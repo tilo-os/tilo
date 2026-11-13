@@ -164,81 +164,85 @@ mod tests {
     use super::*;
     use settings_store::personal_dictionary::{Edit, Service};
 
-    #[test]
-    fn interrupted_reader_failure_is_not_an_ordinary_dictionary_edit() {
-        struct Reader {
-            inner: settings_store::personal_dictionary::Reader,
-            failed: std::sync::atomic::AtomicBool,
-        }
-        impl Vocabulary for Reader {
-            fn snapshot(&self) -> io::Result<Snapshot> {
-                if self.failed.load(std::sync::atomic::Ordering::Acquire) {
-                    Err(io::ErrorKind::Interrupted.into())
-                } else {
-                    self.inner.snapshot()
+    tilo_test_env::scenario! {
+        fn a_vocabulary_lease_retires_its_hints_when_the_dictionary_changes_or_fails;
+
+        phase interrupted_reader_failure_is_not_an_ordinary_dictionary_edit;
+        {
+            struct Reader {
+                inner: settings_store::personal_dictionary::Reader,
+                failed: std::sync::atomic::AtomicBool,
+            }
+            impl Vocabulary for Reader {
+                fn snapshot(&self) -> io::Result<Snapshot> {
+                    if self.failed.load(std::sync::atomic::Ordering::Acquire) {
+                        Err(io::ErrorKind::Interrupted.into())
+                    } else {
+                        self.inner.snapshot()
+                    }
                 }
             }
-        }
-        let directory = tempfile::tempdir().unwrap();
-        let service = Service::new(directory.path().join("dictionary")).unwrap();
-        let inner = service.bind(Some([1; 32])).unwrap();
-        service
-            .edit(&inner, 0, Edit::Add(Word::new("TiLo", None).unwrap()))
-            .unwrap();
-        let reader = Arc::new(Reader {
-            inner,
-            failed: false.into(),
-        });
-        let mut lease = VocabularyLease::capture(reader.clone(), "en").unwrap();
-        assert_eq!(lease.hints(), ["TiLo"]);
-        reader
-            .failed
-            .store(true, std::sync::atomic::Ordering::Release);
-        assert_eq!(lease.check(), Err(LeaseError::Unavailable));
-        assert!(lease.hints().is_empty());
-    }
-
-    #[test]
-    fn shared_service_casing_language_removal_and_binding_revocation_retire_hints() {
-        let directory = tempfile::tempdir().unwrap();
-        let service = Service::new(directory.path().join("dictionary")).unwrap();
-        let reader = service.bind(Some([1; 32])).unwrap();
-        let mut snapshot = reader.snapshot().unwrap();
-        for word in [
-            Word::new("TiLo", None).unwrap(),
-            Word::new("Élodie", Some("fr")).unwrap(),
-            Word::new("Québec", Some("fr-CA")).unwrap(),
-        ] {
-            snapshot = service
-                .edit(&reader, snapshot.revision, Edit::Add(word))
+            let directory = tempfile::tempdir().unwrap();
+            let service = Service::new(directory.path().join("dictionary")).unwrap();
+            let inner = service.bind(Some([1; 32])).unwrap();
+            service
+                .edit(&inner, 0, Edit::Add(Word::new("TiLo", None).unwrap()))
                 .unwrap();
+            let reader = Arc::new(Reader {
+                inner,
+                failed: false.into(),
+            });
+            let mut lease = VocabularyLease::capture(reader.clone(), "en").unwrap();
+            assert_eq!(lease.hints(), ["TiLo"]);
+            reader
+                .failed
+                .store(true, std::sync::atomic::Ordering::Release);
+            assert_eq!(lease.check(), Err(LeaseError::Unavailable));
+            assert!(lease.hints().is_empty());
         }
-        let mut lease = VocabularyLease::capture(Arc::new(reader.clone()), "fr").unwrap();
-        assert_eq!(lease.hints(), ["TiLo", "Élodie"]);
-        assert_eq!(
-            VocabularyLease::capture(Arc::new(reader.clone()), "auto")
-                .unwrap()
-                .hints(),
-            ["TiLo"]
-        );
-        lease.check().unwrap();
-        service
-            .edit(
-                &reader,
-                snapshot.revision,
-                Edit::Remove(Word::new("TiLo", None).unwrap()),
-            )
-            .unwrap();
-        assert!(lease.check().is_err());
-        assert!(lease.hints().is_empty());
-        assert!(lease.check().is_err(), "a changed lease cannot revive");
-        let mut replacement = VocabularyLease::capture(Arc::new(reader), "fr").unwrap();
-        service.bind(None);
-        service.bind(Some([1; 32]));
-        assert!(
-            replacement.check().is_err(),
-            "switching back cannot revive the old binding"
-        );
-        assert!(replacement.hints().is_empty());
+
+        phase shared_service_casing_language_removal_and_binding_revocation_retire_hints;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let service = Service::new(directory.path().join("dictionary")).unwrap();
+            let reader = service.bind(Some([1; 32])).unwrap();
+            let mut snapshot = reader.snapshot().unwrap();
+            for word in [
+                Word::new("TiLo", None).unwrap(),
+                Word::new("Élodie", Some("fr")).unwrap(),
+                Word::new("Québec", Some("fr-CA")).unwrap(),
+            ] {
+                snapshot = service
+                    .edit(&reader, snapshot.revision, Edit::Add(word))
+                    .unwrap();
+            }
+            let mut lease = VocabularyLease::capture(Arc::new(reader.clone()), "fr").unwrap();
+            assert_eq!(lease.hints(), ["TiLo", "Élodie"]);
+            assert_eq!(
+                VocabularyLease::capture(Arc::new(reader.clone()), "auto")
+                    .unwrap()
+                    .hints(),
+                ["TiLo"]
+            );
+            lease.check().unwrap();
+            service
+                .edit(
+                    &reader,
+                    snapshot.revision,
+                    Edit::Remove(Word::new("TiLo", None).unwrap()),
+                )
+                .unwrap();
+            assert!(lease.check().is_err());
+            assert!(lease.hints().is_empty());
+            assert!(lease.check().is_err(), "a changed lease cannot revive");
+            let mut replacement = VocabularyLease::capture(Arc::new(reader), "fr").unwrap();
+            service.bind(None);
+            service.bind(Some([1; 32]));
+            assert!(
+                replacement.check().is_err(),
+                "switching back cannot revive the old binding"
+            );
+            assert!(replacement.hints().is_empty());
+        }
     }
 }

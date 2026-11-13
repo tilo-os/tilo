@@ -76,27 +76,31 @@ fn default_source() -> Result<String, String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_dictation_takes_mono_at_sixteen_kilohertz_without_falling_back() {
-        assert_eq!(
-            Format::MONO_16K,
-            Format {
-                rate: 16_000,
-                channels: 1
-            }
-        );
-        assert_eq!(Format::MONO_16K.frame_bytes(), 2);
-        assert!(STREAM_PROPERTIES.contains("node.dont-fallback = true"));
-        assert!(STREAM_PROPERTIES.contains("node.dont-reconnect = true"));
-        assert!(STREAM_PROPERTIES.contains("node.name = tilo-dictation-microphone"));
-    }
+    tilo_test_env::scenario! {
+        fn the_microphone_is_mono_sixteen_kilohertz_and_never_opened_once_cancelled;
 
-    #[test]
-    fn a_cancelled_dictation_never_opens_the_microphone() {
-        let cancel = AtomicBool::new(true);
-        assert_eq!(
-            Microphone::open(&cancel).err(),
-            Some("dictation canceled".to_owned())
-        );
+        phase a_dictation_takes_mono_at_sixteen_kilohertz_without_falling_back;
+        {
+            assert_eq!(
+                Format::MONO_16K,
+                Format {
+                    rate: 16_000,
+                    channels: 1
+                }
+            );
+            assert_eq!(Format::MONO_16K.frame_bytes(), 2);
+            assert!(STREAM_PROPERTIES.contains("node.dont-fallback = true"));
+            assert!(STREAM_PROPERTIES.contains("node.dont-reconnect = true"));
+            assert!(STREAM_PROPERTIES.contains("node.name = tilo-dictation-microphone"));
+        }
+
+        phase a_cancelled_dictation_never_opens_the_microphone;
+        {
+            let cancel = AtomicBool::new(true);
+            assert_eq!(
+                Microphone::open(&cancel).err(),
+                Some("dictation canceled".to_owned())
+            );
+        }
     }
 }

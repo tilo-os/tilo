@@ -135,61 +135,65 @@ fn validate_text(text: &str) -> Result<(), SpeechError> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn partials_replace_and_segments_accumulate_without_premature_insertion() {
-        let mut stream = PhononTranscript::for_language("en-GB").unwrap();
-        assert!(
-            matches!(stream.observe(r#"{"type":"partial","text":"rough"}"#), Ok(SpeechUpdate::Draft(text)) if text == "rough")
-        );
-        assert!(
-            matches!(stream.observe(r#"{"type":"partial","text":"Corrected."}"#), Ok(SpeechUpdate::Draft(text)) if text == "Corrected.")
-        );
-        assert!(
-            matches!(stream.observe(r#"{"type":"final","text":"Corrected.","segment":1}"#), Ok(SpeechUpdate::Draft(text)) if text == "Corrected.")
-        );
-        assert!(
-            matches!(stream.observe(r#"{"type":"partial","text":"Next 👋"}"#), Ok(SpeechUpdate::Draft(text)) if text == "Corrected. Next 👋")
-        );
-        assert!(
-            matches!(stream.observe(r#"{"type":"done","text":"Corrected. Next 👋"}"#), Ok(SpeechUpdate::Done(text)) if text == "Corrected. Next 👋")
-        );
-        assert!(matches!(
-            stream.observe(r#"{"type":"done","text":"late"}"#),
-            Err(SpeechError::StreamClosed)
-        ));
-    }
+    tilo_test_env::scenario! {
+        fn a_transcript_stream_accumulates_segments_and_closes_on_failure;
 
-    #[test]
-    fn failures_close_the_stream_without_exposing_upstream_copy() {
-        for (frame, error) in [
-            (
-                r#"{"type":"error","message":"private model path and recorded words"}"#,
-                SpeechError::EngineRejected,
-            ),
-            (
-                r#"{"type":"final","text":"replay","segment":2}"#,
-                SpeechError::SegmentOutOfOrder,
-            ),
-            (
-                r#"{"type":"done","text":"run\n"}"#,
-                SpeechError::ControlCharacter,
-            ),
-            (r#"{"type":"unknown"}"#, SpeechError::InvalidMessage),
-        ] {
-            let mut stream = PhononTranscript::default();
-            assert!(matches!(stream.observe(frame), Err(actual) if actual == error));
+        phase partials_replace_and_segments_accumulate_without_premature_insertion;
+        {
+            let mut stream = PhononTranscript::for_language("en-GB").unwrap();
+            assert!(
+                matches!(stream.observe(r#"{"type":"partial","text":"rough"}"#), Ok(SpeechUpdate::Draft(text)) if text == "rough")
+            );
+            assert!(
+                matches!(stream.observe(r#"{"type":"partial","text":"Corrected."}"#), Ok(SpeechUpdate::Draft(text)) if text == "Corrected.")
+            );
+            assert!(
+                matches!(stream.observe(r#"{"type":"final","text":"Corrected.","segment":1}"#), Ok(SpeechUpdate::Draft(text)) if text == "Corrected.")
+            );
+            assert!(
+                matches!(stream.observe(r#"{"type":"partial","text":"Next 👋"}"#), Ok(SpeechUpdate::Draft(text)) if text == "Corrected. Next 👋")
+            );
+            assert!(
+                matches!(stream.observe(r#"{"type":"done","text":"Corrected. Next 👋"}"#), Ok(SpeechUpdate::Done(text)) if text == "Corrected. Next 👋")
+            );
             assert!(matches!(
                 stream.observe(r#"{"type":"done","text":"late"}"#),
                 Err(SpeechError::StreamClosed)
             ));
         }
-        assert!(PhononTranscript::for_language("nl").is_err());
-        assert!(PhononTranscript::for_language("auto").is_err());
-        let mut stream = PhononTranscript::default();
-        let oversized = serde_json::json!({"type":"done", "text":"x".repeat(MAX_DRAFT_BYTES.saturating_add(1))}).to_string();
-        assert!(matches!(
-            stream.observe(&oversized),
-            Err(SpeechError::TranscriptTooLarge)
-        ));
+
+        phase failures_close_the_stream_without_exposing_upstream_copy;
+        {
+            for (frame, error) in [
+                (
+                    r#"{"type":"error","message":"private model path and recorded words"}"#,
+                    SpeechError::EngineRejected,
+                ),
+                (
+                    r#"{"type":"final","text":"replay","segment":2}"#,
+                    SpeechError::SegmentOutOfOrder,
+                ),
+                (
+                    r#"{"type":"done","text":"run\n"}"#,
+                    SpeechError::ControlCharacter,
+                ),
+                (r#"{"type":"unknown"}"#, SpeechError::InvalidMessage),
+            ] {
+                let mut stream = PhononTranscript::default();
+                assert!(matches!(stream.observe(frame), Err(actual) if actual == error));
+                assert!(matches!(
+                    stream.observe(r#"{"type":"done","text":"late"}"#),
+                    Err(SpeechError::StreamClosed)
+                ));
+            }
+            assert!(PhononTranscript::for_language("nl").is_err());
+            assert!(PhononTranscript::for_language("auto").is_err());
+            let mut stream = PhononTranscript::default();
+            let oversized = serde_json::json!({"type":"done", "text":"x".repeat(MAX_DRAFT_BYTES.saturating_add(1))}).to_string();
+            assert!(matches!(
+                stream.observe(&oversized),
+                Err(SpeechError::TranscriptTooLarge)
+            ));
+        }
     }
 }

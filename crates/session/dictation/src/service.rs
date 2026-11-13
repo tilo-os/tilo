@@ -376,35 +376,39 @@ impl std::fmt::Debug for DictationService {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_reading_says_where_a_dictation_stands_and_never_what_it_heard() {
-        let link = DictationLink::default();
-        assert_eq!(
-            link.reading(),
-            serde_json::json!({
-                "status": "idle",
-                "session": null,
-                "failure": null,
-                "recovery": null,
-            })
-        );
-        link.request(Request::Toggle);
-        assert_eq!(link.take_requests(), vec![Request::Toggle]);
-        assert!(link.take_requests().is_empty());
-    }
+    tilo_test_env::scenario! {
+        fn the_dictation_service_reads_where_it_stands_and_only_asks;
 
-    #[test]
-    fn an_action_asks_for_a_dictation_and_never_consents_to_one() {
-        let (mut service, link) = DictationService::start(Arc::new(|| {}));
-        let started = service
-            .invoke(DICTATION, "start", &Map::new())
-            .expect("start is offered");
-        assert_eq!(started, Started::Done(ActionOutput::default()));
-        assert_eq!(link.take_requests(), vec![Request::Toggle]);
-        assert_eq!(
-            service.invoke(DICTATION, "allow", &Map::new()),
-            Err(DoorError::Unknown(ActionAddress::new(DICTATION, "allow"))),
-            "there is no action that allows the microphone"
-        );
+        phase the_reading_says_where_a_dictation_stands_and_never_what_it_heard;
+        {
+            let link = DictationLink::default();
+            assert_eq!(
+                link.reading(),
+                serde_json::json!({
+                    "status": "idle",
+                    "session": null,
+                    "failure": null,
+                    "recovery": null,
+                })
+            );
+            link.request(Request::Toggle);
+            assert_eq!(link.take_requests(), vec![Request::Toggle]);
+            assert!(link.take_requests().is_empty());
+        }
+
+        phase an_action_asks_for_a_dictation_and_never_consents_to_one;
+        {
+            let (mut service, link) = DictationService::start(Arc::new(|| {}));
+            let started = service
+                .invoke(DICTATION, "start", &Map::new())
+                .expect("start is offered");
+            assert_eq!(started, Started::Done(ActionOutput::default()));
+            assert_eq!(link.take_requests(), vec![Request::Toggle]);
+            assert_eq!(
+                service.invoke(DICTATION, "allow", &Map::new()),
+                Err(DoorError::Unknown(ActionAddress::new(DICTATION, "allow"))),
+                "there is no action that allows the microphone"
+            );
+        }
     }
 }
