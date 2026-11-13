@@ -797,6 +797,10 @@ impl Session {
             std::sync::Arc::clone(&steps),
         ));
         session_doors.keep_actions(std::sync::Arc::clone(&session_actions));
+        // What a watch of a whole workspace reads: the changes in this device's replica.
+        if let Some(engine) = &engine {
+            session_doors.keep_records(std::sync::Arc::clone(engine));
+        }
         // The person's settings, answered under the provider Settings' window names for each
         // control it shows: the session keeps them in its settings service, and this is what the
         // broker hands a change of them, on the loop's pass, as it hands the session's own steps.

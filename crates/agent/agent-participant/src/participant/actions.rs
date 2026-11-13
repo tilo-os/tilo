@@ -83,6 +83,10 @@ pub(super) struct Answered(VecDeque<(InvokeRequest, InvocationReceipt)>);
 
 impl AgentParticipant {
     /// Answer one remote-action frame `from` sent, if it is a request.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one answer for each message of the wire's vocabulary, in its order"
+    )]
     pub(super) fn answer_remote_action(&mut self, from: [u8; 32], frame: &[u8]) {
         let Ok(frame) = RemoteActionFrame::decode(frame) else {
             return;
@@ -138,6 +142,19 @@ impl AgentParticipant {
                     result: Err(ActionHostError::confirmation_required()),
                 }
             }
+            // An agent holds no workspace of its own to search or follow.
+            message @ (RemoteActionMessage::SearchRequest { .. }
+            | RemoteActionMessage::ChangesRequest { .. }) => {
+                let Some(refused) = tilo_actions::remote::refuse(
+                    &message,
+                    ActionHostError::Unavailable {
+                        reason: "an agent keeps no records of a workspace".into(),
+                    },
+                ) else {
+                    return;
+                };
+                refused
+            }
             // An agent keeps no content for others to put into.
             RemoteActionMessage::ContentPutRequest { correlation, .. } => {
                 RemoteActionMessage::ContentPutResponse {
@@ -170,6 +187,8 @@ impl AgentParticipant {
             | RemoteActionMessage::ConfirmResponse { .. }
             | RemoteActionMessage::RetiredResourceWatch { .. }
             | RemoteActionMessage::RetiredResourceReading { .. }
+            | RemoteActionMessage::SearchResponse { .. }
+            | RemoteActionMessage::ChangesResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return,
         };
         match RemoteActionFrame::new(reply).encode() {
