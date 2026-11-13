@@ -382,141 +382,145 @@ mod tests {
         }
     }
 
-    /// The device admits only an unrevoked, valid administrator of its own
-    /// identity, and names the first rule any other certificate breaks.
-    #[test]
-    fn admission_takes_only_the_owners_administrators() {
-        let person = Person::new(1);
-        let stranger = Person::new(2);
-        let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
-        let none = RevocationList::new();
-        let admin = person.certify(&key, DeviceCapabilities::administrator());
-        assert_eq!(admit(&admin, &person.user(), &none, 50), Ok(()));
-        for preset in [
-            DeviceCapabilities::primary(),
-            DeviceCapabilities::member(),
-            DeviceCapabilities::member(),
-        ] {
-            let cert = person.certify(&key, preset);
+    tilo_test_env::scenario! {
+        fn the_handshake_admits_proves_and_trusts_only_what_it_should;
+
+        phase admission_takes_only_the_owners_administrators;
+        // The device admits only an unrevoked, valid administrator of its own
+        // identity, and names the first rule any other certificate breaks.
+        {
+            let person = Person::new(1);
+            let stranger = Person::new(2);
+            let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+            let none = RevocationList::new();
+            let admin = person.certify(&key, DeviceCapabilities::administrator());
+            assert_eq!(admit(&admin, &person.user(), &none, 50), Ok(()));
+            for preset in [
+                DeviceCapabilities::primary(),
+                DeviceCapabilities::member(),
+                DeviceCapabilities::member(),
+            ] {
+                let cert = person.certify(&key, preset);
+                assert_eq!(
+                    admit(&cert, &person.user(), &none, 50),
+                    Err(Refusal::NotAdministrator)
+                );
+            }
+            let theirs = stranger.certify(&key, DeviceCapabilities::administrator());
             assert_eq!(
-                admit(&cert, &person.user(), &none, 50),
-                Err(Refusal::NotAdministrator)
+                admit(&theirs, &person.user(), &none, 50),
+                Err(Refusal::OtherIdentity)
+            );
+            // A certificate that claims the person but was not signed by them.
+            let mut forged = theirs;
+            forged.user_public_key = person.user();
+            assert_eq!(
+                admit(&forged, &person.user(), &none, 50),
+                Err(Refusal::NotCertified)
+            );
+            let mut damaged = admin.clone();
+            damaged.signature[0] ^= 1;
+            assert_eq!(
+                admit(&damaged, &person.user(), &none, 50),
+                Err(Refusal::NotCertified)
+            );
+            assert_eq!(
+                admit(&admin, &person.user(), &none, 5_000),
+                Err(Refusal::OutsideValidity)
+            );
+            let revoked = person.revoke(admin.device_public_key);
+            assert_eq!(
+                admit(&admin, &person.user(), &revoked, 50),
+                Err(Refusal::Revoked)
             );
         }
-        let theirs = stranger.certify(&key, DeviceCapabilities::administrator());
-        assert_eq!(
-            admit(&theirs, &person.user(), &none, 50),
-            Err(Refusal::OtherIdentity)
-        );
-        // A certificate that claims the person but was not signed by them.
-        let mut forged = theirs;
-        forged.user_public_key = person.user();
-        assert_eq!(
-            admit(&forged, &person.user(), &none, 50),
-            Err(Refusal::NotCertified)
-        );
-        let mut damaged = admin.clone();
-        damaged.signature[0] ^= 1;
-        assert_eq!(
-            admit(&damaged, &person.user(), &none, 50),
-            Err(Refusal::NotCertified)
-        );
-        assert_eq!(
-            admit(&admin, &person.user(), &none, 5_000),
-            Err(Refusal::OutsideValidity)
-        );
-        let revoked = person.revoke(admin.device_public_key);
-        assert_eq!(
-            admit(&admin, &person.user(), &revoked, 50),
-            Err(Refusal::Revoked)
-        );
-    }
 
-    /// A proof holds only for its own role, nonce and connection.
-    #[test]
-    fn proofs_bind_role_nonce_and_connection() {
-        let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
-        let public = key.verifying_key().to_bytes();
-        let binding = Binding {
-            dialer: [5; 32],
-            device: [6; 32],
-        };
-        let nonce = [7; 32];
-        let proof = prove(&key, Role::Device, &nonce, &binding);
-        assert!(proof_holds(&public, &proof, Role::Device, &nonce, &binding));
-        assert!(!proof_holds(
-            &public,
-            &proof,
-            Role::Administrator,
-            &nonce,
-            &binding
-        ));
-        assert!(!proof_holds(
-            &public,
-            &proof,
-            Role::Device,
-            &[8; 32],
-            &binding
-        ));
-        let relayed = Binding {
-            dialer: [9; 32],
-            ..binding
-        };
-        assert!(!proof_holds(
-            &public,
-            &proof,
-            Role::Device,
-            &nonce,
-            &relayed
-        ));
-        assert!(!proof_holds(
-            &public,
-            &proof[..63],
-            Role::Device,
-            &nonce,
-            &binding
-        ));
-    }
+        phase proofs_bind_role_nonce_and_connection;
+        // A proof holds only for its own role, nonce and connection.
+        {
+            let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+            let public = key.verifying_key().to_bytes();
+            let binding = Binding {
+                dialer: [5; 32],
+                device: [6; 32],
+            };
+            let nonce = [7; 32];
+            let proof = prove(&key, Role::Device, &nonce, &binding);
+            assert!(proof_holds(&public, &proof, Role::Device, &nonce, &binding));
+            assert!(!proof_holds(
+                &public,
+                &proof,
+                Role::Administrator,
+                &nonce,
+                &binding
+            ));
+            assert!(!proof_holds(
+                &public,
+                &proof,
+                Role::Device,
+                &[8; 32],
+                &binding
+            ));
+            let relayed = Binding {
+                dialer: [9; 32],
+                ..binding
+            };
+            assert!(!proof_holds(
+                &public,
+                &proof,
+                Role::Device,
+                &nonce,
+                &relayed
+            ));
+            assert!(!proof_holds(
+                &public,
+                &proof[..63],
+                Role::Device,
+                &nonce,
+                &binding
+            ));
+        }
 
-    /// The dialer trusts only the device it asked for, of its own identity,
-    /// proving its key on this connection.
-    #[test]
-    fn the_dialer_trusts_only_the_device_it_asked_for() {
-        let person = Person::new(1);
-        let device_key = ed25519_dalek::SigningKey::from_bytes(&[10; 32]);
-        let device = person.certify(&device_key, DeviceCapabilities::member());
-        let binding = Binding {
-            dialer: [11; 32],
-            device: [12; 32],
-        };
-        let client_nonce = [13; 32];
-        let challenge = Challenge {
-            cert: device.clone(),
-            nonce: [14; 32],
-            proof: prove(&device_key, Role::Device, &client_nonce, &binding),
-        };
-        let expected = device.device_public_key;
-        let trust = |challenge: &Challenge, user: &[u8; 32], expected: Option<&[u8; 32]>| {
-            trust_device(challenge, user, expected, &client_nonce, &binding, 50)
-        };
-        assert_eq!(trust(&challenge, &person.user(), Some(&expected)), Ok(()));
-        assert_eq!(trust(&challenge, &person.user(), None), Ok(()));
-        assert_eq!(
-            trust(&challenge, &Person::new(2).user(), Some(&expected)),
-            Err(Untrusted::OtherIdentity)
-        );
-        assert!(matches!(
-            trust(&challenge, &person.user(), Some(&[0; 32])),
-            Err(Untrusted::OtherDevice { .. })
-        ));
-        let replayed = Challenge {
-            proof: prove(&device_key, Role::Device, &[99; 32], &binding),
-            ..challenge
-        };
-        assert_eq!(
-            trust(&replayed, &person.user(), Some(&expected)),
-            Err(Untrusted::BadProof)
-        );
+        phase the_dialer_trusts_only_the_device_it_asked_for;
+        // The dialer trusts only the device it asked for, of its own identity,
+        // proving its key on this connection.
+        {
+            let person = Person::new(1);
+            let device_key = ed25519_dalek::SigningKey::from_bytes(&[10; 32]);
+            let device = person.certify(&device_key, DeviceCapabilities::member());
+            let binding = Binding {
+                dialer: [11; 32],
+                device: [12; 32],
+            };
+            let client_nonce = [13; 32];
+            let challenge = Challenge {
+                cert: device.clone(),
+                nonce: [14; 32],
+                proof: prove(&device_key, Role::Device, &client_nonce, &binding),
+            };
+            let expected = device.device_public_key;
+            let trust = |challenge: &Challenge, user: &[u8; 32], expected: Option<&[u8; 32]>| {
+                trust_device(challenge, user, expected, &client_nonce, &binding, 50)
+            };
+            assert_eq!(trust(&challenge, &person.user(), Some(&expected)), Ok(()));
+            assert_eq!(trust(&challenge, &person.user(), None), Ok(()));
+            assert_eq!(
+                trust(&challenge, &Person::new(2).user(), Some(&expected)),
+                Err(Untrusted::OtherIdentity)
+            );
+            assert!(matches!(
+                trust(&challenge, &person.user(), Some(&[0; 32])),
+                Err(Untrusted::OtherDevice { .. })
+            ));
+            let replayed = Challenge {
+                proof: prove(&device_key, Role::Device, &[99; 32], &binding),
+                ..challenge
+            };
+            assert_eq!(
+                trust(&replayed, &person.user(), Some(&expected)),
+                Err(Untrusted::BadProof)
+            );
+        }
     }
 
     #[tokio::test]
