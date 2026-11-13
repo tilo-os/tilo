@@ -125,9 +125,8 @@ try {
     const before = await tab.evaluate('semanticDeliveries');
     await tab.evaluate('mount.requestSemantics()');
     await wait(`semanticDeliveries > ${before}`);
-    // A private key buffer is never projected, and the add chooser is a
-    // command: choosing a preset adds the provider and leaves it empty.
-    if (action === 'value' && !id.startsWith('agent-models-api-key-') && id !== 'agent-models-add-provider') {
+    // A private key buffer is never projected.
+    if (action === 'value' && !id.startsWith('agent-models-api-key-')) {
       await wait(`findControl(${JSON.stringify(id)})?.semantics?.value === ${JSON.stringify(value)}`);
     }
   };
@@ -142,7 +141,10 @@ try {
     await tab.evaluate('JSON.stringify({phase:mount.state()?.phase,error:mount.state()?.error,frames:mount.state()?.frames})') + '; ' + tab.log.join('; ') + '; browser: ' + browser.diagnostics());
   assert((await tab.screenshot())?.length > 1000, 'production WebGPU canvas was not captured');
   await settled();
+  // The catalogue narrows as the filter is typed and its preset's Add chooses
+  // it: the row's button is what a person presses, so the proof presses it.
   await control('agent-models-add-provider', 'value', 'openai-compatible');
+  await control('agent-models-preset-openai-compatible', 'activate');
   await wait('mount.actions().some(a=>a.resource_kind==="settings.agent-provider")');
   assert.equal(config.profiles.length, 1);
   const id = config.profiles[0].id;
