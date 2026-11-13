@@ -20,8 +20,6 @@ fn crop(rgba: &[u8], frame_w: usize, scale: f64, area: Rect) -> Vec<u8> {
     out
 }
 
-/// The window's frame under UI theme `theme`, with its width and device
-/// scale.
 fn frame_in(bench: &mut Bench, theme: Theme) -> (Vec<u8>, usize, f64) {
     bench.app.harness().set_theme(theme);
     bench.frame();
@@ -31,13 +29,10 @@ fn frame_in(bench: &mut Bench, theme: Theme) -> (Vec<u8>, usize, f64) {
     (rgba, (w * scale).round() as usize, scale)
 }
 
-/// The slide on the canvas, inside its rounded card edge.
 fn slide_area(bench: &mut Bench) -> Rect {
     bench.read(|app| app.compute_chrome().slide_dest.inset(-16.0))
 }
 
-/// How many of the slide's pixels differ between the dark and the light UI
-/// theme, past antialiasing.
 fn slide_differs_across_ui_themes(bench: &mut Bench, area: impl Fn(&mut Bench) -> Rect) -> usize {
     let (dark, w, scale) = frame_in(bench, Theme::dark());
     let dark = crop(&dark, w, scale, area(bench));
@@ -47,8 +42,6 @@ fn slide_differs_across_ui_themes(bench: &mut Bench, area: impl Fn(&mut Bench) -
     OffscreenRenderer::pixels_differing_beyond_aa(&dark, &light)
 }
 
-// A deck's look is document content: the same on every screen, in Present
-// and in the exported file, whatever the UI theme.
 #[test]
 fn a_deck_looks_the_same_in_the_dark_and_the_light_ui_theme() {
     let deck = crate::model::seed_deck();
@@ -71,7 +64,6 @@ fn a_deck_looks_the_same_in_the_dark_and_the_light_ui_theme() {
                 look.as_str()
             );
         }
-        // Present draws the deck's slide the same way.
         bench.with(SlidesApp::enter_present);
         let differing = slide_differs_across_ui_themes(&mut bench, |_| {
             let (w, h) = (f64::from(WINDOW.0), f64::from(WINDOW.1));
@@ -86,8 +78,6 @@ fn a_deck_looks_the_same_in_the_dark_and_the_light_ui_theme() {
     }
 }
 
-/// The look is the deck's own: switched in the inspector, it is stored in
-/// the document, and the slide is drawn in it.
 #[test]
 fn the_deck_look_is_stored_in_the_document_and_drawn() {
     let mut bench = Bench::sample();
@@ -125,8 +115,6 @@ fn the_deck_look_is_stored_in_the_document_and_drawn() {
     );
 }
 
-/// A written file carries the deck's colours as Slides draws them, and
-/// opens back in the same look.
 #[test]
 fn a_written_deck_carries_its_look_and_colours() {
     use std::io::Read;

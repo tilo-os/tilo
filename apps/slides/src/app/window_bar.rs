@@ -13,22 +13,16 @@ use ui::window_toolbar::{
 use super::editor_chrome::insert_tools;
 use super::{DeckRecord, ElementKind, Hit, Mode, SlideZoom, SlidesApp, SlidesEffect, tr, tr_args};
 
-/// The bar's views: the slide being edited, or every slide.
 pub(crate) const EDITOR: &str = "slides.view:editor";
 pub(crate) const OVERVIEW: &str = "slides.view:overview";
 
-/// What the bar's menus do in the editor itself.
 #[derive(Clone, Copy, PartialEq)]
 enum Command {
-    /// Insert an element of this kind on the slide.
     Insert(ElementKind),
-    /// Fit the slide to the pane again.
     ZoomToFit,
-    /// Pin the zoom, as its fraction of the design size.
     Zoom(f64),
 }
 
-/// The bar's entries: the deck's effects, and the editor's commands.
 pub(super) struct Bar {
     actions: BarActions<DeckRecord>,
     commands: BarCommands<Command>,
@@ -141,8 +135,6 @@ impl SlidesApp {
         }
     }
 
-    /// Run what the person did in the window's bar, then declare the slots
-    /// for what the editor shows now.
     pub(super) fn run_window_toolbar(&mut self) {
         for event in ui::window_toolbar::take_events() {
             self.run_window_bar_event(&event);
@@ -150,8 +142,6 @@ impl SlidesApp {
         ui::window_toolbar::declare(Some(self.window_toolbar()));
     }
 
-    /// Run one thing the person did in the window's bar, through the deck's
-    /// published action for it.
     pub(crate) fn run_window_bar_event(&mut self, event: &ToolbarEvent) {
         if self.mode == Mode::Present {
             return;

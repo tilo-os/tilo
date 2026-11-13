@@ -1,19 +1,10 @@
-//! Pure data model for a Slides deck.
-//!
-//! The deck is stored as the [`crate::deck::Deck`] record; this module is
-//! the deck as the window draws it, plus the pure
-//! logic the editor needs (geometry, palette resolution, the seed deck).
-//! Nothing here touches the CRDT, the renderer, or winit — it is unit
-//! testable in isolation.
+//! The deck as the window draws it, with the pure logic the editor needs:
+//! geometry, palette resolution and the seed deck. Nothing here touches the
+//! record, the renderer or winit.
 
-// This module's several `from_str(s: &str) -> Self` methods are deliberately
-// infallible tag parsers with a default fallback (an unknown/legacy document
-// tag maps to a sensible variant rather than erroring) -- a different
-// contract from `std::str::FromStr::from_str`, which returns `Result`.
-// Implementing the trait would force a `Result` return and ripple
-// `.parse()`/`?` handling through every call site for no behavioural
-// benefit, so the name collision is accepted here rather than exempted
-// call-by-call.
+// The `from_str(s: &str) -> Self` methods here are infallible tag parsers with a
+// default fallback, not `std::str::FromStr`: the trait would force a `Result`
+// and ripple `?` through every call site for no behavioural gain.
 #![allow(
     clippy::should_implement_trait,
     reason = "the infallible from_str parsers fall back to a default; FromStr would force a Result through every call site"
@@ -28,10 +19,8 @@ use ui::widget::marks::{Mark, MarkSpan};
 use uuid::Uuid;
 use vello::peniko::Color;
 
-/// The slide's intrinsic coordinate space. Every element's `x/y/w/h` and
-/// `font_size` is expressed in these units; the renderer scales the whole
-/// space to whatever destination rect it is painting into (canvas,
-/// thumbnail, or full-screen present). 16:9.
+/// The slide's intrinsic coordinate space: every element's `x/y/w/h` and
+/// `font_size` is in these units, scaled to whatever rect paints it. 16:9.
 pub const SLIDE_W: f64 = 1280.0;
 pub const SLIDE_H: f64 = 720.0;
 
@@ -97,8 +86,7 @@ pub enum TextAlign {
 }
 
 impl TextAlign {
-    /// Every alignment, in the order the inspector's segmented control shows
-    /// them (left · center · right · justify).
+    /// In the order the inspector shows them.
     pub const ALL: [TextAlign; 4] = [
         TextAlign::Left,
         TextAlign::Center,
@@ -148,28 +136,24 @@ pub struct Element {
     pub y: f64,
     pub w: f64,
     pub h: f64,
-    /// The text as plain text, a line per paragraph: what search, the
-    /// outline, speaker tools and export read.
+    /// A line per paragraph: what search, the outline and export read.
     pub text: String,
-    /// The text as written: paragraphs with their marks (bold, italic,
-    /// links). Empty for an element built from plain `text` alone (a
-    /// template, an import), which [`Self::rich_blocks`] derives.
+    /// Empty for an element built from plain `text`, which
+    /// [`Self::rich_blocks`] derives.
     pub blocks: Vec<BlockContent>,
-    /// Source path of an image element's picture on disk. Empty for every
-    /// non-image element. Only the path travels in the CRDT; the decoded
-    /// pixels are a per-peer runtime cache keyed by this path.
+    /// Only the path travels in the record; the decoded pixels are a per-peer
+    /// cache keyed by it.
     pub src: String,
-    /// Colour *role* (see [`Palette::resolve`]) for the fill. `"none"`
-    /// means no fill (shapes become outline-only).
+    /// A colour role (see [`Palette::resolve`]); `"none"` makes a shape
+    /// outline-only.
     pub fill: String,
-    /// Colour role for the stroke / outline. `"none"` disables it.
     pub stroke: String,
     pub stroke_width: f64,
     pub font_size: f64,
     pub align: TextAlign,
     pub bold: bool,
     pub italic: bool,
-    /// Corner radius (rect elements), in slide units.
+    /// In slide units (rect elements).
     pub radius: f64,
     pub z: i64,
 }
@@ -186,18 +170,14 @@ impl Element {
         Element::shape_with_id(new_id(), kind, x, y, w, h)
     }
 
-    /// An image element backed by the picture at `src` (a filesystem path).
-    /// The pixels are decoded lazily off the UI thread and cached by path.
     pub fn image(src: &str, x: f64, y: f64, w: f64, h: f64) -> Element {
         let mut element = Element::of_kind(new_id(), ElementKind::Image, x, y, w, h);
         element.src = src.to_string();
         element
     }
 
-    /// A new element of `kind` with that kind's default style and the given
-    /// id: what [`Self::text`], [`Self::image`] and the shapes start from.
-    /// Taking the id rather than minting one lets an action create an
-    /// element whose id comes from its deterministic context.
+    /// Taking the id lets an action create an element whose id comes from its
+    /// own context.
     pub fn of_kind(id: Id, kind: ElementKind, x: f64, y: f64, w: f64, h: f64) -> Element {
         let mut element = Element::shape_with_id(id, kind, x, y, w, h);
         match kind {
@@ -242,9 +222,6 @@ impl Element {
         }
     }
 
-    /// The text as written: its blocks, or for an element built from plain
-    /// text, a paragraph per line carrying the element's bold and italic
-    /// over all of it.
     /// Whether a text box has no words yet.
     pub fn is_blank_text(&self) -> bool {
         self.kind == ElementKind::Text
@@ -252,6 +229,8 @@ impl Element {
             && self.blocks.iter().all(|block| block.text.trim().is_empty())
     }
 
+    /// The text as written: its blocks, or for an element built from plain
+    /// text, a paragraph per line carrying the element's bold and italic.
     pub fn rich_blocks(&self) -> Vec<BlockContent> {
         if !self.blocks.is_empty() {
             return self.blocks.clone();
@@ -259,9 +238,8 @@ impl Element {
         paragraphs_of(&self.text, self.bold, self.italic)
     }
 
-    /// Replace the text with `blocks`, keeping the plain text in step. The
-    /// blocks' document ids are dropped: the model shows words, and the
-    /// document names its own paragraphs.
+    /// The plain text is kept in step. The blocks' document ids are dropped: the
+    /// model shows words, the document names its paragraphs.
     pub fn set_blocks(&mut self, mut blocks: Vec<BlockContent>) {
         for block in &mut blocks {
             block.id.clear();
@@ -285,8 +263,6 @@ impl Element {
     }
 }
 
-/// Plain text as paragraphs, a paragraph per line, with `bold` and `italic`
-/// over every one: the first-format text box as written.
 pub fn paragraphs_of(text: &str, bold: bool, italic: bool) -> Vec<BlockContent> {
     text.split('\n')
         .map(|line| {
@@ -303,8 +279,7 @@ pub fn paragraphs_of(text: &str, bold: bool, italic: bool) -> Vec<BlockContent> 
         .collect()
 }
 
-/// A paragraph's text as runs of one weight and slant: `(text, bold,
-/// italic)`, in order, the way presentation formats store text.
+/// `(text, bold, italic)` in order, the way presentation formats store text.
 pub fn runs_of(block: &BlockContent) -> Vec<(&str, bool, bool)> {
     let styled = |mark: &Mark, at: usize| {
         block
@@ -336,7 +311,6 @@ pub fn runs_of(block: &BlockContent) -> Vec<(&str, bool, bool)> {
         .collect()
 }
 
-/// Append a run of `text` to `block`, bold and italic as given.
 pub fn push_run(block: &mut BlockContent, text: &str, bold: bool, italic: bool) {
     let start = block.text.len();
     block.text.push_str(text);
@@ -360,7 +334,6 @@ pub fn push_run(block: &mut BlockContent, text: &str, bold: bool, italic: bool) 
     }
 }
 
-/// The plain text of `blocks`, a line per paragraph.
 pub fn plain_text_of(blocks: &[BlockContent]) -> String {
     blocks
         .iter()
@@ -369,7 +342,6 @@ pub fn plain_text_of(blocks: &[BlockContent]) -> String {
         .join("\n")
 }
 
-/// Whether `mark` covers every character of `blocks`.
 pub fn covered_by(blocks: &[BlockContent], mark: &Mark) -> bool {
     blocks.iter().all(|block| {
         let mut covered = 0;
@@ -390,9 +362,8 @@ pub fn covered_by(blocks: &[BlockContent], mark: &Mark) -> bool {
     })
 }
 
-/// Two elements are equal when they show the same thing: the same words
-/// with the same marks, however those were written down (as blocks, or as
-/// plain text with the box's bold and italic).
+/// Equal when they show the same words with the same marks, however those were
+/// written down.
 impl PartialEq for Element {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
@@ -468,24 +439,19 @@ impl Layout {
             Layout::Blank => "Blank",
         }
     }
-    /// Whether the slide paints a full-bleed accent background (section &
-    /// title cover slides) versus a neutral content surface.
+    /// A full-bleed accent background, as section and title covers have.
     pub fn is_cover(self) -> bool {
         matches!(self, Layout::Section | Layout::Title)
     }
 }
 
-/// Per-slide background treatment, resolved against the palette at draw
-/// time. Keeps slides theme-driven while still allowing variety.
+/// Resolved against the palette at draw time.
 #[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Background {
-    /// Neutral content surface (raised panel).
     #[default]
     Surface,
-    /// Full accent wash — used for section / cover slides.
     Accent,
-    /// Deep, near-black accent tint.
     Deep,
 }
 
@@ -538,7 +504,6 @@ impl Slide {
         }
     }
 
-    /// Next z value for a newly added element (one above the current top).
     pub fn next_z(&self) -> i64 {
         self.elements.iter().map(|e| e.z).max().unwrap_or(0) + 1
     }
@@ -557,7 +522,7 @@ impl Slide {
         self.elements.iter_mut().find(|e| e.id == id)
     }
 
-    /// Elements ordered back-to-front for painting.
+    /// Back to front.
     pub fn z_sorted(&self) -> Vec<&Element> {
         let mut v: Vec<&Element> = self.elements.iter().collect();
         v.sort_by(|a, b| a.z.cmp(&b.z).then_with(|| a.id.cmp(&b.id)));
@@ -569,9 +534,8 @@ impl Slide {
 // Deck + palette
 // ===========================================================================
 
-/// Named accent palettes a deck can adopt. Every colour is still pulled
-/// from the OS [`Theme`](ui::theme::Theme) so the deck respects the
-/// system look — the palette only chooses *which* token drives the accent.
+/// Every colour still comes from the OS [`Theme`](ui::theme::Theme); the palette
+/// only chooses which token drives the accent.
 #[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PaletteKind {
@@ -626,16 +590,13 @@ impl PaletteKind {
     }
 }
 
-/// A deck's light or dark look: its surfaces and inks. Document content,
-/// stored with the deck, so it looks the same on every screen, in Present
-/// and in a saved file, whatever the reader's own UI theme.
+/// The deck's surfaces and inks, stored with the deck, so it looks the same on
+/// every screen, in Present and in a saved file, whatever the reader's theme.
 #[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DeckLook {
-    /// Light surfaces, dark ink: what a new deck starts with.
     #[default]
     Light,
-    /// Dark surfaces, light ink.
     Dark,
 }
 
@@ -653,7 +614,6 @@ impl DeckLook {
             _ => DeckLook::Light,
         }
     }
-    /// The look's name, in the reader's language.
     #[must_use]
     pub fn label(self) -> String {
         crate::strings::tr(match self {
@@ -661,7 +621,6 @@ impl DeckLook {
             DeckLook::Dark => "slides-look-dark",
         })
     }
-    /// The colour tokens the deck's colours come from.
     #[must_use]
     pub fn colors(self) -> ui::tokens::Colors {
         match self {
@@ -685,9 +644,8 @@ impl Deck {
     }
 }
 
-/// A palette resolved for the deck's own [`DeckLook`], never the reader's UI
-/// theme. Holds concrete colours so the renderer never re-derives them per
-/// element.
+/// Resolved for the deck's own [`DeckLook`], never the reader's theme; concrete
+/// colours, so the renderer never re-derives them per element.
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
     pub accent: Color,
@@ -703,29 +661,27 @@ pub struct Palette {
     pub warning: Color,
     pub danger: Color,
     pub info: Color,
-    /// The status colour of an image that could not be loaded.
+    /// An image that could not be loaded.
     pub failed: Color,
-    /// The look these colours were resolved for: the deck's words lay out
-    /// and paint against it ([`crate::render::words_theme`]).
+    /// The deck's words lay out and paint against it
+    /// ([`crate::render::words_theme`]).
     pub look: DeckLook,
-    /// The `text` and `text-dim` inks for each slide background, in
-    /// [`Background::ALL`] order. See [`Palette::on`].
+    /// For each slide background, in [`Background::ALL`] order. See
+    /// [`Palette::on`].
     inks: [(Color, Color); 3],
 }
 
-/// The deck's deep tone: an authored dark treatment in every OS theme (a
-/// theme-tracking neutral would flip near-white in the light palette).
+/// An authored dark tone in every OS theme: a theme-tracking neutral would flip
+/// near-white in the light palette.
 const DEEP: Color = Color::from_rgb8(15, 23, 42);
 
-/// A deck's colours are content: they come from the presence palette's
-/// evenly spaced hues, never from the status colours, and a deck looks the
-/// same in either theme, so its hues are the light palette's (deep enough to
-/// carry white type).
+/// A deck's colours are content: the presence palette's evenly spaced hues,
+/// never the status colours, and taken from the light palette (deep enough for
+/// white type) so a deck looks the same in either theme.
 static DECK_HUES: std::sync::LazyLock<ui::tokens::colors::PresencePalette> =
     std::sync::LazyLock::new(|| ui::tokens::Colors::light().presence);
 
 impl Palette {
-    /// Build the resolved palette for `kind` in the deck's `look`.
     pub fn resolve(kind: PaletteKind, look: DeckLook) -> Palette {
         let colors = look.colors();
         let c = &colors;
@@ -743,14 +699,11 @@ impl Palette {
             accent_deep: mix8(accent, DEEP, 0.62),
             surface: c.surfaces.raised,
             surface_dim: mix8(c.surfaces.raised, c.surfaces.content, 0.5),
-            // A "Deep" slide is an authored dark treatment in every OS theme
-            // — a theme-tracking neutral flips near-white in the light
-            // palette. A fixed deep tone keeps it dramatic; its text inks
-            // are chosen against it below.
+            // A fixed deep tone: a theme-tracking neutral flips near-white in
+            // the light palette. Its text inks are chosen against it below.
             deep: DEEP,
             text: c.text_primary,
             text_dim: c.text_dim,
-            // White on the accent where it reads, else the legible ink.
             // White type on the accent, as slides set it large.
             on_accent: c.ink_on_any(
                 &[accent],
@@ -765,13 +718,10 @@ impl Palette {
             look,
             inks: [(c.text_primary, c.text_dim); 3],
         };
-        // The look's text colours are chosen for the look's own surfaces;
-        // a slide background can be the opposite (the fixed deep tone under
-        // the light look's near-black text measured 1.05:1). Resolve the
-        // `text` and `text-dim` roles per background instead: the theme's
-        // ink wherever it clears WCAG AA on that background, otherwise the
-        // legible ink for it, and a dim ink that is a softened version of
-        // whichever text ink won — still clearing AA.
+        // A slide background can be the opposite of the look's own surfaces (the
+        // deep tone under the light look's near-black text measured 1.05:1), so
+        // resolve `text` and `text-dim` per background: the theme's ink where it
+        // clears WCAG AA, else the legible ink, and a softened dim ink.
         palette.inks = Background::ALL.map(|background| {
             let ground = palette.slide_bg(background);
             let text = c.readable_on(ground, c.text_primary);
@@ -785,11 +735,9 @@ impl Palette {
         palette
     }
 
-    /// This palette as it resolves on a slide with background `bg`: the
-    /// `text` and `text-dim` roles become the inks that contrast with that
-    /// background, so text styled with a theme text role stays legible when
-    /// its slide switches to the accent or deep treatment, in either look.
-    /// Every other role is unchanged.
+    /// `text` and `text-dim` become the inks that contrast with `bg`, so text in
+    /// a theme text role stays legible when its slide switches treatment. Every
+    /// other role is unchanged.
     #[must_use]
     pub fn on(&self, bg: Background) -> Palette {
         let index = Background::ALL
@@ -808,14 +756,9 @@ impl Palette {
         }
     }
 
-    /// Resolve a colour *role* string to a concrete colour. Returns `None`
-    /// for `"none"` so callers can skip the fill/stroke entirely.
-    ///
-    /// Two kinds of value are accepted: a named theme *role* (`"accent"`,
-    /// `"surface"`, …), resolved against the deck's palette and look; or a literal `#RRGGBB` / `#RRGGBBAA` hex chosen with the
-    /// inspector colour picker, which resolves to that exact colour regardless
-    /// of theme. Hex is what lets a user pick an arbitrary fill and what a
-    /// `LibreOffice` `.odp` round-trips faithfully.
+    /// `None` for `"none"`, so callers skip the fill or stroke. A named role
+    /// resolves against the deck's palette and look; a `#RRGGBB` hex is that
+    /// exact colour, which is what an `.odp` round-trips faithfully.
     pub fn resolve_role(&self, role: &str) -> Option<Color> {
         if role == "none" {
             return None;
@@ -825,9 +768,8 @@ impl Palette {
         }
         Some(match role {
             "none" => return None,
-            // Falls through to the wildcard below, which also resolves to
-            // `self.accent` — an unrecognised role and the literal "accent"
-            // role are meant to land on the same colour.
+            // Falls through to the wildcard: an unrecognised role and "accent"
+            // land on the same colour.
             "accent-soft" => self.accent_soft,
             "accent-deep" => self.accent_deep,
             "surface" => self.surface,
@@ -845,7 +787,6 @@ impl Palette {
         })
     }
 
-    /// Background colour for a slide given its layout + treatment.
     pub fn slide_bg(&self, bg: Background) -> Color {
         match bg {
             Background::Surface => self.surface,
@@ -854,9 +795,8 @@ impl Palette {
         }
     }
 
-    /// The `text` (or, with `dim`, `text-dim`) ink for text standing on
-    /// `ground`: the slide's own ink where it clears AA on that ground,
-    /// otherwise whichever of the palette's inks reads best on it.
+    /// The slide's own ink where it clears AA on `ground`, else whichever of the
+    /// palette's inks reads best.
     pub fn ink_on(&self, ground: Color, dim: bool) -> Color {
         use ui::a11y::contrast_ratio;
         use ui::tokens::colors::ON_FILL_MIN_CONTRAST as AA;
@@ -883,10 +823,8 @@ impl Palette {
     }
 }
 
-/// The fill roles the inspector offers. They stay distinct from one another
-/// in either OS theme: `surface` is the slide's own ground and `text` its
-/// ink, which sit at opposite ends whichever theme is showing, and the rest
-/// are the deck's hues.
+/// `surface` and `text` sit at opposite ends whichever theme is showing, and the
+/// rest are the deck's hues.
 pub const FILL_ROLES: [&str; 8] = [
     "accent",
     "accent-soft",
@@ -897,8 +835,6 @@ pub const FILL_ROLES: [&str; 8] = [
     "danger",
     "info",
 ];
-/// The stroke roles the inspector offers: no stroke, the slide's ink, and
-/// the deck's hues.
 pub const STROKE_ROLES: [&str; 7] = [
     "none", "text", "accent", "success", "warning", "danger", "info",
 ];
@@ -907,14 +843,12 @@ pub const STROKE_ROLES: [&str; 7] = [
 // Starter deck — the minimal blank document a *live* launch opens with.
 // ===========================================================================
 
-/// A single blank title slide. A live launch opens with this so the app never
-/// auto-populates fabricated content; the deck's real state comes from the
-/// shared CRDT document once the user starts editing (or a peer joins).
+/// A single blank title slide, so a live launch never opens on fabricated
+/// content; the real deck comes from the record.
 pub fn starter_deck() -> Deck {
     let mut s = Slide::new(Layout::Title);
     s.background = Background::Surface;
-    // Empty boxes: the editor prompts for their words, a presentation
-    // shows nothing until they are written.
+    // Empty boxes: the editor prompts, a presentation shows nothing.
     s.add(Element::text("", 96.0, 250.0, 1088.0, 130.0, 88.0).with(|e| e.bold = true));
     s.add(
         Element::text("", 96.0, 386.0, 1088.0, 70.0, 34.0).with(|e| {
@@ -933,8 +867,8 @@ pub fn starter_deck() -> Deck {
 // Sample deck — a designed, multi-slide deck used by `--shots` and tests.
 // ===========================================================================
 
-/// A hermetic, realistic sample deck. Used only for headless screenshots and
-/// unit tests — never auto-loaded on a live launch (see [`starter_deck`]).
+/// Only for headless screenshots and tests; never loaded on a live launch (see
+/// [`starter_deck`]).
 pub fn seed_deck() -> Deck {
     Deck {
         title: "Riverside Park — concept review".into(),
@@ -950,7 +884,6 @@ pub fn seed_deck() -> Deck {
     }
 }
 
-/// Slide 1: cover.
 fn seed_slide_cover() -> Slide {
     let mut s = Slide::new(Layout::Section);
     s.background = Background::Accent;
@@ -999,7 +932,6 @@ fn seed_slide_cover() -> Slide {
     s
 }
 
-/// Slide 2: title + body (selected on launch).
 fn seed_slide_goals() -> Slide {
     let mut s = Slide::new(Layout::TitleContent);
     s.background = Background::Surface;
@@ -1017,7 +949,7 @@ fn seed_slide_goals() -> Slide {
             e.radius = 4.0;
         }),
     );
-    // The goals are a bulleted list, as a person makes one in the editor.
+    // A bulleted list, as a person makes one.
     s.add(
         Element::text("", 96.0, 210.0, 720.0, 440.0, 34.0).with(|e| {
             e.set_blocks(
@@ -1037,7 +969,6 @@ fn seed_slide_goals() -> Slide {
             );
         }),
     );
-    // A small decorative figure block on the right.
     s.add(
         Element::shape(ElementKind::Rect, 880.0, 230.0, 300.0, 300.0).with(|e| {
             e.fill = "accent-soft".into();
@@ -1059,7 +990,6 @@ fn seed_slide_goals() -> Slide {
     s
 }
 
-/// Slide 3: two column.
 fn seed_slide_two_column() -> Slide {
     let mut s = Slide::new(Layout::TwoColumn);
     s.background = Background::Surface;
@@ -1124,7 +1054,6 @@ fn seed_slide_two_column() -> Slide {
     s
 }
 
-/// Slide 4: a built diagram.
 fn seed_slide_diagram() -> Slide {
     let mut s = Slide::new(Layout::Blank);
     s.background = Background::Deep;
@@ -1137,7 +1066,6 @@ fn seed_slide_diagram() -> Slide {
             e.bold = true;
         }),
     );
-    // node A
     s.add(
         Element::shape(ElementKind::Ellipse, 150.0, 320.0, 230.0, 230.0).with(|e| {
             e.fill = "accent".into();
@@ -1150,14 +1078,12 @@ fn seed_slide_diagram() -> Slide {
             e.align = TextAlign::Center;
         }),
     );
-    // connector
     s.add(
         Element::shape(ElementKind::Line, 380.0, 435.0, 280.0, 0.0).with(|e| {
             e.stroke = "accent-soft".into();
             e.stroke_width = 8.0;
         }),
     );
-    // node B
     s.add(
         Element::shape(ElementKind::Ellipse, 660.0, 320.0, 230.0, 230.0).with(|e| {
             e.fill = "surface".into();
@@ -1193,7 +1119,6 @@ fn seed_slide_diagram() -> Slide {
     s
 }
 
-/// Slide 5: closing section.
 fn seed_slide_closing() -> Slide {
     let mut s = Slide::new(Layout::Section);
     s.background = Background::Deep;
@@ -1232,7 +1157,6 @@ fn seed_slide_closing() -> Slide {
 mod tests {
     use super::*;
 
-    /// Seed deck, z increments, kind/align round-trips and palette role fallback.
     #[test]
     fn deck_model_seeds_orders_and_round_trips_kinds() {
         {
@@ -1272,10 +1196,9 @@ mod tests {
         }
     }
 
-    /// Every text element a template or a layout's starting content creates
-    /// stays legible on every slide background, under every accent palette,
-    /// in the light and the dark look: WCAG AA, 4.5:1 for body text and
-    /// 3:1 for large titles — measured on the colour the renderer draws.
+    /// Every text element a template creates clears WCAG AA on every background,
+    /// under every accent palette, in both looks: 4.5:1 for body, 3:1 for
+    /// titles.
     #[test]
     fn template_text_contrasts_with_every_background_in_both_themes() {
         let mut templates: Vec<(String, Element)> = Vec::new();
@@ -1311,7 +1234,6 @@ mod tests {
                     let on = palette.on(background);
                     let ground = on.slide_bg(background);
                     for (name, element) in &texts {
-                        // As `render::draw_text_element` resolves it.
                         let ink = on.resolve_role(&element.fill).unwrap_or(on.text);
                         let ratio = ui::color::contrast_ratio(ink, ground);
                         let title = element.bold && element.font_size >= 24.0;
@@ -1330,8 +1252,8 @@ mod tests {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
-    /// The case that was reported: text in the theme's text role on a slide
-    /// switched to the deep background, in the light look.
+    /// The theme's text role on a slide switched to the deep background, in the
+    /// light look.
     #[test]
     fn theme_text_on_a_deep_slide_is_light_in_the_light_look() {
         let palette = Palette::resolve(PaletteKind::Indigo, DeckLook::Light);

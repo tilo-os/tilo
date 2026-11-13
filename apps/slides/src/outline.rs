@@ -28,7 +28,6 @@ use ui::tilo_resource::Resource as _;
 
 use crate::model::{Deck, ElementKind};
 
-/// The outline of the deck in `doc`, or `None` when it holds no deck.
 pub fn of_document(doc: &AutoCommit) -> Option<String> {
     crate::deck::Deck::read(doc)
         .ok()

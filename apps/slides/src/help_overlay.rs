@@ -21,11 +21,8 @@ use crate::strings::tr;
 #[derive(Default)]
 pub(super) struct HelpOverlay {
     visible: bool,
-    /// How far the sheet's body is scrolled, in logical pixels.
     scroll: f64,
-    /// The furthest the body scrolled at the last paint.
     max_scroll: f64,
-    /// Lines a key press scrolls by, measured at the last paint.
     step: f64,
     layout: Option<ModalLayout>,
 }
@@ -73,9 +70,6 @@ impl HelpOverlay {
         false
     }
 
-    /// A visible sheet is modal over the whole window: a press on its close
-    /// control or on the scrim dismisses it, and every press is swallowed
-    /// rather than activating content underneath.
     pub(super) fn on_pointer_press(&mut self, point: Point, window: Rect) -> bool {
         if !self.visible || !window.contains(point) {
             return false;
@@ -90,7 +84,6 @@ impl HelpOverlay {
         true
     }
 
-    /// The reference as plain lines, for assistive technology.
     #[cfg(test)]
     pub(super) fn spoken_rows() -> Vec<String> {
         sections()
@@ -100,7 +93,6 @@ impl HelpOverlay {
             .collect()
     }
 
-    /// Paint the sheet over `window`.
     pub(super) fn draw(
         &mut self,
         scene: &mut Scene,
@@ -129,8 +121,6 @@ impl HelpOverlay {
                 )
             })
             .collect();
-        // The sections stand side by side where the sheet is wide enough
-        // for two readable columns, else one under the other.
         let wide = modal_dialog::body_width(window, wide_sheet(), theme);
         let column_min = f64::from(theme.tokens.metrics.panel_width_utility);
         let columns = if wide >= 2.0 * column_min + gap {
@@ -193,13 +183,10 @@ impl HelpOverlay {
     }
 }
 
-/// Widest the sheet is drawn when the sections stand side by side: two
-/// list panels.
 fn wide_sheet() -> f64 {
     2.0 * f64::from(ui::tokens::Metrics::BASE.panel_width_list)
 }
 
-/// The reference, by section: `(key, what it does)`.
 fn sections() -> Vec<(String, Vec<(String, String)>)> {
     let rows = |keys: &[(&str, &str)]| -> Vec<(String, String)> {
         keys.iter()
@@ -244,7 +231,6 @@ fn sections() -> Vec<(String, Vec<(String, String)>)> {
 mod tests {
     use super::*;
 
-    /// The sheet toggles without leaking keys and owns the next pointer press.
     #[test]
     fn help_overlay_owns_its_keys_and_the_next_press() {
         {

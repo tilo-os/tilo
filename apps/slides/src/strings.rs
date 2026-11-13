@@ -44,7 +44,6 @@ pub fn tr(key: &str) -> String {
     })
 }
 
-/// Look up `key`, interpolating `args` into its placeables.
 pub fn tr_args(key: &str, args: &[(&str, ArgValue)]) -> String {
     ensure();
     crate::strings::CATALOG.t_args(key, args)
@@ -60,7 +59,6 @@ fn ensure() {
 mod tests {
     use super::*;
 
-    /// Every chrome key resolves and formatted keys interpolate their arguments.
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -171,9 +169,6 @@ mod tests {
             }
         }
 
-        // Case `formatted_keys_interpolate_their_arguments`.
-        // Placeables interpolate: the presenter position line carries the
-        // slide and the total, the custom colour its hex.
         {
             let pos = tr_args(
                 "slides-position",

@@ -36,8 +36,6 @@ const MAX_READY_IMAGE_BYTES: usize = 96 * 1024 * 1024;
 const ARRIVING_RETRY: std::time::Duration = std::time::Duration::from_millis(500);
 pub const ASSET_PREFIX: &str = "asset:blake3:";
 
-/// Where pictures are kept when no host lent the window a store (the
-/// store a host lends carries them on the deck's route): in memory.
 pub fn app_content() -> ContentStore {
     ContentStore::memory()
 }
@@ -91,13 +89,11 @@ pub(crate) fn read_bounded(path: &Path, limit: usize) -> std::io::Result<Option<
     tilo_files::blocking::read_bounded(&dir, &name, limit).map_err(std::io::Error::other)
 }
 
-/// Current decode state of one image path.
 #[derive(Clone)]
 pub enum ImageState {
     /// The file is being decoded off the frame, or its bytes are on their
     /// way from another device.
     Loading,
-    /// Decoded, ready to paint.
     Ready(ImageData),
     /// The file was missing or the bytes weren't a decodable image.
     Failed,
@@ -113,19 +109,15 @@ impl ImageLookup for ImageStore {
     }
 }
 
-/// A path-keyed image cache, decoding off the frame with the toolkit's codec
-/// (`ui::image_codec`, the browser's own on the web).
 pub struct ImageStore {
     content: ContentStore,
     inner: RefCell<HashMap<String, ImageState>>,
-    /// Where finished decodes are handed back, and how many are under way.
     tx: Sender<(String, ImageState)>,
     decoding: Arc<AtomicUsize>,
     rx: Receiver<(String, ImageState)>,
     ready_bytes: Cell<usize>,
     access: RefCell<HashMap<String, u64>>,
     access_clock: Cell<u64>,
-    /// Pictures shown as still arriving whatever their decode reports.
     held: RefCell<std::collections::HashSet<String>>,
     /// Pictures whose bytes another device is still sending this one, and
     /// when they were last asked for.
@@ -133,7 +125,6 @@ pub struct ImageStore {
 }
 
 impl ImageStore {
-    /// A cache decoding the images `content` holds.
     pub fn new(content: ContentStore) -> Self {
         let (tx, rx) = std::sync::mpsc::channel::<(String, ImageState)>();
         ImageStore {
@@ -150,9 +141,6 @@ impl ImageStore {
         }
     }
 
-    /// Look up the current state of `path`, kicking off a background decode the
-    /// first time a path is seen. Cheap on every subsequent call (a map read +
-    /// an `Arc` bump when ready).
     pub fn get(&self, path: &str) -> ImageState {
         if !is_asset_id(path) {
             return ImageState::Failed;
@@ -173,8 +161,6 @@ impl ImageStore {
             self.touch(path);
             return state.clone();
         }
-        // At most a few decodes run at once: past that a request is a
-        // settled failure, rather than a spinner nothing will end.
         if self.decoding.fetch_add(1, Ordering::AcqRel) >= DECODE_QUEUE_CAPACITY {
             self.decoding.fetch_sub(1, Ordering::AcqRel);
             map.insert(path.to_string(), ImageState::Failed);
@@ -294,8 +280,6 @@ fn state_bytes(state: &ImageState) -> usize {
     }
 }
 
-/// Decode an image file into straight-alpha RGBA8 wrapped for Vello. Returns
-/// [`ImageState::Failed`] on any read/decode error.
 async fn decode(content: ContentStore, path: String) -> ImageState {
     let path = path.as_str();
     // This is deliberately categorical. The string arrived through a shared
@@ -328,7 +312,6 @@ pub(crate) async fn decode_bytes(bytes: &[u8]) -> ImageState {
     decode_bytes_with_budget(bytes, MAX_READY_IMAGE_BYTES).await
 }
 
-/// Reject dimensions before allocating pixels beyond a frozen preview's remainder.
 pub(crate) async fn decode_bytes_with_budget(bytes: &[u8], budget: usize) -> ImageState {
     if bytes.is_empty() || bytes.len() > MAX_IMAGE_FILE_BYTES {
         return ImageState::Failed;
@@ -370,8 +353,6 @@ mod tests {
         ContentBackend, ContentError, ContentReader, ContentState, MemoryBackend, Stored,
     };
 
-    /// A device store whose content arrives from another device: pending
-    /// until `arrived`, then readable.
     struct Arriving {
         store: MemoryBackend,
         arrived: Arc<AtomicBool>,
@@ -445,7 +426,6 @@ mod tests {
     /// Frozen/live decode budgets and limits, and failed worker requests never stay loading.
     #[test]
     fn image_decoding_is_bounded_and_never_left_loading() {
-        // Case `frozen_decode_refuses_pixels_exceeding_remaining_aggregate_budget`.
         {
             let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2));
             let mut bytes = std::io::Cursor::new(Vec::new());
@@ -460,7 +440,6 @@ mod tests {
             ));
         }
 
-        // Case `frozen_decode_keeps_file_dimension_and_corrupt_byte_limits`.
         {
             assert!(matches!(
                 ui::rt::block_on(decode_bytes(&vec![0; MAX_IMAGE_FILE_BYTES + 1])).unwrap(),
@@ -480,7 +459,6 @@ mod tests {
             ));
         }
 
-        // Case `decode_refuses_an_oversized_source_before_image_parsing`.
         {
             let path =
                 std::env::temp_dir().join(format!("slides-oversize-{}.bin", uuid::Uuid::new_v4()));
@@ -528,8 +506,6 @@ mod tests {
             "the store holds no plaintext"
         );
 
-        // What a member's device receives of it is the ciphertext, under its
-        // address, and the id opens it there.
         let address = tilo_content::content_address(reference).expect("a reference");
         let carried = writer.read(&address).expect("the ciphertext");
         assert_ne!(carried, png, "the ciphertext is not the picture");
