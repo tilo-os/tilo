@@ -1,5 +1,5 @@
-//! The fixture vault captures and tests show. Every value is synthetic and
-//! never backed by a real vault.
+//! The fixture vault captures and tests show. Every value is synthetic and never backed by
+//! a real vault.
 
 use accounts::{CredentialGrant, SecretId, SecretItem, SecretItemKind};
 
@@ -51,8 +51,8 @@ const FIXTURES: [Fixture; 8] = [
         id: "demo-console",
         kind: SecretItemKind::ApiKey,
         title: "Cloud console",
-        // Cloud account IDs mix 0 and O, 1, I and l: the case the
-        // Identifier text kind sets apart.
+        // Cloud account IDs mix 0 and O, 1, I and l: the case the Identifier text kind sets
+        // apart.
         username: "lovelace-prod-0Il1O",
         password: "ck_live_5bT9wQ2mXc8LrV4n",
         origins: &["https://console.cloud.example"],

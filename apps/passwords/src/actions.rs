@@ -1,47 +1,37 @@
-//! What Passwords does with the vault, as a typed effect vocabulary, and the
-//! live rows it publishes for the vault's items.
-//!
-//! The vault is this device's encrypted credential store
-//! ([`accounts::SecretStore`]), never a document: every change to it is an
-//! effect the surface answers. The palette, agents and scripts reach the same
-//! handler the window's controls do.
+//! What Passwords does with the vault, as a typed effect vocabulary, and the live rows it
+//! publishes for the vault's items. The vault is this device's encrypted credential store
+//! ([`accounts::SecretStore`]), never a document: every change to it is an effect the
+//! surface answers.
 
 use accounts::{SecretItem, SecretItemKind};
 use ui::framework::LiveRow;
 use ui::tilo_actions::{ActionBinding, ResourceSpec};
 use ui::tilo_resource::{self, Effect};
 
-/// The prefix of an item row's id; the rest is the item's opaque vault id.
 pub const ITEM_PREFIX: &str = "passwords:item:";
 
-/// What Passwords does with the vault.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "passwords.effect")]
 pub enum PasswordsEffect {
-    /// Show the current private credential permissions.
     #[effect(view, idempotent, kind = "read", label = "passwords-show-access")]
     ShowAccess,
-    /// Revoke one current credential relationship by its opaque permission ID.
     #[effect(destructive, idempotent, label = "passwords-revoke-access")]
-    RevokeAccess { grant: String },
-    /// Approve one exact native request after protected confirmation.
+    RevokeAccess {
+        grant: String,
+    },
     #[effect(attended, privileged, label = "passwords-approve-access")]
-    ApproveAccess { proposal: String, lifetime: String },
-    /// Decline one pending request without granting access.
+    ApproveAccess {
+        proposal: String,
+        lifetime: String,
+    },
     #[effect(idempotent, kind = "read", label = "passwords-deny-access")]
-    DenyAccess { proposal: String },
-    /// New item.
+    DenyAccess {
+        proposal: String,
+    },
     #[effect(kind = "read")]
     Add,
-    /// Save.
-    ///
-    /// Saves the item open in the editor to the vault.
     Save,
-    /// Save a login.
-    ///
-    /// Adds a login to the vault in one step: what it is called, the address
-    /// it signs in to, the username and the password. The password is a
-    /// secret parameter: it is never shown, logged or listed.
+    /// The password is a secret parameter: it is never shown, logged or listed.
     SaveLogin {
         #[param("What the login is called")]
         name: String,
@@ -52,47 +42,31 @@ pub enum PasswordsEffect {
         #[param(secret, "The password")]
         password: String,
     },
-    /// List logins.
-    ///
-    /// The vault's logins by their opaque ids and names: no username,
-    /// address or password.
     #[effect(returns, kind = "read", idempotent)]
     ListLogins,
-    /// Cancel editing.
     #[effect(kind = "read")]
     Cancel,
-    /// Generate strong password.
-    ///
-    /// Fills the editor's password with a new strong one.
     Generate,
-    /// Edit.
     Edit {
         #[param("Opaque id of the vault item")]
         item: String,
     },
-    /// Copy secret.
-    ///
-    /// Copies the item's password, key or note to the clipboard, which
-    /// clears after 30 seconds.
+    /// Copies the item's password, key or note to the clipboard, which clears after 30
+    /// seconds.
     #[effect(attended, privileged, kind = "read")]
     Copy {
         #[param("Opaque id of the vault item")]
         item: String,
     },
-    /// Copy username.
-    ///
-    /// Copies what identifies the person to the account — a login's username,
-    /// an API key's account, a Wi-Fi network's name — to the clipboard, which
-    /// clears after 30 seconds.
+    /// Copies what identifies the person to the account — a login's username, an API key's
+    /// account, a Wi-Fi network's name — to the clipboard, which clears after 30 seconds.
     #[effect(attended, kind = "read")]
     CopyIdentity {
         #[param("Opaque id of the vault item")]
         item: String,
     },
-    /// Copy addresses.
-    ///
-    /// Copies the addresses the item signs in to, one per line, to the
-    /// clipboard, which clears after 30 seconds.
+    /// Copies the addresses the item signs in to, one per line, to the clipboard, which
+    /// clears after 30 seconds.
     #[effect(attended, kind = "read")]
     CopyOrigins {
         #[param("Opaque id of the vault item")]
@@ -104,24 +78,16 @@ pub enum PasswordsEffect {
         #[param("Opaque id of the vault item")]
         item: String,
     },
-    /// Hide secret.
-    ///
-    /// Hides a revealed secret again before its ten seconds run out. The item
-    /// stays open and nothing else changes.
     #[effect(view, kind = "read", idempotent)]
     Hide {
         #[param("Opaque id of the vault item")]
         item: String,
     },
-    /// Delete item.
     #[effect(destructive)]
     Delete {
         #[param("Opaque id of the vault item")]
         item: String,
     },
-    /// Favorite.
-    ///
-    /// Adds the item to Favorites, or removes it.
     #[effect(idempotent)]
     Favorite {
         #[param("Opaque id of the vault item")]
@@ -129,26 +95,15 @@ pub enum PasswordsEffect {
         #[param("Whether the item is a favorite")]
         favorite: bool,
     },
-    /// Import passwords.
-    ///
-    /// Opens the system file chooser for a browser password CSV.
     #[effect(attended)]
     Import,
-    /// Export CSV…
-    ///
-    /// Asks for confirmation, then writes every item unencrypted to a file
-    /// the person chooses.
     #[effect(attended)]
     Export,
-    /// Filter vault.
     #[effect(kind = "read")]
     Filter {
         #[param("all | favorites | login | api-key | note | wifi | other")]
         filter: String,
     },
-    /// Open.
-    ///
-    /// Shows the item in the window, clearing a filter that hides it.
     #[effect(row, kind = "read")]
     Open {
         #[param("Opaque id of the vault item")]
@@ -192,15 +147,10 @@ pub(crate) fn grant_row(grant: &accounts::CredentialGrant) -> LiveRow {
     )
 }
 
-/// The published id of the vault item `id`.
 pub fn item_resource_id(id: &str) -> String {
     format!("{ITEM_PREFIX}{id}")
 }
 
-/// One vault item as a live row. Rows feed system-wide search and
-/// collaboration, so the encrypted vault metadata (a title, an account, an
-/// origin) is not copied into it: it names the item by its opaque id and
-/// kind, and no operation carries a secret.
 pub fn item_row(item: &SecretItem) -> LiveRow {
     let id = item.id.0.clone();
     let (kind, name, copy, reveal) = match item.kind {
@@ -260,9 +210,9 @@ pub fn item_row(item: &SecretItem) -> LiveRow {
         .operation(PasswordsEffect::Delete { item: id }.bound())
 }
 
-/// A control's binding to `action` of the item's published row
-/// ([`item_row`]): pressing it is what an agent addressing the item by its
-/// opaque id does, and it names the item by that id alone.
+/// A control's binding to `action` of the item's published row ([`item_row`]): pressing it
+/// is what an agent addressing the item by its opaque id does, and it names the item by
+/// that id alone.
 pub(crate) fn item_binding(row: &ResourceSpec, action: &str) -> Option<ActionBinding<()>> {
     let spec = row.actions.iter().find(|spec| spec.id == action)?;
     ActionBinding::static_json(row, spec, serde_json::Map::new()).ok()

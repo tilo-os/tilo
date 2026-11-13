@@ -1,6 +1,5 @@
-//! The content column's pages and the dialogs over the window, built from
-//! the toolkit's retained compositions. The root builds them again whenever
-//! the page they show changes (see [`crate::vault::Core::page_revision`]).
+//! The content column's pages and the dialogs over the window, built from the toolkit's
+//! retained compositions.
 
 use std::rc::Rc;
 
@@ -24,10 +23,8 @@ use crate::vault::{
 };
 use ui::i18n::ArgValue;
 
-/// Shown in place of a secret that is not revealed.
 const MASK: &str = "••••••••••••";
 
-/// The kinds in the editor's switcher, in order.
 const KINDS: [(SecretItemKind, &str); 5] = [
     (SecretItemKind::Login, "Login"),
     (SecretItemKind::ApiKey, "API key"),
@@ -41,9 +38,8 @@ fn ask(requests: &Requests, request: Request) -> impl FnMut() + 'static {
     move || requests.borrow_mut().push(request.clone())
 }
 
-/// `property` with its button running `effect`: the control asks the vault
-/// what the palette or an agent asking for the same effect asks. Without a
-/// published effect for it the property stays readable, with no button.
+/// `property` with its button running `effect`: the control asks the vault what the palette
+/// or an agent asking for the same effect asks.
 fn bound_action(property: Property, icon: Icon, label: &str, effect: &PasswordsEffect) -> Property {
     match crate::bindings::effect(effect) {
         Some(binding) => property.action_binding(icon, label, binding),
@@ -67,7 +63,7 @@ fn text(value: &str, role: TextRole) -> Element {
     Box::new(Text::new(value).with_role(role))
 }
 
-/// A page on the content ground: a vertical scroll of `children`.
+/// A page in the content column: a vertical scroll of `children`.
 fn page(children: Vec<Element>) -> Element {
     let column = children
         .into_iter()
@@ -75,9 +71,7 @@ fn page(children: Vec<Element>) -> Element {
     Box::new(Scrollable::new_vertical().with_child(Box::new(column)))
 }
 
-/// A tool page: its title, an optional sentence under it, then `groups`.
-/// Groups stand a group gap apart: an empty spacer between two of them
-/// takes the column's gap twice.
+/// A tool page: its title, an optional sentence under it, then `groups`, a group gap apart.
 fn titled_page(title: &str, lead: Option<&str>, groups: Vec<Element>) -> Element {
     let mut children = vec![text(title, TextRole::Title)];
     if let Some(lead) = lead {
@@ -90,10 +84,8 @@ fn titled_page(title: &str, lead: Option<&str>, groups: Vec<Element>) -> Element
     page(children)
 }
 
-/// The content column: the page for the current screen, and the dialog
-/// over the window when one is open. While the window bar hosts the
-/// window (`actions_in_bar`), what can be done to the item shown is the
-/// bar's ([`item_actions`]) and its page draws none of it.
+/// The content column: the page for the current screen, and the dialog over the window when
+/// one is open.
 pub(crate) fn content(
     core: &Core,
     shared: &Shared,
@@ -115,8 +107,6 @@ pub(crate) fn content(
 
 fn detail(core: &Core, requests: &Requests, actions_in_bar: bool) -> Element {
     let Some(item) = core.selected_item() else {
-        // The list offers the next step; the wide pane beside it says what
-        // the vault keeps instead of standing blank.
         if core.opening {
             return Box::new(
                 EmptyState::new("Opening your vault")
@@ -147,12 +137,11 @@ fn detail(core: &Core, requests: &Requests, actions_in_bar: bool) -> Element {
     page(children)
 }
 
-/// What can be done to the item shown: copy its secret, edit it and mark
-/// it a favorite, as the window bar offers them.
+/// What can be done to the item shown: copy its secret, edit it and mark it a favorite, as
+/// the window bar offers them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ItemActions {
     pub(crate) id: accounts::SecretId,
-    /// "Copy password", "Copy API key".
     pub(crate) copy: String,
     pub(crate) favorite: bool,
 }
@@ -272,7 +261,6 @@ fn properties(core: &Core, item: &SecretItem) -> Vec<Property> {
         &action,
         &effect,
     );
-    // A masked value reads as hidden, not as a row of dots.
     rows.push(if shown {
         secret
     } else {
@@ -379,8 +367,7 @@ fn draft_field(core: &Core, shared: &Shared, field: DraftField) -> Field {
 
 fn editor(core: &Core, shared: &Shared, requests: &Requests) -> Element {
     let kind = core.draft_kind;
-    // A list, not a segmented strip: five kinds never fit an editor pane
-    // beside the item list without cutting their names short.
+    // A list, not a segmented strip: five kinds never fit an editor pane beside the item list without cutting their names short.
     let selected = KINDS
         .iter()
         .find(|(candidate, _)| *candidate == kind)
@@ -479,8 +466,6 @@ fn count_tone(count: usize) -> Tone {
 
 fn review(core: &Core) -> Element {
     let health = core.health;
-    // Every tile is a finding with its verdict; how many were checked is a
-    // fact about the review below.
     let tiles: Vec<Element> = vec![
         Box::new(
             StatTile::new("Reused", health.reused.to_string()).tone(count_tone(health.reused)),
@@ -491,7 +476,6 @@ fn review(core: &Core) -> Element {
                 .tone(count_tone(health.older_than_year)),
         ),
     ];
-    // With nothing saved there is nothing to grade: no green tiles.
     let mut groups: Vec<Element> = if health.total == 0 {
         Vec::new()
     } else {
@@ -506,7 +490,6 @@ fn review(core: &Core) -> Element {
                 .icon(crate::search::icon(item.kind))
                 .secondary(finding.reasons())
                 .disclosure();
-            // The item's published `open`, by its opaque id alone.
             let published = crate::actions::item_row(item).into_resource();
             Some(
                 Box::new(match crate::actions::item_binding(&published, "open") {
@@ -559,9 +542,6 @@ fn review(core: &Core) -> Element {
     titled_page(&CATALOG.t("passwords-review"), None, groups)
 }
 
-/// The catalogue message saying what the review compares against: only this
-/// vault, wherever it is kept (a browser's storage or the device), so the
-/// words name the vault, not a place.
 const CHECKED_AGAINST: &str = "passwords-checked-against-vault";
 
 fn app_access(core: &Core, requests: &Requests) -> Element {
@@ -707,7 +687,6 @@ fn proposal_details(core: &Core, proposal: &accounts::CredentialProposal) -> Str
     )
 }
 
-/// A titled group inside a page.
 fn group(title: &str, items: Vec<Element>) -> Section {
     Section::new(items).with_header(SectionHeader::group(title))
 }
@@ -802,8 +781,6 @@ fn secret_input(shared: &Shared, confirmation: bool, label: &str, error: Option<
                 &mut core.backup_password
             };
             *slot = zeroize::Zeroizing::new(value.to_owned());
-            // The form is built again only when what it says changes; the
-            // fields keep their caret by id.
             if core.backup_confirmation_problem() != before {
                 core.touch_page();
             }
@@ -917,8 +894,6 @@ fn export_dialog(acknowledged: bool, reminded: bool, requests: &Requests) -> Mod
         .secondary_action("Cancel", ask(requests, Request::CloseDialog))
 }
 
-/// The backup form. Its values live in the shared core, and "Choose file…"
-/// waits there until the password is long enough and confirmed.
 fn backup_dialog(
     shared: &Shared,
     error: Option<&'static str>,
@@ -1009,8 +984,8 @@ mod backup_form_tests {
     use std::cell::RefCell;
     use zeroize::Zeroizing;
 
-    /// "Choose file…" waits for a long, confirmed password in the shared
-    /// core, and the confirmation field says so while it is typed.
+    /// "Choose file…" waits for a long, confirmed password in the shared core, and the
+    /// confirmation field says so while it is typed.
     #[test]
     fn the_backup_form_gates_its_file_choice_and_checks_inline() {
         let shared: Shared = Rc::new(RefCell::new(Core::demo()));

@@ -1,23 +1,13 @@
-//! The vault in the platform search.
-//!
-//! An item is findable by its name, its username and its websites, and
-//! nothing else: passwords, notes and custom field values never enter the
-//! index. A hit is anchored at the item's row and opens it there, as an
-//! agent's `open` of that anchor does. A `kind:` facet narrows a
-//! query to logins, API keys, notes, Wi-Fi networks or other secrets.
-//!
-//! Every entry is secret-bearing: the system's search index keeps the
-//! metadata after Passwords closes, and finds it only while Passwords
-//! reports its vault unlocked ([`crate::vault::Core::secrets_unlocked`]).
+//! The vault in the platform search. An item is findable by its name, its username and its
+//! websites, and nothing else: passwords, notes and custom field values never enter the
+//! index.
 
 use accounts::{SecretItem, SecretItemKind};
 use ui::icons::Icon;
 use ui::tilo_resource::{SearchEntry, SearchWeight};
 
-/// The result group the vault's hits appear under.
 pub const ITEM_KIND: &str = "Passwords";
 
-/// The facet key a query narrows by.
 pub const KIND_FACET: &str = "kind";
 
 const KINDS: [(SecretItemKind, &str, &str); 5] = [
@@ -45,8 +35,8 @@ pub(crate) fn icon(kind: SecretItemKind) -> Icon {
     }
 }
 
-/// Resource search receives only item metadata, even when full secret-bearing
-/// records are supplied. Secret and custom-field values never enter entries.
+/// Resource search receives only item metadata, even when full secret-bearing records are
+/// supplied. Secret and custom-field values never enter entries.
 pub(crate) fn entries(items: &[SecretItem]) -> Vec<SearchEntry> {
     items
         .iter()
@@ -136,7 +126,6 @@ mod tests {
     }
     #[test]
     fn only_a_window_on_the_vault_reports_its_lock() {
-        // The fixture captures show opens no vault: it says nothing.
         assert_eq!(
             crate::PasswordsWindow::demo().core().secrets_unlocked(),
             None

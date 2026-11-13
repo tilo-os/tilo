@@ -1,8 +1,5 @@
-//! The Passwords window: the shared [`NavShell`] with the vault's places in a
-//! [`NavList`], the items of the chosen place in the overview, and the open
-//! item, the editor or a tool page in the content. The shell owns the header
-//! row, the sidebar toggle, the widths, the drawer and the push stack; this
-//! module keeps them in step with [`Core`].
+//! The window: the vault's places in the sidebar, the items of the chosen place in the
+//! overview, and the open item, the editor or a tool page in the content.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -27,7 +24,6 @@ use winit::keyboard::{Key, NamedKey};
 use crate::list_pane::ListPane;
 use crate::vault::{Core, Dialog, Request, Requests, Screen, Shared, VaultFilter};
 
-/// The `--shots --scenario` names this app stages.
 pub const SCENARIOS: &[&str] = &[
     "detail",
     "api-key",
@@ -46,11 +42,10 @@ pub const SCENARIOS: &[&str] = &[
     "sidebar",
 ];
 
-/// Layouts at one window size before a capture stages shell state.
 const SETTLED_LAYOUTS: u32 = 3;
 
-/// The shell state a capture stages once the window has its size: shared by
-/// the window and the view's staging.
+/// The shell state a capture stages once the window has its size: shared by the window and
+/// the view's staging.
 type Pending = Rc<RefCell<Option<String>>>;
 
 fn filter_icon(filter: VaultFilter) -> Icon {
@@ -120,17 +115,10 @@ pub struct PasswordsWindow {
     core: Shared,
     requests: Requests,
     shell: NavShell,
-    /// The page revision the content column was built from, and whether
-    /// the item's actions were the window bar's then.
     built_page: Option<(u64, bool)>,
-    /// The list revision the overview title and search index follow.
     built_list: Option<u64>,
     overview_title: String,
-    /// The overview header is in the window's bar ([`ui::window_toolbar`]).
     header_in_bar: bool,
-    /// The window the bar's slots were declared on
-    /// ([`ui::window_toolbar::current_window`]), the list title, the shell's own
-    /// slots and the item's actions.
     declared_bar: Option<(
         Option<u64>,
         String,
@@ -138,18 +126,13 @@ pub struct PasswordsWindow {
         Option<ItemActions>,
     )>,
     shows_list: bool,
-    /// The empty vault stands in for the list and the item
-    /// ([`NavShell::nothing_listed`]).
     nothing_listed: bool,
-    /// Shell state a capture stages once the window has its size.
     pending: Pending,
     settled_layouts: u32,
     last_window: vello::kurbo::Rect,
     acknowledger: ui::widget::acknowledgement::Acknowledger,
 }
 
-/// The action ids of the window bar's slots: New item, and copying,
-/// editing and starring the item shown.
 const NEW_ITEM: &str = "new-item";
 const COPY_SECRET: &str = "copy-secret";
 const EDIT_ITEM: &str = "edit-item";
@@ -173,11 +156,10 @@ impl PasswordsWindow {
         vec![Box::new(search) as Element, Box::new(new_item)]
     }
 
-    /// The overview header moves into the window's bar while the bar hosts
-    /// the slots ([`ui::window_toolbar`]) and back when it does not: the
-    /// list shown is the window's location, New item its action, then
-    /// copying, editing and starring the item shown, and search the bar's
-    /// own. What the person did there is queued like a click.
+    /// The overview header moves into the window's bar while the bar hosts the slots
+    /// ([`ui::window_toolbar`]) and back when it does not: the list shown is the window's
+    /// location, New item its action, then copying, editing and starring the item shown,
+    /// and search the bar's own.
     fn sync_window_toolbar(&mut self) {
         use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
         let hosted = ui::window_toolbar::is_hosted();
@@ -200,8 +182,6 @@ impl PasswordsWindow {
         if !hosted {
             return;
         }
-        // The shell's own slots: the sidebar's toggle, and Back while an
-        // item in a narrow window has its list to go back to.
         let shell = self.shell.window_toolbar();
         let item = crate::pages::item_actions(&self.core.borrow());
         let key = (
@@ -264,7 +244,6 @@ impl PasswordsWindow {
         let core: Shared = Rc::new(RefCell::new(core));
         let requests: Requests = Rc::default();
         let title = core.borrow().filter.label();
-        // Maximized, the header lives in the window's bar.
         let shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::Page)
             .with_id("passwords.shell")
@@ -306,9 +285,8 @@ impl PasswordsWindow {
         Self::with_core(Core::demo())
     }
 
-    /// What a search hit or an agent's `open` runs: show the vault item
-    /// its anchor names, as clicking its row does; refused for an item the
-    /// vault does not hold.
+    /// What a search hit or an agent's `open` runs: show the vault item its anchor names,
+    /// as clicking its row does; refused for an item the vault does not hold.
     pub(crate) fn opener(&self) -> impl FnMut(&str) -> Result<(), &'static str> + 'static {
         let core = Rc::clone(&self.core);
         let requests = Rc::clone(&self.requests);
@@ -347,9 +325,8 @@ impl PasswordsWindow {
             .map(|ack| ack.text().to_owned())
     }
 
-    /// Apply what controls asked for, then bring the window in step: the
-    /// content page, the overview, its title, the front pane, the notice and
-    /// the search index.
+    /// Apply what controls asked for, then bring the window in step: the content page, the
+    /// overview, its title, the front pane, the notice and the search index.
     pub(crate) fn settle(&mut self) {
         self.core.borrow_mut().refresh_model();
         self.sync_window_toolbar();
@@ -400,7 +377,6 @@ impl PasswordsWindow {
                     .then(|| Box::new(ListPane::new(&self.core, &self.requests)) as Element),
             );
         }
-        // An empty vault with no editor or tool open.
         let nothing = screen == Screen::Vault && {
             let core = self.core.borrow();
             core.items.is_empty() && !core.opening && core.dialog.is_none()
@@ -421,7 +397,6 @@ impl PasswordsWindow {
                 self.shell.set_overview_title(title.clone());
             }
             self.overview_title = title;
-            // The bar names the list now shown.
             self.sync_window_toolbar();
         }
         if let Some(front) = front {
@@ -432,12 +407,11 @@ impl PasswordsWindow {
                     front
                 });
         }
-        // The bar offers what can be done to the item now shown.
         self.sync_window_toolbar();
     }
 
-    /// The vault the window shows, for the view that publishes its items
-    /// and answers its effects beside it.
+    /// The vault the window shows, for the view that publishes its items and answers its
+    /// effects beside it.
     pub(crate) fn vault(&self) -> Shared {
         Rc::clone(&self.core)
     }
@@ -497,8 +471,7 @@ impl PasswordsWindow {
     }
 }
 
-/// Stage a capture on the fixture vault: `None` is the default frame. The
-/// window brings itself in step on its next sync.
+/// Stage a capture on the fixture vault: `None` is the default frame.
 fn stage(core: &Shared, pending: &Pending, scenario: Option<&str>) {
     {
         let mut core = core.borrow_mut();
@@ -623,7 +596,6 @@ impl ui::widget::Decorator for PasswordsWindow {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if matches!(event, WindowEvent::Focused(false)) {
-            // A reveal is only for the actively attended window.
             self.core.borrow_mut().hide_revealed();
         }
         Widget::handle_event(&mut self.shell, event, ctx);

@@ -436,10 +436,8 @@ fn a_window_on_the_frame_loop_opens_the_vault_on_a_thread_of_its_own() {
     );
 }
 
-/// On the frame loop a vault edit is written by a writer thread, and an edit
-/// made while one is under way waits in memory for the next write. An import
-/// or a restore makes many edits at once: every one of them reaches the disk,
-/// not only those the first writer took.
+/// On the frame loop a vault edit is written by a writer thread, and an edit made while one
+/// is under way waits in memory for the next write.
 #[test]
 fn every_imported_and_restored_item_reaches_the_disk_from_the_frame_loop() {
     use crate::transfer::ImportLogin;

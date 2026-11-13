@@ -1,11 +1,6 @@
-//! The vault as the window shows it: the item cache, the place chosen in
-//! the sidebar, the open item, the editor draft, short-lived disclosures and
-//! the import, export and backup flows.
-//!
-//! Every part of the window (the sidebar, the item list, the content pages
-//! and the dialogs) reads this state and asks for changes through
-//! [`Request`]s, which the root applies. The palette, agents and scripts
-//! reach the same state through [`PasswordsEffect`]s.
+//! The vault as the window shows it: the item cache, the place chosen in the sidebar, the
+//! open item, the editor draft, short-lived disclosures and the import, export and backup
+//! flows.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -20,16 +15,12 @@ use crate::CATALOG;
 use crate::actions::PasswordsEffect;
 use crate::transfer::ImportLogin;
 
-/// The core every part of the window reads and changes.
 pub(crate) type Shared = Rc<RefCell<Core>>;
 
-/// Requests from controls, applied by the root.
 pub(crate) type Requests = Rc<RefCell<Vec<Request>>>;
 
-/// How long a revealed secret stays on screen.
 const REVEAL_FOR: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// How long a copied secret stays on the clipboard.
 const CLIPBOARD_FOR: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Which items the list shows.
@@ -99,23 +90,17 @@ impl VaultFilter {
     }
 }
 
-/// What the content column shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Screen {
     #[default]
     Vault,
-    /// The list of items and the editor of a new or open item.
     Editor,
-    /// Reused, weak and old passwords.
     Review,
-    /// Apps that may use vault items without asking.
     AppAccess,
-    /// Backups, browser import and export.
     Transfer,
 }
 
 impl Screen {
-    /// Whether the item list is beside the content.
     pub(crate) fn shows_list(self) -> bool {
         matches!(self, Self::Vault | Self::Editor)
     }
@@ -136,12 +121,10 @@ pub(crate) enum DraftField {
 pub(crate) enum Dialog {
     ImportPreview {
         rows: Vec<ImportLogin>,
-        /// Per row: already in the vault, so the import skips it.
         skipped: Vec<bool>,
     },
     ExportPlaintext {
         acknowledged: bool,
-        /// The person chose a file before acknowledging.
         reminded: bool,
     },
     Backup {
@@ -174,10 +157,8 @@ impl Dialog {
     }
 }
 
-/// What a control asks the app to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Request {
-    /// A sidebar destination, by its row id.
     Navigate(String),
     Open(SecretId),
     ToggleFavorite(SecretId),
@@ -200,15 +181,11 @@ pub(crate) enum Request {
     ConfirmBackup,
     Restore,
     ConfirmRestore,
-    ReviewAccess {
-        proposal: String,
-        lifetime: String,
-    },
+    ReviewAccess { proposal: String, lifetime: String },
     ConfirmAccess,
     DenyAccess(String),
 }
 
-/// A finding of the password review for one item.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Finding {
     pub(crate) id: SecretId,
@@ -346,11 +323,7 @@ pub(crate) fn origins_match(item: &SecretItem, candidate: &str) -> bool {
 }
 
 pub(crate) struct Core {
-    /// The vault; `None` for the fixture captures show.
     pub(crate) model: Option<crate::PasswordsModel>,
-    /// Metadata only: passwords, notes and field values are cleared before
-    /// an item enters this cache (it feeds rendering, resources and
-    /// accessibility).
     pub(crate) items: Vec<SecretItem>,
     pub(crate) selected: Option<SecretId>,
     pub(crate) filter: VaultFilter,
@@ -365,15 +338,9 @@ pub(crate) struct Core {
     pub(crate) draft_tags: String,
     pub(crate) draft_custom_fields: Zeroizing<String>,
     pub(crate) draft_error: Option<(DraftField, String)>,
-    /// Explicit, short-lived disclosure. The value zeroizes when it expires,
-    /// when focus leaves the window, or when another item is revealed.
     pub(crate) revealed: Option<(SecretId, Zeroizing<String>, ui::time::Instant)>,
-    /// The last copy, whose outcome can arrive after its confirmation.
     pub(crate) copy: ui::CopyWatch,
-    /// A notice for the window to hand its shell, which shows and expires it.
     pub(crate) toast: Option<String>,
-    /// The title of an item just saved from the editor, for the window to
-    /// say in passing: closing the editor alone looks the same as Cancel.
     pub(crate) saved: Option<String>,
     pub(crate) health: crate::VaultHealth,
     pub(crate) findings: Vec<Finding>,
@@ -388,28 +355,20 @@ pub(crate) struct Core {
     pub(crate) backup_portal: Option<crate::transfer::Saving>,
     pub(crate) restore_portal: Option<crate::transfer::Choosing>,
     pub(crate) transfer_poll_deadline: std::cell::Cell<Option<ui::time::Instant>>,
-    /// The vault is still writing an edit: a browser page to its storage,
-    /// or the frame loop's writer thread to the disk.
     pub(crate) writing: bool,
     pub(crate) backup_password: Zeroizing<String>,
     pub(crate) backup_confirmation: Zeroizing<String>,
     pub(crate) dialog: Option<Dialog>,
-    /// A narrow window should bring this pane to the front.
     pub(crate) show_pane: Option<NavPane>,
-    /// Scroll the open item into view when the list next shows.
     pub(crate) reveal_open: bool,
     pub(crate) window: Rect,
     /// Bumped whenever the content page must be built again.
     pub(crate) page_revision: u64,
-    /// Bumped whenever the item list or its title changes.
     pub(crate) list_revision: u64,
-    /// The vault is being opened on a thread of its own: a window on the
-    /// compositor's frame loop never waits on the disk for it.
+    /// The vault is being opened on a thread of its own: a window on the compositor's frame
+    /// loop never waits on the disk for it.
     pub(crate) opening: bool,
-    /// Wakes the window once the vault is open.
     wake: std::sync::Arc<std::sync::Mutex<ui::WakeHandle>>,
-    /// Wakes the window when the messaging service's permission requests
-    /// change; dropped with it.
     proposals_watch: Option<Box<dyn std::any::Any + Send + Sync>>,
 }
 
@@ -466,8 +425,6 @@ impl Core {
     /// The vault in `model`: the person's in a live window.
     pub(crate) fn with_model(model: crate::PasswordsModel) -> Self {
         let mut core = Self::empty(Some(model));
-        // A request Messages' accounts make shows at once, not on the next
-        // look at the vault.
         let wake = std::sync::Arc::clone(&core.wake);
         core.proposals_watch =
             tilo_messaging::service::observe_proposals(std::sync::Arc::new(move || {
@@ -480,8 +437,8 @@ impl Core {
         core
     }
 
-    /// Whether the vault is open; if not, it is opened on a thread of its
-    /// own and the window shows it on the sync after that finishes.
+    /// Whether the vault is open; if not, it is opened on a thread of its own and the
+    /// window shows it on the sync after that finishes.
     fn open_without_waiting(&mut self) -> bool {
         let Some(model) = &self.model else {
             return true;
@@ -530,7 +487,6 @@ impl Core {
         self.touch();
     }
 
-    /// The page and the list must be built again.
     pub(crate) fn touch(&mut self) {
         self.page_revision = self.page_revision.wrapping_add(1);
         self.list_revision = self.list_revision.wrapping_add(1);
@@ -544,9 +500,7 @@ impl Core {
         self.toast = Some(message.into());
     }
 
-    /// Whether this window's vault is unlocked: it opened and its key was
-    /// found. `None` for a window that opens no vault (a past version, the
-    /// fixture captures show), which says nothing about the person's.
+    /// Whether this window's vault is unlocked: it opened and its key was found.
     pub(crate) fn secrets_unlocked(&self) -> Option<bool> {
         let model = self.model.as_ref()?;
         if !model.opens_vault() {
@@ -577,7 +531,6 @@ impl Core {
             .into_iter()
             .map(|mut item| {
                 item.password.clear();
-                // A note or an arbitrary field value can be secret too.
                 item.notes.clear();
                 for (label, value) in &mut item.fields {
                     if label != "network" {
@@ -640,8 +593,7 @@ impl Core {
         self.touch();
     }
 
-    /// Show the item `id`, clearing a filter that hides it. `false` when the
-    /// vault has no such item.
+    /// Show the item `id`, clearing a filter that hides it.
     pub(crate) fn open(&mut self, id: &SecretId) -> bool {
         let Some(listed) = self.item(id).map(|item| self.filter.matches(item)) else {
             return false;
@@ -663,7 +615,6 @@ impl Core {
         true
     }
 
-    /// Move the selection by one row (arrow keys).
     pub(crate) fn step(&mut self, forward: bool) {
         let visible: Vec<SecretId> = self.visible().iter().map(|item| item.id.clone()).collect();
         let Some(last) = visible.len().checked_sub(1) else {
@@ -693,8 +644,8 @@ impl Core {
         }
     }
 
-    /// Make the item `id` a favorite or not, saying so; nothing changes when
-    /// it already is what was asked.
+    /// Make the item `id` a favorite or not, saying so; nothing changes when it already is
+    /// what was asked.
     pub(crate) fn set_favorite(&mut self, id: &SecretId, favorite: bool) -> Result<(), String> {
         let Some(was) = self.item(id).map(is_favorite) else {
             return Err("That item is no longer in your vault".to_owned());
@@ -765,7 +716,6 @@ impl Core {
                     return;
                 }
                 let label = secret_label(kind).to_lowercase();
-                // Without threads (a browser page) the clipboard is not cleared.
                 self.toast(if ui::rt::available(ui::rt::Feature::Threads) {
                     format!("Copied {label}. The clipboard clears in 30 seconds.")
                 } else {
@@ -945,7 +895,6 @@ impl Core {
     }
 
     pub(crate) fn set_draft(&mut self, field: DraftField, value: &str) {
-        // An edit answers the field's complaint; the next save checks again.
         if self
             .draft_error
             .as_ref()
@@ -1067,7 +1016,6 @@ impl Core {
             }
         };
         let Some(model) = self.model.as_mut() else {
-            // The fixture vault has no store: close the editor as a save would.
             self.close_editor();
             self.touch();
             return;
@@ -1125,9 +1073,6 @@ impl Core {
             item.fields
                 .insert("network".into(), self.draft_username.trim().into());
         } else {
-            // `network` is a Passwords-owned projection of the Wi-Fi name;
-            // remove it when changing kinds, but retain every app-specific
-            // custom field we do not own or understand.
             item.fields.remove("network");
         }
         let origins: Vec<String> = self
@@ -1142,7 +1087,6 @@ impl Core {
             SecretItemKind::Login | SecretItemKind::ApiKey
         ) {
             for origin in &origins {
-                // A bare host ("git.tilo.so") means its https site.
                 let added = item.add_origin(origin).is_ok()
                     || (!origin.contains("://")
                         && item.add_origin(&format!("https://{origin}")).is_ok());
@@ -1368,9 +1312,9 @@ impl Core {
         }
     }
 
-    /// What the backup form's confirmation field says while it is typed:
-    /// a mismatch as soon as the confirmation stops matching the start of
-    /// the password, nothing while it is empty or still on its way there.
+    /// What the backup form's confirmation field says while it is typed: a mismatch as soon
+    /// as the confirmation stops matching the start of the password, nothing while it is
+    /// empty or still on its way there.
     pub(crate) fn backup_confirmation_problem(&self) -> Option<&'static str> {
         (!self.backup_confirmation.is_empty()
             && !self
@@ -1519,8 +1463,7 @@ impl Core {
         Ok((crate::transfer::export_browser_csv(&items), items.len()))
     }
 
-    /// The vault as an encrypted backup under `passphrase`, and how many
-    /// items it holds.
+    /// The vault as an encrypted backup under `passphrase`, and how many items it holds.
     fn encrypted_backup(&self, passphrase: &str) -> Result<(Zeroizing<Vec<u8>>, usize), String> {
         let Some(model) = &self.model else {
             return Err("There is no vault to back up".into());
@@ -1548,10 +1491,9 @@ impl Core {
         Ok(count)
     }
 
-    /// Learn whether the vault's last edits are kept yet: a browser page
-    /// writes its storage asynchronously, and on the frame loop a writer
-    /// thread writes the disk, so a save is kept a moment after it shows. A
-    /// failed write is said, not dropped.
+    /// Learn whether the vault's last edits are kept yet: a browser page writes its storage
+    /// asynchronously, and on the frame loop a writer thread writes the disk, so a save is
+    /// kept a moment after it shows.
     pub(crate) fn flush_vault(&mut self) {
         let Some(model) = self.model.as_mut() else {
             self.writing = false;
@@ -1765,12 +1707,11 @@ impl Core {
         }
     }
 
-    /// When the window next needs to wake: a pending transfer to poll or a
-    /// disclosure to hide.
+    /// When the window next needs to wake: a pending transfer to poll or a disclosure to
+    /// hide.
     pub(crate) fn next_wake(&self) -> Option<ui::time::Instant> {
         let transfer = if self.transfers_pending() {
-            // Keep the deadline fixed until sync consumes the tick. Returning
-            // now + 16 ms on every query would postpone it indefinitely.
+            // Returning now + 16 ms on every query would postpone it indefinitely.
             let deadline = self.transfer_poll_deadline.get().unwrap_or_else(|| {
                 ui::time::now()
                     .checked_add(std::time::Duration::from_millis(16))
@@ -1795,7 +1736,6 @@ impl Core {
         .min()
     }
 
-    /// Apply a control's request.
     pub(crate) fn apply(&mut self, request: Request) {
         match request {
             Request::Navigate(id) => self.navigate(&id),
@@ -1850,7 +1790,6 @@ impl Core {
         }
     }
 
-    /// The sidebar row id of the place on screen.
     pub(crate) fn place_id(&self) -> String {
         match self.screen {
             Screen::Vault | Screen::Editor => format!("filter:{}", self.filter.as_str()),
@@ -1884,8 +1823,7 @@ impl Core {
         self.screen == Screen::Editor
     }
 
-    /// Answer an effect invoked by the palette, an agent, a script or a
-    /// search hit.
+    /// Answer an effect invoked by the palette, an agent, a script or a search hit.
     pub(crate) fn perform(&mut self, effect: PasswordsEffect) -> Result<(), String> {
         self.refresh_model();
         let open = |core: &mut Self, id: String| {
@@ -1934,7 +1872,6 @@ impl Core {
                 }
             }
             effect @ PasswordsEffect::SaveLogin { .. } => self.save_login(effect)?,
-            // Answered with its value where effects are answered ([`Self::logins`]).
             PasswordsEffect::ListLogins => {}
             PasswordsEffect::Cancel => self.cancel_edit(),
             PasswordsEffect::Generate => {
@@ -1987,9 +1924,9 @@ impl Core {
         Ok(())
     }
 
-    /// Add a login in one step, through the editor's own checks and save: the editor is left as
-    /// it was found when the save is refused, and the draft holding the password is cleared either
-    /// way.
+    /// Add a login in one step, through the editor's own checks and save: the editor is
+    /// left as it was found when the save is refused, and the draft holding the password is
+    /// cleared either way.
     fn save_login(&mut self, effect: PasswordsEffect) -> Result<(), String> {
         let PasswordsEffect::SaveLogin {
             name,
@@ -2035,9 +1972,7 @@ impl Core {
         serde_json::json!({ "logins": logins })
     }
 
-    /// Live vault rows, one per item: what agents, scripts and the palette
-    /// may do with it. A row names the item by its opaque id and kind only;
-    /// its title, account and addresses stay in the vault.
+    /// Live vault rows, one per item: what agents, scripts and the palette may do with it.
     pub(crate) fn item_rows(&self) -> Vec<ui::framework::LiveRow> {
         self.items
             .iter()
