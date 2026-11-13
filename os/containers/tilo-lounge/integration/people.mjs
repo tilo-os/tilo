@@ -8,7 +8,7 @@
 // Then one of them is made someone the workspace lets invite, while their page
 // is open (the operator declares them through the workspace's own socket), and
 // invites a third person from the page's own sheet. That person
-// opens the link the sheet handed over — `https://<site>/i/<handle>#<key>` — in
+// opens the link the sheet handed over — `http://<site>/i/<handle>#<key>` — in
 // a browser of their own, is told who invited them, to what and as what, and
 // joins with no one in the workspace answering for them: an invitation is its
 // inviter's approval.
@@ -684,9 +684,9 @@ const open = async name => {
   await until(tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, `${name} arriving`, stepLimit(6));
   return mounted(tab, name);
 };
-// The invitations a site hands over: `https://<site>/i/<handle>#<key>`, the
+// The invitations a site hands over: `<scheme>://<site>/i/<handle>#<key>`, the
 // handle and the key alone, the key never in the part a site's logs see.
-const sealedLink = /^https:\/\/[^/]+\/i\/[A-Za-z0-9_-]{16}#[A-Za-z0-9_-]{43}$/;
+const sealedLink = /^https?:\/\/[^/]+\/i\/[A-Za-z0-9_-]{16}#[A-Za-z0-9_-]{43}$/;
 // The page's words over the page, as a person at a link reads them.
 const pageText = tab => tab.evaluate(`(document.body.innerText || '').replace(/\\s+/g, ' ').trim()`).catch(() => '');
 // A person following a link: before anything is mounted, the page says who
@@ -733,7 +733,6 @@ const nodeValues = tab => tab.evaluate(`JSON.stringify((() => {
 // SwiftShader's WebGPU, as the app SDK's lane runs the bundle: a host GPU in
 // headless Chrome can lose its device mid-run.
 const browserArgs = [
-  '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   // A person's call is heard through a microphone and played through a
   // speaker: this machine has no person at it, so the browser carries both —

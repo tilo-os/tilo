@@ -71,7 +71,6 @@ const check = (ok, what, detail = '') => {
 };
 
 const browser = await launch({args: [
-  '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
