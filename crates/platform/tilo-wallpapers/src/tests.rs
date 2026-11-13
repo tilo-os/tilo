@@ -12,9 +12,6 @@ fn the_catalog_parses_and_names_its_default() {
     );
 }
 
-/// Every entry is complete: a stable id the setting can hold, a free licence
-/// stated with its source, and installed files pinned by size and digest at
-/// the shapes the desktop and the picker draw.
 #[test]
 fn every_wallpaper_is_pinned_licensed_and_credited() {
     let mut ids = std::collections::BTreeSet::new();
@@ -82,7 +79,7 @@ fn a_setting_value_chooses_a_wallpaper() {
     assert_eq!(choice(None), Some(Choice::Bundled(default)));
     assert_eq!(choice(Some(&other.id)), Some(Choice::Bundled(other)));
     assert_eq!(choice(Some(CUSTOM)), Some(Choice::Custom));
-    // A newer device's picture this build does not ship.
+    // A newer device's picture that this build does not ship.
     assert_eq!(
         choice(Some("not-shipped-here")),
         Some(Choice::Bundled(default))
@@ -94,8 +91,6 @@ fn a_setting_value_chooses_a_wallpaper() {
     assert!(values.contains(&CUSTOM));
 }
 
-/// An installed file is found in the XDG data directories and decodes at
-/// the size the catalog gives; one that is missing is `None`, not a panic.
 #[test]
 fn decoding_reads_only_what_is_installed() {
     let missing = Asset {
@@ -123,8 +118,6 @@ fn decoding_reads_only_what_is_installed() {
     assert_eq!(decoded.rgba.len(), 4 * 2 * 4);
 }
 
-/// The person's own picture is kept privately once it is an image; anything
-/// else is refused and leaves what was kept.
 #[test]
 fn a_custom_picture_is_kept_only_when_it_is_an_image() {
     let dir = tempfile::tempdir().unwrap();
