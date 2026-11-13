@@ -32,13 +32,21 @@ path = "junit.xml"
 
 # The ci profile's test environment, set up by nextest itself on the machine
 # that runs the tests, wherever cargo runs them (a CI container, a developer
-# machine, a remote builder): lavapipe, PDFium, the shared fixture cache, the
-# TILO_REQUIRE_* capabilities the image promises and a private audio endpoint
-# for the run's lifetime; the native NTFS images only for a run that selects a
-# test reading them. tools/test-env-setup.sh describes each step; every test
-# binary also runs in tools/with-test-environment.sh (tools/cargo-runner.sh).
+# machine, a remote builder). Every test gets `test-runtime`: lavapipe, PDFium,
+# the shared fixture cache and the TILO_REQUIRE_* capabilities the image
+# promises, the font catalog and the audio endpoint among them. A setup script
+# runs once per nextest run, and a suite is over a thousand runs (a package's
+# test binary, or one shard of it), so that one starts no interpreter and
+# prepares nothing. What takes work runs for the packages that can use it: the
+# pinned font catalog, and a private audio endpoint for the run's lifetime;
+# the native NTFS images only for a run that selects a test reading them.
+# tools/test-env-setup.sh describes each step; every test binary also runs in
+# tools/with-test-environment.sh (tools/cargo-runner.sh).
 [scripts.setup.test-runtime]
 command = ["bash", "tools/test-env-setup.sh", "runtime"]
+
+[scripts.setup.font-catalog]
+command = ["bash", "tools/test-env-setup.sh", "fonts"]
 
 [scripts.setup.headless-audio]
 command = ["bash", "tools/test-env-setup.sh", "audio"]
@@ -142,7 +150,28 @@ setup = "chat-siblings"
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
 filter = "all()"
-setup = ["test-runtime", "headless-audio"]
+setup = "test-runtime"
+
+# The two steps that take work, for the packages whose code can use what they
+# prepare. `rdeps(NAME)` is NAME and every package that depends on it, which
+# nextest reads from the build's own dependency graph: a package that starts
+# depending on one of these is served without an edit here. The names are read
+# from the code (tools/ci/setup_filters.py prints both filters, and
+# tools/tests/test_setup_filters.py fails while these are not they): the font
+# catalog's one reader, the crate that owns it; and each package whose sources
+# name an audio endpoint, with its dependents where that is library code.
+# `test-runtime` promises both to every test (TILO_REQUIRE_FONTS,
+# TILO_REQUIRE_AUDIO), so a test that needs one in a package left out here
+# fails, saying so, and never skips.
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "rdeps(tilo-font-catalog)"
+setup = "font-catalog"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "rdeps(compat-service) or rdeps(music) or rdeps(tilo-capture) or rdeps(tilo-media) or rdeps(tilo-projector) or rdeps(tilo-spotify) or rdeps(tilo-tts) or package(tilo-session-client) or package(tilo-test-env)"
+setup = "headless-audio"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }

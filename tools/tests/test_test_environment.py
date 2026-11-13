@@ -9,6 +9,7 @@ from pathlib import Path
 import pwd
 import shutil
 import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -25,12 +26,13 @@ RECORDED = ("bash", "sh", "env", "dirname", "basename", "id", "uname", "awk", "s
             "setpriv", "flock")
 
 
-def recorders(directory: Path) -> tuple[Path, Path]:
-    """A PATH entry whose programs each note their name in a file and then run the real one."""
+def recorders(directory: Path, *more: str) -> tuple[Path, Path]:
+    """A PATH entry whose programs each note their name in a file and then run the real one:
+    RECORDED's, and any `more`."""
     programs, started = directory / "recorders", directory / "started"
     programs.mkdir()
     started.touch()
-    for name in RECORDED:
+    for name in (*RECORDED, *more):
         real = shutil.which(name)
         if real is not None:
             (programs / name).write_text(f'#!/bin/sh\necho {name} >>"{started}"\nexec "{real}" "$@"\n')
@@ -286,13 +288,23 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                 f"the {profile} profile builds the page bundle its page tests run against",
             )
         steps = {name: script["command"][2:] for name, script in scripts.items()}
-        self.assertEqual(steps, {"test-runtime": ["runtime"], "headless-audio": ["audio"],
+        self.assertEqual(steps, {"test-runtime": ["runtime"], "font-catalog": ["fonts"],
+                                 "headless-audio": ["audio"],
                                  "ntfs-fixtures": ["ntfs"], "as-root": ["root"]})
         for script in scripts.values():
             self.assertEqual(script["command"][:2], ["bash", "tools/test-env-setup.sh"])
         rules = {rule["filter"]: rule["setup"] for rule in config["profile"]["ci"]["scripts"]}
+        # The two steps that take work run for the packages whose code can use them, never
+        # for every test: a setup script runs once per nextest run, and a suite is over a
+        # thousand of those. tools/tests/test_setup_filters.py holds each filter to the code.
+        costly = {setup: filter_ for filter_, setup in rules.items()
+                  if setup in ("font-catalog", "headless-audio")}
+        self.assertEqual(set(costly), {"font-catalog", "headless-audio"})
+        for filter_ in costly.values():
+            self.assertNotIn("all()", filter_)
+            del rules[filter_]
         # `ci` inherits `default`'s rules, so it names only what it adds.
-        self.assertEqual(rules, {"all()": ["test-runtime", "headless-audio"],
+        self.assertEqual(rules, {"all()": "test-runtime",
                                  "package(tilo-session) and binary(it) and (test(chat_2x2::) or "
                                  "test(device_branch::))": "chat-siblings",
                                  "package(tilo-session) and binary(it) and test(closed_tasks::)": "tasks-siblings",
@@ -316,15 +328,137 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(env["TILO_REQUIRE_MEDIA"], "1")
         self.assertTrue(env["TILO_TEST_CACHE_DIR"].endswith("/.cache/tilo/test-env"))
-        # The font catalog the frames are set in, where the runs that render find it.
+        # The font catalog the frames are set in, where the runs that render find it, and the
+        # audio endpoint: promised to every test here, and prepared by steps of their own for
+        # the packages that can use them, so a test that needs one where it was not prepared
+        # fails and does not skip.
         self.assertTrue(env["TILO_FONT_ASSET_CACHE"].endswith("/font-artifacts"))
         self.assertEqual(env["TILO_REQUIRE_FONTS"], "1")
+        self.assertEqual(env["TILO_REQUIRE_AUDIO"], "1")
         if driver.exists():
             self.assertEqual(env["VK_DRIVER_FILES"], str(driver))
             self.assertEqual(env["WGPU_ADAPTER_NAME"], "llvmpipe")
         else:
             self.assertNotIn("VK_DRIVER_FILES", env)
             self.assertEqual(env["TILO_REQUIRE_GPU"], "0")
+
+    def test_runtime_starts_no_interpreter_and_no_other_shell(self) -> None:
+        # Every job of a run pays for this step, and a suite is well over a thousand jobs (a
+        # package's test binary, or a shard of one), each on a core of its own: a Python start
+        # here was a quarter of a second of every one of them. The step reads and decides in
+        # its own shell, and starts a program only for the driver's architecture and, once,
+        # for the fixture cache's directory.
+        driver = Path(f"/usr/share/vulkan/icd.d/lvp_icd.{os.uname().machine}.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            programs, log = recorders(work, "python3")
+            env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+                   "HOME": str(work / "home"), "NEXTEST_ENV": str(work / "env"),
+                   "TILO_REQUIRE_GPU": "1" if driver.exists() else "0"}
+            for expected in (Counter(uname=1, mkdir=1), Counter(uname=1)):
+                # The shell is named, so the recorders see only what the step itself starts.
+                result = subprocess.run([shutil.which("bash"), str(SETUP), "runtime"], env=env,
+                                        capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                started = Counter(log.read_text().split())
+                log.write_text("")
+                for program in ("python3", "bash", "sh", "env"):
+                    self.assertEqual(started[program], 0, started)
+                if handover_user() is None:
+                    # Where the tests run as another user, looking that user up starts more.
+                    self.assertEqual(started, expected)
+
+    def mapped(self, manifest: str) -> tuple[list[str], list[str]]:
+        """The capabilities the runtime step requires for MANIFEST as the shell reads it, and
+        the ones tools/ci/capability_filter.py reads there."""
+        driver = Path(f"/usr/share/vulkan/icd.d/lvp_icd.{os.uname().machine}.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp) / "tree"
+            (tree / "tools/ci").mkdir(parents=True)
+            (tree / ".config").mkdir()
+            for name in ("test-env-setup.sh", "as-test-user.sh", "ci/capability_filter.py"):
+                shutil.copy(ROOT / "tools" / name, tree / "tools" / name)
+            (tree / ".config/nextest-capabilities.toml").write_text(manifest)
+            env_file = Path(tmp) / "env"
+            env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tmp,
+                   "NEXTEST_ENV": str(env_file), "TILO_REQUIRE_GPU": "1" if driver.exists() else "0"}
+            result = subprocess.run(["bash", str(tree / "tools/test-env-setup.sh"), "runtime"],
+                                    env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            promised = {"TILO_REQUIRE_GPU", "TILO_REQUIRE_MEDIA", "TILO_REQUIRE_FONTS",
+                        "TILO_REQUIRE_AUDIO"}
+            shell = [line.split("=", 1)[0] for line in env_file.read_text().splitlines()
+                     if line.startswith("TILO_REQUIRE_") and line.split("=", 1)[0] not in promised]
+            tool = subprocess.run(
+                [sys.executable, str(tree / "tools/ci/capability_filter.py"), "--require-variables"],
+                capture_output=True, text=True, check=True).stdout
+            return shell, [line.split("=", 1)[0] for line in tool.splitlines()]
+
+    def test_the_shell_reads_the_mapped_capabilities_as_the_manifest_tool_does(self) -> None:
+        # The runtime step reads the manifest itself, where it used to ask the tool. The two
+        # readings are one list: of this tree's manifest, and of one written to tell them
+        # apart (a capability not mapped, keys in either order, a key of the same name in a
+        # test group's table and in a table that is no capability, a last line without its
+        # newline).
+        shell, tool = self.mapped((ROOT / ".config/nextest-capabilities.toml").read_text())
+        self.assertEqual(shell, tool)
+        self.assertTrue(tool, "the manifest maps a capability")
+        shell, tool = self.mapped(
+            '# Capabilities.\n'
+            '[capabilities.One]\n'
+            'variable = "TILO_REQUIRE_ONE"  # the first\n'
+            'mapped = true\n'
+            '\n'
+            '[[capabilities.One.tests]]\n'
+            'probe = "one"\n'
+            'variable = "TILO_REQUIRE_A_GROUPS_KEY"\n'
+            'mapped = true\n'
+            'filter = "package(one)"\n'
+            '\n'
+            '[capabilities.Two]\n'
+            'variable = "TILO_REQUIRE_TWO"\n'
+            'mapped = false\n'
+            '\n'
+            '  [capabilities.Three]\n'
+            '  mapped   =   true\n'
+            '  variable="TILO_REQUIRE_THREE"\n'
+            '\n'
+            '[capabilities.Four]\n'
+            'variable = "TILO_REQUIRE_FOUR"\n'
+            '\n'
+            '[elsewhere]\n'
+            'variable = "TILO_REQUIRE_ELSEWHERE"\n'
+            'mapped = true\n'
+            '\n'
+            '[capabilities.Five]\n'
+            'variable = "TILO_REQUIRE_FIVE"\n'
+            'mapped = true')
+        self.assertEqual(tool, ["TILO_REQUIRE_ONE", "TILO_REQUIRE_THREE", "TILO_REQUIRE_FIVE"])
+        self.assertEqual(shell, tool)
+
+    def test_fonts_prepares_the_catalog_where_the_runtime_says_it_is(self) -> None:
+        # The catalog is a step of its own, which nextest runs for the packages that can
+        # read one; the runtime step every test gets names the same place and promises it.
+        driver = Path(f"/usr/share/vulkan/icd.d/lvp_icd.{os.uname().machine}.json")
+        with tempfile.TemporaryDirectory() as directory:
+            provided = {}
+            for step in ("runtime", "fonts"):
+                env_file = Path(directory) / f"env-{step}"
+                env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": directory,
+                       "NEXTEST_ENV": str(env_file),
+                       "TILO_REQUIRE_GPU": "1" if driver.exists() else "0"}
+                result = subprocess.run(["bash", str(SETUP), step], env=env,
+                                        capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                provided[step] = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+                cache = Path(provided[step]["TILO_FONT_ASSET_CACHE"])
+                if step == "runtime":
+                    self.assertFalse((cache / "catalogs").exists(), "the runtime prepares none")
+            self.assertEqual(provided["fonts"], {"TILO_FONT_ASSET_CACHE": str(cache)})
+            self.assertEqual(provided["runtime"]["TILO_FONT_ASSET_CACHE"], str(cache))
+            (catalog,) = (cache / "catalogs").glob("*-fixtures")
+            self.assertEqual((catalog / "manifest.toml").read_bytes(),
+                             (ROOT / "crates/sdk/ui-core/assets/fonts/manifest.toml").read_bytes())
 
     def test_a_missing_renderer_fails_where_it_is_promised(self) -> None:
         if Path(f"/usr/share/vulkan/icd.d/lvp_icd.{os.uname().machine}.json").exists():

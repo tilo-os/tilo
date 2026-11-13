@@ -13,6 +13,16 @@
 # selects). The image must provide the test runtime
 # (dist/ci/install-build-deps.sh fedora test, or os/Containerfile.builder).
 #
+# Every job of a run pays for `runtime`, a job being one nextest run and a
+# suite well over a thousand of them, so it names and promises and prepares
+# nothing: the shell's own tests and reads, and no interpreter
+# (tools/tests/test_test_environment.py holds it to that). What takes work is
+# a step of its own, `fonts` and `audio`, which nextest runs only for the
+# packages whose code can use it (.config/nextest.toml,
+# tools/ci/setup_filters.py). `runtime` still promises both to every test
+# (TILO_REQUIRE_FONTS, TILO_REQUIRE_AUDIO), so a test that needs one in a
+# package the step leaves out fails, naming it, and never skips.
+#
 # runtime  Mesa's CPU Vulkan driver as the only adapter (VK_DRIVER_FILES,
 #          WGPU_BACKEND, WGPU_ADAPTER_NAME), the renderer the visual goldens are
 #          recorded with, and so TILO_REQUIRE_GPU=1; TILO_REQUIRE_MEDIA=1, as
@@ -27,12 +37,14 @@
 #          A TILO_REQUIRE_* or TILO_PDFIUM_LIB already set is kept, and a
 #          machine that sets TILO_REQUIRE_GPU=0 (it promises no GPU) runs
 #          without lavapipe rather than failing.
-#          The pinned font catalog is prepared in TILO_FONT_ASSET_CACHE
-#          (default $CARGO_TARGET_DIR/font-artifacts, else the test cache's),
-#          where the toolkit's catalog roots find it, and TILO_REQUIRE_FONTS=1
-#          says every frame is to be set in it: a test job that reuses a build
-#          from elsewhere carries no catalog of its own, and a frame drawn in
-#          the host's faces is worse than a failure.
+#          TILO_FONT_ASSET_CACHE (default $CARGO_TARGET_DIR/font-artifacts,
+#          else the test cache's) names where the pinned font catalog is, and
+#          TILO_REQUIRE_FONTS=1 says every frame is to be set in it: a frame
+#          drawn in the host's faces is worse than a failure. TILO_REQUIRE_AUDIO=1
+#          says the same of the audio endpoint.
+# fonts    the pinned font catalog, prepared in TILO_FONT_ASSET_CACHE, where
+#          the toolkit's catalog roots find it: a test job that reuses a build
+#          from elsewhere carries no catalog of its own.
 # audio    a private software audio endpoint (tools/with-headless-audio.sh),
 #          and so TILO_REQUIRE_AUDIO=1. It lives as long as the process
 #          TILO_TEST_ENV_OWNER names (default: the caller, which under nextest
@@ -52,25 +64,73 @@
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
-    echo "usage: $0 runtime|audio|ntfs|root ..." >&2
+    echo "usage: $0 runtime|fonts|audio|ntfs|root ..." >&2
     exit 2
 fi
 env_file=${NEXTEST_ENV:?test-env-setup.sh writes the environment to the file NEXTEST_ENV names}
-repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-home=$(bash "$repo/tools/as-test-user.sh" --home)
+case ${BASH_SOURCE[0]} in
+    */*) repo=${BASH_SOURCE[0]%/*} ;;
+    *) repo=. ;;
+esac
+repo=$(cd -- "$repo/.." && pwd)
+# Who the tests run as, asked in this shell (tools/as-test-user.sh's
+# functions) rather than of another one: a program starts only where there is
+# a test user to look up.
+# shellcheck source=tools/as-test-user.sh
+source "$repo/tools/as-test-user.sh"
+home=$HOME
+[[ -z $tilo_test_user ]] || home=$(tilo_test_user_home)
 if [[ $home == "$HOME" ]]; then
     cache_dir="${TILO_TEST_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tilo/test-env}"
 else
     cache_dir="${TILO_TEST_CACHE_DIR:-$home/.cache/tilo/test-env}"
 fi
+# The build directory is the cache a job shares with the build; a run outside
+# one keeps the catalog in the test cache, where it outlives the run rather
+# than being written into the tree.
+font_cache="${TILO_FONT_ASSET_CACHE:-${CARGO_TARGET_DIR:-$cache_dir}/font-artifacts}"
 
 provide() { # KEY VALUE: the variable, for the tests and for the later steps
     printf '%s=%s\n' "$1" "$2" >>"$env_file"
     export "$1=$2"
 }
 
+# The fixture cache, the test user's: made where it is not there yet.
+test_cache() {
+    [[ -d $cache_dir ]] || (tilo_test_user_exec mkdir -p "$cache_dir")
+}
+
+# The TILO_REQUIRE_* variable of every capability
+# .config/nextest-capabilities.toml marks `mapped`, into `mapped_variables`.
+# tools/ci/capability_filter.py --require-variables prints the same list, and
+# asking it cost every job of a run a Python start (a quarter of a second on a
+# busy node, a quarter of this step) for two keys of a file this shell can
+# read: a capability's own table, `[capabilities.NAME]`, with its `variable`
+# and `mapped` written as keys on lines of their own.
+# tools/tests/test_test_environment.py holds this reading to that tool's, on
+# the manifest and on ones written to tell the two apart.
+mapped_capabilities() {
+    local manifest="$repo/.config/nextest-capabilities.toml" line table= variable= mapped=
+    mapped_variables=()
+    [[ -r $manifest ]] || return 0
+    while IFS= read -r line || [[ -n $line ]]; do
+        if [[ $line =~ ^[[:space:]]*\[ ]]; then
+            if [[ -n $mapped && -n $variable ]]; then mapped_variables+=("$variable"); fi
+            variable= mapped= table=
+            if [[ $line =~ ^[[:space:]]*\[capabilities\.[A-Za-z0-9_-]+\][[:space:]]*(#.*)?$ ]]; then table=1; fi
+        elif [[ -n $table ]]; then
+            if [[ $line =~ ^[[:space:]]*variable[[:space:]]*=[[:space:]]*\"([A-Za-z0-9_]+)\"[[:space:]]*(#.*)?$ ]]; then
+                variable=${BASH_REMATCH[1]}
+            elif [[ $line =~ ^[[:space:]]*mapped[[:space:]]*=[[:space:]]*true[[:space:]]*(#.*)?$ ]]; then
+                mapped=1
+            fi
+        fi
+    done <"$manifest"
+    if [[ -n $mapped && -n $variable ]]; then mapped_variables+=("$variable"); fi
+}
+
 runtime() {
-    local icd
+    local icd required
     icd="/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json"
     if [[ -r $icd ]]; then
         provide WGPU_BACKEND vulkan
@@ -85,34 +145,45 @@ runtime() {
     # Every capability .config/nextest-capabilities.toml maps is required: a
     # test that needs one fails where it is missing, unless the CI step left
     # it out after probing (tools/ci/capability_filter.py).
-    local required
-    while IFS='=' read -r required _; do
+    mapped_capabilities
+    for required in ${mapped_variables[@]+"${mapped_variables[@]}"}; do
         provide "$required" "${!required:-1}"
-    done < <(python3 "$repo/tools/ci/capability_filter.py" --require-variables)
+    done
     if [[ -n ${TILO_PDFIUM_LIB:-} ]]; then
         provide TILO_PDFIUM_LIB "$TILO_PDFIUM_LIB"
     elif [[ -r /usr/lib64/libpdfium.so ]]; then
         provide TILO_PDFIUM_LIB /usr/lib64/libpdfium.so
     fi
-    bash "$repo/tools/as-test-user.sh" mkdir -p "$cache_dir"
+    test_cache
     provide TILO_TEST_CACHE_DIR "$cache_dir"
-    # The pinned font catalog every frame is set in. A build prepares its own into the cargo
-    # output directory of the crate that owns it, and that is not what a build directory carries
-    # from the job that built to the job that tests, so a test job that reuses a build elsewhere
-    # finds none and draws its frames in the host's faces: pixels that look almost right, judged
-    # against baselines recorded in the product's. Preparing it here, in the artifact cache the
-    # builder image seeds, puts it where the tests run — the first job on a machine copies it from
-    # the image and the rest verify what is there — and the toolkit's catalog roots read it. The
-    # build directory is the cache a job shares with the build; a run outside one keeps it in the
-    # test cache, where it outlives the run rather than being written into the tree. A machine
-    # without the image's seed has the jobs that share the cache take turns (the cache's lock), so
-    # one fetches the catalog and the rest verify what it left rather than each fetching it.
-    provide TILO_FONT_ASSET_CACHE "${TILO_FONT_ASSET_CACHE:-${CARGO_TARGET_DIR:-$cache_dir}/font-artifacts}"
-    python3 "$repo/tools/font-catalog.py" root "$repo/crates/sdk/ui-core/assets/fonts" \
-        --scope fixtures --cache "$TILO_FONT_ASSET_CACHE" >/dev/null
-    # And a run promised the catalog stops where one is missing, rather than comparing frames set
-    # in whatever faces the machine happens to have.
+    # Where the pinned font catalog is, and the promise of it: a run promised the catalog stops
+    # where one is missing, rather than comparing frames set in whatever faces the machine
+    # happens to have. Preparing it is the `fonts` step's, for the packages that can set text; a
+    # process of any other package that sets text all the same finds none and stops here.
+    provide TILO_FONT_ASSET_CACHE "$font_cache"
     provide TILO_REQUIRE_FONTS "${TILO_REQUIRE_FONTS:-1}"
+    # The audio endpoint is promised the same way, and is the `audio` step's to start: a test
+    # that requires one (tilo_test_env's `Audio`) in a package that step leaves out fails.
+    provide TILO_REQUIRE_AUDIO "${TILO_REQUIRE_AUDIO:-1}"
+}
+
+# The pinned font catalog every frame is set in. A build prepares its own into the cargo output
+# directory of the crate that owns it, and that is not what a build directory carries from the
+# job that built to the job that tests, so a test job that reuses a build elsewhere finds none
+# and draws its frames in the host's faces: pixels that look almost right, judged against
+# baselines recorded in the product's. Preparing it here, in the artifact cache the builder image
+# seeds, puts it where the tests run and the toolkit's catalog roots read it: a job whose cache
+# has none copies it from the image, and one that finds a catalog verifies what is there. A
+# machine without the image's seed has the jobs that share the cache take turns (the cache's
+# lock), so one fetches the catalog and the rest verify what it left rather than each fetching it.
+# Copying and hashing its 54 MB is half a second of a job's one core, which only the packages
+# that can read a catalog pay: those that depend on the crate that owns it
+# (.config/nextest.toml's `rdeps(tilo-font-catalog)`).
+fonts() {
+    test_cache
+    provide TILO_FONT_ASSET_CACHE "$font_cache"
+    python3 "$repo/tools/font-catalog.py" root "$repo/crates/sdk/ui-core/assets/fonts" \
+        --scope fixtures --cache "$font_cache" >/dev/null
 }
 
 audio() {
@@ -154,7 +225,7 @@ audio() {
             echo "test-env: the headless audio endpoint did not start" >&2
             exit 1
         fi
-        sleep 0.1
+        sleep 0.02
     done
     while IFS= read -r line; do
         provide "${line%%=*}" "${line#*=}"
@@ -231,7 +302,7 @@ delegate_cgroups() {
 
 for step; do
     case $step in
-        runtime | audio | ntfs | root) "$step" ;;
+        runtime | fonts | audio | ntfs | root) "$step" ;;
         *) echo "unknown test environment step: $step" >&2; exit 2 ;;
     esac
 done

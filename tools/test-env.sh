@@ -8,10 +8,12 @@
 #   tools/test-env.sh bash tools/ci/example-scenarios.sh -p example-counter
 #
 # It provides:
-# - tools/test-env-setup.sh's runtime and audio steps: lavapipe as the only
-#   Vulkan adapter, PDFium, the shared fixture cache (TILO_TEST_CACHE_DIR), the
-#   capabilities the image promises (TILO_REQUIRE_*) and a private software
-#   audio endpoint that lives as long as COMMAND;
+# - tools/test-env-setup.sh's runtime, fonts and audio steps: lavapipe as the
+#   only Vulkan adapter, PDFium, the shared fixture cache (TILO_TEST_CACHE_DIR),
+#   the capabilities the image promises (TILO_REQUIRE_*), the pinned font
+#   catalog and a private software audio endpoint that lives as long as
+#   COMMAND. A nextest run prepares the last two only for the packages that
+#   can use them; a command here may be anything, so it gets them all;
 # - its ntfs step (the native NTFS images) unless TILO_TEST_NTFS_FIXTURES=0;
 # - tools/with-test-environment.sh: LANG=C.UTF-8, TZ=UTC, a fresh HOME and XDG
 #   config/data/state/cache/runtime tree removed afterwards, and no desktop
@@ -24,7 +26,7 @@ if [[ $# -eq 0 ]]; then
 fi
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 
-steps=(runtime audio)
+steps=(runtime fonts audio)
 [[ ${TILO_TEST_NTFS_FIXTURES:-1} == 0 ]] || steps+=(ntfs)
 env_file=$(mktemp)
 # This process becomes the test environment's (exec below) and waits for

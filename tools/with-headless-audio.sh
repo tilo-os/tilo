@@ -59,6 +59,9 @@ export TILO_HEADLESS_AUDIO_PID="$audio_pid"
 # is the readiness signal. On a loaded runner (cold page cache, saturated
 # disk) merely exec'ing the daemon and its libraries can take several
 # seconds, so the cap is generous; a daemon that exits ends the wait at once.
+# The daemon is up in a fifth of a second on a quiet machine, and every job
+# that needs audio waits here: the wait looks often, so it ends when the
+# socket is there and not most of a tenth of a second later.
 timeout=${TILO_HEADLESS_AUDIO_TIMEOUT:-60}
 started=$SECONDS
 while [ ! -S "$audio_dir/native" ]; do
@@ -76,7 +79,7 @@ while [ ! -S "$audio_dir/native" ]; do
             "wchan ${wchan:-?}) exposed no endpoint within ${timeout}s" >&2
         break
     fi
-    sleep 0.1
+    sleep 0.02
 done
 if [ -S "$audio_dir/native" ]; then
     if "$@"; then status=0; else status=$?; fi

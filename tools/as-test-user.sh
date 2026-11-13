@@ -69,6 +69,15 @@ tilo_test_user_own_tree() {
     return 0
 }
 
+# The home of whoever tests run as: the test user's, else this shell's own.
+tilo_test_user_home() {
+    if [ -n "$tilo_test_user" ]; then
+        getent passwd "$tilo_test_user" | cut -d: -f6
+    else
+        printf '%s\n' "$HOME"
+    fi
+}
+
 # COMMAND [ARG ...]: this shell becomes COMMAND, running as the test user.
 tilo_test_user_exec() {
     [ -n "$tilo_test_user" ] || exec "$@"
@@ -85,7 +94,7 @@ if [ "$#" -eq 0 ]; then
     exit 2
 fi
 if [ "$1" = --home ]; then
-    if [ -n "$tilo_test_user" ]; then getent passwd "$tilo_test_user" | cut -d: -f6; else printf '%s\n' "$HOME"; fi
+    tilo_test_user_home
     exit 0
 fi
 if [ "$1" = --own ]; then
