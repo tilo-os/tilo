@@ -103,7 +103,16 @@ struct State {
     /// The keys and buttons each device driving this one holds down here.
     held: BTreeMap<DeviceId, (BTreeSet<u32>, BTreeSet<u32>)>,
     injected: u64,
-    latency: Option<(u64, u64)>,
+    /// The leases under which input reached this device: the first event under a new one is
+    /// control arriving here.
+    entered: BTreeSet<[u8; 16]>,
+    /// The device this one drove on the last pass.
+    driving: Option<DeviceId>,
+    /// Whether control arrived here since the last pass.
+    arrived: bool,
+    /// How long each of the latest events took from being sent there to being handed to the
+    /// compositor here, in milliseconds.
+    latency: std::collections::VecDeque<u64>,
 }
 
 impl State {
@@ -117,6 +126,15 @@ impl State {
         self.leases.remove(device);
         None
     }
+}
+
+/// Where the person's keyboard and pointer moved, as the session's pass hands it on.
+pub(crate) struct Handover {
+    /// Control arrived here since the last pass: from the device it drove, or from a device that
+    /// starts driving this one.
+    pub(crate) arrived: bool,
+    /// The devices this one drives or is driven by under a lease that holds, by id.
+    pub(crate) partners: BTreeSet<String>,
 }
 
 /// The device this one drives now.
@@ -505,6 +523,9 @@ impl SharedInput {
                             && allowed(lease, event)
                     });
                 if admitted {
+                    if state.entered.insert(*lease_nonce) {
+                        state.arrived = true;
+                    }
                     state
                         .incoming
                         .push((source.clone(), *event, envelope.issued_unix_ms));
@@ -562,9 +583,11 @@ impl SharedInput {
         }
     }
 
-    /// The session's pass: follow the arrangement and the lock, bring the pointer back where it
-    /// returned, and hand the compositor what the devices driving this one sent.
-    pub(crate) fn follow(&self, compositor: &mut Compositor) {
+    /// The session's pass: follow the arrangement and the lock, keep the pointer out of sight while
+    /// it drives another device and bring it back where it returned, and hand the compositor what
+    /// the devices driving this one sent. Says where the keyboard and pointer moved since the last
+    /// pass, for the clipboard to follow them.
+    pub(crate) fn follow(&self, compositor: &mut Compositor) -> Handover {
         let mut state = self.state.lock_recover();
         self.know_local(&mut state);
         let generation = (
@@ -587,7 +610,53 @@ impl SharedInput {
         if !self.continuity.display_input_permitted() && !state.issued.is_empty() {
             self.revoke(&mut state);
         }
+        let driving = state.active.as_ref().map(|active| active.device.clone());
+        // Control coming back from the device this one drove arrives here as it arrives on a
+        // device this one starts to drive.
+        if state.driving.is_some() && driving.is_none() {
+            state.arrived = true;
+        }
+        state.driving = driving;
+        let now = tilo_clock::unix_now_ms();
+        state
+            .leases
+            .retain(|_, lease| lease.validate_at(now).is_ok());
+        state
+            .issued
+            .retain(|_, lease| lease.validate_at(now).is_ok());
+        let State {
+            issued, entered, ..
+        } = &mut *state;
+        entered.retain(|nonce| issued.contains_key(nonce));
+        let handover = Handover {
+            arrived: std::mem::take(&mut state.arrived),
+            partners: state
+                .leases
+                .keys()
+                .chain(state.issued.values().map(|lease| &lease.controller))
+                .map(|device| device.as_str().to_owned())
+                .collect(),
+        };
+        let parked = state.active.is_some();
         let warp = state.warp.take();
+        drop(state);
+        compositor.park_pointer(parked);
+        if let Some((x, y)) = warp
+            && let Err(error) = compositor.input(InputEvent::PointerMotion { x, y })
+        {
+            tracing::warn!(%error, "the pointer did not come back to this screen");
+        }
+        self.inject(compositor);
+        handover
+    }
+
+    /// Hand the compositor what the devices driving this one sent since the last look, the way
+    /// every remote input reaches it: as soon as it is here, not on the next pass.
+    pub(crate) fn inject(&self, compositor: &mut Compositor) {
+        let mut state = self.state.lock_recover();
+        if state.incoming.is_empty() && state.held.is_empty() {
+            return;
+        }
         let incoming = std::mem::take(&mut state.incoming);
         let gone = self.departed(&mut state);
         let now_ms = tilo_clock::unix_now_ms();
@@ -613,12 +682,10 @@ impl SharedInput {
                 }
                 FabricInputEvent::PointerMotion { .. } | FabricInputEvent::Scroll { .. } => {}
             }
-            let latency = now_ms.saturating_sub(issued_ms);
-            state.latency = Some(
-                state
-                    .latency
-                    .map_or((latency, latency), |(_, max)| (latency, max.max(latency))),
-            );
+            if state.latency.len() == LATENCY_SAMPLES {
+                state.latency.pop_front();
+            }
+            state.latency.push_back(now_ms.saturating_sub(issued_ms));
             state.injected = state.injected.saturating_add(1);
             events.push(injected(event));
         }
@@ -626,11 +693,6 @@ impl SharedInput {
             .held
             .retain(|_, (keys, buttons)| !keys.is_empty() || !buttons.is_empty());
         drop(state);
-        if let Some((x, y)) = warp
-            && let Err(error) = compositor.input(InputEvent::PointerMotion { x, y })
-        {
-            tracing::warn!(%error, "the pointer did not come back to this screen");
-        }
         for event in gone.into_iter().chain(events) {
             if let Err(error) = compositor.input_remote(event) {
                 tracing::warn!(%error, "input from another of the person's devices was not taken");
@@ -672,9 +734,10 @@ impl SharedInput {
         }
     }
 
-    /// What a tool reads of it: where this device's pointer is, the device it drives, the screens
-    /// of the arrangement, and what the devices driving this one sent and how long it took.
-    pub(crate) fn inspection(&self, pointer: (f64, f64)) -> Json {
+    /// What a tool reads of it: where this device's pointer is and whether it shows, the device it
+    /// drives, the screens of the arrangement, and what the devices driving this one sent and how
+    /// long it took.
+    pub(crate) fn inspection(&self, pointer: (f64, f64), pointer_shown: bool) -> Json {
         let state = self.state.lock_recover();
         let displays: Vec<Json> = state
             .layout
@@ -699,12 +762,28 @@ impl SharedInput {
         json!({
             "local": state.local.as_ref().map(DeviceId::as_str),
             "pointer": [pointer.0, pointer.1],
+            "pointer_shown": pointer_shown,
             "driving": state.active.as_ref().map(|active| active.device.as_str()),
             "displays": displays,
             "leases": state.leases.keys().map(DeviceId::as_str).collect::<Vec<_>>(),
             "injected": state.injected,
-            "latency_ms": state.latency.map(|(last, max)| json!({"last": last, "max": max})),
+            "latency_ms": latency(&state.latency),
         })
+    }
+}
+
+/// How many of the latest events' latencies an inspection reads.
+const LATENCY_SAMPLES: usize = 64;
+
+/// The median and the worst of `samples` .
+fn latency(samples: &std::collections::VecDeque<u64>) -> Json {
+    let mut sorted: Vec<u64> = samples.iter().copied().collect();
+    sorted.sort_unstable();
+    match (sorted.get(sorted.len() / 2), sorted.last()) {
+        (Some(median), Some(max)) => {
+            json!({"median": median, "max": max, "samples": sorted.len()})
+        }
+        _ => Json::Null,
     }
 }
 

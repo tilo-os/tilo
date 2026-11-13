@@ -276,6 +276,9 @@ pub struct State {
     /// What is offered every input before the desktop sees it, and takes what it answers `true` to.
     pub(crate) input_observer:
         Option<Arc<dyn Fn(crate::input::ObservedInput) -> bool + Send + Sync>>,
+    /// Whether the pointer waits out of sight at the edge it left this machine's screens by, while
+    /// the person's keyboard and pointer drive another of their devices.
+    pub(crate) pointer_parked: bool,
     /// Super alone, as the person presses and lets go of it: the desktop reads what it asked for
     /// on its own pass. `None` when nobody asks.
     pub(crate) super_tap: Option<Rc<RefCell<SuperTap>>>,
@@ -432,6 +435,7 @@ impl State {
             dnd: crate::dnd::Dnd::default(),
             display_changes: crate::display_change::DisplayChanges::default(),
             input_observer: None,
+            pointer_parked: false,
             super_tap: None,
             redraw: Vec::new(),
             loop_handle: None,

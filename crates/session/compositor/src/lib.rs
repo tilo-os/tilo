@@ -1874,6 +1874,22 @@ impl Compositor {
         (pointer.x, pointer.y)
     }
 
+    /// Hide the pointer while the person's keyboard and pointer drive another of their devices, and
+    /// show it again where it waited when they come back.
+    pub fn park_pointer(&mut self, parked: bool) {
+        let state = &mut self.data.state;
+        if state.pointer_parked != parked {
+            state.pointer_parked = parked;
+            state.mark_redraw_all();
+        }
+    }
+
+    /// Whether the pointer shows on this machine's screens now.
+    #[must_use]
+    pub fn pointer_shown(&self) -> bool {
+        self.data.state.cursor_shape(1.0).is_some()
+    }
+
     /// Give every input to `observer` before the desktop sees it; what it takes (returns `true`
     /// for) is not routed. An input capture takes the input while it holds the person's keyboard
     /// and pointer.

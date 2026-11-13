@@ -170,6 +170,8 @@ impl Session {
         // here, and each time the wait for the frame below is woken, so the frame carries it as it
         // carries a key the person pressed.
         let mut tool_input = serve_tool_input(&self.control, &self.shared, &mut self.compositor);
+        // So is what the keyboard and pointer of another of the person's devices sent this one.
+        serve_fabric_input(&self.shared, &mut self.compositor);
         // A frame that is owed is shown at the display's next blank: what arrives before that blank
         // joins the frame it is shown in, so the desk below is laid out once per refresh however
         // fast events come.
@@ -182,6 +184,7 @@ impl Session {
                 &self.shared,
                 compositor,
             ));
+            serve_fabric_input(&self.shared, compositor);
         })?;
         self.tool_input = tool_input;
         self.follow_logout_request();
@@ -773,7 +776,11 @@ impl Session {
         // The keyboard and pointer of the person's other devices that drive this one, on the pass
         // their actions were routed in.
         if let Some(shared_input) = &self.shared.keyboard_and_pointer {
-            shared_input.follow(&mut self.compositor);
+            let handover = shared_input.follow(&mut self.compositor);
+            // The clipboard follows them: what was copied last is what pastes where they are.
+            self.shared
+                .clipboard
+                .follow_control(handover.arrived, &handover.partners);
         }
         Ok(())
     }
@@ -792,6 +799,16 @@ fn serve_tool_input(
     answering.elapsed()
 }
 
+/// What the keyboard and pointer of the person's other devices sent this one, handed to the desk the
+/// moment it arrived rather than on the pass that routes the rest of what their devices sent.
+fn serve_fabric_input(shared: &crate::Shared, compositor: &mut Compositor) {
+    let (Some(sync), Some(shared_input)) = (&shared.sync, &shared.keyboard_and_pointer) else {
+        return;
+    };
+    sync.fabric_actions_now(|envelope| shared_input.route(envelope));
+    shared_input.inject(compositor);
+}
+
 /// The session as the control socket's answers read it now.
 fn desk<'a>(shared: &'a crate::Shared, compositor: &Compositor) -> crate::test_control::Desk<'a> {
     crate::test_control::Desk {
@@ -806,6 +823,8 @@ fn desk<'a>(shared: &'a crate::Shared, compositor: &Compositor) -> crate::test_c
         lock_screen_drawn: compositor.lock_drawn(),
         lock: &shared.lock,
         pointer: compositor.pointer_location(),
+        pointer_shown: compositor.pointer_shown(),
+        clipboard: &shared.clipboard,
         shared_input: shared.keyboard_and_pointer.as_deref(),
     }
 }

@@ -210,8 +210,11 @@ pub(crate) struct Desk<'a> {
     /// tool that unlocks asks the session to come down the one way it does — the screen dissolves
     /// and the compositor lifts the lock once it has.
     pub(crate) lock: &'a crate::lock_service::Lock,
-    /// Where this device's pointer is.
+    /// Where this device's pointer is, and whether it shows.
     pub(crate) pointer: (f64, f64),
+    pub(crate) pointer_shown: bool,
+    /// The clipboard's history and the selection it reads.
+    pub(crate) clipboard: &'a crate::clipboard::Clipboard,
     /// This device's share of the person's one keyboard and pointer.
     pub(crate) shared_input: Option<&'a crate::shared_input::SharedInput>,
 }

@@ -19,6 +19,7 @@
 //! so every app pastes the way it expects (a terminal with Ctrl+Shift+V).
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -78,6 +79,13 @@ pub(crate) struct Clipboard {
     wake: tilo_service::Wake,
     /// The clipboard the session's own surfaces copy to and paste from.
     desk: DeskClipboard,
+    /// The devices this one shares the person's keyboard and pointer with: what they copy is put on
+    /// the clipboard here as it arrives.
+    partners: RefCell<BTreeSet<String>>,
+    /// Whether the newest copy waits to be put on the clipboard.
+    place: Cell<bool>,
+    /// The copy of another device's put on the clipboard last.
+    placed: Cell<Option<[u8; 32]>>,
 }
 
 /// One read of the selection.
@@ -130,6 +138,9 @@ impl Clipboard {
             synced_at: Cell::new(None),
             desk: DeskClipboard::new(wake.clone()),
             wake,
+            partners: RefCell::default(),
+            place: Cell::new(false),
+            placed: Cell::new(None),
         }
     }
 
@@ -142,6 +153,13 @@ impl Clipboard {
     /// and keep a copy once its bytes are all here.
     pub(crate) fn follow(&self, compositor: &mut Compositor) {
         self.take_back_when_due(compositor);
+        // Never over a copy still being read: what an app copied here is newer.
+        if self.reading.borrow().is_none()
+            && compositor.selection_changes(Selection::Clipboard) == self.seen.get()
+            && self.place.take()
+        {
+            self.place_newest(compositor);
+        }
         let change = compositor.selection_changes(Selection::Clipboard);
         self.desk.moved(change);
         self.finish_reading();
@@ -174,6 +192,47 @@ impl Clipboard {
                 self.desk.read(change, None);
             }
         }
+    }
+
+    /// Follow the person's keyboard and pointer: when they arrive here, what was copied last on any
+    /// of their devices goes on this clipboard, and so does what the devices sharing them copy from
+    /// then on.
+    /// `arrived` says they arrived here since the last pass, and `partners` names the devices they
+    /// move between with this one.
+    pub(crate) fn follow_control(&self, arrived: bool, partners: &BTreeSet<String>) {
+        if *self.partners.borrow() != *partners {
+            self.partners.replace(partners.clone());
+        }
+        if arrived {
+            self.place.set(true);
+            // What the device they came from copied just before is read now, not on the next turn.
+            self.synced_at.set(None);
+            (self.wake)();
+        }
+    }
+
+    /// Put the newest copy of the history on the clipboard when another device made it and it is
+    /// not there yet: a copy made here is on the clipboard already, or was taken off it.
+    fn place_newest(&self, compositor: &mut Compositor) {
+        let newest = {
+            let history = self.history.borrow();
+            let Some(copy) = history.copies().next() else {
+                return;
+            };
+            if copy.from.is_none() || self.placed.get() == Some(copy.id) {
+                return;
+            }
+            (copy.id, copy.key())
+        };
+        if self.offer(compositor, &newest.1) {
+            self.placed.set(Some(newest.0));
+        }
+    }
+
+    /// The text on the clipboard now, as the history last read it.
+    pub(crate) fn text(&self) -> Option<String> {
+        use ui::clipboard::{ClipboardBackend as _, ClipboardTarget};
+        self.desk.text(ClipboardTarget::Clipboard)
     }
 
     /// Keep the copy of a read that finished.
@@ -338,6 +397,7 @@ impl Clipboard {
             .collect();
         let mut changed = false;
         {
+            let partners = self.partners.borrow();
             let mut history = self.history.borrow_mut();
             // Newest first, so the front of the history is what was copied last there too.
             for entry in shared.iter().rev() {
@@ -348,11 +408,19 @@ impl Clipboard {
                 let mut copy = Copy::new(&mime, bytes, entry.created_unix_ms);
                 copy.pinned = entry.pinned;
                 copy.from = Some(entry.origin.as_str().to_owned());
-                changed |= history.import(copy);
+                let partner = partners.contains(entry.origin.as_str());
+                let imported = history.import(copy);
+                changed |= imported;
+                if imported && partner {
+                    self.place.set(true);
+                }
             }
         }
         if changed {
             self.save();
+        }
+        if self.place.get() {
+            (self.wake)();
         }
         if self.unshared.replace(false) {
             let entries = self.shareable(&local);
@@ -448,6 +516,16 @@ impl Clipboard {
     /// Put the copy `key` names on the clipboard and have the app in front paste it. False when
     /// there is no such copy.
     pub(crate) fn paste(&self, compositor: &mut Compositor, key: &str) -> bool {
+        if !self.offer(compositor, key) {
+            return false;
+        }
+        Self::paste_into_focus(compositor);
+        true
+    }
+
+    /// Put the copy `key` names on the clipboard, as the session's own offer rather than a new copy
+    /// of the person's. False when there is no such copy, or the clipboard did not take it.
+    fn offer(&self, compositor: &mut Compositor, key: &str) -> bool {
         let offer = {
             let history = self.history.borrow();
             let Some(copy) = history.find(key) else {
@@ -464,7 +542,6 @@ impl Clipboard {
         self.seen
             .set(compositor.selection_changes(Selection::Clipboard));
         self.desk.read(self.seen.get(), text);
-        Self::paste_into_focus(compositor);
         true
     }
 

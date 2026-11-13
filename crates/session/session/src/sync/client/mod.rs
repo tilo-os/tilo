@@ -325,6 +325,9 @@ pub(crate) struct Seat {
     commands: tokio::sync::mpsc::UnboundedSender<HostCmd>,
     /// What the peer actor and the fabric said that only this desktop keeps.
     host_events: std::sync::mpsc::Receiver<HostEvent>,
+    /// The actions of the person's devices that arrived ahead of the pass routing them: what the
+    /// session took at once ([`Client::fabric_actions_now`]) left these for it.
+    fabric_waiting: RefCell<Vec<crate::platform::fabric::PersonalFabricActionEnvelope>>,
     /// The window streams that reached this device: their frames, starts, ends and control, which
     /// the shares take ([`Self::take_surfaces`]).
     surfaces: RefCell<Vec<ReceivedSurface>>,
@@ -770,11 +773,10 @@ impl Seat {
     pub(crate) fn fabric_actions(
         &self,
     ) -> Vec<crate::platform::fabric::PersonalFabricActionEnvelope> {
-        let actions = self
-            .fabric
-            .as_ref()
-            .map(|fabric| fabric.take_actions())
-            .unwrap_or_default();
+        let mut actions = std::mem::take(&mut *self.fabric_waiting.borrow_mut());
+        if let Some(fabric) = &self.fabric {
+            actions.extend(fabric.take_actions());
+        }
         let Some(nearby) = self.nearby() else {
             return actions;
         };
@@ -1562,7 +1564,25 @@ impl Client {
     #[must_use]
     #[cfg(target_os = "linux")]
     pub fn fabric_actions(&self) -> Vec<crate::platform::fabric::PersonalFabricActionEnvelope> {
+        self.hosting.seat.keep_host_events(&self.inner);
         self.hosting.seat.fabric_actions()
+    }
+
+    /// Hand `take` each action one of the person's devices sent this one since the last look, the
+    /// moment it is here; what it does not take waits for [`Self::fabric_actions`] .
+    #[cfg(target_os = "linux")]
+    pub(crate) fn fabric_actions_now(
+        &self,
+        take: impl Fn(&crate::platform::fabric::PersonalFabricActionEnvelope) -> bool,
+    ) {
+        let seat = &self.hosting.seat;
+        seat.keep_host_events(&self.inner);
+        let left: Vec<_> = seat
+            .fabric_actions()
+            .into_iter()
+            .filter(|envelope| !take(envelope))
+            .collect();
+        seat.fabric_waiting.borrow_mut().extend(left);
     }
 
     /// Where this device's actions are served.
@@ -1791,6 +1811,7 @@ impl Seat {
                 desk: RefCell::new(None),
                 commands,
                 host_events,
+                fabric_waiting: RefCell::default(),
                 surfaces: RefCell::new(Vec::new()),
                 call_audio: RefCell::new(Vec::new()),
                 call_pictures: RefCell::new(Vec::new()),
@@ -1826,6 +1847,7 @@ impl Seat {
             desk: RefCell::new(None),
             commands,
             host_events,
+            fabric_waiting: RefCell::default(),
             surfaces: RefCell::new(Vec::new()),
             call_audio: RefCell::new(Vec::new()),
             call_pictures: RefCell::new(Vec::new()),

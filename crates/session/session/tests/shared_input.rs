@@ -1,6 +1,7 @@
 //! One keyboard and pointer for two of a person's devices standing side by side: the pointer
-//! pushed past the laptop's edge toward the phone's screen goes on there, the keys typed on the
-//! laptop reach the phone, and Ctrl+Alt+Escape on the laptop brings both back. Both devices run
+//! pushed past the laptop's edge toward the phone's screen goes on there while the laptop's own
+//! waits out of sight, the keys typed on the laptop reach the phone, what was copied last pastes
+//! on whichever device they are on, and Ctrl+Alt+Escape on the laptop brings both back. Both devices run
 //! their real sessions, joined to one workspace as the same person, so the input travels the
 //! person's own device fabric and the phone's compositor takes it as it takes remote input.
 
@@ -15,6 +16,43 @@ use crate::common::people::{Device, two_devices_of_one_person};
 /// What `device` says of the person's one keyboard and pointer.
 fn shared(device: &Device) -> Value {
     device.state()["state"]["shared_input"].clone()
+}
+
+/// Whether `device`'s pointer shows on its screen.
+fn pointer_shown(device: &Device) -> bool {
+    shared(device)["pointer_shown"] == json!(true)
+}
+
+/// The text on `device`'s clipboard.
+fn clipboard(device: &Device) -> Option<String> {
+    device.state()["state"]["clipboard"]
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// Copy `text` on `device`, as an app there does when the person copies: through the clipboard's
+/// own copy action, as the device publishes it.
+fn copy(device: &Device, text: &str) {
+    const COPY: &str = "session:clipboard\u{1f}copy";
+    let mut cursor = Value::Null;
+    let provider = loop {
+        let page = device.ask(&json!({"op": "actions_enumerate", "cursor": cursor}));
+        let answer = &page["answer"];
+        let found = answer["actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|row| row["id"] == json!(COPY));
+        if let Some(row) = found {
+            break row["provider"].as_str().expect("a provider").to_owned();
+        }
+        cursor = match answer["next_cursor"].as_str() {
+            Some(next) if !next.is_empty() => Value::from(next),
+            _ => panic!("{} publishes no clipboard copy: {page}", device.label),
+        };
+    };
+    let receipt = device.act_wait(&provider, COPY, &json!({ "text": text }));
+    assert!(receipt.get("err").is_none(), "{}: {receipt}", device.label);
 }
 
 /// Where `device`'s pointer is.
@@ -179,6 +217,13 @@ fn the_pointer_and_the_keyboard_cross_to_the_device_beside_this_one_and_come_bac
         };
         (x, y)
     };
+    // Something copied on the laptop before the pointer leaves it.
+    let from_laptop = "copied on the laptop";
+    copy(&laptop, from_laptop);
+    waited("the laptop's copy on its clipboard", &[&laptop], || {
+        clipboard(&laptop).as_deref() == Some(from_laptop)
+    });
+    assert!(pointer_shown(&laptop), "the laptop shows its pointer");
     picture(&laptop, "1-laptop-before");
     picture(&phone, "1-phone-before");
 
@@ -217,6 +262,16 @@ fn the_pointer_and_the_keyboard_cross_to_the_device_beside_this_one_and_come_bac
         || shared(&phone)["injected"].as_u64().unwrap_or(0) > 0,
     );
     let arrived = pointer(&phone);
+    // The laptop's pointer waits out of sight at the edge, and what it copied pastes on the phone.
+    waited("the laptop's pointer hiding", &[&laptop, &phone], || {
+        !pointer_shown(&laptop)
+    });
+    assert!(pointer_shown(&phone), "the phone shows the pointer");
+    waited(
+        "the laptop's copy on the phone's clipboard",
+        &[&laptop, &phone],
+        || clipboard(&phone).as_deref() == Some(from_laptop),
+    );
 
     // The pointer goes on across the phone's screen; the laptop's stays where it left.
     let along = 120.0;
@@ -278,6 +333,13 @@ fn the_pointer_and_the_keyboard_cross_to_the_device_beside_this_one_and_come_bac
     picture(&laptop, "2-laptop-driving-phone");
     picture(&phone, "2-phone-driven-by-laptop");
 
+    // Something copied in an app on the phone, while the laptop's keys drive it.
+    let from_phone = "copied on the phone";
+    copy(&phone, from_phone);
+    waited("the phone's copy on its clipboard", &[&phone], || {
+        clipboard(&phone).as_deref() == Some(from_phone)
+    });
+
     // Ctrl+Alt+Escape on the laptop brings its keyboard and pointer back.
     key(&laptop, "key_down", "Control");
     key(&laptop, "key_down", "Alt");
@@ -285,6 +347,22 @@ fn the_pointer_and_the_keyboard_cross_to_the_device_beside_this_one_and_come_bac
     key(&laptop, "key_up", "Alt");
     key(&laptop, "key_up", "Control");
     assert_eq!(driving(&laptop), None, "the chord gave the input back");
+    // The pointer shows again at the edge it left by, and what was copied on the phone pastes here.
+    waited(
+        "the laptop's pointer showing again",
+        &[&laptop, &phone],
+        || pointer_shown(&laptop),
+    );
+    assert_eq!(
+        pointer(&laptop),
+        parked,
+        "the pointer comes back where it left"
+    );
+    waited(
+        "the phone's copy on the laptop's clipboard",
+        &[&laptop, &phone],
+        || clipboard(&laptop).as_deref() == Some(from_phone),
+    );
     move_to(&laptop, middle);
     assert_eq!(
         pointer(&laptop),
