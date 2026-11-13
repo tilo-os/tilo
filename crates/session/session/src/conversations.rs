@@ -980,7 +980,14 @@ fn turns(
                     title: chat.display_names(id, Some(person), agent_names),
                     instruction,
                     agent: agent.clone(),
-                    epoch: 1,
+                    // The attempt the message is in, as the run's epoch: a person's Retry asks
+                    // again for the same message, and that is a run of its own — the turn they
+                    // gave up on reads as replaced. Without it the retried turn would read
+                    // exactly like the one that failed (same message, same words, same agent),
+                    // [`Held::differs_from`] would see no change to deliver, and the broker —
+                    // which names a run by its issue and its epoch and hands an agent a run it
+                    // named before only once — would give the agent nothing to answer.
+                    epoch: u64::from(message.attempts) + 1,
                     starter,
                     active: true,
                     finished_by_agent: false,
@@ -1006,7 +1013,17 @@ fn turns(
 /// said as what they are.
 fn request(message: &chat::record::Message) -> (String, Option<tilo_actions::SelectionSubject>) {
     let mut subject = None;
-    let mut instruction = message.text.trim().to_owned();
+    // A reply that answers a run of another message is asked with the words it quotes above its
+    // own: the reply's quote is the conversation's record of what it means, so an answer to "yes,
+    // that one" names what "that one" is without the agent opening the record it acts in.
+    let mut instruction = message
+        .quoted
+        .as_ref()
+        .filter(|quoted| !quoted.text.trim().is_empty())
+        .map_or_else(
+            || message.text.trim().to_owned(),
+            |quoted| format!("> {}\n\n{}", quoted.text.trim(), message.text.trim()),
+        );
     for attached in &message.attachments {
         let named = attached.subject();
         if subject.is_none() && named.is_some() {
@@ -1236,6 +1253,74 @@ mod tests {
             next,
             chat::record::reply_id(&Id::from_raw("m1"), AGENT_ACTOR),
             "a retried turn is answered in a reply of its own"
+        );
+    }
+
+    /// A retried turn is a run of its own, not the one that failed read again: its epoch is the
+    /// attempt the message is in. That is what makes it deliverable — the pass announces a change
+    /// only when the turns differ ([`Held::differs_from`]), and the broker derives the run's own
+    /// id from the issue and its epoch, so a turn that read exactly like the failed one would be
+    /// handed to nobody.
+    #[test]
+    fn a_retried_turn_is_a_new_run_of_the_same_message() {
+        let chat = workspace();
+        let asker = message(ME, "add the revenue curve", 10);
+        let mut head = part(vec![("m1", asker.clone())]);
+        // The turn going before the answer was tried: the run the agent was handed first.
+        let first = read(&chat, &head);
+        let [before] = first.as_slice() else {
+            panic!("the ask is a turn: {first:?}");
+        };
+        assert_eq!(before.run.epoch, 1, "the first attempt is the first run");
+        // The try failed: the failed reply ends the turn.
+        let mut failed = message(AGENT_ACTOR, "", 20);
+        failed.parent = Some(Id::from_raw("m1"));
+        failed.work = Some(chat::record::Work {
+            state: Some(chat::record::Transition {
+                state: chat::model::AgentWorkState::ProviderFinished {
+                    outcome: chat::agent_stream::AgentFinish::Failed,
+                },
+                since: 20,
+            }),
+            ..chat::record::Work::default()
+        });
+        head.messages.push(
+            chat::record::reply_id(&Id::from_raw("m1"), AGENT_ACTOR),
+            failed,
+        );
+        assert_eq!(read(&chat, &head), Vec::new());
+        // The person pressed Retry: the same message is a turn again, and it is a new run.
+        let mut retried = asker;
+        retried.attempts = 1;
+        head.messages.push(Id::from_raw("m1"), retried);
+        let again = read(&chat, &head);
+        let [after] = again.as_slice() else {
+            panic!("the retried summons is a turn again: {again:?}");
+        };
+        assert_eq!(
+            after.run.issue, before.run.issue,
+            "the retried run is the same message's"
+        );
+        assert_eq!(
+            after.run.epoch, 2,
+            "the retried run is the attempt the message moved to"
+        );
+        assert_ne!(
+            *after, *before,
+            "the retried turn differs from the one that failed, so the pass announces it"
+        );
+        // And the pass reads that as a change to deliver, exactly as it does a new turn.
+        let facts = |turns: Vec<Entry>| Held {
+            workspaces: vec![Facts {
+                workspace: "w1".into(),
+                agents: vec![AGENT.to_owned()],
+                policy: None,
+                turns,
+            }],
+        };
+        assert!(
+            facts(again).differs_from(&facts(first)),
+            "the retry is a change the broker is woken for"
         );
     }
 

@@ -307,6 +307,13 @@ pub(crate) fn app_lists() -> Option<Arc<AppLists>> {
     LISTS.lock_recover().as_ref().map(Lists::latest)
 }
 
+/// The app lists as last read, with the generation of the read that produced them. The two come
+/// from one reading, so a caller keys its cache on the generation and shows that reading's lists:
+/// an install or a removal is a new generation, never the same value at a reused address.
+pub(crate) fn app_lists_snapshot() -> Option<(u64, Arc<AppLists>)> {
+    LISTS.lock_recover().as_ref().map(Lists::snapshot)
+}
+
 /// Wake the loop once artwork is ready, so the banner repaints with it.
 pub(crate) fn set_wake(wake: Arc<dyn Fn() + Send + Sync>) {
     *registry().wake.lock_recover() = Some(wake);

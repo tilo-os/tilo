@@ -16,6 +16,9 @@ use crate::surface;
 use crate::wire::Link;
 
 mod agent_loop;
+/// What a failed turn says, split into the person's sentence and the run's record.
+pub(crate) use agent_loop::Failure;
+
 mod confirmation;
 mod conversation;
 mod native_task;
@@ -101,7 +104,10 @@ struct Following {
     reask: native_task::Reask,
     /// The latest state the host reported.
     update: tilo_actions::InvocationUpdate,
-    deadline: Instant,
+    /// When the step gives up, where it has a time: a step that asks the
+    /// person first has none of its own but the run's budget — the person
+    /// decides in their own time, and nothing else cuts it short.
+    deadline: Option<Instant>,
     /// Its outcome, once settled.
     outcome: Option<Result<StepOutcome, TaskActionStop>>,
 }
@@ -217,6 +223,11 @@ pub struct Session {
     outstanding: outstanding::Outstanding,
     /// The turn the run in progress answers, as its reply is being told.
     record: Option<conversation::Record>,
+    /// The run's working record of the failure that ended its turn, kept for
+    /// whoever debugs it later: the transport's error, the partial answer, the
+    /// provider's exposed reasoning. The reply's own words are the failure's
+    /// sentence, never this.
+    failure_detail: Option<String>,
     /// What the run in progress may spend today, as its keeper counted it.
     spending: Option<agent_loop::Spending>,
     /// The agent's own web tools, with the client and the engines' backoff
@@ -309,6 +320,7 @@ impl Session {
             turn: None,
             outstanding: outstanding::Outstanding::default(),
             record: None,
+            failure_detail: None,
             spending: None,
             web: None,
         })
@@ -350,7 +362,7 @@ impl Session {
                 Some(CollabEvent::TaskRun(run)) => {
                     if let Err(error) = self.run_task(&run) {
                         tracing::warn!(run_id = run.run_id, %error, "native task stopped before completion");
-                        if let Err(report_error) = self.fail_task(&run, &error.to_string()) {
+                        if let Err(report_error) = self.fail_task_said(&run, &error.to_string()) {
                             tracing::warn!(%report_error, "native task review report was refused");
                         }
                     }
@@ -544,17 +556,22 @@ impl Session {
                     if !finish.done {
                         return self.fail_task(
                             run,
-                            finish
-                                .reply
-                                .as_deref()
-                                .unwrap_or(&crate::i18n::t("agent-run-needs-decision")),
+                            &agent_loop::Failure::said(
+                                finish
+                                    .reply
+                                    .as_deref()
+                                    .unwrap_or(&crate::i18n::t("agent-run-needs-decision")),
+                            ),
                         );
                     }
                     // The model's own reply is the run's result, whole: an
-                    // answer to a question is what the issue asked for.
+                    // answer to a question is what the issue asked for. A run
+                    // that ends with nothing said is not reported as a success
+                    // with a line nobody wrote: the person reads that the
+                    // agent finished without answering.
                     self.succeed_turn(run, finish.reply, planning::finished(&plan, completed))
                 }
-                agent_loop::LoopEnd::Failed(message) => self.fail_task(run, &message),
+                agent_loop::LoopEnd::Failed(failure) => self.fail_task(run, &failure),
                 agent_loop::LoopEnd::Cancelled(message) => self.cancel_task(run, &message),
             };
         }
@@ -563,7 +580,8 @@ impl Session {
             .as_ref()
             .is_some_and(|state| state.pending.is_some())
         {
-            return self.fail_task(run, &crate::i18n::t("agent-run-directions-require-review"));
+            return self
+                .fail_task_said(run, &crate::i18n::t("agent-run-directions-require-review"));
         }
         // The rules-only planner has no model call to overlap: settle the
         // poll already out before planning, as before.
@@ -573,12 +591,12 @@ impl Session {
         let (actions, reply) = match self.plan_task(run, &plan) {
             Ok((actions, reply)) if !actions.is_empty() => (actions, reply),
             Ok(_) => {
-                return self.fail_task(
+                return self.fail_task_said(
                     run,
                     &planning::unmatched(&plan, &crate::i18n::t("agent-plan-no-action")),
                 );
             }
-            Err(message) => return self.fail_task(run, &message),
+            Err(message) => return self.fail_task_said(run, &message),
         };
         // What the next content-consuming action is built from.
         let mut previous: Option<StepOutcome> = None;
@@ -592,7 +610,7 @@ impl Session {
                 previous.as_ref(),
             ) {
                 Ok(arguments) => arguments,
-                Err(message) => return self.fail_task(run, &message),
+                Err(message) => return self.fail_task_said(run, &message),
             };
             self.report_task(
                 run,
@@ -619,7 +637,7 @@ impl Session {
                 Err(TaskActionStop::Cancelled(_)) => {
                     return self.cancel_task(run, &crate::i18n::t("agent-run-cancelled-in-action"));
                 }
-                Err(TaskActionStop::Failed(message)) => return self.fail_task(run, &message),
+                Err(TaskActionStop::Failed(message)) => return self.fail_task_said(run, &message),
             }
         }
         self.succeed_turn(run, reply, planning::finished(&plan, actions.len()))
@@ -663,13 +681,33 @@ impl Session {
         self.wait_for_native_report(request_id)
     }
 
-    fn fail_task(&mut self, run: &runtime_collab::TaskRunEnvelope, message: &str) -> Result<()> {
+    /// Record a failed turn on the reply to the run's message, and tell the
+    /// host it failed. The reply's words are the failure's sentence — what a
+    /// person reads — and the run's working record goes beside it in the work,
+    /// for whoever debugs it later.
+    fn fail_task(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        failure: &agent_loop::Failure,
+    ) -> Result<()> {
+        self.failure_detail = Some(failure.detail().to_owned());
         self.report_task(
             run,
             runtime_collab::TaskRunUpdate::Failed {
-                message: message.to_string(),
+                message: failure.message().to_owned(),
             },
         )
+    }
+
+    /// [`Self::fail_task`] with the run's own words as both the sentence and
+    /// the record: a stop the loop decided, which names nothing a provider
+    /// said.
+    fn fail_task_said(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        message: &str,
+    ) -> Result<()> {
+        self.fail_task(run, &agent_loop::Failure::said(message))
     }
 
     fn cancel_task(&mut self, run: &runtime_collab::TaskRunEnvelope, message: &str) -> Result<()> {
@@ -696,6 +734,12 @@ impl Session {
         let ordinary = now.checked_add(maximum).unwrap_or(now);
         self.task_deadline
             .map_or(ordinary, |task| ordinary.min(task))
+    }
+
+    /// The run's own budget deadline, where it has one: what a step that
+    /// waits on the person is bounded by, and nothing else.
+    fn task_budget_deadline(&self) -> Option<Instant> {
+        self.task_deadline
     }
 
     fn task_budget_expired(&self) -> bool {
@@ -783,14 +827,17 @@ impl Session {
             arguments: arguments.clone(),
             wait: None,
         })?;
+        let mut asks_person = false;
         let update = match self.wait_for_task_action_result(request_id)? {
             Ok((_, update)) => update,
             Err(error) if confirmation::is_awaiting(&error) => {
-                // A step that asks first belongs to the record's app, which
-                // shows the question; a conversation has nowhere to show it,
-                // so the step fails with the reason and the model plans
-                // around it.
-                return Ok(Err(confirmation::cannot_ask(action)));
+                // The step asks the person before it runs: the host put the
+                // question on the system's sheet and holds the child until
+                // they answer there. Nothing ran yet, so the child is taken
+                // as accepted and followed; its follow waits on the person
+                // (`confirmation.rs`), not on a clock.
+                asks_person = true;
+                tilo_actions::InvocationUpdate::Accepted { invocation }
             }
             Err(error) => {
                 return Ok(Err(TaskActionStop::Failed(confirmation::step_failure(
@@ -798,13 +845,21 @@ impl Session {
                 ))));
             }
         };
+        // A child that asks the person waits on their answer, in their own
+        // time: only the run's own budget can cut the wait short, never the
+        // step's ordinary wait.
+        let deadline = if asks_person {
+            self.task_budget_deadline()
+        } else {
+            Some(self.task_wait_deadline(TASK_ACTION_WAIT))
+        };
         Ok(Ok(Following {
             action: action.clone(),
             arguments: arguments.clone(),
             invocation,
             reask: native_task::Reask::default(),
             update,
-            deadline: self.task_wait_deadline(TASK_ACTION_WAIT),
+            deadline,
             outcome: None,
         }))
     }

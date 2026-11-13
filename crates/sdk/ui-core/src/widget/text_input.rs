@@ -93,6 +93,10 @@ mod input;
 #[path = "text_input_written.rs"]
 mod written;
 
+#[path = "text_input_report.rs"]
+mod report;
+use report::Edited;
+
 /// Outline a field whose content was refused (a wrong password) in the
 /// danger colour, over the field's own edge at the control radius.
 pub fn paint_invalid_edge(scene: &mut Scene, transform: Affine, field: Rect, theme: &Theme) {
@@ -275,14 +279,6 @@ type TextChangeCallback = Box<dyn FnMut(&str)>;
 
 /// Finds the text object a field shows in the document a sync reads.
 type LocateText = Box<dyn Fn(&AutoCommit) -> Option<ObjId>>;
-
-/// One committed edit of a field: what it held before and after. A binding takes the text it
-/// holds now ([`TextInput::on_action`]) or the splice between the two
-/// ([`TextInput::on_text_edit`]).
-struct Edited {
-    before: String,
-    after: String,
-}
 
 /// Complete committed-text runs for an unmasked single line. Decorations use
 /// byte ranges in that same text; IME insertion remaps them only for display.
@@ -636,11 +632,18 @@ pub struct TextInput {
     /// text inset instead of the zero inset of a plain app field.
     document_inset: bool,
     on_submit: Option<TextChangeCallback>,
+    /// The selection settled ([`Self::with_selection_event`]): what a read-only field's reader
+    /// gets of the run someone chose, as `<start>:<end>` bytes, or nothing on a collapse.
+    selection_event: Option<crate::component::Event>,
     /// Route a submitting Enter through an exported resource action.
     submit_action: Option<ActionEmitter<String>>,
     /// Enter's submit, published as the field's view action `submit`
     /// ([`Self::on_submit_view`]) and the resource it announces.
     submit_view: Option<(ActionEmitter<()>, tilo_actions::ResourceSpec)>,
+    /// The words a submit published and its own handler has not answered yet: an entry clears
+    /// itself as it submits, so what it sent is held here for the answer, never read back from
+    /// the field once it stands empty.
+    submitted: Option<String>,
     /// A committed edit, published as the field's view action `change`
     /// ([`Self::on_change_view`]) and answered by its own handler.
     change_verb: Option<super::control_verb::ControlVerb<String>>,
@@ -746,7 +749,10 @@ const SUBMIT_TEXT: &str = "tilo.ui.text.submit";
 /// The operation type of a field's committed edit.
 const CHANGE_TEXT: &str = "tilo.ui.text.change";
 
-/// What a `tilo.ui.text.submit` operation carries: the field it submits.
+/// What a `tilo.ui.text.submit` operation carries: the field it submits. An entry lets go of
+/// what it sent as it submits ([`TextInput::fire_submit`]), so what it held is read from the
+/// field's own record of the submission it is waiting to have answered (`submitted`), never from
+/// the text the field shows by then.
 #[derive(serde::Deserialize)]
 struct SubmitPayload {
     control: String,
@@ -973,8 +979,10 @@ impl TextInput {
             prompt_fit: None,
             document_inset: false,
             on_submit: None,
+            selection_event: None,
             submit_action: None,
             submit_view: None,
+            submitted: None,
             change_verb: None,
             accessory: None,
             content_sized: false,
@@ -1832,48 +1840,21 @@ impl TextInput {
         self
     }
 
-    fn notify_user_change(&mut self, physical_text: bool) {
-        if !self.dirty || self.last_notified_text == self.text {
-            return;
-        }
-        let before = std::mem::replace(&mut self.last_notified_text, self.text.clone());
-        if let Some(action) = &mut self.action {
-            let after = self.text.clone();
-            let _ = crate::bound_dispatch::with_physical_text(physical_text, || {
-                action.emit(Edited { before, after })
-            });
-        }
-        // The field's own state stays the one a bound local edit reads: an
-        // action publishing the text does not stand in for it.
-        self.publish_local_state();
-        if let Some(verb) = &mut self.change_verb {
-            verb.emit(self.text.clone());
-            return;
-        }
-        if let Some(callback) = self.on_change.as_mut() {
-            callback(&self.text);
-        }
-    }
-
-    fn publish_local_state(&mut self) {
-        if let Some(binding) = &mut self.local_state {
-            binding.publish(&self.text);
-        }
-    }
-
-    /// Insert `s` at the caret as the user's edit.
+    /// Insert `s` at the caret as the user's edit, reporting it once as any typed edit is: a host
+    /// splicing text a person chose (a touch keyboard's key, a passcode's keypad, an emoji from a
+    /// palette) gives the field the same edit a keystroke gives it, and the field's listeners hear
+    /// it as they hear a keystroke.
     pub fn insert_at_cursor(&mut self, s: &str) {
         self.repaint = true;
         self.insert_str(s);
-        self.last_notified_text.clone_from(&self.text);
-        self.publish_local_state();
+        self.notify_user_change(false);
     }
 
-    /// Delete the selected text in a host-owned local projection.
+    /// Delete the selected text in a host-owned local projection, reporting it once as any typed
+    /// edit is.
     pub(super) fn delete_local_selection(&mut self) {
         self.delete_selection();
-        self.last_notified_text.clone_from(&self.text);
-        self.publish_local_state();
+        self.notify_user_change(false);
     }
 
     pub fn cursor_pos(&self) -> usize {
@@ -4111,6 +4092,36 @@ impl TextInput {
         self
     }
 
+    /// Report the selection each time it settles — a drag let go, a double or triple click, a
+    /// touch release, a select all — as `<start>:<end>` byte offsets into the text, or nothing
+    /// when the selection collapsed. A read-only field reports it so what reads it can act on
+    /// the run someone chose (a message answered on just those words); a field being typed in
+    /// keeps its selection private unless it is given one too.
+    #[must_use]
+    pub fn with_selection_event(mut self, event: crate::component::Event) -> Self {
+        self.selection_event = Some(event);
+        self
+    }
+
+    pub fn set_selection_event(&mut self, event: crate::component::Event) {
+        self.selection_event = Some(event);
+    }
+
+    /// Tell the reader the selection settled, as [`Self::with_selection_event`] describes it.
+    fn report_selection(&self) {
+        let Some(event) = self.selection_event.clone() else {
+            return;
+        };
+        let value = self
+            .selection_range_public()
+            .map(|(start, end)| {
+                let (start, end) = (start.min(end), start.max(end));
+                crate::component::Value::Text(format!("{start}:{end}"))
+            })
+            .unwrap_or_else(|| crate::component::Value::Text(String::new()));
+        event.fire(Some(value));
+    }
+
     /// Run `callback` with the text on a submitting Enter, the field as control
     /// `tilo.control:<id>`, publishing the submit as its view action `submit`: a person's Enter, a
     /// screen reader, a script and an agent submit through the same action.
@@ -4575,6 +4586,11 @@ impl TextInput {
         }
         let control = self.test_id().unwrap_or("text_input").to_owned();
         if let Some((action, _)) = &mut self.submit_view {
+            if self.entry {
+                // What was submitted, kept for the answer below: the entry lets go of the words
+                // as it submits, so the answer must not read the field for them.
+                self.submitted = Some(text.clone());
+            }
             if let Err(error) = action.emit(()) {
                 tracing::warn!(%error, %control, "a field refused its submit");
             }
@@ -4582,7 +4598,27 @@ impl TextInput {
             callback(&text);
         }
         if self.entry {
+            // What the field showed before it let go: the clear is a change only for an entry
+            // that held something (one submitted empty cleared nothing, and says nothing).
+            let sent = std::mem::take(&mut self.text);
             self.set_text("");
+            self.report_cleared(!sent.trim().is_empty());
+        }
+    }
+
+    /// An entry let go of what it sent: report the empty text as the field's latest edit, so the
+    /// state it is bound to (`ui.TextInput(bind: draft)`, a composer's draft) is emptied too. A
+    /// binding that kept the sent words would be pushed back into the field on the shell's next
+    /// reading, and the person's next words would be typed into the message they already sent.
+    ///
+    /// The submit ran before this ([`Self::fire_submit`]), so the action a press runs has the
+    /// words; only the state it is bound to is cleared after them.
+    fn report_cleared(&mut self, cleared: bool) {
+        // `set_text` records what it shows without telling anyone; the entry's clear is the
+        // person's edit all the same, so it goes through the one path that tells the field's
+        // listeners and records what it told.
+        if cleared {
+            self.report_change(false);
         }
     }
 
@@ -5440,7 +5476,11 @@ impl crate::widget::ResourceOperations for TextInput {
         if payload.control != self.test_id().unwrap_or("text_input") {
             return Ok(None);
         }
-        let text = self.text.clone();
+        // What was submitted as it stood, never the text the field shows now: an entry let go of
+        // its words when it submitted them, so reading back would hand on an empty message (the
+        // words `fire_submit` kept for this answer). An ordinary field still holds them, and one
+        // another writer submitted (a script, an agent) takes what the field holds.
+        let text = self.submitted.take().unwrap_or_else(|| self.text.clone());
         if let Some(callback) = self.on_submit.as_mut() {
             callback(&text);
         }

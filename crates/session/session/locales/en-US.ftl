@@ -392,6 +392,12 @@ desk-style-failed-app-name = Desk
 desk-style-failed-title = Your desk style could not be shown
 desk-style-failed-body = { $style } could not be shown, so the desk shows Strips. Your choice is kept.
 
+## A step an agent takes inside a conversation, asking the person before it
+## runs. The sheet shows the step's draft; confirming allows this one step.
+turn-question-title = Let the agent { $action }
+turn-question-detail = { $action } on { $resource }, as shown. It runs once, for this step only.
+turn-question-detail-here = { $action }, as shown. It runs once, for this step only.
+
 ## Someone mentioned the person in a record of the workspace.
 mention-notice-title = { $name } mentioned you in ‘{ $place }’
 mention-notice-channel = { $name } mentioned you in { $channel }
@@ -419,6 +425,7 @@ so-tilo-session-desk-invitations = List invitations
 so-tilo-session-desk-issue-invitation = Make an invitation link
 so-tilo-session-desk-show-invite = Invite people
 so-tilo-session-desk-show-connect = Connect an agent or computer
+so-tilo-session-desk-notify = Post a notification
 so-tilo-session-desk-cancel-invitation = Cancel invitation
 so-tilo-session-desk-show-surface = Show or hide a panel
 so-tilo-session-desk-close-surface = Close panel

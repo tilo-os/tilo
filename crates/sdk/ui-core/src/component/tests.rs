@@ -389,6 +389,7 @@ fn a_widget_holding_parts_takes_other_parts_only_by_being_built_again() {
                 name: Some("Canvas".into()),
                 ground: false,
                 pins,
+                ..MapProps::default()
             },
         )
     }
@@ -432,6 +433,7 @@ fn a_widget_holding_parts_takes_other_parts_only_by_being_built_again() {
         name: Some("Canvas".into()),
         ground: false,
         pins: pins(keys),
+        ..MapProps::default()
     };
 
     let (mut host, before) = laid_out(map(pins(&["a", "b"])));

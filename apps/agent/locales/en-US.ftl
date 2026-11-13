@@ -14,13 +14,10 @@ agent-plan-no-action = No published action carries the words of the request.
 agent-plan-unmatched-asked = { $why } Name the app to work in, or say what to do in it.
 agent-plan-no-model = I can't work on this yet: no model is set up. Choose one in Settings, under Agent models.
 agent-plan-models-off = Models are turned off for this agent, so nothing can plan this run. Start it again with a model turned on.
+agent-plan-model-failed = The model didn't answer, so this run couldn't be planned. Try again in a moment.
 
 ## How a run ended
 
-agent-done-model = { $actions ->
-        [one] Completed one action.
-       *[other] Completed { $actions } actions.
-    }
 agent-done-words-asked = { $actions ->
         [one] Done: one action matched to the request's words.
        *[other] Done: { $actions } actions matched to the request's words.
@@ -69,8 +66,30 @@ agent-fail-arguments = The planned action's arguments don't fit: { $error }
 agent-fail-turns = The task used all { $turns } model turns of its budget before it finished ({ $actions } action(s) completed). Raise its turns and run it again.
 agent-fail-time = The task ran out of time before it finished.
 agent-fail-budget = The task's time budget ran out.
-agent-fail-model-call = The model call failed: { $error }. Check the model in Settings, under Agent models, then run this again.
-agent-fail-model-answer = The model's answer couldn't be used: { $error }. Run this again.
 agent-fail-turn-not-finished = The model turn did not finish in time
 agent-fail-native-outcome = The action's outcome is still unknown; check the history before trying again.
 agent-fail-direction-pages = More than one page of new directions needs your review; none were acknowledged.
+
+# What a failed model call leaves in the reply a person reads: one sentence
+# of what happened, in their own terms, and where there is a setting to look
+# at, which one. The transport's error, the partial answer, the provider's
+# exposed reasoning and the recovery instruction the agent follows are the
+# run's working record, never this copy.
+agent-failure-unavailable = The model's service is unavailable right now.
+agent-failure-no-provider = No model is set up. Choose one in Settings, under Agent models.
+agent-failure-authentication = The model's provider did not accept its credential. Check it in Settings.
+agent-failure-permission-denied = The model's provider refused this request.
+agent-failure-invalid-request = The model could not take this request. Check the model in Settings.
+agent-failure-conflict = The model settings changed while this ran. Check the model in Settings.
+agent-failure-invalid-response = The model's answer could not be used.
+agent-failure-unsupported = The model cannot do this. Choose another model in Settings, under Agent models.
+agent-failure-rate-limited = The model is busy right now. Try again in a moment.
+agent-failure-credits-exhausted = The model's provider is out of credit.
+agent-failure-context-limit = The conversation is longer than the model can take. Choose a model with more room.
+agent-failure-provider = The model's provider failed. Try again.
+agent-failure-timed-out = The model didn't answer in time.
+agent-failure-cancelled = The model call was stopped.
+agent-failure-truncated = The model's answer was cut off.
+agent-failure-refused = The model declined this request.
+agent-failure-transport = The model could not be reached. Try again.
+agent-failure-no-answer = The agent finished without doing anything or saying what it did.

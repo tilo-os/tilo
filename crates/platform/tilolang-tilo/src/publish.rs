@@ -18,12 +18,12 @@ use tilo_actions::{
 
 use crate::action::{DIRECT_EDITS, DirectEdit, DynAction};
 use crate::background::{Pending, Poll, Waker};
-use tilolang_runtime::meta::{ActionMeta, Meta};
+use tilolang_runtime::meta::{ActionMeta, Meta, TypeMeta};
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::words::Words;
 
 use crate::meta::{MetaExt as _, action_kind};
-use crate::surface::{is_destructive, published_param};
+use crate::surface::{Merge, editable_field_names, is_destructive, published_param};
 
 /// What the declaration `id` is called in the reader's language: `source`, its words in the
 /// package's own, when no catalogue of theirs holds it.
@@ -298,6 +298,19 @@ pub fn action_type(
     // action's row as the keyboard in use spells it.
     if let Some(key) = &action.key {
         spec.type_mut().state.shortcut = Some(key.clone());
+    }
+    // What it asks the service for: the capabilities its body's `outside(...)` calls name, so a
+    // query naming a kind of an outside service finds the app's own action that asks its origin
+    // (`outside:youtube.search`). The tag is the compiler's reading of the code, never a name a
+    // host invented.
+    {
+        let contract = &mut spec.type_mut().contract;
+        for capability in &action.outside {
+            let tag = format!("{}{capability}", tilo_actions::OUTSIDE_CAPABILITY_PREFIX);
+            if !contract.tags.contains(&tag) {
+                contract.tags.push(tag);
+            }
+        }
     }
     spec.type_mut().contract.settle_confirmation();
     Arc::clone(spec.action_type())
@@ -2547,6 +2560,11 @@ pub fn host_resource(committer: &Arc<dyn Committer>) -> ResourceSpec {
 
 /// The plain edit a bound control makes: set `value` into the field `field` of the resource
 /// `id` of the type `type_name`. It needs no planner, since it is not module code.
+///
+/// `field` is the field's **name**, as the app declares it (`title`, `body`), which the edit
+/// verbs publish as their `field` choices; the internal id the document stores it under is
+/// mapped here. An id is still accepted where a caller read one from a record, so a bound
+/// control and an older caller keep working.
 pub fn edit_action(
     meta: &Meta,
     type_name: &str,
@@ -2562,17 +2580,26 @@ pub fn edit_action(
         .ok_or_else(|| format!("the package declares no type `{type_name}`"))?;
     let schema =
         lookup(&declared.id).ok_or_else(|| format!("the type `{type_name}` is not registered"))?;
-    // A caller names the field as its type declares it; it is stored under its id.
-    let named = field;
-    let field = declared
+    // The field as the type declares it: by its name, the spelling the edit verbs offer, or
+    // by its id, the spelling a record stores and a bound control hands back.
+    let declared_field = declared
         .fields
         .iter()
-        .find(|declared| declared.name == named)
-        .map(|declared| declared.id.as_str())
-        .ok_or_else(|| format!("the type `{type_name}` has no field `{named}`"))?;
-    let schema_field = schema
-        .field(field)
-        .ok_or_else(|| format!("the type `{type_name}` has no field `{named}`"))?;
+        .find(|known| known.name == field)
+        .or_else(|| declared.fields.iter().find(|known| known.id == field));
+    let declared_field = declared_field.ok_or_else(|| {
+        format!(
+            "the type `{type_name}` has no field `{field}`; its fields are: {}",
+            field_names(declared)
+        )
+    })?;
+    let field_id = &declared_field.id;
+    let schema_field = schema.field(field_id).ok_or_else(|| {
+        format!(
+            "the type `{type_name}` has no field `{field}`; its fields are: {}",
+            field_names(declared)
+        )
+    })?;
     let op = match (schema_field.kind, value) {
         (MergeKind::Text, Json::String(text)) => EditOp::Replace { text: text.clone() },
         (MergeKind::Register, value) => EditOp::Set {
@@ -2604,7 +2631,7 @@ pub fn edit_action(
         app: meta.app.clone(),
         kind: meta.kind_of(type_name),
         action_id: action_id.to_owned(),
-        args: serde_json::json!({"field": field, "value": value}),
+        args: serde_json::json!({"field": field_id, "value": value}),
         authorship: crate::action::Authorship {
             module: meta.module_hash.clone(),
             ..crate::action::Authorship::default()
@@ -2616,32 +2643,62 @@ pub fn edit_action(
                 edit: Edit::new(
                     vec![
                         Segment::Item(tilo_resource::Id::from_raw(item)),
-                        Segment::Field(field.to_owned()),
+                        Segment::Field(field_id.clone()),
                     ],
                     op,
                 ),
             },
             None => crate::action::DynEdit::Edit {
                 id: id.to_owned(),
-                edit: Edit::new(vec![Segment::Field(field.to_owned())], op),
+                edit: Edit::new(vec![Segment::Field(field_id.clone())], op),
             },
         }],
     })
 }
 
+/// The names of `declared`'s fields, comma-separated, as a refusal that names a field the
+/// type lacks lists them: what an [`edit_action`] refusal says a caller may choose instead.
+fn field_names(declared: &TypeMeta) -> String {
+    declared
+        .fields
+        .iter()
+        .map(|known| known.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The two direct edit actions of a resource, whose target is its id: a bound text input and
 /// a bound checkbox. The verbs and their arguments are [`DIRECT_EDITS`]'.
 fn edit_types(meta: &Meta, type_name: &str, planner: &Arc<dyn Planner>) -> [Arc<ActionType>; 2] {
+    // The fields `edit-text` and `edit-flag` may set, by their names: a caller reads the list
+    // in the parameter's description rather than guessing at an internal id. The parameter is
+    // not restricted to them, though: a bound control's `$edit` hands the field's internal id
+    // back (and a nested field path still names a field), and `edit_action` takes either,
+    // mapping a name or an id to the field it names and refusing the ones the type lacks with
+    // the names it offers. Binding either keeps a control's own edits working.
+    let names = |flag: bool| -> Vec<String> {
+        let merge = if flag { Merge::Flag } else { Merge::Text };
+        meta.type_named(type_name)
+            .map(|declared| editable_field_names(declared, merge))
+            .unwrap_or_default()
+    };
     let make = |direct: DirectEdit| {
+        let fields = names(direct.value == ParamType::Boolean);
         let (meta, type_name) = (meta.clone(), type_name.to_owned());
         let planner = Arc::clone(planner);
+        let description = if fields.is_empty() {
+            "The field's name".to_owned()
+        } else {
+            format!("The field's name, one of: {}", fields.join(", "))
+        };
+        let field = ActionParam::required_owned("field", ParamType::Text, description);
         let spec = ActionSpec::typed_on(
             direct.id,
             direct.label,
             direct.label,
             ExecutionLocus::ClientLocal,
             vec![
-                ActionParam::required("field", ParamType::Text, "The field's name"),
+                field,
                 ActionParam::required("value", direct.value, "The new value"),
             ],
             move |target: &Target, args: &ActionArgs| {

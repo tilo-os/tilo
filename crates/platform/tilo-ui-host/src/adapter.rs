@@ -317,7 +317,19 @@ impl Adapter {
             Prop::Int(number) => Value::Int(*number),
             Prop::Float(number) => Value::Float(*number),
             Prop::Bool(flag) => Value::Bool(*flag),
-            Prop::Resource(id) => Value::Ref(self.resources.borrow().get(id)?.clone()),
+            // A resource the view gave as a prop comes back whole; one no prop named — what a
+            // drag carried from another view, or a drop target takes from any runtime — comes
+            // back by the address the component fired, which is all the toolkit knows of it.
+            // Its type is read where the drop lands, from the record or the reading that holds
+            // it, so the value is never lost at this boundary.
+            Prop::Resource(id) => {
+                Value::Ref(self.resources.borrow().get(id).cloned().unwrap_or_else(|| {
+                    ResourceRef {
+                        id: id.clone(),
+                        ty: String::new(),
+                    }
+                }))
+            }
             Prop::Principal { identity, name } => Value::Principal(crate::Principal {
                 id: identity.clone(),
                 name: name.clone(),
@@ -1070,6 +1082,37 @@ mod tests {
             .expect("the avatar slot reads the Avatar's props");
         assert_eq!(avatar.name.as_deref(), Some("Ada"));
         assert_eq!(avatar.glyph, Some(ui::icons::Icon::Users));
+    }
+
+    #[test]
+    fn a_drop_carries_its_resource_even_when_no_prop_gave_it() {
+        // A drag that started in another view — the shell's place handle, a chip of another
+        // app's transcript — reaches a drop target carrying its resource by its published
+        // address alone. No prop of this view gave that resource, so the adapter has no map
+        // entry for it; the event still carries the resource, by its address, and its type is
+        // read where the drop lands. Without that the value vanished at this boundary and the
+        // drop arrived at the runtime with nothing ("event `drop` carries no value").
+        let mut reconciler = reconciler();
+        let mut target = node("DropTarget", "composer", &[]);
+        target.events.insert("drop".to_owned(), Event::default());
+        let described = description_of(&target).expect("described");
+        let event = NodeSource::new(&target, described, &mut reconciler).event("drop");
+        event.fire(Some(ui::component::Value::Resource(
+            "notes.pages:page_1".to_owned(),
+        )));
+        assert_eq!(
+            reconciler.adapter().take_events(),
+            vec![UiEvent::Fire(
+                "composer".to_owned(),
+                "drop".to_owned(),
+                Some(Value::Ref(ResourceRef {
+                    id: "notes.pages:page_1".to_owned(),
+                    // The adapter does not know the type: it reads where the drop lands.
+                    ty: String::new(),
+                })),
+            )],
+            "the drop carries the resource the drag let go with, by its address"
+        );
     }
 
     #[test]

@@ -914,6 +914,8 @@ fn call_of(
                     ));
                 }
             };
+            // The edit verbs take a field by its name, as the surface offers it; the binding
+            // refuses an id the verb does not offer, and the program named the field by name.
             Ok(json!({
                 "app": app,
                 "resource": resource_id(app, &target.id_string()),

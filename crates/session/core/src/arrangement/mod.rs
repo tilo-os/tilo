@@ -14,8 +14,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
-use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
+use tilo_actions::remote::session_actions;
 use tilo_actions::{
     ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
     OperationKind, ParamType, ResourceSpec, ResultSpec,
@@ -27,6 +27,11 @@ use tilo_desktop_model::{
 use tilo_desktop_surface::DesktopHandle;
 
 use crate::desk::Desk;
+
+mod readings;
+pub use readings::*;
+mod queries;
+use queries::{query_resource, query_state_from_outcome, query_target, settle};
 
 /// The size a place made from a resource takes on the canvas when the caller names none: the framed
 /// canvas's window, in canvas pixels.
@@ -52,8 +57,10 @@ const FLOAT_HEIGHT: u32 = 480;
 
 /// The operation type every arranging action carries.
 pub const OPERATION: &str = "tilo.shell.arranging";
-/// The resource the person's arrangement is published as.
-pub const RESOURCE: &str = "shell:arrangement";
+/// The resource the person's arrangement is published as. Its id is the one every door that names
+/// the system's `open` names ([`session_actions::ARRANGEMENT_RESOURCE`]): the broker rewrites a
+/// served app's `open` into the arrangement's own, so the two are one address.
+pub const RESOURCE: &str = session_actions::ARRANGEMENT_RESOURCE;
 /// The resource its history is published as: its undo and redo.
 pub const RECORD_RESOURCE: &str = "shell:arrangement-record";
 /// The kind of a place's own resource.
@@ -62,6 +69,9 @@ pub const PLACE_KIND: &str = "arrangement.place";
 pub const STRIP_KIND: &str = "arrangement.strip";
 /// The kind of a row's own resource.
 pub const ROW_KIND: &str = "arrangement.row";
+/// The kind of a query's own resource: what a place shows while its app answers what the person
+/// typed (`session.arrangement_query`, shell.md §8).
+pub const QUERY_KIND: &str = "arrangement.query";
 
 /// What a place, a strip or a row of the arrangement is published as a resource of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,6 +79,8 @@ pub enum Item {
     Place,
     Strip,
     Row,
+    /// A query a place shows while its app answers it; its key is the id of that place.
+    Query,
 }
 
 impl Item {
@@ -79,6 +91,7 @@ impl Item {
             Self::Place => "shell:place:",
             Self::Strip => "shell:strip:",
             Self::Row => "shell:row:",
+            Self::Query => "shell:query:",
         }
     }
 
@@ -94,103 +107,6 @@ impl Item {
         id.strip_prefix(self.prefix()).filter(|key| !key.is_empty())
     }
 }
-
-/// A workspace the person's desk shows, as their arrangement names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementWorkspaceReading {
-    pub key: String,
-    pub name: String,
-    /// Whether it is the workspace in front: a desk holds several and shows one, so a shell draws
-    /// the rows of this one and no other.
-    pub current: bool,
-}
-
-/// A row of the desk, as the person's arrangement names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementRowReading {
-    pub key: String,
-    pub workspace: String,
-    pub name: String,
-    pub shell: String,
-}
-
-/// A strip of the desk, as the person's arrangement names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementStripReading {
-    pub key: String,
-    pub workspace: String,
-    pub row: String,
-    /// Its width in per-mille of its row's usable width.
-    pub width: i64,
-    pub maximized: bool,
-    pub active: String,
-    pub placed: bool,
-    pub canvas_x: i64,
-    pub canvas_y: i64,
-    pub canvas_width: i64,
-    pub canvas_height: i64,
-    /// Whether the strip's window floats above the workspace's windows,
-    /// rather than standing among them in its row.
-    #[serde(default)]
-    pub floating: bool,
-    /// The corner of the work area a floating window keeps its distance from:
-    /// `top-left`, `top-right`, `bottom-right` or `bottom-left`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub float_corner: String,
-    /// Its distance from that corner's side edge, in canvas pixels.
-    #[serde(default)]
-    pub float_dx: i64,
-    /// Its distance from that corner's top or bottom edge, in canvas pixels.
-    #[serde(default)]
-    pub float_dy: i64,
-    /// Its floating width and height in canvas pixels.
-    #[serde(default)]
-    pub float_width: i64,
-    #[serde(default)]
-    pub float_height: i64,
-    pub shell: String,
-}
-
-/// A place of the desk, as the person's arrangement names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementPlaceReading {
-    pub key: String,
-    pub strip: String,
-    pub shows: String,
-    pub shown_as: String,
-    pub record: String,
-    /// The title the place recorded when it was made, kept for the record's own bookkeeping:
-    /// what a surface shows a window by is [`Self::name`].
-    pub title: String,
-    /// What every surface calls this place: its window's title and the app's own name
-    /// (`Groceries — Notes`), or the app's name alone when the window has no title. Never an
-    /// app id.
-    pub name: String,
-    pub pinned: bool,
-    pub shell: String,
-}
-
-/// The person's arrangement as a shell's views read it, by key: every workspace, its rows, every
-/// window group and every window, each as the desk has it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementReading {
-    pub workspaces: Vec<ArrangementWorkspaceReading>,
-    pub rows: Vec<ArrangementRowReading>,
-    pub strips: Vec<ArrangementStripReading>,
-    pub places: Vec<ArrangementPlaceReading>,
-}
-
-/// The person's arrangement as a shell's views read it: what [`Arrangement::reading`] answers and
-/// [`Arrangement::resources`] publishes a resource of.
-pub type Reading = ArrangementReading;
-/// A workspace of [`Reading`].
-pub type WorkspaceReading = ArrangementWorkspaceReading;
-/// A row of [`Reading`].
-pub type RowReading = ArrangementRowReading;
-/// A strip of [`Reading`].
-pub type StripReading = ArrangementStripReading;
-/// A place of [`Reading`].
-pub type PlaceReading = ArrangementPlaceReading;
 
 /// An arranging action: one change of the person's arrangement.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -239,6 +155,11 @@ pub enum ArrangementAction {
     /// Pin the place `place` (`pinned`), so an agent's arrangement leaves it alone (shell.md §5),
     /// or unpin it.
     Pin { place: u64, pinned: bool },
+    /// Stand the place `place` at `(x, y)` canvas pixels, keeping every other place where it is:
+    /// what a drag that let a place go on the canvas runs (`canvas.md` §6, "moving a window is one
+    /// arranging action", shell.md §2 `move`). The place's strip takes the point; nothing else
+    /// changes. Appended last: existing encodings are unchanged.
+    Position { place: u64, x: i64, y: i64 },
     /// Stand the resource `resource` on the canvas as its view `view`
     /// (empty for its primary published view), at `(x, y)` canvas pixels.
     /// The place is the new entry `place`, alone in its own strip `strip`,
@@ -311,6 +232,22 @@ pub enum ArrangementAction {
         #[serde(default)]
         beside: String,
     },
+    /// A place shows another resource: the place keeping its id, its strip and its place on the
+    /// canvas, and the window it is now showing `resource` through `view` (empty for the
+    /// resource's primary one). This is the one step an answered canvas query takes
+    /// (shell.md §8, "Finding what to place"): the place the query stood in re-points at the
+    /// channel it found, so the person's place is the same place, and Undo puts the query back.
+    /// A resource a place cannot show refuses. Appended last.
+    Show {
+        place: u64,
+        resource: String,
+        #[serde(default)]
+        view: String,
+    },
+    /// Ask the app the query `place` shows again for what the person typed: the query goes back to
+    /// searching and the app's search action runs once more. Resolved where the app's action is
+    /// (`ArrangementDoor`), never in the record: the record holds no running query. Appended last.
+    RetryQuery { place: u64 },
 }
 
 /// Where a place made on the desk now goes: the workspace in front, its row, and the ids the
@@ -360,6 +297,46 @@ pub fn found_resource(
 /// always did.
 pub type Ask = Rc<dyn Fn(&str) -> bool>;
 
+/// The query the platform has indexed instead of an answer: the resources it found, with the
+/// name each goes by and the kind of resource it is, or why it could not find them.
+pub type Answer = Result<Vec<AnswerRef>, String>;
+
+/// One resource an outside origin's query found: its address in its app, the name it goes by, and
+/// its kind as its app publishes it (`tube.channel`). The same three words a place's record is
+/// named by (`session.arrangement_ref`), so the query's rows and a place's record are one shape.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnswerRef {
+    pub address: String,
+    pub title: String,
+    pub kind: String,
+}
+
+/// What a text typed on the canvas does when no resource it names is held: ask the app whose type
+/// it names for what it says, through that app's own search action
+/// (`outside:<origin>.search`, shell.md §8, "Finding what to place", search.md §7, "Who
+/// indexes"). The app's own action runs the text, and its result is read here: a refusal, a
+/// failure, or the run itself is the answer's outcome (shell.md §8). `None` for a text that names
+/// no app's type the platform can ask, so the text fails to place as it always did; `Some(Err)` is
+/// the invocation's own failure, which the query stands as `.failed` with.
+///
+/// Answers the app asked, its kind as the app publishes it (`tube.channel`), what it held of that
+/// kind before the search (so what it holds afterwards that it did not then is the answer), and
+/// how the invocation went.
+pub type AskOrigin = Rc<
+    dyn Fn(
+        &str,
+    ) -> Option<(
+        String,
+        String,
+        std::collections::BTreeSet<String>,
+        Result<(), String>,
+    )>,
+>;
+
+/// The outcome of the invocation of an app's search action: what the query is told when the app
+/// refused to search or the run failed before it could.
+pub type SearchOutcome = Result<(), String>;
+
 /// What a text typed on the canvas found, and where it stands: the inputs of
 /// [`Arrangement::place_found`] besides the arrangement itself.
 #[derive(Clone, Copy)]
@@ -380,6 +357,16 @@ pub struct Found<'a> {
     pub hits: &'a [tilo_desktop_search::Hit],
     /// The ask for text that asks, [`Ask`].
     pub ask: &'a dyn Fn(&str) -> bool,
+    /// The ask of an app whose type the text names, when nothing it names is held, [`AskOrigin`]:
+    /// `None` when the platform can ask no app for the text.
+    pub ask_origin: &'a dyn Fn(
+        &str,
+    ) -> Option<(
+        String,
+        String,
+        std::collections::BTreeSet<String>,
+        SearchOutcome,
+    )>,
     /// Whether anyone else's change is still in flight.
     pub busy: Busy,
 }
@@ -458,6 +445,28 @@ fn inside(resource: &str, other: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
+/// The root a resource of an app belongs to, when it is one the app publishes a root for:
+/// `root-<type>` after the app's own id, so `tl:so.tilo.lang.mail:root-su4h67i5/ie99c2c19-72`
+/// has the root `tl:so.tilo.lang.mail:root-su4h67i5`. `None` for a resource with no app id or no
+/// `root-` segment, and for a root itself.
+fn root_of(resource: &str) -> Option<&str> {
+    let rest = resource.strip_prefix("tl:")?;
+    let (app, doc) = rest.split_once(':')?;
+    if app.is_empty() {
+        return None;
+    }
+    // The root is the `root-<type>` segment at the front of the document's path: everything from
+    // the app's id through that segment, and no further. A split of the resource at the segment's
+    // end names it whole, so no length is added up.
+    let head = doc.split('/').next()?;
+    if !head.starts_with("root-") {
+        return None;
+    }
+    let (prefix, _) = resource.split_once(head)?;
+    let end = prefix.len().checked_add(head.len())?;
+    resource.get(..end)
+}
+
 /// A resource as the arrangement makes a place of it: the app publishing it, its views (the primary
 /// first when it declares one), and what it is called. What `place` resolves a resource id against,
 /// from what the session publishes now.
@@ -469,6 +478,9 @@ pub struct Target {
     pub views: Vec<String>,
     /// The resource's label, as the place is shown under.
     pub title: String,
+    /// The resource's kind, as its app publishes it (`tube.video`,
+    /// `tl.so.tilo.lang.tasks.Tasks`): what a reference to it names.
+    pub kind: String,
 }
 
 impl Target {
@@ -481,64 +493,6 @@ impl Target {
             return view.to_owned();
         }
         self.views.first().cloned().unwrap_or_default()
-    }
-}
-
-/// The resources the session publishes now, by id: what a place made from a resource takes its app
-/// and view from. The session hands it the door's tree each time it changes, and never reads it
-/// inside an invocation.
-#[derive(Default)]
-pub struct Catalog {
-    by_id: BTreeMap<String, Target>,
-}
-
-impl Catalog {
-    /// Take in `resources` (a door's whole tree), recursing into children.
-    pub fn take(&mut self, resources: &[ResourceSpec]) {
-        let mut by_id = BTreeMap::new();
-        for resource in resources {
-            collect_targets(resource, &mut by_id);
-        }
-        self.by_id = by_id;
-    }
-
-    /// The resource `id` as it is published, if it is.
-    #[must_use]
-    pub fn get(&self, id: &str) -> Option<&Target> {
-        self.by_id.get(id)
-    }
-
-    /// Put `target` under `id` , as the resource is published: a place made from a resource the
-    /// session has just published but the door's tree does not hold yet.
-    pub fn remember(&mut self, id: &str, target: Target) {
-        self.by_id.insert(id.to_owned(), target);
-    }
-
-    /// Remember `resource` as its app publishes it: the app, the views it publishes, and what it
-    /// is called — the same target the door's tree yields for it, so a place made from a resource
-    /// the session has just published shows it through its app's own view, never as the app's
-    /// window.
-    pub fn remember_resource(&mut self, resource: &ResourceSpec) {
-        collect_targets(resource, &mut self.by_id);
-    }
-}
-
-/// Every resource of `resource` and its children, by id, with the views it publishes primary first.
-fn collect_targets(resource: &ResourceSpec, out: &mut BTreeMap<String, Target>) {
-    let mut views: Vec<&tilo_actions::ResourceViewSpec> = resource.views.iter().collect();
-    views.sort_by_key(|view| std::cmp::Reverse(view.primary));
-    if let Some(app) = resource.app() {
-        out.insert(
-            resource.id.as_str().to_owned(),
-            Target {
-                app: app.to_owned(),
-                views: views.into_iter().map(|view| view.id.clone()).collect(),
-                title: resource.label.clone(),
-            },
-        );
-    }
-    for child in &resource.children {
-        collect_targets(child, out);
     }
 }
 
@@ -596,6 +550,15 @@ pub struct Arrangement {
     /// Actions that arrived under a gesture or while the person typed: they run in order once it
     /// ends.
     waiting: RefCell<VecDeque<(String, ArrangementAction)>>,
+    /// The queries the canvas stood while their app answers them, by the key each place shows it
+    /// under (`session.arrangement_query`, shell.md §8): a query is no part of the desk's record
+    /// — a place still shows one while it runs — so the session keeps it here, in step with the
+    /// place that shows it.
+    queries: RefCell<BTreeMap<String, ArrangementQueryReading>>,
+    /// The resources of a query's kind its app held when the query went out, by place: what the
+    /// app holds now of that kind that it did not then is what the search found — the answer is
+    /// told apart from what the app already had without a service's private words (shell.md §8).
+    query_held: RefCell<BTreeMap<String, std::collections::BTreeSet<String>>>,
 }
 
 impl Arrangement {
@@ -611,6 +574,8 @@ impl Arrangement {
             names,
             catalog: Rc::new(RefCell::new(Catalog::default())),
             waiting: RefCell::new(VecDeque::new()),
+            queries: RefCell::new(BTreeMap::new()),
+            query_held: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -762,6 +727,7 @@ impl Arrangement {
             at,
             hits,
             ask,
+            ask_origin,
             busy,
         } = inputs;
         let text = text.trim();
@@ -771,6 +737,53 @@ impl Arrangement {
         let named = found_resource(hits, text, |resource| {
             self.catalog.borrow().get(resource).is_some()
         });
+        // A text naming an app's type (shell.md §8) that names nothing held asks that app, through
+        // its own search action, for what it says: the query stands as a place of its own while
+        // the app answers, and answers into it (`Self::answer_query`). A question goes to the
+        // person's agent instead (shell.md §8.1), never both.
+        if named.is_none()
+            && !tilo_desktop_search::answers::question::asks(text)
+            && let Some((app, kind, held, outcome)) = ask_origin(text)
+        {
+            let surface = self.surface_at_strip(strip)?;
+            let key = surface.place.to_string();
+            // The app's own search either ran (and its answer settles the query as it lands) or
+            // refused / failed, which is this invocation's own result: the query stands `.failed`
+            // with the reason it gave (shell.md §8).
+            let (state, reason) = query_state_from_outcome(outcome);
+            let query = ArrangementQueryReading {
+                key: key.clone(),
+                text: text.to_owned(),
+                app,
+                kind,
+                state,
+                reason,
+                matches: Vec::new(),
+            };
+            let query_resource = Item::Query.resource(&key);
+            self.catalog
+                .borrow_mut()
+                .remember(&query_resource, query_target(&query));
+            self.queries.borrow_mut().insert(key.clone(), query.clone());
+            // What the app held of the kind when it was asked: what it holds of that kind
+            // afterwards that it did not hold then is what the search found.
+            self.query_held.borrow_mut().insert(key, held);
+            let action = ArrangementAction::Place {
+                workspace: surface.workspace,
+                row: surface.row,
+                strip: surface.strip,
+                place: surface.place,
+                resource: query_resource,
+                view: String::new(),
+                x: at.0,
+                y: at.1,
+                width: DEFAULT_WIDTH,
+                height: DEFAULT_HEIGHT,
+                float: None,
+            };
+            self.ask(asked, action, busy)?;
+            return Ok(Some(surface.place));
+        }
         // A question is answered even when it happens to match something the search holds: the
         // person asked, so the text they typed is a message to their agent, not a thing to stand
         // (shell.md §8.1).
@@ -797,8 +810,127 @@ impl Arrangement {
         Ok(Some(surface.place))
     }
 
-    /// The place already showing `resource` , if one stands: what text typed again brings forward
-    /// rather than placing a second time.
+    /// The place `place` shows what `answer` says, when the app the query asked has answered:    /// exactly one match of its type re-points the place at that resource (one arranging step, so
+    /// Undo puts the query back); several or none leave the query standing with what it found or
+    /// did not. The desk is unchanged by this call alone: the re-point is one [Show] step.
+    ///
+    /// Returns the resource the place now shows, when it re-pointed, so a caller says so.
+    fn answer_query(
+        &mut self,
+        asked: &str,
+        place: u64,
+        answer: Answer,
+        busy: Busy,
+    ) -> Option<String> {
+        let Some(mut query) = self.queries.borrow().get(&place.to_string()).cloned() else {
+            return None;
+        };
+        let (state, reason, found) = match answer {
+            Answer::Ok(matches) => (String::new(), String::new(), matches),
+            Answer::Err(reason) => ("failed".to_owned(), reason, Vec::new()),
+        };
+        let key = query.key.clone();
+        query.matches = found
+            .into_iter()
+            .enumerate()
+            .map(|(at, found)| ArrangementRefReading {
+                key: format!("{key}/{at}"),
+                address: found.address,
+                title: found.title,
+                kind: found.kind,
+            })
+            .collect();
+        let (state, kind) = settle(state, &query.matches);
+        query.state.clone_from(&state);
+        query.kind.clone_from(&kind);
+        query.reason.clone_from(&reason);
+        // One confident match of the type: the place becomes it, the same place.
+        if state == "one"
+            && let Some(only) = query.matches.first().cloned()
+        {
+            let action = ArrangementAction::Show {
+                place,
+                resource: only.address.clone(),
+                view: String::new(),
+            };
+            // A query answered while the person drags or types waits, as any arranging action does;
+            // the answer is kept either way and the place re-points when they end.
+            if self.ask(asked, action, busy).is_ok() {
+                self.queries.borrow_mut().remove(&place.to_string());
+                self.query_held.borrow_mut().remove(&place.to_string());
+                return Some(only.address);
+            }
+        }
+        self.queries.borrow_mut().insert(place.to_string(), query);
+        None
+    }
+
+    /// Ask the app again what the query `place` shows looks for: its state goes back to
+    /// `searching` with nothing found yet, and the app's own search runs the text once more
+    /// (`ask_origin`). What the app answers settles the query as any answer does
+    /// ([`Self::answer_query`]).
+    ///
+    /// # Errors
+    /// `place` shows no query, or the platform can ask no app for its text.
+    pub fn retry_query(
+        &mut self,
+        _asked: &str,
+        place: u64,
+        ask_origin: &dyn Fn(
+            &str,
+        ) -> Option<(
+            String,
+            String,
+            std::collections::BTreeSet<String>,
+            SearchOutcome,
+        )>,
+        _busy: Busy,
+    ) -> Result<(), String> {
+        let Some(mut query) = self.queries.borrow().get(&place.to_string()).cloned() else {
+            return Err("that place shows no search to look for again".to_owned());
+        };
+        let Some((app, kind, held, outcome)) = ask_origin(&query.text) else {
+            return Err("the platform can ask no app for it".to_owned());
+        };
+        // The retried invocation's own result: running again, or the reason it failed.
+        let (state, reason) = match outcome {
+            Ok(()) => ("searching".to_owned(), String::new()),
+            Err(reason) => ("failed".to_owned(), reason),
+        };
+        query.reason = reason;
+        query.matches.clear();
+        query.app = app;
+        query.kind = kind;
+        query.state = state;
+        self.queries.borrow_mut().insert(place.to_string(), query);
+        self.query_held.borrow_mut().insert(place.to_string(), held);
+        Ok(())
+    }
+
+    /// The queries the canvas stands that still search, by place: what the host answers with
+    /// [`Self::answer_query_of`] once the app's own records hold what it found (shell.md §8).
+    #[must_use]
+    pub fn queries_running(&self) -> Vec<ArrangementQueryReading> {
+        self.queries
+            .borrow()
+            .values()
+            .filter(|query| query.state == "searching")
+            .cloned()
+            .collect()
+    }
+
+    /// Settle the query a place stands with what its app answered, by the query's key: exactly one
+    /// match re-points the place ([`ArrangementAction::Show`], one step Undo takes back), and
+    /// several, none or a failure leave the query standing with what it found or did not. The one
+    /// arranging step is made as the person's.
+    pub fn answer_query_of(&mut self, key: &str, answer: Answer, busy: Busy) {
+        let Ok(place) = key.parse::<u64>() else {
+            return;
+        };
+        let asked = self.person.clone();
+        self.answer_query(&asked, place, answer, busy);
+    }
+
     #[must_use]
     pub fn place_of(&self, resource: &str) -> Option<u64> {
         let records = self.records();
@@ -809,6 +941,29 @@ impl Arrangement {
                 .flat_map(|row| row.window_groups.iter())
                 .flat_map(|group| group.tabs.iter())
                 .find(|tab| records.get(&tab.id) == Some(&resource.to_owned()))
+                .map(|tab| tab.id)
+        })
+    }
+
+    /// The place already showing `resource` or anything of its root, if one stands: what opening a
+    /// mailbox, a conversation, a notebook or one of its entries brings forward rather than standing
+    /// a second place of the same app's record (`shell.md` §3, "Activating something already shown
+    /// goes to it"). Opening the root and then one view inside it is one thing open, not two.
+    #[must_use]
+    pub fn place_of_root(&self, resource: &str) -> Option<u64> {
+        let records = self.records();
+        let root = root_of(resource);
+        self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|row| row.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .find(|tab| {
+                    records.get(&tab.id).is_some_and(|held| {
+                        held == resource || (root.is_some() && root_of(held) == root)
+                    })
+                })
                 .map(|tab| tab.id)
         })
     }
@@ -837,11 +992,7 @@ impl Arrangement {
         view: &str,
     ) -> Result<Option<u64>, String> {
         if let Some(held) = self.place_in(workspace, resource) {
-            self.ask(
-                asked,
-                ArrangementAction::Activate { place: held },
-                Busy::default(),
-            )?;
+            self.bring_forward(asked, held, Busy::default())?;
             return Ok(None);
         }
         let surface = self.surface_on(Some(workspace), None)?;
@@ -862,6 +1013,22 @@ impl Arrangement {
         Ok(Some(surface.place))
     }
 
+    /// Bring the place `place` forward as `asked`'s step, for a caller that is raising what
+    /// already stands rather than making it: a place already in front is where it should be, so
+    /// the activation that would refuse ("that place is in front already") is no failure — a
+    /// text that asks posts its message and then brings the conversation forward, and the ask
+    /// has succeeded whether or not that place was in front.
+    ///
+    /// # Errors
+    /// Why the place could not be activated at all.
+    fn bring_forward(&mut self, asked: &str, place: u64, busy: Busy) -> Result<(), String> {
+        match self.ask(asked, ArrangementAction::Activate { place }, busy) {
+            Ok(_) => Ok(()),
+            Err(why) if why == "that place is in front already" => Ok(()),
+            Err(why) => Err(why),
+        }
+    }
+
     /// The system's `open` (`docs/designs/app-language/one-app-model.md` §3): stand `resource`
     /// with its view `view` (empty for its primary one) beside the place that shows `beside`'s
     /// resource — the conversation of the turn that asked — or beside the place in front when
@@ -879,18 +1046,11 @@ impl Arrangement {
         view: &str,
         beside: &str,
     ) -> Result<Option<u64>, String> {
-        if let Some(held) = self.place_of(resource) {
-            // Opening what is open brings it forward; one already in front is where it should be,
-            // and asking to activate it again would refuse ("that place is in front already").
-            match self.ask(
-                asked,
-                ArrangementAction::Activate { place: held },
-                Busy::default(),
-            ) {
-                Ok(_) => {}
-                Err(why) if why == "that place is in front already" => {}
-                Err(why) => return Err(why),
-            }
+        if let Some(held) = self.place_of_root(resource) {
+            // Opening what is open, or a view of what is open, brings that place forward; one
+            // already in front is where it should be, and asking to activate it again would refuse
+            // ("that place is in front already").
+            self.bring_forward(asked, held, Busy::default())?;
             return Ok(None);
         }
         let anchor = if beside.trim().is_empty() {
@@ -899,19 +1059,28 @@ impl Arrangement {
             self.place_of(beside)
         };
         let surface = self.surface_at()?;
-        // The point the new place stands at: the anchor's own place, so the free space nearest it
-        // keeps a gap from it and never covers it (`Arrangement::free_place_near`). With no anchor
-        // the place comes to the canvas' origin, as a place made by `place` without a point does.
-        let at = anchor
-            .and_then(|place| {
-                self.handle.read(|tree| {
-                    let (workspace, row, group, _) = locate(tree, place)?;
-                    let held = tree.workspaces.get(workspace)?;
-                    let id = held.strips.get(row)?.window_groups.get(group)?.id;
-                    held.arrangement.place_of(id)
-                })
+        // Where the new place stands: the free space next to the anchor (`free_place_next_to`),
+        // its trailing side first, then below it, then further down the two columns the anchor
+        // starts. The point handed to the place action is free already, so the action's own
+        // `free_place_near` keeps it as it is. With no anchor the place comes to the canvas'
+        // origin, as a place made by `place` without a point does. Opening several things beside
+        // one anchor therefore runs right, then down, never over the anchor or over each other,
+        // and never above or to the left of it (`shell.md` §3, "a place next to where it came
+        // from").
+        let (width, height) = (clamp_side(DEFAULT_WIDTH), clamp_side(DEFAULT_HEIGHT));
+        let at = anchor.and_then(|place| {
+            self.handle.read(|tree| {
+                let (workspace, row, group, _) = locate(tree, place)?;
+                let held = tree.workspaces.get(workspace)?;
+                let id = held.strips.get(row)?.window_groups.get(group)?.id;
+                let subject = held.arrangement.place_of(id)?;
+                let free = held
+                    .arrangement
+                    .free_place_next_to(subject, width, height, None);
+                Some((i64::from(free.x), i64::from(free.y)))
             })
-            .map_or((0, 0), |place| (place.right(), i64::from(place.y)));
+        });
+        let (x, y) = at.map_or((0, 0), |at| at);
         let action = ArrangementAction::Place {
             workspace: surface.workspace,
             row: surface.row,
@@ -919,8 +1088,8 @@ impl Arrangement {
             place: surface.place,
             resource: resource.to_owned(),
             view: view.to_owned(),
-            x: at.0,
-            y: at.1,
+            x,
+            y,
             width: DEFAULT_WIDTH,
             height: DEFAULT_HEIGHT,
             float: None,
@@ -952,8 +1121,50 @@ impl Arrangement {
     pub fn reading(&self) -> Reading {
         let records = self.records();
         let catalog = self.catalog.borrow();
-        self.handle
-            .read(|tree| reading_of(tree, &records, &catalog, &self.names))
+        let mut reading = self
+            .handle
+            .read(|tree| reading_of(tree, &records, &catalog, &self.names));
+        // A query lives while its place does: one whose place has gone (closed, replaced, undone)
+        // is no longer the person's to see, and drops here.
+        let places: std::collections::BTreeSet<String> = reading
+            .places
+            .iter()
+            .map(|place| place.key.clone())
+            .collect();
+        self.queries
+            .borrow_mut()
+            .retain(|key, _| places.contains(key));
+        self.query_held
+            .borrow_mut()
+            .retain(|key, _| places.contains(key));
+        reading
+            .queries
+            .extend(self.queries.borrow().values().cloned());
+        reading
+    }
+
+    /// The query `place` shows, if it shows one.
+    #[must_use]
+    pub fn query_of(&self, place: u64) -> Option<ArrangementQueryReading> {
+        self.queries.borrow().get(&place.to_string()).cloned()
+    }
+
+    /// Note the resources of a query's kind its app held when the query went out (`held`, their
+    /// ids), so what the app holds of that kind afterwards that it did not hold before is what
+    /// the search found. Called for a place showing a query and no others, by the host, which
+    /// reads the app's records.
+    pub fn note_held(&self, place: u64, held: std::collections::BTreeSet<String>) {
+        self.query_held
+            .borrow_mut()
+            .entry(place.to_string())
+            .or_insert(held);
+    }
+
+    /// The resources of a query's kind its app held when the query went out, by place: what
+    /// [`Self::note_held`] kept.
+    #[must_use]
+    pub fn held_when_asked(&self, place: u64) -> Option<std::collections::BTreeSet<String>> {
+        self.query_held.borrow().get(&place.to_string()).cloned()
     }
 
     /// The record each window shows, by tab, as the desk keeps it: what a place put on a record was
@@ -1017,8 +1228,11 @@ impl Arrangement {
                 ResourceSpec::with_action,
             )
         });
+        // A query a place shows while its app answers is a resource of its own beside the places,
+        // so an open place draws it and its rows may be pressed (`query_resource`).
+        let queries = reading.queries.iter().map(query_resource);
         vec![
-            arrangement_resource().with_children(rows.chain(strips).chain(places)),
+            arrangement_resource().with_children(rows.chain(strips).chain(places).chain(queries)),
             record_resource(),
         ]
     }
@@ -1139,13 +1353,16 @@ impl Arrangement {
         self.handle.replace_tree(tree.clone());
         // The place a resource was put on shows that resource from now on,
         // and the desk keeps it beside the window it came with.
-        let shows: Vec<(TabId, String)> = if let ArrangementAction::Place {
-            place, resource, ..
-        } = action
-        {
-            vec![(*place, resource.clone())]
-        } else {
-            Vec::new()
+        // A place that shows another resource from now on says so in the desk's own record map,
+        // so a restart opens the place on what it shows, as a place put on the canvas does.
+        let shows: Vec<(TabId, String)> = match action {
+            ArrangementAction::Place {
+                place, resource, ..
+            } => vec![(*place, resource.clone())],
+            ArrangementAction::Show {
+                place, resource, ..
+            } => vec![(*place, resource.clone())],
+            _ => Vec::new(),
         };
         // The desk is the record the workspace shares, and its own changes are its history: the
         // change this action made says who asked for it and what they did, and is one step of the
@@ -1170,120 +1387,6 @@ impl Arrangement {
             ))),
             ..tilo_actions::ActionContext::default()
         }
-    }
-}
-
-/// The shell this build's arrangement is: what every row, strip and place of a reading says it was
-/// made by, so a person running a shell of their own reads what this one made and it reads theirs.
-const SHELL: &str = "so.tilo.shell.strips";
-
-/// The desk `tree` as the person's arrangement, by key: every workspace, its rows, every window
-/// group and every window, each as the desk has it, with what each window shows (`records`) and
-/// what the resource it shows is called (`catalog`).
-fn reading_of(
-    tree: &DesktopTree,
-    records: &BTreeMap<TabId, String>,
-    catalog: &Catalog,
-    names: &Names,
-) -> Reading {
-    let mut reading = Reading::default();
-    for workspace in &tree.workspaces {
-        reading.workspaces.push(WorkspaceReading {
-            key: workspace.slot.0.to_string(),
-            name: workspace.name.clone(),
-            // A desk holds every workspace the person is in and shows one: the shell draws the
-            // rows of the one in front, so the reading says which that is.
-            current: workspace.slot == tree.active,
-        });
-        for row in &workspace.strips {
-            reading.rows.push(RowReading {
-                key: row.id.0.to_string(),
-                workspace: workspace.slot.0.to_string(),
-                name: row.name.clone(),
-                shell: SHELL.to_owned(),
-            });
-            for group in &row.window_groups {
-                let canvas = workspace.arrangement.place_of(group.id);
-                let float = workspace.arrangement.float_of(group.id);
-                reading.strips.push(StripReading {
-                    key: group.id.to_string(),
-                    workspace: workspace.slot.0.to_string(),
-                    row: row.id.0.to_string(),
-                    width: i64::from(group.width.permille()),
-                    maximized: group.maximized,
-                    active: Some(group.active_tab)
-                        .filter(|active| group.tabs.iter().any(|tab| tab.id == *active))
-                        .map_or_else(String::new, |active| active.to_string()),
-                    placed: canvas.is_some(),
-                    canvas_x: canvas.map_or(0, |held| i64::from(held.x)),
-                    canvas_y: canvas.map_or(0, |held| i64::from(held.y)),
-                    canvas_width: canvas.map_or(0, |held| i64::from(held.width)),
-                    canvas_height: canvas.map_or(0, |held| i64::from(held.height)),
-                    floating: float.is_some(),
-                    float_corner: float
-                        .map_or_else(String::new, |float| float.corner.as_str().to_owned()),
-                    float_dx: float.map_or(0, |float| i64::from(float.dx)),
-                    float_dy: float.map_or(0, |float| i64::from(float.dy)),
-                    float_width: float.map_or(0, |float| i64::from(float.width)),
-                    float_height: float.map_or(0, |float| i64::from(float.height)),
-                    shell: SHELL.to_owned(),
-                });
-                for tab in &group.tabs {
-                    reading
-                        .places
-                        .push(place_reading(tab, group.id, records, catalog, names));
-                }
-            }
-        }
-    }
-    reading
-}
-
-/// The place the window `tab` of the strip `strip` is, as a shell reads it.
-fn place_reading(
-    tab: &Tab,
-    strip: GroupId,
-    records: &BTreeMap<TabId, String>,
-    catalog: &Catalog,
-    names: &Names,
-) -> PlaceReading {
-    let record = records.get(&tab.id).cloned().unwrap_or_default();
-    // A window showing a record is named by that record: its window shows it, so its title is the
-    // record's, unless the person named the window itself.
-    let record_title = catalog
-        .get(&record)
-        .map(|target| target.title.trim().to_owned())
-        .unwrap_or_default();
-    let title = if tab.app_title.is_none() && !record_title.is_empty() {
-        record_title
-    } else {
-        tab.title.clone()
-    };
-    PlaceReading {
-        key: tab.id.to_string(),
-        strip: strip.to_string(),
-        shows: tilo_desktop_model::apps::canonical_app_id(&tab.tile)
-            .map(String::from)
-            .unwrap_or_default(),
-        shown_as: tab.view.clone(),
-        record,
-        title: tab.title.clone(),
-        name: names(&shown_app(&tab.tile), &title),
-        pinned: tab.pinned,
-        shell: SHELL.to_owned(),
-    }
-}
-
-/// The app a window belongs to, as the desk names it: the app's id, or a placeholder's own label
-/// for an app this device does not have.
-fn shown_app(tile: &TileContent) -> String {
-    match tile {
-        TileContent::AppPlaceholder { label, .. } | TileContent::Stub { label, .. } => {
-            label.clone()
-        }
-        held => tilo_desktop_model::apps::canonical_app_id(held)
-            .map(String::from)
-            .unwrap_or_default(),
     }
 }
 
@@ -1349,6 +1452,9 @@ fn change(
             tab.pinned = *pinned;
             Ok(changed)
         }
+        ArrangementAction::Position { place, x, y } => {
+            position(tree, *place, clamp_coord(*x), clamp_coord(*y))
+        }
         // Resolved into a `Place` at invocation, where the system's search and what is published
         // now are; the record never holds the words.
         ArrangementAction::PlaceFound { .. } => {
@@ -1392,7 +1498,36 @@ fn change(
         ArrangementAction::Snap { place, row, before } => {
             snap_back(tree, *place, *row, *before, by_the_person)
         }
+        ArrangementAction::Show {
+            place,
+            resource,
+            view,
+        } => show_at(tree, catalog, *place, resource, view),
+        // Resolved where the app's own search action is (`ArrangementDoor`), never in the record.
+        ArrangementAction::RetryQuery { .. } => {
+            Err("a retried search is resolved before it reaches the record".into())
+        }
     }
+}
+
+/// Move the place `place` to `(x, y)` on its workspace's canvas. Whether the desk changed.
+fn position(tree: &mut DesktopTree, place: u64, x: i32, y: i32) -> Result<bool, String> {
+    let Some((workspace, row, group, _)) = locate(tree, place) else {
+        return Err("that place is not in the arrangement".into());
+    };
+    let Some(id) = tree
+        .workspaces
+        .get(workspace)
+        .and_then(|held| held.strips.get(row))
+        .and_then(|row| row.window_groups.get(group))
+        .map(|group| group.id)
+    else {
+        return Err("that place is not in the arrangement".into());
+    };
+    let Some(held) = tree.workspaces.get_mut(workspace) else {
+        return Err("that place is not in the arrangement".into());
+    };
+    Ok(held.arrangement.set_position(id, x, y))
 }
 
 /// Float the place `place` above its workspace's windows at `float` .
@@ -1720,6 +1855,56 @@ fn place_at(
     Ok(true)
 }
 
+/// The place `place` shows the resource `resource` through `view` (empty for its primary one),
+/// keeping its id, its strip and its place on the canvas. What a canvas query's place becomes
+/// when the app answered it: the same place, now the found resource, so Undo puts the query
+/// back. Whether the desk changed; a place already showing that resource through that view is
+/// no change.
+fn show_at(
+    tree: &mut DesktopTree,
+    catalog: &Rc<RefCell<Catalog>>,
+    place: u64,
+    resource: &str,
+    view: &str,
+) -> Result<bool, String> {
+    let resource = resource.trim();
+    if resource.is_empty() {
+        return Err("a place names the resource it shows".into());
+    }
+    let target = catalog
+        .borrow()
+        .get(resource)
+        .cloned()
+        .ok_or_else(|| format!("nothing published is `{resource}`"))?;
+    let Some(tab) = group_holding(tree, place)
+        .and_then(|held| held.tabs.iter_mut().find(|tab| tab.id == place))
+    else {
+        return Err("that place is not in the arrangement".into());
+    };
+    let view = target.chosen_view(view);
+    // The window the place is shows the resource from now on: its app, the record `Place` writes
+    // for it (`Desk::record_action`'s `shows`), and the view it shows it through. Everything
+    // else the place keeps — its id, its strip, its place on the canvas, whether it is pinned.
+    let window = Tab {
+        id: place,
+        title: target.title.clone(),
+        tile: TileContent::LocalApp {
+            app_id: target.app,
+            label: target.title,
+            note: String::new(),
+        },
+        app_title: None,
+        view,
+        pinned: tab.pinned,
+    };
+    let changed = tab.title != window.title || tab.view != window.view || tab.tile != window.tile;
+    tab.title = window.title;
+    tab.tile = window.tile;
+    tab.view = window.view;
+    tab.app_title = None;
+    Ok(changed)
+}
+
 /// Float the place `group` at `float` , when the place asked to float at all.
 fn float_new(
     workspace: &mut tilo_desktop_model::Workspace,
@@ -1774,10 +1959,13 @@ fn verb(action: &ArrangementAction) -> &'static str {
         ArrangementAction::Close { .. } => "close",
         ArrangementAction::Activate { .. } => "activate",
         ArrangementAction::Pin { .. } => "pin",
+        ArrangementAction::Position { .. } => "position",
         ArrangementAction::Place { .. } | ArrangementAction::PlaceFound { .. } => "place",
         ArrangementAction::Open { .. } => "open",
         ArrangementAction::Float { .. } => "float",
         ArrangementAction::Snap { .. } => "snap-back",
+        ArrangementAction::Show { .. } => "show",
+        ArrangementAction::RetryQuery { .. } => "retry",
         // Refused before it is stepped: it names no change of the desk.
         ArrangementAction::RetiredOpenInto { .. } => "retired",
     }
@@ -1845,6 +2033,7 @@ fn place_actions(key: &str) -> Vec<ActionSpec> {
     let closed = key.to_owned();
     let moved = key.to_owned();
     let in_front = key.to_owned();
+    let positioned = key.to_owned();
     vec![
         action(
             "pin",
@@ -1857,6 +2046,19 @@ fn place_actions(key: &str) -> Vec<ActionSpec> {
             move |args| ArrangementAction::Pin {
                 place: count_of(&pinned),
                 pinned: args.boolean("pinned").unwrap_or(true),
+            },
+        ),
+        action(
+            "position",
+            "Stand a place at a point on the canvas, as a drag that let it go there",
+            vec![
+                required("x", ParamType::Integer, "Its canvas x"),
+                required("y", ParamType::Integer, "Its canvas y"),
+            ],
+            move |args| ArrangementAction::Position {
+                place: count_of(&positioned),
+                x: args.integer("x").unwrap_or_default(),
+                y: args.integer("y").unwrap_or_default(),
             },
         ),
         action("close", "Close a place", Vec::new(), move |_| {
@@ -2034,7 +2236,7 @@ fn named(args: &ActionArgs, name: &str, item: Item) -> Option<u64> {
 
 /// The record key of a place, a strip or a row, as its actions take it. `0` for the keyless
 /// resource a package describes the kind with, which no door publishes.
-fn count_of(key: &str) -> u64 {
+pub(super) fn count_of(key: &str) -> u64 {
     tilo_failure::ignored!(
         "a keyless resource has no count, and 0 is its count",
         key.parse().unwrap_or_default()
@@ -2064,6 +2266,15 @@ fn place_label(place: &PlaceReading) -> String {
     }
 }
 
+/// The state a query's matches settle it at, and the kind of resource the query names: `failed`
+/// when the app gave a reason, else `one` for exactly one match a place can show, `several` for
+/// more, `none` for none — and `searching` while a state is still being waited for (the caller
+/// passes `""` for `state` only once the app answered). `kind` is the one every match shares, or
+/// the first's, as the app publishes it.
+/// The state and reason a query starts in, from the app's own search invocation's result: a
+/// refusal or failure is the query `.failed` with the action's own reason; a run that was taken is
+/// `searching`, answered later into the app's records (shell.md §8). The invocation itself says,
+/// never a guess from the app's records.
 /// Feed what `specs` publish into `hasher` : each resource's id, kind and label, and its
 /// children's, so two revisions are equal exactly when the door publishes the same.
 fn hash_resources(specs: &[ResourceSpec], hasher: &mut std::hash::DefaultHasher) {
@@ -2080,7 +2291,52 @@ fn hash_resources(specs: &[ResourceSpec], hasher: &mut std::hash::DefaultHasher)
 /// The actions that put a resource on the canvas: by naming it and one of its views, or by what a
 /// text finds (shell.md §8).
 fn placing_actions() -> Vec<ActionSpec> {
-    vec![place_action(), place_found_action(), open_action()]
+    vec![
+        place_action(),
+        place_found_action(),
+        open_action(),
+        show_action(),
+        retry_query_action(),
+    ]
+}
+
+/// `show`: a place shows another resource, keeping its id and its place on the canvas. What an
+/// answered canvas query's place becomes, and Undo puts the query back (shell.md §8).
+fn show_action() -> ActionSpec {
+    action(
+        "show",
+        "Show another resource in a place, keeping the place where it is",
+        vec![
+            required("place", ParamType::Resource, "The place, by its resource")
+                .of_resource_kind(PLACE_KIND),
+            required(
+                "resource",
+                ParamType::Resource,
+                "The resource it shows from now on",
+            ),
+            optional("view", ParamType::Text, "The view it shows it through"),
+        ],
+        |args| ArrangementAction::Show {
+            place: named(args, "place", Item::Place).unwrap_or_default(),
+            resource: text(args, "resource"),
+            view: args.text("view").unwrap_or_default().to_owned(),
+        },
+    )
+}
+
+/// `retry-query`: ask the app the query a place shows again for what the person typed.
+fn retry_query_action() -> ActionSpec {
+    action(
+        "retry-query",
+        "Look for what a place's search names again",
+        vec![
+            required("place", ParamType::Resource, "The place, by its resource")
+                .of_resource_kind(PLACE_KIND),
+        ],
+        |args| ArrangementAction::RetryQuery {
+            place: named(args, "place", Item::Place).unwrap_or_default(),
+        },
+    )
 }
 
 /// Put a resource on the canvas as one of its views.
@@ -2249,7 +2505,7 @@ fn step_action(id: &'static str, label: &str) -> ActionSpec {
     clippy::expect_used,
     reason = "an arranging action always serializes to JSON"
 )]
-fn action(
+pub(super) fn action(
     id: &'static str,
     label: &str,
     params: Vec<ActionParam>,
@@ -2275,7 +2531,7 @@ fn action(
     spec
 }
 
-fn required(name: &'static str, ty: ParamType, help: &str) -> ActionParam {
+pub(super) fn required(name: &'static str, ty: ParamType, help: &str) -> ActionParam {
     ActionParam::required_owned(name, ty, help.to_owned())
 }
 
@@ -2301,7 +2557,7 @@ fn id_text(args: &ActionArgs, name: &str) -> u64 {
     )
 }
 
-fn text(args: &ActionArgs, name: &str) -> String {
+pub(super) fn text(args: &ActionArgs, name: &str) -> String {
     args.text(name).unwrap_or_default().to_owned()
 }
 
@@ -2318,6 +2574,10 @@ pub struct Door {
     /// What the canvas asks of the host when the text it is given is a question, or names
     /// nothing (shell.md §8.1).
     ask: Ask,
+    /// What the canvas asks of an app when the text names a type of its and names nothing the
+    /// session holds: that app's own search action, through its origin (shell.md §8, search.md
+    /// §7). Empty where the host can ask no app.
+    ask_origin: AskOrigin,
 }
 
 impl Door {
@@ -2329,12 +2589,14 @@ impl Door {
         busy: Rc<dyn Fn() -> Busy>,
         find: Find,
         ask: Ask,
+        ask_origin: AskOrigin,
     ) -> Self {
         Self {
             arrangement,
             busy,
             find,
             ask,
+            ask_origin,
         }
     }
 
@@ -2425,6 +2687,7 @@ impl Door {
             let spot = (*x, *y);
             let find = Rc::clone(&self.find);
             let ask = Rc::clone(&self.ask);
+            let ask_origin = Rc::clone(&self.ask_origin);
             let door = self.clone();
             let needle = text.trim().to_owned();
             let (text, view, strip) = (text.clone(), view.clone(), *strip);
@@ -2439,6 +2702,7 @@ impl Door {
                         at: spot,
                         hits: &hits,
                         ask: &*ask,
+                        ask_origin: &*ask_origin,
                         busy,
                     }) {
                         // The text named nothing a place can show, and nothing answered it: the
@@ -2472,6 +2736,23 @@ impl Door {
                 code: "nowhere_to_open".to_owned(),
                 reason: why,
             })?;
+            return Ok(ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ));
+        }
+        // A query's Retry asks its app again, from the text it holds: the query goes back to
+        // searching, and the app's own search action runs the text once more through `ask_origin`
+        // (`Arrangement::retry_query`). Resolved here, where the app's action is, never in the
+        // record.
+        if let ArrangementAction::RetryQuery { place } = &action {
+            let ask_origin = Rc::clone(&self.ask_origin);
+            self.arrangement
+                .borrow_mut()
+                .retry_query(&asked, *place, &*ask_origin, busy)
+                .map_err(|why| tilo_actions::DoorError::Unavailable {
+                    code: "nothing_to_place".to_owned(),
+                    reason: why,
+                })?;
             return Ok(ui::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ));
@@ -2582,8 +2863,26 @@ impl Door {
 
 #[cfg(test)]
 mod tests {
-    use super::{found_resource, most_specific, placed};
+    use super::{found_resource, most_specific, placed, query_state_from_outcome};
     use tilo_desktop_search::{Hit, InvokeTarget, ResourceKind, Target};
+
+    /// The query's starting state is the app's own search invocation result: a run that was taken
+    /// keeps searching; a refusal or failure is the query `.failed` with the action's own reason —
+    /// never a guess read from the app's records.
+    #[test]
+    fn a_refused_search_starts_the_query_failed_with_its_own_reason() {
+        assert_eq!(
+            query_state_from_outcome(Ok(())),
+            ("searching".to_owned(), String::new()),
+            "a search the app took is still searching"
+        );
+        let (state, reason) = query_state_from_outcome(Err("Type something to search for".into()));
+        assert_eq!(state, "failed", "a refused search is failed");
+        assert_eq!(
+            reason, "Type something to search for",
+            "with the action's own reason"
+        );
+    }
 
     /// A row text typed on the canvas would stand for: what it opens, and what it is.
     fn opening(resource: &str, title: &str, kind: ResourceKind) -> Hit {

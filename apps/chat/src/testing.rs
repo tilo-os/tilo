@@ -290,6 +290,7 @@ pub(crate) fn work_update(work: &crate::model::AgentWork) -> crate::record::Work
                 }
             })
             .collect(),
+        detail: None,
     }
 }
 

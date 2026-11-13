@@ -37,6 +37,17 @@ pub const ISSUE_INVITATION: &str = "issue-invitation";
 /// sheet.
 pub const SHOW_INVITE: &str = "show-invite";
 
+/// The resource the person's arrangement is published as: the desk itself, which a place is put
+/// on, brought forward and closed through, and which carries the system's `open`.
+pub const ARRANGEMENT_RESOURCE: &str = "shell:arrangement";
+
+/// The system's `open` on the arrangement: resource `resource` placed with its own default view
+/// beside the place showing `beside` (the conversation of the turn that asked) or beside the
+/// place in front when it names none (`docs/designs/app-language/one-app-model.md` §3, "`open(r)`
+/// places r with its default view, beside where it was asked, for every app"). A resource's own
+/// `open`, an app's `open` for an app this session serves, and this step are one act.
+pub const OPEN: &str = "open";
+
 /// The desk's action showing how an agent or another computer of the person's connects as them:
 /// the same setup their own card's "Connect an agent or computer" opens ([`CONNECT_AGENT`]). An app
 /// that lists what acts as the person (Settings' Devices and access) offers adding to it this way.

@@ -81,9 +81,12 @@ pub(crate) const PLANNER_INSTRUCTIONS: &str = "You drive Tilo apps only through 
 /// many first. The planning deadline still bounds the time they all take.
 pub(crate) const MOST_DISCOVERY_TURNS: u32 = 40;
 
-/// Output one turn may use: a whole request's plan with full arguments,
-/// and a reasoning model's thinking before it, which counts against the
-/// same bound. A metered endpoint reserves credit for all of it.
+/// Output one turn may use when the selected model declares no limit of its
+/// own: a whole request's plan with full arguments, and a reasoning model's
+/// thinking before it, which counts against the same bound. A metered
+/// endpoint reserves credit for all of it. A model from Settings declares
+/// its own limit ([`tilo_agent::providers::ProviderSelection`]'s model),
+/// which is what is asked for.
 pub(crate) const TURN_OUTPUT_TOKENS: u32 = 16_384;
 
 /// The most characters of a refusal's own words kept in an error or a
@@ -179,6 +182,10 @@ pub(crate) struct Asked<'a> {
     pub most_steps: usize,
     /// Whether the model is shown pictures.
     pub sees: bool,
+    /// The most tokens one answer may take, as the selected model declares
+    /// it; `None` for a model nothing declared a limit for, which asks
+    /// [`TURN_OUTPUT_TOKENS`].
+    pub output_tokens: Option<u32>,
     /// How long the whole plan may take.
     pub timeout: Duration,
 }
@@ -287,11 +294,29 @@ pub(crate) fn plan(
         };
         match response.stop_reason {
             StopReason::Refusal => return Err(refused(&said(&response))),
-            // A turn cut short (most often while it reasoned) is asked once
-            // more: it is the length of that one answer, not the plan.
+            // A turn cut off at the model's output limit is continued from
+            // where it stopped, not failed: a reasoning model spends part of
+            // that bound thinking, and a plan with full arguments needs the
+            // rest. Bounded, so one that never finishes ends the plan.
             StopReason::OutputLimit if !talk.cut_short => {
                 talk.cut_short = true;
-                tracing::debug!("agent: asking a cut-short planning turn again");
+                let written = said(&response);
+                tracing::debug!(
+                    written = written.len(),
+                    "agent: continuing a planning turn cut off at its output limit"
+                );
+                // Only the words it wrote are replayed: a partly written call
+                // was never a call, and replaying it would break the turn
+                // pairing every provider requires.
+                if !written.trim().is_empty() {
+                    talk.messages.push(Message::text(Role::Assistant, &written));
+                }
+                talk.messages.push(Message::text(
+                    Role::User,
+                    "Your previous answer was cut off at the model's output limit before it \
+                     finished. Continue exactly from where you stopped writing it. Do not repeat \
+                     what you already wrote, and do not perform any action you already performed.",
+                ));
                 continue;
             }
             StopReason::OutputLimit => return Err("the model's answer was cut short".into()),
@@ -365,6 +390,8 @@ struct Talk {
     repeats: Repeats,
     /// Whether a turn was cut short and asked again already.
     cut_short: bool,
+    /// The most tokens one answer may take.
+    output_tokens: u32,
 }
 
 impl Talk {
@@ -399,6 +426,7 @@ impl Talk {
             no_call: NoCall::default(),
             repeats: Repeats::default(),
             cut_short: false,
+            output_tokens: asked.output_tokens.unwrap_or(TURN_OUTPUT_TOKENS),
         }
     }
 
@@ -414,7 +442,7 @@ impl Talk {
             } else {
                 ToolChoice::Required
             },
-            max_output_tokens: TURN_OUTPUT_TOKENS,
+            max_output_tokens: self.output_tokens,
         }
     }
 

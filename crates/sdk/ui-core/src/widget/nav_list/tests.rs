@@ -2275,6 +2275,13 @@ fn an_agent_chooses_a_destination_through_the_published_view_action() {
         .iter()
         .find(|resource| resource.id.0 == "tilo.control:mail.places")
         .expect("the list publishes its selection");
+    // The resource a sheet names reads as the place the person is at
+    // ("Inbox"), never as the control's id: an agent's confirmation of a
+    // step reads a person's words, never an address.
+    assert_eq!(
+        control.label, "Inbox",
+        "the published choice is named by the place shown, not its id"
+    );
     let select = control
         .actions
         .iter()

@@ -79,10 +79,16 @@ pub trait Decorated: Widget {
 pub trait AsDynWidget {
     /// This widget as a trait object.
     fn as_dyn_widget(&self) -> &dyn Widget;
+    /// This widget as a mutable trait object.
+    fn as_dyn_widget_mut(&mut self) -> &mut dyn Widget;
 }
 
 impl<T: Widget> AsDynWidget for T {
     fn as_dyn_widget(&self) -> &dyn Widget {
+        self
+    }
+
+    fn as_dyn_widget_mut(&mut self) -> &mut dyn Widget {
         self
     }
 }
@@ -91,10 +97,18 @@ impl AsDynWidget for dyn Widget {
     fn as_dyn_widget(&self) -> &dyn Widget {
         self
     }
+
+    fn as_dyn_widget_mut(&mut self) -> &mut dyn Widget {
+        self
+    }
 }
 
 impl AsDynWidget for dyn super::AppWidget {
     fn as_dyn_widget(&self) -> &dyn Widget {
+        self
+    }
+
+    fn as_dyn_widget_mut(&mut self) -> &mut dyn Widget {
         self
     }
 }

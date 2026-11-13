@@ -390,12 +390,11 @@ pub fn notebook_of(person: &str, titles: &[&str]) -> (RecordService, Vec<String>
         include_str!("../../../../../apps/tl/discussion/app.ids"),
     )
     .unwrap();
-    let notes = host
-        .load_builtin(
-            include_str!("../../../../../apps/tl/notes/app.tl"),
-            include_str!("../../../../../apps/tl/notes/app.ids"),
-        )
-        .unwrap();
+    host.load_builtin(
+        include_str!("../../../../../apps/tl/notes/app.tl"),
+        include_str!("../../../../../apps/tl/notes/app.ids"),
+    )
+    .unwrap();
     host.root_of(NOTES).unwrap();
     for committed in host.take_committed() {
         let action = &committed.action;
@@ -415,16 +414,6 @@ pub fn notebook_of(person: &str, titles: &[&str]) -> (RecordService, Vec<String>
         record.commit();
         host.sync_from(&record);
     }
-    let action = |name: &str| {
-        notes
-            .meta
-            .actions
-            .iter()
-            .find(|action| action.name == name)
-            .unwrap()
-            .id
-            .clone()
-    };
     let mut service = RecordService::new(record, host, person);
     let book = service
         .resources()
@@ -434,7 +423,7 @@ pub fn notebook_of(person: &str, titles: &[&str]) -> (RecordService, Vec<String>
     let mut made = Vec::new();
     for title in titles {
         let Started::Done(note) = service
-            .invoke(book.id.as_str(), &action("new_note"), &Map::new())
+            .invoke(book.id.as_str(), "new_note", &Map::new())
             .unwrap()
         else {
             panic!("a tilolang action is done once committed");
@@ -443,7 +432,8 @@ pub fn notebook_of(person: &str, titles: &[&str]) -> (RecordService, Vec<String>
         service
             .invoke(
                 &id,
-                &action("retitle"),
+                // Actions are published by their names, as a caller reads them.
+                "retitle",
                 json!({ "title": title }).as_object().unwrap(),
             )
             .unwrap();

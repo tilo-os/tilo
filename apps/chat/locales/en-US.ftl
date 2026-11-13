@@ -105,7 +105,6 @@ chat-agent-work-step-refused = Refused: { $target }
 chat-agent-work-step-refused-why = Refused: { $target }: { $why }
 chat-agent-work-show-details = Show activity
 chat-agent-work-hide-details = Hide activity
-chat-agent-recovery = The answer stopped early. Ask again to continue.
 chat-agent-provider-reasoning = Reasoning shared by the provider
 chat-agent-show-reasoning = Show reasoning
 chat-agent-hide-reasoning = Hide reasoning
@@ -305,6 +304,7 @@ chat-composer = Message composer
 chat-send-message = Send message
 chat-undo = Undo
 chat-retry = Retry
+chat-failure-details = Details
 chat-close = Close
 # A message that did not reach the workspace; $reason says why.
 chat-not-sent = Not sent: { $reason }

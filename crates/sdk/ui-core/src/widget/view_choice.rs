@@ -34,6 +34,9 @@ pub(crate) struct ViewChoice {
     id: String,
     /// What the action is called ("Go to", "Select").
     label: &'static str,
+    /// What the control is, as a person reads it ("Mailboxes"): the resource's
+    /// published label. Never its id, which is an address, not a name.
+    name: Option<String>,
     action: ActionEmitter<String>,
 }
 
@@ -45,7 +48,7 @@ impl ViewChoice {
     )]
     pub(crate) fn new(id: impl Into<String>, label: &'static str) -> Self {
         let id = id.into();
-        let resource = Self::resource_of(&id, label, None);
+        let resource = Self::resource_of(&id, label, None, None);
         let action = tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |entry| {
             serde_json::Map::from_iter([("entry".into(), serde_json::Value::String(entry))])
         })
@@ -53,6 +56,7 @@ impl ViewChoice {
         Self {
             id,
             label,
+            name: None,
             action: ActionEmitter::new(action),
         }
     }
@@ -62,22 +66,44 @@ impl ViewChoice {
         &self.id
     }
 
+    /// The control as published now, offering `entries` (key, label), the
+    /// resource named `name` in the person's words ("Inbox") where the caller
+    /// knows what the person is looking at.
+    pub(crate) fn resource_named(
+        &self,
+        name: Option<&str>,
+        entries: Vec<(String, String)>,
+    ) -> tilo_actions::ResourceSpec {
+        let name = name.map(str::to_owned).or_else(|| self.name.clone());
+        Self::resource_of(&self.id, self.label, name, Some(Choices::Labelled(entries)))
+    }
+
     /// The control as published now, offering `entries` (key, label).
     pub(crate) fn resource(&self, entries: Vec<(String, String)>) -> tilo_actions::ResourceSpec {
-        Self::resource_of(&self.id, self.label, Some(Choices::Labelled(entries)))
+        Self::resource_of(
+            &self.id,
+            self.label,
+            self.name.clone(),
+            Some(Choices::Labelled(entries)),
+        )
     }
 
     /// The control as published now, its entries too many to list (a long
     /// table's rows): an entry is checked when it is chosen.
     pub(crate) fn resource_unlisted(&self) -> tilo_actions::ResourceSpec {
-        Self::resource_of(&self.id, self.label, None)
+        Self::resource_of(&self.id, self.label, self.name.clone(), None)
     }
 
     /// The control as published now, offering its entries by key alone, for
     /// entries whose labels change (a renamed page) while what is offered
     /// stays as it was.
     pub(crate) fn resource_of_keys(&self, keys: Vec<String>) -> tilo_actions::ResourceSpec {
-        Self::resource_of(&self.id, self.label, Some(Choices::Keys(keys)))
+        Self::resource_of(
+            &self.id,
+            self.label,
+            self.name.clone(),
+            Some(Choices::Keys(keys)),
+        )
     }
 
     #[expect(
@@ -87,6 +113,7 @@ impl ViewChoice {
     fn resource_of(
         id: &str,
         label: &'static str,
+        name: Option<String>,
         entries: Option<Choices>,
     ) -> tilo_actions::ResourceSpec {
         use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
@@ -116,8 +143,16 @@ impl ViewChoice {
             },
         )
         .for_audience(tilo_actions::Audience::Agents);
-        tilo_actions::ResourceSpec::new(format!("tilo.control:{id}"), "tilo.control.choice", id)
-            .with_action(spec)
+        // The resource is named by what the control is, in the person's words,
+        // or — where the control declares none — by its action ("Go to"), which
+        // is already a person's words. Its id stays the address alone.
+        let shown = name.filter(|name| !name.trim().is_empty());
+        tilo_actions::ResourceSpec::new(
+            format!("tilo.control:{id}"),
+            "tilo.control.choice",
+            shown.unwrap_or_else(|| label.to_owned()),
+        )
+        .with_action(spec)
     }
 
     /// The entry an operation addressed to this control chooses; `None`

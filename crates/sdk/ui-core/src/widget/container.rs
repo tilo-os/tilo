@@ -522,16 +522,11 @@ impl Widget for Container {
         let style = Style {
             display: taffy::Display::Flex,
             // Prevent vertical squashing; a narrowing container shrinks along a row, its
-            // automatic minimum height keeping a column from squashing it.
+            // automatic minimum height keeping a column from squashing it. A growing
+            // container's minimums are [`super::layout::filling`]'s.
             flex_shrink: if self.narrows { 1.0 } else { 0.0 },
             // A pinned width must not grow to fill a flex parent: `flex_basis:
             // auto` lets `size.width` resolve the basis instead.
-            flex_grow: self.flex_grow,
-            flex_basis: if self.flex_grow > 0.0 {
-                length(0.0_f32)
-            } else {
-                taffy::Dimension::auto()
-            },
             padding: super::layout::insets_all(pad),
             size: taffy::Size { width, height },
             min_size: taffy::Size {
@@ -565,6 +560,7 @@ impl Widget for Container {
             },
             ..Default::default()
         };
+        let style = super::layout::filling(style, self.flex_grow);
 
         let node = if let Some(child) = child_node {
             taffy.parent_node(style, &[child])

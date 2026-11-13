@@ -281,6 +281,7 @@ fn post(
             channel: id.clone(),
             text: text.to_owned(),
             parent,
+            quoted: None,
             body,
             attachments,
             mentions: None,

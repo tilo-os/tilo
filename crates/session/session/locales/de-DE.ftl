@@ -396,6 +396,12 @@ desk-style-failed-app-name = Schreibtisch
 desk-style-failed-title = Dein Schreibtischstil konnte nicht angezeigt werden
 desk-style-failed-body = { $style } konnte nicht angezeigt werden, daher zeigt der Schreibtisch Streifen. Deine Wahl bleibt erhalten.
 
+## A step an agent takes inside a conversation, asking the person before it
+## runs. The sheet shows the step's draft; confirming allows this one step.
+turn-question-title = Den Agenten { $action } lassen
+turn-question-detail = { $action } auf { $resource }, wie gezeigt. Es läuft einmal, nur für diesen Schritt.
+turn-question-detail-here = { $action }, wie gezeigt. Es läuft einmal, nur für diesen Schritt.
+
 ## Someone mentioned the person in a record of the workspace.
 mention-notice-title = { $name } hat dich in ‘{ $place }’ erwähnt
 mention-notice-channel = { $name } hat dich in { $channel } erwähnt
@@ -423,6 +429,7 @@ so-tilo-session-desk-invitations = Einladungen auflisten
 so-tilo-session-desk-issue-invitation = Einladungslink erstellen
 so-tilo-session-desk-show-invite = Personen einladen
 so-tilo-session-desk-show-connect = Agent oder Computer verbinden
+so-tilo-session-desk-notify = Benachrichtigung senden
 so-tilo-session-desk-cancel-invitation = Einladung zurückziehen
 so-tilo-session-desk-show-surface = Bereich ein- oder ausblenden
 so-tilo-session-desk-close-surface = Bereich schließen

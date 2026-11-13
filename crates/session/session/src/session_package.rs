@@ -77,6 +77,10 @@ fn singletons() -> Vec<(ResourceSpec, Option<Declared>)> {
             Some(<DeskEffect as Effect>::declaration),
         ),
         (crate::arrangement::resources().swap_remove(0), None),
+        // The person's own desk styles as packages in their workspace: "make it mine", `check`
+        // and `install` (`shell.md` §6, "Agents make styles with the same commands a person
+        // types"), so a shell view and the canvas chat's agent call them as an app's.
+        (crate::style_packages::resource(), None),
     ]
 }
 

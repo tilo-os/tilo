@@ -425,6 +425,38 @@ fn assembled(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<A
     Ok(apps)
 }
 
+/// Stage, pack and sign one already-compiled package as the `.tapp` a session installs: the
+/// same delivery [`build`] makes, for a caller that compiled its package itself against
+/// packages it publishes (a style package compiled against the shell a session runs, which is
+/// no directory this build searches).
+///
+/// # Errors
+/// The icon, manifest, packing or signing fails.
+pub fn deliver_compiled(
+    compiled: &tilolang::Compiled,
+    imports: &[&tilolang::Compiled],
+    options: &BuildOptions,
+    identity: &SigningIdentity,
+) -> Result<BuiltApp, String> {
+    let meta = &compiled.meta;
+    let publisher = hex::encode(identity.public_key_bytes());
+    let bundle = Bundle::new(compiled, imports.iter().copied());
+    let manifest = manifest_text(meta, &bundle.catalogues(), options, &publisher);
+    let digest = digest(&manifest, &bundle)?;
+    deliver(
+        Assembled {
+            app: meta.app.clone(),
+            title: meta.title.clone(),
+            meta: meta.clone(),
+            manifest,
+            bundle,
+            digest,
+        },
+        options,
+        identity,
+    )
+}
+
 /// A build of one app as the directory a running desktop app follows it takes it: the bundle
 /// itself, and what decides whether the running build takes it in place.
 pub struct Published {

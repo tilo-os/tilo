@@ -113,7 +113,10 @@ impl<T: Send + Sync + 'static> Watched<T> {
         let shared = Arc::new(Shared {
             read: Box::new(read),
             value: RwLock::new((0, Arc::new(first))),
-            tickets: AtomicU64::new(u64::from(read_first)),
+            // The first value is generation 0, read or standing in for a read still to come, and
+            // every read after it a later one: a read that replaces a stand-in is a new
+            // generation, so a cache keyed on it (`Self::snapshot`) sees the value change.
+            tickets: AtomicU64::new(1),
             listeners: Mutex::new(Vec::new()),
             wake: Mutex::new(changed.clone()),
         });
@@ -154,6 +157,20 @@ impl<T: Send + Sync + 'static> Watched<T> {
                 .unwrap_or_else(PoisonError::into_inner)
                 .1,
         )
+    }
+
+    /// The latest value with the generation of the read that produced it, taken together so the
+    /// two always describe the same reading. The generation is a number that only ever rises, one
+    /// per read that was kept, so two values read at different times are told apart even after the
+    /// older one was freed and a new one happened to land at its address. Callers key caches on it.
+    #[must_use]
+    pub fn snapshot(&self) -> (u64, Arc<T>) {
+        let value = self
+            .shared
+            .value
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        (value.0, Arc::clone(&value.1))
     }
 
     /// Reads the value again on this thread, now, for a writer in this process that must not see its

@@ -21,6 +21,7 @@ use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
 use tilolang_tilo::records_service::RecordService;
 
+use crate::common::window::KEY_A;
 use crate::common::{
     CANVAS_ENTRY, HEIGHT, NOTE_TITLE, PERSON, TITLES, WIDTH, notebook as notes, on_display,
     on_screen, press, press_where, show_preset, until,
@@ -40,6 +41,9 @@ fn session() -> (Session, String) {
     let (session, notes) = session_at(WIDTH, HEIGHT);
     (session, notes.into_iter().next().unwrap())
 }
+
+/// The window's own menu in the pill of its bar, as every strip's window names it.
+const WINDOW_MENU: &str = "This window";
 
 /// The session with the shell, on one display `width` by `height` , and the notes [`notebook`]
 /// keeps.
@@ -393,8 +397,7 @@ fn a_placed_notes_body_stands_at_the_desks_height_under_one_bar() {
         );
     }
     // Under the window's bar: the bar is its tabs and the controls, and the app's body stands below
-    // it rather than on its line. The window's menu is the first of its controls, named for the
-    // window it is the menu of.
+    // it rather than on its line, under the window's own menu in its bar.
     let controls = window_menu(&session, &shown).expect("the window's controls stand");
     assert!(
         title.1 >= controls.1 + controls.3,
@@ -514,13 +517,13 @@ fn window_within(
 }
 
 /// Where the menu of the window the shell shows as `name` stands on the standard display: the
-/// first of the window's own controls in its one bar, named for the window it is the menu of. Of
-/// the controls by that name it is the one standing in the window's frame at an icon's size: the
-/// smallest of them, where a tab of that name is as wide as its title.
+/// window's own menu in the pill of its one bar ("This window", `window_controls`). Every strip's
+/// window carries one by that name, so it is the one standing in the window's frame at an icon's
+/// size.
 fn window_menu(session: &Session, name: &str) -> Option<(f64, f64, f64, f64)> {
     let frame = window_frame(session, name)?;
     session
-        .shell_controls(name)
+        .shell_controls(WINDOW_MENU)
         .into_iter()
         .filter(|&(x, y, w, h)| {
             let (across, down) = (x + w / 2.0, y + h / 2.0);
@@ -666,8 +669,7 @@ fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
         placed > u64::try_from(i64::MAX).unwrap(),
         "the desk's ids do not fit an integer: {placed}"
     );
-    // The window's own controls stand in its one bar: its menu, named for the window it is the
-    // menu of, its maximize and its close.
+    // The window's own controls stand in its one bar: its menu, its maximize and its close.
     let shown = shown_as(&session, NOTE_TITLE);
     until(&mut session, "the window's controls", |session| {
         window_menu(session, &shown).is_some() && on_screen(session, "Close").is_some()
@@ -883,8 +885,14 @@ fn a_place_arrives_over_the_frames_between() {
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
     });
-    // A note arrives on the desk.
+    // A note arrives on the desk. The clock is held while it does, so the frame that first shows
+    // it is the window at its motion's start however long the machine takes to get there: read
+    // at the running clock, a loaded machine could see the window already landed.
     let note = notes.first().expect("a note").clone();
+    let held = ui::motion::testing::frozen();
+    // The person asks for it with the pointer (a press on the dock, a drop on the canvas): what a
+    // hand asks for comes in, where a script's place lands at once (`motion::source`).
+    ui::motion::note_source(ui::tokens::MotionSource::Pointer);
     place(&mut session, &note);
     let shown = shown_as(&session, NOTE_TITLE);
     let arriving = crate::common::wait_for(&mut session, "the note on the desk", |session| {
@@ -892,6 +900,7 @@ fn a_place_arrives_over_the_frames_between() {
             .is_some()
             .then(|| crate::common::shot(session, "motion-arriving"))
     });
+    drop(held);
     // The frames right after it appears change: the window is on its way in.
     let mut changes = 0;
     let mut before = arriving;
@@ -1098,4 +1107,100 @@ fn the_desk_carries_no_strip_label_of_its_own() {
              (all: {mains:?})"
         );
     }
+}
+
+/// A window beside a place on the canvas is the window the person's own press reaches: a client's
+/// window (a Rust app's, which draws its own surface rather than a tilolang view) stands on the
+/// Frames canvas next to a tilolang place, a press inside it focuses it, and the keys typed next
+/// reach it. The client hears what the window hears, so the press and the keys are what a real
+/// app's window would get.
+///
+/// The place's frame draws a toolbar whose menu is closed: its menu node stands in the shell's
+/// tree, hidden. Counting a hidden menu as an open one stood the shell's part over every window
+/// for as long as such a frame was drawn — the part took each press anywhere on its display, and
+/// each key — so nothing reached the window beside it.
+#[test]
+fn a_window_beside_a_place_on_the_canvas_takes_the_press_and_the_keys() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, notes) = session_at(WIDTH, HEIGHT);
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    show_preset(&mut session, "Frames");
+    until(&mut session, "the canvas", |session| {
+        on_screen(session, CANVAS_ENTRY).is_some()
+    });
+
+    // A tilolang place stands on the canvas first, as the person's work beside the window does.
+    let note = notes.first().expect("a note").clone();
+    place(&mut session, &note);
+    let shown = shown_as(&session, NOTE_TITLE);
+    until(&mut session, "the placed note's window", |session| {
+        on_screen(session, &shown).is_some()
+    });
+    // A frame whose menu is shut is no surface over the windows: nothing of the shell's takes the
+    // keyboard, so what the person types is the window in front's.
+    assert!(
+        !session.compositor().host_takes_keys(),
+        "the shell takes no key while its own menu is shut: {:?}",
+        session.compositor().windows()
+    );
+
+    // A window of an app this session does not run as a view opens on the desk: a client of its
+    // own, as a Rust app's window is.
+    let mut client = crate::common::window::Client::connect(session.compositor());
+    client.pump(&mut session, |_, seen| {
+        seen.wm_base.is_some() && seen.shm.is_some() && seen.seat.is_some()
+    });
+    client.pump(&mut session, |_, seen| seen.keyboard.is_some());
+    client.map_plain(&mut session, "so.tilo.chat", (560, 520));
+    let (id, (x, y, w, h)) =
+        crate::common::window::window_of(session.compositor(), "so.tilo.chat").expect("mapped");
+    assert!(x >= 0 && y >= 0, "the window stands on the screen: {x},{y}");
+
+    // A press lands inside it, as a person's does: the pointer there, then the button down and up.
+    let (px, py) = (
+        f64::from(x) + f64::from(w) / 2.0,
+        f64::from(y) + f64::from(h) / 3.0,
+    );
+    crate::common::window::click(&mut session, px, py);
+    for _ in 0..4 {
+        client.exchange();
+        session.step(std::time::Duration::from_millis(1)).unwrap();
+    }
+    assert!(
+        client
+            .seen
+            .buttons
+            .contains(&crate::common::window::BTN_LEFT),
+        "the press reaches the window: {:?} (the pointer came onto it {} times)",
+        client.seen.buttons,
+        client.seen.pointer_on_window
+    );
+    // The window the person pressed is the window in front, as the desk keeps the focus.
+    let desk_focused = session.desktop().with_policy(|policy| policy.focused());
+    let compositor_focused = session
+        .compositor()
+        .focused_window()
+        .map(|window| window.id);
+    assert_eq!(
+        desk_focused,
+        Some(id),
+        "the press focuses the window it landed on: the desk says {desk_focused:?}, the \
+         compositor {compositor_focused:?}"
+    );
+    assert_eq!(
+        compositor_focused,
+        Some(id),
+        "the window in front is the pressed one"
+    );
+
+    // The keys the person types next reach it.
+    client.tap(&mut session, KEY_A);
+    client.pump(&mut session, |_, seen| seen.keys.contains(&(KEY_A, true)));
+    assert!(
+        client.seen.pressed(KEY_A) > 0,
+        "the typed key reaches the window: {:?}",
+        client.seen.keys
+    );
 }

@@ -288,6 +288,9 @@ impl AppBrokerState {
                 continue;
             };
             self.notify_run_questions(workspace, &runs);
+            // A turn's ask whose turn ended stands on nobody's screen: the
+            // sheet that showed it is withdrawn with it.
+            self.prune_conversation_asks(&runs);
             for run in runs.iter().filter(|run| run.active) {
                 if let Err(error) = self.dispatch_tracker_run(workspace, run) {
                     tracing::warn!(%error, issue = %run.issue, "approved issue run not delivered");

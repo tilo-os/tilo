@@ -126,14 +126,27 @@ fn a_model_that_keeps_malforming_its_call_ends_the_task_without_looping() {
         (2..=3).contains(&turns),
         "a bounded number of turns, not {turns}"
     );
+    // The person reads one sentence of what happened in their terms — never
+    // the parser's own words about the model's call, which are the record kept
+    // beside it (`Failure`, `agent_loop::failure`).
     assert!(
         matches!(
             terminal(&f.sent.borrow()),
             runtime_collab::TaskRunUpdate::Failed { message }
-                if message.contains("missing operation")
+                if message == "The model's answer could not be used."
         ),
-        "the run ends and the conversation shows why: {:?}",
+        "the run ends and the conversation shows why, in a person's sentence: {:?}",
         terminal(&f.sent.borrow())
+    );
+    // The parser's reason is the run's record, not its reply: whoever debugs
+    // the failure still reads what was wrong with the call.
+    assert!(
+        f.session
+            .failure_detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("missing operation")),
+        "the record keeps why the call was refused: {:?}",
+        f.session.failure_detail
     );
 }
 

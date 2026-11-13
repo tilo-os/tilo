@@ -30,6 +30,9 @@ pub struct Capabilities {
     pub vision: Option<bool>,
     pub tool_calling: Option<bool>,
     pub context_window: Option<u32>,
+    /// The model's own declared output limit: the most tokens one answer
+    /// may take, reasoning and answer together.
+    pub max_output_tokens: Option<u32>,
 }
 
 impl Capabilities {
@@ -133,6 +136,29 @@ pub fn from_listing(entry: &Value) -> Capabilities {
             .and_then(Value::as_u64)
     })
     .and_then(|tokens| u32::try_from(tokens).ok());
+    // What the model itself declares one answer may take: OpenRouter's
+    // `top_provider.max_completion_tokens`, Gemini's `outputTokenLimit`, and
+    // the limits most OpenAI-compatible lists publish.
+    found.max_output_tokens = [
+        "max_completion_tokens",
+        "max_output_tokens",
+        "outputTokenLimit",
+        "max_tokens",
+    ]
+    .iter()
+    .find_map(|key| {
+        entry
+            .get(*key)
+            .or_else(|| {
+                entry
+                    .get("top_provider")
+                    .and_then(|provider| provider.get(*key))
+            })
+            .or_else(|| metadata.and_then(|meta| meta.get(*key)))
+            .and_then(Value::as_u64)
+    })
+    .and_then(|tokens| u32::try_from(tokens).ok())
+    .filter(|tokens| *tokens > 0);
     found
 }
 
@@ -251,6 +277,7 @@ pub fn family(id: &str) -> Option<Capabilities> {
             vision: Some(family.vision),
             tool_calling: Some(family.tool_calling),
             context_window: None,
+            max_output_tokens: None,
         })
 }
 
@@ -260,6 +287,9 @@ pub fn apply_listing(model: &mut ModelDescriptor, entry: &Value) {
     let listed = from_listing(entry);
     if model.context_window.is_none() {
         model.context_window = listed.context_window;
+    }
+    if model.max_output_tokens.is_none() {
+        model.max_output_tokens = listed.max_output_tokens;
     }
     if model.capabilities_set_by_person() {
         return;
@@ -288,6 +318,9 @@ pub fn apply_family(model: &mut ModelDescriptor) {
 pub fn refresh(stored: &mut ModelDescriptor, listed: &ModelDescriptor) {
     if stored.context_window.is_none() {
         stored.context_window = listed.context_window;
+    }
+    if stored.max_output_tokens.is_none() {
+        stored.max_output_tokens = listed.max_output_tokens;
     }
     if stored.capabilities_set_by_person() {
         return;
@@ -328,6 +361,44 @@ mod tests {
         });
         let model = listed("anthropic/claude-x", &entry);
         assert!(!model.vision && !model.tool_calling);
+    }
+
+    #[test]
+    fn a_listed_output_limit_becomes_the_models_declared_limit() {
+        let openrouter = json!({
+            "id": "deepseek/x", "context_length": 131_072,
+            "top_provider": {"max_completion_tokens": 32_768}
+        });
+        let model = listed("deepseek/x", &openrouter);
+        assert_eq!(model.max_output_tokens, Some(32_768));
+        let gemini =
+            json!({"id": "gemini-x", "inputTokenLimit": 1_000_000, "outputTokenLimit": 65_536});
+        assert_eq!(listed("gemini-x", &gemini).max_output_tokens, Some(65_536));
+        // A list that says nothing leaves it unknown, never guessed.
+        assert_eq!(
+            listed("house-model-7", &json!({"id": "house-model-7"})).max_output_tokens,
+            None
+        );
+        // A zero is no limit declared, not an answer of no tokens.
+        assert_eq!(
+            listed("m", &json!({"max_output_tokens": 0})).max_output_tokens,
+            None
+        );
+    }
+
+    /// A model that declared its limit is asked for exactly that; one that
+    /// did not is asked for the default, and never for more than its context.
+    #[test]
+    fn the_output_budget_is_the_declared_limit_else_the_default() {
+        let mut model = ModelDescriptor::new("declares");
+        assert_eq!(
+            model.output_tokens(),
+            ModelDescriptor::DEFAULT_OUTPUT_TOKENS
+        );
+        model.max_output_tokens = Some(8_000);
+        assert_eq!(model.output_tokens(), 8_000);
+        model.context_window = Some(4_096);
+        assert_eq!(model.output_tokens(), 4_096, "never more than the context");
     }
 
     #[test]

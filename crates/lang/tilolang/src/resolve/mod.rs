@@ -11,6 +11,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 mod effects;
 mod model;
+mod templates;
 mod text;
 mod triggers;
 mod views;
@@ -205,6 +206,19 @@ impl Env {
             .find(|c| !c.own && c.app == app && c.name == name)
     }
 
+    /// [`Self::foreign_callable`], where `from_template_of` is the mark a name rewritten at
+    /// import carries: a private callable is found only when the mark names its own package.
+    pub fn foreign_callable_marked(
+        &self,
+        app: &str,
+        name: &str,
+        from_template_of: Option<&str>,
+    ) -> Option<&Callable> {
+        self.callables
+            .iter()
+            .find(|c| !c.own && c.app == app && c.name == name && c.callable_by(from_template_of))
+    }
+
     /// An import named by alias or by full app id.
     pub fn find_import(&self, path: &str) -> Option<&Import> {
         self.imports
@@ -287,6 +301,32 @@ impl Env {
                 .collect(),
             previously: meta.previously.clone(),
         });
+        // The package's `template view`s: a caller elsewhere writes `alias.name(...)` with a
+        // block, and the template expands there. Its body is its own package's, so every
+        // unqualified reference to one of the package's items is rewritten to `alias.item`
+        // before it is registered (`templates::qualify`); the caller's block, inserted at the
+        // slot when the template expands, keeps the caller's scope. One that does not parse is
+        // left out, and a call of it then reads as a view the package does not declare, rather
+        // than failing the importer's whole compile.
+        let names = templates::PackageNames::of(meta);
+        for template in &meta.templates {
+            let source = format!("app {} \"{}\"\n{}", meta.app, meta.title, template.source);
+            let Ok(module) = crate::package::parse(&source) else {
+                continue;
+            };
+            for item in module.items {
+                if let ast::Item::View(mut view) = item {
+                    if !crate::checker::is_template(&view) {
+                        continue;
+                    }
+                    templates::qualify(&mut view, alias, &meta.app, &names);
+                    self.templates.push(Template {
+                        ns: Some(meta.app.clone()),
+                        decl: view,
+                    });
+                }
+            }
+        }
         let app = meta.app.clone();
         let field_info = |f: &crate::meta::FieldMeta| FieldInfo {
             name: f.name.clone(),
@@ -368,6 +408,28 @@ impl Env {
             r.as_ref()
                 .map_or(Ty::Unit, |t| Ty::parse_meta(t, &app).unwrap_or(Ty::Error))
         };
+        for v in meta
+            .views
+            .iter()
+            .filter(|v| v.presents.is_some() || v.row_of.is_some())
+        {
+            // `add` appends and returns nothing; the view is marked private as it is pushed.
+            self.callables.push(Callable {
+                kind: CKind::View,
+                name: v.name.clone(),
+                id: v.id.clone(),
+                app: app.clone(),
+                own: false,
+                func: None,
+                params: params(&v.params),
+                result: Ty::View,
+                class: None,
+                uses: BTreeSet::new(),
+                present: Presentation::default(),
+                scenario: false,
+                private: true,
+            });
+        }
         let mut add = |kind, name: &str, id: &str, params, result, class, uses, present| {
             self.callables.push(Callable {
                 kind,
@@ -382,6 +444,7 @@ impl Env {
                 uses,
                 present,
                 scenario: false,
+                private: false,
             });
         };
         for a in meta.callable_actions() {
@@ -424,6 +487,10 @@ impl Env {
                 Presentation::default(),
             );
         }
+        // The views the package does not offer — an action's presentation view, a loop's row
+        // view — are the package's own helpers: source that names no template of the package
+        // cannot call them (`Callable::private`), but a `template view` of the package can,
+        // since its body was rewritten at import with the package's mark.
         for rv in &meta.row_views {
             let ty = meta.types.iter().find(|t| t.id == rv.ty);
             let view = meta.views.iter().find(|v| v.id == rv.view);
@@ -1621,6 +1688,7 @@ impl Resolver<'_> {
                 uses,
                 present,
                 scenario: false,
+                private: false,
             });
             if let Item::View(v) = item {
                 self.anchors(v, lock);
@@ -1641,6 +1709,7 @@ impl Resolver<'_> {
                 uses: BTreeSet::new(),
                 present: Presentation::default(),
                 scenario: false,
+                private: false,
             });
             func += 1;
         }
@@ -1739,6 +1808,7 @@ impl Resolver<'_> {
                 ..Presentation::default()
             },
             scenario: true,
+            private: false,
         });
     }
 
@@ -2156,16 +2226,29 @@ impl Resolver<'_> {
 
 /// Resolves a type written inside a body (a `let` annotation).
 pub fn resolve_type_expr(env: &Env, te: &TypeExpr, diags: &mut Vec<Diagnostic>) -> Ty {
+    resolve_type_expr_in(env, None, te, diags)
+}
+
+/// [`resolve_type_expr`], with a plain type name read as the package `ns` declares it: the
+/// package whose `template view` is expanding, so the template's own body names its package's
+/// types (`a: Arrangement`), never the caller's of the same name.
+pub fn resolve_type_expr_in(
+    env: &Env,
+    ns: Option<&str>,
+    te: &TypeExpr,
+    diags: &mut Vec<Diagnostic>,
+) -> Ty {
+    let app = ns.unwrap_or(&env.app);
     let own_types = env
         .types
         .iter()
-        .filter(|t| t.key.app == env.app)
+        .filter(|t| t.key.app == app)
         .map(|t| t.key.name.clone())
         .collect();
     let own_enums = env
         .enums
         .iter()
-        .filter(|t| t.key.app == env.app)
+        .filter(|t| t.key.app == app)
         .map(|t| t.key.name.clone())
         .collect();
     let mut r = Resolver {

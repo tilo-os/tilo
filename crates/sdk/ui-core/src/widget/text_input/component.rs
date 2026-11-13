@@ -13,6 +13,13 @@ pub struct TextInputProps {
     /// The text it edits.
     #[component(bind(merge = "splice"))]
     pub value: Bound<String>,
+    /// Text it shows when it binds nothing: read and copied, never edited (a message body, a
+    /// log). A field given one is read-only; what it reports of its selection is still
+    /// [`Self::select`].
+    pub text: Option<String>,
+    /// Whether it is read and copied but never edited, even when it binds a field: a value shown
+    /// for reading.
+    pub read_only: bool,
     /// What to type, shown while it is empty.
     pub placeholder: Option<String>,
     /// Room for this many lines: the field wraps and grows with what is typed.
@@ -43,12 +50,21 @@ pub struct TextInputProps {
     /// field's line.
     #[component(event(value = String))]
     pub submit: Event,
+    /// The selection settled (a drag let go, a double click, a select all, shift and an arrow
+    /// key): carries the run selected as `<start>:<end>`, byte offsets into the text, or nothing
+    /// when the selection collapsed. A read-only field reports it so what reads it — a message
+    /// answered on just the words someone chose — can act on the run; a field being typed in
+    /// keeps its selection private.
+    #[component(event(value = String))]
+    pub select: Event,
 }
 
 impl Default for TextInputProps {
     fn default() -> Self {
         Self {
             value: Bound::default(),
+            text: None,
+            read_only: false,
             placeholder: None,
             lines: None,
             title: false,
@@ -59,6 +75,7 @@ impl Default for TextInputProps {
             entry: false,
             key: None,
             submit: Event::None,
+            select: Event::None,
         }
     }
 }
@@ -83,6 +100,8 @@ impl Described for TextInput {
     fn from_props(key: &str, props: TextInputProps) -> Self {
         let TextInputProps {
             value,
+            text,
+            read_only,
             placeholder,
             lines,
             title,
@@ -93,7 +112,10 @@ impl Described for TextInput {
             entry,
             key: _,
             submit,
+            select,
         } = props;
+        // Text given beside a field it binds nothing to is read-only: a message body, a log.
+        let read_only = read_only || text.is_some();
         let change = changed_by.map(|by| {
             let note = change_note(&by, previous.as_deref());
             (by.identity, note)
@@ -114,8 +136,16 @@ impl Described for TextInput {
             .with_accessible_name(&name)
             .with_placeholder(&placeholder)
             .with_change(change)
-            .disabled(!enabled);
+            .disabled(!enabled)
+            .with_read_only(read_only);
         input.change_before = previous;
+        if let Some(text) = text {
+            input = input
+                .with_plain_chrome()
+                .multiline(true)
+                .with_text_role(TextRole::Body)
+                .with_initial_value(&text);
+        }
         if autofocus {
             input = input.wants_focus();
         }
@@ -138,6 +168,7 @@ impl Described for TextInput {
         if !submit.is_none() {
             input = input.on_submit(move |text| submit.fire(Some(Value::Text(text.to_owned()))));
         }
+        input = input.with_selection_event(select);
         input
     }
 
@@ -146,6 +177,8 @@ impl Described for TextInput {
     fn set_props(&mut self, props: TextInputProps) -> bool {
         let TextInputProps {
             value,
+            text,
+            read_only,
             placeholder,
             lines,
             title,
@@ -156,7 +189,9 @@ impl Described for TextInput {
             entry,
             key: _,
             submit,
+            select,
         } = props;
+        let read_only = read_only || text.is_some();
         if !self.follows(&value.state) {
             self.follow(&value.state);
         }
@@ -188,7 +223,13 @@ impl Described for TextInput {
         } else {
             TextRole::Body
         });
-        self.set_plain_chrome(title);
+        self.set_plain_chrome(title || text.is_some());
+        self.set_read_only(read_only);
+        if let Some(text) = text
+            && self.value() != text
+        {
+            self.set_text(&text);
+        }
         self.entry = entry;
         match submit {
             Event::None => self.set_on_submit(None),
@@ -197,6 +238,7 @@ impl Described for TextInput {
             }))),
         }
         self.enter_submits = self.enter_submits || title || entry;
+        self.set_selection_event(select);
         true
     }
 }

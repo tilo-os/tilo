@@ -573,6 +573,13 @@ impl WidgetHost {
         self.owe();
     }
 
+    /// Whether a control of the tree has the keyboard and answers it: a field the person put the
+    /// caret in, or a canvas their press put it in so the arrow keys pan it. What a part of the
+    /// shell asks before taking the keys from the window in front.
+    pub fn takes_keys(&self) -> bool {
+        self.host.focused().is_some()
+    }
+
     fn input(&mut self, event: &WindowEvent) {
         self.host.send(event);
         self.owe();

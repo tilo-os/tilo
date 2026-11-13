@@ -1066,7 +1066,23 @@ impl NavList {
     fn view_resource(&self) -> Option<tilo_actions::ResourceSpec> {
         let shared = self.shared.borrow();
         let view = shared.view.as_ref()?;
-        Some(view.choice.resource(destinations(&self.sections)))
+        // The control is named by the place the person is at, in their words
+        // ("Inbox"), never by its id: a sheet asking the person to confirm a
+        // step reads "Inbox", not the address of a row.
+        let here = shared
+            .selected
+            .as_deref()
+            .and_then(|selected| {
+                destinations(&self.sections)
+                    .into_iter()
+                    .find(|(id, _)| id == selected)
+                    .map(|(_, label)| label)
+            })
+            .filter(|label| !label.trim().is_empty());
+        Some(
+            view.choice
+                .resource_named(here.as_deref(), destinations(&self.sections)),
+        )
     }
 
     /// Answer a `select` addressed to this list: show the destination and

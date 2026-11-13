@@ -154,9 +154,15 @@ pub struct Work {
     /// `provider_*` end.
     #[serde(default)]
     pub state: String,
-    /// What is under way, in the agent's words (`doing`), or why it ended.
+    /// What the run said of the work: what is under way (`doing`), or what
+    /// happened when it ended. What a person reads, never the run's record.
     #[serde(default)]
     pub detail: String,
+    /// The run's working record of a failure, for whoever debugs it later: the
+    /// transport's error, the partial answer, the provider's exposed reasoning.
+    /// Shown only behind a disclosure, never as the row's own words.
+    #[serde(default)]
+    pub failure_detail: String,
 }
 
 impl Work {
@@ -201,9 +207,26 @@ pub struct Quote {
     /// Who wrote it.
     #[serde(default)]
     pub author: String,
-    /// The start of what it said.
+    /// The start of what it said, or — when the reply answers a span of it — the selected
+    /// words themselves.
     #[serde(default)]
     pub excerpt: String,
+    /// The span of the answered message the reply quotes, in UTF-8 bytes of its text, when the
+    /// reply answers a run of it rather than the whole message: what pressing the quote
+    /// reveals. None for a quote of the whole message, whose excerpt is its start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<Span>,
+}
+
+/// A run of an answered message a reply quotes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct Span {
+    /// Where the run starts, in UTF-8 bytes of the answered message's text.
+    #[serde(default)]
+    pub start: usize,
+    /// Where it ends, exclusive.
+    #[serde(default)]
+    pub end: usize,
 }
 
 /// Who reacted to a message with one emoji.
@@ -326,22 +349,37 @@ impl Channel {
                 attempts: row.attempts,
                 sending: row.sending,
                 reply_to: row.parent.as_deref().and_then(|parent| {
+                    // A reply that quotes a span of the message it answers shows those words,
+                    // never the whole message's start: the person chose them, and the reply
+                    // answers them. Its span is what pressing the quote reveals.
                     // A reply that answers the message right above it needs no quote: the person
                     // reads what is answered just over the answer. A reply to anything else
                     // keeps its quote.
-                    if index
-                        .checked_sub(1)
-                        .and_then(|before| rows.get(before))
-                        .is_some_and(|before| before.id == parent)
+                    let quoted = row
+                        .quoted
+                        .as_ref()
+                        .filter(|quoted| !quoted.text.trim().is_empty());
+                    if quoted.is_none()
+                        && index
+                            .checked_sub(1)
+                            .and_then(|before| rows.get(before))
+                            .is_some_and(|before| before.id == parent)
                     {
                         return None;
                     }
                     rows.iter()
                         .find(|held| held.id == parent)
-                        .map(|quoted| Quote {
-                            id: quoted.id.clone(),
-                            author: quoted.author.clone(),
-                            excerpt: excerpt(&quoted.text),
+                        .map(|answered| Quote {
+                            id: answered.id.clone(),
+                            author: answered.author.clone(),
+                            excerpt: quoted.map_or_else(
+                                || excerpt(&answered.text),
+                                |quoted| excerpt(&quoted.text),
+                            ),
+                            span: quoted.map(|quoted| Span {
+                                start: usize::try_from(quoted.start).unwrap_or_default(),
+                                end: usize::try_from(quoted.end).unwrap_or_default(),
+                            }),
                         })
                 }),
                 reactions: row
@@ -467,7 +505,11 @@ fn work_of(work: &crate::model::AgentWork) -> Work {
         .stream
         .as_ref()
         .map_or_else(String::new, |stream| stream.detail.clone());
-    Work { state, detail }
+    Work {
+        state,
+        detail,
+        failure_detail: work.failure_detail.clone().unwrap_or_default(),
+    }
 }
 
 /// The state a provider's finish is, spelled as [record-work](crate::messages) spells it.
@@ -988,6 +1030,11 @@ fn writing_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
 /// and its Retry is the conversation's own `retry` action — the same verb the REPL calls — with
 /// the reply it retries. The row stays where it happened: the turn's place in the transcript is
 /// the evidence that the person was not ignored.
+///
+/// What the row says is the run's sentence for a person — one line of what happened, and at most
+/// what to do next. The run's working record (the transport's error, the partial answer, the
+/// provider's exposed reasoning) is for whoever debugs the failure later, so it sits behind a
+/// disclosure: a person who just wants to read the conversation never meets it.
 fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
     let mut banner =
         ui::BannerBuilder::new(&cx.key(format!("failed-{}", message.id)), work.happened())
@@ -1001,7 +1048,7 @@ fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
         banner = banner.action(crate::i18n::t("chat-retry"));
     }
     let banner: Node = banner.into();
-    if let Some(summons) = message.retry_summons.clone() {
+    let banner = if let Some(summons) = message.retry_summons.clone() {
         let fired = cx.action_with(
             &banner,
             "act",
@@ -1011,7 +1058,35 @@ fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
         node::on(banner, "act", fired)
     } else {
         banner
+    };
+    let record = work.failure_detail.trim();
+    if record.is_empty() {
+        return banner;
     }
+    // The technical record closes behind its own row: a disclosure a person opens only when they
+    // want to know what went wrong under the hood, never the row's own words.
+    let details: Node = ui::DisclosureRowBuilder::new(
+        &cx.key(format!("failed-record-{}", message.id)),
+        crate::i18n::t("chat-failure-details"),
+    )
+    .into();
+    let details = node::with(
+        details,
+        vec![
+            ui::TextBuilder::new(
+                &cx.key(format!("failed-record-text-{}", message.id)),
+                record,
+            )
+            .role(ui::TextRole::Caption)
+            .secondary(true)
+            .into(),
+        ],
+    );
+    ui::stack(
+        &cx.key(format!("failed-stack-{}", message.id)),
+        Gap::Tight,
+        vec![banner, details],
+    )
 }
 
 /// What a message offers while the pointer is over it or it holds focus, over its trailing
@@ -1036,9 +1111,14 @@ fn hover_actions(_c: &Channel, message: &Message, cx: &ViewCx) -> Node {
 }
 
 /// What a reply answers: who wrote it and the start of what it said, as the designed quote over
-/// the reply (`ui.Quote`), naming who it answers and what they said. The message the reply is in
-/// opens on activation, as every message does.
-fn reply_quote(c: &Channel, quote: &Quote, key: &str, _cx: &ViewCx) -> Node {
+/// the reply (`ui.Quote`), naming who it answers and what they said. A reply to a span quotes
+/// the words the person chose, not the answered message's start.
+///
+/// Pressing the quote brings the answered message into view: it is the same press a message row
+/// takes, the system's own open of the message's resource (`shell.md` §3), so a quote and the
+/// row it names land the reader in the same place. The run the reply quotes is kept in the
+/// view's `span`, which is where a window that reveals a range says where the words stand.
+fn reply_quote(c: &Channel, quote: &Quote, key: &str, cx: &ViewCx) -> Node {
     let author = c.person(&quote.author);
     let excerpt = if quote.excerpt.trim().is_empty() {
         // A message the page does not hold (one from an earlier part of the chat) still says
@@ -1047,10 +1127,19 @@ fn reply_quote(c: &Channel, quote: &Quote, key: &str, _cx: &ViewCx) -> Node {
     } else {
         quote.excerpt.trim().to_owned()
     };
-    ui::QuoteBuilder::new(key, &excerpt)
+    let shown: Node = ui::QuoteBuilder::new(key, &excerpt)
         .caption(crate::i18n::t("chat-quote-caption"))
         .author(principal(author, &quote.author))
-        .into()
+        .into();
+    // A quote of a message the page holds names it: pressing the quote shows the message. A
+    // quote of one the page does not hold (an earlier part of the chat) is read, not pressed.
+    match Channel::message_resource(&quote.id) {
+        Some(target) => {
+            let opened = cx.open(&shown, "activate", target, None);
+            node::on(shown, "activate", opened)
+        }
+        None => shown,
+    }
 }
 
 /// One thing a message carries: a record it was shared from (a row that places it), the words
@@ -1066,7 +1155,16 @@ fn attachment_row(attachment: &Attachment, key: &str, cx: &ViewCx) -> Node {
             .dense(true)
             .into();
         let opened = cx.open(&row, "activate", target.clone(), None);
-        return node::on(row, "activate", opened);
+        let row = node::on(row, "activate", opened);
+        // The chip is also a source: dragging it to the canvas places the resource there (a
+        // `ui.DropTarget` that takes it runs the system's placement), and dragging it to a
+        // composer attaches it to another draft.
+        return drag_source(
+            &cx.key(format!("source-{key}")),
+            row,
+            target,
+            &attachment.label,
+        );
     }
     match attachment.kind.as_str() {
         "image" if !attachment.src.is_empty() => {
@@ -1155,6 +1253,23 @@ fn composer(c: &Channel, cx: &ViewCx) -> Node {
 
 /// The name the composer's draft is held under in the view's own state.
 const DRAFT: &str = "Composer";
+
+/// `node` wrapped so the person can drag it out: what it carries is `target`, and its ghost
+/// reads `title`. A press that does not travel is still `node`'s own, so the row opens and the
+/// chip presses exactly as they did before.
+fn drag_source(key: &str, node: Node, target: &ResourceRef, title: &str) -> Node {
+    let source: Node = ui::DragSourceBuilder::new(key, target.id.clone()).into();
+    let source = ui::put(
+        source,
+        "title",
+        Value::Text(if title.trim().is_empty() {
+            target.id.clone()
+        } else {
+            title.to_owned()
+        }),
+    );
+    node::slot(source, "content", vec![node])
+}
 
 /// The name the message being answered is held under in the view's own state: a message's Reply
 /// button sets it, and the composer reads it as the next message's parent.
@@ -1348,6 +1463,7 @@ mod tests {
             edited: false,
             history: Vec::new(),
             parent: None,
+            quoted: None,
             reactions: Vec::new(),
             mentions: Vec::new(),
             attachments: Vec::new(),
@@ -1686,6 +1802,109 @@ mod tests {
     }
 
     #[test]
+    fn a_messages_attachment_chip_can_be_dragged_out() {
+        // A record an attachment holds is a drag source as well as a row: dragging it carries
+        // the resource's address, so a drop target elsewhere — the canvas — takes it.
+        let mut channel = demo_channel();
+        let shared = ResourceRef {
+            id: "tube.video:vid_rust_async".to_owned(),
+            ty: "tube.video".to_owned(),
+        };
+        channel.messages.push(Message {
+            id: "m_shared".to_owned(),
+            author: channel.people[0].id.clone(),
+            ts: 1_782_470_400,
+            attachments: vec![Attachment {
+                kind: "resource".to_owned(),
+                label: "Async Rust".to_owned(),
+                resource: Some(shared.clone()),
+                ..Attachment::default()
+            }],
+            ..Message::default()
+        });
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let source = keyed(&tree, "ui.DragSource", "source-page@attachment-m_shared-0")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| {
+                panic!(
+                    "the attachment is a drag source: {:?}",
+                    keyed(&tree, "ui.DragSource", "")
+                )
+            });
+        assert_eq!(
+            source.props.get("resource"),
+            Some(&Value::Text(shared.id.clone())),
+            "the drag carries the resource the attachment holds"
+        );
+        assert_eq!(
+            source.props.get("title"),
+            Some(&Value::Text("Async Rust".to_owned())),
+            "the ghost under the pointer says the resource's name"
+        );
+    }
+
+    #[test]
+    fn a_resource_attachments_chip_shows_its_title_not_its_id() {
+        // A resource the session placed is attached by its published address
+        // (`tl:so.tilo.lang.tasks:root-fjqi4yze`): the chip the message draws says what the
+        // resource is called, never the address the drag carried or a step of it
+        // (`root-fjqi4yze`).
+        const ADDRESS: &str = "tl:so.tilo.lang.tasks:root-fjqi4yze";
+        let attached = tilo_reference::Attached::resource(
+            tilo_reference::ResourceAt {
+                app: "so.tilo.lang.tasks".into(),
+                record: None,
+                reference: tilo_reference::ResourceRef::whole(
+                    "tl.so.tilo.lang.tasks.Tasks",
+                    ADDRESS,
+                    "Tasks",
+                ),
+            },
+            None,
+            "Tasks",
+        );
+        let attachment = Attachment::of(&attached);
+        assert_eq!(attachment.kind, "resource");
+        assert_eq!(attachment.label, "Tasks", "the chip says the title");
+        assert_ne!(attachment.label, ADDRESS, "never the address");
+        let shown = attachment
+            .resource
+            .clone()
+            .expect("the chip holds the resource");
+        assert_eq!(shown.id, ADDRESS, "the address is what a press places");
+        assert_eq!(shown.ty, "tl.so.tilo.lang.tasks.Tasks");
+        let mut channel = demo_channel();
+        channel.messages.push(Message {
+            id: "m_dropped".to_owned(),
+            author: channel.people[0].id.clone(),
+            ts: 1_782_470_400,
+            text: "what is left?".to_owned(),
+            attachments: vec![attachment],
+            ..Message::default()
+        });
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let row = keyed(&tree, "ui.ListRow", "@attachment-m_dropped-0")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| {
+                panic!(
+                    "the message's attachment is a row: {:?}",
+                    keyed(&tree, "ui.ListRow", "")
+                )
+            });
+        assert_eq!(
+            row.props.get("title"),
+            Some(&Value::Text("Tasks".to_owned())),
+            "the message's chip says the title"
+        );
+    }
+
+    #[test]
     fn the_composer_is_full_width_with_attach_and_send() {
         let channel = demo_channel();
         let cx = view_cx(&channel);
@@ -1906,6 +2125,97 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_carrying_a_span_draws_that_span_in_its_quote() {
+        // A reply that answers a run of a message quotes the words the person chose, never the
+        // whole message's start: the quote over it draws exactly the selected words, and the
+        // run it names is kept so the quote opens on them.
+        let answered = "The revenue curve is flat from April to June. \
+                        The cost line keeps climbing all year.";
+        let chosen = "flat from April to June";
+        let start = answered.find(chosen).expect("the words are in the message");
+        let end = start + chosen.len();
+        let mut rows = vec![
+            row(
+                "c_crit",
+                "m_asked",
+                crate::model::ME,
+                1_782_470_400,
+                answered,
+            ),
+            row(
+                "c_crit",
+                "m_other",
+                crate::model::ME,
+                1_782_470_410,
+                "and the cost line?",
+            ),
+        ];
+        let mut reply = row(
+            "c_crit",
+            "m_reply",
+            "agent:tide",
+            1_782_470_420,
+            "Yes: that stretch flattens",
+        );
+        reply.parent = Some("m_asked".to_owned());
+        reply.quoted = Some(crate::record::Quote {
+            text: chosen.to_owned(),
+            start: u64::try_from(start).expect("an offset"),
+            end: u64::try_from(end).expect("an offset"),
+        });
+        rows.push(reply);
+        let channel = Channel::read(
+            &crate::record::Chat::default(),
+            &rows,
+            "c_crit",
+            crate::model::ME,
+            &Names::default(),
+        );
+        let quoted = channel
+            .messages
+            .iter()
+            .find(|message| message.id == "m_reply")
+            .and_then(|message| message.reply_to.clone())
+            .expect("the reply carries a quote");
+        assert_eq!(quoted.excerpt, chosen, "the quote shows the selected words");
+        assert_eq!(
+            quoted.span,
+            Some(Span { start, end }),
+            "the run it names is the one that was chosen"
+        );
+        // And the page draws exactly those words in the quote, not the answered message's start.
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let quote = keyed(&tree, "ui.Quote", "@quote-m_reply")
+            .into_iter()
+            .next()
+            .expect("the reply's quote");
+        assert_eq!(
+            quote.props.get("excerpt"),
+            Some(&Value::Text(chosen.to_owned())),
+            "the quote draws the span the person answered"
+        );
+        assert!(
+            !texts(&tree)
+                .iter()
+                .any(|text| text == "The revenue curve is flat from April to June."),
+            "the whole answered message is not what the quote shows"
+        );
+        // Pressing the quote brings the answered message into view: the same press a message row
+        // takes, the system's own open of that message's resource, so a quote and the row it
+        // names land the reader on one message.
+        assert_eq!(
+            cx.effect(&quote.key, "activate"),
+            Some(tilo_view::Effect::Open {
+                target: Channel::message_resource("m_asked").expect("a message has a resource"),
+                view: None,
+            }),
+            "pressing the quote shows the message it quotes"
+        );
+    }
+
+    #[test]
     fn a_messages_avatar_stands_on_its_author_line() {
         // Every message's avatar leads the line its author's name and the time stand on: the
         // row starts its own children at the top, so the avatar of a message that carries a
@@ -2105,10 +2415,12 @@ mod tests {
                 id: "m_asked".to_owned(),
                 author: crate::model::ME.to_owned(),
                 excerpt: "Add the revenue curve".to_owned(),
+                span: None,
             }),
             work: Some(Work {
                 state: state.to_owned(),
                 detail: String::new(),
+                failure_detail: String::new(),
             }),
             ..Message::default()
         });
@@ -2166,6 +2478,7 @@ mod tests {
                 reply.work = Some(Work {
                     state: state.to_owned(),
                     detail: "The provider connection closed".to_owned(),
+                    failure_detail: String::new(),
                 });
             }
             let cx = view_cx(&channel);
@@ -2218,6 +2531,69 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_row_says_what_happened_and_keeps_the_runs_record_behind_a_disclosure() {
+        // A failed turn's row says the run's own sentence for a person — one line of what
+        // happened — never the working record a person would read as the model's reasoning or
+        // a recovery instruction written for the agent. The record is there, for whoever debugs
+        // the failure, behind a disclosure the row offers.
+        let mut channel = writing_channel("provider_failed", "");
+        if let Some(reply) = channel.messages.last_mut() {
+            reply.retry = true;
+            reply.retry_summons = Some("m_asked".to_owned());
+            reply.work = Some(Work {
+                state: "provider_failed".to_owned(),
+                detail: "The model didn't answer in time.".to_owned(),
+                failure_detail: "Model request timed out Retry inference from saved history; \
+                                 do not replay completed actions. Provider-exposed summary: \
+                                 Let me read r4, r9.."
+                    .to_owned(),
+            });
+        }
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let rows = keyed(&tree, "ui.Banner", "@failed-");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].props.get("message"),
+            Some(&Value::Text("The model didn't answer in time.".to_owned())),
+            "the row says what happened in the run's sentence"
+        );
+        // The row's own visible words — the banner, not the disclosure it offers — carry nothing
+        // of the record. The disclosure's body is the one place it lives.
+        let shown = texts(rows[0]);
+        for line in &shown {
+            assert!(
+                !line.contains("Retry inference from saved history"),
+                "the record's recovery instruction is not the row's words: {line:?}"
+            );
+            assert!(
+                !line.contains("Provider-exposed summary"),
+                "the provider's reasoning is not the row's words: {line:?}"
+            );
+            assert!(
+                !line.contains("Let me read"),
+                "model reasoning is not the row's words: {line:?}"
+            );
+        }
+        // The record is behind a disclosure on the row, so it can be opened when a person wants
+        // to know what went wrong under the hood.
+        let details = keyed(&tree, "ui.DisclosureRow", "@failed-record-");
+        assert_eq!(details.len(), 1, "the record has a disclosure");
+        assert_eq!(
+            details[0].props.get("title"),
+            Some(&Value::Text("Details".to_owned())),
+            "the disclosure says what it holds"
+        );
+        assert!(
+            texts(&details[0])
+                .iter()
+                .any(|line| line.contains("Provider-exposed summary")),
+            "the record is inside the disclosure"
+        );
+    }
+
+    #[test]
     fn a_reply_of_an_earlier_attempt_offers_no_retry() {
         // A retry moves the question to its next attempt, and the answer is a reply of its own:
         // the reply that failed stands as history, and a Retry there would ask a third time.
@@ -2233,10 +2609,12 @@ mod tests {
                 id: "m_asked".to_owned(),
                 author: crate::model::ME.to_owned(),
                 excerpt: "Add the revenue curve".to_owned(),
+                span: None,
             }),
             work: Some(Work {
                 state: "provider_complete".to_owned(),
                 detail: String::new(),
+                failure_detail: String::new(),
             }),
             ..Message::default()
         });
@@ -2276,6 +2654,7 @@ mod tests {
             edited: false,
             history: Vec::new(),
             parent: Some(summons),
+            quoted: None,
             work: Some(crate::model::AgentWork {
                 stream: Some(crate::agent_stream::AgentStream {
                     run: "7:0".to_owned(),
@@ -2311,6 +2690,7 @@ mod tests {
             Some(Work {
                 state: "provider_failed".to_owned(),
                 detail: "The model connection closed".to_owned(),
+                failure_detail: String::new(),
             }),
             "the page projects the record's failed end and its reason"
         );

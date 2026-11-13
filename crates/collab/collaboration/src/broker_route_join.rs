@@ -244,17 +244,31 @@ pub(super) async fn join_route(
     // A workspace that seals its records takes every write encrypted under the
     // record channel's keys, whoever reads the record for the app. A route
     // whose endpoint has no keys to ask for refuses each write there.
-    let sealed = matches!(
-        channel
-            .committed_document(&runtime_collab::committed_document::Request::Writes)
-            .await,
-        Ok(runtime_collab::committed_document::Reply::Writes { sealed: true })
-    );
+    //
+    // A cluster-scope route (an empty app id: discovery and presence for
+    // every app of the workspace, as an agent joins to learn the catalogue)
+    // names no app of its own, so the identity service can never grant it
+    // channel keys: it refuses the question, and a route left waiting for an
+    // answer it cannot get asks again on the timer for the whole life of the
+    // connection. It carries no record and writes nothing, so it asks for no
+    // keys and reads nothing about sealing: it stays plaintext, and its
+    // timer is never armed for it.
+    let cluster_route = spec.app_id.is_empty();
+    let sealed = if cluster_route {
+        false
+    } else {
+        matches!(
+            channel
+                .committed_document(&runtime_collab::committed_document::Request::Writes)
+                .await,
+            Ok(runtime_collab::committed_document::Reply::Writes { sealed: true })
+        )
+    };
     // A committed route's owner admits and applies each edit itself, and a
     // committing host holds no channel keys: it could neither open a sealed
     // edit nor accept cleartext on the route after one. Committed routes
     // therefore stay cleartext end to end.
-    let encrypted = asks_channel_keys && (sealed || !committed);
+    let encrypted = asks_channel_keys && !cluster_route && (sealed || !committed);
     let encryption = std::sync::Arc::new(std::sync::Mutex::new(if encrypted {
         super::super::route_keys::RouteKeys::requested()
     } else if sealed {

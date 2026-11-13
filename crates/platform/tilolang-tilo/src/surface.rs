@@ -317,6 +317,35 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
 /// The record unit, where an action writes unless it says otherwise.
 pub const RECORD_UNIT: &str = tilo_actions::surface::RECORD_UNIT;
 
+/// The names of the fields of `ty` that `edit-text` and `edit-flag` can set, from the type's
+/// metadata: a text (or rich-text) field the first, a flag field the second, in declaration
+/// order. The edit verbs take these names, never the internal field ids the document stores
+/// them under — an agent, and anyone reading a surface, chooses a field by the name the app
+/// and its views use, and `edit_action` maps that name back to the id.
+pub(crate) fn editable_field_names(ty: &TypeMeta, merge: Merge) -> Vec<String> {
+    ty.fields
+        .iter()
+        .filter(|field| match merge {
+            Merge::Text => matches!(
+                tilolang_runtime::meta::parse_ty(field.ty.trim(), ""),
+                Ok(Ty::Text | Ty::RichText)
+            ),
+            Merge::Flag => matches!(
+                tilolang_runtime::meta::parse_ty(field.ty.trim(), ""),
+                Ok(Ty::Bool)
+            ),
+        })
+        .map(|field| field.name.clone())
+        .collect()
+}
+
+/// Which kinds of field an [`edit_verbs`] verb may set: a text (plain or rich), or a flag.
+#[derive(Clone, Copy)]
+pub(crate) enum Merge {
+    Text,
+    Flag,
+}
+
 /// The surface's reading of a direct edit's value: its type, and the schema a caller reads it by.
 fn direct_edit_value(ty: ParamType) -> (FieldType, Json) {
     match ty {
@@ -329,8 +358,9 @@ fn direct_edit_value(ty: ParamType) -> (FieldType, Json) {
 /// The verbs a bound control's edit of a field names, and the one that creates the resource:
 /// [`DIRECT_EDITS`]', with the arguments a change of it carries. A text edit names the field
 /// alone — what a person typed is the change itself — and a caller may name the value it sets,
-/// so the value is one it may give.
-fn edit_verbs() -> Vec<VerbSurface> {
+/// so the value is one it may give. The field is chosen by name, from the type's fields that edit
+/// sets ([`editable_field_names`]).
+fn edit_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
     // The host creates a package's root resource on its own the first time a window wants it,
     // as a committed change of its own; receivers decide that change against this verb.
     let create = VerbSurface {
@@ -359,7 +389,16 @@ fn edit_verbs() -> Vec<VerbSurface> {
                 ParamSurface {
                     name: "field".to_owned(),
                     required: true,
-                    schema: json!({"type": "string"}),
+                    // The choices are the field names, so a caller reads the one it wants from
+                    // the list instead of guessing at an internal id.
+                    schema: json!({
+                        "type": "string",
+                        "description": "The name of the field to set.",
+                        "enum": editable_field_names(
+                            declared,
+                            if direct.value == ParamType::Boolean { Merge::Flag } else { Merge::Text },
+                        ),
+                    }),
                     ty: FieldType::Text,
                     within: None,
                 },
@@ -433,7 +472,7 @@ pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
     let mut surfaces = Vec::new();
     for ty in &meta.types {
         let mut types = TypeSet::new();
-        let mut verbs = edit_verbs();
+        let mut verbs = edit_verbs(ty);
         verbs.extend(
             meta.offered_actions()
                 .filter(|action| {

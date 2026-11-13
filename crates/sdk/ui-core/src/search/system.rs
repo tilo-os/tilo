@@ -420,6 +420,94 @@ fn named_at(words: &[String], name: &str, out: &mut Vec<usize>) -> bool {
     found
 }
 
+/// The words of `needle` that name what a resource is rather than what it is called: the ones a
+/// [`type_match_score_with`] over `ty` (with its kindred types' nouns, `kin`, and its app's
+/// names, `keywords`) leaves out. The rest is the text the resource itself must match — and what
+/// an outside origin is asked for what the query names (search.md §4, §7). Empty when no word of
+/// the query names the type.
+#[must_use]
+pub fn type_words_rest<'k>(
+    needle: &str,
+    ty: &tilo_actions::ResourceType,
+    kin: impl IntoIterator<Item = &'k tilo_actions::Noun>,
+    keywords: &[&str],
+) -> Option<String> {
+    let words = split_words(needle);
+    let kin: Vec<&tilo_actions::Noun> = kin.into_iter().collect();
+    let covered = type_coverage(&words, ty, &kin, keywords)?;
+    let rest: Vec<&str> = words
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| !covered.contains(at))
+        .map(|(_, word)| word.as_str())
+        .collect();
+    Some(rest.join(" "))
+}
+
+/// Whether `needle` names `ty` by its own noun rather than only by its app's name or a kindred
+/// type's noun: "videos" names a `Video` so, while "videos of <channel>" names a `Channel` only
+/// through its kindred type. What tells the type a query means when several of its app's types
+/// name the words — the channel the person looks for, not the videos they would search.
+#[must_use]
+pub fn named_by_own_noun(needle: &str, ty: &tilo_actions::ResourceType) -> bool {
+    let words = split_words(needle);
+    let mut at = Vec::new();
+    named_at(&words, &ty.noun.one, &mut at) | named_at(&words, &ty.noun.many, &mut at)
+}
+
+/// `needle`'s words, folded for matching.
+fn split_words(needle: &str) -> Vec<String> {
+    super::fold_search_text(needle)
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The positions in `words` a query names `ty` by (its noun or app, or a kindred type's noun):
+/// `None` when no word names it. The rule [`type_match_score_with`] scores by.
+fn type_coverage(
+    words: &[String],
+    ty: &tilo_actions::ResourceType,
+    kin: &[&tilo_actions::Noun],
+    keywords: &[&str],
+) -> Option<Vec<usize>> {
+    let type_names: Vec<String> = std::iter::once(ty.noun.clone())
+        .chain(kin.iter().map(|noun| (*noun).clone()))
+        .flat_map(|noun| [noun.one, noun.many])
+        .map(|name| super::fold_search_text(&name))
+        .collect();
+    let app_names: Vec<String> = [&ty.app.one, &ty.app.many]
+        .into_iter()
+        .map(|name| super::fold_search_text(name))
+        .chain(
+            keywords
+                .iter()
+                .map(|keyword| super::fold_search_text(keyword))
+                .filter(|keyword| !type_names.contains(keyword)),
+        )
+        .collect();
+    let mut own = Vec::new();
+    for name in [&ty.noun.one, &ty.noun.many] {
+        named_at(words, name, &mut own);
+    }
+    for name in &app_names {
+        named_at(words, name, &mut own);
+    }
+    let mut covered = own;
+    let title: Vec<String> = [&ty.app.one, &ty.app.many]
+        .into_iter()
+        .map(|name| super::fold_search_text(name))
+        .collect();
+    for noun in kin {
+        for name in [&noun.one, &noun.many] {
+            if !title.contains(&super::fold_search_text(name)) {
+                named_at(words, name, &mut covered);
+            }
+        }
+    }
+    (!covered.is_empty()).then_some(covered)
+}
+
 /// How well `needle` names a resource by what it is ([`tilo_actions::ResourceType`]):
 /// a word naming its type's noun or plural, or its app's name, matches it
 /// whatever it is called, and the rest of the query must match its text,

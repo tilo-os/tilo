@@ -133,10 +133,18 @@ impl HostStepServices for SettingsSteps {
     fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
         let argument = request.argument.map(str::to_owned);
         let (done, asked) = pending();
+        // The place the ask is in, as for the session's own steps: an agent's turn stands what a
+        // setting opens beside its conversation, the person's own step beside the place in front.
+        let beside = request
+            .actor
+            .turn()
+            .map(|turn| turn.conversation.clone())
+            .unwrap_or_default();
         self.doors.invoke_step(
             request.actor.id().to_owned(),
             request.address.clone(),
             argument,
+            beside,
             request.run.cloned(),
             done,
         );

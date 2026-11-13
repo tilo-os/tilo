@@ -1062,6 +1062,8 @@ impl AppWindow {
     fn reconcile_into_pane(&mut self, composed: &UiNode) {
         let old = self.built.take();
         let reconciler = Rc::clone(&self.reconciler);
+        // What an update builds into a composed window arrives; its first tree shows at rest.
+        let _window = ui::motion::laying_out_window(old.is_some());
         if let Some(pane) = self.shell_pane() {
             let mut reconciler = reconciler.borrow_mut();
             match &old {

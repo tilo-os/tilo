@@ -25,6 +25,8 @@ use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::{BlendMode, Fill};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::chrome::HeaderRowMetrics;
 use crate::component::{Component, Described, SlotViews};
@@ -67,6 +69,11 @@ pub struct WindowFrameProps {
     /// place's own header or the frame's.
     #[component(slot)]
     pub tabs: Option<Element>,
+    /// The resource the window's bar carries when a person picks it up, by its published
+    /// address: a place on the canvas is dragged onto a composer, or back onto the canvas, by
+    /// its own bar ([`ui.DragSource`](super::drag_source::DragSource), `shell.md` §8.1). Empty
+    /// leaves the bar no source, as a foreign window's bar has nothing to carry.
+    pub carries: Option<String>,
     /// The window's content, filling the window.
     #[component(slot(default))]
     pub body: Option<Element>,
@@ -127,6 +134,24 @@ pub struct WindowFrame {
     /// reduced motion). Drawn as a component of the shell's do: a window a view builds again
     /// each time the arrangement changes still moves rather than jumping.
     placed: crate::motion::Placed,
+    /// The resource the bar carries when it is picked up, by its published address: what a
+    /// press on the bar's empty area publishes on the drag bus once it travels past the
+    /// threshold, so a place on the canvas reaches a composer or the canvas itself by its own
+    /// bar. `None` for a window whose bar carries nothing (a foreign window's).
+    carries: Option<String>,
+    /// A press on the bar that may become a drag.
+    lift: Option<Lift>,
+    /// Where the pointer last was, in the frame's logical coordinates.
+    cursor: Point,
+}
+
+/// A press on the bar that may become a drag of the window's own bar.
+#[derive(Clone, Copy, Debug)]
+struct Lift {
+    /// Where the press began, in the frame's logical coordinates.
+    start: Point,
+    /// The press travelled past the threshold: the drag is live on the bus.
+    active: bool,
 }
 
 /// The layer holding the content, and the one holding the controls.
@@ -205,6 +230,7 @@ impl Described for WindowFrame {
             lists_actions,
             controls,
             tabs,
+            carries,
             body,
         } = props;
         let tabbed = tabs.as_deref().is_some_and(holds_tabs);
@@ -256,6 +282,9 @@ impl Described for WindowFrame {
             } else {
                 crate::motion::Placed::opened()
             },
+            carries,
+            lift: None,
+            cursor: Point::ZERO,
         }
     }
 
@@ -273,6 +302,7 @@ impl Described for WindowFrame {
         self.name = props.name;
         self.focused = props.focused;
         self.lists_actions = props.lists_actions;
+        self.carries = props.carries;
         true
     }
 
@@ -524,6 +554,53 @@ impl WindowFrame {
             bar.y0 - controls.y0,
         )
     }
+
+    /// The pointer moved while the bar is held: past the threshold the bar's resource is in
+    /// flight on the drag bus, with the window's name as its label.
+    fn carry(&mut self, point: Point) {
+        let (Some(carries), Some(lift)) = (self.carries.as_deref(), self.lift.as_mut()) else {
+            return;
+        };
+        if !lift.active && lift.start.distance(point) > crate::dnd::DRAG_START_THRESHOLD_PX {
+            lift.active = true;
+        }
+        if !lift.active {
+            return;
+        }
+        let title = self.name.clone().unwrap_or_default();
+        crate::widget::drag_bus::publish(crate::widget::drag_bus::InFlight {
+            source: self.key.clone(),
+            payload: crate::dnd::DragPayload::Custom {
+                kind: crate::widget::drag_source::RESOURCE_PAYLOAD.to_owned(),
+                blob: carries.as_bytes().to_vec(),
+            },
+            label: title,
+            pointer: point,
+            runs: vec![(self.key.clone(), self.rect)],
+        });
+    }
+
+    /// The bar was let go: `Some(true)` when the press travelled and the drag ended here (the
+    /// content sees no click), `Some(false)` when it never travelled.
+    fn let_go(&mut self) -> Option<bool> {
+        let lift = self.lift.take()?;
+        if lift.active {
+            let Some(carries) = self.carries.clone() else {
+                return Some(true);
+            };
+            crate::widget::drag_bus::end(Some(crate::widget::drag_bus::Landed {
+                source: self.key.clone(),
+                payload: crate::dnd::DragPayload::Custom {
+                    kind: crate::widget::drag_source::RESOURCE_PAYLOAD.to_owned(),
+                    blob: carries.into_bytes(),
+                },
+                pointer: self.cursor,
+            }));
+        } else {
+            crate::widget::drag_bus::end(None);
+        }
+        Some(lift.active)
+    }
 }
 
 impl Decorator for WindowFrame {
@@ -535,6 +612,80 @@ impl Decorator for WindowFrame {
 
     fn inner_mut(&mut self) -> &mut Layers {
         &mut self.layers
+    }
+
+    /// The window's bar is the handle a person picks the window up by: a press on the bar's
+    /// empty area that travels carries `carries` on the drag bus, as a
+    /// [`DragSource`](super::drag_source::DragSource) does, so a place on the canvas reaches a
+    /// composer or the canvas itself by its own bar (`shell.md` §8.1, "Dropping on the
+    /// composer"). The tabs, the controls and the app's own header buttons take their presses
+    /// first: only what the content did not take is the bar's.
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.carries.is_none() {
+            self.layers.handle_event(event, ctx);
+            return;
+        }
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let point = ctx.logical(position);
+                self.cursor = point;
+                if self.lift.is_some() {
+                    self.carry(point);
+                    if self.lift.is_some_and(|lift| lift.active) {
+                        *ctx.handled = true;
+                        return;
+                    }
+                }
+                self.layers.handle_event(event, ctx);
+            }
+            WindowEvent::CursorLeft { .. } => {
+                if self.lift.take().is_some() {
+                    crate::widget::drag_bus::end(None);
+                }
+                self.layers.handle_event(event, ctx);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.layers.handle_event(event, ctx);
+                if *ctx.handled || !self.bar.contains(self.cursor) {
+                    return;
+                }
+                self.lift = Some(Lift {
+                    start: self.cursor,
+                    active: false,
+                });
+                *ctx.focus_target = Some(ctx.node_id);
+                *ctx.handled = true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.lift.is_some() => {
+                if self.let_go() == Some(true) {
+                    *ctx.handled = true;
+                    return;
+                }
+                self.layers.handle_event(event, ctx);
+            }
+            WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == ElementState::Pressed
+                    && key.logical_key == Key::Named(NamedKey::Escape)
+                    && self.lift.is_some() =>
+            {
+                self.lift = None;
+                crate::widget::drag_bus::end(None);
+                *ctx.handled = true;
+            }
+            _ => self.layers.handle_event(event, ctx),
+        }
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.lift.is_some()
     }
 
     fn build_layout(
@@ -1098,5 +1249,108 @@ mod tests {
                 "and it asks for no frame to get there"
             );
         }
+    }
+
+    /// The window's bar is its handle: a press on the bar's empty area that travels publishes
+    /// the resource the frame carries on the drag bus, and letting go over a drop target hands
+    /// it there. A press inside the body is the content's, never the bar's.
+    #[test]
+    fn a_drag_on_the_window_bar_carries_the_resource_it_holds() {
+        use crate::widget::drag_bus;
+        use taffy::TaffyTree;
+        // A window in a pane of its own: the frame is built in a layout tree and laid out at
+        // the room the pane gives it, as a pane lays a window out, and every event is dispatched
+        // against that same tree.
+        let mut frame = Box::new(WindowFrame::from_props(
+            "w",
+            WindowFrameProps {
+                key: "w".to_owned(),
+                name: Some("Design crit".to_owned()),
+                carries: Some("chat.workspace/channels/c_crit".to_owned()),
+                body: Some(Box::new(Spacer::new())),
+                ..WindowFrameProps::default()
+            },
+        ));
+        let theme = Theme::dark();
+        let rect = Rect::new(0.0, 0.0, 480.0, 360.0);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut nodes = std::collections::HashMap::new();
+        let node = Widget::build_layout(frame.as_mut(), &mut taffy, &theme, &mut nodes);
+        // The room a pane gives the window: a frame is laid out at an exact size, as a place on
+        // the canvas or a strip's window gives it.
+        if let Ok(mut style) = taffy.style(node).cloned() {
+            style.size = taffy::Size::from_lengths(480.0_f32, 360.0_f32);
+            let _ = taffy.set_style(node, style);
+        }
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(480.0),
+                    height: taffy::AvailableSpace::Definite(360.0),
+                },
+            )
+            .expect("the window solves its layout");
+        Widget::apply_layout(frame.as_mut(), &taffy, node, rect.origin());
+        // The bar the frame lays out: where a person picks the window up.
+        let bar = frame.bar;
+        assert!(bar.height() > 0.0, "the frame draws a bar: {bar:?}");
+        let mut send = |event: &WindowEvent| {
+            let mut doc = automerge::AutoCommit::new();
+            crate::testing::Dispatch::new()
+                .doc(&mut doc)
+                .layout(&taffy, node)
+                .send(frame.as_mut(), event);
+        };
+        let (from_x, from_y) = (bar.x0 + bar.width() / 2.0, bar.center().y);
+        send(&crate::synthetic_input::cursor_moved(from_x, from_y));
+        send(&crate::synthetic_input::mouse_press());
+        for step in 1..=4 {
+            let dy = 12.0 * f64::from(step);
+            send(&crate::synthetic_input::cursor_moved(from_x, from_y + dy));
+        }
+        let in_flight = drag_bus::current();
+        // Let go over a drop target below: the drop carries the same resource.
+        let target = Rect::new(60.0, 200.0, 400.0, 320.0);
+        send(&crate::synthetic_input::cursor_moved(200.0, 260.0));
+        send(&crate::synthetic_input::mouse_release());
+        let landed = drag_bus::take("composer", target);
+        drag_bus::end(None);
+        let in_flight = in_flight.expect("the bar published what it carries");
+        assert_eq!(
+            in_flight.source, "w",
+            "the drag names the frame it came from"
+        );
+        assert_eq!(
+            in_flight.label, "Design crit",
+            "the ghost says the window's name"
+        );
+        let landed = landed.expect("the drop landed in the target it was let go over");
+        let crate::dnd::DragPayload::Custom { kind, blob } = landed.payload else {
+            panic!("the bar carries a resource");
+        };
+        assert_eq!(kind, crate::widget::drag_source::RESOURCE_PAYLOAD);
+        assert_eq!(
+            String::from_utf8(blob).expect("an address"),
+            "chat.workspace/channels/c_crit",
+            "the drop carries the resource the bar holds"
+        );
+
+        // A press inside the body travels no bar and publishes nothing: the content keeps it.
+        let (bx, by) = (bar.x0 + bar.width() / 2.0, bar.y1 + 120.0);
+        send(&crate::synthetic_input::cursor_moved(bx, by));
+        send(&crate::synthetic_input::mouse_press());
+        for step in 1..=4 {
+            send(&crate::synthetic_input::cursor_moved(
+                bx + 12.0 * f64::from(step),
+                by,
+            ));
+        }
+        let body_drag = drag_bus::current();
+        drag_bus::end(None);
+        assert!(
+            body_drag.is_none(),
+            "a press on the body is the content's, never the bar's"
+        );
     }
 }

@@ -1840,6 +1840,95 @@ fn answer_rows(app: &mut local::End, items: &[(&str, &str)]) -> bool {
     asked
 }
 
+/// An entry bound to view state (`ui.TextInput(entry: true, bind: draft)`, Chat's composer) sends
+/// what it holds, lets go of it, and takes the very next typing without a click to put the
+/// keyboard back: what the person types after a send is the next message, never the sent words
+/// with more typed after them. The app's `bound` value for the emptied draft — its own reading of
+/// what the send left — never takes the person's new words away, either.
+#[test]
+fn a_bound_entry_takes_the_next_typing_after_it_sends() {
+    use wire::Event;
+    let mut page = bound_page(
+        "ui.TextInput",
+        &[
+            ("placeholder", Value::text("Message #general")),
+            ("entry", Value::Bool(true)),
+        ],
+        Value::text("hello"),
+    );
+    if let Some(ToUi::Open { tree, .. }) = page.first_mut() {
+        tree.children[0]
+            .events
+            .insert("submit".to_owned(), Event::default());
+    }
+    let (mut app, mut harness) = drawn(&page);
+    harness.click_named("field").expect("the composer is drawn");
+    harness.relayout();
+    assert_eq!(
+        drawn_window(&mut harness).focused_control().as_deref(),
+        Some("field"),
+        "the click put the keyboard in the composer"
+    );
+    // Enter submits what the field holds; the entry clears itself and the app hears both.
+    harness.key("Enter");
+    drawn_window(&mut harness).flush();
+    harness.relayout();
+    let heard = sent(&mut app);
+    assert!(
+        heard.iter().any(|message| matches!(
+            message,
+            ToApp::Fire { key, event, value: Some(Value::Text(text)), .. }
+                if key == "field" && event == "submit" && text == "hello"
+        )),
+        "the send carried the words the field held: {heard:?}"
+    );
+    assert_eq!(
+        drawn_window(&mut harness).focused_control().as_deref(),
+        Some("field"),
+        "the entry kept the keyboard after it submitted"
+    );
+    assert_eq!(
+        shown_value(&harness, "Field").as_deref(),
+        Some(""),
+        "the entry let go of what it sent"
+    );
+    // The app reads its draft back as empty, as the cleared field told it: the field keeps
+    // holding nothing, never the sent words pushed back on it.
+    send(
+        &mut app,
+        &[ToUi::Bound {
+            lane: Lane::Root,
+            key: "field".to_owned(),
+            value: Value::text(""),
+            acked: 1,
+        }],
+    );
+    drawn_window(&mut harness).receive();
+    harness.relayout();
+    // The next words land in the field at once, with no click to bring the keyboard back.
+    harness.type_text("and then");
+    harness.relayout();
+    assert_eq!(
+        shown_value(&harness, "Field").as_deref(),
+        Some("and then"),
+        "the entry took the next typing without being clicked into again"
+    );
+    // What the person typed after the send is a fresh draft, sent as its own message: the second
+    // send carries the new words alone, never the words already sent.
+    harness.key("Enter");
+    drawn_window(&mut harness).flush();
+    let second = sent(&mut app);
+    assert!(
+        second.iter().any(|message| matches!(
+            message,
+            ToApp::Fire { key, event, value: Some(Value::Text(text)), .. }
+                if key == "field" && event == "submit" && text == "and then"
+        )),
+        "the second send carried the new words alone: {second:?}"
+    );
+}
+
+/// A list window: a shell whose overview lists rows, declaring where the window's search goes.
 fn searching_list_page(rows: i64) -> Vec<ToUi> {
     let mut list = UiNode::empty("ui.VirtualList", "list");
     list.props.insert("in_column".to_owned(), Value::Bool(true));

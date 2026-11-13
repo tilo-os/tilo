@@ -46,6 +46,9 @@ pub struct OpenAiModel {
     /// Whether it is shown pictures, set outright
     /// ([`crate::vision::VISION_ENV`]); `None` leaves its default.
     vision: Option<bool>,
+    /// The most tokens one answer may take, as its endpoint's catalogue
+    /// declares it; `None` asks the planner's default.
+    output_tokens: Option<u32>,
 }
 
 impl OpenAiModel {
@@ -78,6 +81,7 @@ impl OpenAiModel {
             },
             timeout,
             vision: None,
+            output_tokens: None,
         }
     }
 
@@ -155,6 +159,7 @@ impl PlanModel for OpenAiModel {
                 catalogue,
                 most_steps,
                 sees,
+                output_tokens: self.output_tokens,
                 timeout: self.timeout,
             },
             read,

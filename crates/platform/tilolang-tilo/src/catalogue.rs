@@ -650,6 +650,7 @@ impl Reader<'_> {
             guard: false,
             applies: false,
             uses: Vec::new(),
+            outside: Vec::new(),
             invokes: false,
         });
     }

@@ -80,28 +80,35 @@ pub(super) fn unmatched(plan: &Planner, why: &str) -> String {
 }
 
 /// How a run that the published actions decided ended, said as one sentence
-/// so the outcome does not read as a model's work.
-pub(super) fn finished(plan: &Planner, actions: usize) -> String {
+/// so the outcome does not read as a model's work. `None` for a
+/// model-planned run: its result is the model's own reply, and the agent
+/// writes no line in its place.
+pub(super) fn finished(plan: &Planner, actions: usize) -> Option<String> {
     let actions = ArgValue::from(actions);
     match plan {
-        Planner::Model { .. } => t_args("agent-done-model", &[("actions", actions)]),
+        Planner::Model { .. } => None,
         Planner::Words {
             reason: Words::NoModel,
-        } => t_args("agent-done-words-no-model", &[("actions", actions)]),
+        } => Some(t_args("agent-done-words-no-model", &[("actions", actions)])),
         Planner::Words {
             reason: Words::Asked,
-        } => t_args("agent-done-words-asked", &[("actions", actions)]),
+        } => Some(t_args("agent-done-words-asked", &[("actions", actions)])),
     }
 }
 
 /// Why a run that asked for a model has none, with the step that fixes it.
-pub(super) fn no_model(reason: &crate::model::Route) -> String {
+///
+/// A run whose model call failed says the model didn't answer, in the words a
+/// person reads; the transport's own error is the record kept beside it.
+pub(super) fn no_model(reason: &crate::model::Route) -> crate::session::Failure {
     use crate::model::{Fallback, Route};
     match reason {
-        Route::Keywords(Fallback::NoKey) => t("agent-plan-no-model"),
-        Route::Keywords(Fallback::Disabled) => t("agent-plan-models-off"),
+        Route::Keywords(Fallback::NoKey) => crate::session::Failure::said(t("agent-plan-no-model")),
+        Route::Keywords(Fallback::Disabled) => {
+            crate::session::Failure::said(t("agent-plan-models-off"))
+        }
         Route::Keywords(Fallback::Failed(error)) => {
-            t_args("agent-fail-model-call", &[("error", error.as_str().into())])
+            crate::session::Failure::spoken(&t("agent-plan-model-failed"), error)
         }
     }
 }
@@ -160,15 +167,18 @@ mod tests {
 
     #[test]
     fn an_outcome_says_whether_a_model_produced_it() {
-        assert_eq!(finished(&model(), 2), "Completed 2 actions.");
+        // A model-planned run's result is the model's own reply: the agent
+        // writes no line in its place.
+        assert_eq!(finished(&model(), 2), None);
         assert_eq!(
             finished(
                 &Planner::Words {
                     reason: Words::NoModel
                 },
                 1
-            ),
-            "Done: one action matched to the request's words, without a model."
+            )
+            .as_deref(),
+            Some("Done: one action matched to the request's words, without a model.")
         );
     }
 
@@ -189,7 +199,16 @@ mod tests {
             unmatched.contains("Einstellungen") && unmatched.contains("Agentenmodelle"),
             "{unmatched}"
         );
-        assert_eq!(finished(&model(), 1), "Eine Aktion ausgeführt.");
-        assert_eq!(finished(&model(), 2), "2 Aktionen ausgeführt.");
+        let asked = Planner::Words {
+            reason: Words::Asked,
+        };
+        assert_eq!(
+            finished(&asked, 1).as_deref(),
+            Some("Fertig: eine Aktion den Wörtern der Anfrage zugeordnet.")
+        );
+        assert_eq!(
+            finished(&asked, 2).as_deref(),
+            Some("Fertig: 2 Aktionen den Wörtern der Anfrage zugeordnet.")
+        );
     }
 }

@@ -168,6 +168,28 @@ pub struct PackageMeta {
     /// as it is then. Each is exported as `e_<id>`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub at_event: Vec<FnMeta>,
+    /// The package's `template view`s, as source: a template is expanded where a caller writes
+    /// the call, its body the caller's UI, so another package that imports this one expands it
+    /// too (`shell.desk_style(a, false) { ... }`). Its body names this package's helpers, so it
+    /// is carried as the source the importer parses, and expanded in this package's namespace.
+    ///
+    /// It travels in the metadata JSON, because a `PackageMeta` handed to a compiler is the only
+    /// way an importer learns of another package's templates. [`Module hash`](Self::module_hash)
+    /// is computed over the module without this section, so a template's text never reaches it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub templates: Vec<TemplateMeta>,
+}
+
+/// One of a package's `template view`s, as the source it was written in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateMeta {
+    /// The template's name: what a caller writes after the package's alias
+    /// (`shell.desk_style`).
+    pub name: String,
+    /// The file it is declared in, for a diagnostic that names it.
+    pub file: String,
+    /// The declaration, from `template view` to its closing brace, as its author wrote it.
+    pub source: String,
 }
 
 /// The views a window of a type switches between: the type's id and the views' ids, in the
@@ -676,6 +698,12 @@ pub struct ActionMeta {
     /// its writes; one that does not is one change and is never replayed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub invokes: bool,
+    /// The outside capabilities its body's `outside(...)` calls name, as written
+    /// (`youtube.search`, `smtp.send`), in order: what the platform tags the action with
+    /// (`outside:youtube.search`), so a query naming a kind of an outside service finds the
+    /// action of that service's app that asks it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outside: Vec<String>,
 }
 
 impl ActionMeta {

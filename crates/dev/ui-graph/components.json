@@ -923,6 +923,10 @@
         {
           "name": "dismiss",
           "doc": "The close button was pressed. Without it there is no close button."
+        },
+        {
+          "name": "activate",
+          "doc": "The quote was pressed: show the message it quotes, or the run of it it names, where that message stands. Without it the quote is read, not pressed."
         }
       ],
       "semantics": {
@@ -1764,6 +1768,46 @@
       }
     },
     {
+      "name": "DragSource",
+      "doc": "A view a person can pick up and drag to a drop target in the same window: a search hit, a row of a list, a message's attachment. What it carries is `resource`; the ghost under the pointer says `title`.\nA press that does not travel is the content's own, so a dragged row still opens when clicked and a dragged chip still presses.",
+      "props": [
+        {
+          "name": "resource",
+          "doc": "The resource the drag carries, as its published address (`chat.workspace/messages/m1`): what a drop target receives.",
+          "type": "text",
+          "required": true,
+          "positional": true,
+          "data": true
+        },
+        {
+          "name": "title",
+          "doc": "What the drag's ghost says under the pointer, and what assistive technology reads instead of the resource's address.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "content",
+          "doc": "What it draws.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "activate",
+          "doc": "It was picked up and let go without travelling: the content's own press did not take it. Reported so a source that wraps something inert still says what happened.",
+          "press": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "title"
+      }
+    },
+    {
       "name": "Drawing",
       "doc": "Shapes drawn with the design system over a box of their own: a ring, a gauge, a small chart, a diagram. Colours are theme roles and widths tokens; a press reports which shape.",
       "props": [
@@ -1835,6 +1879,28 @@
       "semantics": {
         "role": "Image",
         "label": "label"
+      }
+    },
+    {
+      "name": "DropTarget",
+      "doc": "A view that takes what another view dragged to it: a chat composer takes an attachment, a dock takes a resource. A drag over it draws the toolkit's drop line, and letting go inside it reports what the drag carried.\nIt takes a resource dragged out of any [`ui.DragSource`](super::DragSource) and a run's item ([`ui.DragItem`](super::DragItem)); nothing else, so a file dragged in from another application is not silently swallowed (`ui.DropZone` is the component for files).",
+      "slots": [
+        {
+          "name": "content",
+          "doc": "What it draws.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "drop",
+          "doc": "A resource was dropped on it: carries the resource the drag carried, as its address. The view decides what to do with it — a composer attaches it to the draft, a canvas places it where it was dropped.",
+          "value": "resource"
+        }
+      ],
+      "semantics": {
+        "role": "Group"
       }
     },
     {
@@ -2764,6 +2830,38 @@
           },
           "many": true,
           "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "drop",
+          "doc": "A resource was dragged onto the map and let go: carries the resource the drag carried, as its address, and where it was let go — its canvas x, then its canvas y. The view decides what to do with it; the shell's canvas places it there.",
+          "value": "resource",
+          "at": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "press",
+          "doc": "The pointer pressed on the map's empty surface — not on a pin — and let go there, having travelled no further than a click: carries the canvas point under the press, its x then its y, kept apart from a drag and a middle drag. What it reports is where the press landed at the camera the map looks with, so the point is right at any pan or zoom; the view decides what stands there (the shell's canvas opens its caret at it).",
+          "value": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "frame",
+          "doc": "A left drag across the map's empty surface, let go after travelling: carries the dragged rectangle in canvas pixels, its x, its y, its width and its height. The rectangle is drawn as a light outline while the drag lasts (the theme's focus colour, never a colour of its own), and the view lays what it answers into that rectangle.",
+          "value": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "context",
+          "doc": "The pointer's right button pressed on the map: carries the key of the pin standing under it — empty text where the press landed on the map's own empty surface — and the canvas point under the pointer, its x then its y. What the view does with it is its own: the shell's canvas opens the pointed place's menu, or the canvas's own for free space (`canvas.md` §1, §6).",
+          "value": "text",
+          "at": {
+            "list": "int"
+          }
         }
       ],
       "semantics": {
@@ -4942,6 +5040,18 @@
       "doc": "A field to type text into, bound to the text it edits. Each edit is spliced into that text, never written over it, so people typing in the same text at once all keep what they typed.",
       "props": [
         {
+          "name": "text",
+          "doc": "Text it shows when it binds nothing: read and copied, never edited (a message body, a log). A field given one is read-only; what it reports of its selection is still [`Self::select`].",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "read_only",
+          "doc": "Whether it is read and copied but never edited, even when it binds a field: a value shown for reading.",
+          "type": "bool"
+        },
+        {
           "name": "placeholder",
           "doc": "What to type, shown while it is empty.",
           "type": {
@@ -5002,6 +5112,11 @@
         {
           "name": "submit",
           "doc": "Enter was pressed: what was typed is done (a list's entry), carried with it. With it, Enter ends the text rather than breaking its line; Shift+Enter still breaks a wrapping field's line.",
+          "value": "text"
+        },
+        {
+          "name": "select",
+          "doc": "The selection settled (a drag let go, a double click, a select all, shift and an arrow key): carries the run selected as `<start>:<end>`, byte offsets into the text, or nothing when the selection collapsed. A read-only field reports it so what reads it — a message answered on just the words someone chose — can act on the run; a field being typed in keeps its selection private.",
           "value": "text"
         }
       ],
@@ -5753,6 +5868,13 @@
           "name": "lists_actions",
           "doc": "The shell lists this window's actions where the person reaches them (the desktop bar's window menu): its header's actions that do not fit give way with no door of their own. Without it what does not fit goes behind the header's door.",
           "type": "bool"
+        },
+        {
+          "name": "carries",
+          "doc": "The resource the window's bar carries when a person picks it up, by its published address: a place on the canvas is dragged onto a composer, or back onto the canvas, by its own bar ([`ui.DragSource`](super::drag_source::DragSource), `shell.md` §8.1). Empty leaves the bar no source, as a foreign window's bar has nothing to carry.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "slots": [

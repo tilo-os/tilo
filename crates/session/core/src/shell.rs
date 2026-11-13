@@ -243,6 +243,9 @@ pub struct DeskReading {
     /// The running applications' tray items, in the order they registered.
     #[serde(default)]
     pub tray: Vec<TrayReading>,
+    /// The applications installed on this device, as the launcher lists and opens them.
+    #[serde(default)]
+    pub apps: Vec<AppReading>,
     /// The desk styles every installed package offers, as the session finds them (shell.md
     /// §6): each a view of the arrangement, listed by its own doc line, so the person's switch
     /// offers every style wherever it was written.
@@ -275,8 +278,8 @@ pub struct DeskStyleReading {
 
 /// The arrangement's readings, which a shell reads beside the desk's: what the person arranged.
 pub use crate::arrangement::{
-    ArrangementPlaceReading, ArrangementReading, ArrangementRowReading, ArrangementStripReading,
-    ArrangementWorkspaceReading,
+    ArrangementPlaceReading, ArrangementQueryReading, ArrangementReading, ArrangementRefReading,
+    ArrangementRowReading, ArrangementStripReading, ArrangementWorkspaceReading,
 };
 
 /// A running application's tray item, as the bar shows it.
@@ -289,6 +292,20 @@ pub struct TrayReading {
     /// Whether choosing it opens its menu rather than its window.
     #[serde(default)]
     pub menu: bool,
+}
+
+/// An application installed on this device, as the launcher lists it (a `session.application`):
+/// its package id which `open-app` names, its name in the person's language, its glyph, and its
+/// category and description when it named them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppReading {
+    pub key: String,
+    pub name: String,
+    pub icon: String,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub description: String,
 }
 
 /// A question the session puts to the person about themselves, waiting on their own avatar.

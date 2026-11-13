@@ -296,12 +296,6 @@ impl ChatApp {
             if !stream.detail.is_empty() {
                 lines.push(stream.detail.clone());
             }
-            if stream
-                .finish
-                .is_some_and(|finish| finish != crate::agent_stream::AgentFinish::Complete)
-            {
-                lines.push(crate::i18n::t("chat-agent-recovery"));
-            }
             if self.expanded_agent.contains(&m.id) && !stream.reasoning.is_empty() {
                 lines.push(crate::i18n::t("chat-agent-provider-reasoning"));
                 lines.push(stream.reasoning.clone());
@@ -909,6 +903,7 @@ mod tests {
             edited: false,
             history: Vec::new(),
             parent: None,
+            quoted: None,
             reactions: Vec::new(),
             mentions: Vec::new(),
             attachments: Vec::new(),
