@@ -43,7 +43,6 @@ use tilo_actions::{
 use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, InputEvent, Selection};
 
-use tilo_desktop::chrome::ActiveExposure;
 use tilo_desktop_model::window_share::{
     mapped_window, window_node, window_of_node, window_share_id, window_shares,
 };
@@ -208,6 +207,8 @@ struct Asked {
     at: Instant,
     /// The largest picture its hardware decoders take, by codec: what its stream is encoded for.
     decode: Vec<SurfaceDecodeLimit>,
+    /// What the workspace calls it, which is how the bar names it ([`viewer`]).
+    name: String,
 }
 
 /// A window another member shares, as this session shows it.
@@ -368,31 +369,6 @@ impl WindowShares {
     /// Have `governor` write this session's shares from now on, never the session itself.
     pub(crate) fn governed_by(&mut self, governor: Rc<dyn ShareGovernor>) {
         self.governor = Some(governor);
-    }
-
-    /// What the bar says is being shared: each member viewing a window of this device, and whether
-    /// it may control it.
-    pub(crate) fn exposures(&self) -> Vec<ActiveExposure> {
-        let mut exposures = Vec::new();
-        for (tab, hosted) in &self.hosted {
-            for peer in self.viewers(*tab) {
-                exposures.push(ActiveExposure {
-                    peer,
-                    surface: *tab,
-                    can_control: hosted.open || hosted.controlled.contains(&peer),
-                });
-            }
-        }
-        for tab in self.pages.keys() {
-            for peer in self.viewers(*tab) {
-                exposures.push(ActiveExposure {
-                    peer,
-                    surface: *tab,
-                    can_control: false,
-                });
-            }
-        }
-        exposures
     }
 
     /// The members viewing `tab` of this device: the ones that asked to, in order.
@@ -1705,6 +1681,7 @@ impl WindowShares {
         }
         let now = Instant::now();
         let mut changed = false;
+        let name = viewer::name_of(sync, workspace, device);
         let named: HashSet<TabId> = views
             .iter()
             .map(|view| view.tab)
@@ -1718,6 +1695,11 @@ impl WindowShares {
                     asked.decode = decode.to_vec();
                     changed = true;
                 }
+                // What names it may be heard after it first asked.
+                if asked.name != name {
+                    asked.name.clone_from(&name);
+                    changed = true;
+                }
             } else {
                 self.asked.insert(
                     (*tab, peer),
@@ -1725,6 +1707,7 @@ impl WindowShares {
                         device,
                         at: now,
                         decode: decode.to_vec(),
+                        name: name.clone(),
                     },
                 );
                 changed = true;
@@ -2864,6 +2847,7 @@ fn unwatch_action() -> ActionSpec {
 
 mod menu;
 mod reading;
+mod viewer;
 pub(crate) use menu::{follow_asks, reading_for_menus};
 
 #[cfg(all(test, target_os = "linux"))]

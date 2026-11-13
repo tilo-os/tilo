@@ -1182,6 +1182,7 @@ fn a_shared_window_reaches_the_member_showing_it() {
             peer: viewer.sync.peer(),
             surface: tab,
             can_control: false,
+            name: String::new(),
         }],
         "the bar's sharing indicator says who is watching what"
     );
@@ -2262,7 +2263,13 @@ fn person(seed: u8) -> String {
 /// The device `seed` said who it is on `viewer` 's plane: the certificate a session says when it
 /// starts, which names the device it runs on.
 fn heard(viewer: &Member, seed: u8, label: &str) {
-    let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+    heard_of(viewer, seed, seed, label);
+}
+
+/// The device `seed` said on `viewer` 's plane that it is a device of the person whose root key
+/// `of` makes: two devices of one person say certificates the same root signed.
+fn heard_of(viewer: &Member, seed: u8, of: u8, label: &str) {
+    let root = ed25519_dalek::SigningKey::from_bytes(&[of; 32]);
     let mut cert = tilo_user_identity::DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: *device(seed).as_bytes(),

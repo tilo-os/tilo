@@ -508,6 +508,17 @@ impl Presence {
             .unwrap_or_default()
     }
 
+    /// What `workspace` heard of the device `device` beside this one: the person behind it once a
+    /// certificate named them, what the device calls itself and the name its person goes by. What
+    /// names who views a window of this device.
+    #[must_use]
+    pub fn workspace_device(&self, workspace: &str, device: EndpointId) -> Option<Shown> {
+        let plane = self.plane.borrow();
+        let held = plane.workspaces.iter().find(|held| held.id == workspace)?;
+        let member = held.board.member(*device.as_bytes())?;
+        Some(presence::shown(member, now_ms()))
+    }
+
     /// Say what this device is, now, in the workspace in front: only what changed since its last
     /// words leaves, under the board's one schedule.
     fn say_own(&self) {

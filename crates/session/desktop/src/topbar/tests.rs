@@ -1862,6 +1862,7 @@ fn live_share_is_persistent_visible_named_and_accessible() {
             peer: 7,
             surface: 42,
             can_control: true,
+            name: String::new(),
         }]);
     let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
     lay_out_and_draw(&mut bar, 1600.0);
@@ -1903,16 +1904,19 @@ fn disclosure_attributes_each_surface_to_its_actual_viewer() {
             peer: 7,
             surface: 42,
             can_control: false,
+            name: String::new(),
         },
         crate::chrome::ActiveExposure {
             peer: 9,
             surface: 43,
             can_control: true,
+            name: String::new(),
         },
         crate::chrome::ActiveExposure {
             peer: 7,
             surface: 44,
             can_control: true,
+            name: String::new(),
         },
     ]);
     let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
@@ -1958,6 +1962,7 @@ fn agent_viewer_is_never_described_as_a_person() {
             peer: 9,
             surface: 42,
             can_control: false,
+            name: String::new(),
         }]);
     let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
 
@@ -1972,6 +1977,75 @@ fn agent_viewer_is_never_described_as_a_person() {
         Some("Agent watching: Release Notes Agent"),
         "critical privacy state must precede the elidable display name"
     );
+}
+
+/// A viewer no row of the roster carries goes by what its share says the workspace calls it: the
+/// person's own other device by that device's name. One nothing names is said in words. Its
+/// handle means nothing to anyone, and stands nowhere on the bar.
+#[test]
+fn a_viewer_the_roster_does_not_carry_is_named_by_its_share_or_in_words() {
+    let mut tree = DesktopTree {
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
+        ..Default::default()
+    };
+    tree.active = tree.workspaces[0].slot;
+    tree.workspaces[0]
+        .strips
+        .push(shared_windows(&[(42, "Budget")]));
+    let peer = 0x9ab6_a25b_15de_4c07_u64;
+    // What the pill paints and what the people control tells a reader, of the one viewer its share
+    // calls `name` .
+    let said = |name: &str| {
+        let chrome = super::fixture::FixtureChrome::new(tree.clone());
+        chrome
+            .borrow_mut()
+            .set_active_exposures(vec![crate::chrome::ActiveExposure {
+                peer,
+                surface: 42,
+                can_control: false,
+                name: name.to_owned(),
+            }]);
+        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+        lay_out_and_draw(&mut bar, 1600.0);
+        let pill = bar
+            .placed
+            .sharing
+            .as_ref()
+            .map(|(label, _)| label.clone())
+            .expect("a viewed window paints the pill");
+        (pill, bar.control_name(TopBarChrome::CONTROL_COLLABORATORS))
+    };
+    let handles = [format!("{peer:x}"), peer.to_string()];
+    let shows_no_handle = |words: &str| !handles.iter().any(|handle| words.contains(handle));
+
+    let (pill, disclosure) = said("Framework");
+    assert_eq!(
+        pill, "Watching: Framework",
+        "the person's own other device goes by its name"
+    );
+    assert!(
+        disclosure.contains("Framework") && disclosure.contains("view only Budget"),
+        "{disclosure}"
+    );
+    assert!(shows_no_handle(&pill) && shows_no_handle(&disclosure));
+
+    let (pill, disclosure) = said("");
+    assert_eq!(
+        pill, "Watching: another device",
+        "a viewer nothing names is said in words"
+    );
+    assert!(
+        disclosure.contains("another device") && disclosure.contains("view only Budget"),
+        "{disclosure}"
+    );
+    assert!(shows_no_handle(&pill) && shows_no_handle(&disclosure));
+
+    // A key is no name either, whoever sent it as one.
+    let key = "9f".repeat(32);
+    let (pill, disclosure) = said(&key);
+    assert_eq!(pill, "Watching: another device");
+    assert!(!disclosure.contains(&key), "{disclosure}");
 }
 
 #[test]
@@ -2021,6 +2095,7 @@ fn disclosure_keeps_identity_and_target_when_user_switches_workspaces() {
             peer: 9,
             surface: 42,
             can_control: true,
+            name: String::new(),
         }]);
     let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
     let name = bar.control_name(TopBarChrome::CONTROL_COLLABORATORS);

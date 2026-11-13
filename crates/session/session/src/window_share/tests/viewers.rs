@@ -391,6 +391,7 @@ fn a_shared_window_reaches_both_members_showing_it() {
                 peer: *peer,
                 surface: tab,
                 can_control: *can_control,
+                name: String::new(),
             })
             .collect::<Vec<_>>(),
         "the bar's sharing indicator says both are watching the window"
@@ -601,6 +602,7 @@ fn a_member_that_stops_showing_a_shared_window_ends_its_own_stream_only() {
             peer: staying,
             surface: tab,
             can_control: false,
+            name: String::new(),
         }],
         "the bar's sharing indicator names the one member still watching"
     );
@@ -710,5 +712,48 @@ fn a_member_that_stopped_showing_a_shared_window_no_longer_reaches_it() {
         seats(&three.host),
         kept,
         "the member still showing the window acts at the seat it had"
+    );
+}
+
+/// The person's own other device views a window this one shares: the bar's sharing indicator names
+/// it by what that device calls itself, as the certificate it said names it, and never by its
+/// handle.
+#[test]
+fn the_persons_own_other_device_viewing_a_window_goes_by_its_device_name() {
+    tilo_window_share::flatpak_share::read_encoders();
+    // Both devices are the one person's: the same root signed the certificate each says.
+    let own = person(0x58);
+    let salt = Options::default().salt;
+    let mut host = member_as(
+        0x58,
+        governed(own_desk(), &own, &[]),
+        salt,
+        Some(own.clone()),
+    );
+    let mut window = Some(mapped(&mut host.session, APP));
+    let tab = tab_of(&host.session, APP);
+    share(&mut host, APP, tab);
+    let mut viewer = member_as(
+        0x59,
+        governed(showing(host.sync.publisher(), APP, tab), &own, &[]),
+        salt,
+        Some(own),
+    );
+    heard_of(&host, 0x59, 0x58, "Phone");
+    heard_of(&viewer, 0x58, 0x58, "Framework");
+
+    watch(&mut viewer, tab);
+    viewing(&mut host, &mut window, &mut viewer, tab);
+
+    let exposures = host.session.shared.window_shares.borrow().exposures();
+    assert_eq!(
+        exposures,
+        vec![tilo_desktop::chrome::ActiveExposure {
+            peer: viewer.sync.peer(),
+            surface: tab,
+            can_control: false,
+            name: "Phone".to_owned(),
+        }],
+        "the bar names the person's own other device by what it calls itself"
     );
 }

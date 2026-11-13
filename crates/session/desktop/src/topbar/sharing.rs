@@ -195,27 +195,32 @@ impl TopBarChrome {
         (peers.len(), controllers.len(), surfaces.len())
     }
 
-    /// Named viewers for disclosure prose. Transport ids are joined to the active workspace's live
-    /// roster through `Collaborator::session` ; an unknown session remains visible under its
-    /// deterministic peer handle.
+    /// Named viewers for disclosure prose. A transport id is joined to the active workspace's live
+    /// roster through `Collaborator::session` ; a viewer no row carries goes by what its share says
+    /// the workspace calls it, and one nothing names is said in words. A handle or a key means
+    /// nothing to a person and is never shown as a name.
     pub(super) fn sharing_viewers(&self) -> Vec<(u64, String, Option<bool>, bool)> {
         let Some(chrome) = self.chrome.as_ref() else {
             return Vec::new();
         };
         let snapshot = chrome.snapshot();
-        let mut authority = Vec::<(u64, bool)>::new();
+        let mut authority = Vec::<(u64, bool, &str)>::new();
         for row in &snapshot.active_exposures {
-            if let Some((_, can_control)) = authority.iter_mut().find(|(peer, _)| *peer == row.peer)
+            if let Some((_, can_control, name)) =
+                authority.iter_mut().find(|(peer, ..)| *peer == row.peer)
             {
                 *can_control |= row.can_control;
+                if name.is_empty() {
+                    *name = row.name.as_str();
+                }
             } else {
-                authority.push((row.peer, row.can_control));
+                authority.push((row.peer, row.can_control, row.name.as_str()));
             }
         }
-        authority.compact_sort_by_key(|(peer, _)| *peer);
+        authority.compact_sort_by_key(|(peer, ..)| *peer);
         let tree = chrome.tree();
         let mut viewers = Vec::new();
-        for (peer, can_control) in authority {
+        for (peer, can_control, name) in authority {
             if let Some((workspace, participant)) = tree.workspaces.iter().find_map(|workspace| {
                 workspace
                     .collaborators
@@ -231,7 +236,9 @@ impl TopBarChrome {
                 });
                 viewers.push((peer, participant.name.clone(), Some(is_agent), can_control));
             } else {
-                viewers.push((peer, format!("p{peer:016x}"), None, can_control));
+                let name = ui::presence::shown_name(name)
+                    .map_or_else(|| t("topbar-sharing-unnamed-viewer"), str::to_owned);
+                viewers.push((peer, name, None, can_control));
             }
         }
         viewers

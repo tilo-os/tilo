@@ -22,6 +22,8 @@ topbar-sharing-count = { $viewers } { $viewers ->
        *[other] sehen
     } zu
 topbar-sharing-unknown-window = ein Fenster
+# Wer ein geteiltes Fenster sieht, wenn nichts ihn benennt, nach „Sieht zu:“ oder „Steuert:“.
+topbar-sharing-unnamed-viewer = ein anderes Gerät
 topbar-sharing-window-in-workspace = { $window } in { $workspace }
 topbar-watching-count = +{ $count } { $count ->
         [one] schaut zu

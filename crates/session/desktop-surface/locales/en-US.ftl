@@ -13,6 +13,8 @@ topbar-sharing-session-viewing = Watching: { $name }
 topbar-sharing-count-controlling = { $viewers } watching, { $controllers } in control
 topbar-sharing-count = { $viewers } watching
 topbar-sharing-unknown-window = a window
+# Who views a shared window when nothing names them, after "Watching:" or "In control:".
+topbar-sharing-unnamed-viewer = another device
 topbar-sharing-window-in-workspace = { $window } in { $workspace }
 topbar-watching-count = +{ $count } watching
 topbar-watching-description = { $count } { $count ->
