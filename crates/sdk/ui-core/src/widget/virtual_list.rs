@@ -63,7 +63,7 @@ mod jump;
 mod reordering;
 use edit::{RenameCallback, RenameField};
 #[path = "virtual_list_lift.rs"]
-mod lift;
+pub(super) mod lift;
 #[path = "virtual_list_press.rs"]
 mod press;
 #[path = "virtual_list_row_group.rs"]

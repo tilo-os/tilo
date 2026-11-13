@@ -63,7 +63,11 @@ impl<M: ListModel> VirtualList<M> {
     pub(super) fn collect_row_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
         let first = regions.len();
         for row in self.mounted.get(self.placed_near()).unwrap_or_default() {
+            let before = regions.len();
             row.widget.collect_damage(regions);
+            if regions.len() > before {
+                self.collect_row_frame_damage(row, regions);
+            }
         }
         // The field renaming a row in place draws over that row as part of the
         // list, and says where its own pixels changed.
@@ -73,6 +77,38 @@ impl<M: ListModel> VirtualList<M> {
         if let Some(changed) = regions.get_mut(first..) {
             for rect in changed {
                 *rect = rect.intersect(self.rect);
+            }
+        }
+    }
+
+    /// What the list paints around a row it repaints, past the row's own box: the selection lift
+    /// stands a bleed outside what the row shows, and the ring of the row holding the keyboard
+    /// stands outside the row, both drawn by the list and neither covered by the row's damage.
+    fn collect_row_frame_damage(
+        &self,
+        row: &super::MountedRow<M::Key>,
+        regions: &mut Vec<vello::kurbo::Rect>,
+    ) {
+        let Some(row_rect) = self.row_box(row.index) else {
+            return;
+        };
+        let mut frame = row_rect;
+        if row.selection.selected && !self.delegate_selection {
+            let content = crate::widget::row_content_box(row.widget.as_ref()).unwrap_or(row_rect);
+            frame = frame.union(super::lift::selection_around(row_rect, content, self.lift));
+        }
+        if self.is_focused && self.focused_key.as_ref() == Some(&row.key) {
+            frame = frame.union(row_rect.inset(-2.0));
+        }
+        let shown = row.widget.get_rect();
+        for strip in [
+            vello::kurbo::Rect::new(frame.x0, frame.y0, shown.x0, frame.y1),
+            vello::kurbo::Rect::new(shown.x1, frame.y0, frame.x1, frame.y1),
+            vello::kurbo::Rect::new(shown.x0, frame.y0, shown.x1, shown.y0),
+            vello::kurbo::Rect::new(shown.x0, shown.y1, shown.x1, frame.y1),
+        ] {
+            if strip.width() > 0.0 && strip.height() > 0.0 {
+                regions.push(strip.intersect(frame));
             }
         }
     }
