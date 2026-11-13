@@ -924,6 +924,48 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
             );
         }
     }
+    // Phase `a_view_said_again_reaches_the_windows_device_each_time`.
+    {
+        let [a, mut b] = two(linked(47, 2).await);
+        let (cmd_a, a_id, b_id) = (&a.cmd, a.id, b.id);
+        // A viewer says which windows it views every few seconds, in the same bytes each time,
+        // and the device hosting them stops naming a viewer it no longer hears: every saying
+        // arrives, none is dropped as a copy of the first.
+        for _ in 0..3 {
+            cmd_a
+                .send(NetCmd::PublishWorkspaceControl {
+                    ws: 47,
+                    msg: NeighbourMsg::SurfaceViewRequest {
+                        peer: crate::behaviour::peer_liveness_handle(&a_id),
+                        room: "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c".into(),
+                        views: vec![neighbour_wire::SurfaceView {
+                            tab: 7,
+                            width: 800,
+                            height: 600,
+                        }],
+                        decode: Vec::new(),
+                    },
+                    target: b_id,
+                })
+                .await
+                .unwrap();
+        }
+        let mut heard = 0;
+        while heard < 3 {
+            let event = tilo_test_env::within("a viewer's word on rx_b", b.rx.recv())
+                .await
+                .unwrap();
+            if matches!(
+                event,
+                NetEvent::Msg {
+                    msg: NeighbourMsg::SurfaceViewRequest { .. },
+                    ..
+                }
+            ) {
+                heard += 1;
+            }
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
