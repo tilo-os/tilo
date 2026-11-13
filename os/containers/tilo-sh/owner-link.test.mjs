@@ -6,7 +6,7 @@
 // content type that keeps another origin's page from posting one.
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {mkdtempSync, readFileSync, statSync, existsSync} from 'node:fs';
+import {existsSync, mkdtempSync, readFileSync, rmSync, statSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {after, before, test} from 'node:test';
@@ -35,6 +35,7 @@ const wait = {
   },
   after: async () => {
     child?.kill();
+    rmSync(state, {recursive: true, force: true});
   },
 };
 
