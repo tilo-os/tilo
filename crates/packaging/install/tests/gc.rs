@@ -1,14 +1,11 @@
-//! `tilo-install gc` and the collection after every change, through the
-//! real binary: runtime builds no installed package runs on go, pinned and
-//! freshly installed ones stay, and a collection a crash stopped halfway is
-//! finished by the next change without a half-deleted build ever being
-//! selectable.
+//! `tilo-install gc` and the collection after every change, through the real binary: runtime builds
+//! no installed package runs on go, pinned and freshly installed ones stay, and a crash halfway
+//! through a collection is finished by the next change.
 
 use std::path::Path;
 
 use super::{Env, identity_file};
 
-/// Bytes of the regular files under `dir`.
 fn disk_bytes(dir: &Path) -> u64 {
     let mut total = 0u64;
     let mut stack = vec![dir.to_path_buf()];
@@ -27,9 +24,8 @@ fn disk_bytes(dir: &Path) -> u64 {
 
 #[test]
 fn runtime_updates_leave_only_the_build_the_app_runs_on() {
-    // Each update moves the app to a new runtime build; the builds it left
-    // stay through the install's grace period and go at the next collection
-    // after it.
+    // Each update moves the app to a new runtime build; the ones left stay through the grace period
+    // and go at the next collection.
     const UPDATES: usize = 4;
     const TOOLKIT_BYTES: usize = 256 * 1024;
     let env = Env::new();
@@ -43,8 +39,7 @@ fn runtime_updates_leave_only_the_build_the_app_runs_on() {
         let (version, bundle) = env.bundle(&name, &toolkit, &runtime_identity);
         let runtime = format!("tilo-runtime/{version}");
         let package = env.runtime_tapp(&name, &bundle, &runtime);
-        // Each build after the first replaces the one runtime package's
-        // catalogue record, so it is installed as a replacement.
+        // Each build after the first replaces the runtime package's catalogue record.
         let (ok, out) = env.cmd(&[
             "install",
             package.to_str().unwrap(),
@@ -73,7 +68,6 @@ fn runtime_updates_leave_only_the_build_the_app_runs_on() {
 
     let (current, retired) = versions.split_last().unwrap();
 
-    // Phase `a_dry_run_names_the_builds_and_removes_none`.
     let (ok, out) = env.cmd(&["gc", "--dry-run", "--grace-secs", "0"]);
     assert!(ok, "{out}");
     for version in retired {
@@ -84,7 +78,6 @@ fn runtime_updates_leave_only_the_build_the_app_runs_on() {
     }
     assert_eq!(disk_bytes(&root), before);
 
-    // Phase `collection_keeps_only_the_build_an_installed_package_names`.
     let (ok, out) = env.cmd(&["gc", "--grace-secs", "0"]);
     assert!(ok, "{out}");
     let after = disk_bytes(&root);
@@ -109,7 +102,6 @@ fn runtime_updates_leave_only_the_build_the_app_runs_on() {
         "{out}"
     );
 
-    // Phase `uninstalling_the_last_app_frees_its_runtime_after_the_grace_period`.
     let (ok, out) = env.cmd(&["uninstall", "so.tilo.linked", "--keep-state"]);
     assert!(ok, "{out}");
     assert!(
@@ -137,8 +129,7 @@ fn pinned_and_freshly_installed_runtimes_survive_collection() {
     ]);
     assert!(ok, "{out}");
     let package = env.runtime_tapp("fresh", &fresh_bundle, &format!("tilo-runtime/{fresh}"));
-    // A second build of the one runtime package is a replacement: the
-    // catalogue holds one verified record per package id.
+    // A second build is a replacement: the catalogue holds one verified record per package id.
     let (ok, out) = env.cmd(&[
         "install",
         package.to_str().unwrap(),
@@ -147,8 +138,7 @@ fn pinned_and_freshly_installed_runtimes_survive_collection() {
     ]);
     assert!(ok, "{out}");
 
-    // Phase `nothing_names_them_and_both_stay`: one is pinned, the other was
-    // installed moments ago (an app's first open installs its runtime first).
+    // Nothing names either, and both stay: one is pinned, the other was installed moments ago.
     let (ok, out) = env.cmd(&["gc"]);
     assert!(ok, "{out}");
     assert!(out.contains(&format!("runtime {kept} (pinned)")), "{out}");
@@ -160,13 +150,11 @@ fn pinned_and_freshly_installed_runtimes_survive_collection() {
     );
     assert!(env.installed_bundle(&kept).exists() && env.installed_bundle(&fresh).exists());
 
-    // Phase `past_the_grace_period_only_the_pin_keeps_one`.
     let (ok, out) = env.cmd(&["gc", "--grace-secs", "0"]);
     assert!(ok, "{out}");
     assert!(env.installed_bundle(&kept).exists(), "{out}");
     assert!(!env.installed_bundle(&fresh).exists(), "{out}");
 
-    // Phase `an_unpinned_runtime_goes`.
     let (ok, out) = env.cmd(&["runtime", "unpin", kept.as_str()]);
     assert!(ok, "{out}");
     let (ok, out) = env.cmd(&["gc", "--grace-secs", "0"]);
@@ -183,8 +171,8 @@ fn an_install_finishes_the_collection_a_crash_left_halfway() {
     let package = env.runtime_tapp("one", &bundle, &format!("tilo-runtime/{version}"));
     let (ok, out) = env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"]);
     assert!(ok, "{out}");
-    // A collection was killed after taking a build out of use and deleting
-    // part of it, and an install died mid-download.
+    // A collection was killed after taking a build out of use and part-deleting it, and an install
+    // died mid-download.
     let root = env.path("data/tilo-runtime");
     let half = root.join(".trash/2026.07+native.dead.1.2");
     std::fs::create_dir_all(half.join("lib")).unwrap();
@@ -205,7 +193,6 @@ fn an_install_finishes_the_collection_a_crash_left_halfway() {
     );
     assert!(!root.join("2026.07+native.dead").exists());
 
-    // Phase `the_next_change_sweeps_the_leftovers`.
     let app = env.app_tapp(&format!("tilo-runtime/{version}"));
     let (ok, out) = env.cmd(&["install", app.to_str().unwrap(), "--allow-self-signed"]);
     assert!(ok, "{out}");

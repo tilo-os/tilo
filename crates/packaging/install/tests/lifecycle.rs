@@ -1,13 +1,8 @@
-//! End-to-end package-manager lifecycle through the binary.
-//!
-//! install → list → verify → update → uninstall, plus the two things
-//! that make it a package manager rather than an unpacker: it knows
-//! what it depends on (the runtime bundle), and it distinguishes the
+//! install → list → verify → update → uninstall through the binary, plus the two things that make
+//! it a package manager rather than an unpacker: it knows its runtime bundle, and it tells the
 //! publisher's files from the user's data.
 //!
-//! Every test drives `tilo-install` as a subprocess with `XDG_DATA_HOME`
-//! and `XDG_CONFIG_HOME` pointed at a tempdir, isolating the test data while
-//! exercising the command's install path.
+//! Every test runs `tilo-install` with `XDG_DATA_HOME` and `XDG_CONFIG_HOME` in a tempdir.
 
 #![allow(
     clippy::unwrap_used,
@@ -22,8 +17,7 @@ use tilo_app_package::Manifest;
 
 use crate::support::{build_tapp, fresh_key};
 
-/// A package that declares no runtime bundle, so the lifecycle tests
-/// exercise install/update/uninstall rather than dependency handling.
+/// A package that declares no runtime bundle.
 fn manifest_src(version: &str, pub_hex: &str, runtime: Option<&str>) -> String {
     let runtime_line = match runtime {
         Some(r) => format!("runtime = \"{r}\"\n"),
@@ -84,8 +78,6 @@ impl Env {
         self.xdg_data().join("tilo-apps")
     }
 
-    /// The installed tree, as the registry records it; a path that does not
-    /// exist when the package is not installed.
     fn payload_root(&self) -> PathBuf {
         package_store::Registry::load(&self.tilo_apps().join("registry.toml"))
             .ok()
@@ -113,7 +105,7 @@ impl Env {
         path
     }
 
-    /// A package requiring `runtime` as one of its further runtimes.
+    /// A package requiring `runtime`.
     fn tapp_requiring_runtime(&self, version: &str, body: &[u8], runtime: &str) -> PathBuf {
         let build = self.home.path().join(format!("build-requiring-{version}"));
         let payload = build.join("payload");
@@ -128,7 +120,6 @@ impl Env {
         path
     }
 
-    /// A self-contained fixture with a linked release, never a runtime override.
     fn desktop_tapp(&self, body: &[u8], platform: &str, arch: &str) -> PathBuf {
         let build = self.home.path().join("desktop-build");
         let payload = build.join("payload");
@@ -153,7 +144,6 @@ impl Env {
         crate::support::run(cmd)
     }
 
-    /// Simulate the app having saved something, in two workspaces.
     fn seed_state(&self) {
         for workspace in ["personal", "b7c1-workspace"] {
             let dir = self
@@ -181,7 +171,6 @@ impl Env {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn installs_list_verify_report_and_serve_thin_packages() {
-    // Phase `install_list_verify_update_uninstall`.
     {
         let env = Env::new();
         let v1 = env.tapp("1.0.0", b"version one", None);
@@ -209,8 +198,7 @@ fn installs_list_verify_report_and_serve_thin_packages() {
         assert!(ok, "verify failed: {out}{err}");
         assert!(out.contains("ok       so.tilo.lifecycle 1.0.0"), "{out}");
 
-        // The app saves something. From here on the payload and the state
-        // have to be treated differently.
+        // From here on the payload and the saved data are treated differently.
         env.seed_state();
 
         let v2 = env.tapp("1.1.0", b"version two", None);
@@ -236,8 +224,7 @@ fn installs_list_verify_report_and_serve_thin_packages() {
             "an update must keep the user's data"
         );
 
-        // Verification has to follow the swap: the recorded evidence is
-        // now the new version's, and the old record would fail.
+        // Verification follows the swap: the record is the new version's.
         let (ok, out, err) = env.cmd(&["verify", "so.tilo.lifecycle"]);
         assert!(ok, "verify after update failed: {out}{err}");
         assert!(out.contains("ok       so.tilo.lifecycle 1.1.0"), "{out}");
@@ -260,9 +247,7 @@ fn installs_list_verify_report_and_serve_thin_packages() {
             "--keep-state must keep the user's data"
         );
     }
-    // Phase `verify_catches_a_modified_payload`.
-    // A tampered payload has to be caught by the thing whose job is to
-    // catch it, and named precisely enough to act on.
+    // A tampered payload is caught and named precisely enough to act on.
     {
         let env = Env::new();
         let v1 = env.tapp("1.0.0", b"one", None);
@@ -281,9 +266,6 @@ fn installs_list_verify_report_and_serve_thin_packages() {
         assert!(out.contains("FAILED   so.tilo.lifecycle"), "{out}");
         assert!(out.contains("modified: bin/app"), "{out}");
     }
-    // Phase `info_reports_the_runtime_the_integrity_record_and_the_saved_data`.
-    // `info` is the alias people reach for; it must show the things the
-    // other commands act on — the dependency, the evidence, the data.
     {
         let env = Env::new();
         let v1 = env.tapp("1.0.0", b"one", None);
@@ -297,9 +279,8 @@ fn installs_list_verify_report_and_serve_thin_packages() {
         assert!(out.contains("saved data    : 2 workspace(s)"), "{out}");
         assert!(out.contains("personal"), "{out}");
     }
-    // Phase `a_thin_package_installs_from_what_the_store_holds`.
-    // A thin package is metadata only: it installs when the content store
-    // already holds its payload, and is refused when nothing can supply it.
+    // A thin package is metadata only: it installs when the content store holds its payload, and is
+    // refused when nothing can supply it.
     {
         let env = Env::new();
         let full = env.tapp("1.0.0", b"one", None);
@@ -328,10 +309,8 @@ fn installs_list_verify_report_and_serve_thin_packages() {
 
 #[test]
 fn uninstall_keeps_state_unless_purged() {
-    // Phase `purge_removes_the_state_that_keep_state_would_have_left`.
-    // Deleting someone's notes is not undoable, so it takes an explicit
-    // instruction — and the uninstall says how much it is about to
-    // delete before it does.
+    // Deleting notes is not undoable, so it takes an explicit instruction, and the uninstall says
+    // how much it is about to delete first.
     {
         let env = Env::new();
         let v1 = env.tapp("1.0.0", b"one", None);
@@ -348,9 +327,7 @@ fn uninstall_keeps_state_unless_purged() {
         assert!(!env.state_exists("personal"));
         assert!(!env.state_exists("b7c1-workspace"));
     }
-    // Phase `a_non_interactive_uninstall_keeps_state_by_default`.
-    // A non-interactive uninstall must not silently delete user data —
-    // there is nobody to ask, so the answer is keep.
+    // A non-interactive uninstall keeps user data: there is nobody to ask.
     {
         let env = Env::new();
         let v1 = env.tapp("1.0.0", b"one", None);
@@ -370,7 +347,6 @@ fn uninstall_keeps_state_unless_purged() {
 
 #[test]
 fn dry_runs_and_runtime_dependencies_are_reported_before_anything_changes() {
-    // Phase `dry_run_reports_the_change_without_making_it`.
     {
         let env = Env::new();
         let v1 = env.tapp("1.0.0", b"one", None);
@@ -424,10 +400,8 @@ fn dry_runs_and_runtime_dependencies_are_reported_before_anything_changes() {
         assert!(out.contains("(nothing was removed)"), "{out}");
         assert!(env.payload_root().exists());
     }
-    // Phase `a_missing_runtime_bundle_refuses_the_install_and_says_how_to_fix_it`.
-    // Refusing an install whose runtime bundle is absent is what keeps
-    // "installed" and "launchable" the same thing. The message has to
-    // name the command that fixes it.
+    // Refusing an install whose runtime bundle is absent keeps "installed" and "launchable" the same
+    // thing, and the message names the command that fixes it.
     {
         let env = Env::new();
         let pkg = env.tapp("1.0.0", b"one", Some("tilo-runtime/2025.06"));
@@ -454,13 +428,10 @@ fn dry_runs_and_runtime_dependencies_are_reported_before_anything_changes() {
         assert!(ok, "{out}{err}");
         assert!(err.contains("will not launch until it is"), "{err}");
 
-        // And `list` keeps saying so, rather than showing it as ready.
+        // `list` keeps saying so.
         let (_, out, _) = env.cmd(&["list"]);
         assert!(out.contains("tilo-runtime/2025.06 (MISSING)"), "{out}");
     }
-    // Phase `dry_run_names_a_missing_runtime_dependency`.
-    // The dry run has to report the dependency too, or the plan is not a
-    // plan.
     {
         let env = Env::new();
         let pkg = env.tapp("1.0.0", b"one", Some("tilo-runtime/2025.06"));
@@ -477,9 +448,8 @@ fn dry_runs_and_runtime_dependencies_are_reported_before_anything_changes() {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn updates_refuse_downgrades_foreign_packages_and_unapproved_publishers() {
-    // Phase `update_refuses_a_downgrade_unless_told_to`.
-    // Installing an older version over a newer one is nearly always a
-    // mis-resolve, so it is refused unless asked for.
+    // An older version over a newer one is nearly always a mis-resolve, so it is refused unless
+    // asked for.
     {
         let env = Env::new();
         let v2 = env.tapp("2.0.0", b"two", None);
@@ -513,7 +483,6 @@ fn updates_refuse_downgrades_foreign_packages_and_unapproved_publishers() {
             b"one"
         );
     }
-    // Phase `update_with_the_same_version_is_a_no_op`.
     {
         let env = Env::new();
         let v1 = env.tapp("1.0.0", b"one", None);
@@ -527,9 +496,7 @@ fn updates_refuse_downgrades_foreign_packages_and_unapproved_publishers() {
         assert!(ok, "{out}{err}");
         assert!(out.contains("is already current"), "{out}");
     }
-    // Phase `update_refuses_a_tapp_for_a_different_package`.
-    // A `.tapp` for a different package must not be swapped into this
-    // one's slot, however well signed it is.
+    // A `.tapp` for a different package is never swapped into this one's slot.
     {
         let env = Env::new();
         let v1 = env.tapp("1.0.0", b"one", None);
@@ -557,10 +524,8 @@ fn updates_refuse_downgrades_foreign_packages_and_unapproved_publishers() {
             b"one"
         );
     }
-    // Phase `local_update_requires_explicit_authority_for_a_publisher_change`.
-    // A local tapp does not have a registry owner's signed publisher
-    // authorization. Matching the package id is therefore insufficient: an
-    // unrelated key must not silently take over the installed app's update slot.
+    // A local tapp has no registry owner's signed publisher authorisation, so matching the package
+    // id is not enough: an unrelated key must not take over the update slot.
     {
         let env = Env::new();
         let v1 = env.tapp("1.0.0", b"one", None);
@@ -608,7 +573,7 @@ fn updates_refuse_downgrades_foreign_packages_and_unapproved_publishers() {
     }
 }
 
-/// The thin form of the full package at `full`: metadata only.
+/// The thin form of `full`: metadata only.
 fn thin_of(full: &Path) -> PathBuf {
     let file = std::fs::File::open(full).unwrap();
     let tapp = tilo_app_package::tapp::read(file, &mut tilo_app_package::DiscardBlobs).unwrap();
@@ -685,8 +650,8 @@ fn desktop_contract_keeps_both_archive_size_limits() {
         } else {
             tilo_app_package::MAX_APP_TAPP_BYTES
         };
-        // Payload is exactly at its ceiling, but the signed tar adds metadata:
-        // the production installer must reject that oversized wire archive.
+        // The payload is at its ceiling and the signed tar adds metadata: the installer rejects that
+        // oversized archive.
         let body = vec![0; usize::try_from(limit).unwrap() - b"payload data".len()];
         let pkg = if desktop {
             env.desktop_tapp(&body, std::env::consts::OS, std::env::consts::ARCH)
@@ -778,16 +743,13 @@ fn cohort_selection_preserves_user_holds_pins_and_state_through_the_real_install
     assert_eq!(env.registry_toml(), before);
 }
 
-/// An app that requires a further runtime by exact version (the Browser's
-/// engine) is installed and updated together with it, on every path that
-/// reaches the installer: an app replaced while its engine is absent would
-/// not start.
+/// An app that requires a further runtime by exact version is installed and updated with it on every
+/// path: an app replaced while its engine is absent would not start.
 #[test]
 fn an_app_is_not_installed_or_updated_without_the_runtimes_it_requires() {
     let env = Env::new();
     let engine = "tilo-runtime/2026.10.9-chromium";
 
-    // Install: refused, naming the fix, leaving nothing behind.
     let v1 = env.tapp_requiring_runtime("1.0.0", b"one", engine);
     let (ok, out, err) = env.cmd(&["install", v1.to_str().unwrap()]);
     assert!(!ok, "install must refuse: {out}{err}");
@@ -795,12 +757,10 @@ fn an_app_is_not_installed_or_updated_without_the_runtimes_it_requires() {
     assert!(err.contains("app install so.tilo.lifecycle"), "{err}");
     assert!(!env.payload_root().exists());
 
-    // The explicit escape hatch still installs it (a developer's own tree).
     let (ok, out, err) = env.cmd(&["install", v1.to_str().unwrap(), "--ignore-missing-runtime"]);
     assert!(ok, "{out}{err}");
 
-    // Update: a build pinning an engine this device lacks does not replace
-    // the working one.
+    // A build pinning an engine this device lacks does not replace the working one.
     let v2 = env.tapp_requiring_runtime("2.0.0", b"two", "tilo-runtime/2026.10.23-chromium");
     let (ok, out, err) = env.cmd(&[
         "update",
@@ -816,7 +776,6 @@ fn an_app_is_not_installed_or_updated_without_the_runtimes_it_requires() {
         "the working build stays"
     );
 
-    // With the engine installed the same update goes through.
     let bundle = env
         .xdg_data()
         .join("tilo-runtime")

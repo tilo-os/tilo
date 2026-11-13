@@ -1,18 +1,6 @@
-//! End-to-end tests for the `tilo-install` trust flags:
-//!
-//! - `install --require-attestor foo`: refuses when the package
-//!   isn't attested by `foo`.
-//! - `install --require-attestor foo --allow-self-signed`:
-//!   attestor match wins; else the self-signed fallback permits
-//!   install.
-//! - `install` on a package with a revoked publisher key is
-//!   refused unconditionally.
-//!
-//! The tests build .tapp files in-process (bypassing tilo-tilo-app-package-cli
-//! to avoid a circular workspace dep) and drive the built
-//! `tilo-install` binary via `std::process::Command` with
-//! `XDG_CONFIG_HOME` / `XDG_DATA_HOME` pointed at per-test
-//! tempdirs so the tests use isolated configuration.
+//! The `tilo-install` trust flags end to end, on `.tapp` files built in-process (the package CLI
+//! would be a circular workspace dependency) and driven through the built binary with
+//! `XDG_CONFIG_HOME` and `XDG_DATA_HOME` in a tempdir.
 
 #![allow(
     clippy::unwrap_used,
@@ -84,8 +72,8 @@ fn attest_and_inject(
     attestor_id: &str,
     attestor_sk: &SigningKey,
 ) {
-    // Payload_root_hash is independent of attestation contents,
-    // so a single throwaway pack yields the value we sign over.
+    // The payload root hash does not depend on attestation contents, so one throwaway pack gives the
+    // value to sign over.
     let identity = SigningIdentity::from_signing_key(publisher_sk.clone());
     let signed = pack(payload_dir, manifest, &identity)
         .expect("throwaway pack")
@@ -107,7 +95,7 @@ fn attest_and_inject(
     });
 }
 
-/// Environment for one test — isolated data + config dirs.
+/// One test's isolated data and config dirs.
 struct TestEnv {
     home: tempfile::TempDir,
 }
@@ -139,16 +127,14 @@ impl TestEnv {
         list.save(&path).unwrap();
     }
 
-    /// The output of the CLI `arguments` run in this environment.
     fn cli(&self, arguments: &[&str]) -> (bool, String, String) {
         let mut cmd = crate::support::cmd(self.home.path());
         cmd.args(arguments);
         crate::support::run(cmd)
     }
 
-    /// The output of installing `tapp` with `extra`. Every install here proves
-    /// *signature* policy, so the fixture package, which declares a runtime
-    /// bundle it does not ship, is not refused for that first.
+    /// The output of installing `tapp` with `extra`. Every install here is about signature policy, so
+    /// the runtime bundle the fixture declares but does not ship is let through.
     fn install(&self, tapp: &Path, extra: &[&str]) -> (bool, String, String) {
         let tapp = tapp.to_str().unwrap();
         let arguments = [&["install", tapp, "--ignore-missing-runtime"][..], extra].concat();
@@ -162,7 +148,6 @@ impl TestEnv {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn required_attestors_gate_installs_with_optional_self_signed_fallback() {
-    // Phase `install_require_attestor_refuses_self_signed`.
     {
         let env = TestEnv::new();
         let (publisher_sk, publisher_pub_hex) = fresh_key();
@@ -174,7 +159,6 @@ fn required_attestors_gate_installs_with_optional_self_signed_fallback() {
         let tapp_path = env.home.path().join("app.tapp");
         build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
 
-        // No attestor registered.
         env.write_trusted_attestors(&TrustedAttestors::default());
         env.write_revocation(&RevocationList::default());
 
@@ -189,7 +173,6 @@ fn required_attestors_gate_installs_with_optional_self_signed_fallback() {
             "unexpected stderr: {stderr}"
         );
     }
-    // Phase `install_require_attestor_permits_matching_attestation`.
     {
         let env = TestEnv::new();
         let (publisher_sk, publisher_pub_hex) = fresh_key();
@@ -224,7 +207,6 @@ fn required_attestors_gate_installs_with_optional_self_signed_fallback() {
         assert!(stdout.contains("installed:"), "stdout: {stdout}");
         assert!(stdout.contains("attested"), "stdout: {stdout}");
     }
-    // Phase `install_require_attestor_and_allow_self_signed_takes_attestation_when_present`.
     {
         let env = TestEnv::new();
         let (publisher_sk, publisher_pub_hex) = fresh_key();
@@ -262,11 +244,9 @@ fn required_attestors_gate_installs_with_optional_self_signed_fallback() {
             ],
         );
         assert!(ok, "expected success, stdout={stdout} stderr={stderr}");
-        // Attestor path took priority — the printed "attested" line
-        // proves it wasn't the self-signed fallback.
+        // The printed "attested" line proves the attestor path took priority.
         assert!(stdout.contains("attested"), "stdout: {stdout}");
     }
-    // Phase `install_require_attestor_and_allow_self_signed_falls_back_when_no_match`.
     {
         let env = TestEnv::new();
         let (publisher_sk, publisher_pub_hex) = fresh_key();
@@ -278,7 +258,6 @@ fn required_attestors_gate_installs_with_optional_self_signed_fallback() {
         let tapp_path = env.home.path().join("app.tapp");
         build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
 
-        // Registry empty — no attestation on file.
         env.write_trusted_attestors(&TrustedAttestors::default());
         env.write_revocation(&RevocationList::default());
 
@@ -304,7 +283,6 @@ fn required_attestors_gate_installs_with_optional_self_signed_fallback() {
 
 #[test]
 fn publisher_trust_refuses_revoked_warns_on_self_signed_and_binds_registry_keys() {
-    // Phase `install_refuses_revoked_publisher`.
     {
         let env = TestEnv::new();
         let (publisher_sk, publisher_pub_hex) = fresh_key();
@@ -331,10 +309,8 @@ fn publisher_trust_refuses_revoked_warns_on_self_signed_and_binds_registry_keys(
             "stderr: {stderr}"
         );
     }
-    // Phase `install_default_warns_but_installs_self_signed`.
     {
-        // Preserves current default behavior: no flags → warn on
-        // self-signed and proceed.
+        // No flags: warn on a self-signed package and proceed.
         let env = TestEnv::new();
         let (publisher_sk, publisher_pub_hex) = fresh_key();
         let manifest = manifest(&publisher_pub_hex);
@@ -356,7 +332,6 @@ fn publisher_trust_refuses_revoked_warns_on_self_signed_and_binds_registry_keys(
             "stderr: {stderr}"
         );
     }
-    // Phase `install_require_publisher_binds_the_package_to_the_registry_key`.
     {
         let env = TestEnv::new();
         let (publisher_sk, publisher_pub_hex) = fresh_key();
@@ -407,7 +382,6 @@ fn publisher_trust_refuses_revoked_warns_on_self_signed_and_binds_registry_keys(
 
 #[test]
 fn trust_store_commands_round_trip() {
-    // Phase `trust_add_list_remove_roundtrip`.
     {
         let env = TestEnv::new();
         let pubkey = "aa".repeat(32);
@@ -435,7 +409,6 @@ fn trust_store_commands_round_trip() {
             "stdout: {stdout}"
         );
     }
-    // Phase `revoke_and_revoked_list_roundtrip`.
     {
         let env = TestEnv::new();
         let pubkey = "bb".repeat(32);

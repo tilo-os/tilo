@@ -1,16 +1,12 @@
-//! Runtime payload blobs this device already holds.
+//! Reusing runtime payload bytes the device already has.
 //!
-//! Successive runtime builds share most of their files (the C library,
-//! `libstd`, `libglib-2.0`, `libgstreamer-1.0`, …); only the toolkit dylib
-//! changes with every build. A runtime package is thin, so installing one fetches every payload
-//! blob it names. Before going to the network the installer looks for each
-//! blob in the runtime bundles already installed — the image's and the
-//! user's — whose `bundle.toml` lists every file with its BLAKE3 hash.
+//! Successive runtime builds share most of their files; only the toolkit dylib changes with every
+//! build. Before going to the network the installer looks for each blob in the installed bundles —
+//! the image's and the user's — whose `bundle.toml` lists every file with its BLAKE3 hash.
 //!
-//! A listing is only a hint where to look. Bytes are taken from a local file
-//! only when they hash to the blob the signed package names, checked while
-//! they are copied; a file that changed, or a manifest that lies, costs a
-//! download, never a wrong byte.
+//! A listing is only a hint where to look. Bytes are taken from a local file only when they hash to
+//! the blob the signed package names, checked while they are copied; a file that changed, or a
+//! manifest that lies, costs a download, never a wrong byte.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -20,17 +16,15 @@ use std::path::{Component, Path, PathBuf};
 use tilo_app_package::BlobHash;
 use tilo_app_package::blobs::HashingReader;
 
-/// Where each blob named in an installed runtime bundle's manifest may be
-/// read: candidate paths with the size the manifest records.
+/// Blob hash to the paths that may hold it, with the size the manifest records.
 #[derive(Debug, Default)]
 pub struct LocalRuntimeBlobs {
     files: BTreeMap<BlobHash, Vec<(PathBuf, u64)>>,
 }
 
 impl LocalRuntimeBlobs {
-    /// Index every bundle directly under each of `roots` (directories holding
-    /// `<version>/bundle.toml`). Unreadable roots, bundles and manifests are
-    /// skipped: they only mean fewer bytes to reuse.
+    /// Index every bundle directly under each of `roots` (directories holding `<version>/bundle.toml`).
+    /// Unreadable roots, bundles and manifests are skipped: they only mean fewer bytes to reuse.
     #[must_use]
     pub fn index(roots: &[PathBuf]) -> Self {
         let mut files: BTreeMap<BlobHash, Vec<(PathBuf, u64)>> = BTreeMap::new();
@@ -64,8 +58,8 @@ impl LocalRuntimeBlobs {
         Self { files }
     }
 
-    /// The runtime bundle roots this device installs to and ships: the
-    /// user's (or [`runtime_bundle::RUNTIME_DIR_ENV`]'s) and the image's.
+    /// The bundle roots this device has: the user's (or [`runtime_bundle::RUNTIME_DIR_ENV`]'s) and
+    /// the image's.
     #[must_use]
     pub fn installed() -> Self {
         let mut roots = Vec::new();
@@ -77,26 +71,23 @@ impl LocalRuntimeBlobs {
         Self::index(&roots)
     }
 
-    /// How many distinct blobs the index knows a place for.
     #[must_use]
     pub fn len(&self) -> usize {
         self.files.len()
     }
 
-    /// Whether the index knows no blob.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
     }
 
-    /// Copy each of `wanted` that a local file holds into `dir` as
-    /// `<dir>/<hash hex>`, verified against its hash, and return the ones
-    /// still to fetch with the number of bytes reused.
+    /// Copy each of `wanted` that a local file holds into `dir` as `<dir>/<hash hex>`, verified
+    /// against its hash; return the ones still to fetch with the number of bytes reused.
     ///
     /// # Errors
     ///
-    /// Returns an error when `dir` cannot be written. A local file that
-    /// cannot be read or does not hash to its blob is skipped, not an error.
+    /// When `dir` cannot be written. A local file that cannot be read or does not hash to its blob
+    /// is skipped, not an error.
     pub fn copy_into(&self, wanted: &[BlobHash], dir: &Path) -> io::Result<(Vec<BlobHash>, u64)> {
         let mut missing = Vec::new();
         let mut reused = 0u64;
@@ -127,17 +118,15 @@ fn contained(path: &str) -> Option<PathBuf> {
         .filter(|relative| !relative.as_os_str().is_empty())
 }
 
-/// Copy `source` to `<dir>/<hash>` when its bytes are exactly the `size`
-/// bytes named `hash`; `Ok(None)` (and nothing left behind) when they are
-/// not or cannot be read.
+/// Copy `source` to `<dir>/<hash>` when its bytes are exactly the `size` bytes named `hash`;
+/// `Ok(None)` (with nothing left behind) when they are not or cannot be read.
 fn copy_verified(source: &Path, size: u64, hash: &BlobHash, dir: &Path) -> io::Result<Option<u64>> {
     let Ok(file) = fs::File::open(source) else {
         return Ok(None);
     };
     let partial = dir.join(format!("{}.local", hash.to_hex()));
     let mut out = fs::File::create(&partial)?;
-    // One byte past the recorded size, so a grown file is caught without
-    // reading all of it.
+    // One byte past the recorded size, so a grown file is caught without reading all of it.
     let mut hashing = HashingReader::new(file.take(size.saturating_add(1)));
     let copied = io::copy(&mut hashing, &mut out).and_then(|_| out.flush());
     let (actual, len) = hashing.finish();
@@ -155,8 +144,8 @@ fn copy_verified(source: &Path, size: u64, hash: &BlobHash, dir: &Path) -> io::R
 mod tests {
     use super::*;
 
-    /// A bundle under `root/<version>` listing `files` as `(path, bytes)`;
-    /// `recorded` overrides the hash a file is listed under.
+    /// A bundle under `root/<version>` listing `files` as `(path, bytes)`; `recorded` overrides the
+    /// hash a file is listed under.
     fn bundle(root: &Path, version: &str, files: &[(&str, &[u8], Option<BlobHash>)]) {
         let dir = root.join(version);
         let mut listed = Vec::new();
@@ -221,8 +210,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let out = tempfile::tempdir().unwrap();
         let wanted: &[u8] = b"the bytes the signed package names";
-        // A manifest that lists other bytes under the wanted hash, as a
-        // tampered or half-updated bundle would.
+        // A manifest that lists other bytes under the wanted hash, as a tampered or half-updated
+        // bundle would.
         bundle(
             root.path(),
             "tampered",
