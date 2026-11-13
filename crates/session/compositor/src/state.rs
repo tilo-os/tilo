@@ -840,13 +840,20 @@ impl State {
     pub(crate) fn handle_input(&mut self, event: InputEvent) {
         let now = Instant::now();
         self.remote_input.note_local(now);
-        // The person's own Ctrl+Alt+Escape gives back whatever a client holds — a locked pointer,
-        // the desktop's shortcuts — and otherwise cuts remote input. Its press goes no further
+        // The person's own Ctrl+Alt+Escape gives back whatever holds their keyboard and pointer —
+        // another of their devices this machine's input drives, a locked pointer, the desktop's
+        // shortcuts — and otherwise cuts remote input. Its press goes no further
         // either way: no window sees half a chord.
         if let InputEvent::Key { keycode, pressed } = event
             && self.remote_input.chord(keycode, pressed)
         {
-            if self.pointer_lock.is_engaged() || self.shortcut_inhibit.is_active() {
+            let observer_gave_back = self
+                .input_observer
+                .as_ref()
+                .is_some_and(|observer| observer(crate::input::ObservedInput::GiveBack));
+            if observer_gave_back {
+                tracing::info!("the chord took the keyboard and pointer back to this machine");
+            } else if self.pointer_lock.is_engaged() || self.shortcut_inhibit.is_active() {
                 self.release_pointer_lock();
                 self.suspend_shortcut_inhibit();
             } else if self.remote_input.cut() {

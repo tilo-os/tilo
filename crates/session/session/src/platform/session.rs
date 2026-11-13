@@ -196,6 +196,10 @@ impl Session {
         let continuity = crate::platform::fabric::Continuity::default();
         continuity.read(&settings_store::load());
         let watched_continuity = continuity.clone();
+        // Where the person placed their devices' screens beside each other, which the pointer
+        // crosses between them by.
+        let arranged = crate::shared_input::Arranged::loaded();
+        let watched_arranged = arranged.clone();
         // The bar's own setting, read on the same watch: it changes what the
         // desk's band takes and when the bars show.
         let hide_top_bar = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
@@ -230,6 +234,7 @@ impl Session {
             watched_wallpapers.follow(&document);
             crate::desk::follow_prefs(&watched_widgets, &document);
             watched_continuity.read(&document);
+            watched_arranged.read(&document);
             watched_night_light.read(&document);
             crate::ambient_brightness::read(&watched_auto, &document);
             watched_hide.store(
@@ -729,6 +734,14 @@ impl Session {
             // Notifications continue on the person's other devices.
             notifications.borrow().attach_fabric(Arc::clone(link));
         }
+        // The person's one keyboard and pointer, across the screens of their devices.
+        let shared_input = fabric.as_ref().map(|link| {
+            Arc::new(crate::shared_input::SharedInput::new(
+                Arc::clone(link),
+                continuity.clone(),
+                arranged,
+            ))
+        });
         // Nearby Send: one engine for every file that leaves this device for
         // another of the person's, whether a screenshot the studio sends or a
         // file Files hands over. It stages into this machine's own spool, and
@@ -1524,6 +1537,7 @@ impl Session {
             bluetooth: crate::bluetooth_handoff::Handoffs::default(),
             handoff: Rc::new(std::cell::RefCell::new(None)),
             waking: crate::wake::Wake::new(&options.wake_seams),
+            keyboard_and_pointer: shared_input,
             wake_handle: options.wake.handle(),
             music,
             power,
@@ -1725,8 +1739,20 @@ impl Session {
         }
         // What the portal brings comes from any thread, and wakes the loop
         // instead of waiting for its next turn.
-        if let Some(portal) = &options.portal {
-            compositor.set_input_observer(Some(portal.input_observer()));
+        // This device's input goes first to the person's device it drives, then to an app's input
+        // capture.
+        let captures = options
+            .portal
+            .as_ref()
+            .map(crate::portal_link::SessionLink::input_observer);
+        let sharing = shared.keyboard_and_pointer.clone();
+        if captures.is_some() || sharing.is_some() {
+            compositor.set_input_observer(Some(Arc::new(move |input| {
+                sharing
+                    .as_ref()
+                    .is_some_and(|sharing| sharing.observe(input))
+                    || captures.as_ref().is_some_and(|captures| captures(input))
+            })));
         }
         let loop_wake = compositor.waker();
         // Signing in does not change the login screens; what the person

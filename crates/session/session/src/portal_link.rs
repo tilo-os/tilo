@@ -48,7 +48,7 @@ fn frame_interval() -> Duration {
 }
 
 /// A pointer step of a scroll wheel notch, in logical pixels.
-const NOTCH: f64 = 15.0;
+pub(crate) const NOTCH: f64 = 15.0;
 
 type Reply<T> = tokio::sync::oneshot::Sender<Result<T, String>>;
 
@@ -269,6 +269,8 @@ impl SessionLink {
                 ObservedInput::Key { keycode, pressed } => {
                     CapturedInput::Keyboard { keycode, pressed }
                 }
+                // An app's capture ends when the app releases it or the person ends its session.
+                ObservedInput::GiveBack => return false,
             };
             captures.observe(input)
         })

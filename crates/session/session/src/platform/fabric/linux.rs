@@ -24,10 +24,11 @@ pub use tilo_device_fabric::unlock::{
 pub use tilo_device_fabric::wake::WakeEvent;
 pub use tilo_device_fabric::{
     ClipboardEntry, ClipboardPayload, DeviceFabric, DeviceFabricSnapshot, DeviceKind,
-    DevicePresence, FABRIC_SCHEMA_VERSION, FabricCapabilities, Ipv4Subnet, MAX_WAKE_ROUTES,
-    MediaSourceLocator, OWNER_SESSION_ACTIVE_STEP_MS, OwnerSession, PersonalFabricAction,
-    PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS, REMOTE_AUDIO_FRAME_SAMPLES,
-    REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ, RoamingSetting, WakeInterfaceKind,
-    WakeOutcome, WakeRoute,
+    DevicePresence, FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricInputEvent, InputLease,
+    Ipv4Subnet, MAX_INPUT_LEASE_MS, MAX_WAKE_ROUTES, MediaSourceLocator,
+    OWNER_SESSION_ACTIVE_STEP_MS, OwnerSession, PersonalFabricAction, PersonalFabricActionEnvelope,
+    REMOTE_AUDIO_CHANNELS, REMOTE_AUDIO_FRAME_SAMPLES, REMOTE_AUDIO_PROTOCOL_VERSION,
+    REMOTE_AUDIO_SAMPLE_RATE_HZ, RoamingSetting, ScrollUnit, WakeInterfaceKind, WakeOutcome,
+    WakeRoute,
 };
 pub use tilo_device_fabric::{clock, wake};

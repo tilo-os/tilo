@@ -211,6 +211,8 @@ mod settings_authorship;
 mod settings_sync;
 #[path = "shared_folder.rs"]
 mod shared_folder;
+#[path = "shared_input.rs"]
+mod shared_input;
 #[path = "sheet_click.rs"]
 mod sheet_click;
 #[path = "sheet_frames.rs"]

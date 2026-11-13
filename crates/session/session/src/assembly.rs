@@ -191,6 +191,9 @@ pub(crate) struct Shared {
     /// The wakes this session takes part in.
     #[cfg(target_os = "linux")]
     pub(crate) waking: Rc<crate::wake::Wake>,
+    /// This device's share of the person's one keyboard and pointer, while it is on their fabric.
+    #[cfg(target_os = "linux")]
+    pub(crate) keyboard_and_pointer: Option<std::sync::Arc<crate::shared_input::SharedInput>>,
     pub(crate) wake_handle: tilo_service::Wake,
     /// What plays, as the desk's music widget shows it.
     pub(crate) music: tilo_desktop::desk_widgets::DeskMusic,

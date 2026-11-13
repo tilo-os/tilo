@@ -33,6 +33,7 @@ pub struct Continuity {
     wifi_settings: Arc<AtomicBool>,
     file_transfer: Arc<AtomicBool>,
     notifications: Arc<AtomicBool>,
+    display_input: Arc<AtomicBool>,
 }
 
 impl Continuity {
@@ -57,6 +58,14 @@ impl Continuity {
         ] {
             switch.store(enabled && on(facet.key()), Ordering::Relaxed);
         }
+        // This device takes the keyboard and pointer of the person's other devices only with
+        // Display & input on and its automatic grants left on, as Settings words both.
+        self.display_input.store(
+            enabled
+                && on(ContinuityCapability::DisplayInput.key())
+                && on("automatic_display_input"),
+            Ordering::Relaxed,
+        );
     }
 
     fn media_permitted(&self) -> bool {
@@ -69,6 +78,11 @@ impl Continuity {
 
     fn notifications_permitted(&self) -> bool {
         self.notifications.load(Ordering::Relaxed)
+    }
+
+    /// Whether the person's other devices may drive this one's keyboard and pointer.
+    pub(crate) fn display_input_permitted(&self) -> bool {
+        self.display_input.load(Ordering::Relaxed)
     }
 
     /// Whether the person lets files they send move to their other devices.
@@ -534,20 +548,19 @@ impl crate::Session {
                 self.shared.notifications.borrow_mut().answered(&envelope.action);
             }
             // Nothing on this session holds a media offer, and what the person's devices send each
-            // other that no service here carries — placement, input, accessories, files, calls,
+            // other that no service here carries — accessories, files, calls,
             // displays, wake — is dropped rather than half-acted on. The speaker services and the
             // certification above answer for theirs; the rest reach here only when their own
             // preconditions refuse.
             PersonalFabricAction::MediaAccepted { .. }
             | PersonalFabricAction::MediaRejected { .. }
             | PersonalFabricAction::MediaCancelled { .. }
-            | PersonalFabricAction::SetDisplayPlacement { .. }
-            | PersonalFabricAction::SetDisplayPlacementChecked { .. }
+            // The person's keyboard and pointer between their devices, while this session takes
+            // part in no fabric that could carry them.
+            | PersonalFabricAction::InputLeaseAsk
             | PersonalFabricAction::InputLeaseGranted { .. }
             | PersonalFabricAction::InputLeaseRevoked { .. }
             | PersonalFabricAction::Input { .. }
-            | PersonalFabricAction::SpatialInputProtocol { .. }
-            | PersonalFabricAction::SpatialInputSequenced { .. }
             | PersonalFabricAction::NearbyDrop { .. }
             | PersonalFabricAction::NearbyDropResult { .. }
             // A Nearby Send reaches no session here: the client that carries one hands its offer,
@@ -585,6 +598,10 @@ impl crate::Session {
             | PersonalFabricAction::RetiredDeviceHealthProbe
             | PersonalFabricAction::RetiredDeviceHealthReport
             | PersonalFabricAction::RetiredTethering
+            | PersonalFabricAction::RetiredSetDisplayPlacement
+            | PersonalFabricAction::RetiredSetDisplayPlacementChecked
+            | PersonalFabricAction::RetiredSpatialInputProtocol
+            | PersonalFabricAction::RetiredSpatialInputSequenced
             // A clock probe is answered where its frame arrived and a report measured from there,
             // so nothing on this side routes one.
             | PersonalFabricAction::FabricClockProbe { .. }
@@ -620,7 +637,8 @@ impl crate::Session {
     }
 
     /// Whether one of this session's services took `envelope` 's action: a Bluetooth accessory's
-    /// move, a device to wake, a certification, a speaker service's. What they did not take is the
+    /// move, a device to wake, a certification, a speaker service's, the person's keyboard and
+    /// pointer. What they did not take is the
     /// session's own.
     fn service_took(&self, fabric: &SharedLink, envelope: &PersonalFabricActionEnvelope) -> bool {
         self.shared
@@ -633,6 +651,11 @@ impl crate::Session {
             || crate::certification::handle_action(fabric, envelope)
             || tilo_speaker_service::remote_audio::handle_action(fabric.as_ref(), envelope)
             || tilo_speaker_service::groups::handle_action(fabric.as_ref(), envelope)
+            || self
+                .shared
+                .keyboard_and_pointer
+                .as_ref()
+                .is_some_and(|shared_input| shared_input.route(envelope))
     }
 
     /// Show the notification another of the person's devices projected,

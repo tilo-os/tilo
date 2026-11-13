@@ -62,6 +62,9 @@ pub enum ObservedInput {
     Scroll { dx: f64, dy: f64 },
     /// A key (evdev code) changed state.
     Key { keycode: u32, pressed: bool },
+    /// The person pressed Ctrl+Alt+Escape on this machine's own keyboard: whatever holds their
+    /// keyboard and pointer gives them back first. The Escape that completed it is not seen.
+    GiveBack,
 }
 
 impl InputEvent {

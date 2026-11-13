@@ -770,6 +770,11 @@ impl Session {
                 sync.announce_fabric();
             }
         }
+        // The keyboard and pointer of the person's other devices that drive this one, on the pass
+        // their actions were routed in.
+        if let Some(shared_input) = &self.shared.keyboard_and_pointer {
+            shared_input.follow(&mut self.compositor);
+        }
         Ok(())
     }
 }
@@ -800,5 +805,7 @@ fn desk<'a>(shared: &'a crate::Shared, compositor: &Compositor) -> crate::test_c
         locked: compositor.locked(),
         lock_screen_drawn: compositor.lock_drawn(),
         lock: &shared.lock,
+        pointer: compositor.pointer_location(),
+        shared_input: shared.keyboard_and_pointer.as_deref(),
     }
 }
