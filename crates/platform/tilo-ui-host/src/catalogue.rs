@@ -1,17 +1,10 @@
-//! The actions an app publishes for its window, as the window's own command palette offers
-//! them.
-//!
-//! An app whose instance runs beside its window sends what it offers
-//! ([`ToUi::Actions`](tilo_render_protocol::patch::ToUi::Actions)): its actions as the
-//! workspace's action directory lists them for the person at the window, with the labels, keys,
-//! icons, arguments and confirmation the app gives them. The window offers them the one way
-//! every window offers its actions: as [`PublishesResources`]. The command palette, the action
-//! directory and every other reader of the window's surface find them there, and choosing one
-//! hands its address back to the app, which runs it through the door it publishes.
-//!
-//! So a window offers the same palette whichever way its app runs: an app in the window's own
-//! process reads the actions off its widgets, and an app in a host sends them, and neither
-//! knows how the other works.
+//! The actions an app publishes for its window, as the window's own command palette offers them. An
+//! app whose instance runs beside its window sends them
+//! ([`ToUi::Actions`](tilo_render_protocol::patch::ToUi::Actions)); the window offers them as
+//! [`PublishesResources`], where the palette, the action directory and every other reader of its
+//! surface find them, and choosing one hands its address back to the app, which runs it through the
+//! door it publishes. So a window offers the same palette whichever way its app runs, and neither
+//! side knows how the other works.
 
 use tilo_actions::{
     ActionAddress, ActionArgs, ActionDescriptor, ActionOutput, ActionParam, ActionSpec,
@@ -24,12 +17,12 @@ use ui::resources::PublishesResources;
 use crate::window::AppWindow;
 use tilo_render_protocol::patch as wire;
 
-/// The operation type of the window's own declaration of the actions its app published:
-/// choosing one hands the action's address to the app, which runs it as the person's step.
+/// The operation of the window's declaration of the actions its app published: choosing one hands
+/// the action's address to the app, which runs it as the person's step.
 pub const HOSTED_ACTION: &str = "tilo.tilolang.hosted.action";
 
 /// What the person chose from the window's command palette, as that operation's payload: the
-/// action's address in the app's published surface, and the arguments the palette collected.
+/// action's address, and the arguments the palette collected.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Chosen {
     resource: String,
@@ -38,8 +31,6 @@ struct Chosen {
 }
 
 impl Chosen {
-    /// The arguments as the door's binder reads them: the canonical JSON object the palette
-    /// collected, or nothing for an action that takes none.
     fn argument(&self) -> Option<String> {
         match &self.arguments {
             serde_json::Value::Object(arguments) if arguments.is_empty() => None,
@@ -101,9 +92,8 @@ fn replace(held: &mut Vec<ActionDescriptor>, mut incoming: Vec<ActionDescriptor>
 }
 
 impl AppWindow {
-    /// The actions the app published for this window, as the resources the window's palette,
-    /// action directory and agents offer: one resource per published one, in the order the app
-    /// offered them, each action with everything the app said of it.
+    /// The actions the app published for this window, as the resources its palette, action
+    /// directory and agents offer: one per published action, in the order the app offered them.
     #[must_use]
     pub fn catalogue(&self) -> Vec<ResourceSpec> {
         let mut resources: Vec<ResourceSpec> = Vec::new();
@@ -127,14 +117,10 @@ impl AppWindow {
     }
 }
 
-/// The window's declaration of the published action `descriptor`: everything the palette shows
-/// of it, and the operation that hands its address to the app when the person chooses it.
 fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
     let address = descriptor.address.clone();
-    // The app says what an invocation of its action takes, and the window lists and collects it
-    // by that same declaration: one that takes nothing runs from the palette at once, and one
-    // that takes words is asked them in the app's own words and handed over under the parameter
-    // the app named them by.
+    // The app says what an invocation of its action takes, and the window lists and collects it by
+    // that same declaration.
     let (params, placeholder) = match &descriptor.input {
         InputSpec::None => (Vec::new(), String::new()),
         InputSpec::Text { placeholder, .. } if !descriptor.params.is_empty() => {
@@ -173,8 +159,8 @@ fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
                 arguments: serde_json::Value::Object(args.to_json()),
             };
             EncodedAction::encode_operation(HOSTED_ACTION, &chosen).unwrap_or_else(|error| {
-                // Handing over the address cannot fail; an empty payload is refused where the
-                // choice is handed over, and says so in the window.
+                // Encoding a chosen action cannot fail; an error says so where the choice is handed
+                // over.
                 tracing::error!(%error, "a chosen action did not encode");
                 EncodedAction {
                     type_id: HOSTED_ACTION.to_owned(),
@@ -193,19 +179,16 @@ fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
     }
     ty.keywords.clone_from(&descriptor.keywords);
     ty.icon.clone_from(&descriptor.icon);
-    // Whether it can run now, as the app says: an action whose precondition does not hold is
-    // not offered, so the window does not offer it either.
+    // An action whose precondition does not hold is not offered, as the app says.
     ty.contract
         .availability
         .clone_from(&descriptor.contract.availability);
-    // The window offers the app's actions to whoever the app offers them to: one it keeps for
-    // agents stays out of what a person is shown here, as it is everywhere else.
+    // The window offers the app's actions to whoever the app offers them to: one kept for agents
+    // stays out of what a person is shown.
     ty.contract.set_audience(descriptor.contract.audience());
     spec
 }
 
-/// The window offers the app's published actions as its own: the one surface the command
-/// palette, the action directory and every other reader of the window's widgets see.
 impl PublishesResources for AppWindow {
     fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
         let mut all = ui::resources::resources(ui::widget::Decorator::inner(self), doc);
@@ -214,8 +197,6 @@ impl PublishesResources for AppWindow {
     }
 }
 
-/// Choosing one hands its address back to the app over the window's patch connection: the app
-/// runs it as the person's own step, through the same door an invocation from anywhere takes.
 impl ResourceOperations for AppWindow {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[HOSTED_ACTION]

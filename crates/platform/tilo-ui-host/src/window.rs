@@ -1,19 +1,14 @@
-//! One app window as the UI host holds it.
-//!
-//! The window keeps a copy of each of its app's two views (the root, and the view of the
-//! resource `open(r)` or a row went to), as the app sends them over the patch protocol, and
-//! shows them as the columns of one shell ([`crate::shell`]): the root's sidebar and overview
-//! beside the content and header of the view after it. On a narrow screen the columns become
-//! push navigation with Back, by the shell's rules. Everything in the shell is the views' own,
-//! built through the one adapter: the window adds no frame, header or list of its own.
-//!
-//! What holds for every window is the platform's, and so the window's: the overview's
-//! selection is the view shown after it; a notice of a destructive action offers Undo; the Ask
-//! bar is trusted chrome the app cannot draw.
-//!
-//! What the person does is sent back as it happens, at most one batch a frame: a component's
+//! One app window as the UI host holds it. The window keeps a copy of each of its app's two views
+//! (the root, and the view of the resource `open(r)` or a row went to), as the app sends them over
+//! the patch protocol, and shows them as the columns of one shell ([`crate::shell`]): the root's
+//! sidebar and overview beside the content and header of the view after it. On a narrow screen the
+//! columns become push navigation with Back, by the shell's rules. Everything in the shell is the
+//! views' own, built through the one adapter: the window adds no frame, header or list. What holds
+//! for every window is the platform's: the overview's selection is the view shown after it, a
+//! notice of a destructive action offers Undo, and the Ask bar is trusted chrome the app cannot
+//! draw. What the person does is sent back as it happens, at most one batch a frame: a component's
 //! event by its key, an edit through a binding as a splice of what the control showed (the
-//! toolkit's field shows the typing at once), the rows a list shows now.
+//! toolkit's field shows the typing at once), and the rows a list shows now.
 
 use std::cell::RefCell;
 mod page;
@@ -40,8 +35,8 @@ use crate::{ResourceRef, UiNode, Value};
 pub type Registry = Rc<RefCell<HashMap<String, Rc<RefCell<RemoteRows>>>>>;
 
 /// A list whose rows the window keeps: its key in the window's tree, the lane and prefix of the
-/// view it stands in, the kind of component a row is, and the words of the heading over its rows
-/// where one heads them.
+/// view it is in, the kind of component a row is, and the words of the heading over its rows where
+/// one heads them.
 struct Rows {
     key: String,
     lane: Lane,
@@ -52,7 +47,6 @@ struct Rows {
 }
 
 impl Rows {
-    /// The list `list` of the view of `lane` whose nodes carry `prefix`.
     fn new(
         prefix: &'static str,
         lane: Lane,
@@ -73,21 +67,21 @@ impl Rows {
 
 /// One of the window's two views, as the app last sent it.
 struct View {
-    /// The resource it shows.
     target: ResourceRef,
     /// Its tree, without the rows of its virtual lists.
     tree: UiNode,
 }
 
-/// What a bound control holds, as the person's typing left it: the text it showed when they
-/// began and now, or the rich text. Every bound control that takes typing reports in one of
-/// these, so what the person types while a press runs waits for it whichever kind of control
-/// the keyboard is in.
+/// What a bound control holds, as the person's typing left it: the text it showed when they began
+/// and now, or the rich text. Every bound control that takes typing reports in one of these, so
+/// what the person types while a press runs waits for it whichever kind of control the keyboard is
+/// in.
 #[derive(Clone, Debug)]
 enum Held {
-    /// A text control (or a number, a date): what it showed when they began, and now.
-    Text { base: String, now: String },
-    /// A rich-text control: what it held when they began, and now.
+    Text {
+        base: String,
+        now: String,
+    },
     Rich {
         base: wire::rich::RichText,
         now: wire::rich::RichText,
@@ -104,7 +98,6 @@ impl Held {
     }
 }
 
-/// `rich` as the text a person reads, a line per paragraph.
 fn rich_text_of(rich: &wire::rich::RichText) -> String {
     rich.blocks
         .iter()
@@ -114,9 +107,9 @@ fn rich_text_of(rich: &wire::rich::RichText) -> String {
 }
 
 /// `rich` with `delete` bytes at byte `at` of its text replaced by `insert` (paragraphs a line
-/// each, as [`rich_text_of`] reads them): the change lands in the paragraph the caret is in,
-/// and every mark around it moves with the text it marks. Typing is characters, never a
-/// paragraph break: Enter's key text is a control character, which is never held.
+/// each, as [`rich_text_of`] reads them): the change lands in the paragraph the caret is in, and
+/// every mark around it moves with the text it marks. Typing is characters, never a paragraph
+/// break: Enter's key text is a control character, which is never held.
 fn rich_spliced_at(
     rich: &wire::rich::RichText,
     at: usize,
@@ -180,42 +173,40 @@ fn rich_spliced_at(
     rich
 }
 
-/// `text` with `(at, end)` replaced by `insert`.
 fn splice_text(text: &str, (at, end): (usize, usize), insert: &str) -> String {
     let mut out = text.to_owned();
     out.replace_range(at..end, insert);
     out
 }
 
-/// What the person typed after a press the app has not run yet: held, not sent, until it did.
-/// It goes where the keyboard would have been had the press run at once: typed where the
-/// keyboard was when they pressed, or with no field focused, it follows the press into the
-/// field of what it opened; typed into a field they put the keyboard in since, it stays that
-/// field's, of the resource it showed.
+/// What the person typed after a press the app has not run yet: held, not sent, until it did. It
+/// goes where the keyboard would have been had the press run at once: typed where the keyboard was
+/// when they pressed, or with no field focused, it follows the press into the field of what it
+/// opened; typed into a field they put the keyboard in since, it is that field's, of the resource
+/// it showed.
 struct Typed {
-    /// How many presses the window had sent when the person typed it: it waits until the app
-    /// ran them.
+    /// How many presses the window had sent when the person typed it: it waits until the app ran
+    /// them.
     after: u64,
-    /// The field, by key in the composed tree: none while no field had the keyboard (the press
-    /// took it).
+    /// The field, by key in the composed tree: none while no field had the keyboard (the press took
+    /// it).
     key: Option<String>,
-    /// The resource the field's view showed when the person typed into it: none while no field
-    /// had the keyboard.
+    /// The resource the field's view showed when the person typed into it: none while no field had
+    /// the keyboard.
     target: Option<ResourceRef>,
-    /// The field had the keyboard since before the press: the person typed after the press
-    /// where the keyboard was, not where they put it since.
+    /// The field had the keyboard before the press: the person typed after the press where the
+    /// keyboard was, not where they put it since.
     follows: bool,
-    /// It followed the press into the field the press opened: it goes at that field's end,
-    /// after whatever went there before it.
+    /// It followed the press into the field the press opened: it goes at that field's end, after
+    /// whatever went there before it.
     moved: bool,
-    /// It is the field a press opened's, typed while the window's request for the keyboard to
-    /// go there was still on its way ([`AppWindow::hold_for_landing`]): it goes once the app
-    /// took that request.
+    /// It is typed into the field a press opened while the window's request for the keyboard to go
+    /// there was still on its way ([`AppWindow::hold_for_landing`]): it goes once the app took that
+    /// request.
     waits_focus: bool,
-    /// What the control holds as they typed.
     held: Held,
-    /// What the app sent for the field since (it showed something else meanwhile, such as the
-    /// note the press opened).
+    /// What the app sent for the field since (it showed something else meanwhile, such as the note
+    /// the press opened).
     sent: Option<Value>,
 }
 
@@ -225,22 +216,19 @@ fn slot(element: Element, fit: Fit) -> Slot {
     slot
 }
 
-/// What moves a column the person's last input brings to the front: a click or a tap slides it
-/// in; a key, an agent's action, or nothing the person just did lands it.
+/// What brings a column to the front: a click or a tap slides it in; a key, an agent's action or
+/// nothing the person just did moves it without.
 fn by_input() -> MotionSource {
     ui::motion::recent_input(ui::time::now()).unwrap_or(MotionSource::Action)
 }
 
-/// What the window is to whoever shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Shape {
-    /// An app's window: its views composed into the one shell.
     Window,
     /// A part of a shell ([`AppWindow::part`]): the root view as it is.
     Part,
 }
 
-/// See the module docs.
 pub struct AppWindow {
     transport: Box<dyn Transport>,
     limits: PatchLimits,
@@ -249,21 +237,17 @@ pub struct AppWindow {
     /// Builds the composed shell and reconciles it, reporting what its controls do.
     reconciler: Rc<RefCell<Reconciler>>,
     events: EventSink,
-    /// The composed shell last built.
     built: Option<UiNode>,
-    /// The rows of the views' virtual lists.
     rows: Registry,
     /// What each bound control shows, as the app last sent it, by key in the composed tree.
     bound: BoundValues,
-    /// The text of each bound text control as the app has it, splices sent included: what the
-    /// next splice is against.
+    /// The text of each bound text control as the app has it, splices sent included: what the next
+    /// splice is against.
     texts: HashMap<String, String>,
     /// The last splice of each bound control sent, by key in the composed tree.
     seqs: HashMap<String, u64>,
-    /// The shell, the Ask bar and whatever the embedder shows beside them.
     body: Element,
     answers: Rc<RefCell<Vec<Answer>>>,
-    /// The Ask bar shown, if one is.
     ask: Option<wire::Ask>,
     /// The form shown, if one is: an action waiting for its arguments.
     form: Option<crate::form::Shown>,
@@ -271,8 +255,7 @@ pub struct AppWindow {
     structure_dirty: bool,
     /// Why the window shows the platform's error state: a batch it refused.
     failed: Option<String>,
-    /// A key, a press or a touch arrived since the window last looked where the keyboard focus
-    /// is.
+    /// A key, a press or a touch arrived since the window last looked where the keyboard focus is.
     input: bool,
     /// The bound control the keyboard focus was in, as last sent, by key in the composed tree.
     focus: Option<String>,
@@ -280,77 +263,75 @@ pub struct AppWindow {
     composing: bool,
     /// How often the app asked for the window to come forward since the window last did.
     activations: u32,
-    /// The task runs a change mark asked to show ([`ToUi::ShowRun`]), until the window's
-    /// host takes them ([`Self::take_shown_runs`]).
+    /// The task runs a change mark asked to show ([`ToUi::ShowRun`]), until the window's host takes
+    /// them ([`Self::take_shown_runs`]).
     shown_runs: Vec<String>,
-    /// How many presses the window sent the app (`ToApp::Fire`, `ToApp::Invoke`), and how many
-    /// of them the app said it ran (`ToUi::Took`).
+    /// How many presses the window sent the app (`ToApp::Fire`, `ToApp::Invoke`), and how many of
+    /// them the app said it ran (`ToUi::Took`).
     fired: u64,
     took: u64,
-    /// What the person typed after presses the app has not run yet, oldest first.
     typed: std::collections::VecDeque<Typed>,
-    /// How many presses the window had sent when the person last pointed (a click, a touch):
-    /// what they type after a press they pointed after was typed where they put the keyboard,
-    /// not where the keyboard was at the press.
+    /// How many presses the window had sent when the person last pointed (a click, a touch): what
+    /// they type after a press they pointed after goes where they put the keyboard, not where it
+    /// was at the press.
     pointed_after: Option<u64>,
-    /// The control to take the keyboard once the window's tree is laid out, by key in the
-    /// composed tree ([`Widget::take_focus_request`]).
+    /// The control to take the keyboard once the window's tree is laid out, by key in the composed
+    /// tree ([`Widget::take_focus_request`]).
     focus_request: Option<String>,
-    /// The field a press opened, the window asked the keyboard for and has not heard back of:
-    /// what the person types meanwhile is that field's, not the one the keyboard is leaving
+    /// The field a press opened, the window asked the keyboard for and has not heard back of: what
+    /// the person types meanwhile is that field's, not the one the keyboard is leaving
     /// ([`Self::hold_for_landing`]). In the composed tree.
     landing: Option<String>,
-    /// The item the window's own view shows in place (a tree beside what it shows): what the
-    /// fields of its content belong to.
+    /// The item the window's own view shows in place (a tree beside what it shows): what the fields
+    /// of its content belong to.
     shown_in_place: Option<ResourceRef>,
-    /// What the row of the item the window's own view shows as its page names it: what the
-    /// window is named by while it shows one ([`Self::title`]).
+    /// What the row of the item the window's own view shows as its page names it: what the window
+    /// is named by while it shows one ([`Self::title`]).
     page_title: Option<String>,
-    /// The field of the page the window draws for the item a press showed, until the keyboard
-    /// is in it: the page is built again when the item changes, and the keyboard goes with it.
+    /// The field of the page the window draws for the item a press showed, until the keyboard is in
+    /// it: the page is built again when the item changes, and the keyboard goes with it.
     page_focus: Option<String>,
-    /// How many times the window asked for it, so a field that never takes the keyboard does
-    /// not have the page built again on every frame.
+    /// How many times the window asked for it, so a field that never takes the keyboard does not
+    /// have the page built again on every frame.
     page_focus_tries: u8,
-    /// What the app last said each bound control holds, by key: what the window shows again
-    /// when the person's typing goes elsewhere.
+    /// What the app last said each bound control holds, by key: what the window shows again when
+    /// the person's typing goes elsewhere.
     app_bound: HashMap<String, Value>,
-    /// The item each press showed the window's own view (by the press's count): what the
-    /// person typed after that press belongs to it, even once a later press showed another.
+    /// The item each press showed the window's own view (by the press's count): what the person
+    /// typed after that press belongs to it, even once a later press showed another.
     shows_by_press: BTreeMap<u64, ResourceRef>,
-    /// How many presses the window had sent when the app last opened a view for the person's
-    /// input, until the app says it ran them (`ToUi::Took`).
+    /// How many presses the window had sent when the app last opened a view for the person's input,
+    /// until the app says it ran them (`ToUi::Took`).
     opened: Option<u64>,
     /// One `rem` in logical pixels under the theme the window was last laid out in.
     rem: f32,
     /// The space last told the app each lane's view has, in rem.
     root_space: Option<(f32, f32)>,
     detail_space: Option<(f32, f32)>,
-    /// The column the window keeps in front of a narrow window: what a person's tap or the
-    /// app's open brought forward, held while the shell is built anew. A shell built from the
-    /// views starts on the screen a new window opens on; the window itself remembers where the
-    /// person is, so a patch that changes the views' keys does not send them back.
+    /// The column a narrow window keeps in front: what a person's tap or the app's open brought
+    /// forward, held while the shell is built anew. A shell built from the views starts on the
+    /// screen a new window opens on; the window remembers where the person is, so a patch that
+    /// changes the views' keys does not send them back.
     front: Option<NavPane>,
-    /// A part of a shell rather than a window ([`Self::part`]): the root view shown as it is,
-    /// with no window shell around it.
+    /// A part of a shell rather than a window ([`Self::part`]): the root view as it is, with no
+    /// window shell around it.
     shape: Shape,
     /// What the app said a part has no window to show, until its embedder takes it.
     notices: Vec<(wire::NoticeKind, String)>,
-    /// The actions the app offers the person at this window, as their command palette lists
-    /// them ([`ToUi::Actions`]).
+    /// The actions the app offers the person at this window, as their command palette lists them
+    /// ([`ToUi::Actions`]).
     actions: Vec<tilo_actions::ActionDescriptor>,
-    /// How many rows the frame's list showed before the search typed anything: what the
-    /// search's counter counts them of.
+    /// How many rows the frame's list showed before the search typed anything: what the search's
+    /// counter counts them of.
     search_total: Option<usize>,
 }
 
 impl AppWindow {
     /// A part of a shell (its top bar, a dock) receiving its views over `transport`: the root
-    /// view's tree shown as it is, over the whole area the part is given, with no window
-    /// shell, header or ground of its own. The view fills the area, so what it places at the
-    /// area's edges (a dock at the foot) stands there however little it shows between them;
-    /// what it does not draw stays clear, so what lies under the part shows through, and what
-    /// the view opens (a menu) has room.
+    /// view's tree as it is, over the whole area the part is given, with no window shell, header or
+    /// background. The view fills the area, so what it places at the area's edges (a dock at the
+    /// foot) is there however little it shows between them; what it does not draw stays clear, so
+    /// what lies under the part shows through, and what the view opens (a menu) has room.
     #[must_use]
     pub fn part(transport: Box<dyn Transport>) -> Self {
         let mut window = Self::new(transport, Vec::new());
@@ -369,8 +350,8 @@ impl AppWindow {
         window
     }
 
-    /// A window receiving its app's views over `transport`, showing `beside` after its shell
-    /// and Ask bar (an embedder's endpoints, which take no room).
+    /// A window receiving its app's views over `transport`, showing `beside` after its shell and
+    /// Ask bar (an embedder's endpoints, which take no room).
     #[must_use]
     pub fn new(transport: Box<dyn Transport>, beside: Vec<Element>) -> Self {
         let mut body = Stack::stack()
@@ -390,8 +371,8 @@ impl AppWindow {
         let events: EventSink = Rc::default();
         let rows: Registry = Rc::default();
         let reconciler = {
-            // Weakly: the rows' own readers share this reconciler, and a strong hold would keep
-            // the rows alive after the window closes.
+            // Weakly: the rows' own readers share this reconciler, and a strong hold would keep the
+            // rows alive after the window closes.
             let registry = Rc::downgrade(&rows);
             let rows_of: crate::adapter::RowsOf = Rc::new(move |key: &str| {
                 registry
@@ -450,28 +431,24 @@ impl AppWindow {
         }
     }
 
-    /// What the app said (a refusal, a done action) since this was last asked, where the
-    /// window is a part with no shell to toast in.
     pub fn take_notices(&mut self) -> Vec<(wire::NoticeKind, String)> {
         std::mem::take(&mut self.notices)
     }
 
-    /// The actions the app offers the person at this window, as its command palette lists
-    /// them ([`ToUi::Actions`]): labels, keys, icons and what they act on, for the window to
-    /// offer them the way it offers its own.
+    /// The actions the app offers the person at this window, as its command palette lists them
+    /// ([`ToUi::Actions`]): labels, keys, icons and what they act on, for the window to offer them
+    /// the way it offers its own.
     #[must_use]
     pub fn actions(&self) -> &[tilo_actions::ActionDescriptor] {
         &self.actions
     }
 
-    /// The person chose `address` from the window's command palette with `argument`, or pressed
-    /// a control the app published the action for: the app runs it as their own step. `argument`
-    /// is the palette's collected text or canonical JSON arguments, as a prompt or typed form
-    /// encodes them.
-    ///
-    /// An action whose key a text field of the view declares (a list's entry) is pressed where
-    /// that field stands: the press puts the keyboard in it, as the key does, rather than
-    /// making an empty item the person never typed.
+    /// The person chose `address` from the window's command palette with `argument`, or pressed a
+    /// control the app published the action for: the app runs it as their own step. `argument` is
+    /// the palette's collected text or canonical JSON arguments, as a prompt or typed form encodes
+    /// them. An action whose key a text field of the view declares (a list's entry) is pressed
+    /// where that field is: the press puts the keyboard in it, as the key does, instead of making
+    /// an empty item nobody typed.
     pub fn invoke_action(
         &mut self,
         address: tilo_actions::ActionAddress,
@@ -492,8 +469,8 @@ impl AppWindow {
             self.flush();
             return;
         }
-        // A press like any other: what the person types while the app runs it goes where it
-        // leaves the keyboard, and what it makes opens as their input.
+        // A press like any other: what the person types while the app runs it goes where it leaves
+        // the keyboard, and what it makes opens as their input.
         self.fired = self.fired.saturating_add(1);
         self.tell(ToApp::Invoke { address, argument });
     }
@@ -504,15 +481,12 @@ impl AppWindow {
         std::mem::take(&mut self.activations) > 0
     }
 
-    /// The first task run a change mark in the window asked to show and the window's host has
-    /// not taken yet ([`ToUi::ShowRun`]): the host shows it where the system keeps its log.
+    /// The first task run a change mark in the window asked to show and the window's host has not
+    /// taken yet ([`ToUi::ShowRun`]): the host shows it where the system keeps its log.
     pub fn take_shown_run(&mut self) -> Option<String> {
         (!self.shown_runs.is_empty()).then(|| self.shown_runs.remove(0))
     }
 
-    // ----- what the app sends --------------------------------------------------------------
-
-    /// Take what the app sent and show it. Whether anything arrived.
     pub fn receive(&mut self) -> bool {
         let mut any = false;
         loop {
@@ -547,8 +521,8 @@ impl AppWindow {
         any
     }
 
-    /// Refuse what the app sent: the window shows the platform's error state, and takes
-    /// nothing more until the app opens its root anew.
+    /// Refuse what the app sent: the window shows the platform's error state, and takes nothing
+    /// more until the app opens its root anew.
     fn fail(&mut self, why: &str) {
         tracing::warn!(why, "a window refused what its app sent");
         if self.failed.is_none() {
@@ -562,8 +536,8 @@ impl AppWindow {
         self.failed = Some(why.to_owned());
     }
 
-    /// Whether the window, showing the error state, leaves `message` aside: it takes nothing
-    /// until the app opens its root anew.
+    /// Whether the window, showing the error state, leaves `message` aside: it takes nothing until
+    /// the app opens its root anew.
     fn refuses_while_failed(&self, message: &ToUi) -> bool {
         self.failed.is_some()
             && !matches!(
@@ -636,8 +610,8 @@ impl AppWindow {
                 } => self.take_bound(lane, &key, value, acked),
                 rows @ (ToUi::Rows { .. } | ToUi::RowsChanged { .. }) => {
                     self.take_rows(rows);
-                    // A row that arrived can hold a list of its own (the document of a row
-                    // standing open), whose rows the app sends next.
+                    // A row that arrived can hold a list of its own (the document of a row standing
+                    // open), whose rows the app sends next.
                     self.track_rows();
                     arrived = true;
                 }
@@ -647,8 +621,8 @@ impl AppWindow {
                 ToUi::Actions(catalogue) => self.take_actions(catalogue)?,
                 ToUi::Took { fired } => {
                     self.took = self.took.max(fired);
-                    // What was typed after the presses it ran goes to what they opened, before
-                    // what a later press opened (further on in this batch) takes its place.
+                    // What was typed after the presses it ran goes to what they opened, before what
+                    // a later press opened (further on in this batch) takes its place.
                     opened_for_input = false;
                     let opened = self.opened.take().is_some();
                     self.send_typed_into(opened);
@@ -678,8 +652,8 @@ impl AppWindow {
     }
 
     /// The lane `lane` opened on `target` with the tree `tree`, coming to the front of a narrow
-    /// window when `brought` names the press that opened it. Whether that press takes the
-    /// keyboard into the page.
+    /// window when `brought` names the press that opened it. Whether that press takes the keyboard
+    /// into the page.
     fn opened(
         &mut self,
         lane: Lane,
@@ -705,16 +679,16 @@ impl AppWindow {
         }
         self.track_rows();
         if lane == Lane::Detail && brought == Some(wire::Front::Input) {
-            // Its Took may come in a later batch: what is typed until then follows the press
-            // into it.
+            // Its Took may come in a later batch: what is typed until then follows the press into
+            // it.
             self.opened = Some(self.fired);
             return true;
         }
         false
     }
 
-    /// The page the person's press showed is built again with the item: the keyboard goes into
-    /// it once it stands, and once more if the page was built after the first ask.
+    /// The page the person's press showed is built again with the item: the keyboard goes into it
+    /// once it is there, and once more if the page was built after the first ask.
     fn keep_page_focus(&mut self) {
         let Some(field) = self.page_focus.clone() else {
             return;
@@ -731,22 +705,22 @@ impl AppWindow {
     /// What the app offers the person at the window now ([`crate::catalogue::take`]).
     fn take_actions(&mut self, catalogue: wire::ActionCatalogue) -> Result<(), String> {
         crate::catalogue::take(&mut self.actions, catalogue)?;
-        // The window publishes each action as the resource its controls stand on.
+        // The window publishes each action as the resource its controls are on.
         let published = self.catalogue();
         self.bind_published(&published);
         Ok(())
     }
 
-    /// Bind the window's controls to the actions the app publishes (`published`): a control
-    /// whose event runs one of them runs it through the door, the one path anyone else running
-    /// the action takes, and is where an agent running it is seen. An app whose instance runs
-    /// in the window's own process publishes its actions itself and binds them here; an app in
-    /// a host sends them ([`ToUi::Actions`]).
+    /// Bind the window's controls to the actions the app publishes (`published`): a control whose
+    /// event runs one of them runs it through the door, the one path anyone else running the action
+    /// takes, and is where an agent running it is seen. An app whose instance runs in the window's
+    /// own process publishes its actions itself and binds them here; an app in a host sends them
+    /// ([`ToUi::Actions`]).
     pub fn bind_published(&mut self, published: &[tilo_actions::ResourceSpec]) {
-        // A control is bound to the action its event runs when its widget is built: controls
-        // whose events would now take the other path are built again, so a press and anyone
-        // else running the action take the one path. The app publishing the same actions again
-        // binds nothing anew.
+        // A control is bound to the action its event runs when its widget is built: controls whose
+        // events would now take the other path are built again, so a press and anyone else running
+        // the action take the one path. The app publishing the same actions again binds nothing
+        // anew.
         let rebind = {
             let reconciler = self.reconciler.borrow();
             let adapter = reconciler.adapter();
@@ -762,7 +736,6 @@ impl AppWindow {
         }
     }
 
-    /// The window's trees within its budget: one window's nodes are its own to spend.
     /// Rows of a virtual list, or what changed of them, into the list that shows them.
     fn take_rows(&self, message: ToUi) {
         match message {
@@ -831,7 +804,6 @@ impl AppWindow {
         self.structure_dirty = true;
     }
 
-    /// Forget what the window held of the view of `lane`: it opened anew, or closed.
     fn forget_lane(&mut self, lane: Lane) {
         let prefix = match lane {
             Lane::Root => None,
@@ -845,17 +817,14 @@ impl AppWindow {
         self.bound.borrow_mut().retain(|key, _| !ours(key));
         self.texts.retain(|key, _| !ours(key));
         self.seqs.retain(|key, _| !ours(key));
-        // The field a press opened for this lane is gone with it: what was typed for it goes
-        // to the resource it was typed into, wherever the lane shows now.
+        // The field a press opened for this lane is gone with it: what was typed for it goes to the
+        // resource it was typed into, wherever the lane shows now.
         if self.landing.as_ref().is_some_and(ours) {
             self.landing = None;
         }
     }
 
-    /// Keep rows for every virtual list of the views and of the rows they hold, and drop the
-    /// rows of lists gone.
     fn track_rows(&self) {
-        // Each list with the words of the heading over it, where one heads its rows.
         let mut wanted: Vec<Rows> = Vec::new();
         for (view, lane, prefix) in [
             (self.root.as_ref(), Lane::Root, ""),
@@ -866,8 +835,8 @@ impl AppWindow {
                 wanted.push(Rows::new(prefix, lane, &list, item, heading));
             }
         }
-        // A row a list holds can hold a list of its own — the document of a row standing open
-        // where it stands — and so can that list's rows.
+        // A row a list holds can hold a list of its own — the document of a row standing open where
+        // it stands — and so can that list's rows.
         let mut at = 0;
         while let Some(rows) = wanted.get(at) {
             let (lane, prefix, heading) = (rows.lane, rows.prefix, rows.heading.clone());
@@ -916,8 +885,8 @@ impl AppWindow {
     fn take_bound(&mut self, lane: Lane, key: &str, value: Value, acked: u64) {
         let key = composed_key(lane, key);
         self.app_bound.insert(key.clone(), value.clone());
-        // The field keeps what the person typed into it while a press was running, while it
-        // still shows the resource they typed into.
+        // The field keeps what the person typed into it while a press was running, while it still
+        // shows the resource they typed into.
         let shows = self.target(lane);
         if let Some(typed) = self.typed.iter_mut().find(|typed| {
             typed.key.as_deref() == Some(key.as_str())
@@ -925,8 +894,8 @@ impl AppWindow {
                 && typed.target == shows
         }) {
             // What the app sent for the field: the typing goes against it when the app ran the
-            // press. The field keeps showing what the person typed into it, which the app has
-            // not taken: a value it held before that is no reason to take their words away.
+            // press. The field keeps showing what the person typed into it, which the app has not
+            // taken: a value it held before is no reason to take their words away.
             typed.sent = Some(value);
             return;
         }
@@ -943,8 +912,8 @@ impl AppWindow {
     fn notice(&mut self, words: &Words, kind: wire::NoticeKind, undo: bool) {
         let text = say(words);
         if self.shape == Shape::Part {
-            // A part has no window to toast in: its embedder says it where the shell says
-            // things ([`Self::take_notices`]).
+            // A part has no window to toast in: its embedder says it where the shell says things
+            // ([`Self::take_notices`]).
             self.notices.push((kind, text));
             return;
         }
@@ -959,8 +928,6 @@ impl AppWindow {
             (wire::NoticeKind::Info, false) => shell.toast(text, ToastKind::Info),
         }
     }
-
-    // ----- the shell -----------------------------------------------------------------------
 
     /// The pane the shell stands in.
     fn shell_pane(&mut self) -> Option<&mut Pane> {
@@ -980,9 +947,9 @@ impl AppWindow {
     }
 
     fn show_content(&mut self, source: MotionSource) {
-        // The shell reports the columns its own front moves, and owes the frame that slides
-        // them; a window whose content already stood in front — a press on what the person was
-        // reading — changed nothing its layout is built for.
+        // The shell reports the columns its own front moves, and owes the frame that slides them; a
+        // window whose content already stood in front (a press on what the person was reading)
+        // changed nothing its layout is built for.
         let already_in_front = self.front == Some(NavPane::Content);
         if let Some(shell) = self.shell() {
             shell.show_from(NavPane::Content, source);
@@ -1006,13 +973,13 @@ impl AppWindow {
         self.structure_dirty = true;
     }
 
-    /// Bring the shell up to date with the views: the root's shell with the view after it as
-    /// its content, reconciled into the widgets it was built into.
+    /// Bring the shell up to date with the views: the root's shell with the view after it as its
+    /// content, reconciled into the widgets it was built into.
     fn compose(&mut self) {
         if self.shape == Shape::Part && self.root.is_none() {
-            // A part whose whole view is another app's state has no root of its own: what it
-            // shows is the detail lane's view, keyed as a window's detail view is so a press
-            // reaches the view that drew it.
+            // A part whose whole view is another app's state has no root of its own: what it shows
+            // is the detail lane's view, keyed as a window's detail view is so a press reaches the
+            // view that drew it.
             let Some(detail) = self.detail.as_ref() else {
                 return;
             };
@@ -1045,13 +1012,13 @@ impl AppWindow {
         });
         let composed = crate::shell::compose(&root_shell, detail_shell.as_ref());
         // A page while it shows something other than the window itself: a view that shows the
-        // resource the window already is (`show(r)` of the app's own root, a scenario that
-        // stages it) stands where the window opens, with nothing to go back to.
+        // resource the window already is (`show(r)` of the app's own root, a scenario that stages
+        // it) is where the window opens, with nothing to go back to.
         let composed = match (&self.root, &self.detail) {
             (Some(root), Some(detail))
                 if root.target == detail.target
-                    // A page the window's own view already shows (a tree beside what it shows)
-                    // is no page after it: nothing stands behind to go back to.
+                    // A page the window's own view already shows (a tree beside what it shows) is
+                    // no page after it: nothing behind it to go back to.
                     || {
                         let mut chosen = None;
                         chosen_item(&root.tree, &mut chosen);
@@ -1068,10 +1035,10 @@ impl AppWindow {
             _ => composed,
         };
         let composed = crate::shell::header_rules(composed);
-        // A window that had nothing at all to list and now lists something shows its columns
-        // again, and opens on the screen it would have opened on: the front of a column that was
-        // gone is no screen to keep (a notebook staged after its window opened keeps its tree in
-        // front on a phone, rather than the first note).
+        // A window that had nothing at all to list and now lists something shows its columns again,
+        // and opens on the screen it would have opened on: the front of a column that was gone is
+        // no screen to keep (a notebook staged after its window opened keeps its tree in front on a
+        // phone, not the first note).
         if !composed.props.contains_key(crate::shell::NOTHING_LISTED)
             && self
                 .built
@@ -1081,8 +1048,8 @@ impl AppWindow {
             self.front = None;
         }
         let composed = match self.front {
-            // A shell built anew opens on the screen a new window opens on: the window hands it
-            // the one it shows, so the person stays where they are.
+            // A shell built anew opens on the screen a new window opens on: the window hands it the
+            // one it shows, so the person stays where they are.
             Some(front) => with_front(composed, front),
             None => composed,
         };
@@ -1092,8 +1059,6 @@ impl AppWindow {
         self.refresh_bound();
     }
 
-    /// Bring the pane's widgets up to date with `composed`, reconciled into what they were
-    /// built from, or built anew.
     fn reconcile_into_pane(&mut self, composed: &UiNode) {
         let old = self.built.take();
         let reconciler = Rc::clone(&self.reconciler);
@@ -1111,10 +1076,10 @@ impl AppWindow {
         }
     }
 
-    /// Select, in each list of the overview, the row of the view shown after it: the app keeps
-    /// no selection beside it. The sidebar's place follows what the content shows the same way:
-    /// a place names the resource it shows by the id alone, so the window chooses the one that
-    /// names the shown resource, and leaves the app's own choice when none does.
+    /// Select, in each list of the overview, the row of the view shown after it: the app keeps no
+    /// selection beside it. The sidebar's place follows what the content shows the same way: a
+    /// place names the resource it shows by the id alone, so the window chooses the one that names
+    /// the shown resource, and leaves the app's choice when none does.
     fn select_shown(&mut self) {
         let shown = self.detail.as_ref().map(|detail| detail.target.id_string());
         if let Some(shell) = self.shell() {
@@ -1130,7 +1095,7 @@ impl AppWindow {
     }
 
     /// Show what the bound fields and view state hold now in the controls that edit them: the
-    /// shell's and the rows its lists show.
+    /// shell's, and those of the rows its lists show.
     fn refresh_bound(&self) {
         if let Some(built) = &self.built {
             let reconciler = self.reconciler.borrow();
@@ -1205,11 +1170,10 @@ impl AppWindow {
         self.set_body_slot(1, bar, Fit::hug());
     }
 
-    /// The body slot the form stands in.
     const FORM_SLOT: usize = 2;
 
-    /// Show the form `form` of an action waiting for its arguments, or none. The form the
-    /// window shows already, sent again as it reads now, is reconciled in place.
+    /// Show the form `form` of an action waiting for its arguments, or none. The form the window
+    /// shows already, sent again as it reads now, is reconciled in place.
     fn show_form(&mut self, form: Option<&wire::Form>) {
         let Some(form) = form else {
             if self.form.take().is_some() {
@@ -1232,7 +1196,7 @@ impl AppWindow {
             }
         }
         let (shown, mut sheet) = crate::form::Shown::build(form, &mut reconciler.borrow_mut());
-        // A form of a field or two stands beside the control that ran it, as a popover.
+        // A form of a field or two is a popover beside the control that ran it.
         if crate::form::fits_a_popover(form)
             && let Some((lane, key)) = &form.from
         {
@@ -1242,8 +1206,8 @@ impl AppWindow {
         self.set_body_slot(Self::FORM_SLOT, Box::new(sheet), Fit::hug());
     }
 
-    /// What the person answered in the form's own controls since the last frame. Cancel closes
-    /// it at once; what they typed stays the app's.
+    /// What the person answered in the form's own controls since the last frame. Cancel closes it
+    /// at once; what they typed stays the app's.
     fn take_form_answer(&mut self) {
         let Some(answer) = self.form.as_ref().and_then(crate::form::Shown::take_answer) else {
             return;
@@ -1254,12 +1218,10 @@ impl AppWindow {
         self.out.push(answer);
     }
 
-    // ----- what the person did -------------------------------------------------------------
-
     /// Whether the window holds a message for the app it has not sent: a space a layout gave a
     /// view, what the person did, a row asked for. An embedder that only sends when it has
-    /// something to say asks this, so a window nothing touches still hands the app what its
-    /// frame gave its views.
+    /// something to say asks this, so a window nothing touches hands the app what its frame gave
+    /// its views.
     #[must_use]
     pub fn owes(&self) -> bool {
         !self.out.is_empty()
@@ -1270,10 +1232,9 @@ impl AppWindow {
                 .any(|rows| rows.borrow().wants())
     }
 
-    /// Send the app what the person did since the last frame: one batch.
     pub fn flush(&mut self) {
-        // What was typed while the keyboard was on its way to the field a press opened goes
-        // there once it arrived.
+        // What was typed while the keyboard was on its way to the field a press opened goes there
+        // once it arrived.
         self.release_landing();
         for answer in std::mem::take(&mut *self.answers.borrow_mut()) {
             self.out.push(ToApp::Answer(answer));
@@ -1315,8 +1276,6 @@ impl AppWindow {
         }
     }
 
-    /// What the person did with the window's controls since it was last taken, for the next
-    /// batch.
     fn take_events(&mut self) {
         // One queue, in the order the person did things.
         for event in self.events.take() {
@@ -1324,8 +1283,8 @@ impl AppWindow {
         }
     }
 
-    /// Tell the app which bound control the keyboard focus is in now, when that changed: what
-    /// its presence shows of the person (where they type).
+    /// Tell the app which bound control the keyboard focus is in now, when that changed: what its
+    /// presence shows of the person (where they type).
     fn follow_focus(&mut self) {
         let now = self.focused_field();
         if now == self.focus {
@@ -1351,9 +1310,9 @@ impl AppWindow {
             self.out.push(ToApp::Back);
             return;
         }
-        // A control pressed where a field declares its same key leads the person to the field,
-        // as the key does: the window's Primary brings them to a list's entry to type the item,
-        // rather than making one nobody typed.
+        // A control pressed where a field declares its same key leads the person to the field, as
+        // the key does: the window's Primary brings them to a list's entry to type the item,
+        // instead of making one nobody typed.
         if let UiEvent::Press(key) | UiEvent::Fire(key, _, None) = &event
             && let Some(field) = self.press_leads_a_field(key)
         {
@@ -1422,7 +1381,6 @@ impl AppWindow {
         self.bound_text(composed, held)
     }
 
-    /// The bound rich-text control `composed` now holds `rich`.
     fn edited_rich(&mut self, composed: &str, rich: wire::rich::RichText) -> Option<ToApp> {
         let base = match self.bound.borrow().get(composed) {
             Some(Value::Rich(before)) => before.clone(),
@@ -1431,14 +1389,14 @@ impl AppWindow {
         self.bound_text(composed, Held::Rich { base, now: rich })
     }
 
-    /// The bound control `composed` now holds `held`: shown as the person left it, and sent,
-    /// unless a press it was typed after has not run yet — then it waits, like every control
-    /// that takes typing ([`Self::hold`]).
+    /// The bound control `composed` now holds `held`: shown as the person left it, and sent, unless
+    /// a press it was typed after has not run yet; then it waits, like every control that takes
+    /// typing ([`Self::hold`]).
     fn bound_text(&mut self, composed: &str, held: Held) -> Option<ToApp> {
         let (lane, key) = lane_of(composed);
         // A control that edits no text (a number, a date) sends the value it now holds: how its
-        // edits merge, as its component's description says. A control no component built holds
-        // text when what it shows is text.
+        // edits merge, as its component's description says. A control no component built holds text
+        // when what it shows is text.
         let edits_text = matches!(held, Held::Rich { .. })
             || match self.reconciler.borrow().adapter().merge_of(composed) {
                 Some(merge) => merge == ui::component::Merge::Splice,
@@ -1466,8 +1424,8 @@ impl AppWindow {
             Held::Text { now, .. } => Value::Text(now.clone()),
             Held::Rich { now, .. } => Value::Rich(now.clone()),
         };
-        // Typing after a press the app has not run yet waits for it: the press may open
-        // something else into the field the person types into.
+        // Typing after a press the app has not run yet waits for it: the press may open something
+        // else into the field the person types into.
         if self.fired > self.took {
             self.hold(composed, lane, held, shown);
             return None;
@@ -1489,16 +1447,16 @@ impl AppWindow {
         }
     }
 
-    /// Hold what the person typed in the bound control `composed` of `lane` until the presses
-    /// the app has not run yet did, showing `shown` meanwhile: what they typed goes where the
-    /// keyboard would have been had the press run at once.
+    /// Hold what the person typed in the bound control `composed` of `lane` until the presses the
+    /// app has not run yet did, showing `shown` meanwhile: what they typed goes where the keyboard
+    /// would have been had the press run at once.
     fn hold(&mut self, composed: &str, lane: Lane, held: Held, shown: Value) {
         let fired = self.fired;
         let target = self.target(lane);
         let same_field =
             |typed: &Typed| typed.key.as_deref() == Some(composed) && typed.target == target;
-        // The person moved on to another field meanwhile: what they typed before stays where
-        // they typed it.
+        // The person moved on to another field meanwhile: what they typed before stays where they
+        // typed it.
         if self
             .typed
             .back()
@@ -1524,8 +1482,8 @@ impl AppWindow {
                 sent: None,
             });
         } else if let Some(typed) = self.typed.back_mut() {
-            // Every key after the first keeps what the control held before the person began:
-            // what they typed is read from there.
+            // Every key after the first keeps what the control held before the person began: what
+            // they typed is read from there.
             match (&mut typed.held, held) {
                 (Held::Text { now, .. }, Held::Text { now: newer, .. }) => now.clone_from(&newer),
                 (Held::Rich { now, .. }, Held::Rich { now: newer, .. }) => *now = newer,
@@ -1539,10 +1497,10 @@ impl AppWindow {
         self.bound.borrow_mut().insert(composed.to_owned(), shown);
     }
 
-    /// The view a person's press opened takes the keyboard in its first text field, and what
-    /// they typed after the press, before it ran, goes there: as it would have, had the press
-    /// run at once. What they typed before the press, or into a field they put the keyboard in
-    /// since, stays that field's, of the resource it showed.
+    /// The view a person's press opened takes the keyboard in its first text field, and what they
+    /// typed after the press, before it ran, goes there, as it would have had the press run at
+    /// once. What they typed before the press, or into a field they put the keyboard in since, is
+    /// that field's, of the resource it showed.
     fn focus_opened(&mut self) {
         fn first_field(node: &UiNode) -> Option<&UiNode> {
             if node.binding.is_some()
@@ -1553,8 +1511,8 @@ impl AppWindow {
             }
             node.children.iter().find_map(first_field)
         }
-        // The page a press showed: the item opened after the window's own, or — for a window
-        // whose page is its own, a tree beside what it shows — the first field of its content.
+        // The page a press showed: the item opened after the window's own, or, for a window whose
+        // page is its own (a tree beside what it shows), the first field of its content.
         let page = self
             .detail
             .as_ref()
@@ -1571,8 +1529,8 @@ impl AppWindow {
             };
             (field.key.clone(), Lane::Root)
         };
-        // What was typed with no field focused after the press the app just ran, not after a
-        // later one.
+        // What was typed with no field focused after the press the app just ran, not after a later
+        // one.
         let took = self.took;
         let target = self.target(lane);
         // What the field the keyboard goes to holds: a body's rich text typed into a title is
@@ -1582,14 +1540,14 @@ impl AppWindow {
             .as_ref()
             .and_then(|built| node_of_key(built, lane_of(&field).1.as_str()))
             .is_some_and(|node| node.kind == crate::adapter::kind("RichInput"));
-        // The fields the typing leaves show what the app has of them again, not the words that
-        // went elsewhere.
+        // The fields the typing leaves show what the app has of them again, not the words that went
+        // elsewhere.
         let mut left = Vec::new();
         for typed in &mut self.typed {
             if typed.after <= took && typed.follows && !typed.moved {
                 if typed.key.is_some() {
-                    // Only what the person typed moves, never what the field held before it,
-                    // and a line break a body's text ends with does not move into a title.
+                    // Only what the person typed moves, never what the field held before it, and a
+                    // line break a body's text ends with does not move into a title.
                     let insert = match &typed.held {
                         Held::Text { base, now } => splice_between(base, now).2,
                         Held::Rich { base, now } => {
@@ -1608,8 +1566,8 @@ impl AppWindow {
                         },
                     };
                 }
-                // Its old value is no part of the field it goes to now: what it holds there is
-                // read from that field.
+                // Its old value is no part of the field it goes to now: what it holds there is read
+                // from that field.
                 typed.sent = None;
                 typed.moved = true;
                 if let Some(old) = typed.key.replace(field.clone())
@@ -1630,8 +1588,8 @@ impl AppWindow {
         self.ask_focus(field);
     }
 
-    /// Ask the app to put the keyboard in `field` (its key in the composed tree), and keep
-    /// what the person types until it has it that field's ([`Self::hold_for_landing`]).
+    /// Ask the app to put the keyboard in `field` (its key in the composed tree), and keep what the
+    /// person types until it has it that field's ([`Self::hold_for_landing`]).
     fn ask_focus(&mut self, field: String) {
         self.landing = Some(field.clone());
         self.focus_request = Some(field);
@@ -1667,8 +1625,8 @@ impl AppWindow {
                 }
             }
         } else {
-            // What the app has for the field: the text the person's typing goes after, and what
-            // its echo is measured against.
+            // What the app has for the field: the text the person's typing goes after, and what its
+            // echo is measured against.
             let before = self.bound.borrow().get(field).cloned();
             let (held, shown) = match before {
                 Some(Value::Rich(rich)) => (
@@ -1724,8 +1682,7 @@ impl AppWindow {
 
     /// Hold `event` when it types text the window cannot place yet: while the keyboard is on its
     /// way to the field a press opened, into that field; while a press runs and no field has the
-    /// keyboard (the press took it), into the field it leaves the keyboard in. Whether it was
-    /// held.
+    /// keyboard (the press took it), into the field it leaves the keyboard in. Whether it was held.
     fn hold_typing(&mut self, event: &ui::winit::event::WindowEvent) -> bool {
         let ui::winit::event::WindowEvent::KeyboardInput { event: key, .. } = event else {
             return false;
@@ -1737,14 +1694,14 @@ impl AppWindow {
         else {
             return false;
         };
-        // A press the window's controls reported since the last event counts: the key may
-        // follow it in the same frame.
+        // A press the window's controls reported since the last event counts: the key may follow it
+        // in the same frame.
         self.take_events();
         if key.state != ui::winit::event::ElementState::Pressed {
             return false;
         }
-        // The keyboard is on its way to the field a press opened: what the person types
-        // meanwhile is that field's, never the one the keyboard is leaving.
+        // The keyboard is on its way to the field a press opened: what the person types meanwhile
+        // is that field's, never the one the keyboard is leaving.
         if let Some(field) = self.landing.clone()
             && self.focused_control().as_deref() != Some(field.as_str())
         {
@@ -1783,9 +1740,9 @@ impl AppWindow {
         true
     }
 
-    /// Enter in a field of one line that submits nothing moves the keyboard on to the next field
-    /// of its view, as native Notes goes from a note's title to its body. A field with `submit`
-    /// keeps Enter: it submits. Whether it moved.
+    /// Enter in a field of one line that submits nothing moves the keyboard on to the next field of
+    /// its view, as native Notes goes from a note's title to its body. A field with `submit` keeps
+    /// Enter: it submits. Whether it moved.
     fn enter_moves_on(
         &mut self,
         event: &ui::winit::event::WindowEvent,
@@ -1850,15 +1807,15 @@ impl AppWindow {
         self.press_where(&pressed)
     }
 
-    /// Where a press of `pressed` leads in the window: the field it brings the person to, the
-    /// field that carries it out (the keyboard is already there), or the control that runs it —
-    /// on the item the keyboard is on first, then what that stands in, then the window.
+    /// Where a press of `pressed` leads in the window: the field it brings the person to, the field
+    /// that carries it out (the keyboard is already there), or the control that runs it — on the
+    /// item the keyboard is on first, then what that is in, then the window.
     fn press_where(&self, pressed: &ui::platform::Shortcut) -> Option<Press> {
         let built = self.built.as_ref()?;
         let focused = self.focused_control();
         // A key a text field declares is the field's: where the keyboard is already in it, it
-        // carries the key out there, on the item the person is on, rather than sending them to
-        // the first field of the window that names it.
+        // carries the key out there, on the item the person is on, instead of sending them to the
+        // first field of the window that names it.
         if let Some(field) = focused.as_deref().filter(|field| {
             node_at(built, field).is_some_and(|field| text_field(field) && declares(field, pressed))
         }) {
@@ -1882,17 +1839,17 @@ impl AppWindow {
         self.body.handle_event(&enter, ctx);
     }
 
-    /// The field a press on the control `key` leads the person to: one whose declared key is
-    /// the shortcut that control names, when there is one. See [`focus_field`].
+    /// The field a press on the control `key` leads the person to: one whose declared key is the
+    /// shortcut that control names, when there is one. See [`focus_field`].
     fn press_leads_a_field(&self, key: &str) -> Option<String> {
         let built = self.built.as_ref()?;
         let declared = shortcut_declared(built, key)?;
         focus_field(built, &declared)
     }
 
-    /// Run the action the app declared the shortcut `key` for, as pressing it does: the event
-    /// it runs reaches the app at once, or the keyboard goes to the field the key leads to.
-    /// Whether the window offers it. A test's way in.
+    /// Run the action the app declared the shortcut `key` for, as pressing it does: the event it
+    /// runs reaches the app at once, or the keyboard goes to the field the key leads to. Whether
+    /// the window offers it. A test's way in.
     pub fn run_shortcut(&mut self, key: &str) -> bool {
         let Some(press) = self.press_where(&ui::platform::Shortcut::from(key)) else {
             return false;
@@ -1906,8 +1863,8 @@ impl AppWindow {
                 self.flush();
                 true
             }
-            // The keyboard is already in the field that declares the key, and the field carries
-            // it out through its own press: only the event path does that.
+            // The keyboard is already in the field that declares the key, and the field carries it
+            // out through its own press: only the event path does that.
             Press::Commit => true,
             Press::Run(node_key, event) => {
                 self.act(UiEvent::Fire(node_key, event, None));
@@ -1918,8 +1875,8 @@ impl AppWindow {
         }
     }
 
-    /// Send what the person typed after each press the app ran since, into the view a press
-    /// opened for them when `opened` (its first field takes the keyboard).
+    /// Send what the person typed after each press the app ran since, into the view a press opened
+    /// for them when `opened` (its first field takes the keyboard).
     fn send_typed_into(&mut self, opened: bool) {
         if opened {
             self.focus_opened();
@@ -1927,7 +1884,6 @@ impl AppWindow {
         self.send_typed();
     }
 
-    /// Send what the person typed after each press the app ran since.
     fn send_typed(&mut self) {
         let mut sent = false;
         while self.typed.front().is_some_and(|typed| {
@@ -1943,14 +1899,14 @@ impl AppWindow {
         }
     }
 
-    /// Send what the person typed while a press was running into the field it went into,
-    /// against what the field shows now: what they typed keeps its place from the field's end.
-    /// Typed while no field had the keyboard, and the press opened no field: it goes to the
-    /// field the keyboard is in now, at its end; with none, the window says where it went.
+    /// Send what the person typed while a press was running into the field it went into, against
+    /// what the field shows now: what they typed keeps its place from the field's end. Typed while
+    /// no field had the keyboard, and the press opened no field: it goes to the field the keyboard
+    /// is in now, at its end; with none, the window says where it went.
     fn send_typed_now(&mut self, mut typed: Typed) {
         if typed.key.is_none() {
-            // The field the press showed takes it: the page beside a list, or the page after
-            // the window's own, named while the keyboard goes there.
+            // The field the press showed takes it: the page beside a list, or the page after the
+            // window's own, named while the keyboard goes there.
             let Some(field) = self.landing.clone().or_else(|| self.focused_field()) else {
                 let typed_text = typed.held.texts().1;
                 if !typed_text.is_empty() {
@@ -1970,21 +1926,21 @@ impl AppWindow {
             return;
         };
         // What the field shows now, when the window did not hold what the person typed: their
-        // own typing is no part of what the app has of it.
+        // typing is no part of what the app has of it.
         if typed.moved && typed.sent.is_none() {
             typed.sent = self.bound.borrow().get(&key).cloned();
         }
         let (lane, field) = lane_of(&key);
-        // The resource the field belongs to, when it is the one the person typed into: the item
-        // the press before their typing showed, where the window draws the page itself.
+        // The resource the field belongs to, when it is the one the person typed into: the item the
+        // press before their typing showed, where the window draws the page itself.
         let target = self.field_target_for(&key, Some(typed.after));
         // A field of the page belongs to the item its press showed: it goes there even once the
         // page shows another, and what it showed when the person typed is what they typed into.
         let page = self.page_field(&key);
         let still_shown = typed.target.is_none() || typed.target == target || page;
         // What the field shows now: what the app sent for it since, or what it showed when the
-        // person began typing (the window showed their typing meanwhile, which is no part of
-        // what it shows now).
+        // person began typing (the window showed their typing meanwhile, which is no part of what
+        // it shows now).
         let shown = match typed.sent.take() {
             Some(sent) if !page => sent,
             _ => match &typed.held {
@@ -1996,8 +1952,8 @@ impl AppWindow {
             self.send_typed_into_field(&key, lane, field, target, &typed.held, &shown);
             return;
         }
-        // The lane moved on to another resource: what they typed goes to the one it was typed
-        // into, and the field the lane shows now keeps what it shows.
+        // The lane moved on to another resource: what they typed goes to the one it was typed into,
+        // and the field the lane shows now keeps what it shows.
         let Some(target) = typed.target else {
             return;
         };
@@ -2005,8 +1961,8 @@ impl AppWindow {
         self.out.push(message);
     }
 
-    /// Send what the person typed in `key` of `lane` into the field the lane shows now
-    /// (`target`), against what it shows (`shown`).
+    /// Send what the person typed in `key` of `lane` into the field the lane shows now (`target`),
+    /// against what it shows (`shown`).
     fn send_typed_into_field(
         &mut self,
         key: &str,
@@ -2056,8 +2012,8 @@ impl AppWindow {
         }
     }
 
-    /// What the person typed, where it goes in what the field shows now: a splice of the
-    /// shown text and the place the typing keeps from its end.
+    /// What the person typed, where it goes in what the field shows now: a splice of the shown text
+    /// and the place the typing keeps from its end.
     fn place_of(held: &Held, shown: &Value) -> (usize, usize, String) {
         let (base_text, now_text) = held.texts();
         let (at, delete, insert) = splice_between(&base_text, &now_text);
@@ -2074,8 +2030,8 @@ impl AppWindow {
         (start, delete, insert)
     }
 
-    /// What the person typed into the field of a resource the lane left: an edit of the
-    /// resource they typed into.
+    /// What the person typed into the field of a resource the lane left: an edit of the resource
+    /// they typed into.
     fn typed_elsewhere(
         &self,
         key: &str,
@@ -2120,7 +2076,6 @@ impl AppWindow {
         }
     }
 
-    /// The control the keyboard is in now, by key in the composed tree.
     fn focused_control(&self) -> Option<String> {
         fn focused(widget: &dyn Widget) -> Option<String> {
             if widget.is_focused()
@@ -2133,7 +2088,6 @@ impl AppWindow {
         focused(self.body.as_ref())
     }
 
-    /// The bound text control the keyboard is in now, by key in the composed tree.
     fn focused_field(&self) -> Option<String> {
         let field = self.focused_control()?;
         matches!(
@@ -2143,25 +2097,24 @@ impl AppWindow {
         .then_some(field)
     }
 
-    /// Whether the keyboard is in a field that takes typing: a text field's keys are its own
-    /// until it says it does not use one.
+    /// Whether the keyboard is in a field that takes typing: a text field's keys are its own until
+    /// it says it does not use one.
     fn typing(&self) -> bool {
         takes_typing(self.body.as_ref())
     }
 
-    /// The splice of the bound text control `composed` from `before` to `text`, which it now
-    /// shows.
+    /// The splice of the bound text control `composed` from `before` to `text`, which it now shows.
     fn splice(&mut self, composed: &str, before: &str, text: String) -> Option<ToApp> {
         let (lane, key) = lane_of(composed);
-        // Of the resource the field belongs to: the app applies it there, whatever the lane
-        // shows by the time it takes it.
+        // Of the resource the field belongs to: the app applies it there, whatever the lane shows
+        // by the time it takes it.
         let target = self.field_target(composed)?;
         let (at, delete, insert) = splice_between(before, &text);
         let seq = self.seqs.entry(composed.to_owned()).or_default();
         *seq = seq.saturating_add(1);
         let seq = *seq;
-        // What the field shows is what the person typed, whatever the window shows it again
-        // from before the app takes it.
+        // What the field shows is what the person typed, whatever the window shows it again from
+        // before the app takes it.
         self.bound
             .borrow_mut()
             .insert(composed.to_owned(), Value::Text(text.clone()));
@@ -2177,7 +2130,6 @@ impl AppWindow {
         })
     }
 
-    /// The resource the view of `lane` shows.
     fn target(&self, lane: Lane) -> Option<ResourceRef> {
         match lane {
             Lane::Root => self.root.as_ref(),
@@ -2186,15 +2138,11 @@ impl AppWindow {
         .map(|view| view.target.clone())
     }
 
-    // ----- for embedders and tests ---------------------------------------------------------
-
-    /// The composed shell, as the window last built it.
     #[must_use]
     pub fn composed(&self) -> Option<&UiNode> {
         self.built.as_ref()
     }
 
-    /// The root view's tree, as the window holds it.
     #[must_use]
     pub fn root_tree(&self) -> Option<UiNode> {
         self.root
@@ -2202,7 +2150,6 @@ impl AppWindow {
             .map(|view| crate::reconcile::normalize(&view.tree))
     }
 
-    /// The detail view's tree, as the window holds it.
     #[must_use]
     pub fn detail_tree(&self) -> Option<UiNode> {
         self.detail
@@ -2210,19 +2157,16 @@ impl AppWindow {
             .map(|view| crate::reconcile::normalize(&view.tree))
     }
 
-    /// The resource the detail view shows.
     #[must_use]
     pub fn detail_target(&self) -> Option<&ResourceRef> {
         self.detail.as_ref().map(|view| &view.target)
     }
 
-    /// The resource the root view shows.
     #[must_use]
     pub fn root_target(&self) -> Option<&ResourceRef> {
         self.root.as_ref().map(|view| &view.target)
     }
 
-    /// The keys of the virtual lists in the composed tree.
     #[must_use]
     pub fn lists(&self) -> Vec<String> {
         let mut keys: Vec<String> = self.rows.borrow().keys().cloned().collect();
@@ -2230,55 +2174,46 @@ impl AppWindow {
         keys
     }
 
-    /// The rows of the virtual list `key` (its key in the composed tree).
     #[must_use]
     pub fn rows_of(&self, key: &str) -> Option<Rc<RefCell<RemoteRows>>> {
         self.rows.borrow().get(key).cloned()
     }
 
-    /// What the bound control `key` (its key in the composed tree) shows, as the app last sent
-    /// it and the window took it.
     #[must_use]
     pub fn bound_value(&self, key: &str) -> Option<Value> {
         self.bound.borrow().get(key).cloned()
     }
 
-    /// Why the window shows the platform's error state, when it does.
     #[must_use]
     pub fn failed(&self) -> Option<&str> {
         self.failed.as_deref()
     }
 
-    /// Each component of the window's view that did not build or take its props, and why.
     #[must_use]
     pub fn broken_components(&self) -> Vec<String> {
         self.reconciler.borrow().broken()
     }
 
-    /// The Ask bar the window shows, if it shows one.
     #[must_use]
     pub fn asks(&self) -> Option<&wire::Ask> {
         self.ask.as_ref()
     }
 
-    /// Answer the Ask bar, as the person does with its buttons.
     pub fn answer(&self, answer: Answer) {
         self.answers.borrow_mut().push(answer);
     }
 
-    /// Tell the app `message` with the next batch: what the embedder knows that the app does
-    /// not, such as the names of the workspace's participants.
+    /// Tell the app `message` with the next batch: what the embedder knows that the app does not,
+    /// such as the names of the workspace's participants.
     pub fn tell(&mut self, message: ToApp) {
         self.out.push(message);
     }
 
-    /// Report what a person did: an event of a control of the composed shell, by its key
-    /// there.
+    /// Report what a person did: an event of a control of the composed shell, by its key there.
     pub fn act(&self, event: UiEvent) {
         self.events.push(event);
     }
 
-    /// The shell.
     #[must_use]
     pub fn shell_ref(&self) -> Option<&NavShell> {
         self.body
@@ -2292,13 +2227,11 @@ impl AppWindow {
             .downcast_ref::<NavShell>()
     }
 
-    /// The shell, to change it as a person would.
     pub fn shell_mut(&mut self) -> Option<&mut NavShell> {
         self.shell()
     }
 }
 
-/// The key `key` of `lane`'s view in the composed tree.
 fn composed_key(lane: Lane, key: &str) -> String {
     match lane {
         Lane::Root => key.to_owned(),
@@ -2306,8 +2239,6 @@ fn composed_key(lane: Lane, key: &str) -> String {
     }
 }
 
-/// The composed shell `shell` showing `pane` in front of a narrow window: the column it opens
-/// on, given as the shell's own state, which a shell built anew has none of.
 fn with_front(mut shell: UiNode, pane: NavPane) -> UiNode {
     let case = match pane {
         NavPane::Sidebar => "sidebar",
@@ -2318,7 +2249,6 @@ fn with_front(mut shell: UiNode, pane: NavPane) -> UiNode {
     shell
 }
 
-/// Where the widget for the node `key` of the composed tree is drawn, when it is on screen.
 fn rect_of(widget: &dyn Widget, key: &str) -> Option<ui::kurbo::Rect> {
     if widget.test_id() == Some(key) {
         let rect = widget.get_rect();
@@ -2330,7 +2260,6 @@ fn rect_of(widget: &dyn Widget, key: &str) -> Option<ui::kurbo::Rect> {
         .find_map(|child| rect_of(child, key))
 }
 
-/// The view a key of the composed tree is of, and the key in that view.
 fn lane_of(key: &str) -> (Lane, String) {
     match key.strip_prefix(DETAIL) {
         Some(own) => (Lane::Detail, own.to_owned()),
@@ -2338,8 +2267,6 @@ fn lane_of(key: &str) -> (Lane, String) {
     }
 }
 
-/// The field Enter in the field `key` of the composed tree `tree` moves the keyboard on to: the
-/// next field of its view, when `key` is a text field of one line that submits nothing.
 fn field_after_enter(tree: &UiNode, key: &str) -> Option<String> {
     fn in_order<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) {
         out.push(node);
@@ -2347,8 +2274,6 @@ fn field_after_enter(tree: &UiNode, key: &str) -> Option<String> {
             in_order(child, out);
         }
     }
-    // A bound control whose binding is text takes typing, whatever component it is: the
-    // document's body is a block editor, and a field after the title moves to it all the same.
     let takes_typing = |node: &UiNode| {
         node.binding.is_some()
             && crate::adapter::description_of(node).is_some_and(|description| {
@@ -2364,8 +2289,6 @@ fn field_after_enter(tree: &UiNode, key: &str) -> Option<String> {
     in_order(tree, &mut nodes);
     let at = nodes.iter().position(|node| node.key == key)?;
     let field = nodes.get(at)?;
-    // Given `lines`, the field wraps and Enter breaks its line (a document's title still ends
-    // at Enter, and wraps only to fit).
     if !one_line(field) || field.events.contains_key("submit") {
         return None;
     }
@@ -2377,7 +2300,6 @@ fn field_after_enter(tree: &UiNode, key: &str) -> Option<String> {
         .map(|node| node.key.clone())
 }
 
-/// What `words` say, in the person's language.
 fn say(words: &Words) -> String {
     match words {
         Words::Plain(text) => text.clone(),
@@ -2391,8 +2313,6 @@ fn say(words: &Words) -> String {
     }
 }
 
-/// The splice from `before` to `after`: where they first differ, how many bytes of `before`
-/// go from there, and what comes instead, on character boundaries.
 #[must_use]
 pub fn splice_between(before: &str, after: &str) -> (usize, usize, String) {
     let mut start = before
@@ -2425,8 +2345,8 @@ pub fn splice_between(before: &str, after: &str) -> (usize, usize, String) {
 }
 
 /// Show what each bound control under `node` is bound to, as `bound` holds it by key in the
-/// composed tree (each of `node`'s keys carrying `prefix` there), reporting whether any control
-/// was given a value other than the one it showed.
+/// composed tree (each of `node`'s keys carrying `prefix` there), reporting whether any control was
+/// given a value other than the one it showed.
 pub fn show_bound<S: std::hash::BuildHasher>(
     node: &UiNode,
     prefix: &str,
@@ -2456,26 +2376,19 @@ pub fn show_bound<S: std::hash::BuildHasher>(
     changed
 }
 
-/// Where a press of a key an app declared leads in a window.
 enum Press {
-    /// The keyboard goes to the text field the key brings the person to: the entry an app wrote
-    /// for its primary action, rather than an item nobody typed.
     Lead(String),
-    /// The key is the one the field the keyboard is already in declares: the field carries it
-    /// out itself, as its own press does.
     Commit,
-    /// The control that declares the action runs it, on the event it takes.
     Run(String, String),
 }
 
-/// The window stands for its body in the layout and in every walk of the widgets (it adds no
-/// node of its own, so a walk that pairs widgets with layout nodes meets the body's children
-/// under it), taking the person's input and its own changes on the way.
-/// How much a view's size has to change, in rem, before the app is told: less moves no class
-/// boundary and no size a view would show differently.
+/// The window stands for its body in the layout and in every walk of the widgets (it adds no node
+/// of its own, so a walk that pairs widgets with layout nodes meets the body's children under it),
+/// taking the person's input and its own changes on the way. How much a view's size has to change,
+/// in rem, before the app is told: less moves no class boundary and no size a view would show
+/// differently.
 const SPACE_STEP_REM: f32 = 0.125;
 
-/// The widget keyed `key` at or under `widget`.
 fn keyed<'a>(widget: &'a dyn Widget, key: &str) -> Option<&'a dyn Widget> {
     if widget.test_id() == Some(key) {
         return Some(widget);
@@ -2486,26 +2399,24 @@ fn keyed<'a>(widget: &'a dyn Widget, key: &str) -> Option<&'a dyn Widget> {
         .find_map(|child| keyed(child, key))
 }
 
-/// The node key and event to fire for the control that answers a press, matched the way the
-/// toolkit matches every shortcut ([`ui::platform::Shortcut::same_press`]): one key, in one
-/// spelling, with the modifiers it names, and a command modifier that is the platform's own. So
-/// an app's `key: "Ctrl+Enter"` is Command+Enter on a Mac and `key: "e"` is the unshifted E on
-/// every layout (a `Button`'s `press`, a `MenuItem`'s `choose`, as the action's `key:` reaches
-/// them through `std.header`). `None` when no control declares it.
-///
-/// The control `focused` — the one the keyboard is in — is where the answer starts: the actions
-/// of the item the person is on lead, then those of what it stands in, out to the window's. With
-/// no control to start from, the content after the overview's list leads (the resource the
-/// person selected), then the whole shell.
+/// The node key and event to fire for the control that answers a press, matched the way the toolkit
+/// matches every shortcut ([`ui::platform::Shortcut::same_press`]): one key, in one spelling, with
+/// the modifiers it names, and a command modifier that is the platform's own. So an app's `key:
+/// "Ctrl+Enter"` is Command+Enter on a Mac and `key: "e"` is the unshifted E on every layout (a
+/// `Button`'s `press`, a `MenuItem`'s `choose`, as the action's `key:` reaches them through
+/// `std.header`). `None` when no control declares it. The control `focused` — the one the keyboard
+/// is in — is where the answer starts: the actions of the item the person is on lead, then those of
+/// what it is in, out to the window's. With no control to start from, the content after the
+/// overview's list leads (the resource the person selected), then the whole shell.
 fn shortcut_action_where(
     node: &UiNode,
     focused: Option<&str>,
     pressed: &ui::platform::Shortcut,
 ) -> Option<(String, String)> {
     if let Some(path) = focused.and_then(|key| path_to(node, key)) {
-        // Out from the control the keyboard is in: what it declares itself, then what else
-        // stands beside the way on at each level (the item's own controls, the header of the page
-        // it is on), then what the item stands in.
+        // Out from the control the keyboard is in: what it declares itself, then what else is
+        // beside the way on at each level (the item's own controls, the header of the page it is
+        // on), then what the item is in.
         for (at, stands) in path.iter().enumerate().rev() {
             if let Some(found) = declared_action(stands, pressed) {
                 return Some(found);
@@ -2529,8 +2440,6 @@ fn shortcut_action_where(
     declared_within(node, pressed)
 }
 
-/// The control `node` itself is for the shortcut `pressed`: its node key and the event that
-/// runs its action, by its kind (a button's `press`, a menu item's `choose`).
 fn declared_action(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(String, String)> {
     if !declares(node, pressed) {
         return None;
@@ -2541,10 +2450,10 @@ fn declared_action(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(S
         .map(|event| (node.key.clone(), event.to_owned()))
 }
 
-/// Whether some control of the tree `node` an app built while the actions `before` were
-/// published would take the other path now that the window offers the actions `after`: an event
-/// that runs an action the app publishes is bound to the action itself, and one that runs an
-/// action it does not publish is the view's own.
+/// Whether some control of the tree `node` an app built while the actions `before` were published
+/// would take the other path now that the window offers the actions `after`: an event that runs an
+/// action the app publishes is bound to the action itself, and one that runs an action it does not
+/// publish is the view's own.
 fn rebinding(
     before: &crate::adapter::Published,
     after: &crate::adapter::Adapter,
@@ -2562,7 +2471,6 @@ fn rebinding(
         .any(|child| rebinding(before, after, child))
 }
 
-/// The first control in `node`'s tree, itself included, that answers the shortcut `pressed`.
 fn declared_within(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(String, String)> {
     declared_action(node, pressed).or_else(|| {
         node.children
@@ -2571,7 +2479,6 @@ fn declared_within(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(S
     })
 }
 
-/// Whether `node` declares `pressed` as its key, in its `key` prop (`key: "Ctrl+Enter"`).
 fn declares(node: &UiNode, pressed: &ui::platform::Shortcut) -> bool {
     matches!(
         node.props.get("key"),
@@ -2580,7 +2487,6 @@ fn declares(node: &UiNode, pressed: &ui::platform::Shortcut) -> bool {
     )
 }
 
-/// The nodes from `node` down to the one keyed `key`, the window's root first.
 fn path_to<'a>(node: &'a UiNode, key: &str) -> Option<Vec<&'a UiNode>> {
     if node.key == key {
         return Some(vec![node]);
@@ -2592,12 +2498,10 @@ fn path_to<'a>(node: &'a UiNode, key: &str) -> Option<Vec<&'a UiNode>> {
     })
 }
 
-/// Whether `node` is a text field: what a person types in.
 fn text_field(node: &UiNode) -> bool {
     node.kind == crate::adapter::kind("TextInput") || node.kind == crate::adapter::kind("RichInput")
 }
 
-/// Whether `node` is a text field of one line: Enter ends its text rather than breaking a line.
 fn one_line(node: &UiNode) -> bool {
     node.kind == crate::adapter::kind("TextInput")
         && matches!(
@@ -2606,13 +2510,10 @@ fn one_line(node: &UiNode) -> bool {
         )
 }
 
-/// Whether the text field `key` of the tree `node` takes a press of its own: a field of one line
-/// that submits what it holds, so the key it declares commits the item typed there.
 fn field_takes_a_press(node: &UiNode, key: &str) -> bool {
     node_at(node, key).is_some_and(|field| one_line(field) && field.events.contains_key("submit"))
 }
 
-/// The node of the tree `node` keyed `key`.
 fn node_at<'a>(node: &'a UiNode, key: &str) -> Option<&'a UiNode> {
     if node.key == key {
         return Some(node);
@@ -2620,16 +2521,15 @@ fn node_at<'a>(node: &'a UiNode, key: &str) -> Option<&'a UiNode> {
     node.children.iter().find_map(|child| node_at(child, key))
 }
 
-/// Whether `widget`, or one of the children it holds, has the keyboard and takes typing.
 fn takes_typing(widget: &dyn Widget) -> bool {
     (widget.is_focused() && widget.ime_content().is_some())
         || widget.children().into_iter().any(takes_typing)
 }
 
-/// The node key of the text field in `node`'s tree that declares the press `pressed`: the entry
-/// at the end of a list, where the app's key puts the person rather than making an empty item.
-/// It answers before any control: a header or bar button that names the same key leads the
-/// person to the entry the app wrote for it.
+/// The node key of the text field in `node`'s tree that declares the press `pressed`: the entry at
+/// the end of a list, where the app's key puts the person instead of making an empty item. It
+/// answers before any control: a header or bar button that names the same key leads the person to
+/// the entry the app wrote for it.
 fn focus_field(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<String> {
     if text_field(node) && declares(node, pressed) {
         return Some(node.key.clone());
@@ -2639,8 +2539,6 @@ fn focus_field(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<String
         .find_map(|child| focus_field(child, pressed))
 }
 
-/// The shortcut the control `key` declares in its `key` prop, as pressing it names one: a
-/// button's press or a menu row's choose.
 fn shortcut_declared(node: &UiNode, key: &str) -> Option<ui::platform::Shortcut> {
     let control = node.kind == crate::adapter::kind("Button")
         || node.kind == crate::adapter::kind("MenuItem");
@@ -2656,10 +2554,9 @@ fn shortcut_declared(node: &UiNode, key: &str) -> Option<ui::platform::Shortcut>
 }
 
 impl AppWindow {
-    /// Tell the app the space each view has where layout placed it, when it changed: a view
-    /// reads `space` from its own container (layout.md, "Responding to space"). The app
-    /// decides the classes, with their hysteresis, and runs a view again only when what it read
-    /// of it changed.
+    /// Tell the app the space each view has where layout placed it, when it changed: a view reads
+    /// `space` from its own container (layout.md, "Responding to space"). The app decides the
+    /// classes, with their hysteresis, and runs a view again only when what it read of it changed.
     fn follow_spaces(&mut self) {
         let keys = [
             self.root.as_ref().map(|view| view.tree.key.clone()),
@@ -2698,19 +2595,18 @@ impl AppWindow {
     }
 }
 
-/// The event a view's window frame declares where its search writes: what is typed in the
-/// window's bar narrows what the frame lists, as a place chosen in its sidebar does.
+/// The event a view's window frame declares where its search writes: what is typed in the window's
+/// bar narrows what the frame lists, as a place chosen in its sidebar does.
 const SEARCH: &str = "search";
 
 impl AppWindow {
-    /// Whether the frame the views drew says where the window's search goes.
     fn searches(&self) -> bool {
         self.composed()
             .is_some_and(|shell| shell.events.contains_key(SEARCH))
     }
 
-    /// How many rows the window's list shows now: the rows of the first list its views show,
-    /// a tree's rows counting as a list's do.
+    /// How many rows the window's list shows now: the rows of the first list its views show, a
+    /// tree's rows counting as a list's do.
     fn shown_rows(&self) -> Option<usize> {
         fn first_list(node: &UiNode) -> Option<&str> {
             if tilo_render_protocol::patch::is_virtual_list(&node.kind) {
@@ -2724,14 +2620,14 @@ impl AppWindow {
         Some(len)
     }
 
-    /// Whether the window's search narrows what the frame lists: the frame says where it goes.
-    /// A document standing in the window is found in as well, so the one search does both.
+    /// Whether the window's search narrows what the frame lists: the frame says where it goes. A
+    /// document in the window is found in as well, so the one search does both.
     fn offers_search(&self) -> bool {
         self.searches()
     }
 
-    /// Type `text` into the window's search: the frame narrows what it lists, as a place
-    /// chosen in the sidebar narrows it. Closing the search widens it again.
+    /// Type `text` into the window's search: the frame narrows what it lists, as a place chosen in
+    /// the sidebar narrows it. Closing the search widens it again.
     fn narrow_to(&mut self, text: &str) {
         let Some(shell) = self.composed() else {
             return;
@@ -2755,10 +2651,9 @@ impl AppWindow {
     }
 }
 
-/// The window's search narrows what the views list where their frame declares it: the app
-/// hears the text as the frame's `search` event and narrows its own query, so the list
-/// beside the person narrows in place, found by the same search the store answers every
-/// text field from.
+/// The window's search narrows what the views list where their frame declares it: the app hears the
+/// text as the frame's `search` event and narrows its query, so the list beside the person narrows
+/// in place, found by the same search the store answers every text field from.
 impl ui::widget::Queryable for AppWindow {
     fn set_query_text(&mut self, text: &str) {
         self.narrow_to(text);
@@ -2768,9 +2663,9 @@ impl ui::widget::Queryable for AppWindow {
         self.narrow_to("");
     }
 
-    /// The rows the list shows now, of the rows it held before anything was typed. The app
-    /// answers a search a frame after it hears it, so the window reads the count off the
-    /// frame the app sent, again each time the search asks.
+    /// The rows the list shows now, of the rows it held before anything was typed. The app answers
+    /// a search a frame after it hears it, so the window reads the count off the frame the app
+    /// sent, again each time the search asks.
     fn query_count(&self) -> Option<ui::widget::FilterCount> {
         let shown = self.shown_rows()?;
         Some(ui::widget::FilterCount::new(
@@ -2784,8 +2679,8 @@ impl ui::widget::Decorator for AppWindow {
     type Inner = dyn Widget;
 
     // The window is the publisher of the app's actions and the one that answers choosing one
-    // ([`crate::catalogue`]), and it answers for the views' search where their frame says
-    // where it goes; everything else is the body's and forwarded to it.
+    // ([`crate::catalogue`]), and it answers for the views' search where their frame says where it
+    // goes; everything else is the body's and forwarded to it.
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn ui::widget::Queryable>() && self.offers_search() {
             request.provide::<dyn ui::widget::Queryable>(self);
@@ -2836,8 +2731,8 @@ impl ui::widget::Decorator for AppWindow {
     ) {
         self.body.apply_layout(taffy, node, origin);
         self.follow_spaces();
-        // Where the person is stays the window's across the shell being built anew: the column
-        // the narrow stack has in front, as they left it (Back, a place, a row).
+        // Where the person is stays the window's across the shell being built anew: the column the
+        // narrow stack has in front, as they left it (Back, a place, a row).
         if let Some(shell) = self.shell() {
             self.front = Some(shell.front_pane());
         }
@@ -2874,8 +2769,8 @@ impl ui::widget::Decorator for AppWindow {
             self.landing = None;
             self.focus_request = None;
         }
-        // What the person typed while the keyboard was on its way to the field a press opened
-        // goes there first, before the input this event brings.
+        // What the person typed while the keyboard was on its way to the field a press opened goes
+        // there first, before the input this event brings.
         self.release_landing();
         // Focus moves on a key, a press or a touch, never on a pointer that only moves.
         if matches!(
@@ -2925,8 +2820,8 @@ impl ui::widget::Decorator for AppWindow {
             return;
         };
         match press {
-            // The field the keyboard is in carries the key out as its own press does: Enter,
-            // which submits what it holds there.
+            // The field the keyboard is in carries the key out as its own press does: Enter, which
+            // submits what it holds there.
             Press::Commit => {
                 self.enter_press(ctx);
             }
@@ -2949,8 +2844,8 @@ impl ui::widget::Decorator for AppWindow {
             .focus_request
             .take()
             .or_else(|| self.body.take_focus_request());
-        // The app places the keyboard now: what the person typed while it was on its way is
-        // the field's it is arriving in.
+        // The app places the keyboard now: what the person typed while it was on its way is the
+        // field's it is arriving in.
         if request.is_some() {
             self.landing = None;
         }
@@ -2962,8 +2857,8 @@ impl ui::widget::Decorator for AppWindow {
         self.body.take_structure_dirty() || dirty
     }
 
-    /// The window's own changes (a shell built, a bar shown) rebuild; what its body describes
-    /// (a column's content changed in place) stays described.
+    /// The window's own changes (a shell built, a bar shown) rebuild; what its body describes (a
+    /// column's content changed in place) stays described.
     fn take_structure_change(&mut self) -> ui::widget::StructureChange {
         let own = ui::widget::StructureChange::of(std::mem::take(&mut self.structure_dirty));
         own.join(self.body.take_structure_change())

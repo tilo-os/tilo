@@ -1,12 +1,10 @@
-//! Dates and times as people read them, and the `date` control.
-//!
-//! A `Date` or `Time` reaches the view as its ISO text with a sibling prop `<prop>:as` (`"date"`
-//! or `"time"`); [`shown`] formats it the person's way, and [`shown_brief`] as a list reads it,
-//! through the toolkit's one [day fact](ui::format::day_fact). A day paired with the time of day
-//! it is due ([`ui::format::DayFact`]) gives the sibling prop `<prop>:time`, and the two read as
-//! one fact (`Today 09:00`). The `date` control is the toolkit's [`DateField`] over the bound
-//! value, which it reports as ISO text (empty for no date) through the same edit every bound
-//! input reports.
+//! Dates and times as people read them, and the `date` control. A `Date` or `Time` reaches the view
+//! as its ISO text with a sibling prop `<prop>:as` (`"date"` or `"time"`); [`shown`] formats it the
+//! person's way, and [`shown_brief`] as a list reads it, through the toolkit's one day fact
+//! (`ui::format::day_fact`). A day paired with the time of day it is due gives the sibling prop
+//! `<prop>:time`, and the two read as one fact (`Today 09:00`). The `date` control is the toolkit's
+//! [`DateField`] over the bound value, reported as ISO text (empty for no date) through the same
+//! edit every bound input reports.
 
 use crate::{UiNode, Value};
 use chrono::{DateTime, Local, NaiveDate, NaiveTime, Utc};
@@ -15,8 +13,8 @@ use ui::widget::{DateField, Decorator, Tone, Widget};
 
 use crate::reconcile::{EventSink, UiEvent, display};
 
-/// The prop `name` of `node` as people read it: a date or a time in their format (a time with
-/// its date), anything else as [`display`] shows it.
+/// The prop `name` of `node` as people read it: a date or a time in their format (a time with its
+/// date), anything else as [`display`] shows it.
 #[must_use]
 pub fn shown(node: &UiNode, name: &str) -> Option<String> {
     let value = node.props.get(name)?;
@@ -31,17 +29,12 @@ pub fn shown(node: &UiNode, name: &str) -> Option<String> {
     formatted(node, name, ui::format::date, ui::format::timestamp)
 }
 
-/// The prop `name` of `node` as a list row reads it: the day fact (`Overdue`, `Today`,
-/// `Thursday`, `Jun 29`), with the time of day paired with it where the view names one
-/// (`Today 09:00`); a time is [`ui::format::list_date`], as native lists show when a message
-/// came. The day something was done on (`<name>_done`) reads as the day it happened
-/// (`Yesterday`, `Sunday`, `Jun 21`): what a heading over finished work says, never a day gone
-/// by.
-///
-/// A row's day fact standing under a heading that says the same day — the group, card or
-/// section above it — is the heading's to say: the row keeps only the time of day it is due
-/// (`09:00`), and says nothing where it names no time. That is no day fact of the row's own,
-/// and none where the row stands under no heading (`under`).
+/// The prop `name` of `node` as a list row reads it: the day fact (`Overdue`, `Today`, `Thursday`,
+/// `Jun 29`), with the time of day the view pairs with it (`Today 09:00`); a time is
+/// [`ui::format::list_date`], as native lists show when a message came. The day something was done
+/// on (`<name>_done`) reads as the day it happened, never a day gone by. A day fact a heading over
+/// the row already says is the heading's to say: the row keeps only the time of day it is due
+/// (`09:00`), and says nothing where it names no time. That holds only under a heading (`under`).
 #[must_use]
 pub fn shown_brief(node: &UiNode, name: &str, under: Option<&str>) -> Option<String> {
     let value = node.props.get(name)?;
@@ -64,8 +57,8 @@ pub fn shown_brief(node: &UiNode, name: &str, under: Option<&str>) -> Option<Str
     })
 }
 
-/// The prop a row states the day it happened or is due in at its trailing edge, where its kind
-/// has one: the fact a heading over the row can say for it.
+/// The prop a row states the day it happened or is due in at its trailing edge, where its kind has
+/// one: the fact a heading over the row can say for it.
 fn trailing_day(node: &UiNode) -> Option<&'static str> {
     match crate::adapter::component_name(&node.kind)? {
         "ListRow" => Some("meta"),
@@ -74,8 +67,6 @@ fn trailing_day(node: &UiNode) -> Option<&'static str> {
     }
 }
 
-/// Whether `heading` says the day of the trailing day fact the row `node` states in `name`: the
-/// fact is the heading's to say, then, and no day fact of the row's own.
 fn said_by_heading(node: &UiNode, name: &str, heading: &str) -> bool {
     if trailing_day(node) != Some(name) || done_day(node, name) {
         return false;
@@ -86,9 +77,8 @@ fn said_by_heading(node: &UiNode, name: &str, heading: &str) -> bool {
         .is_some_and(|day| says_day(heading, day))
 }
 
-/// The day the heading over the rows `node` holds says, where it heads them by a day: its
-/// `group` prop. `None` where it names none, and where the group is the day a row was done on —
-/// a heading over finished work heads the day it was done, never the day a row is due.
+/// The day the heading over the rows `node` holds says, where it heads them by a day: its `group`
+/// prop. `None` where it names none, and where the group is the day a row was done on.
 #[must_use]
 pub fn group_heading(node: &UiNode) -> Option<String> {
     if done_day(node, "group") {
@@ -97,9 +87,8 @@ pub fn group_heading(node: &UiNode) -> Option<String> {
     day_heading(node, "group")
 }
 
-/// The words the prop `name` of `node` reads as a heading over what it holds says the day in
-/// (`Today`, `Overdue since Jun 29`): the day fact without a time of day. `None` where the prop
-/// holds no day.
+/// The day fact without a time of day, where the prop `name` of `node` holds a day, as a heading
+/// over it says it (`Today`, `Overdue since Jun 29`).
 fn day_heading(node: &UiNode, name: &str) -> Option<String> {
     if !matches!(node.props.get(&format!("{name}:as")), Some(Value::Text(kind)) if kind == "date") {
         return None;
@@ -108,15 +97,12 @@ fn day_heading(node: &UiNode, name: &str) -> Option<String> {
     Some(ui::format::day_fact_today(day, None).text)
 }
 
-/// Whether `heading`, the words over a row, says `day`: the day fact without a time of day.
 fn says_day(heading: &str, day: NaiveDate) -> bool {
     heading
         .trim()
         .eq_ignore_ascii_case(&ui::format::day_fact_today(day, None).text)
 }
 
-/// The words `node` heads what it holds with: a card's, a section's or a window's title. `None`
-/// for a node that heads nothing, and for a title with no words.
 #[must_use]
 pub fn heading_of(node: &UiNode) -> Option<String> {
     match crate::adapter::component_name(&node.kind)? {
@@ -129,9 +115,9 @@ pub fn heading_of(node: &UiNode) -> Option<String> {
     }
 }
 
-/// The tree with each row's trailing day fact dropped where a heading over it says that day:
-/// the group, card or section above the rows says the day already, so the row keeps the time of
-/// day it is due (`09:00`), and shows nothing where it names no time.
+/// The tree with each row's trailing day fact dropped where a heading over it says that day: the
+/// heading says the day, and the row keeps the time of day it is due (`09:00`), or nothing where it
+/// names no time.
 #[must_use]
 pub fn under_headings(node: UiNode) -> UiNode {
     fn walk(mut node: UiNode, heading: Option<&str>) -> UiNode {
@@ -165,16 +151,14 @@ pub fn under_headings(node: UiNode) -> UiNode {
     walk(node, None)
 }
 
-/// Whether the prop `name` of `node` is the day the item was done on, as the view says with
-/// its `<name>_done` companion: the day it happened, not a day it is due by.
 fn done_day(node: &UiNode, name: &str) -> bool {
     crate::reconcile::flag(node, &format!("{name}_done"))
 }
 
 /// A choice's case as a row tells it at its trailing edge, where the choice says what its cases
-/// hold (`case:as`): a moment as a person reads the hour ("15:00", "Sat 09:00"), a length of
-/// time as they read it ("1 hr 30 min"). `None` where the case's value is not of that kind,
-/// so a choice of words shows its labels alone.
+/// hold (`case:as`): a moment as a person reads the hour ("15:00", "Sat 09:00"), a length of time
+/// as they read it ("1 hr 30 min"). `None` where the case's value is not of that kind, so a choice
+/// of words shows its labels alone.
 #[must_use]
 pub fn shown_case(node: &UiNode, value: &str) -> Option<String> {
     let Some(Value::Text(kind)) = node.props.get("case:as") else {
@@ -188,9 +172,9 @@ pub fn shown_case(node: &UiNode, value: &str) -> Option<String> {
 }
 
 /// How the stored `value` of a day or a time of day (`kind` is `date` or `time`) reads in a
-/// sentence where no view can stand beside it: a day as the day fact (`Today`, `Friday`,
-/// `Jun 29`), a time of day as a list shows when something came. Anything else, and text that
-/// is not a day or an instant, stays as it is stored.
+/// sentence where no view can stand beside it: a day as the day fact (`Today`, `Friday`, `Jun 29`),
+/// a time of day as a list shows when something came. Anything else, and text that is not a day or
+/// an instant, stays as stored.
 #[must_use]
 pub fn shown_text(kind: &str, value: &str) -> String {
     let now = ui::clock::local_now();
@@ -205,8 +189,8 @@ pub fn shown_text(kind: &str, value: &str) -> String {
     )
 }
 
-/// The tone the prop `name` of `node` reads in, when it reads in one: a day gone by is overdue
-/// ([`Tone::Danger`]). `None` for anything else, and for a day that is not gone by.
+/// The tone the prop `name` of `node` reads in, where a day is gone by ([`Tone::Danger`]); `None`
+/// for anything else.
 #[must_use]
 pub fn shown_tone(node: &UiNode, name: &str, under: Option<&str>) -> Option<Tone> {
     let Some(Value::Text(kind)) = node.props.get(&format!("{name}:as")) else {
@@ -217,7 +201,7 @@ pub fn shown_tone(node: &UiNode, name: &str, under: Option<&str>) -> Option<Tone
         return None;
     }
     let day = day_of(&display(node.props.get(name)?))?;
-    // A day the heading over the row says is no fact of the row's own: no tone of its own.
+    // No tone of a day the heading over the row says: it is the heading's fact.
     if under.is_some_and(|heading| says_day(heading, day)) && trailing_day(node) == Some(name) {
         return None;
     }
@@ -225,8 +209,8 @@ pub fn shown_tone(node: &UiNode, name: &str, under: Option<&str>) -> Option<Tone
     (fact.tone != Tone::Neutral).then_some(fact.tone)
 }
 
-/// The time of day paired with the day `name` holds, in the person's zone: the view gives it as
-/// the sibling prop `<name>:time`.
+/// The time of day paired with the day `name` holds, in the person's zone: the sibling prop
+/// `<name>:time`.
 fn paired_time(node: &UiNode, name: &str) -> Option<NaiveTime> {
     let text = display(node.props.get(&format!("{name}:time"))?);
     moment_of(&text).map(|at| at.with_timezone(&Local).time())
@@ -251,13 +235,11 @@ fn formatted(
     })
 }
 
-/// The calendar day `YYYY-MM-DD`.
 fn day_of(text: &str) -> Option<NaiveDate> {
     // ignored-failure: a value that is not a day is shown as the text it is
     NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()
 }
 
-/// A length of time, held as its number of seconds.
 fn duration_of(text: &str) -> Option<std::time::Duration> {
     // ignored-failure: a value that is no number of seconds is shown as the text it is
     text.trim()
@@ -266,7 +248,6 @@ fn duration_of(text: &str) -> Option<std::time::Duration> {
         .map(std::time::Duration::from_secs)
 }
 
-/// The instant `YYYY-MM-DDTHH:MM:SSZ`.
 fn moment_of(text: &str) -> Option<DateTime<Utc>> {
     // ignored-failure: a value that is not an instant is shown as the text it is
     DateTime::parse_from_rfc3339(text)
@@ -281,8 +262,6 @@ pub struct DateControl {
 }
 
 impl DateControl {
-    /// The control of the bound node `key`, showing `value`; a date that may be empty when
-    /// `optional`.
     #[must_use]
     pub fn new(key: &str, value: &LocalState<String>, sink: &EventSink, optional: bool) -> Self {
         let day = value.with(|text| day_of(text));
@@ -304,7 +283,6 @@ impl DateControl {
 }
 
 impl DateControl {
-    /// Show the value the window last read, a date set elsewhere.
     fn follow_value(&mut self) -> bool {
         let day = self.value.with(|text| day_of(text));
         if day == self.field.value() {
@@ -381,7 +359,6 @@ mod tests {
         assert!(sink.is_empty(), "showing a value reports no edit");
     }
 
-    /// The instant today's person's clock shows at `hour`.
     fn at(hour: u32) -> String {
         use chrono::TimeZone;
         Local
@@ -418,7 +395,6 @@ mod tests {
         let done = today - chrono::Days::new(40);
         let day = done.format("%Y-%m-%d").to_string();
         let mut row = node(&[("group", &day), ("group:as", "date")]);
-        // The runtime lowers a flag prop as a whole number, as the view's `true` reaches a node.
         row.props.insert("group_done".to_owned(), Value::Int(1));
         assert_eq!(
             shown_brief(&row, "group", None),
@@ -432,14 +408,12 @@ mod tests {
         );
     }
 
-    /// A row of a kind that states a day fact at its trailing edge, of `props`.
     fn row(kind: &str, props: &[(&str, &str)]) -> UiNode {
         let mut row = node(props);
         row.kind = crate::adapter::kind(kind);
         row
     }
 
-    /// The facts the first list row of `widget` shows, as a screen reader reads them.
     fn row_facts(widget: &dyn ui::widget::Widget, found: &mut Option<String>) {
         if let Some(list_row) = widget
             .as_any()
@@ -453,7 +427,6 @@ mod tests {
         }
     }
 
-    /// The words the day fact of `day` says, as a heading over a row says it.
     fn heading(day: NaiveDate) -> String {
         ui::format::day_fact_today(day, None).text
     }
@@ -551,8 +524,6 @@ mod tests {
         );
     }
 
-    /// The facts a card's row shows on its trailing edge, as the window builds it: the tree is
-    /// the one a card of rows is — its title, the list it draws, and the rows within.
     fn card_row_facts(title: &str, meta: &[(&str, &str)]) -> Option<String> {
         let mut props = vec![("title", "Water the plants")];
         props.extend_from_slice(meta);
