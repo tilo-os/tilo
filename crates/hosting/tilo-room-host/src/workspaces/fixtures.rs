@@ -55,6 +55,10 @@ pub fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCer
 pub struct TestHost {
     host: WorkspaceHost,
     router: Router,
+    /// The relay its endpoint took as its home ([`reached_through`]), closed
+    /// after the endpoint that reaches it.
+    #[cfg(test)]
+    _home: tilo_test_env::relay::Relay,
 }
 
 impl TestHost {
@@ -205,10 +209,14 @@ async fn host_on(
     grants: Option<usize>,
 ) -> TestHost {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
-        .bind()
-        .await
-        .expect("a loopback endpoint binds");
+        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()));
+    #[cfg(test)]
+    let home = tilo_test_env::relay::relay().await;
+    #[cfg(test)]
+    let endpoint = endpoint.relay_mode(iroh::RelayMode::Custom(home.relays()));
+    let endpoint = endpoint.bind().await.expect("a loopback endpoint binds");
+    #[cfg(test)]
+    reached_through(&endpoint, &home).await;
     let host = WorkspaceHost::open(
         HostConfig {
             max_workspace_grants: grants,
@@ -239,7 +247,36 @@ async fn host_on(
     TestHost {
         host,
         router: router.spawn(),
+        #[cfg(test)]
+        _home: home,
     }
+}
+
+/// Wait until `endpoint` names `home` as the relay it is reached through.
+///
+/// A host waits at its opening for its endpoint to name a relay
+/// ([`super::await_relay`]), so no workspace learns an address the host must
+/// rename, and gives up after iroh's net report timeout. An endpoint that has
+/// no relay to reach waits that whole bound out: five seconds for every host a
+/// test opens. This package's tests give the fixture's endpoint a relay on this
+/// machine's loopback instead, as a host on a network has one, and the host
+/// opens as soon as its endpoint names it. An embedder's tests reach this
+/// fixture without that relay, which is a development dependency here, and
+/// wait as before.
+#[cfg(test)]
+async fn reached_through(endpoint: &iroh::Endpoint, home: &tilo_test_env::relay::Relay) {
+    use iroh::Watcher as _;
+    tilo_test_env::within("the fixture host's endpoint names its relay", async {
+        let mut watch = endpoint.watch_addr();
+        let mut addr = watch.get();
+        while !addr.relay_urls().any(|url| url == home.url()) {
+            let Ok(next) = watch.updated().await else {
+                panic!("the endpoint closed before it named its relay");
+            };
+            addr = next;
+        }
+    })
+    .await;
 }
 
 /// Admit `member` to `workspace` as a reader, as the governor `key` decides it.

@@ -16,6 +16,7 @@ pub(crate) use super::fixtures::{
 pub(crate) mod admission_cost;
 #[cfg(feature = "agents")]
 pub(crate) mod bots;
+mod host_address;
 pub(crate) mod large_record;
 
 #[tokio::test]
