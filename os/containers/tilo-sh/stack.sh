@@ -711,7 +711,7 @@ image_env_here() {
 . "$here/caddy.env"
 find_caddy() {
   if [[ -n ${TILO_SH_CADDY:-} ]]; then
-    [[ -x $TILO_SH_CADDY ]] || die "TILO_SH_CADDY names $TILO_SH_CADDY, which is not an executable"
+    [[ -f $TILO_SH_CADDY && -x $TILO_SH_CADDY ]] || die "TILO_SH_CADDY names $TILO_SH_CADDY, which is not an executable file"
     printf '%s' "$TILO_SH_CADDY"; return
   fi
   if command -v caddy >/dev/null; then command -v caddy; return; fi
