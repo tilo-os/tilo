@@ -161,7 +161,15 @@ impl Catalog {
     /// The resource `id` as it is published, if it is.
     #[must_use]
     pub fn get(&self, id: &str) -> Option<&Target> {
-        self.by_id.get(id)
+        self.by_id.get(id).or_else(|| {
+            // A place recorded before its app published the item under its stable address
+            // (`chat.workspace/channels/c1` for `chat.workspace.channels:c1`) shows the same
+            // resource: the record keeps what it holds, and the link keeps opening.
+            // And the other way: a stable link to an item its app publishes in the item form.
+            let other =
+                tilo_actions::stable_item_address(id).or_else(|| tilo_actions::item_form_of(id))?;
+            self.by_id.get(&other)
+        })
     }
 
     /// Put `target` under `id` , as the resource is published: a place made from a resource the

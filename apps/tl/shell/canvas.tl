@@ -70,7 +70,12 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
                 y: (pointed.at(1) ?? 0) + caret_inset(pointed),
                 width: caret_room(pointed.at(2) ?? 0),
             ) {
-                ui.TextInput(bind: typed, placeholder: "Find or ask", autofocus: true) {
+                ui.TextInput(
+                    bind: typed,
+                    placeholder: "Find or ask",
+                    autofocus: true,
+                    caret: true,
+                ) {
                     on submit: session
                         .place_found(
                             text: typed,

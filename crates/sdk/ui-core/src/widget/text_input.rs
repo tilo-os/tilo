@@ -635,6 +635,12 @@ pub struct TextInput {
     /// A plain field inside a toolkit document view keeps the document's own
     /// text inset instead of the zero inset of a plain app field.
     document_inset: bool,
+    /// A caret standing on a surface ([`Self::as_caret`]): no well and no fill, and only as
+    /// wide as what it holds — the words typed, or its prompt while it holds none.
+    caret: bool,
+    /// What a caret field was last measured holding: an edit that changes it lays the field out
+    /// again, so its width follows the words.
+    caret_measured: Option<String>,
     on_submit: Option<TextChangeCallback>,
     /// The selection settled ([`Self::with_selection_event`]): what a read-only field's reader
     /// gets of the run someone chose, as `<start>:<end>` bytes, or nothing on a collapse.
@@ -749,6 +755,9 @@ pub enum AccessoryAction {
 /// The action target of a field's trailing accessory, for agents and
 /// assistive technology.
 const ACCESSORY_TARGET: &str = "text-input-accessory";
+
+/// The room a caret field keeps past its words for the caret itself, in logical pixels.
+const CARET_ROOM: f32 = 2.0;
 
 /// The operation type of a field's submitting Enter.
 const SUBMIT_TEXT: &str = "tilo.ui.text.submit";
@@ -974,6 +983,8 @@ impl TextInput {
             own_width: crate::tokens::Metrics::BASE.field_min_width,
             prompt_fit: None,
             document_inset: false,
+            caret: false,
+            caret_measured: None,
             on_submit: None,
             selection_event: None,
             cancel_event: crate::component::Event::None,
@@ -1118,6 +1129,35 @@ impl TextInput {
     pub fn set_plain_chrome(&mut self, plain: bool) {
         self.repaint = true;
         self.plain = plain;
+    }
+
+    /// A caret standing on a surface rather than a field in a form: it draws no well and no
+    /// fill — the caret and the words are all there is of it — and it is only as wide as what
+    /// it holds, growing as the words are typed (the prompt's width while it holds none). The
+    /// canvas's caret, standing where the person pointed (canvas.md §1).
+    #[must_use]
+    pub fn as_caret(mut self) -> Self {
+        self.set_caret(true);
+        self
+    }
+
+    /// See [`Self::as_caret`].
+    pub fn set_caret(&mut self, caret: bool) {
+        if self.caret != caret {
+            self.caret = caret;
+            self.caret_measured = None;
+            self.repaint = true;
+        }
+        self.plain = caret || self.plain;
+    }
+
+    /// What a caret field is as wide as: its words, else its prompt.
+    fn caret_shown(&self) -> &str {
+        if self.value().is_empty() {
+            &self.placeholder
+        } else {
+            self.value()
+        }
     }
 
     #[must_use]
@@ -6170,7 +6210,12 @@ impl Widget for TextInput {
         };
         let style = Style {
             size: Size {
-                width: Dimension::percent(1.0),
+                // A caret is as wide as what it holds (`measure`); a field takes its row.
+                width: if self.caret {
+                    Dimension::auto()
+                } else {
+                    Dimension::percent(1.0)
+                },
                 height,
             },
             // A field with the show/hide control is a node with a child, which
@@ -6240,6 +6285,24 @@ impl Widget for TextInput {
                 );
             }
             self.layout_dirty = false;
+            if self.caret {
+                // A caret is as wide as its words (or its prompt), and the caret's own width past
+                // them, never wider than the room it stands in.
+                let shown = self.caret_shown().to_owned();
+                let scale = self.scale_for(text_renderer.text_scale());
+                let (words, _) =
+                    text_renderer.measure(&shown, self.effective_font_size() * scale, None);
+                let width = (words + CARET_ROOM).ceil();
+                self.caret_measured = Some(shown);
+                let width = match available.width {
+                    taffy::AvailableSpace::Definite(room) => width.min(room),
+                    _ => width,
+                };
+                return taffy::Size {
+                    width: known.width.unwrap_or(width),
+                    height: 0.0,
+                };
+            }
             // Its height is the band `build_layout` set. Its width is the room
             // it is given; where nothing gives it room (a row that wraps, a run
             // that hugs its items) it stands at its own width, never at 0.
@@ -6733,7 +6796,9 @@ impl Widget for TextInput {
     /// them, so an edit is measured in one frame however long its owner
     /// waits to publish it, and idle inputs are never re-measured.
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO || self.layout_dirty
+        self.rect == Rect::ZERO
+            || self.layout_dirty
+            || (self.caret && self.caret_measured.as_deref() != Some(self.caret_shown()))
     }
 
     /// A disabled input claims no cursor and defers to the host default.

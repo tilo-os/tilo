@@ -265,6 +265,24 @@ pub struct Attachment {
     pub detail: String,
 }
 
+/// The address a conversation is published under: its stable `kind:id`,
+/// `chat.workspace.channels:<id>`, which a place, an open and an action's resource parameter take.
+#[must_use]
+pub fn channel_address(id: &str) -> String {
+    format!("{}:{id}", <Channel as ViewResource>::KIND)
+}
+
+/// The conversation an address names, by its id: its stable address
+/// ([`channel_address`]), and the item form older links and records carry
+/// (`chat.workspace/channels/<id>`), which keep opening the same conversation.
+#[must_use]
+pub fn channel_of(address: &str) -> Option<&str> {
+    address
+        .strip_prefix("chat.workspace.channels:")
+        .or_else(|| address.strip_prefix("chat.workspace/channels/"))
+        .filter(|id| !id.is_empty() && !id.contains('/') && !id.contains(':'))
+}
+
 impl Channel {
     /// The resource a place names for this channel, by the id it is published under:
     /// `chat.workspace.channels:<id>` as a development session publishes it, and
@@ -296,8 +314,10 @@ impl Channel {
     /// message with no id (a quote of one from an earlier part of the chat).
     #[must_use]
     pub fn message_resource(id: &str) -> Option<ResourceRef> {
+        // Its stable address, which an open's resource takes; the item form Chat's window
+        // publishes it under resolves from it.
         (!id.is_empty()).then(|| ResourceRef {
-            id: format!("{MESSAGES_KIND}/messages/{id}"),
+            id: format!("{MESSAGES_KIND}.messages:{id}"),
             ty: format!("{MESSAGES_KIND}.messages"),
         })
     }
@@ -2860,7 +2880,14 @@ mod tests {
             ["r1"],
             "the turn ends where the person spoke again"
         );
-        assert_eq!(turn_of_q1.conversation().id, "chat.workspace/channels/c1");
+        assert_eq!(turn_of_q1.conversation().id, "chat.workspace.channels:c1");
+        assert_eq!(channel_of("chat.workspace.channels:c1"), Some("c1"));
+        assert_eq!(
+            channel_of("chat.workspace/channels/c1"),
+            Some("c1"),
+            "an older link names the same conversation"
+        );
+        assert_eq!(channel_of("chat.workspace/channels/c1/messages/m"), None);
         assert_eq!(
             Turn::of(&channel, "q2").map(|next| next.replies.len()),
             Some(1)

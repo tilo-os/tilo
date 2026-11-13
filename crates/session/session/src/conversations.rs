@@ -1166,7 +1166,7 @@ impl ChatViewService {
 }
 
 /// One conversation as a place's resource, the way Chat publishes a channel of its record: its
-/// item id (`chat.workspace/channels/<id>`), its `page` view (Chat's own `#[view(default)]` over
+/// stable address (`chat.workspace.channels:<id>`, [`chat::views::channel_address`]), its `page` view (Chat's own `#[view(default)]` over
 /// the channel's type), its type, and the composer's `post`. A place made from it shows the
 /// channel through that view — never the app's window, which is what a resource naming no view
 /// falls back to.
@@ -1186,7 +1186,7 @@ pub(crate) fn channel_resource(
         name.to_owned()
     };
     let mut spec = tilo_actions::ResourceSpec::new(
-        format!("chat.workspace/channels/{id}"),
+        chat::views::channel_address(id),
         "chat.workspace.channels",
         label,
     )
@@ -1207,8 +1207,9 @@ pub(crate) fn channel_resource(
         .with_action(detach_action())
 }
 
-/// Where a turn is published: `chat.workspace/turns/<message>`, by the message that asked.
-const TURNS: &str = "chat.workspace/turns/";
+/// Where a turn is published: its stable address `chat.workspace.turns:<message>`, by the
+/// message that asked.
+const TURNS: &str = "chat.workspace.turns:";
 
 /// The turn the message `question` opened, by its address.
 #[must_use]
@@ -1522,9 +1523,7 @@ impl tilo_service::Service for ChatViewService {
             let reading = self.conversations.turn_reading(question)?;
             return serde_json::to_value(&reading).ok();
         }
-        let channel = resource
-            .strip_prefix("chat.workspace/channels/")
-            .or_else(|| resource.strip_prefix("chat.workspace.channels:"))?;
+        let channel = chat::views::channel_of(resource)?;
         let reading = self.conversations.channel_reading(channel)?;
         serde_json::to_value(&reading).ok()
     }
@@ -1567,11 +1566,7 @@ impl tilo_service::Service for ChatViewService {
             let channel = arguments
                 .get("channel")
                 .and_then(serde_json::Value::as_str)
-                .or_else(|| {
-                    resource
-                        .strip_prefix("chat.workspace/channels/")
-                        .or_else(|| resource.strip_prefix("chat.workspace.channels:"))
-                })
+                .or_else(|| chat::views::channel_of(resource))
                 .unwrap_or_default();
             let text = arguments
                 .get("text")
@@ -1633,11 +1628,7 @@ impl tilo_service::Service for ChatViewService {
             let channel = arguments
                 .get("channel")
                 .and_then(serde_json::Value::as_str)
-                .or_else(|| {
-                    resource
-                        .strip_prefix("chat.workspace/channels/")
-                        .or_else(|| resource.strip_prefix("chat.workspace.channels:"))
-                })
+                .or_else(|| chat::views::channel_of(resource))
                 .unwrap_or_default();
             return self
                 .conversations
@@ -1718,6 +1709,8 @@ fn message_of(resource: &str) -> Option<String> {
         "chat.messages/messages/",
         "chat.workspace.messages:messages:",
         "chat.workspace.messages:message:",
+        // Its stable address (`chat.workspace.messages:<id>`), which a message's link opens.
+        "chat.workspace.messages:",
     ] {
         if let Some(id) = resource.strip_prefix(prefix)
             && !id.is_empty()

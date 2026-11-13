@@ -11,7 +11,7 @@ use super::{
 /// whole conversation is the channel, which the turn opens on request.
 ///
 /// A turn is a resource: a place names it by the message that asked
-/// (`chat.workspace/turns/<message>`), the session publishes its reading, and [`turn`] draws it.
+/// (`chat.workspace.turns:<message>`), the session publishes its reading, and [`turn`] draws it.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Turn {
     /// The message that asked, by its id: what the turn is named by.
@@ -76,7 +76,7 @@ impl Turn {
     #[must_use]
     pub fn conversation(&self) -> ResourceRef {
         ResourceRef {
-            id: format!("chat.workspace/channels/{}", self.channel),
+            id: super::channel_address(&self.channel),
             ty: <Channel as ViewResource>::KIND.to_owned(),
         }
     }
@@ -91,11 +91,11 @@ impl Turn {
     }
 }
 
-/// The kind a turn is published as (`chat.workspace/turns/<message>`).
+/// The kind a turn is published as (`chat.workspace.turns:<message>`).
 pub const TURN_KIND: &str = "chat.workspace.turns";
 
 impl ViewResource for Turn {
-    // A turn of a conversation, as the session publishes it (`chat.workspace/turns/<message>`).
+    // A turn of a conversation, as the session publishes it (`chat.workspace.turns:<message>`).
     const KIND: &'static str = TURN_KIND;
     const APP: &'static str = "chat";
 }

@@ -211,6 +211,18 @@ pub fn item_kind(resource_id: &str) -> Option<String> {
         .then(|| format!("{kind}.{field}"))
 }
 
+/// The stable address of the item an item resource id names ([`tilo_actions::stable_item_address`]).
+#[must_use]
+pub fn stable_item_address(resource_id: &str) -> Option<String> {
+    tilo_actions::stable_item_address(resource_id)
+}
+
+/// The item form of an item's stable address ([`tilo_actions::item_form_of`]).
+#[must_use]
+pub fn item_form_of(address: &str) -> Option<String> {
+    tilo_actions::item_form_of(address)
+}
+
 /// The item an item resource id names, if it is one of `R`'s.
 pub fn item_of_resource<R: Resource>(resource_id: &str) -> Option<(&str, Id)> {
     item_of_resource_in(R::KIND, resource_id)

@@ -38,12 +38,21 @@ impl SessionLink {
     /// finds no such action.
     #[must_use]
     pub fn published_address(&self, reference: &str) -> Option<String> {
-        let reference = tilolang_tilo::runtime::value::flat_id(reference);
-        let readings = self.readings.borrow();
-        readings
-            .iter()
-            .find(|(id, _)| tilolang_tilo::runtime::value::flat_id(id) == reference)
-            .map(|(id, _)| id.clone())
+        let find = |reference: &str| {
+            let reference = tilolang_tilo::runtime::value::flat_id(reference);
+            let readings = self.readings.borrow();
+            readings
+                .iter()
+                .find(|(id, _)| tilolang_tilo::runtime::value::flat_id(id) == reference)
+                .map(|(id, _)| id.clone())
+        };
+        // A reference written in an item's older form (`chat.workspace/channels/c1`) names what
+        // its app publishes now under the item's stable address (`chat.workspace.channels:c1`).
+        find(reference).or_else(|| {
+            let other = tilo_resource::items::stable_item_address(reference)
+                .or_else(|| tilo_resource::items::item_form_of(reference))?;
+            find(&other)
+        })
     }
 
     /// The verbs the session's resources publish that no loaded package declares, by resource

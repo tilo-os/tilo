@@ -61,6 +61,9 @@ pub struct TextInputProps {
     /// (a caret on the canvas).
     #[component(event)]
     pub cancel: Event,
+    /// A caret standing on a surface rather than a field in a form: no well and no fill, only
+    /// as wide as what it holds, growing as the words are typed. The canvas's caret.
+    pub caret: bool,
 }
 
 impl Default for TextInputProps {
@@ -81,6 +84,7 @@ impl Default for TextInputProps {
             submit: Event::None,
             select: Event::None,
             cancel: Event::None,
+            caret: false,
         }
     }
 }
@@ -119,6 +123,7 @@ impl Described for TextInput {
             submit,
             select,
             cancel,
+            caret,
         } = props;
         // Text given beside a field it binds nothing to is read-only: a message body, a log.
         let read_only = read_only || text.is_some();
@@ -175,6 +180,9 @@ impl Described for TextInput {
         }
         input = input.with_selection_event(select);
         input.set_cancel_event(cancel);
+        if caret {
+            input.set_caret(true);
+        }
         input
     }
 
@@ -197,6 +205,7 @@ impl Described for TextInput {
             submit,
             select,
             cancel,
+            caret,
         } = props;
         let read_only = read_only || text.is_some();
         if !self.follows(&value.state) {
@@ -229,7 +238,8 @@ impl Described for TextInput {
         } else {
             TextRole::Body
         });
-        self.set_plain_chrome(title || text.is_some());
+        self.set_plain_chrome(title || text.is_some() || caret);
+        self.set_caret(caret);
         self.set_read_only(read_only);
         if let Some(text) = text
             && self.value() != text
@@ -293,6 +303,48 @@ mod tests {
         assert!(
             field.is_composing(),
             "what was being composed is still in the field"
+        );
+    }
+
+    /// The width a caret field is laid out at, given a wide room.
+    fn caret_width(field: &mut TextInput) -> f64 {
+        let mut text = crate::font_catalog::fixture_renderer();
+        crate::widget::layout::lay_out_detached(
+            field,
+            Rect::new(0.0, 0.0, 800.0, 100.0),
+            &crate::Theme::dark(),
+            &mut text,
+        )
+        .expect("the caret lays out");
+        field.get_rect().width()
+    }
+
+    /// A caret on a surface is no field in a form: it draws no well or fill (its chrome is
+    /// plain), it stands only as wide as its prompt while empty — far narrower than the row it is
+    /// in — and it grows as the words are typed.
+    #[test]
+    fn a_caret_is_as_wide_as_its_words_with_no_well() {
+        let props = TextInputProps {
+            placeholder: Some("Find or ask".into()),
+            caret: true,
+            ..TextInputProps::default()
+        };
+        let mut field = TextInput::from_props("caret", props);
+        assert!(field.is_plain(), "a caret draws no well and no fill");
+        let empty = caret_width(&mut field);
+        assert!(
+            empty > 0.0 && empty < 200.0,
+            "an empty caret is its prompt's width, not its row's: {empty}"
+        );
+        field.set_text("what is due on my task list this week and next");
+        assert!(
+            Widget::is_layout_dirty(&field),
+            "words typed lay the caret out again"
+        );
+        let typed = caret_width(&mut field);
+        assert!(
+            typed > empty + 100.0,
+            "the caret grows with the words: {typed} against {empty}"
         );
     }
 }

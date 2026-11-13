@@ -505,7 +505,7 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
     until(&mut session, "the ask conversation", |session| {
         common::places(session)
             .iter()
-            .any(|place| place.record.contains("chat.workspace/channels/"))
+            .any(|place| place.record.starts_with("chat.workspace.turns:"))
     });
 }
 

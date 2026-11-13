@@ -103,7 +103,7 @@ fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
     // An agent's question stands its turn where it was asked.
     enter_text(&mut session, (0.7, 0.08), "what is on my task list?");
     let conversation = wait_for(&mut session, "the conversation on the canvas", |session| {
-        place_showing(session, "chat.workspace/turns/")
+        place_showing(session, "chat.workspace.turns:")
     });
     assert_eq!(
         (conversation.3, conversation.4),
@@ -145,7 +145,7 @@ fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
         "the inbox keeps where it stood and how big it was: {after:?} against {inbox:?}"
     );
     let conversation_after =
-        place_showing(&session, "chat.workspace/turns/").expect("the conversation still stands");
+        place_showing(&session, "chat.workspace.turns:").expect("the conversation still stands");
     assert_eq!(
         (
             conversation_after.1,
@@ -213,7 +213,7 @@ fn opening_a_third_place_never_shrinks_what_the_person_is_reading() {
     // The question, then the agent opening Tasks beside it: two more places arrive.
     enter_text(&mut session, (0.7, 0.08), "what is on my task list?");
     let conversation = wait_for(&mut session, "the conversation on the canvas", |session| {
-        place_showing(session, "chat.workspace/turns/")
+        place_showing(session, "chat.workspace.turns:")
     });
     let resource = session
         .service_resources()

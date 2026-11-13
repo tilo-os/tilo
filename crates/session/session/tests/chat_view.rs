@@ -608,11 +608,11 @@ fn a_resource_dropped_on_the_composer_rides_with_the_message_and_the_agents_turn
     let placed = common::wait_for(&mut session, "the conversation placed", |session| {
         common::places(session)
             .into_iter()
-            .find(|place| place.record.starts_with("chat.workspace/channels/"))
+            .find(|place| place.record.starts_with("chat.workspace.channels:"))
     });
     let address = placed.record;
     let channel = address
-        .trim_start_matches("chat.workspace/channels/")
+        .trim_start_matches("chat.workspace.channels:")
         .to_owned();
     // The channel's own verb a drop runs: `attach`, published by the service on the channel's
     // item, taking the channel and the resource the drag carried.
@@ -922,7 +922,7 @@ fn typing_in_the_ask_conversations_composer_posts_on_enter_and_draws_the_text_on
     let address = common::wait_for(&mut session, "the conversation placed", |session| {
         common::places(session)
             .into_iter()
-            .find(|place| place.record.starts_with("chat.workspace/channels/"))
+            .find(|place| place.record.starts_with("chat.workspace.channels:"))
             .map(|place| place.record)
     });
     let name = common::wait_for(&mut session, "the conversation's reading", |session| {

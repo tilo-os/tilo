@@ -233,7 +233,7 @@ fn a_question_stands_its_turn_at_the_caret() {
     let turn = wait_for(&mut session, "the turn placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.starts_with("chat.workspace/turns/"))
+            .find(|place| place.record.starts_with("chat.workspace.turns:"))
     });
     assert_eq!(
         turn.shown_as, "turn",
@@ -242,7 +242,7 @@ fn a_question_stands_its_turn_at_the_caret() {
     assert!(
         !places(&session)
             .iter()
-            .any(|place| place.record.contains("/channels/")),
+            .any(|place| place.record.starts_with("chat.workspace.channels:")),
         "the channel's page is not placed: {:?}",
         places(&session)
     );
@@ -282,7 +282,7 @@ fn an_agents_place_in_the_turn_fills_the_dragged_rectangle() {
     let turn = wait_for(&mut session, "the turn placed", |session| {
         places(session)
             .into_iter()
-            .find(|place| place.record.starts_with("chat.workspace/turns/"))
+            .find(|place| place.record.starts_with("chat.workspace.turns:"))
     });
     let (_, ty, _, th) = wait_for(&mut session, "the turn on screen", |session| {
         place_on_screen(session, &turn)
@@ -291,7 +291,7 @@ fn an_agents_place_in_the_turn_fills_the_dragged_rectangle() {
         .service_resources()
         .into_iter()
         .map(|spec| spec.id.as_str().to_owned())
-        .find(|id| id.starts_with("chat.workspace/channels/"))
+        .find(|id| id.starts_with("chat.workspace.channels:"))
         .expect("the conversation the ask made is published");
     let notes = session
         .service_resources()

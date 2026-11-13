@@ -5118,6 +5118,11 @@
             "option": "text"
           },
           "data": true
+        },
+        {
+          "name": "caret",
+          "doc": "A caret standing on a surface rather than a field in a form: no well and no fill, only as wide as what it holds, growing as the words are typed. The canvas's caret.",
+          "type": "bool"
         }
       ],
       "events": [

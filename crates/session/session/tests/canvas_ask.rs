@@ -249,7 +249,7 @@ fn turn_place(session: &mut Session) -> tilo_session::arrangement::PlaceReading 
         arrangement(session)
             .places
             .into_iter()
-            .filter(|place| place.record.starts_with("chat.workspace/turns/"))
+            .filter(|place| place.record.starts_with("chat.workspace.turns:"))
             .last()
     })
 }
@@ -260,7 +260,7 @@ fn conversation(session: &Session) -> String {
         .service_resources()
         .into_iter()
         .map(|spec| spec.id.as_str().to_owned())
-        .find(|id| id.starts_with("chat.workspace/channels/"))
+        .find(|id| id.starts_with("chat.workspace.channels:"))
         .expect("the ask conversation is published")
 }
 
@@ -273,7 +273,7 @@ fn open_the_conversation(session: &mut Session) -> tilo_session::arrangement::Pl
         arrangement(session)
             .places
             .into_iter()
-            .find(|place| place.record.contains("/channels/"))
+            .find(|place| place.record.starts_with("chat.workspace.channels:"))
     })
 }
 
@@ -348,7 +348,7 @@ fn a_second_ask_stands_its_own_turn_in_the_same_conversation() {
     );
     let second = wait_for(&mut session, "the second turn", |session| {
         arrangement(session).places.into_iter().find(|place| {
-            place.record.starts_with("chat.workspace/turns/") && place.key != first.key
+            place.record.starts_with("chat.workspace.turns:") && place.key != first.key
         })
     });
     assert_ne!(first.record, second.record, "each question is its own turn");
@@ -372,7 +372,7 @@ fn a_second_ask_stands_its_own_turn_in_the_same_conversation() {
         !arrangement(&session)
             .places
             .iter()
-            .any(|place| place.record.contains("/channels/")),
+            .any(|place| place.record.starts_with("chat.workspace.channels:")),
         "the conversation stays underneath, unplaced"
     );
 }
@@ -388,10 +388,11 @@ fn the_conversations_page_posts_through_the_sessions_own_channel() {
     let mut session = session(root.path());
     ask(&mut session, "what is on my task list?");
     let place = open_the_conversation(&mut session);
-    // The channel the ask placed, as the session publishes it (`chat.workspace/channels/<id>`).
+    // The conversation opened, as the session publishes it: its stable address
+    // (`chat.workspace.channels:<id>`), which a place and an open take.
     let address = place.record;
     assert!(
-        address.starts_with("chat.workspace/channels/"),
+        address.starts_with("chat.workspace.channels:"),
         "the place shows the conversation Chat holds: {address}"
     );
     // The service serves the channel's reading before anything is typed: the page a place draws
@@ -407,7 +408,7 @@ fn the_conversations_page_posts_through_the_sessions_own_channel() {
     // words the composer holds. The session's door routes it to the service that publishes it.
     let mut arguments = serde_json::Map::new();
     let channel = address
-        .trim_start_matches("chat.workspace/channels/")
+        .trim_start_matches("chat.workspace.channels:")
         .to_owned();
     arguments.insert("channel".into(), serde_json::Value::String(channel));
     arguments.insert(
@@ -732,7 +733,7 @@ fn a_failed_turn_offers_a_retry_that_asks_the_agent_again_on_the_same_message() 
     session
         .invoke_service_step_as(&summons.agent, &summons.item, "record-work", &failed)
         .unwrap_or_else(|error| panic!("Chat records the failed turn: {error}"));
-    let channel_resource = format!("chat.workspace/channels/{}", summons.channel);
+    let channel_resource = format!("chat.workspace.channels:{}", summons.channel);
     // The page the place draws: Chat's own reading of the channel, with the failure row the person
     // sees and the Retry it offers.
     let reply_row = reply_in_page(&session, &summons.channel, &summons.reply);
