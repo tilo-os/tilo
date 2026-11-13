@@ -11,7 +11,7 @@
 //!
 //! ```text
 //! TILO_ADMISSION_COST=full cargo test --release --locked -p tilo-automerge-isolate \
-//!     --test admission_cost -- --nocapture
+//!     --test it admission_cost -- --nocapture
 //! ```
 //!
 //! Without `--release` the numbers are not the shipped ones: the test
@@ -38,8 +38,6 @@ use automerge::{
 };
 use tilo_automerge::ApplyIncoming as _;
 use tilo_automerge_isolate::{Applied, Dependencies, Isolate, Limits};
-
-tilo_automerge_isolate::test_worker!();
 
 struct Scale {
     histories: &'static [usize],

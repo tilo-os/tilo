@@ -19,8 +19,6 @@ use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc};
 use tilo_automerge_isolate::{Applied, Dependencies, Isolate, Limits, Rejected};
 
-tilo_automerge_isolate::test_worker!();
-
 /// An isolate whose deadline only a hang reaches.
 fn isolate() -> Isolate {
     Isolate::new(Limits {
@@ -134,8 +132,12 @@ const SEQUENCE_GAP_CASES: &[(&str, &str)] = &[
     ),
 ];
 
-fn reject_or_admit_every(isolate: &Isolate, cases: &[(&str, &str)]) {
-    for (what, input) in cases {
+/// Every case is rejected or admitted while the caller lives on. The cases
+/// whose index is in `spinning` make a plain load spin the decoder forever:
+/// only the deadline stops those, and the isolate admits good input right
+/// after.
+fn reject_or_admit_every(isolate: &Isolate, cases: &[(&str, &str)], spinning: &[usize]) {
+    for (index, (what, input)) in cases.iter().enumerate() {
         let input = hex::decode(input).unwrap();
         let mut doc = seeded_doc();
         let before = doc.save();
@@ -147,7 +149,15 @@ fn reject_or_admit_every(isolate: &Isolate, cases: &[(&str, &str)]) {
                 "{what}: a rejection changed the document"
             );
         }
-        let _ = isolate.load(&input);
+        let loaded = isolate.load(&input);
+        if spinning.contains(&index) {
+            assert_eq!(
+                loaded.err(),
+                Some(Rejected::TimedOut),
+                "{what}: a spinning decoder is stopped by the deadline"
+            );
+            still_admits(isolate);
+        }
         eprintln!("{what}: {outcome:?}");
     }
     still_admits(isolate);
@@ -155,20 +165,13 @@ fn reject_or_admit_every(isolate: &Isolate, cases: &[(&str, &str)]) {
 
 #[test]
 fn decoder_panics_and_hangs_cost_only_the_worker() {
-    reject_or_admit_every(&spin_stopping_isolate(), DECODER_CASES);
+    // The first case is the plain-load hang.
+    reject_or_admit_every(&spin_stopping_isolate(), DECODER_CASES, &[0]);
 }
 
 #[test]
 fn change_graph_sequence_gaps_cost_only_the_worker() {
-    reject_or_admit_every(&isolate(), SEQUENCE_GAP_CASES);
-}
-
-#[test]
-fn a_spinning_decoder_is_stopped_by_the_deadline() {
-    let isolate = spin_stopping_isolate();
-    let spinning = hex::decode(DECODER_CASES[0].1).unwrap();
-    assert_eq!(isolate.load(&spinning).err(), Some(Rejected::TimedOut));
-    still_admits(&isolate);
+    reject_or_admit_every(&isolate(), SEQUENCE_GAP_CASES, &[]);
 }
 
 fn chunk(kind: u8, body: &[u8]) -> Vec<u8> {
@@ -363,24 +366,7 @@ fn distinct_orphan_queues_rebuild_their_exact_state() {
 }
 
 #[test]
-fn a_malformed_tail_refuses_the_whole_input() {
-    let isolate = isolate();
-    let mut doc = seeded_doc();
-    let mut input = remote_change(&mut doc, "good");
-    let mut bad = remote_change(&mut doc, "bad");
-    let last = bad.len() - 1;
-    bad[last] ^= 0x55;
-    input.extend(bad);
-    let before = doc.save();
-    assert!(matches!(
-        isolate.apply(&mut doc, &input, Dependencies::RetainOrphans),
-        Err(Rejected::Invalid(_))
-    ));
-    assert_eq!(doc.save(), before);
-}
-
-#[test]
-fn a_bad_change_checksum_refuses_the_whole_input() {
+fn a_bad_change_checksum_or_a_malformed_tail_refuses_the_whole_input() {
     let isolate = isolate();
     let mut doc = seeded_doc();
     let good = remote_change(&mut doc, "good");
@@ -393,12 +379,29 @@ fn a_bad_change_checksum_refuses_the_whole_input() {
     let compressed = last.bytes().to_vec();
     assert_eq!(compressed[8], 2, "fixture must be a compressed change");
     let known = doc.get_last_local_change().unwrap().raw_bytes().to_vec();
-    for (what, prefix, mut bad) in [
-        ("new change", good.clone(), remote_change(&mut doc, "bad")),
-        ("known change", good.clone(), known),
-        ("compressed change", good, compressed),
+    let tail = remote_change(&mut doc, "bad");
+    let last = tail.len() - 1;
+    // Each row: the good change it follows, the change, and the byte of it
+    // that is flipped (byte 4 is in the checksum).
+    for (what, prefix, mut bad, at, mask) in [
+        (
+            "new change, checksum",
+            good.clone(),
+            remote_change(&mut doc, "bad"),
+            4,
+            0x01,
+        ),
+        ("known change, checksum", good.clone(), known, 4, 0x01),
+        (
+            "compressed change, checksum",
+            good.clone(),
+            compressed,
+            4,
+            0x01,
+        ),
+        ("new change, a malformed tail", good, tail, last, 0x55),
     ] {
-        bad[4] ^= 0x01;
+        bad[at] ^= mask;
         let mut input = prefix;
         input.extend(bad);
         let before = doc.save();

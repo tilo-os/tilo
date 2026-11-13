@@ -146,42 +146,54 @@ mod tests {
     }
 
     #[test]
-    fn refuses_trailing_bytes_unknown_types_and_oversize() {
+    fn refuses_malformed_framing_and_input_past_a_ceiling_but_not_at_it() {
         let limits = Limits::default();
-        let mut bytes = saved();
-        bytes.push(0);
-        assert!(matches!(
-            check(&bytes, &limits),
-            Err(Rejected::Malformed(_))
-        ));
+        let mut trailing = saved();
+        trailing.push(0);
         let mut unknown = saved();
         *unknown.get_mut(8).unwrap() = 9;
-        assert!(matches!(
-            check(&unknown, &limits),
-            Err(Rejected::Malformed(_))
-        ));
-        let small = Limits {
-            max_input_bytes: 4,
-            ..Limits::default()
-        };
-        assert_eq!(check(&saved(), &small), Err(Rejected::TooLarge));
-        let one = Limits {
-            max_chunks: 1,
-            ..Limits::default()
-        };
-        assert_eq!(check(&saved(), &one), Err(Rejected::TooLarge));
-    }
+        let mut overlong = MAGIC.to_vec();
+        overlong.extend([0; 4]);
+        overlong.push(1);
+        overlong.extend([0xff; 9]);
+        overlong.push(0x02);
+        for (case, bytes) in [
+            ("a trailing byte", trailing),
+            ("an unknown chunk type", unknown),
+            ("a length that does not fit in 64 bits", overlong),
+        ] {
+            assert!(
+                matches!(check(&bytes, &limits), Err(Rejected::Malformed(_))),
+                "{case}"
+            );
+        }
 
-    #[test]
-    fn refuses_a_length_that_does_not_fit_in_64_bits() {
-        let mut bytes = MAGIC.to_vec();
-        bytes.extend([0; 4]);
-        bytes.push(1);
-        bytes.extend([0xff; 9]);
-        bytes.push(0x02);
-        assert!(matches!(
-            check(&bytes, &Limits::default()),
-            Err(Rejected::Malformed(_))
-        ));
+        // Two chunks: the ceilings refuse one byte or one chunk past them and
+        // admit input that is exactly at them.
+        let bytes = saved();
+        for (case, max_input_bytes, max_chunks, expected) in [
+            ("a 4 byte ceiling", 4, usize::MAX, Err(Rejected::TooLarge)),
+            (
+                "one byte past the byte ceiling",
+                bytes.len().saturating_sub(1),
+                usize::MAX,
+                Err(Rejected::TooLarge),
+            ),
+            ("exactly the byte ceiling", bytes.len(), usize::MAX, Ok(())),
+            (
+                "one chunk past the chunk ceiling",
+                usize::MAX,
+                1,
+                Err(Rejected::TooLarge),
+            ),
+            ("exactly the chunk ceiling", usize::MAX, 2, Ok(())),
+        ] {
+            let limits = Limits {
+                max_input_bytes,
+                max_chunks,
+                ..Limits::default()
+            };
+            assert_eq!(check(&bytes, &limits), expected, "{case}");
+        }
     }
 }

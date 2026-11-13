@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "tilo-automerge-isolate"
 version = "0.1.0"
 edition = "2024"
@@ -22,6 +24,12 @@ flate2.workspace = true
 hex.workspace = true
 sha2.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
+
+# One test binary for the integration tests, whose files it includes as modules:
+# a file per binary linked the whole crate once each.
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true
