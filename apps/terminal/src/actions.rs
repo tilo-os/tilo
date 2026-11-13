@@ -114,43 +114,74 @@ mod tests {
         }
     }
 
-    #[test]
-    fn effects_that_reach_the_process_or_clipboard_ask_for_confirmation() {
-        use ui::tilo_actions::{ActionKind, ConfirmationPolicy, OperationKind};
-        let specs = TerminalEffect::specs();
-        assert!(specs.iter().all(|spec| spec.kind == OperationKind::Effect));
-        for spec in &specs {
-            let reads = matches!(
-                spec.id.as_str(),
-                "history-top"
-                    | "history-live"
-                    | "inspect-session"
-                    | "read-screen"
-                    | "inspect-editor"
+    tilo_test_env::scenario! {
+        fn effects_ask_for_confirmation_and_only_public_links_are_offered;
+
+        phase effects_that_reach_the_process_or_clipboard_ask_for_confirmation;
+        {
+            use ui::tilo_actions::{ActionKind, ConfirmationPolicy, OperationKind};
+            let specs = TerminalEffect::specs();
+            assert!(specs.iter().all(|spec| spec.kind == OperationKind::Effect));
+            for spec in &specs {
+                let reads = matches!(
+                    spec.id.as_str(),
+                    "history-top"
+                        | "history-live"
+                        | "inspect-session"
+                        | "read-screen"
+                        | "inspect-editor"
+                );
+                assert_eq!(
+                    spec.contract.confirmation == ConfirmationPolicy::Confirm,
+                    !reads,
+                    "`{}` confirmation",
+                    spec.id
+                );
+                let views = matches!(
+                    spec.id.as_str(),
+                    "history-top"
+                        | "inspect-session"
+                        | "read-screen"
+                        | "inspect-editor"
+                        | "history-live"
+                        | "copy-visible"
+                        | "copy-selection"
+                        | "select-all"
+                        | "open-link"
+                );
+                assert_eq!(
+                    spec.contract.kind == ActionKind::Read,
+                    views,
+                    "`{}` permission",
+                    spec.id
+                );
+            }
+        }
+
+        phase only_public_web_osc_links_are_offered_to_agents;
+        {
+            let (mut widget, _writes) = build_test_widget();
+            widget.feed(
+                b"\x1b]8;;file:///home/me/.ssh/id_ed25519\x1b\\local\x1b]8;;\x1b\\ \
+              \x1b]8;;https://token@example.test/private\x1b\\credential\x1b]8;;\x1b\\ \
+              \x1b]8;;https://example.test/docs\x1b\\public\x1b]8;;\x1b\\",
             );
+            let rows: Vec<_> = widget
+                .link_rows()
+                .into_iter()
+                .map(ui::framework::LiveRow::into_resource)
+                .collect();
             assert_eq!(
-                spec.contract.confirmation == ConfirmationPolicy::Confirm,
-                !reads,
-                "`{}` confirmation",
-                spec.id
+                rows.len(),
+                1,
+                "local and credential-bearing links are not rows"
             );
-            let views = matches!(
-                spec.id.as_str(),
-                "history-top"
-                    | "inspect-session"
-                    | "read-screen"
-                    | "inspect-editor"
-                    | "history-live"
-                    | "copy-visible"
-                    | "copy-selection"
-                    | "select-all"
-                    | "open-link"
-            );
-            assert_eq!(
-                spec.contract.kind == ActionKind::Read,
-                views,
-                "`{}` permission",
-                spec.id
+            assert_eq!(rows[0].label, "https://example.test/docs");
+            assert!(
+                !crate::inner::is_public_web_link("file:///home/me/.ssh/id_ed25519")
+                    && !crate::inner::is_public_web_link("https://token@example.test/private")
+                    && !crate::inner::is_public_web_link("https://example.test/?access_token=no"),
+                "local paths, credentials and query-bearing targets are not public links"
             );
         }
     }
@@ -173,33 +204,6 @@ mod tests {
         assert!(
             drain_writes(&writes).is_empty(),
             "a refused input never writes a partial PTY sequence"
-        );
-    }
-
-    #[test]
-    fn only_public_web_osc_links_are_offered_to_agents() {
-        let (mut widget, _writes) = build_test_widget();
-        widget.feed(
-            b"\x1b]8;;file:///home/me/.ssh/id_ed25519\x1b\\local\x1b]8;;\x1b\\ \
-              \x1b]8;;https://token@example.test/private\x1b\\credential\x1b]8;;\x1b\\ \
-              \x1b]8;;https://example.test/docs\x1b\\public\x1b]8;;\x1b\\",
-        );
-        let rows: Vec<_> = widget
-            .link_rows()
-            .into_iter()
-            .map(ui::framework::LiveRow::into_resource)
-            .collect();
-        assert_eq!(
-            rows.len(),
-            1,
-            "local and credential-bearing links are not rows"
-        );
-        assert_eq!(rows[0].label, "https://example.test/docs");
-        assert!(
-            !crate::inner::is_public_web_link("file:///home/me/.ssh/id_ed25519")
-                && !crate::inner::is_public_web_link("https://token@example.test/private")
-                && !crate::inner::is_public_web_link("https://example.test/?access_token=no"),
-            "local paths, credentials and query-bearing targets are not public links"
         );
     }
 

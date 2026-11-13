@@ -110,97 +110,418 @@ pub(crate) fn build_test_widget_io() -> (
     (widget, write_rx, pty_out_tx)
 }
 
-#[test]
-fn pty_output_is_read_and_pumped_into_redraws_and_watermark() {
+tilo_test_env::scenario! {
+    fn program_output_lands_on_the_grid_and_its_screens;
+
+    phase pty_output_is_read_and_pumped_into_redraws_and_watermark;
     {
-        let (mut widget, _writes, output) = build_test_widget_io();
-        let doc = AutoCommit::new();
+        {
+            let (mut widget, _writes, output) = build_test_widget_io();
+            let doc = AutoCommit::new();
 
-        assert!(
-            !widget.needs_animation_frame(),
-            "an idle embedded terminal must not pin its host to continuous redraws"
-        );
+            assert!(
+                !widget.needs_animation_frame(),
+                "an idle embedded terminal must not pin its host to continuous redraws"
+            );
 
-        output.send(b"embedded output".to_vec()).unwrap();
-        assert!(
-            widget.needs_animation_frame(),
-            "queued PTY bytes must request a frame until the host pumps them"
-        );
-        assert!(widget.update(&doc, &ROOT));
-        widget.sync(&doc, &ROOT);
-        assert!(widget.grid_text().contains("embedded output"));
-        assert!(
-            !widget.needs_animation_frame(),
-            "the terminal must return to idle after its output queue is drained"
-        );
-    }
+            output.send(b"embedded output".to_vec()).unwrap();
+            assert!(
+                widget.needs_animation_frame(),
+                "queued PTY bytes must request a frame until the host pumps them"
+            );
+            assert!(widget.update(&doc, &ROOT));
+            widget.sync(&doc, &ROOT);
+            assert!(widget.grid_text().contains("embedded output"));
+            assert!(
+                !widget.needs_animation_frame(),
+                "the terminal must return to idle after its output queue is drained"
+            );
+        }
 
-    {
-        use crate::inner::{PtyReadDisposition, classify_pty_read};
+        {
+            use crate::inner::{PtyReadDisposition, classify_pty_read};
 
-        assert_eq!(
-            classify_pty_read(
-                &Err(std::io::Error::from(std::io::ErrorKind::Interrupted)),
-                || false
-            ),
-            PtyReadDisposition::Retry
-        );
-        assert_eq!(
-            classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EIO)), || true),
-            PtyReadDisposition::Retry,
-            "a PTY master can report EIO before the guest opens its slave"
-        );
-        assert_eq!(
-            classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EIO)), || false),
-            PtyReadDisposition::Closed,
-            "once the session's lifetime socket closes, EIO means the guest exited"
-        );
-        assert_eq!(
-            classify_pty_read(&Ok(19), || true),
-            PtyReadDisposition::Data(19)
-        );
-        assert_eq!(
-            classify_pty_read(&Ok(0), || true),
-            if cfg!(target_vendor = "apple") {
+            assert_eq!(
+                classify_pty_read(
+                    &Err(std::io::Error::from(std::io::ErrorKind::Interrupted)),
+                    || false
+                ),
                 PtyReadDisposition::Retry
-            } else {
+            );
+            assert_eq!(
+                classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EIO)), || true),
+                PtyReadDisposition::Retry,
+                "a PTY master can report EIO before the guest opens its slave"
+            );
+            assert_eq!(
+                classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EIO)), || false),
+                PtyReadDisposition::Closed,
+                "once the session's lifetime socket closes, EIO means the guest exited"
+            );
+            assert_eq!(
+                classify_pty_read(&Ok(19), || true),
+                PtyReadDisposition::Data(19)
+            );
+            assert_eq!(
+                classify_pty_read(&Ok(0), || true),
+                if cfg!(target_vendor = "apple") {
+                    PtyReadDisposition::Retry
+                } else {
+                    PtyReadDisposition::Closed
+                },
+                "macOS reports a master without a slave as the end of the file, Linux as EIO"
+            );
+            assert_eq!(
+                classify_pty_read(&Ok(0), || false),
+                PtyReadDisposition::Closed,
+                "once the session's lifetime socket closes, the end of the file is the guest's exit"
+            );
+            assert_eq!(
+                classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EBADF)), || {
+                    true
+                }),
                 PtyReadDisposition::Closed
-            },
-            "macOS reports a master without a slave as the end of the file, Linux as EIO"
-        );
-        assert_eq!(
-            classify_pty_read(&Ok(0), || false),
-            PtyReadDisposition::Closed,
-            "once the session's lifetime socket closes, the end of the file is the guest's exit"
-        );
-        assert_eq!(
-            classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EBADF)), || {
-                true
-            }),
-            PtyReadDisposition::Closed
-        );
+            );
+        }
+
+        {
+            let (mut widget, _writes) = build_test_widget();
+            assert!(!widget.has_received_pty_output());
+
+            widget.feed(b"\x1b[32m\x1b[?25h");
+
+            assert!(
+                widget.has_received_pty_output(),
+                "control-only startup output still proves the PTY is live"
+            );
+        }
+
+        {
+            let (mut widget, _write_rx, output_tx) = build_test_widget_io();
+            let state = AutoCommit::new();
+            assert!(!widget.has_received_pty_output());
+
+            output_tx.send(vec![b'\x1b', b'[', b'0', b'm']).unwrap();
+            assert!(widget.update(&state, &ROOT));
+            assert!(widget.has_received_pty_output());
+        }
     }
 
+    phase terminal_grid_initialises_prints_and_is_a_library_widget;
     {
-        let (mut widget, _writes) = build_test_widget();
-        assert!(!widget.has_received_pty_output());
+        {
+            struct MockMaster;
+            impl MasterPty for MockMaster {
+                fn get_size(&self) -> Result<PtySize, anyhow::Error> {
+                    Ok(PtySize::default())
+                }
+                fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> {
+                    Ok(())
+                }
+                fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
+                    Ok(Box::new(std::io::sink()))
+                }
+                fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
+                    Ok(Box::new(std::io::empty()))
+                }
+                #[cfg(unix)]
+                fn process_group_leader(&self) -> Option<i32> {
+                    None
+                }
+                #[cfg(unix)]
+                fn as_raw_fd(&self) -> Option<i32> {
+                    None
+                }
+                #[cfg(unix)]
+                fn tty_name(&self) -> Option<std::path::PathBuf> {
+                    None
+                }
+            }
 
-        widget.feed(b"\x1b[32m\x1b[?25h");
+            let (_output_tx, output_rx) = std::sync::mpsc::channel();
+            let writer: Box<dyn Write + Send> = Box::new(std::io::sink());
 
+            let mut widget = TerminalWidget::new(
+                Arc::new(Mutex::new(writer)),
+                Arc::new(Mutex::new(Box::new(MockMaster))),
+                output_rx,
+                tilo_content::ContentStore::memory(),
+            );
+
+            widget.feed(b"");
+            assert_eq!(widget.grid_text().split('\n').count(), 24);
+        }
+
+        {
+            let (mut widget, _rx) = build_test_widget();
+
+            widget.feed(b"");
+            assert_eq!(widget.grid_row(0).len(), 0, "blank lines are seeded empty");
+
+            widget.feed(b"\x1b[1;11HX");
+            let line = widget.grid_row(0);
+            assert_eq!(
+                line.chars().nth(10),
+                Some('X'),
+                "printed char must land at column 10; got {line:?}",
+            );
+            assert!(
+                line.chars().take(10).all(|c| c == ' '),
+                "columns 0-9 must be padded with spaces; got {line:?}",
+            );
+        }
+
+        {
+            fn _takes_widget<T: ui::widget::Widget>(_: T) {}
+            #[allow(
+                unused_imports,
+                reason = "the import itself is the compile-time public type assertion"
+            )]
+            use crate::TerminalWidget as _;
+        }
+
+        {
+            use ui::{AppKind, AppWidget, IconDescriptor};
+            fn require_app_widget<T: AppWidget>(_: &T) {}
+            let w = crate::TerminalWidget::spawn_default().expect("pty spawn");
+            require_app_widget(&w);
+            assert_eq!(w.app_kind(), AppKind::Terminal);
+            assert_eq!(w.app_title(), "Terminal");
+            match w.app_icon() {
+                IconDescriptor::Glyph(g) => assert_eq!(g, "󰆍"),
+                IconDescriptor::Named(_) => panic!("expected glyph icon"),
+            }
+            assert_eq!(w.permission_hint(), Some(AppKind::Terminal));
+        }
+    }
+
+    phase grid_mirror_stays_linear_aligned_and_reports_changes;
+    {
+        {
+            const LINES: usize = 80;
+            let (mut w, _write_rx, _out_tx) = build_test_widget_io();
+            let doc = AutoCommit::new();
+            w.force_geometry(Rect::new(0.0, 0.0, 1290.0, 760.0), 10.0, 20.0);
+
+            let mut payload = Vec::new();
+            for i in 0..LINES {
+                payload.extend_from_slice(
+                format!("\x1b[38;5;250m{i:>4}\x1b[0m  the quick brown fox jumps over the lazy dog {i:03}\r\n")
+                    .as_bytes(),
+            );
+            }
+
+            w.feed(&payload);
+            w.sync(&doc, &automerge::ROOT);
+
+            let visible = w.visible_lines();
+            assert!(
+                visible.iter().any(|l| l.contains("lazy dog 079")),
+                "newest bulk line rendered: {visible:?}"
+            );
+            w.scroll_to_top();
+            let top = w.visible_lines();
+            assert!(
+                top.iter().any(|l| l.contains("lazy dog 000")),
+                "oldest bulk line retained: {top:?}"
+            );
+        }
+
+        {
+            use vello::kurbo::Rect;
+            let (mut w, _rx, _out) = build_test_widget_io();
+            let doc = AutoCommit::new();
+            w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0); // 80x24 logical grid
+
+            let mut emitted = 0usize;
+            for _chunk in 0..3 {
+                let mut payload = Vec::new();
+                for _ in 0..50 {
+                    payload.extend_from_slice(format!("ROW{emitted:04}\r\n").as_bytes());
+                    emitted += 1;
+                }
+                w.feed(&payload);
+                w.sync(&doc, &automerge::ROOT);
+            }
+            let text = w.grid_text();
+            let count = text.lines().count();
+            assert!(count <= 120 + 24, "history bounded, got {count} lines");
+            assert!(
+                text.lines().any(|l| l.trim_end() == "ROW0149"),
+                "newest line present in the aligned mirror"
+            );
+            assert!(
+                !text.contains("ROW0000"),
+                "oldest line trimmed off the front"
+            );
+            assert!(
+                text.lines().any(|l| l.trim_end() == "ROW0120"),
+                "a surviving scrollback line stays intact: {:?}",
+                text.lines().rev().take(5).collect::<Vec<_>>()
+            );
+        }
+
+        {
+            use automerge::ROOT;
+            use ui::State;
+
+            let mut state = State::new();
+            let _ = state.commit_action_authored(None, None, None);
+
+            assert!(
+                !state.commit_action_authored(None, None, None),
+                "an empty transaction must report no change (App then skips save)"
+            );
+            ui::tilo_resource::write_key(
+                &mut state.doc,
+                &ROOT,
+                "k",
+                &ui::tilo_resource::Atom("v".into()),
+            )
+            .unwrap();
+            assert!(
+                state.commit_action_authored(None, None, None),
+                "a real edit must report a change (App then saves + broadcasts)"
+            );
+            assert!(
+                !state.commit_action_authored(None, None, None),
+                "with nothing new pending, the next commit reports no change again"
+            );
+        }
+    }
+
+    phase terminal_modes_switch_screens_cursor_paste_and_focus_reporting;
+    {
+        {
+            use vello::kurbo::Rect;
+            let (mut w, _rx) = build_test_widget();
+            let doc = AutoCommit::new();
+            w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+            w.feed(b"MAIN CONTENT\r\n");
+            w.sync(&doc, &automerge::ROOT);
+            assert!(!w.is_alt_screen());
+            assert!(w.grid_row(0).starts_with("MAIN CONTENT"));
+
+            w.feed(b"\x1b[?1049h\x1b[2J\x1b[H");
+            w.feed(b"\x1b[3;5HTUI REDRAW");
+            w.sync(&doc, &automerge::ROOT);
+            assert!(w.is_alt_screen(), "?1049h enters the alternate screen");
+            assert!(
+                w.grid_row(2).contains("TUI REDRAW"),
+                "row 2 (1-based row 3): {:?}",
+                w.grid_row(2)
+            );
+            assert!(
+                !w.grid_row(0).contains("MAIN CONTENT"),
+                "alt buffer is fresh"
+            );
+
+            w.feed(b"\x1b[?1049l");
+            w.sync(&doc, &automerge::ROOT);
+            assert!(!w.is_alt_screen(), "?1049l restores the main screen");
+            assert!(
+                w.grid_row(0).starts_with("MAIN CONTENT"),
+                "main content restored: {:?}",
+                w.grid_row(0)
+            );
+            assert!(
+                !w.grid_row(2).contains("TUI REDRAW"),
+                "alt redraw did not leak into main"
+            );
+        }
+
+        {
+            let (mut w, _rx) = build_test_widget();
+            w.feed(b"");
+            assert!(w.modes().cursor_visible, "cursor visible by default");
+
+            w.feed(b"\x1b[?25l");
+            assert!(!w.modes().cursor_visible, "?25l hides the cursor");
+            w.feed(b"\x1b[?25h");
+            assert!(w.modes().cursor_visible, "?25h shows the cursor");
+
+            w.feed(b"\x1b[?1000h\x1b[?1006h");
+            assert!(
+                w.modes().mouse_report && w.modes().mouse_sgr,
+                "mouse modes are tracked"
+            );
+            assert_eq!(w.modes().mouse_tracking, 1000);
+        }
+
+        {
+            let (mut w, rx) = build_test_widget();
+            let mut doc = AutoCommit::new();
+            w.feed(b"\x1b[?1004h");
+            let _ = drain_writes(&rx);
+            send_focus(&mut w, &mut doc, true);
+            send_focus(&mut w, &mut doc, false);
+            assert_eq!(drain_writes(&rx), b"\x1b[I\x1b[O");
+        }
+    }
+
+    phase a_fish_prompt_after_its_startup_queries_is_on_screen;
+    {
+        let (mut w, _rx) = build_test_widget();
+        let doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        let batches: [&[u8]; 3] = [
+            b"\x1b[?u\x1b[>0q\x1b]11;?\x1b\\\x1b[?1049h\x1bP+q696e646e\x1b\\\x1bP+q71756572792d6f732d6e616d65\x1b\\\x1b[?1049l\x1b[0c",
+            b"\rWillkommen in fish\r\nType \x1b[32mhelp\x1b[m for instructions\r\n\x1b]7;file://ush/var/tmp\x07\x1b]0;/v/tmp\x07\x1b[m\x1b]11;?\x1b\\\x1b[6n\x1b[0c",
+            b"\x1b[?2004h\x1b[?2031h\x1b[>4;1m\x1b=\x1b]133;A;click_events=1\x1b\\\x1b[92mroot\x1b[m@\x1b[mush\x1b[m \x1b[31m/v/tmp\x1b[m\x1b[m# \x1b]133;B\x07\x1b[K\r\x1b[17C\x1b[?2004l\x1b[?2031l\x1b[>4;0m\x1b>\x1b]0;/v/tmp\x07\x1b[m\x1b[?2004h\x1b[?2031h\x1b[>4;1m\x1b=\r\x1b]133;A;click_events=1\x07\x1b[92mroot\x1b[m@\x1b[mush\x1b[m \x1b[31m/v/tmp\x1b[m\x1b[m# \x1b]133;B\x07\x1b[J\r\x1b[17Cab",
+        ];
+        for batch in batches {
+            w.feed(batch);
+            w.sync(&doc, &ROOT);
+        }
         assert!(
-            widget.has_received_pty_output(),
-            "control-only startup output still proves the PTY is live"
+            w.grid_row(2).starts_with("root@ush /v/tmp# ab"),
+            "prompt row: {:?}\n{}",
+            w.grid_row(2),
+            w.grid_text()
         );
     }
 
+    phase deleting_lines_on_screen_leaves_the_scrollback_alone;
     {
-        let (mut widget, _write_rx, output_tx) = build_test_widget_io();
-        let state = AutoCommit::new();
-        assert!(!widget.has_received_pty_output());
+        let (mut w, _rx) = build_test_widget();
+        let doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
+        let history: String = (0..60).fold(String::new(), |mut history, n| {
+            use std::fmt::Write as _;
+            let _ = write!(history, "H{n:03}\r\n");
+            history
+        });
+        w.feed(history.as_bytes());
+        w.sync(&doc, &ROOT);
+        let before = w.grid_text();
+        w.feed(b"\x1b[5;1H\x1b[2M");
+        w.sync(&doc, &ROOT);
+        let after = w.grid_text();
+        let scrollback = |text: &str| text.lines().take(30).map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(scrollback(&after), scrollback(&before));
+        assert!(after.contains("H000") && after.contains("H059"), "{after}");
+    }
 
-        output_tx.send(vec![b'\x1b', b'[', b'0', b'm']).unwrap();
-        assert!(widget.update(&state, &ROOT));
-        assert!(widget.has_received_pty_output());
+    phase erasing_below_the_cursor_keeps_what_is_left_of_it;
+    {
+        let (mut w, _rx) = build_test_widget();
+        let doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        w.feed(b"above\r\nP# tail\r\nbelow\x1b[2;4H\x1b[J");
+        w.sync(&doc, &ROOT);
+        assert_eq!(w.grid_row(0).trim_end(), "above");
+        assert_eq!(w.grid_row(1).trim_end(), "P#");
+        assert_eq!(w.grid_row(2).trim_end(), "");
+
+        w.feed(b"\x1b[2;3H\x1b[1J");
+        w.sync(&doc, &ROOT);
+        assert_eq!(w.grid_row(0).trim_end(), "");
+        assert!(
+            w.grid_row(1).trim().is_empty(),
+            "row 1: {:?}",
+            w.grid_row(1)
+        );
     }
 }
 
@@ -582,237 +903,202 @@ pub(crate) fn send_key_without_text(
         .handled
 }
 
-#[test]
-fn typed_text_reaches_the_pty_without_keyevent_text() {
-    use winit::keyboard::{Key, NamedKey, SmolStr};
+tilo_test_env::scenario! {
+    fn keys_reach_the_process_as_bytes;
 
-    let (mut widget, writes) = build_test_widget();
-    let mut doc = AutoCommit::new();
-    widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-
-    assert!(
-        send_key_without_text(
-            &mut widget,
-            &mut doc,
-            Key::Character(SmolStr::new_static("e")),
-        ),
-        "a character key without text must be consumed"
-    );
-    assert!(
-        send_key_without_text(&mut widget, &mut doc, Key::Named(NamedKey::Space)),
-        "Named Space without text must be consumed, not left for Activate"
-    );
-    assert!(
-        send_key_without_text(
-            &mut widget,
-            &mut doc,
-            Key::Character(SmolStr::new_static(" ")),
-        ),
-        "Character Space without text must be consumed"
-    );
-    assert!(
-        send_key_without_text(&mut widget, &mut doc, Key::Named(NamedKey::Enter)),
-        "Enter must be consumed as a carriage return"
-    );
-
-    assert_eq!(
-        drain_writes(&writes),
-        b"e  \r",
-        "letters, both Space spellings, and Enter reach the PTY",
-    );
-}
-
-#[test]
-fn control_space_reaches_the_native_editor_as_nul() {
-    use winit::event::ElementState;
-    use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey, SmolStr};
-
-    let (mut widget, writes) = build_test_widget();
-    let mut doc = AutoCommit::new();
-    widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-
-    for alt in [false, true] {
-        let modifiers = if alt {
-            ModifiersState::CONTROL | ModifiersState::ALT
-        } else {
-            ModifiersState::CONTROL
-        };
-        for key in [
-            Key::Named(NamedKey::Space),
-            Key::Character(SmolStr::new_static(" ")),
-            Key::Unidentified(winit::keyboard::NativeKey::Unidentified),
-        ] {
-            let mut event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
-            event.physical_key = PhysicalKey::Code(KeyCode::Space);
-            assert!(
-                ui::testing::Dispatch::new()
-                    .modifiers(modifiers)
-                    .doc(&mut doc)
-                    .send(&mut widget, &ui::synthetic_input::keyboard_input(event),)
-                    .handled,
-                "the terminal must consume modified Space"
-            );
-            assert_eq!(
-                drain_writes(&writes),
-                if alt {
-                    b"\x1b\0".as_slice()
-                } else {
-                    b"\0".as_slice()
-                },
-                "all native key spellings must reach Readline's mark command"
-            );
-        }
-    }
-}
-
-#[test]
-fn terminal_grid_initialises_prints_and_is_a_library_widget() {
+    phase typed_text_reaches_the_pty_without_keyevent_text;
     {
-        struct MockMaster;
-        impl MasterPty for MockMaster {
-            fn get_size(&self) -> Result<PtySize, anyhow::Error> {
-                Ok(PtySize::default())
-            }
-            fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> {
-                Ok(())
-            }
-            fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
-                Ok(Box::new(std::io::sink()))
-            }
-            fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
-                Ok(Box::new(std::io::empty()))
-            }
-            #[cfg(unix)]
-            fn process_group_leader(&self) -> Option<i32> {
-                None
-            }
-            #[cfg(unix)]
-            fn as_raw_fd(&self) -> Option<i32> {
-                None
-            }
-            #[cfg(unix)]
-            fn tty_name(&self) -> Option<std::path::PathBuf> {
-                None
-            }
-        }
+        use winit::keyboard::{Key, NamedKey, SmolStr};
 
-        let (_output_tx, output_rx) = std::sync::mpsc::channel();
-        let writer: Box<dyn Write + Send> = Box::new(std::io::sink());
+        let (mut widget, writes) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
-        let mut widget = TerminalWidget::new(
-            Arc::new(Mutex::new(writer)),
-            Arc::new(Mutex::new(Box::new(MockMaster))),
-            output_rx,
-            tilo_content::ContentStore::memory(),
+        assert!(
+            send_key_without_text(
+                &mut widget,
+                &mut doc,
+                Key::Character(SmolStr::new_static("e")),
+            ),
+            "a character key without text must be consumed"
+        );
+        assert!(
+            send_key_without_text(&mut widget, &mut doc, Key::Named(NamedKey::Space)),
+            "Named Space without text must be consumed, not left for Activate"
+        );
+        assert!(
+            send_key_without_text(
+                &mut widget,
+                &mut doc,
+                Key::Character(SmolStr::new_static(" ")),
+            ),
+            "Character Space without text must be consumed"
+        );
+        assert!(
+            send_key_without_text(&mut widget, &mut doc, Key::Named(NamedKey::Enter)),
+            "Enter must be consumed as a carriage return"
         );
 
-        widget.feed(b"");
-        assert_eq!(widget.grid_text().split('\n').count(), 24);
-    }
-
-    {
-        let (mut widget, _rx) = build_test_widget();
-
-        widget.feed(b"");
-        assert_eq!(widget.grid_row(0).len(), 0, "blank lines are seeded empty");
-
-        widget.feed(b"\x1b[1;11HX");
-        let line = widget.grid_row(0);
         assert_eq!(
-            line.chars().nth(10),
-            Some('X'),
-            "printed char must land at column 10; got {line:?}",
-        );
-        assert!(
-            line.chars().take(10).all(|c| c == ' '),
-            "columns 0-9 must be padded with spaces; got {line:?}",
+            drain_writes(&writes),
+            b"e  \r",
+            "letters, both Space spellings, and Enter reach the PTY",
         );
     }
 
+    phase control_space_reaches_the_native_editor_as_nul;
     {
-        fn _takes_widget<T: ui::widget::Widget>(_: T) {}
-        #[allow(
-            unused_imports,
-            reason = "the import itself is the compile-time public type assertion"
-        )]
-        use crate::TerminalWidget as _;
-    }
+        use winit::event::ElementState;
+        use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
-    {
-        use ui::{AppKind, AppWidget, IconDescriptor};
-        fn require_app_widget<T: AppWidget>(_: &T) {}
-        let w = crate::TerminalWidget::spawn_default().expect("pty spawn");
-        require_app_widget(&w);
-        assert_eq!(w.app_kind(), AppKind::Terminal);
-        assert_eq!(w.app_title(), "Terminal");
-        match w.app_icon() {
-            IconDescriptor::Glyph(g) => assert_eq!(g, "󰆍"),
-            IconDescriptor::Named(_) => panic!("expected glyph icon"),
+        let (mut widget, writes) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+        for alt in [false, true] {
+            let modifiers = if alt {
+                ModifiersState::CONTROL | ModifiersState::ALT
+            } else {
+                ModifiersState::CONTROL
+            };
+            for key in [
+                Key::Named(NamedKey::Space),
+                Key::Character(SmolStr::new_static(" ")),
+                Key::Unidentified(winit::keyboard::NativeKey::Unidentified),
+            ] {
+                let mut event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
+                event.physical_key = PhysicalKey::Code(KeyCode::Space);
+                assert!(
+                    ui::testing::Dispatch::new()
+                        .modifiers(modifiers)
+                        .doc(&mut doc)
+                        .send(&mut widget, &ui::synthetic_input::keyboard_input(event),)
+                        .handled,
+                    "the terminal must consume modified Space"
+                );
+                assert_eq!(
+                    drain_writes(&writes),
+                    if alt {
+                        b"\x1b\0".as_slice()
+                    } else {
+                        b"\0".as_slice()
+                    },
+                    "all native key spellings must reach Readline's mark command"
+                );
+            }
         }
-        assert_eq!(w.permission_hint(), Some(AppKind::Terminal));
     }
 }
 
-#[test]
-fn terminal_draw_and_disconnected_state_follow_theme_and_text_scale() {
-    {
-        use ui::widget::Widget;
+tilo_test_env::scenario! {
+    fn the_terminal_draws_by_its_theme_on_device_pixels;
 
-        let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
-            .expect("spawn short-lived pty command");
-        let doc = AutoCommit::new();
-        tilo_test_env::wait_until("PTY EOF to settle the session state", || {
-            widget.sync(&doc, &ROOT);
-            widget.is_disconnected()
-        });
-        let node = Widget::accessibility(&widget).expect("terminal semantics");
+    phase terminal_draw_and_disconnected_state_follow_theme_and_text_scale;
+    {
+        {
+            use ui::widget::Widget;
+
+            let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
+                .expect("spawn short-lived pty command");
+            let doc = AutoCommit::new();
+            tilo_test_env::wait_until("PTY EOF to settle the session state", || {
+                widget.sync(&doc, &ROOT);
+                widget.is_disconnected()
+            });
+            let node = Widget::accessibility(&widget).expect("terminal semantics");
+            assert!(
+                node.description
+                    .is_some_and(|description| description.contains("Session ended"))
+            );
+            assert!(node.children.iter().any(|child| {
+                child
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.contains("Session ended"))
+                    && child.live == Some(ui::a11y::Politeness::Assertive)
+            }));
+        }
+
+        {
+            use ui::Theme;
+            let theme = Theme::dark();
+            let mono = theme.tokens.font_mono;
+            assert!(
+                !mono.family.is_empty(),
+                "theme must expose mono font tokens"
+            );
+        }
+
+        {
+            use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+            use vello::{Scene, kurbo::Affine};
+
+            let (mut widget, _) = build_test_widget();
+            widget.force_geometry(Rect::new(0.0, 0.0, 390.0, 844.0), 4.0, 12.0);
+            let (provisional_cols, _) = widget.grid_size();
+            let theme = Theme::high_contrast().with_text_scale(2.0);
+            let mut scene = Scene::new();
+            let mut text_renderer = TextRenderer::new();
+            widget.draw_child(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text_renderer,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            let (resolved_cols, resolved_rows) = widget.grid_size();
+            assert!(resolved_cols < provisional_cols);
+            assert!(resolved_cols > 0 && resolved_rows > 0);
+        }
+
+        {
+            assert_eq!(TerminalWidget::disconnected_badge_label(), "Session ended");
+        }
+    }
+
+    phase the_cursor_is_an_opaque_inverted_cell;
+    {
+        let palette = ui::tokens::TerminalPalette::dark();
+        let cursor = crate::inner::cursor_from_palette(&palette);
         assert!(
-            node.description
-                .is_some_and(|description| description.contains("Session ended"))
+            (cursor.components[3] - 1.0).abs() < f32::EPSILON,
+            "the block cursor is fully opaque, not a translucent wash"
         );
-        assert!(node.children.iter().any(|child| {
-            child
-                .name
-                .as_deref()
-                .is_some_and(|name| name.contains("Session ended"))
-                && child.live == Some(ui::a11y::Politeness::Assertive)
-        }));
-    }
-
-    {
-        use ui::Theme;
-        let theme = Theme::dark();
-        let mono = theme.tokens.font_mono;
-        assert!(
-            !mono.family.is_empty(),
-            "theme must expose mono font tokens"
+        assert_eq!(
+            cursor.components[..3],
+            palette.fg_default.components[..3],
+            "the cursor is the default foreground"
         );
     }
 
+    phase cell_fills_snap_to_device_pixels_and_adjacent_cells_tile;
     {
-        use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
-        use vello::{Scene, kurbo::Affine};
+        use crate::inner::snap_to_device_pixels;
+        use vello::kurbo::Affine;
 
-        let (mut widget, _) = build_test_widget();
-        widget.force_geometry(Rect::new(0.0, 0.0, 390.0, 844.0), 4.0, 12.0);
-        let (provisional_cols, _) = widget.grid_size();
-        let theme = Theme::high_contrast().with_text_scale(2.0);
-        let mut scene = Scene::new();
-        let mut text_renderer = TextRenderer::new();
-        widget.draw_child(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text_renderer,
-            &theme,
-            &PresenceCtx::empty(),
-        );
-        let (resolved_cols, resolved_rows) = widget.grid_size();
-        assert!(resolved_cols < provisional_cols);
-        assert!(resolved_cols > 0 && resolved_rows > 0);
-    }
-
-    {
-        assert_eq!(TerminalWidget::disconnected_badge_label(), "Session ended");
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let transform = Affine::scale(scale);
+            let (char_w, x0) = (8.43, 12.0);
+            for cell in 0..40 {
+                let left = x0 + f64::from(cell) * char_w;
+                let a = snap_to_device_pixels(transform, Rect::new(left, 20.0, left + char_w, 40.0));
+                let b = snap_to_device_pixels(
+                    transform,
+                    Rect::new(left + char_w, 20.0, left + 2.0 * char_w, 40.0),
+                );
+                for edge in [a.x0, a.x1, a.y0, a.y1] {
+                    let device = edge * scale;
+                    assert!(
+                        (device - device.round()).abs() < 1e-9,
+                        "edge {edge} at scale {scale} is not on a device pixel"
+                    );
+                }
+                assert!(
+                    (a.x1 - b.x0).abs() < 1e-9,
+                    "neighbouring cells meet without a seam or overlap"
+                );
+            }
+        }
     }
 }
 
@@ -1952,191 +2238,121 @@ fn menu_rows_drive_the_process_and_follow_its_lifecycle() {
     );
 }
 
-#[test]
-fn grid_mirror_stays_linear_aligned_and_reports_changes() {
-    {
-        const LINES: usize = 80;
-        let (mut w, _write_rx, _out_tx) = build_test_widget_io();
-        let doc = AutoCommit::new();
-        w.force_geometry(Rect::new(0.0, 0.0, 1290.0, 760.0), 10.0, 20.0);
+tilo_test_env::scenario! {
+    fn queries_are_answered_and_pastes_written_to_the_process;
 
-        let mut payload = Vec::new();
-        for i in 0..LINES {
-            payload.extend_from_slice(
-            format!("\x1b[38;5;250m{i:>4}\x1b[0m  the quick brown fox jumps over the lazy dog {i:03}\r\n")
-                .as_bytes(),
-        );
+    phase paste_writes_to_pty_with_newline_and_bracketing_rules;
+    {
+        {
+            let (mut w, write_rx) = build_test_widget();
+            w.feed(b""); // init crdt / modes
+            w.paste("echo hi\nls");
+            let got = drain_writes(&write_rx);
+            assert_eq!(got, b"echo hi\rls", "plain paste normalises LF to CR");
         }
 
-        w.feed(&payload);
-        w.sync(&doc, &automerge::ROOT);
-
-        let visible = w.visible_lines();
-        assert!(
-            visible.iter().any(|l| l.contains("lazy dog 079")),
-            "newest bulk line rendered: {visible:?}"
-        );
-        w.scroll_to_top();
-        let top = w.visible_lines();
-        assert!(
-            top.iter().any(|l| l.contains("lazy dog 000")),
-            "oldest bulk line retained: {top:?}"
-        );
-    }
-
-    {
-        use vello::kurbo::Rect;
-        let (mut w, _rx, _out) = build_test_widget_io();
-        let doc = AutoCommit::new();
-        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0); // 80x24 logical grid
-
-        let mut emitted = 0usize;
-        for _chunk in 0..3 {
-            let mut payload = Vec::new();
-            for _ in 0..50 {
-                payload.extend_from_slice(format!("ROW{emitted:04}\r\n").as_bytes());
-                emitted += 1;
-            }
-            w.feed(&payload);
-            w.sync(&doc, &automerge::ROOT);
+        {
+            let (mut w, write_rx) = build_test_widget();
+            w.feed(b"\x1b[?2004h");
+            assert!(w.modes().bracketed_paste);
+            w.paste("data");
+            let got = drain_writes(&write_rx);
+            assert_eq!(
+                got, b"\x1b[200~data\x1b[201~",
+                "bracketed paste wraps the payload"
+            );
         }
-        let text = w.grid_text();
-        let count = text.lines().count();
-        assert!(count <= 120 + 24, "history bounded, got {count} lines");
-        assert!(
-            text.lines().any(|l| l.trim_end() == "ROW0149"),
-            "newest line present in the aligned mirror"
-        );
-        assert!(
-            !text.contains("ROW0000"),
-            "oldest line trimmed off the front"
-        );
-        assert!(
-            text.lines().any(|l| l.trim_end() == "ROW0120"),
-            "a surviving scrollback line stays intact: {:?}",
-            text.lines().rev().take(5).collect::<Vec<_>>()
-        );
     }
 
+    phase device_attribute_queries_reply;
     {
-        use automerge::ROOT;
-        use ui::State;
+        {
+            let (mut w, write_rx) = build_test_widget();
+            w.feed(b"\x1b[c");
+            let got = drain_writes(&write_rx);
+            assert_eq!(
+                got, b"\x1b[?6c",
+                "DA1 (CSI c) must answer with the device attributes"
+            );
+        }
 
-        let mut state = State::new();
-        let _ = state.commit_action_authored(None, None, None);
+        {
+            let (mut w, write_rx) = build_test_widget();
+            w.feed(b"\x1b[0c");
+            assert_eq!(drain_writes(&write_rx), b"\x1b[?6c", "CSI 0 c is DA1 too");
+        }
 
-        assert!(
-            !state.commit_action_authored(None, None, None),
-            "an empty transaction must report no change (App then skips save)"
-        );
-        ui::tilo_resource::write_key(
-            &mut state.doc,
-            &ROOT,
-            "k",
-            &ui::tilo_resource::Atom("v".into()),
-        )
-        .unwrap();
-        assert!(
-            state.commit_action_authored(None, None, None),
-            "a real edit must report a change (App then saves + broadcasts)"
-        );
-        assert!(
-            !state.commit_action_authored(None, None, None),
-            "with nothing new pending, the next commit reports no change again"
-        );
-    }
-}
+        {
+            let (mut w, write_rx) = build_test_widget();
+            w.feed(b"\x1bZ");
+            assert_eq!(
+                drain_writes(&write_rx),
+                b"\x1b[?6c",
+                "ESC Z (DECID) is a DA1 request"
+            );
+        }
 
-#[test]
-fn paste_writes_to_pty_with_newline_and_bracketing_rules() {
-    {
-        let (mut w, write_rx) = build_test_widget();
-        w.feed(b""); // init crdt / modes
-        w.paste("echo hi\nls");
-        let got = drain_writes(&write_rx);
-        assert_eq!(got, b"echo hi\rls", "plain paste normalises LF to CR");
-    }
-
-    {
-        let (mut w, write_rx) = build_test_widget();
-        w.feed(b"\x1b[?2004h");
-        assert!(w.modes().bracketed_paste);
-        w.paste("data");
-        let got = drain_writes(&write_rx);
-        assert_eq!(
-            got, b"\x1b[200~data\x1b[201~",
-            "bracketed paste wraps the payload"
-        );
-    }
-}
-
-#[test]
-fn terminal_modes_switch_screens_cursor_paste_and_focus_reporting() {
-    {
-        use vello::kurbo::Rect;
-        let (mut w, _rx) = build_test_widget();
-        let doc = AutoCommit::new();
-        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-
-        w.feed(b"MAIN CONTENT\r\n");
-        w.sync(&doc, &automerge::ROOT);
-        assert!(!w.is_alt_screen());
-        assert!(w.grid_row(0).starts_with("MAIN CONTENT"));
-
-        w.feed(b"\x1b[?1049h\x1b[2J\x1b[H");
-        w.feed(b"\x1b[3;5HTUI REDRAW");
-        w.sync(&doc, &automerge::ROOT);
-        assert!(w.is_alt_screen(), "?1049h enters the alternate screen");
-        assert!(
-            w.grid_row(2).contains("TUI REDRAW"),
-            "row 2 (1-based row 3): {:?}",
-            w.grid_row(2)
-        );
-        assert!(
-            !w.grid_row(0).contains("MAIN CONTENT"),
-            "alt buffer is fresh"
-        );
-
-        w.feed(b"\x1b[?1049l");
-        w.sync(&doc, &automerge::ROOT);
-        assert!(!w.is_alt_screen(), "?1049l restores the main screen");
-        assert!(
-            w.grid_row(0).starts_with("MAIN CONTENT"),
-            "main content restored: {:?}",
-            w.grid_row(0)
-        );
-        assert!(
-            !w.grid_row(2).contains("TUI REDRAW"),
-            "alt redraw did not leak into main"
-        );
+        {
+            let (mut w, write_rx) = build_test_widget();
+            w.feed(b"\x1b[>c");
+            let reply = String::from_utf8(drain_writes(&write_rx)).expect("ascii reply");
+            assert!(
+                reply.starts_with("\x1b[>0;") && reply.ends_with(";1c"),
+                "DA2 (CSI > c) reports terminal type and version: {reply:?}"
+            );
+        }
     }
 
+    phase status_and_mode_reports_reply_or_stay_silent;
     {
-        let (mut w, _rx) = build_test_widget();
-        w.feed(b"");
-        assert!(w.modes().cursor_visible, "cursor visible by default");
+        {
+            let (mut w, write_rx) = build_test_widget();
+            w.feed(b"\x1b[5;3H");
+            let _ = drain_writes(&write_rx); // CUP itself sends nothing; clear.
+            w.feed(b"\x1b[6n");
+            assert_eq!(
+                drain_writes(&write_rx),
+                b"\x1b[5;3R",
+                "DSR 6n (CPR) reports the 1-based cursor row;col"
+            );
+        }
 
-        w.feed(b"\x1b[?25l");
-        assert!(!w.modes().cursor_visible, "?25l hides the cursor");
-        w.feed(b"\x1b[?25h");
-        assert!(w.modes().cursor_visible, "?25h shows the cursor");
+        {
+            let (mut w, write_rx) = build_test_widget();
+            w.feed(b"\x1b[5n");
+            assert_eq!(drain_writes(&write_rx), b"\x1b[0n", "DSR 5n → terminal OK");
+        }
 
-        w.feed(b"\x1b[?1000h\x1b[?1006h");
-        assert!(
-            w.modes().mouse_report && w.modes().mouse_sgr,
-            "mouse modes are tracked"
-        );
-        assert_eq!(w.modes().mouse_tracking, 1000);
-    }
+        {
+            let (mut w, write_rx) = build_test_widget();
+            w.feed(b"\x1b[?2004h\x1b[?2004$p");
+            assert_eq!(
+                drain_writes(&write_rx),
+                b"\x1b[?2004;1$y",
+                "DECRQM must report bracketed paste as set (1) after ?2004h"
+            );
+            w.feed(b"\x1b[?2004l\x1b[?2004$p");
+            assert_eq!(
+                drain_writes(&write_rx),
+                b"\x1b[?2004;2$y",
+                "DECRQM must report bracketed paste as reset (2) after ?2004l"
+            );
+        }
 
-    {
-        let (mut w, rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
-        w.feed(b"\x1b[?1004h");
-        let _ = drain_writes(&rx);
-        send_focus(&mut w, &mut doc, true);
-        send_focus(&mut w, &mut doc, false);
-        assert_eq!(drain_writes(&rx), b"\x1b[I\x1b[O");
+        {
+            let (mut w, write_rx) = build_test_widget();
+            w.feed(b"\x1b[?9999$p");
+            assert_eq!(drain_writes(&write_rx), b"\x1b[?9999;0$y");
+        }
+
+        {
+            let (mut w, write_rx) = build_test_widget();
+            w.feed(b"\x1b[2 q");
+            assert!(
+                drain_writes(&write_rx).is_empty(),
+                "a non-query CSI must not write a spurious reply to the shell"
+            );
+        }
     }
 }
 
@@ -2608,35 +2824,138 @@ fn cells(w: &TerminalWidget, row: usize, col: usize, len: usize) -> Vec<(char, A
         .collect()
 }
 
-#[test]
-fn claude_codes_start_up_leaves_its_text_without_a_line_under_it() {
-    use vello::kurbo::Rect;
-    let (mut w, _rx) = build_test_widget();
-    let doc = AutoCommit::new();
-    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+tilo_test_env::scenario! {
+    fn escapes_style_cells_and_name_titles_and_links;
 
-    w.feed(
-        b"\x1b7\x1b[r\x1b8\x1b[?25h\x1b[?2004h\x1b[?2031h\x1b[?1004h\x1b[<u\x1b[>5u\x1b[>4;2m\
+    phase claude_codes_start_up_leaves_its_text_without_a_line_under_it;
+    {
+        use vello::kurbo::Rect;
+        let (mut w, _rx) = build_test_widget();
+        let doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+        w.feed(
+            b"\x1b7\x1b[r\x1b8\x1b[?25h\x1b[?2004h\x1b[?2031h\x1b[?1004h\x1b[<u\x1b[>5u\x1b[>4;2m\
           \x1b]0;\xe2\x9c\xb3 Claude Code\x07\x1b[?1049h\x1b[2J\x1b[H\x1b[<u\x1b[>5u\x1b[>4;2m\
           \x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?25l\x1b[H\
           \x1b[1mClaude Code\x1b[22m\x1b[13G\x1b[38;5;246mv2.1.305\x1b[39m",
-    );
-    w.sync(&doc, &automerge::ROOT);
+        );
+        w.sync(&doc, &automerge::ROOT);
 
-    let drawn = cells(&w, 0, 0, 20);
-    let text: String = drawn.iter().map(|(c, _)| c).collect();
-    assert_eq!(
-        text, "Claude Code v2.1.305",
-        "the private-marker sequences moved nothing: {text:?}"
-    );
-    for (c, attr) in &drawn {
-        assert!(!attr.underline, "{c:?} has a line drawn under it: {attr:?}");
-        assert!(!attr.dim, "{c:?} is drawn faint: {attr:?}");
+        let drawn = cells(&w, 0, 0, 20);
+        let text: String = drawn.iter().map(|(c, _)| c).collect();
+        assert_eq!(
+            text, "Claude Code v2.1.305",
+            "the private-marker sequences moved nothing: {text:?}"
+        );
+        for (c, attr) in &drawn {
+            assert!(!attr.underline, "{c:?} has a line drawn under it: {attr:?}");
+            assert!(!attr.dim, "{c:?} is drawn faint: {attr:?}");
+        }
+        assert!(
+            drawn.iter().take(6).all(|(_, a)| a.bold),
+            "the bold that was asked for still applies"
+        );
     }
-    assert!(
-        drawn.iter().take(6).all(|(_, a)| a.bold),
-        "the bold that was asked for still applies"
-    );
+
+    phase underline_ends_where_programs_end_it;
+    {
+        use vello::kurbo::Rect;
+        let (mut w, _rx) = build_test_widget();
+        let doc = AutoCommit::new();
+        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+        let cases: &[(&[u8], bool, bool)] = &[
+            (b"\x1b[4m", true, false),
+            (b"\x1b[4m\x1b[24m", false, false),
+            (b"\x1b[4m\x1b[0m", false, false),
+            (b"\x1b[4:3m", true, false),
+            (b"\x1b[4:3m\x1b[4:0m", false, false),
+            (b"\x1b[4:0m", false, false),
+            (b"\x1b[58;2;2;4;4m", false, false),
+            (b"\x1b[58;5;4m", false, false),
+            (b"\x1b[58:2::4:2:4m", false, false),
+            (b"\x1b[4;58;2;1;2;3m\x1b[59m\x1b[24m", false, false),
+            (b"\x1b[>4;2m", false, false),
+            (b"\x1b[>4m", false, false),
+        ];
+        for (i, (seq, underline, dim)) in cases.iter().enumerate() {
+            let mut bytes = b"\x1b[0m\x1b[H".to_vec();
+            bytes.extend_from_slice(seq);
+            bytes.push(b'X');
+            w.feed(&bytes);
+            w.sync(&doc, &automerge::ROOT);
+            let a = w.cell_attr(0, 0);
+            assert_eq!(
+                (a.underline, a.dim),
+                (*underline, *dim),
+                "case {i} {:?}: {a:?}",
+                String::from_utf8_lossy(seq)
+            );
+        }
+
+        w.feed(b"\x1b[0m\x1b[2;1H\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\ plain");
+        w.sync(&doc, &automerge::ROOT);
+        let row = cells(&w, 1, 0, 10);
+        assert!(row.iter().take(4).all(|(_, a)| a.link_id != 0), "{row:?}");
+        assert!(
+            row.iter()
+                .skip(4)
+                .all(|(_, a)| a.link_id == 0 && !a.underline),
+            "text after the link's close is plain: {row:?}"
+        );
+    }
+
+    phase osc_sequences_update_title_and_hyperlinks;
+    {
+        {
+            use ui::AppWidget;
+            let (mut w, _) = build_test_widget();
+            w.feed(b"\x1b]2;my session\x07");
+            assert_eq!(w.title(), "my session", "OSC 2 sets the window title");
+            assert_eq!(
+                w.app_title(),
+                "my session",
+                "app_title reflects the OSC title"
+            );
+
+            w.feed(b"\x1b]0;another\x1b\\");
+            assert_eq!(w.title(), "another", "OSC 0 sets the window title too");
+        }
+
+        {
+            assert_eq!(
+                crate::inner::safe_osc_text(b"build 42", 32).as_deref(),
+                Some("build 42")
+            );
+            assert!(crate::inner::safe_osc_text(b"line one\nline two", 32).is_none());
+            assert!(crate::inner::safe_osc_text(&[b'x'; 33], 32).is_none());
+            assert!(crate::inner::safe_osc_text(&[0xff], 32).is_none());
+        }
+
+        {
+            let (mut w, _) = build_test_widget();
+            w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+            w.feed(b"\x1b[H\x1b]8;;https://example.test/docs\x1b\\link\x1b]8;;\x1b\\");
+
+            assert_eq!(w.grid_row(0).trim_end(), "link", "the link text is printed");
+            assert_eq!(
+                w.hyperlink_at(0, 0),
+                Some("https://example.test/docs"),
+                "first link cell resolves to the URL"
+            );
+            assert_eq!(
+                w.hyperlink_at(0, 3),
+                Some("https://example.test/docs"),
+                "last link cell resolves to the URL"
+            );
+            assert_eq!(
+                w.hyperlink_at(0, 10),
+                None,
+                "cells outside the link have no URL"
+            );
+        }
+    }
 }
 
 #[test]
@@ -2653,54 +2972,6 @@ fn kitty_keyboard_pushes_and_pops_do_not_restore_the_cursor() {
     let text: String = drawn.iter().map(|(c, _)| c).collect();
     assert_eq!(text, "ABC", "each letter follows the last: {text:?}");
     assert!(drawn.iter().all(|(_, a)| !a.underline), "{drawn:?}");
-}
-
-#[test]
-fn underline_ends_where_programs_end_it() {
-    use vello::kurbo::Rect;
-    let (mut w, _rx) = build_test_widget();
-    let doc = AutoCommit::new();
-    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-
-    let cases: &[(&[u8], bool, bool)] = &[
-        (b"\x1b[4m", true, false),
-        (b"\x1b[4m\x1b[24m", false, false),
-        (b"\x1b[4m\x1b[0m", false, false),
-        (b"\x1b[4:3m", true, false),
-        (b"\x1b[4:3m\x1b[4:0m", false, false),
-        (b"\x1b[4:0m", false, false),
-        (b"\x1b[58;2;2;4;4m", false, false),
-        (b"\x1b[58;5;4m", false, false),
-        (b"\x1b[58:2::4:2:4m", false, false),
-        (b"\x1b[4;58;2;1;2;3m\x1b[59m\x1b[24m", false, false),
-        (b"\x1b[>4;2m", false, false),
-        (b"\x1b[>4m", false, false),
-    ];
-    for (i, (seq, underline, dim)) in cases.iter().enumerate() {
-        let mut bytes = b"\x1b[0m\x1b[H".to_vec();
-        bytes.extend_from_slice(seq);
-        bytes.push(b'X');
-        w.feed(&bytes);
-        w.sync(&doc, &automerge::ROOT);
-        let a = w.cell_attr(0, 0);
-        assert_eq!(
-            (a.underline, a.dim),
-            (*underline, *dim),
-            "case {i} {:?}: {a:?}",
-            String::from_utf8_lossy(seq)
-        );
-    }
-
-    w.feed(b"\x1b[0m\x1b[2;1H\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\ plain");
-    w.sync(&doc, &automerge::ROOT);
-    let row = cells(&w, 1, 0, 10);
-    assert!(row.iter().take(4).all(|(_, a)| a.link_id != 0), "{row:?}");
-    assert!(
-        row.iter()
-            .skip(4)
-            .all(|(_, a)| a.link_id == 0 && !a.underline),
-        "text after the link's close is plain: {row:?}"
-    );
 }
 
 #[test]
@@ -3372,57 +3643,6 @@ fn mouse_selection_gestures_select_extend_and_stay_anchored() {
 }
 
 #[test]
-fn osc_sequences_update_title_and_hyperlinks() {
-    {
-        use ui::AppWidget;
-        let (mut w, _) = build_test_widget();
-        w.feed(b"\x1b]2;my session\x07");
-        assert_eq!(w.title(), "my session", "OSC 2 sets the window title");
-        assert_eq!(
-            w.app_title(),
-            "my session",
-            "app_title reflects the OSC title"
-        );
-
-        w.feed(b"\x1b]0;another\x1b\\");
-        assert_eq!(w.title(), "another", "OSC 0 sets the window title too");
-    }
-
-    {
-        assert_eq!(
-            crate::inner::safe_osc_text(b"build 42", 32).as_deref(),
-            Some("build 42")
-        );
-        assert!(crate::inner::safe_osc_text(b"line one\nline two", 32).is_none());
-        assert!(crate::inner::safe_osc_text(&[b'x'; 33], 32).is_none());
-        assert!(crate::inner::safe_osc_text(&[0xff], 32).is_none());
-    }
-
-    {
-        let (mut w, _) = build_test_widget();
-        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        w.feed(b"\x1b[H\x1b]8;;https://example.test/docs\x1b\\link\x1b]8;;\x1b\\");
-
-        assert_eq!(w.grid_row(0).trim_end(), "link", "the link text is printed");
-        assert_eq!(
-            w.hyperlink_at(0, 0),
-            Some("https://example.test/docs"),
-            "first link cell resolves to the URL"
-        );
-        assert_eq!(
-            w.hyperlink_at(0, 3),
-            Some("https://example.test/docs"),
-            "last link cell resolves to the URL"
-        );
-        assert_eq!(
-            w.hyperlink_at(0, 10),
-            None,
-            "cells outside the link have no URL"
-        );
-    }
-}
-
-#[test]
 #[cfg(target_os = "linux")]
 #[serial_test::serial]
 fn osc_52_writes_clipboard_from_base64() {
@@ -3441,97 +3661,6 @@ fn osc_52_writes_clipboard_from_base64() {
         Some("tilo-osc52"),
         "once allowed, OSC 52 decodes base64 into the clipboard"
     );
-}
-
-#[test]
-fn device_attribute_queries_reply() {
-    {
-        let (mut w, write_rx) = build_test_widget();
-        w.feed(b"\x1b[c");
-        let got = drain_writes(&write_rx);
-        assert_eq!(
-            got, b"\x1b[?6c",
-            "DA1 (CSI c) must answer with the device attributes"
-        );
-    }
-
-    {
-        let (mut w, write_rx) = build_test_widget();
-        w.feed(b"\x1b[0c");
-        assert_eq!(drain_writes(&write_rx), b"\x1b[?6c", "CSI 0 c is DA1 too");
-    }
-
-    {
-        let (mut w, write_rx) = build_test_widget();
-        w.feed(b"\x1bZ");
-        assert_eq!(
-            drain_writes(&write_rx),
-            b"\x1b[?6c",
-            "ESC Z (DECID) is a DA1 request"
-        );
-    }
-
-    {
-        let (mut w, write_rx) = build_test_widget();
-        w.feed(b"\x1b[>c");
-        let reply = String::from_utf8(drain_writes(&write_rx)).expect("ascii reply");
-        assert!(
-            reply.starts_with("\x1b[>0;") && reply.ends_with(";1c"),
-            "DA2 (CSI > c) reports terminal type and version: {reply:?}"
-        );
-    }
-}
-
-#[test]
-fn status_and_mode_reports_reply_or_stay_silent() {
-    {
-        let (mut w, write_rx) = build_test_widget();
-        w.feed(b"\x1b[5;3H");
-        let _ = drain_writes(&write_rx); // CUP itself sends nothing; clear.
-        w.feed(b"\x1b[6n");
-        assert_eq!(
-            drain_writes(&write_rx),
-            b"\x1b[5;3R",
-            "DSR 6n (CPR) reports the 1-based cursor row;col"
-        );
-    }
-
-    {
-        let (mut w, write_rx) = build_test_widget();
-        w.feed(b"\x1b[5n");
-        assert_eq!(drain_writes(&write_rx), b"\x1b[0n", "DSR 5n → terminal OK");
-    }
-
-    {
-        let (mut w, write_rx) = build_test_widget();
-        w.feed(b"\x1b[?2004h\x1b[?2004$p");
-        assert_eq!(
-            drain_writes(&write_rx),
-            b"\x1b[?2004;1$y",
-            "DECRQM must report bracketed paste as set (1) after ?2004h"
-        );
-        w.feed(b"\x1b[?2004l\x1b[?2004$p");
-        assert_eq!(
-            drain_writes(&write_rx),
-            b"\x1b[?2004;2$y",
-            "DECRQM must report bracketed paste as reset (2) after ?2004l"
-        );
-    }
-
-    {
-        let (mut w, write_rx) = build_test_widget();
-        w.feed(b"\x1b[?9999$p");
-        assert_eq!(drain_writes(&write_rx), b"\x1b[?9999;0$y");
-    }
-
-    {
-        let (mut w, write_rx) = build_test_widget();
-        w.feed(b"\x1b[2 q");
-        assert!(
-            drain_writes(&write_rx).is_empty(),
-            "a non-query CSI must not write a spurious reply to the shell"
-        );
-    }
 }
 
 #[test]
@@ -3603,69 +3732,99 @@ fn locate_fish() -> Option<std::path::PathBuf> {
     tilo_process::tools::ToolDirs::current().find("fish")
 }
 
-#[test]
-fn confinement_routes_are_mandatory_for_hosted_terminals() {
+tilo_test_env::scenario! {
+    fn where_a_session_runs_is_decided_before_it_starts;
+
+    phase confinement_routes_are_mandatory_for_hosted_terminals;
     {
-        use crate::inner::{ConfineRoute, decide_route};
-        use crate::target::SessionTarget;
-        use std::path::PathBuf;
-        let bin = PathBuf::from("/usr/libexec/tilo-ush");
-        for target in [SessionTarget::default_environment(), SessionTarget::Host] {
+        {
+            use crate::inner::{ConfineRoute, decide_route};
+            use crate::target::SessionTarget;
+            use std::path::PathBuf;
+            let bin = PathBuf::from("/usr/libexec/tilo-ush");
+            for target in [SessionTarget::default_environment(), SessionTarget::Host] {
+                assert_eq!(
+                    decide_route(&target, true, false, None),
+                    ConfineRoute::Service
+                );
+                assert_eq!(
+                    decide_route(&target, true, true, None),
+                    ConfineRoute::Service
+                );
+                assert_eq!(
+                    decide_route(&target, true, true, Some(bin.clone())),
+                    ConfineRoute::Service
+                );
+            }
+        }
+
+        {
+            use crate::inner::{ConfineRoute, decide_route};
+            use crate::target::SessionTarget;
+            use std::path::PathBuf;
+            let bin = PathBuf::from("/usr/libexec/tilo-ush");
+            let env = SessionTarget::default_environment();
+            assert!(matches!(
+                decide_route(&env, false, false, Some(bin.clone())),
+                ConfineRoute::Unavailable(_)
+            ));
+            assert!(matches!(
+                decide_route(&env, false, true, None),
+                ConfineRoute::Unavailable(_)
+            ));
             assert_eq!(
-                decide_route(&target, true, false, None),
-                ConfineRoute::Service
+                decide_route(&env, false, true, Some(bin.clone())),
+                ConfineRoute::SelfHosted(bin.clone())
             );
             assert_eq!(
-                decide_route(&target, true, true, None),
-                ConfineRoute::Service
+                decide_route(&SessionTarget::Host, false, true, Some(bin.clone())),
+                ConfineRoute::Host
             );
-            assert_eq!(
-                decide_route(&target, true, true, Some(bin.clone())),
-                ConfineRoute::Service
-            );
+            assert_eq!(decide_route(&env, true, false, None), ConfineRoute::Service);
+            assert!(matches!(
+                decide_route(
+                    &SessionTarget::Legacy { vm: "linux".into() },
+                    true,
+                    true,
+                    Some(bin)
+                ),
+                ConfineRoute::Unavailable(_)
+            ));
+        }
+
+        {
+            let result = crate::TerminalWidget::spawn_hosted(crate::HostedProcessServices::default());
+            assert!(matches!(
+                result,
+                Err(crate::HostedTerminalError::RequiredServiceMissing("ush"))
+            ));
         }
     }
 
+    phase a_desktop_entry_command_reaches_the_terminal_through_the_launch_context;
     {
-        use crate::inner::{ConfineRoute, decide_route};
-        use crate::target::SessionTarget;
-        use std::path::PathBuf;
-        let bin = PathBuf::from("/usr/libexec/tilo-ush");
-        let env = SessionTarget::default_environment();
-        assert!(matches!(
-            decide_route(&env, false, false, Some(bin.clone())),
-            ConfineRoute::Unavailable(_)
-        ));
-        assert!(matches!(
-            decide_route(&env, false, true, None),
-            ConfineRoute::Unavailable(_)
-        ));
+        use crate::inner::{exec_script, launch_command_from_context};
         assert_eq!(
-            decide_route(&env, false, true, Some(bin.clone())),
-            ConfineRoute::SelfHosted(bin.clone())
+            launch_command_from_context(r#"{"terminal_command":["vim","--","/home/u/a b.txt"]}"#),
+            vec!["vim", "--", "/home/u/a b.txt"]
         );
+        for ignored in [
+            "",
+            "not json",
+            r#"{"tool":"vpn"}"#,
+            r#"{"terminal_command":[]}"#,
+            r#"{"terminal_command":["",""]}"#,
+            r#"{"terminal_command":["vim",3]}"#,
+        ] {
+            assert!(
+                launch_command_from_context(ignored).is_empty(),
+                "{ignored:?} must start an ordinary shell"
+            );
+        }
         assert_eq!(
-            decide_route(&SessionTarget::Host, false, true, Some(bin.clone())),
-            ConfineRoute::Host
+            exec_script(&["printf".into(), "it's %s".into()]),
+            "exec 'printf' 'it'\\''s %s'"
         );
-        assert_eq!(decide_route(&env, true, false, None), ConfineRoute::Service);
-        assert!(matches!(
-            decide_route(
-                &SessionTarget::Legacy { vm: "linux".into() },
-                true,
-                true,
-                Some(bin)
-            ),
-            ConfineRoute::Unavailable(_)
-        ));
-    }
-
-    {
-        let result = crate::TerminalWidget::spawn_hosted(crate::HostedProcessServices::default());
-        assert!(matches!(
-            result,
-            Err(crate::HostedTerminalError::RequiredServiceMissing("ush"))
-        ));
     }
 }
 
@@ -3732,318 +3891,191 @@ fn windows_native_and_hosted_terminal_paths() {
     }
 }
 
-#[test]
-fn a_desktop_entry_command_reaches_the_terminal_through_the_launch_context() {
-    use crate::inner::{exec_script, launch_command_from_context};
-    assert_eq!(
-        launch_command_from_context(r#"{"terminal_command":["vim","--","/home/u/a b.txt"]}"#),
-        vec!["vim", "--", "/home/u/a b.txt"]
-    );
-    for ignored in [
-        "",
-        "not json",
-        r#"{"tool":"vpn"}"#,
-        r#"{"terminal_command":[]}"#,
-        r#"{"terminal_command":["",""]}"#,
-        r#"{"terminal_command":["vim",3]}"#,
-    ] {
+tilo_test_env::scenario! {
+    fn typing_and_scrolling_repaint_only_what_changed;
+
+    phase typing_damages_only_its_row_and_the_cursor;
+    {
+        use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+        use vello::{Scene, kurbo::Affine};
+
+        let (mut widget, _) = build_test_widget();
+        let viewport = Rect::new(0.0, 0.0, 1600.0, 1000.0);
+        widget.force_geometry(viewport, 10.0, 20.0);
+        widget.feed(b"first line\r\nsecond line\r\n$ ");
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut frame = |widget: &mut TerminalWidget| {
+            let mut scene = Box::new(Scene::new());
+            let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
+                widget.draw_child(
+                    scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &PresenceCtx::empty(),
+                );
+            });
+            (scene, parts.expect("the terminal's parts are well nested"))
+        };
+        let _ = frame(&mut widget);
+        widget.feed(b"");
+        let (before, before_parts) = frame(&mut widget);
+        let (again, again_parts) = frame(&mut widget);
+        assert_eq!(
+            ui::scene_parts::damage(&before, &before_parts, &again, &again_parts),
+            Ok(Vec::new()),
+            "an unchanged terminal draws the same commands"
+        );
+        widget.feed(b"l");
+        let (after, after_parts) = frame(&mut widget);
+        let damage = ui::scene_parts::damage(&again, &again_parts, &after, &after_parts)
+            .expect("typing changes nothing outside the terminal's parts");
+        assert!(!damage.is_empty(), "the typed letter is repainted");
+        let (_, rows) = widget.grid_size();
+        let row_h = widget.grid_rect().height() / rows.max(1) as f64;
         assert!(
-            launch_command_from_context(ignored).is_empty(),
-            "{ignored:?} must start an ordinary shell"
+            damage.iter().all(|rect| rect.height() <= 3.0 * row_h + 2.0),
+            "typing repaints a row band and the cursor's cell, not the grid: {damage:?}"
+        );
+        let area: f64 = damage.iter().map(Rect::area).sum();
+        eprintln!(
+            "#3892 terminal keystroke damage: {area} of {} px",
+            viewport.area()
+        );
+        assert!(
+            area * 4.0 < viewport.area(),
+            "typing repaints a sliver of the terminal, not {area} of {} px: {damage:?}",
+            viewport.area()
         );
     }
-    assert_eq!(
-        exec_script(&["printf".into(), "it's %s".into()]),
-        "exec 'printf' 'it'\\''s %s'"
-    );
-}
 
-#[test]
-fn a_fish_prompt_after_its_startup_queries_is_on_screen() {
-    let (mut w, _rx) = build_test_widget();
-    let doc = AutoCommit::new();
-    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-    let batches: [&[u8]; 3] = [
-        b"\x1b[?u\x1b[>0q\x1b]11;?\x1b\\\x1b[?1049h\x1bP+q696e646e\x1b\\\x1bP+q71756572792d6f732d6e616d65\x1b\\\x1b[?1049l\x1b[0c",
-        b"\rWillkommen in fish\r\nType \x1b[32mhelp\x1b[m for instructions\r\n\x1b]7;file://ush/var/tmp\x07\x1b]0;/v/tmp\x07\x1b[m\x1b]11;?\x1b\\\x1b[6n\x1b[0c",
-        b"\x1b[?2004h\x1b[?2031h\x1b[>4;1m\x1b=\x1b]133;A;click_events=1\x1b\\\x1b[92mroot\x1b[m@\x1b[mush\x1b[m \x1b[31m/v/tmp\x1b[m\x1b[m# \x1b]133;B\x07\x1b[K\r\x1b[17C\x1b[?2004l\x1b[?2031l\x1b[>4;0m\x1b>\x1b]0;/v/tmp\x07\x1b[m\x1b[?2004h\x1b[?2031h\x1b[>4;1m\x1b=\r\x1b]133;A;click_events=1\x07\x1b[92mroot\x1b[m@\x1b[mush\x1b[m \x1b[31m/v/tmp\x1b[m\x1b[m# \x1b]133;B\x07\x1b[J\r\x1b[17Cab",
-    ];
-    for batch in batches {
-        w.feed(batch);
-        w.sync(&doc, &ROOT);
-    }
-    assert!(
-        w.grid_row(2).starts_with("root@ush /v/tmp# ab"),
-        "prompt row: {:?}\n{}",
-        w.grid_row(2),
-        w.grid_text()
-    );
-}
+    phase fingers_scroll_the_scrollback_by_the_pixel_and_copy_its_rows;
+    {
+        use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+        use vello::{Scene, kurbo::Affine};
+        use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
 
-#[test]
-fn deleting_lines_on_screen_leaves_the_scrollback_alone() {
-    let (mut w, _rx) = build_test_widget();
-    let doc = AutoCommit::new();
-    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
-    let history: String = (0..60).fold(String::new(), |mut history, n| {
-        use std::fmt::Write as _;
-        let _ = write!(history, "H{n:03}\r\n");
-        history
-    });
-    w.feed(history.as_bytes());
-    w.sync(&doc, &ROOT);
-    let before = w.grid_text();
-    w.feed(b"\x1b[5;1H\x1b[2M");
-    w.sync(&doc, &ROOT);
-    let after = w.grid_text();
-    let scrollback = |text: &str| text.lines().take(30).map(str::to_owned).collect::<Vec<_>>();
-    assert_eq!(scrollback(&after), scrollback(&before));
-    assert!(after.contains("H000") && after.contains("H059"), "{after}");
-}
-
-#[test]
-fn erasing_below_the_cursor_keeps_what_is_left_of_it() {
-    let (mut w, _rx) = build_test_widget();
-    let doc = AutoCommit::new();
-    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-    w.feed(b"above\r\nP# tail\r\nbelow\x1b[2;4H\x1b[J");
-    w.sync(&doc, &ROOT);
-    assert_eq!(w.grid_row(0).trim_end(), "above");
-    assert_eq!(w.grid_row(1).trim_end(), "P#");
-    assert_eq!(w.grid_row(2).trim_end(), "");
-
-    w.feed(b"\x1b[2;3H\x1b[1J");
-    w.sync(&doc, &ROOT);
-    assert_eq!(w.grid_row(0).trim_end(), "");
-    assert!(
-        w.grid_row(1).trim().is_empty(),
-        "row 1: {:?}",
-        w.grid_row(1)
-    );
-}
-
-#[test]
-fn the_cursor_is_an_opaque_inverted_cell() {
-    let palette = ui::tokens::TerminalPalette::dark();
-    let cursor = crate::inner::cursor_from_palette(&palette);
-    assert!(
-        (cursor.components[3] - 1.0).abs() < f32::EPSILON,
-        "the block cursor is fully opaque, not a translucent wash"
-    );
-    assert_eq!(
-        cursor.components[..3],
-        palette.fg_default.components[..3],
-        "the cursor is the default foreground"
-    );
-}
-
-#[test]
-fn cell_fills_snap_to_device_pixels_and_adjacent_cells_tile() {
-    use crate::inner::snap_to_device_pixels;
-    use vello::kurbo::Affine;
-
-    for scale in [1.0, 1.25, 1.5, 2.0] {
-        let transform = Affine::scale(scale);
-        let (char_w, x0) = (8.43, 12.0);
-        for cell in 0..40 {
-            let left = x0 + f64::from(cell) * char_w;
-            let a = snap_to_device_pixels(transform, Rect::new(left, 20.0, left + char_w, 40.0));
-            let b = snap_to_device_pixels(
-                transform,
-                Rect::new(left + char_w, 20.0, left + 2.0 * char_w, 40.0),
-            );
-            for edge in [a.x0, a.x1, a.y0, a.y1] {
-                let device = edge * scale;
-                assert!(
-                    (device - device.round()).abs() < 1e-9,
-                    "edge {edge} at scale {scale} is not on a device pixel"
-                );
-            }
-            assert!(
-                (a.x1 - b.x0).abs() < 1e-9,
-                "neighbouring cells meet without a seam or overlap"
-            );
+        let (mut widget, _) = build_test_widget();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 400.0);
+        widget.force_geometry(viewport, 10.0, 20.0);
+        let mut output = Vec::new();
+        for line in 0..200 {
+            output.extend_from_slice(format!("line {line:03}\r\n").as_bytes());
         }
-    }
-}
-
-#[test]
-fn typing_damages_only_its_row_and_the_cursor() {
-    use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
-    use vello::{Scene, kurbo::Affine};
-
-    let (mut widget, _) = build_test_widget();
-    let viewport = Rect::new(0.0, 0.0, 1600.0, 1000.0);
-    widget.force_geometry(viewport, 10.0, 20.0);
-    widget.feed(b"first line\r\nsecond line\r\n$ ");
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let mut frame = |widget: &mut TerminalWidget| {
-        let mut scene = Box::new(Scene::new());
-        let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
+        widget.feed(&output);
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut frame = |widget: &mut TerminalWidget| {
             widget.draw_child(
-                scene,
+                &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut text,
                 &theme,
                 &PresenceCtx::empty(),
             );
-        });
-        (scene, parts.expect("the terminal's parts are well nested"))
-    };
-    let _ = frame(&mut widget);
-    widget.feed(b"");
-    let (before, before_parts) = frame(&mut widget);
-    let (again, again_parts) = frame(&mut widget);
-    assert_eq!(
-        ui::scene_parts::damage(&before, &before_parts, &again, &again_parts),
-        Ok(Vec::new()),
-        "an unchanged terminal draws the same commands"
-    );
-    widget.feed(b"l");
-    let (after, after_parts) = frame(&mut widget);
-    let damage = ui::scene_parts::damage(&again, &again_parts, &after, &after_parts)
-        .expect("typing changes nothing outside the terminal's parts");
-    assert!(!damage.is_empty(), "the typed letter is repainted");
-    let (_, rows) = widget.grid_size();
-    let row_h = widget.grid_rect().height() / rows.max(1) as f64;
-    assert!(
-        damage.iter().all(|rect| rect.height() <= 3.0 * row_h + 2.0),
-        "typing repaints a row band and the cursor's cell, not the grid: {damage:?}"
-    );
-    let area: f64 = damage.iter().map(Rect::area).sum();
-    eprintln!(
-        "#3892 terminal keystroke damage: {area} of {} px",
-        viewport.area()
-    );
-    assert!(
-        area * 4.0 < viewport.area(),
-        "typing repaints a sliver of the terminal, not {area} of {} px: {damage:?}",
-        viewport.area()
-    );
-}
-
-#[test]
-fn fingers_scroll_the_scrollback_by_the_pixel_and_copy_its_rows() {
-    use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
-    use vello::{Scene, kurbo::Affine};
-    use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
-
-    let (mut widget, _) = build_test_widget();
-    let viewport = Rect::new(0.0, 0.0, 800.0, 400.0);
-    widget.force_geometry(viewport, 10.0, 20.0);
-    let mut output = Vec::new();
-    for line in 0..200 {
-        output.extend_from_slice(format!("line {line:03}\r\n").as_bytes());
-    }
-    widget.feed(&output);
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let mut frame = |widget: &mut TerminalWidget| {
-        widget.draw_child(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::empty(),
-        );
-    };
-    frame(&mut widget);
-    widget.feed(b"");
-    frame(&mut widget);
-    widget.mark_drawn();
-    let mut doc = AutoCommit::new();
-    let mut fingers = |widget: &mut TerminalWidget, dy: f64| {
-        let event = WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, dy)),
-            phase: TouchPhase::Moved,
         };
-        ui::testing::Dispatch::new()
-            .doc(&mut doc)
-            .send(widget, &event);
-    };
-    let centre = viewport.center();
-    ui::testing::Dispatch::new().send(
-        &mut widget,
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(centre.x, centre.y),
-        },
-    );
-    fingers(&mut widget, 7.0);
-    assert_eq!(
-        widget.scroll_offset(),
-        1,
-        "seven pixels back show part of the row above the live screen"
-    );
-    frame(&mut widget);
-    let mut regions = Vec::new();
-    let offers = ui::scroll_copy::accepting(|| widget.collect_damage(&mut regions));
-    assert_eq!(offers.len(), 1, "the scroll is offered as a copy");
-    assert_eq!(offers[0].delta(), vello::kurbo::Vec2::new(0.0, 7.0));
-    let area: f64 = regions.iter().map(Rect::area).sum();
-    assert!(
-        area * 4.0 < viewport.area(),
-        "a scroll repaints a strip of the terminal, not {area} of {} px: {regions:?}",
-        viewport.area()
-    );
-    widget.mark_drawn();
-    fingers(&mut widget, -7.0);
-    assert_eq!(widget.scroll_offset(), 0);
-    let lines = widget.visible_lines();
-    assert!(
-        lines.iter().any(|line| line.contains("line 199")),
-        "the live output is in view: {lines:?}"
-    );
+        frame(&mut widget);
+        widget.feed(b"");
+        frame(&mut widget);
+        widget.mark_drawn();
+        let mut doc = AutoCommit::new();
+        let mut fingers = |widget: &mut TerminalWidget, dy: f64| {
+            let event = WindowEvent::MouseWheel {
+                device_id: winit::event::DeviceId::dummy(),
+                delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, dy)),
+                phase: TouchPhase::Moved,
+            };
+            ui::testing::Dispatch::new()
+                .doc(&mut doc)
+                .send(widget, &event);
+        };
+        let centre = viewport.center();
+        ui::testing::Dispatch::new().send(
+            &mut widget,
+            &WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(centre.x, centre.y),
+            },
+        );
+        fingers(&mut widget, 7.0);
+        assert_eq!(
+            widget.scroll_offset(),
+            1,
+            "seven pixels back show part of the row above the live screen"
+        );
+        frame(&mut widget);
+        let mut regions = Vec::new();
+        let offers = ui::scroll_copy::accepting(|| widget.collect_damage(&mut regions));
+        assert_eq!(offers.len(), 1, "the scroll is offered as a copy");
+        assert_eq!(offers[0].delta(), vello::kurbo::Vec2::new(0.0, 7.0));
+        let area: f64 = regions.iter().map(Rect::area).sum();
+        assert!(
+            area * 4.0 < viewport.area(),
+            "a scroll repaints a strip of the terminal, not {area} of {} px: {regions:?}",
+            viewport.area()
+        );
+        widget.mark_drawn();
+        fingers(&mut widget, -7.0);
+        assert_eq!(widget.scroll_offset(), 0);
+        let lines = widget.visible_lines();
+        assert!(
+            lines.iter().any(|line| line.contains("line 199")),
+            "the live output is in view: {lines:?}"
+        );
+    }
 }
 
-#[allow(
-    clippy::float_cmp,
-    reason = "a bell that is off leaves the flash at exactly 0.0, untouched"
-)]
-#[test]
-fn the_bell_flashes_the_pane_when_it_is_turned_on() {
-    use crate::preferences::{Bell, Preferences};
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::float_cmp,
+        reason = "a bell that is off leaves the flash at exactly 0.0, untouched"
+    )]
+    fn a_terminal_follows_its_preferences;
 
-    let (mut widget, _writes) = build_test_widget();
-    widget.use_preferences(Preferences::none());
-    widget.feed(b"ready\x07");
-    assert_eq!(
-        widget.bell_flash_for_test(),
-        0.0,
-        "the bell is off by default: nothing happens"
-    );
+    phase the_bell_flashes_the_pane_when_it_is_turned_on;
+    {
+        use crate::preferences::{Bell, Preferences};
 
-    widget.set_bell(Bell::Visual);
-    widget.feed(b"\x07");
-    assert!(
-        widget.bell_flash_for_test() > 0.0,
-        "the bell flashes the pane"
-    );
-    assert!(
-        widget.needs_animation_frame(),
-        "the flash keeps frames coming while it fades"
-    );
-}
+        let (mut widget, _writes) = build_test_widget();
+        widget.use_preferences(Preferences::none());
+        widget.feed(b"ready\x07");
+        assert_eq!(
+            widget.bell_flash_for_test(),
+            0.0,
+            "the bell is off by default: nothing happens"
+        );
 
-#[test]
-fn copy_on_select_is_kept_for_the_next_terminal() {
-    use crate::preferences::Preferences;
+        widget.set_bell(Bell::Visual);
+        widget.feed(b"\x07");
+        assert!(
+            widget.bell_flash_for_test() > 0.0,
+            "the bell flashes the pane"
+        );
+        assert!(
+            widget.needs_animation_frame(),
+            "the flash keeps frames coming while it fades"
+        );
+    }
 
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().to_path_buf();
-    let (mut first, _writes) = build_test_widget();
-    first.use_preferences(Preferences::at(&path));
-    assert!(!first.selects_to_copy_for_test(), "off until asked");
-    first.set_select_to_copy(true);
+    phase copy_on_select_is_kept_for_the_next_terminal;
+    {
+        use crate::preferences::Preferences;
 
-    let (mut second, _writes) = build_test_widget();
-    second.use_preferences(Preferences::at(&path));
-    assert!(
-        second.selects_to_copy_for_test(),
-        "a new terminal opens with the choice already made"
-    );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        let (mut first, _writes) = build_test_widget();
+        first.use_preferences(Preferences::at(&path));
+        assert!(!first.selects_to_copy_for_test(), "off until asked");
+        first.set_select_to_copy(true);
+
+        let (mut second, _writes) = build_test_widget();
+        second.use_preferences(Preferences::at(&path));
+        assert!(
+            second.selects_to_copy_for_test(),
+            "a new terminal opens with the choice already made"
+        );
+    }
 }
 
 #[test]

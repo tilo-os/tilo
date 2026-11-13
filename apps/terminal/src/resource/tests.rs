@@ -76,36 +76,142 @@ fn output_stays_out_of_the_record() {
     assert!(!app.undo(), "nothing the session recorded is an undo step");
 }
 
-#[test]
-fn the_record_takes_valid_facts_only() {
-    let mut session = Replica::<Terminal>::new();
-    assert!(
+tilo_test_env::scenario! {
+    fn the_session_record_holds_valid_facts_under_its_object;
+
+    phase the_record_takes_valid_facts_only;
+    {
+        let mut session = Replica::<Terminal>::new();
+        assert!(
+            session
+                .apply(Terminal::RECORD_TARGET.with(("not a target".to_owned(), None::<String>)))
+                .is_err()
+        );
+        assert!(
+            session
+                .apply(Terminal::CLAIM_PANE.with(("pane".to_owned(), None::<String>)))
+                .is_err()
+        );
+        assert!(
+            session
+                .apply(Terminal::RECORD_RELAY_SESSION.with(Some("xyz".to_owned())))
+                .is_err()
+        );
+        let relay = "0123456789abcdef0123456789abcdef".to_owned();
         session
-            .apply(Terminal::RECORD_TARGET.with(("not a target".to_owned(), None::<String>)))
-            .is_err()
-    );
-    assert!(
+            .apply(Terminal::RECORD_RELAY_SESSION.with(Some(relay.clone())))
+            .unwrap();
+        session.apply(target_action(&SessionTarget::Host)).unwrap();
+        let state = session.state().unwrap();
+        assert_eq!(state.relay(), Some(relay.as_str()));
+        assert_eq!(state.session_target(), Some(SessionTarget::Host));
         session
-            .apply(Terminal::CLAIM_PANE.with(("pane".to_owned(), None::<String>)))
-            .is_err()
-    );
-    assert!(
+            .apply(Terminal::RECORD_RELAY_SESSION.with(None::<String>))
+            .unwrap();
+        assert_eq!(session.state().unwrap().relay(), None);
+    }
+
+    phase a_session_nested_in_another_record_stays_under_its_object;
+    {
+        let mut doc = Doc::new();
+        let panel = ui::tilo_resource::Slot::Key(&automerge::ROOT, "terminal_panel")
+            .object(&mut doc, automerge::ObjType::Map)
+            .unwrap();
+        let pane = uuid::Uuid::new_v4().to_string();
+        let action = Terminal::CLAIM_PANE
+            .with((pane.clone(), None::<String>))
+            .build(0)
+            .unwrap();
+        Terminal::apply_under(&action, &mut doc, &panel).unwrap();
+        assert_eq!(Terminal::read_under(&doc, &panel).unwrap().pane_id(), pane);
+        assert!(
+            Terminal::read_under(&doc, &automerge::ROOT)
+                .unwrap()
+                .pane
+                .is_none(),
+            "nothing lands at the document root"
+        );
+    }
+
+    phase history_reads_a_requested_run_from_the_stored_record;
+    {
+        use ui::tilo_resource::Settled;
+        let mut session = Replica::<Terminal>::new().as_author("agent:claude-code");
         session
-            .apply(Terminal::RECORD_RELAY_SESSION.with(Some("xyz".to_owned())))
-            .is_err()
-    );
-    let relay = "0123456789abcdef0123456789abcdef".to_owned();
-    session
-        .apply(Terminal::RECORD_RELAY_SESSION.with(Some(relay.clone())))
-        .unwrap();
-    session.apply(target_action(&SessionTarget::Host)).unwrap();
-    let state = session.state().unwrap();
-    assert_eq!(state.relay(), Some(relay.as_str()));
-    assert_eq!(state.session_target(), Some(SessionTarget::Host));
-    session
-        .apply(Terminal::RECORD_RELAY_SESSION.with(None::<String>))
-        .unwrap();
-    assert_eq!(session.state().unwrap().relay(), None);
+            .apply(Terminal::CLAIM_PANE.with((uuid::Uuid::new_v4().to_string(), None::<String>)))
+            .unwrap();
+        session
+            .apply(Terminal::RUN.with("cargo test -p signup".to_owned()))
+            .unwrap();
+        let request = session
+            .state()
+            .unwrap()
+            .requests
+            .pending()
+            .next()
+            .map(|(id, _)| id.clone())
+            .unwrap();
+        let store = tilo_content::ContentStore::memory().sealing();
+        let printed = b"error: signup failed\n";
+        let reference = store.put(printed).unwrap();
+        assert!(tilo_content::is_sealed(&reference));
+        let output = ui::tilo_resource::Bytes::kept_as(printed, &reference);
+        let stored = output.to_json();
+        session
+            .apply(Terminal::RECORD_RUN.with(Finished {
+                command: "cargo test -p signup".to_owned(),
+                cwd: "/home/ada/signup".to_owned(),
+                started_ms: 1_000,
+                ended_ms: 4_500,
+                exit: 101,
+                output: Some(output.clone()),
+                truncated: false,
+                tool: "cargo".to_owned(),
+                undoable: false,
+                items: Vec::new(),
+                request: Some(request.clone()),
+                run: request.clone(),
+            }))
+            .unwrap();
+        session
+            .apply(Terminal::paths().requests.settle(
+                &request,
+                &Settled::Done(RunAnswer {
+                    run: Some(request.clone()),
+                    exit: Some(101),
+                    refusal: None,
+                }),
+            ))
+            .unwrap();
+        let mut doc = session.doc().clone();
+        let heads = doc.get_heads();
+        let doc = doc.document();
+        let rows = tilo_automerge::items::outbox_entries(doc, &heads, "requests");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, request.as_str());
+        assert_eq!(rows[0].value["command"], "cargo test -p signup");
+        let settled = rows[0].settled.as_ref().expect("the request is settled");
+        assert_eq!(
+            settled.pointer("/result/run"),
+            Some(&serde_json::json!(request.as_str()))
+        );
+        let run =
+            tilo_automerge::items::collection_item_json(doc, &heads, "runs", request.as_str()).unwrap();
+        assert_eq!(run["command"], "cargo test -p signup");
+        assert_eq!(run["cwd"], "/home/ada/signup");
+        assert_eq!(run["exit"], 101);
+        assert_eq!(run["started_ms"], 1_000);
+        assert_eq!(run["ended_ms"], 4_500);
+        assert_eq!(
+            run["output"], stored,
+            "the run names its output by the store's sealed reference"
+        );
+        assert_eq!(
+            output.read(&store).as_deref(),
+            Some(&printed[..]),
+            "and that reference opens the bytes it printed"
+        );
+    }
 }
 
 #[test]
@@ -129,28 +235,6 @@ fn replicas_converge_on_one_pane() {
     assert_eq!(
         app.state().session_target(),
         Some(SessionTarget::default_environment())
-    );
-}
-
-#[test]
-fn a_session_nested_in_another_record_stays_under_its_object() {
-    let mut doc = Doc::new();
-    let panel = ui::tilo_resource::Slot::Key(&automerge::ROOT, "terminal_panel")
-        .object(&mut doc, automerge::ObjType::Map)
-        .unwrap();
-    let pane = uuid::Uuid::new_v4().to_string();
-    let action = Terminal::CLAIM_PANE
-        .with((pane.clone(), None::<String>))
-        .build(0)
-        .unwrap();
-    Terminal::apply_under(&action, &mut doc, &panel).unwrap();
-    assert_eq!(Terminal::read_under(&doc, &panel).unwrap().pane_id(), pane);
-    assert!(
-        Terminal::read_under(&doc, &automerge::ROOT)
-            .unwrap()
-            .pane
-            .is_none(),
-        "nothing lands at the document root"
     );
 }
 
@@ -263,46 +347,50 @@ fn scenarios_stage_their_output_and_view_state() {
     assert_eq!(target, Some(crate::target::SessionTarget::Host));
 }
 
-#[test]
-fn granting_a_relative_folder_is_refused() {
-    use ui::tilo_resource::Effect as _;
-    let arguments = serde_json::Map::from_iter([
-        ("record".to_owned(), serde_json::json!("environment")),
-        ("path".to_owned(), serde_json::json!("projects")),
-    ]);
-    let refused = TerminalEffect::decode("grant-folder", &arguments).unwrap_err();
-    assert!(
-        matches!(
-            &refused,
-            ui::tilo_resource::EffectDecodeError::Argument { name, source }
-                if name == "path" && source.to_string().contains("absolute")
-        ),
-        "{refused}"
-    );
-}
+tilo_test_env::scenario! {
+    fn an_effect_refuses_and_hides_what_its_contract_says;
 
-#[test]
-fn native_replacement_preserves_private_effect_contract() {
-    use ui::tilo_resource::Effect as _;
-    let effect = TerminalEffect::ReplaceEditorSelection {
-        session: "original-session".into(),
-        lease: "private-lease".into(),
-        text: "private transcript".into(),
-    };
-    let debug = format!("{effect:?}");
-    assert!(!debug.contains("private"));
-    assert!(!debug.contains("original-session"));
-    let declaration = TerminalEffect::declarations()
-        .into_iter()
-        .find(|declaration| declaration.id == effect.id())
-        .unwrap();
-    let text = declaration
-        .params
-        .iter()
-        .find(|param| param.name == "text")
-        .unwrap();
-    assert_eq!(text.ty, ui::tilo_actions::ParamType::Secret);
-    assert_eq!(effect.arguments()["text"], "private transcript");
+    phase granting_a_relative_folder_is_refused;
+    {
+        use ui::tilo_resource::Effect as _;
+        let arguments = serde_json::Map::from_iter([
+            ("record".to_owned(), serde_json::json!("environment")),
+            ("path".to_owned(), serde_json::json!("projects")),
+        ]);
+        let refused = TerminalEffect::decode("grant-folder", &arguments).unwrap_err();
+        assert!(
+            matches!(
+                &refused,
+                ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                    if name == "path" && source.to_string().contains("absolute")
+            ),
+            "{refused}"
+        );
+    }
+
+    phase native_replacement_preserves_private_effect_contract;
+    {
+        use ui::tilo_resource::Effect as _;
+        let effect = TerminalEffect::ReplaceEditorSelection {
+            session: "original-session".into(),
+            lease: "private-lease".into(),
+            text: "private transcript".into(),
+        };
+        let debug = format!("{effect:?}");
+        assert!(!debug.contains("private"));
+        assert!(!debug.contains("original-session"));
+        let declaration = TerminalEffect::declarations()
+            .into_iter()
+            .find(|declaration| declaration.id == effect.id())
+            .unwrap();
+        let text = declaration
+            .params
+            .iter()
+            .find(|param| param.name == "text")
+            .unwrap();
+        assert_eq!(text.ty, ui::tilo_actions::ParamType::Secret);
+        assert_eq!(effect.arguments()["text"], "private transcript");
+    }
 }
 
 #[test]
@@ -320,84 +408,4 @@ fn every_window_is_a_session_of_its_own() {
     let first = app.read_document(|doc| doc.clone().get_heads());
     let second = beside.read_document(|doc| doc.clone().get_heads());
     assert_ne!(first, second, "and holds nothing of it");
-}
-
-#[test]
-fn history_reads_a_requested_run_from_the_stored_record() {
-    use ui::tilo_resource::Settled;
-    let mut session = Replica::<Terminal>::new().as_author("agent:claude-code");
-    session
-        .apply(Terminal::CLAIM_PANE.with((uuid::Uuid::new_v4().to_string(), None::<String>)))
-        .unwrap();
-    session
-        .apply(Terminal::RUN.with("cargo test -p signup".to_owned()))
-        .unwrap();
-    let request = session
-        .state()
-        .unwrap()
-        .requests
-        .pending()
-        .next()
-        .map(|(id, _)| id.clone())
-        .unwrap();
-    let store = tilo_content::ContentStore::memory().sealing();
-    let printed = b"error: signup failed\n";
-    let reference = store.put(printed).unwrap();
-    assert!(tilo_content::is_sealed(&reference));
-    let output = ui::tilo_resource::Bytes::kept_as(printed, &reference);
-    let stored = output.to_json();
-    session
-        .apply(Terminal::RECORD_RUN.with(Finished {
-            command: "cargo test -p signup".to_owned(),
-            cwd: "/home/ada/signup".to_owned(),
-            started_ms: 1_000,
-            ended_ms: 4_500,
-            exit: 101,
-            output: Some(output.clone()),
-            truncated: false,
-            tool: "cargo".to_owned(),
-            undoable: false,
-            items: Vec::new(),
-            request: Some(request.clone()),
-            run: request.clone(),
-        }))
-        .unwrap();
-    session
-        .apply(Terminal::paths().requests.settle(
-            &request,
-            &Settled::Done(RunAnswer {
-                run: Some(request.clone()),
-                exit: Some(101),
-                refusal: None,
-            }),
-        ))
-        .unwrap();
-    let mut doc = session.doc().clone();
-    let heads = doc.get_heads();
-    let doc = doc.document();
-    let rows = tilo_automerge::items::outbox_entries(doc, &heads, "requests");
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].id, request.as_str());
-    assert_eq!(rows[0].value["command"], "cargo test -p signup");
-    let settled = rows[0].settled.as_ref().expect("the request is settled");
-    assert_eq!(
-        settled.pointer("/result/run"),
-        Some(&serde_json::json!(request.as_str()))
-    );
-    let run =
-        tilo_automerge::items::collection_item_json(doc, &heads, "runs", request.as_str()).unwrap();
-    assert_eq!(run["command"], "cargo test -p signup");
-    assert_eq!(run["cwd"], "/home/ada/signup");
-    assert_eq!(run["exit"], 101);
-    assert_eq!(run["started_ms"], 1_000);
-    assert_eq!(run["ended_ms"], 4_500);
-    assert_eq!(
-        run["output"], stored,
-        "the run names its output by the store's sealed reference"
-    );
-    assert_eq!(
-        output.read(&store).as_deref(),
-        Some(&printed[..]),
-        "and that reference opens the bytes it printed"
-    );
 }

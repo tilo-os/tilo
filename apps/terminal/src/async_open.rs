@@ -140,45 +140,121 @@ mod tests {
         request
     }
 
-    #[test]
-    fn an_open_names_the_workspace_the_window_is_in_and_none_when_unknown() {
-        let window = ui::hosted_window::HostedWindow::new();
-        window.set_workspace(Some("e787c8a3-e6d5-4b00-90fe-ff1af708b979".into()));
-        let request = open_request_from(&window);
-        assert_eq!(request["op"], "open-session");
-        assert_eq!(request["workspace"], "e787c8a3-e6d5-4b00-90fe-ff1af708b979");
+    tilo_test_env::scenario! {
+        fn an_open_names_its_workspace_and_ends_with_its_tab;
 
-        window.set_workspace(Some("2b1f6c0e-8d1a-4c5e-9f3b-7a6d5e4c3b2a".into()));
-        let request = open_request_from(&window);
-        assert_eq!(request["workspace"], "2b1f6c0e-8d1a-4c5e-9f3b-7a6d5e4c3b2a");
-
-        for unknown in [None, Some(String::new())] {
-            window.set_workspace(unknown);
+        phase an_open_names_the_workspace_the_window_is_in_and_none_when_unknown;
+        {
+            let window = ui::hosted_window::HostedWindow::new();
+            window.set_workspace(Some("e787c8a3-e6d5-4b00-90fe-ff1af708b979".into()));
             let request = open_request_from(&window);
             assert_eq!(request["op"], "open-session");
-            assert!(request.get("workspace").is_none(), "{request}");
-        }
-    }
+            assert_eq!(request["workspace"], "e787c8a3-e6d5-4b00-90fe-ff1af708b979");
 
-    #[test]
-    fn deferred_host_constructs_without_a_socket_and_reports_missing_ush_after_open() {
-        let runtime = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_RUNTIME_DIR", runtime.path());
-        let mut widget = crate::TerminalWidget::spawn_hosted_deferred();
-        assert_eq!(widget.inspect_session()["lifecycle"], "unopened");
-        assert_eq!(widget.inspect_session()["input_available"], false);
-        let doc = automerge::AutoCommit::new();
-        widget.sync(&doc, &automerge::ROOT);
-        finish(&mut widget, &doc);
-        assert_eq!(widget.inspect_session()["lifecycle"], "no_runtime");
-        assert!(
-            widget.inspect_session()["startup_reason"]
-                .as_str()
-                .unwrap()
-                .contains("ush")
-        );
-        assert_eq!(widget.inspect_session()["input_available"], false);
+            window.set_workspace(Some("2b1f6c0e-8d1a-4c5e-9f3b-7a6d5e4c3b2a".into()));
+            let request = open_request_from(&window);
+            assert_eq!(request["workspace"], "2b1f6c0e-8d1a-4c5e-9f3b-7a6d5e4c3b2a");
+
+            for unknown in [None, Some(String::new())] {
+                window.set_workspace(unknown);
+                let request = open_request_from(&window);
+                assert_eq!(request["op"], "open-session");
+                assert!(request.get("workspace").is_none(), "{request}");
+            }
+        }
+
+        phase deferred_host_constructs_without_a_socket_and_reports_missing_ush_after_open;
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_RUNTIME_DIR", runtime.path());
+            let mut widget = crate::TerminalWidget::spawn_hosted_deferred();
+            assert_eq!(widget.inspect_session()["lifecycle"], "unopened");
+            assert_eq!(widget.inspect_session()["input_available"], false);
+            let doc = automerge::AutoCommit::new();
+            widget.sync(&doc, &automerge::ROOT);
+            finish(&mut widget, &doc);
+            assert_eq!(widget.inspect_session()["lifecycle"], "no_runtime");
+            assert!(
+                widget.inspect_session()["startup_reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("ush")
+            );
+            assert_eq!(widget.inspect_session()["input_available"], false);
+        }
+
+        phase closing_pending_tab_disconnects_supervisor_before_reply;
+        {
+            let (client, mut server) = UnixStream::pair().unwrap();
+            server.set_read_timeout(Some(hang_bound())).unwrap();
+            let mut widget = tab(client);
+            widget.sync(&automerge::AutoCommit::new(), &automerge::ROOT);
+            let mut reader = accept_hello(&server);
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            assert!(request.contains("open-session"));
+            drop(widget);
+            assert_eq!(
+                server.read(&mut [0]).unwrap(),
+                0,
+                "cancel ends the lifetime capability without waiting for readiness"
+            );
+        }
+
+        phase accepted_open_keeps_lifetime_until_tab_closes_even_with_reader_clone;
+        {
+            let (client, server) = UnixStream::pair().unwrap();
+            server.set_read_timeout(Some(hang_bound())).unwrap();
+            let worker = std::thread::spawn(move || {
+                let mut reader = accept_hello(&server);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                let mut lease = grant_session(&server, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+                lease.set_read_timeout(Some(hang_bound())).unwrap();
+                assert_eq!(
+                    lease.read(&mut [0]).unwrap(),
+                    0,
+                    "closing the accepted tab must end the guest lifetime despite the PTY reader's socket clone"
+                );
+            });
+            let mut widget = tab(client);
+            let doc = automerge::AutoCommit::new();
+            widget.sync(&doc, &automerge::ROOT);
+            finish(&mut widget, &doc);
+            assert_eq!(widget.inspect_session()["lifecycle"], "open");
+            assert_eq!(widget.inspect_session()["input_available"], true);
+            drop(widget);
+            worker.join().unwrap();
+        }
+
+        phase a_queued_success_is_discarded_when_the_attempt_is_cancelled;
+        {
+            let (client, server) = UnixStream::pair().unwrap();
+            let (sent, handed) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let mut reader = accept_hello(&server);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                let mut lease = grant_session(&server, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+                lease.set_read_timeout(Some(hang_bound())).unwrap();
+                sent.send(()).unwrap();
+                assert_eq!(lease.read(&mut [0]).unwrap(), 0);
+            });
+            let pending = PendingOpen::start(
+                Some(HostedProcessServices { ush: Some(client) }),
+                SessionTarget::default_environment(),
+                Requester::Person,
+                None,
+                None,
+                Arc::new(Mutex::new(ui::WakeHandle::new())),
+            )
+            .unwrap();
+            handed.recv_timeout(hang_bound()).unwrap();
+            tilo_test_env::wait_until("the answer to be queued", || pending.answer.is_finished());
+            drop(pending);
+            worker.join().unwrap();
+        }
     }
 
     #[test]
@@ -218,24 +294,6 @@ mod tests {
     }
 
     #[test]
-    fn closing_pending_tab_disconnects_supervisor_before_reply() {
-        let (client, mut server) = UnixStream::pair().unwrap();
-        server.set_read_timeout(Some(hang_bound())).unwrap();
-        let mut widget = tab(client);
-        widget.sync(&automerge::AutoCommit::new(), &automerge::ROOT);
-        let mut reader = accept_hello(&server);
-        let mut request = String::new();
-        reader.read_line(&mut request).unwrap();
-        assert!(request.contains("open-session"));
-        drop(widget);
-        assert_eq!(
-            server.read(&mut [0]).unwrap(),
-            0,
-            "cancel ends the lifetime capability without waiting for readiness"
-        );
-    }
-
-    #[test]
     fn repeated_open_cancels_old_attempt_and_never_attaches_its_reply() {
         let (client, mut server) = UnixStream::pair().unwrap();
         server.set_read_timeout(Some(hang_bound())).unwrap();
@@ -260,32 +318,6 @@ mod tests {
             sessions.take_open_answer().is_none(),
             "old receiver was discarded"
         );
-    }
-
-    #[test]
-    fn accepted_open_keeps_lifetime_until_tab_closes_even_with_reader_clone() {
-        let (client, server) = UnixStream::pair().unwrap();
-        server.set_read_timeout(Some(hang_bound())).unwrap();
-        let worker = std::thread::spawn(move || {
-            let mut reader = accept_hello(&server);
-            let mut request = String::new();
-            reader.read_line(&mut request).unwrap();
-            let mut lease = grant_session(&server, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-            lease.set_read_timeout(Some(hang_bound())).unwrap();
-            assert_eq!(
-                lease.read(&mut [0]).unwrap(),
-                0,
-                "closing the accepted tab must end the guest lifetime despite the PTY reader's socket clone"
-            );
-        });
-        let mut widget = tab(client);
-        let doc = automerge::AutoCommit::new();
-        widget.sync(&doc, &automerge::ROOT);
-        finish(&mut widget, &doc);
-        assert_eq!(widget.inspect_session()["lifecycle"], "open");
-        assert_eq!(widget.inspect_session()["input_available"], true);
-        drop(widget);
-        worker.join().unwrap();
     }
 
     #[test]
@@ -321,34 +353,6 @@ mod tests {
         for supervisor in supervisors {
             supervisor.join().unwrap();
         }
-    }
-
-    #[test]
-    fn a_queued_success_is_discarded_when_the_attempt_is_cancelled() {
-        let (client, server) = UnixStream::pair().unwrap();
-        let (sent, handed) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            let mut reader = accept_hello(&server);
-            let mut request = String::new();
-            reader.read_line(&mut request).unwrap();
-            let mut lease = grant_session(&server, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-            lease.set_read_timeout(Some(hang_bound())).unwrap();
-            sent.send(()).unwrap();
-            assert_eq!(lease.read(&mut [0]).unwrap(), 0);
-        });
-        let pending = PendingOpen::start(
-            Some(HostedProcessServices { ush: Some(client) }),
-            SessionTarget::default_environment(),
-            Requester::Person,
-            None,
-            None,
-            Arc::new(Mutex::new(ui::WakeHandle::new())),
-        )
-        .unwrap();
-        handed.recv_timeout(hang_bound()).unwrap();
-        tilo_test_env::wait_until("the answer to be queued", || pending.answer.is_finished());
-        drop(pending);
-        worker.join().unwrap();
     }
 
     #[test]
