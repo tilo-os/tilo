@@ -214,9 +214,10 @@ async fn a_record_written_on_one_device_reaches_the_app_on_another() {
     })
     .await;
 
-    // A device the person revoked stops reaching this one: the link stays as
-    // the store tells it why, what it writes after that is refused and filed
-    // as refused, and none of it reaches this device's apps or its records.
+    // A device the person revoked stops reaching this one: the revocation
+    // reaches it, it lets go of the person's records, and what it writes
+    // after that it refuses itself, so none of it reaches this device's apps
+    // or its records.
     let mut revoked = RevocationEntry {
         user_public_key: root_key,
         revoked_device_public_key: b_key.verifying_key().to_bytes(),
@@ -229,24 +230,17 @@ async fn a_record_written_on_one_device_reaches_the_app_on_another() {
         a.admit(|store, _| store.revoke(revoked)).unwrap(),
         "the person's device was revoked in the store"
     );
-    b.publish(|store, key, now| store.publish(APP, RECORD, &change("name", "Grace"), key, now))
-        .unwrap();
-    until(&a, |store| {
-        store
-            .write_refusals()
-            .iter()
-            .any(|refusal| refusal.author == b_key.verifying_key().to_bytes())
-    })
-    .await;
-    let refusal = a
-        .read(PersonalStore::write_refusals)
-        .into_iter()
-        .find(|refusal| refusal.author == b_key.verifying_key().to_bytes())
-        .expect("the refused write was filed");
+    until(&b, |store| !store.holds_document(APP, RECORD)).await;
+    let refused = b
+        .publish(|store, key, now| store.publish(APP, RECORD, &change("name", "Grace"), key, now))
+        .unwrap_err();
     assert!(
-        refusal.detail.contains("revoked"),
-        "it was refused because the person revoked that device: {}",
-        refusal.detail
+        refused.contains("revoked"),
+        "a revoked device refuses its own writes: {refused}"
+    );
+    assert!(
+        a.read(PersonalStore::write_refusals).is_empty(),
+        "nothing a revoked device wrote reached this device"
     );
     assert!(
         heard_rx.recv_timeout(Duration::from_millis(500)).is_err(),
