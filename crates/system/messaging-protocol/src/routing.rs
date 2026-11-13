@@ -136,80 +136,85 @@ mod tests {
         store
     }
 
-    #[test]
-    fn removed_selected_account_never_falls_back_to_another_with_the_same_name() {
-        let live = LiveBinding {
-            owner: owner(),
-            state: LinkState::Linked,
-        };
-        assert_eq!(check(&store(), &route(), &owner(), &live), Ok(()));
-        let mut store = AccountStore::new();
-        let mut other = Account::new("account-b", "signal");
-        other.enabled = true;
-        store.upsert(other);
-        assert_eq!(
-            check(&store, &route(), &owner(), &live),
-            Err(Refusal::AccountMissing)
-        );
-    }
+    tilo_test_env::scenario! {
+        /// `check`: which account, link and owner a submission is refused for.
+        fn route_check;
 
-    #[test]
-    fn revoked_disabled_stale_or_wrong_device_authority_refuses_submission() {
-        let mut live = LiveBinding {
-            owner: owner(),
-            state: LinkState::Revoked,
-        };
-        assert_eq!(
-            check(&store(), &route(), &owner(), &live),
-            Err(Refusal::Revoked)
-        );
-        live.state = LinkState::Unavailable;
-        assert_eq!(
-            check(&store(), &route(), &owner(), &live),
-            Err(Refusal::Unavailable)
-        );
-        live.state = LinkState::Linked;
-        live.owner.linking_generation = 2;
-        assert_eq!(
-            check(&store(), &route(), &owner(), &live),
-            Err(Refusal::StaleLink)
-        );
-        live.owner = owner();
-        live.owner.device = "device-b".into();
-        assert_eq!(
-            check(&store(), &route(), &owner(), &live),
-            Err(Refusal::WrongDevice)
-        );
-        live.owner = owner();
-        live.owner.principal = "22".repeat(32);
-        assert_eq!(
-            check(&store(), &route(), &owner(), &live),
-            Err(Refusal::WrongPrincipal)
-        );
-        live.owner = owner();
-        let mut disabled = AccountStore::new();
-        let mut account = Account::new("account-a", "signal");
-        account.enabled = false;
-        disabled.upsert(account);
-        assert_eq!(
-            check(&disabled, &route(), &owner(), &live),
-            Err(Refusal::AccountDisabled)
-        );
-        let mut wrong = AccountStore::new();
-        let mut account = Account::new("account-a", "sms");
-        account.enabled = true;
-        wrong.upsert(account);
-        assert_eq!(
-            check(&wrong, &route(), &owner(), &live),
-            Err(Refusal::WrongService)
-        );
-        let mut contributed = AccountStore::new();
-        let mut account = Account::new("account-a", "signal");
-        account.owner = Some("another-person".into());
-        contributed.upsert(account);
-        assert_eq!(
-            check(&contributed, &route(), &owner(), &live),
-            Err(Refusal::AccountNotOwned)
-        );
+        phase removed_selected_account_never_falls_back_to_another_with_the_same_name;
+        {
+            let live = LiveBinding {
+                owner: owner(),
+                state: LinkState::Linked,
+            };
+            assert_eq!(check(&store(), &route(), &owner(), &live), Ok(()));
+            let mut store = AccountStore::new();
+            let mut other = Account::new("account-b", "signal");
+            other.enabled = true;
+            store.upsert(other);
+            assert_eq!(
+                check(&store, &route(), &owner(), &live),
+                Err(Refusal::AccountMissing)
+            );
+        }
+
+        phase revoked_disabled_stale_or_wrong_device_authority_refuses_submission;
+        {
+            let mut live = LiveBinding {
+                owner: owner(),
+                state: LinkState::Revoked,
+            };
+            assert_eq!(
+                check(&store(), &route(), &owner(), &live),
+                Err(Refusal::Revoked)
+            );
+            live.state = LinkState::Unavailable;
+            assert_eq!(
+                check(&store(), &route(), &owner(), &live),
+                Err(Refusal::Unavailable)
+            );
+            live.state = LinkState::Linked;
+            live.owner.linking_generation = 2;
+            assert_eq!(
+                check(&store(), &route(), &owner(), &live),
+                Err(Refusal::StaleLink)
+            );
+            live.owner = owner();
+            live.owner.device = "device-b".into();
+            assert_eq!(
+                check(&store(), &route(), &owner(), &live),
+                Err(Refusal::WrongDevice)
+            );
+            live.owner = owner();
+            live.owner.principal = "22".repeat(32);
+            assert_eq!(
+                check(&store(), &route(), &owner(), &live),
+                Err(Refusal::WrongPrincipal)
+            );
+            live.owner = owner();
+            let mut disabled = AccountStore::new();
+            let mut account = Account::new("account-a", "signal");
+            account.enabled = false;
+            disabled.upsert(account);
+            assert_eq!(
+                check(&disabled, &route(), &owner(), &live),
+                Err(Refusal::AccountDisabled)
+            );
+            let mut wrong = AccountStore::new();
+            let mut account = Account::new("account-a", "sms");
+            account.enabled = true;
+            wrong.upsert(account);
+            assert_eq!(
+                check(&wrong, &route(), &owner(), &live),
+                Err(Refusal::WrongService)
+            );
+            let mut contributed = AccountStore::new();
+            let mut account = Account::new("account-a", "signal");
+            account.owner = Some("another-person".into());
+            contributed.upsert(account);
+            assert_eq!(
+                check(&contributed, &route(), &owner(), &live),
+                Err(Refusal::AccountNotOwned)
+            );
+        }
     }
 }

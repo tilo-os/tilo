@@ -60,71 +60,201 @@ fn event(account: &str) -> Vec<u8> {
 /// host, so these tests give the runtime's maximum: only a hang uses it up.
 const ANSWERED_BUDGET: Duration = MAX_OPERATION_TIMEOUT;
 
-#[test]
-fn socket_send_maps_registry_account_to_signal_and_restart_refuses_duplicates() {
-    let root = tempfile::tempdir().unwrap();
-    let (client, mut peer) = UnixStream::pair().unwrap();
-    peer.set_read_timeout(Some(ANSWERED_BUDGET)).unwrap();
-    let peer_reader = peer.try_clone().unwrap();
-    let daemon = std::thread::spawn(move || {
-        let mut request = String::new();
-        BufReader::new(peer_reader).read_line(&mut request).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&request).unwrap();
-        assert_eq!(value["params"]["account"], "+15555550101");
+tilo_test_env::scenario! {
+    /// `SignalRuntime` over a socket pair, each case with its own journal and peer.
+    fn signal_runtime;
+
+    phase socket_send_maps_registry_account_to_signal_and_restart_refuses_duplicates;
+    {
+        let root = tempfile::tempdir().unwrap();
+        let (client, mut peer) = UnixStream::pair().unwrap();
+        peer.set_read_timeout(Some(ANSWERED_BUDGET)).unwrap();
+        let peer_reader = peer.try_clone().unwrap();
+        let daemon = std::thread::spawn(move || {
+            let mut request = String::new();
+            BufReader::new(peer_reader).read_line(&mut request).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&request).unwrap();
+            assert_eq!(value["params"]["account"], "+15555550101");
+            assert_eq!(
+                value["params"]["recipient"],
+                serde_json::json!(["+15555550102"])
+            );
+            assert_eq!(value["params"]["message"], "private text");
+            assert_eq!(value["id"], "op");
+            peer.write_all(&event("+15555550101")).unwrap();
+            peer.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":\"op\",\"result\":{\"timestamp\":43}}\n")
+                .unwrap();
+        });
+        let mut runtime = runtime(root.path(), client);
         assert_eq!(
-            value["params"]["recipient"],
-            serde_json::json!(["+15555550102"])
+            runtime
+                .send(
+                    &accounts(),
+                    &binding(),
+                    &route(),
+                    "op",
+                    "private text",
+                    ANSWERED_BUDGET
+                )
+                .unwrap()
+                .timestamp,
+            43
         );
-        assert_eq!(value["params"]["message"], "private text");
-        assert_eq!(value["id"], "op");
-        peer.write_all(&event("+15555550101")).unwrap();
-        peer.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":\"op\",\"result\":{\"timestamp\":43}}\n")
-            .unwrap();
-    });
-    let mut runtime = runtime(root.path(), client);
-    assert_eq!(
-        runtime
-            .send(
+        assert_eq!(runtime.take_events().len(), 1);
+        assert_eq!(
+            runtime.status("op"),
+            Some(Status::Acknowledged(ProtocolReference::Signal {
+                timestamp: 43
+            }))
+        );
+        daemon.join().unwrap();
+        drop(runtime);
+        let (client, mut peer) = UnixStream::pair().unwrap();
+        peer.set_nonblocking(true).unwrap();
+        let mut restarted = self::runtime(root.path(), client);
+        assert_eq!(
+            restarted.send(
                 &accounts(),
                 &binding(),
                 &route(),
                 "op",
                 "private text",
                 ANSWERED_BUDGET
+            ),
+            Err(CheckedSendError::Transport(SendError::Journal(
+                JournalError::AlreadyReserved
+            )))
+        );
+        assert_eq!(
+            peer.read(&mut [0; 1]).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+    }
+
+    phase silent_socket_expires_and_preserves_uncertainty_without_retry;
+    {
+        let root = tempfile::tempdir().unwrap();
+        let (client, mut peer) = UnixStream::pair().unwrap();
+        let mut runtime = runtime(root.path(), client);
+        // The monotonic clock stands still on this thread, so the durable
+        // reservation around the wait, slow on a loaded host, spends none of the
+        // budget: the silent socket's wait is the only thing that can end it.
+        let answer = tilo_clock::testing::with_monotonic_time(tilo_clock::now(), || {
+            runtime.send(
+                &accounts(),
+                &binding(),
+                &route(),
+                "op",
+                "private text",
+                Duration::from_millis(40),
             )
-            .unwrap()
-            .timestamp,
-        43
-    );
-    assert_eq!(runtime.take_events().len(), 1);
-    assert_eq!(
-        runtime.status("op"),
-        Some(Status::Acknowledged(ProtocolReference::Signal {
-            timestamp: 43
-        }))
-    );
-    daemon.join().unwrap();
-    drop(runtime);
-    let (client, mut peer) = UnixStream::pair().unwrap();
-    peer.set_nonblocking(true).unwrap();
-    let mut restarted = self::runtime(root.path(), client);
-    assert_eq!(
-        restarted.send(
-            &accounts(),
-            &binding(),
-            &route(),
-            "op",
-            "private text",
-            ANSWERED_BUDGET
-        ),
-        Err(CheckedSendError::Transport(SendError::Journal(
-            JournalError::AlreadyReserved
-        )))
-    );
-    assert_eq!(
-        peer.read(&mut [0; 1]).unwrap_err().kind(),
-        io::ErrorKind::WouldBlock
-    );
+        });
+        assert_eq!(
+            answer,
+            Err(CheckedSendError::Transport(SendError::Uncertain))
+        );
+        assert_eq!(runtime.status("op"), Some(Status::Uncertain));
+        let request = written(&mut peer);
+        assert!(request.ends_with(b"\n"));
+        assert_eq!(
+            runtime.send(
+                &accounts(),
+                &binding(),
+                &route(),
+                "new-op",
+                "private text",
+                ANSWERED_BUDGET
+            ),
+            Err(CheckedSendError::Transport(SendError::BeforeSubmission(
+                Error::ConnectionUnavailable
+            )))
+        );
+        assert_eq!(
+            peer.read(&mut [0; 1]).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+    }
+
+    phase receive_uses_signal_account_and_returns_registry_scoped_identity;
+    {
+        let root = tempfile::tempdir().unwrap();
+        let (client, mut peer) = UnixStream::pair().unwrap();
+        let mut runtime = runtime(root.path(), client);
+        peer.write_all(&event("+15555550101")).unwrap();
+        let received = runtime.receive(ANSWERED_BUDGET).unwrap();
+        assert_eq!(received.id.account, "tilo-account-a");
+        assert_eq!(received.text.as_str(), "received text");
+        peer.write_all(&event("+15555550999")).unwrap();
+        assert_eq!(
+            runtime.receive(ANSWERED_BUDGET).unwrap_err(),
+            Error::WrongAccount
+        );
+        assert_eq!(
+            runtime.receive(ANSWERED_BUDGET).unwrap_err(),
+            Error::ConnectionUnavailable
+        );
+    }
+
+    phase invalid_budgets_and_revoked_routes_write_no_bytes;
+    {
+        let root = tempfile::tempdir().unwrap();
+        let (client, mut peer) = UnixStream::pair().unwrap();
+        peer.set_nonblocking(true).unwrap();
+        let mut runtime = runtime(root.path(), client);
+        for timeout in [
+            Duration::ZERO,
+            MAX_OPERATION_TIMEOUT + Duration::from_secs(1),
+        ] {
+            assert_eq!(
+                runtime.send(
+                    &accounts(),
+                    &binding(),
+                    &route(),
+                    "op",
+                    "private text",
+                    timeout
+                ),
+                Err(CheckedSendError::Transport(SendError::BeforeSubmission(
+                    Error::InvalidRequest
+                )))
+            );
+        }
+        let mut revoked = binding();
+        revoked.state = LinkState::Revoked;
+        assert_eq!(
+            runtime.send(
+                &accounts(),
+                &revoked,
+                &route(),
+                "op",
+                "private text",
+                ANSWERED_BUDGET
+            ),
+            Err(CheckedSendError::Routing(crate::routing::Refusal::Revoked))
+        );
+        assert!(runtime.status("op").is_none());
+        assert_eq!(
+            peer.read(&mut [0; 1]).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+    }
+
+    phase frozen_journal_owner_and_signal_identity_are_required;
+    {
+        for (account, device) in [("display-name", "device-a"), ("+15555550101", "device-b")] {
+            let root = tempfile::tempdir().unwrap();
+            let (client, _) = UnixStream::pair().unwrap();
+            let supplied = Owner {
+                device: device.into(),
+                ..owner()
+            };
+            assert!(matches!(
+                SignalRuntime::from_journal(supplied, account.into(), client, journal(root.path())),
+                Err(OpenError::WrongOwner)
+            ));
+        }
+        assert!(valid_signal_account("01234567-89ab-cdef-0123-456789abcdef"));
+    }
 }
 
 /// Bytes the runtime already handed to the socket, without ever blocking.
@@ -142,131 +272,6 @@ fn written(peer: &mut UnixStream) -> Vec<u8> {
         }
     }
     bytes
-}
-
-#[test]
-fn silent_socket_expires_and_preserves_uncertainty_without_retry() {
-    let root = tempfile::tempdir().unwrap();
-    let (client, mut peer) = UnixStream::pair().unwrap();
-    let mut runtime = runtime(root.path(), client);
-    // The monotonic clock stands still on this thread, so the durable
-    // reservation around the wait, slow on a loaded host, spends none of the
-    // budget: the silent socket's wait is the only thing that can end it.
-    let answer = tilo_clock::testing::with_monotonic_time(tilo_clock::now(), || {
-        runtime.send(
-            &accounts(),
-            &binding(),
-            &route(),
-            "op",
-            "private text",
-            Duration::from_millis(40),
-        )
-    });
-    assert_eq!(
-        answer,
-        Err(CheckedSendError::Transport(SendError::Uncertain))
-    );
-    assert_eq!(runtime.status("op"), Some(Status::Uncertain));
-    let request = written(&mut peer);
-    assert!(request.ends_with(b"\n"));
-    assert_eq!(
-        runtime.send(
-            &accounts(),
-            &binding(),
-            &route(),
-            "new-op",
-            "private text",
-            ANSWERED_BUDGET
-        ),
-        Err(CheckedSendError::Transport(SendError::BeforeSubmission(
-            Error::ConnectionUnavailable
-        )))
-    );
-    assert_eq!(
-        peer.read(&mut [0; 1]).unwrap_err().kind(),
-        io::ErrorKind::WouldBlock
-    );
-}
-
-#[test]
-fn receive_uses_signal_account_and_returns_registry_scoped_identity() {
-    let root = tempfile::tempdir().unwrap();
-    let (client, mut peer) = UnixStream::pair().unwrap();
-    let mut runtime = runtime(root.path(), client);
-    peer.write_all(&event("+15555550101")).unwrap();
-    let received = runtime.receive(ANSWERED_BUDGET).unwrap();
-    assert_eq!(received.id.account, "tilo-account-a");
-    assert_eq!(received.text.as_str(), "received text");
-    peer.write_all(&event("+15555550999")).unwrap();
-    assert_eq!(
-        runtime.receive(ANSWERED_BUDGET).unwrap_err(),
-        Error::WrongAccount
-    );
-    assert_eq!(
-        runtime.receive(ANSWERED_BUDGET).unwrap_err(),
-        Error::ConnectionUnavailable
-    );
-}
-
-#[test]
-fn invalid_budgets_and_revoked_routes_write_no_bytes() {
-    let root = tempfile::tempdir().unwrap();
-    let (client, mut peer) = UnixStream::pair().unwrap();
-    peer.set_nonblocking(true).unwrap();
-    let mut runtime = runtime(root.path(), client);
-    for timeout in [
-        Duration::ZERO,
-        MAX_OPERATION_TIMEOUT + Duration::from_secs(1),
-    ] {
-        assert_eq!(
-            runtime.send(
-                &accounts(),
-                &binding(),
-                &route(),
-                "op",
-                "private text",
-                timeout
-            ),
-            Err(CheckedSendError::Transport(SendError::BeforeSubmission(
-                Error::InvalidRequest
-            )))
-        );
-    }
-    let mut revoked = binding();
-    revoked.state = LinkState::Revoked;
-    assert_eq!(
-        runtime.send(
-            &accounts(),
-            &revoked,
-            &route(),
-            "op",
-            "private text",
-            ANSWERED_BUDGET
-        ),
-        Err(CheckedSendError::Routing(crate::routing::Refusal::Revoked))
-    );
-    assert!(runtime.status("op").is_none());
-    assert_eq!(
-        peer.read(&mut [0; 1]).unwrap_err().kind(),
-        io::ErrorKind::WouldBlock
-    );
-}
-
-#[test]
-fn frozen_journal_owner_and_signal_identity_are_required() {
-    for (account, device) in [("display-name", "device-a"), ("+15555550101", "device-b")] {
-        let root = tempfile::tempdir().unwrap();
-        let (client, _) = UnixStream::pair().unwrap();
-        let supplied = Owner {
-            device: device.into(),
-            ..owner()
-        };
-        assert!(matches!(
-            SignalRuntime::from_journal(supplied, account.into(), client, journal(root.path())),
-            Err(OpenError::WrongOwner)
-        ));
-    }
-    assert!(valid_signal_account("01234567-89ab-cdef-0123-456789abcdef"));
 }
 
 #[test]

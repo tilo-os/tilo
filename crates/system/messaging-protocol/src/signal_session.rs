@@ -382,107 +382,222 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn journal_and_account_failures_write_no_bytes() {
-        let mut session = Session::new(
-            "account-a".into(),
-            Cursor::new(Vec::<u8>::new()),
-            Vec::new(),
-        )
-        .unwrap();
-        let mut journal = Journal {
-            unavailable: true,
-            ..Default::default()
-        };
-        assert_eq!(
-            session.send(&mut journal, &route("account-a"), "op", "private"),
-            Err(SendError::Journal(JournalError::Unavailable))
-        );
-        assert_eq!(
-            session.send(&mut journal, &route("account-b"), "op", "private"),
-            Err(SendError::BeforeSubmission(Error::WrongAccount))
-        );
-        assert!(session.writer.is_empty());
-    }
+    tilo_test_env::scenario! {
+        /// `Session::send` and `send_checked`, each case on its own session and journal.
+        fn session_send;
 
-    #[test]
-    fn interrupted_send_is_uncertain_and_cannot_be_resubmitted() {
-        let mut session = Session::new(
-            "account-a".into(),
-            Cursor::new(Vec::<u8>::new()),
-            Vec::new(),
-        )
-        .unwrap();
-        let mut journal = Journal::default();
-        assert_eq!(
-            session.send(&mut journal, &route("account-a"), "op", "private"),
-            Err(SendError::Uncertain)
-        );
-        let written = session.writer.len();
-        assert_eq!(journal.completed, [Completion::Uncertain]);
-        assert_eq!(
-            session.send(&mut journal, &route("account-a"), "new-op", "different"),
-            Err(SendError::BeforeSubmission(Error::ConnectionUnavailable))
-        );
-        assert_eq!(session.writer.len(), written);
-        let mut session = Session::new(
-            "account-a".into(),
-            Cursor::new(Vec::<u8>::new()),
-            Vec::new(),
-        )
-        .unwrap();
-        assert_eq!(
-            session.send(&mut journal, &route("account-a"), "op", "different"),
-            Err(SendError::Journal(JournalError::AlreadyReserved))
-        );
-        assert!(session.writer.is_empty());
-    }
+        phase journal_and_account_failures_write_no_bytes;
+        {
+            let mut session = Session::new(
+                "account-a".into(),
+                Cursor::new(Vec::<u8>::new()),
+                Vec::new(),
+            )
+            .unwrap();
+            let mut journal = Journal {
+                unavailable: true,
+                ..Default::default()
+            };
+            assert_eq!(
+                session.send(&mut journal, &route("account-a"), "op", "private"),
+                Err(SendError::Journal(JournalError::Unavailable))
+            );
+            assert_eq!(
+                session.send(&mut journal, &route("account-b"), "op", "private"),
+                Err(SendError::BeforeSubmission(Error::WrongAccount))
+            );
+            assert!(session.writer.is_empty());
+        }
 
-    #[test]
-    fn receive_notifications_survive_a_pending_send() {
-        let input = concat!(
-            "{\"jsonrpc\":\"2.0\",\"method\":\"receive\",\"params\":{\"account\":\"account-a\",\"envelope\":{\"sourceUuid\":\"11111111-1111-4111-8111-111111111111\",\"dataMessage\":{\"timestamp\":1,\"message\":\"hi\"}}}}\n",
-            "{\"jsonrpc\":\"2.0\",\"id\":\"op\",\"result\":{\"timestamp\":2}}\n"
-        );
-        let mut session = Session::new("account-a".into(), Cursor::new(input), Vec::new()).unwrap();
-        let mut journal = Journal::default();
-        assert_eq!(
-            session
-                .send(&mut journal, &route("account-a"), "op", "private")
-                .unwrap()
-                .timestamp,
-            2
-        );
-        let events = session.take_events();
-        assert_eq!(events.len(), 1);
-        assert_eq!(
-            signal::incoming(&events[0], "account-a")
-                .unwrap()
-                .text
-                .as_str(),
-            "hi"
-        );
-        assert!(matches!(
-            journal.completed.as_slice(),
-            [Completion::Acknowledged(_)]
-        ));
-    }
-
-    #[test]
-    fn responses_and_events_from_other_operations_cannot_complete_this_send() {
-        for input in [
-            "{\"jsonrpc\":\"2.0\",\"id\":\"another-op\",\"result\":{\"timestamp\":2}}\n",
-            "{\"jsonrpc\":\"2.0\",\"method\":\"receive\",\"params\":{\"account\":\"other-account\"}}\n",
-        ] {
-            let mut session =
-                Session::new("account-a".into(), Cursor::new(input), Vec::new()).unwrap();
+        phase interrupted_send_is_uncertain_and_cannot_be_resubmitted;
+        {
+            let mut session = Session::new(
+                "account-a".into(),
+                Cursor::new(Vec::<u8>::new()),
+                Vec::new(),
+            )
+            .unwrap();
             let mut journal = Journal::default();
             assert_eq!(
                 session.send(&mut journal, &route("account-a"), "op", "private"),
                 Err(SendError::Uncertain)
             );
+            let written = session.writer.len();
             assert_eq!(journal.completed, [Completion::Uncertain]);
-            assert!(session.take_events().is_empty());
+            assert_eq!(
+                session.send(&mut journal, &route("account-a"), "new-op", "different"),
+                Err(SendError::BeforeSubmission(Error::ConnectionUnavailable))
+            );
+            assert_eq!(session.writer.len(), written);
+            let mut session = Session::new(
+                "account-a".into(),
+                Cursor::new(Vec::<u8>::new()),
+                Vec::new(),
+            )
+            .unwrap();
+            assert_eq!(
+                session.send(&mut journal, &route("account-a"), "op", "different"),
+                Err(SendError::Journal(JournalError::AlreadyReserved))
+            );
+            assert!(session.writer.is_empty());
+        }
+
+        phase receive_notifications_survive_a_pending_send;
+        {
+            let input = concat!(
+                "{\"jsonrpc\":\"2.0\",\"method\":\"receive\",\"params\":{\"account\":\"account-a\",\"envelope\":{\"sourceUuid\":\"11111111-1111-4111-8111-111111111111\",\"dataMessage\":{\"timestamp\":1,\"message\":\"hi\"}}}}\n",
+                "{\"jsonrpc\":\"2.0\",\"id\":\"op\",\"result\":{\"timestamp\":2}}\n"
+            );
+            let mut session = Session::new("account-a".into(), Cursor::new(input), Vec::new()).unwrap();
+            let mut journal = Journal::default();
+            assert_eq!(
+                session
+                    .send(&mut journal, &route("account-a"), "op", "private")
+                    .unwrap()
+                    .timestamp,
+                2
+            );
+            let events = session.take_events();
+            assert_eq!(events.len(), 1);
+            assert_eq!(
+                signal::incoming(&events[0], "account-a")
+                    .unwrap()
+                    .text
+                    .as_str(),
+                "hi"
+            );
+            assert!(matches!(
+                journal.completed.as_slice(),
+                [Completion::Acknowledged(_)]
+            ));
+        }
+
+        phase responses_and_events_from_other_operations_cannot_complete_this_send;
+        {
+            for input in [
+                "{\"jsonrpc\":\"2.0\",\"id\":\"another-op\",\"result\":{\"timestamp\":2}}\n",
+                "{\"jsonrpc\":\"2.0\",\"method\":\"receive\",\"params\":{\"account\":\"other-account\"}}\n",
+            ] {
+                let mut session =
+                    Session::new("account-a".into(), Cursor::new(input), Vec::new()).unwrap();
+                let mut journal = Journal::default();
+                assert_eq!(
+                    session.send(&mut journal, &route("account-a"), "op", "private"),
+                    Err(SendError::Uncertain)
+                );
+                assert_eq!(journal.completed, [Completion::Uncertain]);
+                assert!(session.take_events().is_empty());
+            }
+        }
+
+        phase a_failed_post_send_commit_reports_uncertainty;
+        {
+            struct BrokenJournal(Journal);
+            impl SendJournal for BrokenJournal {
+                fn begin(
+                    &mut self,
+                    operation: &str,
+                    route: &Route,
+                    payload: &[u8],
+                ) -> Result<(), JournalError> {
+                    self.0.begin(operation, route, payload)
+                }
+                fn complete(&mut self, _: &str, _: Completion) -> Result<(), JournalError> {
+                    Err(JournalError::Unavailable)
+                }
+            }
+            let input = "{\"jsonrpc\":\"2.0\",\"id\":\"op\",\"result\":{\"timestamp\":2}}\n";
+            let mut session = Session::new("account-a".into(), Cursor::new(input), Vec::new()).unwrap();
+            let mut journal = BrokenJournal(Journal::default());
+            assert_eq!(
+                session.send(&mut journal, &route("account-a"), "op", "private"),
+                Err(SendError::Uncertain)
+            );
+            let written = session.writer.len();
+            assert!(written > 0);
+            let mut session = Session::new("account-a".into(), Cursor::new(input), Vec::new()).unwrap();
+            assert_eq!(
+                session.send(&mut journal, &route("account-a"), "op", "private"),
+                Err(SendError::Journal(JournalError::AlreadyReserved))
+            );
+            assert!(session.writer.is_empty());
+        }
+
+        phase checked_send_uses_canonical_accounts_and_real_encrypted_restart_state;
+        {
+            use crate::journal::{EncryptedJournal, Owner};
+            use crate::routing::{LinkState, LiveBinding};
+            let root = tempfile::tempdir().unwrap();
+            let owner = Owner {
+                principal: "11".repeat(32),
+                device: "device-a".into(),
+                service: crate::Service::Signal,
+                account: "account-a".into(),
+                linking_generation: 1,
+            };
+            let mut journal = EncryptedJournal::open(
+                root.path(),
+                &owner,
+                secret_vault::VaultKey::from_slice(&[7; 32]).unwrap(),
+            )
+            .unwrap();
+            let mut accounts = accounts::AccountStore::new();
+            let mut account = accounts::Account::new("account-a", "signal");
+            account.enabled = true;
+            accounts.upsert(account);
+            let mut live = LiveBinding {
+                owner: owner.clone(),
+                state: LinkState::Revoked,
+            };
+            let input = "{\"jsonrpc\":\"2.0\",\"id\":\"op\",\"result\":{\"timestamp\":42}}\n";
+            let mut session = Session::new("account-a".into(), Cursor::new(input), Vec::new()).unwrap();
+            let mut context = SendContext {
+                accounts: &accounts,
+                expected_owner: &owner,
+                live_binding: &live,
+                journal: &mut journal,
+            };
+            assert_eq!(
+                session.send_checked(&mut context, &route("account-a"), "op", "private"),
+                Err(CheckedSendError::Routing(crate::routing::Refusal::Revoked))
+            );
+            assert!(session.writer.is_empty());
+            live.state = LinkState::Linked;
+            let mut context = SendContext {
+                accounts: &accounts,
+                expected_owner: &owner,
+                live_binding: &live,
+                journal: &mut journal,
+            };
+            assert_eq!(
+                session
+                    .send_checked(&mut context, &route("account-a"), "op", "private")
+                    .unwrap()
+                    .timestamp,
+                42
+            );
+            drop(journal);
+            let mut journal = EncryptedJournal::open(
+                root.path(),
+                &owner,
+                secret_vault::VaultKey::from_slice(&[7; 32]).unwrap(),
+            )
+            .unwrap();
+            let mut restarted =
+                Session::new("account-a".into(), Cursor::new(input), Vec::new()).unwrap();
+            let mut context = SendContext {
+                accounts: &accounts,
+                expected_owner: &owner,
+                live_binding: &live,
+                journal: &mut journal,
+            };
+            assert_eq!(
+                restarted.send_checked(&mut context, &route("account-a"), "op", "private"),
+                Err(CheckedSendError::Transport(SendError::Journal(
+                    JournalError::AlreadyReserved
+                )))
+            );
+            assert!(restarted.writer.is_empty());
         }
     }
 
@@ -496,115 +611,5 @@ mod tests {
             read_frame(&mut Cursor::new(b"{\"jsonrpc\":\"2.0\"}")),
             Err(Error::InvalidFrame)
         ));
-    }
-
-    #[test]
-    fn a_failed_post_send_commit_reports_uncertainty() {
-        struct BrokenJournal(Journal);
-        impl SendJournal for BrokenJournal {
-            fn begin(
-                &mut self,
-                operation: &str,
-                route: &Route,
-                payload: &[u8],
-            ) -> Result<(), JournalError> {
-                self.0.begin(operation, route, payload)
-            }
-            fn complete(&mut self, _: &str, _: Completion) -> Result<(), JournalError> {
-                Err(JournalError::Unavailable)
-            }
-        }
-        let input = "{\"jsonrpc\":\"2.0\",\"id\":\"op\",\"result\":{\"timestamp\":2}}\n";
-        let mut session = Session::new("account-a".into(), Cursor::new(input), Vec::new()).unwrap();
-        let mut journal = BrokenJournal(Journal::default());
-        assert_eq!(
-            session.send(&mut journal, &route("account-a"), "op", "private"),
-            Err(SendError::Uncertain)
-        );
-        let written = session.writer.len();
-        assert!(written > 0);
-        let mut session = Session::new("account-a".into(), Cursor::new(input), Vec::new()).unwrap();
-        assert_eq!(
-            session.send(&mut journal, &route("account-a"), "op", "private"),
-            Err(SendError::Journal(JournalError::AlreadyReserved))
-        );
-        assert!(session.writer.is_empty());
-    }
-
-    #[test]
-    fn checked_send_uses_canonical_accounts_and_real_encrypted_restart_state() {
-        use crate::journal::{EncryptedJournal, Owner};
-        use crate::routing::{LinkState, LiveBinding};
-        let root = tempfile::tempdir().unwrap();
-        let owner = Owner {
-            principal: "11".repeat(32),
-            device: "device-a".into(),
-            service: crate::Service::Signal,
-            account: "account-a".into(),
-            linking_generation: 1,
-        };
-        let mut journal = EncryptedJournal::open(
-            root.path(),
-            &owner,
-            secret_vault::VaultKey::from_slice(&[7; 32]).unwrap(),
-        )
-        .unwrap();
-        let mut accounts = accounts::AccountStore::new();
-        let mut account = accounts::Account::new("account-a", "signal");
-        account.enabled = true;
-        accounts.upsert(account);
-        let mut live = LiveBinding {
-            owner: owner.clone(),
-            state: LinkState::Revoked,
-        };
-        let input = "{\"jsonrpc\":\"2.0\",\"id\":\"op\",\"result\":{\"timestamp\":42}}\n";
-        let mut session = Session::new("account-a".into(), Cursor::new(input), Vec::new()).unwrap();
-        let mut context = SendContext {
-            accounts: &accounts,
-            expected_owner: &owner,
-            live_binding: &live,
-            journal: &mut journal,
-        };
-        assert_eq!(
-            session.send_checked(&mut context, &route("account-a"), "op", "private"),
-            Err(CheckedSendError::Routing(crate::routing::Refusal::Revoked))
-        );
-        assert!(session.writer.is_empty());
-        live.state = LinkState::Linked;
-        let mut context = SendContext {
-            accounts: &accounts,
-            expected_owner: &owner,
-            live_binding: &live,
-            journal: &mut journal,
-        };
-        assert_eq!(
-            session
-                .send_checked(&mut context, &route("account-a"), "op", "private")
-                .unwrap()
-                .timestamp,
-            42
-        );
-        drop(journal);
-        let mut journal = EncryptedJournal::open(
-            root.path(),
-            &owner,
-            secret_vault::VaultKey::from_slice(&[7; 32]).unwrap(),
-        )
-        .unwrap();
-        let mut restarted =
-            Session::new("account-a".into(), Cursor::new(input), Vec::new()).unwrap();
-        let mut context = SendContext {
-            accounts: &accounts,
-            expected_owner: &owner,
-            live_binding: &live,
-            journal: &mut journal,
-        };
-        assert_eq!(
-            restarted.send_checked(&mut context, &route("account-a"), "op", "private"),
-            Err(CheckedSendError::Transport(SendError::Journal(
-                JournalError::AlreadyReserved
-            )))
-        );
-        assert!(restarted.writer.is_empty());
     }
 }
