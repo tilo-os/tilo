@@ -534,11 +534,8 @@ impl Widget for Container {
         if self.fixed_height.is_some() || self.fill_height {
             return None;
         }
-        let moving = self
-            .child
-            .as_ref()
-            .and_then(|child| child.disclosing())
-            .map(|moving| moving.follower_offset(0.0));
+        let child = self.child.as_ref().and_then(|child| child.disclosing());
+        let moving = child.map(|moving| moving.follower_offset(0.0));
         let leaving = self
             .ghosts
             .shift(None, usize::from(self.child.is_some()))
@@ -546,9 +543,14 @@ impl Widget for Container {
         if moving.is_none() && leaving.is_none() {
             return None;
         }
-        Some(crate::widget::Disclosing::Grows(
-            moving.unwrap_or(0.0) + leaving.unwrap_or(0.0),
-        ))
+        let by = moving.unwrap_or(0.0) + leaving.unwrap_or(0.0);
+        let rise = child.map_or(0.0, |moving| {
+            moving.reach(0.0) - moving.follower_offset(0.0)
+        });
+        Some(crate::widget::Disclosing::Grows {
+            by,
+            reach: by + rise.max(0.0),
+        })
     }
 
     fn needs_animation_frame(&self) -> bool {

@@ -356,13 +356,13 @@ fn a_banner_in_a_section_or_a_container_moves_what_follows_the_group() {
         );
         let group = d.root_widget().children()[0].disclosing();
         assert!(
-            matches!(group, Some(crate::widget::Disclosing::Grows(by)) if by.abs() < 0.5),
+            matches!(group, Some(crate::widget::Disclosing::Grows { by, .. }) if by.abs() < 0.5),
             "{nest}: the group grows with the band, from nothing: {group:?}"
         );
         assert!(
             matches!(
                 d.root_widget().disclosing(),
-                Some(crate::widget::Disclosing::Grows(_))
+                Some(crate::widget::Disclosing::Grows { .. })
             ),
             "{nest}: and so does a content-sized column around it"
         );

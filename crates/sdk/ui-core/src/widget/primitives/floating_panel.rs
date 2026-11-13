@@ -333,19 +333,18 @@ impl FloatingPanel {
         embed(header);
     }
 
-    /// How much taller than laid out its body's page is drawn this frame, while a band opens or
-    /// closes in it ([`crate::widget::Disclosing`]); the body's scroll view keeps its own box, so
-    /// the page is asked through it.
-    fn body_growth(&self) -> Option<f64> {
-        let page = match self
+    /// How its body's page is drawn taller than laid out, while a band opens or closes in it
+    /// ([`crate::widget::Disclosing`]); the body's scroll view keeps its own box, so the page is
+    /// asked through it.
+    fn body_growth(&self) -> Option<crate::widget::Disclosing> {
+        match self
             .body
             .as_any()
             .and_then(|any| any.downcast_ref::<crate::widget::Scrollable>())
         {
             Some(scroll) => scroll.content_disclosing(),
             None => self.body.disclosing(),
-        };
-        page.map(|moving| moving.follower_offset(0.0))
+        }
     }
 
     fn body_is_empty(&self) -> bool {
@@ -354,11 +353,41 @@ impl FloatingPanel {
 
     fn moving(&self) -> bool {
         let now = crate::motion::frame_now();
-        self.placed.is_moving(now)
-            || self
-                .fit
-                .as_ref()
-                .is_some_and(|fit| fit.extent.is_moving(now))
+        self.placed.is_moving(now) || self.refitting(now)
+    }
+
+    /// Whether the height the panel fits is on its way from one page's to another's: its
+    /// window then stands at the taller of the two ([`Widget::preferred_window_size`]) and the
+    /// card moves inside it ([`Self::card`]).
+    fn refitting(&self, now: crate::time::Instant) -> bool {
+        self.fit
+            .as_ref()
+            .is_some_and(|fit| fit.extent.is_moving(now) || self.body_growth().is_some())
+    }
+
+    /// The card as it is drawn this frame: the whole of the panel, but in a window that stands
+    /// taller than the page it fits (while it refits, or until the window takes the page's
+    /// height), the card's height on its motion.
+    fn card(&self, now: crate::time::Instant) -> Rect {
+        match &self.fit {
+            Some(fit)
+                if fit.extent.is_known() && fit.extent.get(now) < self.rect.height() - 0.5 =>
+            {
+                let height = fit.extent.get(now).max(0.0);
+                Rect::new(
+                    self.rect.x0,
+                    self.rect.y0,
+                    self.rect.x1,
+                    self.rect.y0 + height,
+                )
+            }
+            _ => self.rect,
+        }
+    }
+
+    /// How far above its laid-out place the footer is drawn: it stands at the card's foot.
+    fn footer_shift(&self, card: Rect) -> f64 {
+        card.y1 - self.rect.y1
     }
 
     fn slots_mut(&mut self) -> impl Iterator<Item = &mut Box<dyn Widget>> {
@@ -390,6 +419,7 @@ impl FloatingPanel {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
+        card: Rect,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
@@ -404,16 +434,17 @@ impl FloatingPanel {
             .header(header)
             .footer(footer)
             .body_empty(self.body_is_empty());
-        let (_, inner) = face.paint(scene, transform, self.rect, 1.0, theme);
-        for slot in self.slots_mut() {
-            crate::widget::draw_child(
-                slot.as_mut(),
-                scene,
-                transform,
-                text_renderer,
-                &inner,
-                presence,
-            );
+        let (_, inner) = face.paint(scene, transform, card, 1.0, theme);
+        let footer_at = transform * Affine::translate((0.0, self.footer_shift(card)));
+        let footer = self.footer.is_some();
+        let slots = self.slots_mut().count();
+        for (index, slot) in self.slots_mut().enumerate() {
+            let at = if footer && index + 1 == slots {
+                footer_at
+            } else {
+                transform
+            };
+            crate::widget::draw_child(slot.as_mut(), scene, at, text_renderer, &inner, presence);
         }
     }
 }
@@ -517,9 +548,9 @@ impl Widget for FloatingPanel {
         let now = crate::motion::frame_now();
         let arriving = self.placed.is_moving(now);
         // A section opening or closing in the page is drawn taller or shorter than it is laid
-        // out, on its own motion: the window goes with its edge, so what follows it moves down
-        // inside a panel growing under it, rather than after it on a spring of its own.
-        let growth = self.body_growth();
+        // out, on its own motion: the card goes with its edge, so what follows it moves down
+        // inside a card growing under it, rather than after it on a spring of its own.
+        let growth = self.body_growth().map(|moving| moving.follower_offset(0.0));
         if let Some(fit) = &mut self.fit {
             if arriving || growth.is_some() {
                 fit.extent.snap(fit.wanted + growth.unwrap_or(0.0));
@@ -544,10 +575,11 @@ impl Widget for FloatingPanel {
             crate::motion::input_source(),
             now,
         );
-        let pose = self.placed.pose(self.rect, now);
-        let bounds = self.rect.union(pose.drawn_rect(self.rect));
+        let card = self.card(now);
+        let pose = self.placed.pose(card, now);
+        let bounds = card.union(pose.drawn_rect(card));
         pose.paint(scene, transform, bounds, |scene, transform| {
-            self.paint_panel(scene, transform, text_renderer, theme, presence);
+            self.paint_panel(scene, transform, card, text_renderer, theme, presence);
         });
     }
 
@@ -564,10 +596,20 @@ impl Widget for FloatingPanel {
     fn preferred_window_size(&self) -> Option<(f64, f64)> {
         let fit = self.fit.as_ref()?;
         let now = crate::motion::frame_now();
-        let height = if fit.extent.is_known() && !self.placed.is_moving(now) {
-            fit.extent.get(now)
-        } else {
+        // While the card refits, the window stands at the taller of where it comes from and
+        // where it goes, in one step: a window resized each frame would trail the card (a size
+        // is a round trip to the desk and a frame drawn whole), cutting off what follows a
+        // section opening.
+        let height = if !fit.extent.is_known() || self.placed.is_moving(now) {
             fit.wanted
+        } else if self.refitting(now) {
+            let reach = self.body_growth().map_or(0.0, |moving| moving.reach(0.0));
+            fit.extent
+                .get(now)
+                .max(fit.wanted + reach)
+                .max(self.rect.height())
+        } else {
+            fit.extent.get(now)
         };
         (self.rect.width() > 0.0 && height > 0.0)
             .then(|| (self.rect.width(), height.max(1.0).round()))
@@ -575,12 +617,24 @@ impl Widget for FloatingPanel {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let wrappers = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        for (slot, wrapper) in self.slots_mut().zip(wrappers) {
+        let shift = self.footer_shift(self.card(crate::motion::frame_now()));
+        let footer = self.footer.is_some();
+        let slots = wrappers.len();
+        for (index, (slot, wrapper)) in self.slots_mut().zip(wrappers).enumerate() {
             if *ctx.handled {
                 return;
             }
             if let Some(&child) = ctx.taffy.children(wrapper).unwrap_or_default().first() {
-                slot.handle_event(event, &mut ctx.reborrow(ctx.path, child));
+                let event = if footer && index + 1 == slots {
+                    crate::widget::disclosing::event_offset(
+                        event,
+                        vello::kurbo::Vec2::new(0.0, shift),
+                        ctx.scale_factor,
+                    )
+                } else {
+                    std::borrow::Cow::Borrowed(event)
+                };
+                slot.handle_event(&event, &mut ctx.reborrow(ctx.path, child));
             }
         }
     }
@@ -610,6 +664,10 @@ impl Widget for FloatingPanel {
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        // A card refitting inside its window changes its own edge and moves its footer.
+        if self.refitting(crate::motion::frame_now()) {
+            regions.push(self.rect);
+        }
         for child in self.children() {
             child.collect_damage(regions);
         }
@@ -716,6 +774,58 @@ mod tests {
         assert!(
             panel.placed.settles_at().is_some(),
             "and it will arrive at a time of the motion's own"
+        );
+    }
+
+    /// A card shrinking to a shorter page moves inside its window, which keeps its height until
+    /// the card rests and then takes the card's in one step: resized each frame, the window
+    /// would trail the card and cut off what it shows.
+    #[test]
+    fn a_shrinking_card_moves_inside_a_window_resized_once() {
+        let start = crate::time::now();
+        let room = Rect::new(0.0, 0.0, 380.0, 436.0);
+        let mut panel = FloatingPanel::new(Box::new(crate::widget::Spacer::new())).fit_height();
+        panel.rect = room;
+        panel.placed.snap(room, false);
+        let fit = panel.fit.as_mut().expect("it fits its page");
+        fit.extent.snap(436.0);
+        fit.wanted = 344.0;
+        fit.extent.follow(
+            344.0,
+            Theme::dark().motion(),
+            crate::tokens::MotionSource::Pointer,
+            start,
+        );
+        let mut heights = Vec::new();
+        for frame in 1..=60 {
+            let _frame =
+                crate::motion::pin_frame_at(start + std::time::Duration::from_millis(16 * frame));
+            let card = panel.card(crate::motion::frame_now());
+            let window = Widget::preferred_window_size(&panel).map(|(_, height)| height);
+            assert!(
+                card.height() <= room.height(),
+                "the card stands in its window"
+            );
+            heights.push((window, card.height()));
+        }
+        let mut windows: Vec<_> = heights.iter().map(|(window, _)| *window).collect();
+        windows.dedup();
+        assert_eq!(
+            windows,
+            [Some(436.0), Some(344.0)],
+            "the window keeps its height while the card moves, then takes the card's: {heights:?}"
+        );
+        assert!(
+            heights
+                .iter()
+                .any(|(_, card)| *card < 436.0 && *card > 344.0),
+            "the card moves inside it: {heights:?}"
+        );
+        assert!(
+            heights
+                .iter()
+                .all(|(window, card)| *window != Some(344.0) || (*card - 344.0).abs() < 1e-6),
+            "the window takes the card's height only once the card rests: {heights:?}"
         );
     }
 

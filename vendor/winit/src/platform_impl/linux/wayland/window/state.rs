@@ -942,7 +942,22 @@ impl WindowState {
         };
         let width = i32::try_from(logical.width.max(1)).unwrap_or(i32::MAX);
         let height = i32::try_from(logical.height.max(1)).unwrap_or(i32::MAX);
+        // The frame may fill only the top-left corner of its buffer (`Self::crops_frames`):
+        // the source names its pixels, in surface coordinates of the buffer's scale.
+        let buffer_scale =
+            if self.fractional_scale.is_some() { 1.0 } else { f64::from(scale as i32).max(1.0) };
+        viewport.set_source(
+            0.0,
+            0.0,
+            f64::from(size.0.max(1)) / buffer_scale,
+            f64::from(size.1.max(1)) / buffer_scale,
+        );
         viewport.set_destination(width, height);
+    }
+
+    /// Whether [`Self::size_viewport_to`] shows only the frame's own pixels of a larger buffer.
+    pub fn crops_frames(&self) -> bool {
+        self.viewport.is_some()
     }
 
     /// Get the scale factor of the window.

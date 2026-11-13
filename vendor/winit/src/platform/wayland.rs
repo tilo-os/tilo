@@ -158,6 +158,11 @@ pub trait WindowExtWayland {
         present: impl FnOnce(),
     ) -> bool;
 
+    /// Whether a frame [`Self::present_frame`] presents may be drawn in the top-left corner of a
+    /// larger buffer: the surface shows only the frame's own pixels, so a swapchain can keep
+    /// its buffers while the window's size changes under them.
+    fn crops_frames(&self) -> bool;
+
     /// Returns `xdg_toplevel` of the window or [`None`] if the window is X11 window.
     fn xdg_toplevel(&self) -> Option<NonNull<c_void>>;
 
@@ -274,6 +279,15 @@ impl WindowExtWayland for Window {
             crate::platform_impl::Window::Wayland(window) => {
                 window.present_frame(size, observer, present)
             }
+        }
+    }
+
+    fn crops_frames(&self) -> bool {
+        match &self.window {
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => false,
+            #[cfg(wayland_platform)]
+            crate::platform_impl::Window::Wayland(window) => window.crops_frames(),
         }
     }
 

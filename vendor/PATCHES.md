@@ -826,6 +826,14 @@ sets it from the buffer's own size, and `WindowExtWayland::present_frame`
 (which replaces `present_with_feedback`) sets it from the size of the frame
 a swapchain present commits, under the window state's lock.
 
+## `vendor/winit`: a frame may fill part of its buffer
+
+`size_viewport_to` also sets the `wp_viewport` source to the frame's own
+pixels, and `WindowExtWayland::crops_frames` says whether it can. A
+swapchain then keeps its buffers while a window's size changes under them:
+recreating it waits for the device to go idle, so a panel growing a step
+each frame trailed its content.
+
 ## `vendor/winit`: drag offers stream files when asked
 
 `WindowExtWayland::start_drag` takes each offer as a `DragData`: bytes, or a

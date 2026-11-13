@@ -377,6 +377,10 @@ impl Window {
         }
     }
 
+    pub fn crops_frames(&self) -> bool {
+        self.window_state.lock().unwrap().crops_frames()
+    }
+
     pub fn present_frame(
         &self,
         size: PhysicalSize<u32>,

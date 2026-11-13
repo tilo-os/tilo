@@ -2437,7 +2437,7 @@ impl Mount {
         {
             shared
                 .cx
-                .resize_surface(&mut gpu.surface, viewport.width, viewport.height);
+                .resize_surface(&mut gpu.surface, viewport.width, viewport.height, false);
             // A new target texture holds nothing of the last frame.
             gpu.retained.forget();
         }

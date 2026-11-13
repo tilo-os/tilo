@@ -10,8 +10,16 @@ use winit::event::WindowEvent;
 /// what follows it ([`Widget::disclosing`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Disclosing {
-    Band { extent: f64, drawn: f64 },
-    Grows(f64),
+    Band {
+        extent: f64,
+        drawn: f64,
+    },
+    /// What holds bands on their way is drawn `by` taller than laid out, and at most `reach`
+    /// taller on their motions: a band opening ends drawn whole.
+    Grows {
+        by: f64,
+        reach: f64,
+    },
 }
 
 impl Disclosing {
@@ -28,7 +36,45 @@ impl Disclosing {
                     drawn / extent * (extent + gap)
                 }
             }
-            Self::Grows(by) => by,
+            Self::Grows { by, .. } => by,
+        }
+    }
+
+    /// The most [`Self::follower_offset`] comes to on this motion: a band's whole height and
+    /// gap, whichever way it moves.
+    #[must_use]
+    pub fn reach(self, gap: f64) -> f64 {
+        match self {
+            Self::Band { extent, .. } => {
+                if extent <= 0.0 {
+                    0.0
+                } else {
+                    extent + gap
+                }
+            }
+            Self::Grows { by, reach } => reach.max(by),
+        }
+    }
+
+    /// A column whose followers stand `shifts` below their places ([`follower_shifts`], the
+    /// last its whole growth) as `children` on their way move them, `gap(i)` above child `i`.
+    pub(crate) fn of_column<'a>(
+        shifts: &[f64],
+        children: impl IntoIterator<Item = &'a dyn Widget>,
+        gap: impl Fn(usize) -> f64,
+    ) -> Self {
+        let by = shifts.last().copied().unwrap_or(0.0);
+        let rise: f64 = children
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, child)| {
+                let moving = child.disclosing()?;
+                Some((moving.reach(gap(index)) - moving.follower_offset(gap(index))).max(0.0))
+            })
+            .sum();
+        Self::Grows {
+            by,
+            reach: by + rise,
         }
     }
 
@@ -704,4 +750,26 @@ fn placement_parent<'a>(
         }
     }
     hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Disclosing;
+
+    /// A band opening reaches its whole height and gap, so what holds it knows the room it
+    /// ends in while it is still small.
+    #[test]
+    fn a_band_on_its_way_reaches_its_whole_height() {
+        let opening = Disclosing::Band {
+            extent: 80.0,
+            drawn: 20.0,
+        };
+        assert!((opening.follower_offset(8.0) - 22.0).abs() < 1e-9);
+        assert!((opening.reach(8.0) - 88.0).abs() < 1e-9);
+        let column = Disclosing::Grows {
+            by: 22.0,
+            reach: 88.0,
+        };
+        assert!((column.reach(0.0) - 88.0).abs() < 1e-9);
+    }
 }
