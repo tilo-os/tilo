@@ -21,42 +21,46 @@ fn retained_witness() -> Witness {
     .unwrap()
 }
 
-#[test]
-fn retained_seed_witness_binds_path_and_regular_file_policy() {
-    let mut witness = retained_witness();
-    witness.validate(Path::new(".bashrc")).unwrap();
-    assert!(witness.validate(Path::new(".profile")).is_err());
-    witness.target.directory = true;
-    assert!(witness.validate(Path::new(".bashrc")).is_err());
-    witness.target.directory = false;
-    witness.target.mode = 0o4755;
-    assert!(witness.validate(Path::new(".bashrc")).is_err());
-}
+tilo_test_env::scenario! {
+    fn retained_seed_records_bind_paths_and_refuse_extensions;
 
-#[test]
-fn generated_paths_cannot_name_active_custody_or_escape_home() {
-    for path in [
-        "",
-        "../.bashrc",
-        "/etc/passwd",
-        ".config/tilo/key",
-        ".local/state/tilo/journal",
-    ] {
-        assert!(relative(path).is_err(), "{path}");
+    phase retained_seed_witness_binds_path_and_regular_file_policy;
+    {
+        let mut witness = retained_witness();
+        witness.validate(Path::new(".bashrc")).unwrap();
+        assert!(witness.validate(Path::new(".profile")).is_err());
+        witness.target.directory = true;
+        assert!(witness.validate(Path::new(".bashrc")).is_err());
+        witness.target.directory = false;
+        witness.target.mode = 0o4755;
+        assert!(witness.validate(Path::new(".bashrc")).is_err());
     }
-    assert_eq!(
-        relative(".config/app/settings").unwrap(),
-        Path::new(".config/app/settings")
-    );
-}
 
-#[test]
-fn retained_seed_records_preserve_journal_shape_and_reject_extensions() {
-    let witness = retained_witness();
-    let record = serde_json::to_value(&witness).unwrap();
-    let recovered: Witness = serde_json::from_value(record.clone()).unwrap();
-    assert_eq!(serde_json::to_value(recovered).unwrap(), record);
-    let mut extended = record;
-    extended["authority"] = serde_json::json!(true);
-    assert!(serde_json::from_value::<Witness>(extended).is_err());
+    phase generated_paths_cannot_name_active_custody_or_escape_home;
+    {
+        for path in [
+            "",
+            "../.bashrc",
+            "/etc/passwd",
+            ".config/tilo/key",
+            ".local/state/tilo/journal",
+        ] {
+            assert!(relative(path).is_err(), "{path}");
+        }
+        assert_eq!(
+            relative(".config/app/settings").unwrap(),
+            Path::new(".config/app/settings")
+        );
+    }
+
+    phase retained_seed_records_preserve_journal_shape_and_reject_extensions;
+    {
+        let witness = retained_witness();
+        let record = serde_json::to_value(&witness).unwrap();
+        let recovered: Witness = serde_json::from_value(record.clone()).unwrap();
+        assert_eq!(serde_json::to_value(recovered).unwrap(), record);
+        let mut extended = record;
+        extended["authority"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<Witness>(extended).is_err());
+    }
 }

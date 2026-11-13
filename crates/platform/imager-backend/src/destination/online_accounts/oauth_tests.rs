@@ -52,29 +52,33 @@ fn consent(provider: Provider, calendar: bool) -> Vec<String> {
     scopes
 }
 
-#[test]
-fn google_mail_and_calendar_consent_never_requests_drive() {
-    let scopes = consent(Provider::Google, true);
-    assert!(
-        scopes
-            .iter()
-            .any(|scope| scope == "https://mail.google.com/")
-    );
-    assert!(
-        scopes
-            .iter()
-            .any(|scope| scope == "https://www.googleapis.com/auth/calendar")
-    );
-    assert!(!scopes.iter().any(|scope| scope.contains("drive")));
-}
+tilo_test_env::scenario! {
+    fn mail_consent_requests_only_its_own_scopes;
 
-#[test]
-fn microsoft_mail_starts_with_graph_identity_not_exchange_or_files() {
-    let scopes = consent(Provider::Microsoft, false);
-    assert!(scopes.iter().any(|scope| scope == "User.Read"));
-    assert!(
-        !scopes
-            .iter()
-            .any(|scope| scope.contains("outlook") || scope.contains("Files"))
-    );
+    phase google_mail_and_calendar_consent_never_requests_drive;
+    {
+        let scopes = consent(Provider::Google, true);
+        assert!(
+            scopes
+                .iter()
+                .any(|scope| scope == "https://mail.google.com/")
+        );
+        assert!(
+            scopes
+                .iter()
+                .any(|scope| scope == "https://www.googleapis.com/auth/calendar")
+        );
+        assert!(!scopes.iter().any(|scope| scope.contains("drive")));
+    }
+
+    phase microsoft_mail_starts_with_graph_identity_not_exchange_or_files;
+    {
+        let scopes = consent(Provider::Microsoft, false);
+        assert!(scopes.iter().any(|scope| scope == "User.Read"));
+        assert!(
+            !scopes
+                .iter()
+                .any(|scope| scope.contains("outlook") || scope.contains("Files"))
+        );
+    }
 }

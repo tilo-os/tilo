@@ -257,123 +257,127 @@ fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_vcard_address_book_reaches_the_contacts_import_inbox() {
-        let target = tempfile::tempdir().unwrap();
-        let bytes = b"BEGIN:VCARD\r\nVERSION:4.0\r\nUID:ada@example.test\r\nFN:Ada Lovelace\r\nEMAIL:ada@example.test\r\nEND:VCARD\r\n";
-        assert!(
-            stage(
-                target.path(),
-                "profile",
-                "book",
-                Sidecar::AddressBook,
-                bytes
-            )
-            .unwrap()
-        );
-        let staged = target.path().join(
-            ".local/share/tilo-workspaces/personal/so.tilo.contacts/.local/share/so.tilo.contacts/personal-data-incoming/contacts/profile-book.vcf",
-        );
-        let text = std::fs::read_to_string(staged).unwrap();
-        assert!(text.contains("BEGIN:VCARD"));
-        assert!(text.contains("FN:Ada Lovelace"));
-    }
+    tilo_test_env::scenario! {
+        fn thunderbird_personal_data_reaches_the_import_inboxes;
 
-    #[test]
-    fn an_ics_calendar_reaches_the_calendar_import_inbox() {
-        let target = tempfile::tempdir().unwrap();
-        let bytes = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:event@example.test\r\nSUMMARY:Kept\r\nDTSTART:20260102T090000Z\r\nDTEND:20260102T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-        assert!(
-            stage(
-                target.path(),
-                "profile",
-                "calendar",
-                Sidecar::Calendar,
-                bytes,
-            )
-            .unwrap()
-        );
-        let staged = target.path().join(
-            ".local/share/tilo-workspaces/personal/so.tilo.calendar/.local/share/so.tilo.calendar/personal-data-incoming/calendars/profile-calendar.ics",
-        );
-        let text = std::fs::read_to_string(staged).unwrap();
-        assert!(text.contains("BEGIN:VEVENT"));
-        assert!(text.contains("SUMMARY:Kept"));
-    }
+        phase a_vcard_address_book_reaches_the_contacts_import_inbox;
+        {
+            let target = tempfile::tempdir().unwrap();
+            let bytes = b"BEGIN:VCARD\r\nVERSION:4.0\r\nUID:ada@example.test\r\nFN:Ada Lovelace\r\nEMAIL:ada@example.test\r\nEND:VCARD\r\n";
+            assert!(
+                stage(
+                    target.path(),
+                    "profile",
+                    "book",
+                    Sidecar::AddressBook,
+                    bytes
+                )
+                .unwrap()
+            );
+            let staged = target.path().join(
+                ".local/share/tilo-workspaces/personal/so.tilo.contacts/.local/share/so.tilo.contacts/personal-data-incoming/contacts/profile-book.vcf",
+            );
+            let text = std::fs::read_to_string(staged).unwrap();
+            assert!(text.contains("BEGIN:VCARD"));
+            assert!(text.contains("FN:Ada Lovelace"));
+        }
 
-    #[test]
-    fn an_unusable_sidecar_stages_nothing() {
-        let target = tempfile::tempdir().unwrap();
-        assert!(
-            !stage(
-                target.path(),
-                "profile",
-                "book",
-                Sidecar::AddressBook,
-                b"selected address book",
-            )
-            .unwrap()
-        );
-    }
+        phase an_ics_calendar_reaches_the_calendar_import_inbox;
+        {
+            let target = tempfile::tempdir().unwrap();
+            let bytes = b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:event@example.test\r\nSUMMARY:Kept\r\nDTSTART:20260102T090000Z\r\nDTEND:20260102T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+            assert!(
+                stage(
+                    target.path(),
+                    "profile",
+                    "calendar",
+                    Sidecar::Calendar,
+                    bytes,
+                )
+                .unwrap()
+            );
+            let staged = target.path().join(
+                ".local/share/tilo-workspaces/personal/so.tilo.calendar/.local/share/so.tilo.calendar/personal-data-incoming/calendars/profile-calendar.ics",
+            );
+            let text = std::fs::read_to_string(staged).unwrap();
+            assert!(text.contains("BEGIN:VEVENT"));
+            assert!(text.contains("SUMMARY:Kept"));
+        }
 
-    #[test]
-    fn a_thunderbird_sqlite_contact_store_is_converted_to_vcard() {
-        let target = tempfile::tempdir().unwrap();
-        let database = target.path().join("abook.sqlite");
-        let connection = rusqlite::Connection::open(&database).unwrap();
-        connection
-            .execute_batch(
-                "CREATE TABLE main(card TEXT);
+        phase an_unusable_sidecar_stages_nothing;
+        {
+            let target = tempfile::tempdir().unwrap();
+            assert!(
+                !stage(
+                    target.path(),
+                    "profile",
+                    "book",
+                    Sidecar::AddressBook,
+                    b"selected address book",
+                )
+                .unwrap()
+            );
+        }
+
+        phase a_thunderbird_sqlite_contact_store_is_converted_to_vcard;
+        {
+            let target = tempfile::tempdir().unwrap();
+            let database = target.path().join("abook.sqlite");
+            let connection = rusqlite::Connection::open(&database).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE main(card TEXT);
                  INSERT INTO main VALUES('BEGIN:VCARD\r\nUID:person@example.test\r\nFN:Person\r\nEND:VCARD\r\n');",
-            )
-            .unwrap();
-        drop(connection);
-        let bytes = std::fs::read(&database).unwrap();
-        assert!(
-            stage(
-                target.path(),
-                "profile",
-                "book",
-                Sidecar::AddressBook,
-                &bytes
-            )
-            .unwrap()
-        );
-        let staged = target.path().join(
-            ".local/share/tilo-workspaces/personal/so.tilo.contacts/.local/share/so.tilo.contacts/personal-data-incoming/contacts/profile-book.vcf",
-        );
-        let text = std::fs::read_to_string(staged).unwrap();
-        assert!(text.contains("UID:person@example.test"));
-        assert!(text.contains("FN:Person"));
-    }
+                )
+                .unwrap();
+            drop(connection);
+            let bytes = std::fs::read(&database).unwrap();
+            assert!(
+                stage(
+                    target.path(),
+                    "profile",
+                    "book",
+                    Sidecar::AddressBook,
+                    &bytes
+                )
+                .unwrap()
+            );
+            let staged = target.path().join(
+                ".local/share/tilo-workspaces/personal/so.tilo.contacts/.local/share/so.tilo.contacts/personal-data-incoming/contacts/profile-book.vcf",
+            );
+            let text = std::fs::read_to_string(staged).unwrap();
+            assert!(text.contains("UID:person@example.test"));
+            assert!(text.contains("FN:Person"));
+        }
 
-    #[test]
-    fn a_thunderbird_sqlite_calendar_store_is_converted_to_ics() {
-        let target = tempfile::tempdir().unwrap();
-        let database = target.path().join("calendar-data.local.sqlite");
-        let connection = rusqlite::Connection::open(&database).unwrap();
-        connection
-            .execute_batch(
-                "CREATE TABLE cal_events(icalString TEXT);
+        phase a_thunderbird_sqlite_calendar_store_is_converted_to_ics;
+        {
+            let target = tempfile::tempdir().unwrap();
+            let database = target.path().join("calendar-data.local.sqlite");
+            let connection = rusqlite::Connection::open(&database).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE cal_events(icalString TEXT);
                  INSERT INTO cal_events VALUES('BEGIN:VEVENT\r\nUID:kept@example.test\r\nSUMMARY:Kept\r\nDTSTART:20260102T090000Z\r\nDTEND:20260102T100000Z\r\nEND:VEVENT');",
-            )
-            .unwrap();
-        drop(connection);
-        let bytes = std::fs::read(&database).unwrap();
-        assert!(
-            stage(
-                target.path(),
-                "profile",
-                "calendar",
-                Sidecar::Calendar,
-                &bytes
-            )
-            .unwrap()
-        );
-        let staged = target.path().join(
-            ".local/share/tilo-workspaces/personal/so.tilo.calendar/.local/share/so.tilo.calendar/personal-data-incoming/calendars/profile-calendar.ics",
-        );
-        let text = std::fs::read_to_string(staged).unwrap();
-        assert!(text.contains("SUMMARY:Kept"));
+                )
+                .unwrap();
+            drop(connection);
+            let bytes = std::fs::read(&database).unwrap();
+            assert!(
+                stage(
+                    target.path(),
+                    "profile",
+                    "calendar",
+                    Sidecar::Calendar,
+                    &bytes
+                )
+                .unwrap()
+            );
+            let staged = target.path().join(
+                ".local/share/tilo-workspaces/personal/so.tilo.calendar/.local/share/so.tilo.calendar/personal-data-incoming/calendars/profile-calendar.ics",
+            );
+            let text = std::fs::read_to_string(staged).unwrap();
+            assert!(text.contains("SUMMARY:Kept"));
+        }
     }
 }

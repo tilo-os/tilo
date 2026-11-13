@@ -173,60 +173,63 @@ fn discovers_accounts_local_folders_hierarchy_counts_flags_and_attachments() {
     assert!(!serialized.contains("launch_a_program"));
 }
 
-#[cfg(unix)]
-#[test]
-fn redirected_profile_files_are_refused_without_reading_outside_the_grant() {
-    use std::os::unix::fs::symlink;
-    let (home, root) = fixture();
-    let outside = tempfile::tempdir().unwrap();
-    let prefs = root.join("abc.default/prefs.js");
-    std::fs::remove_file(&prefs).unwrap();
-    symlink(outside.path().join("prefs.js"), &prefs).unwrap();
-    std::fs::write(
-        outside.path().join("prefs.js"),
-        "user_pref(\"mail.accountmanager.accounts\", \"account1\");",
-    )
-    .unwrap();
-    let inventory = super::super::discover(&super::super::SourceRoots {
-        home: home.path().into(),
-        config: home.path().join(".config"),
-    });
-    assert!(inventory.thunderbird.is_empty());
-    assert!(
-        inventory
-            .unreadable_sources
-            .contains(&"Thunderbird profile")
-    );
-}
+tilo_test_env::scenario! {
+    #[cfg(unix)]
+    fn redirected_thunderbird_files_are_refused_not_followed;
 
-#[cfg(unix)]
-#[test]
-fn redirected_folder_file_is_not_counted_or_followed() {
-    use std::os::unix::fs::symlink;
-    let (home, root) = fixture();
-    let outside = tempfile::tempdir().unwrap();
-    std::fs::write(
-        outside.path().join("Inbox"),
-        message("outside", "Outside", "0001", false),
-    )
-    .unwrap();
-    let inbox = root.join("abc.default/Mail/Local Folders/Inbox");
-    std::fs::remove_file(&inbox).unwrap();
-    symlink(outside.path().join("Inbox"), &inbox).unwrap();
-    let inventory = super::super::discover(&super::super::SourceRoots {
-        home: home.path().into(),
-        config: home.path().join(".config"),
-    });
-    let profile = &inventory.thunderbird[0];
-    let local = profile
-        .accounts
-        .iter()
-        .find(|account| account.kind == "local")
+    phase redirected_profile_files_are_refused_without_reading_outside_the_grant;
+    {
+        use std::os::unix::fs::symlink;
+        let (home, root) = fixture();
+        let outside = tempfile::tempdir().unwrap();
+        let prefs = root.join("abc.default/prefs.js");
+        std::fs::remove_file(&prefs).unwrap();
+        symlink(outside.path().join("prefs.js"), &prefs).unwrap();
+        std::fs::write(
+            outside.path().join("prefs.js"),
+            "user_pref(\"mail.accountmanager.accounts\", \"account1\");",
+        )
         .unwrap();
-    assert!(
-        !local
-            .folders
+        let inventory = super::super::discover(&super::super::SourceRoots {
+            home: home.path().into(),
+            config: home.path().join(".config"),
+        });
+        assert!(inventory.thunderbird.is_empty());
+        assert!(
+            inventory
+                .unreadable_sources
+                .contains(&"Thunderbird profile")
+        );
+    }
+
+    phase redirected_folder_file_is_not_counted_or_followed;
+    {
+        use std::os::unix::fs::symlink;
+        let (home, root) = fixture();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(
+            outside.path().join("Inbox"),
+            message("outside", "Outside", "0001", false),
+        )
+        .unwrap();
+        let inbox = root.join("abc.default/Mail/Local Folders/Inbox");
+        std::fs::remove_file(&inbox).unwrap();
+        symlink(outside.path().join("Inbox"), &inbox).unwrap();
+        let inventory = super::super::discover(&super::super::SourceRoots {
+            home: home.path().into(),
+            config: home.path().join(".config"),
+        });
+        let profile = &inventory.thunderbird[0];
+        let local = profile
+            .accounts
             .iter()
-            .any(|folder| folder.hierarchy == ["Inbox"])
-    );
+            .find(|account| account.kind == "local")
+            .unwrap();
+        assert!(
+            !local
+                .folders
+                .iter()
+                .any(|folder| folder.hierarchy == ["Inbox"])
+        );
+    }
 }

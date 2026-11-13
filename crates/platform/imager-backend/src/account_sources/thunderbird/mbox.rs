@@ -200,53 +200,57 @@ mod tests {
         (output, splitter.max_buffered())
     }
 
-    #[test]
-    fn a_boundary_split_across_chunks_still_starts_a_message() {
-        let body = vec![b'a'; CHUNK.saturating_sub(3)];
-        let mut file = Vec::new();
-        file.extend_from_slice(b"From - Mon Jan 01 00:00:00 2024\r\n");
-        file.extend_from_slice(&body);
-        file.extend_from_slice(b"\r\nFrom - Mon Jan 01 00:00:00 2024\r\nSubject: two\r\n\r\nB\r\n");
-        let (parsed, buffered) = messages(&file, 8 * CHUNK);
-        assert_eq!(parsed.len(), 2);
-        assert!(parsed[1].starts_with(b"From - Mon"));
-        assert!(
-            buffered <= CHUNK.saturating_add(BOUNDARY.len()),
-            "{buffered} bytes buffered"
-        );
-        let joined: Vec<u8> = parsed.concat();
-        assert_eq!(joined, file);
-    }
+    tilo_test_env::scenario! {
+        fn mbox_reader_splits_messages_at_from_lines;
 
-    #[test]
-    fn only_a_from_at_the_start_of_a_line_separates_messages() {
-        let file = b"From a\r\nSubject: one\r\n\r\n>From the archive\r\nFrom now on\r\nFrom b\r\nSubject: two\r\n\r\nB\r\n";
-        let (parsed, _) = messages(file, 4096);
-        assert_eq!(parsed.len(), 3, "an mbox escapes a quoted line with `>`");
-        assert!(parsed[0].ends_with(b">From the archive\r\n"));
-        assert!(parsed[1].starts_with(b"From now on"));
-        assert_eq!(parsed.concat(), file);
-    }
+        phase a_boundary_split_across_chunks_still_starts_a_message;
+        {
+            let body = vec![b'a'; CHUNK.saturating_sub(3)];
+            let mut file = Vec::new();
+            file.extend_from_slice(b"From - Mon Jan 01 00:00:00 2024\r\n");
+            file.extend_from_slice(&body);
+            file.extend_from_slice(b"\r\nFrom - Mon Jan 01 00:00:00 2024\r\nSubject: two\r\n\r\nB\r\n");
+            let (parsed, buffered) = messages(&file, 8 * CHUNK);
+            assert_eq!(parsed.len(), 2);
+            assert!(parsed[1].starts_with(b"From - Mon"));
+            assert!(
+                buffered <= CHUNK.saturating_add(BOUNDARY.len()),
+                "{buffered} bytes buffered"
+            );
+            let joined: Vec<u8> = parsed.concat();
+            assert_eq!(joined, file);
+        }
 
-    #[test]
-    fn an_oversized_message_is_reported_and_the_next_one_is_still_found() {
-        let mut file = Vec::new();
-        file.extend_from_slice(b"From a\r\nSubject: big\r\n\r\n");
-        file.extend_from_slice(&vec![b'x'; 128 * 1024]);
-        file.extend_from_slice(b"\r\nFrom b\r\nSubject: small\r\n\r\nB\r\n");
-        let mut splitter = MboxMessages::new(file.as_slice(), 64 * 1024);
-        let error = splitter.next_message().unwrap_err();
-        assert!(is_too_large(&error));
-        let next = splitter.next_message().unwrap().unwrap();
-        assert!(next.starts_with(b"From b\r\n"));
-        assert!(splitter.max_message_bytes() <= 64 * 1024);
-        assert!(splitter.next_message().unwrap().is_none());
-    }
+        phase only_a_from_at_the_start_of_a_line_separates_messages;
+        {
+            let file = b"From a\r\nSubject: one\r\n\r\n>From the archive\r\nFrom now on\r\nFrom b\r\nSubject: two\r\n\r\nB\r\n";
+            let (parsed, _) = messages(file, 4096);
+            assert_eq!(parsed.len(), 3, "an mbox escapes a quoted line with `>`");
+            assert!(parsed[0].ends_with(b">From the archive\r\n"));
+            assert!(parsed[1].starts_with(b"From now on"));
+            assert_eq!(parsed.concat(), file);
+        }
 
-    #[test]
-    fn bytes_before_the_first_boundary_are_not_a_message() {
-        let (parsed, _) = messages(b"preamble\r\nFrom a\r\n\r\nA\r\n", 4096);
-        assert_eq!(parsed.len(), 1);
-        assert!(parsed[0].starts_with(b"From a"));
+        phase an_oversized_message_is_reported_and_the_next_one_is_still_found;
+        {
+            let mut file = Vec::new();
+            file.extend_from_slice(b"From a\r\nSubject: big\r\n\r\n");
+            file.extend_from_slice(&vec![b'x'; 128 * 1024]);
+            file.extend_from_slice(b"\r\nFrom b\r\nSubject: small\r\n\r\nB\r\n");
+            let mut splitter = MboxMessages::new(file.as_slice(), 64 * 1024);
+            let error = splitter.next_message().unwrap_err();
+            assert!(is_too_large(&error));
+            let next = splitter.next_message().unwrap().unwrap();
+            assert!(next.starts_with(b"From b\r\n"));
+            assert!(splitter.max_message_bytes() <= 64 * 1024);
+            assert!(splitter.next_message().unwrap().is_none());
+        }
+
+        phase bytes_before_the_first_boundary_are_not_a_message;
+        {
+            let (parsed, _) = messages(b"preamble\r\nFrom a\r\n\r\nA\r\n", 4096);
+            assert_eq!(parsed.len(), 1);
+            assert!(parsed[0].starts_with(b"From a"));
+        }
     }
 }

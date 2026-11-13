@@ -373,51 +373,55 @@ impl WorkerChannel {
 mod tests {
     use super::*;
 
-    #[test]
-    fn received_rights_reject_wrong_kind_and_tag_without_mutating_source() {
-        let original = tempfile::NamedTempFile::new().unwrap();
-        original
-            .as_file()
-            .write_all(b"original source bytes")
-            .unwrap();
-        let (sender, receiver) = UnixStream::pair().unwrap();
-        let mut receiver = WorkerChannel {
-            stream: receiver,
-            root: None,
-        };
-        fd_transport::send_with_fd(sender.as_fd(), &[2], original.as_file().as_fd()).unwrap();
-        assert!(receiver.receive(1, false).is_err());
-        fd_transport::send_with_fd(sender.as_fd(), &[1], original.as_file().as_fd()).unwrap();
-        assert!(receiver.receive(1, true).is_err());
-        assert_eq!(
-            std::fs::read(original.path()).unwrap(),
-            b"original source bytes"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn received_rights_are_the_exact_held_objects;
 
-    #[test]
-    fn received_directory_is_the_exact_held_inode_even_after_rename() {
-        use std::os::unix::fs::MetadataExt;
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("selected");
-        std::fs::create_dir(&path).unwrap();
-        let original = File::open(&path).unwrap();
-        let facts = original.metadata().unwrap();
-        std::fs::rename(&path, root.path().join("renamed")).unwrap();
-        std::fs::create_dir(&path).unwrap();
-        let (mut sender, receiver) = UnixStream::pair().unwrap();
-        let mut receiver = WorkerChannel {
-            stream: receiver,
-            root: None,
-        };
-        fd_transport::send_with_fd(sender.as_fd(), &[1], original.as_fd()).unwrap();
-        let transferred = receiver.receive(1, true).unwrap();
-        let mut ack = [0];
-        sender.read_exact(&mut ack).unwrap();
-        assert_eq!(ack, [1]);
-        let metadata = transferred.metadata().unwrap();
-        assert_eq!((metadata.dev(), metadata.ino()), (facts.dev(), facts.ino()));
-        assert_ne!(metadata.ino(), std::fs::metadata(&path).unwrap().ino());
+        phase received_rights_reject_wrong_kind_and_tag_without_mutating_source;
+        {
+            let original = tempfile::NamedTempFile::new().unwrap();
+            original
+                .as_file()
+                .write_all(b"original source bytes")
+                .unwrap();
+            let (sender, receiver) = UnixStream::pair().unwrap();
+            let mut receiver = WorkerChannel {
+                stream: receiver,
+                root: None,
+            };
+            fd_transport::send_with_fd(sender.as_fd(), &[2], original.as_file().as_fd()).unwrap();
+            assert!(receiver.receive(1, false).is_err());
+            fd_transport::send_with_fd(sender.as_fd(), &[1], original.as_file().as_fd()).unwrap();
+            assert!(receiver.receive(1, true).is_err());
+            assert_eq!(
+                std::fs::read(original.path()).unwrap(),
+                b"original source bytes"
+            );
+        }
+
+        phase received_directory_is_the_exact_held_inode_even_after_rename;
+        {
+            use std::os::unix::fs::MetadataExt;
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("selected");
+            std::fs::create_dir(&path).unwrap();
+            let original = File::open(&path).unwrap();
+            let facts = original.metadata().unwrap();
+            std::fs::rename(&path, root.path().join("renamed")).unwrap();
+            std::fs::create_dir(&path).unwrap();
+            let (mut sender, receiver) = UnixStream::pair().unwrap();
+            let mut receiver = WorkerChannel {
+                stream: receiver,
+                root: None,
+            };
+            fd_transport::send_with_fd(sender.as_fd(), &[1], original.as_fd()).unwrap();
+            let transferred = receiver.receive(1, true).unwrap();
+            let mut ack = [0];
+            sender.read_exact(&mut ack).unwrap();
+            assert_eq!(ack, [1]);
+            let metadata = transferred.metadata().unwrap();
+            assert_eq!((metadata.dev(), metadata.ino()), (facts.dev(), facts.ino()));
+            assert_ne!(metadata.ino(), std::fs::metadata(&path).unwrap().ino());
+        }
     }
 }
 

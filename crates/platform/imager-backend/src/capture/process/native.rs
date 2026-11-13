@@ -317,44 +317,48 @@ mod tests {
         }
     }
 
-    #[test]
-    fn foreign_boot_custody_never_signals_a_matching_live_pid() {
-        let mut child = Owned(
-            std::process::Command::new("sleep")
-                .arg("30")
-                .spawn_locked()
-                .unwrap(),
-        );
-        let uid = rustix::process::getuid().as_raw();
-        let mut host = Incarnation::capture(child.0.id(), uid).unwrap();
-        assert!(host.open_current().unwrap().is_some());
-        host.boot[0] ^= 1;
-        let custody = Custody {
-            host,
-            launch_acknowledged: true,
-            namespace: Some(Namespace {
-                init_pid: host.pid,
-                start_ticks: host.start,
-                namespace_dev: 0,
-                namespace_ino: 0,
-            }),
-        };
-        custody.stop_and_observe().unwrap();
-        assert!(child.0.try_wait().unwrap().is_none());
-    }
+    tilo_test_env::scenario! {
+        fn process_custody_never_trusts_a_pid_alone;
 
-    #[test]
-    fn a_reused_start_value_does_not_pin_the_live_process() {
-        let mut child = Owned(
-            std::process::Command::new("sleep")
-                .arg("30")
-                .spawn_locked()
-                .unwrap(),
-        );
-        let mut identity =
-            Incarnation::capture(child.0.id(), rustix::process::getuid().as_raw()).unwrap();
-        identity.start = identity.start.wrapping_add(1);
-        assert!(identity.open_current().unwrap().is_none());
-        assert!(child.0.try_wait().unwrap().is_none());
+        phase foreign_boot_custody_never_signals_a_matching_live_pid;
+        {
+            let mut child = Owned(
+                std::process::Command::new("sleep")
+                    .arg("30")
+                    .spawn_locked()
+                    .unwrap(),
+            );
+            let uid = rustix::process::getuid().as_raw();
+            let mut host = Incarnation::capture(child.0.id(), uid).unwrap();
+            assert!(host.open_current().unwrap().is_some());
+            host.boot[0] ^= 1;
+            let custody = Custody {
+                host,
+                launch_acknowledged: true,
+                namespace: Some(Namespace {
+                    init_pid: host.pid,
+                    start_ticks: host.start,
+                    namespace_dev: 0,
+                    namespace_ino: 0,
+                }),
+            };
+            custody.stop_and_observe().unwrap();
+            assert!(child.0.try_wait().unwrap().is_none());
+        }
+
+        phase a_reused_start_value_does_not_pin_the_live_process;
+        {
+            let mut child = Owned(
+                std::process::Command::new("sleep")
+                    .arg("30")
+                    .spawn_locked()
+                    .unwrap(),
+            );
+            let mut identity =
+                Incarnation::capture(child.0.id(), rustix::process::getuid().as_raw()).unwrap();
+            identity.start = identity.start.wrapping_add(1);
+            assert!(identity.open_current().unwrap().is_none());
+            assert!(child.0.try_wait().unwrap().is_none());
+        }
     }
 }

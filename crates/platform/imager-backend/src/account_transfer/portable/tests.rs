@@ -18,227 +18,231 @@ fn connect(root: &std::path::Path, name: &str, password: &str) -> AccountId {
         .unwrap()
 }
 
-#[test]
-fn selected_account_transport_reseals_fresh_custody_without_copying_source_key() {
-    let fixture = tempfile::tempdir().unwrap();
-    let source = fixture.path().join("source");
-    let target = fixture.path().join("target");
-    let chosen = connect(&source, "Selected", "selected-private-app-password");
-    let unselected = connect(&source, "Not selected", "unselected-private-app-password");
-    let unrelated = connect(
-        &target,
-        "Existing target",
-        "existing-target-private-password",
-    );
-    let source_store = std::fs::read(accounts::store_path_in(&source)).unwrap();
-    let source_key = std::fs::read(accounts::vault_dir_in(&source).join("vault.key")).unwrap();
-    let source_cipher = std::fs::read(accounts::vault_dir_in(&source).join("vault.enc")).unwrap();
-    let key = SymmetricKey::generate().unwrap();
-    let sealed = Connector::new(source.clone())
-        .seal_selected_accounts(std::slice::from_ref(&chosen), &key, b"setup-operation-1")
-        .unwrap();
-    assert!(
-        !sealed
-            .as_bytes()
-            .windows(source_key.len())
-            .any(|window| window == source_key)
-    );
-    assert!(!format!("{sealed:?}").contains("private-app-password"));
-    let parsed = SealedAccounts::from_bytes(sealed.as_bytes()).unwrap();
-    let connector = Connector::new(target.clone());
-    for _ in 0..2 {
+tilo_test_env::scenario! {
+    fn selected_account_transport_refuses_tampering_and_conflicts;
+
+    phase selected_account_transport_reseals_fresh_custody_without_copying_source_key;
+    {
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("source");
+        let target = fixture.path().join("target");
+        let chosen = connect(&source, "Selected", "selected-private-app-password");
+        let unselected = connect(&source, "Not selected", "unselected-private-app-password");
+        let unrelated = connect(
+            &target,
+            "Existing target",
+            "existing-target-private-password",
+        );
+        let source_store = std::fs::read(accounts::store_path_in(&source)).unwrap();
+        let source_key = std::fs::read(accounts::vault_dir_in(&source).join("vault.key")).unwrap();
+        let source_cipher = std::fs::read(accounts::vault_dir_in(&source).join("vault.enc")).unwrap();
+        let key = SymmetricKey::generate().unwrap();
+        let sealed = Connector::new(source.clone())
+            .seal_selected_accounts(std::slice::from_ref(&chosen), &key, b"setup-operation-1")
+            .unwrap();
+        assert!(
+            !sealed
+                .as_bytes()
+                .windows(source_key.len())
+                .any(|window| window == source_key)
+        );
+        assert!(!format!("{sealed:?}").contains("private-app-password"));
+        let parsed = SealedAccounts::from_bytes(sealed.as_bytes()).unwrap();
+        let connector = Connector::new(target.clone());
+        for _ in 0..2 {
+            assert_eq!(
+                connector
+                    .import_sealed_accounts(&parsed, &key, b"setup-operation-1")
+                    .unwrap(),
+                vec![chosen.clone()]
+            );
+        }
+        let store = accounts::AccountStore::load_in(&target);
+        assert_eq!(store.len(), 2);
+        assert!(store.get(&chosen).is_some());
+        assert!(store.get(&unrelated).is_some());
+        assert!(store.get(&unselected).is_none());
+        let vault = SecretVault::open_in(&target);
         assert_eq!(
-            connector
-                .import_sealed_accounts(&parsed, &key, b"setup-operation-1")
-                .unwrap(),
-            vec![chosen.clone()]
+            vault.get(&chosen).unwrap().password,
+            "selected-private-app-password"
+        );
+        assert_eq!(
+            vault.get(&unrelated).unwrap().password,
+            "existing-target-private-password"
+        );
+        assert!(vault.get(&unselected).is_none());
+        assert_ne!(
+            std::fs::read(accounts::vault_dir_in(&target).join("vault.key")).unwrap(),
+            source_key
+        );
+        assert_eq!(
+            std::fs::read(accounts::store_path_in(&source)).unwrap(),
+            source_store
+        );
+        assert_eq!(
+            std::fs::read(accounts::vault_dir_in(&source).join("vault.enc")).unwrap(),
+            source_cipher
+        );
+        assert_eq!(
+            std::fs::read(accounts::vault_dir_in(&source).join("vault.key")).unwrap(),
+            source_key
         );
     }
-    let store = accounts::AccountStore::load_in(&target);
-    assert_eq!(store.len(), 2);
-    assert!(store.get(&chosen).is_some());
-    assert!(store.get(&unrelated).is_some());
-    assert!(store.get(&unselected).is_none());
-    let vault = SecretVault::open_in(&target);
-    assert_eq!(
-        vault.get(&chosen).unwrap().password,
-        "selected-private-app-password"
-    );
-    assert_eq!(
-        vault.get(&unrelated).unwrap().password,
-        "existing-target-private-password"
-    );
-    assert!(vault.get(&unselected).is_none());
-    assert_ne!(
-        std::fs::read(accounts::vault_dir_in(&target).join("vault.key")).unwrap(),
-        source_key
-    );
-    assert_eq!(
-        std::fs::read(accounts::store_path_in(&source)).unwrap(),
-        source_store
-    );
-    assert_eq!(
-        std::fs::read(accounts::vault_dir_in(&source).join("vault.enc")).unwrap(),
-        source_cipher
-    );
-    assert_eq!(
-        std::fs::read(accounts::vault_dir_in(&source).join("vault.key")).unwrap(),
-        source_key
-    );
-}
 
-#[test]
-fn wrong_setup_key_tampering_and_empty_binding_never_write_destination() {
-    let fixture = tempfile::tempdir().unwrap();
-    let source = fixture.path().join("source");
-    let target = fixture.path().join("never-created");
-    let id = connect(&source, "Selected", "private-app-password");
-    let key = SymmetricKey::generate().unwrap();
-    let source_connector = Connector::new(source);
-    let sealed = source_connector
-        .seal_selected_accounts(std::slice::from_ref(&id), &key, b"setup-1")
-        .unwrap();
-    let target_connector = Connector::new(target.clone());
-    assert!(
-        target_connector
-            .import_sealed_accounts(&sealed, &key, b"setup-2")
-            .is_err()
-    );
-    assert!(
-        target_connector
-            .import_sealed_accounts(&sealed, &SymmetricKey::generate().unwrap(), b"setup-1")
-            .is_err()
-    );
-    assert!(
-        target_connector
-            .import_sealed_accounts(&sealed, &key, b"")
-            .is_err()
-    );
-    let mut tampered = sealed.as_bytes().to_vec();
-    *tampered.last_mut().unwrap() ^= 1;
-    let tampered = SealedAccounts::from_bytes(&tampered).unwrap();
-    assert!(
-        target_connector
-            .import_sealed_accounts(&tampered, &key, b"setup-1")
-            .is_err()
-    );
-    assert!(!target.exists());
-    assert!(
-        source_connector
-            .seal_selected_accounts(&[id.clone(), id], &key, b"setup-1")
-            .is_err()
-    );
-    assert!(SealedAccounts::from_bytes(&vec![0; MAX_PLAINTEXT + 257]).is_err());
-}
+    phase wrong_setup_key_tampering_and_empty_binding_never_write_destination;
+    {
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("source");
+        let target = fixture.path().join("never-created");
+        let id = connect(&source, "Selected", "private-app-password");
+        let key = SymmetricKey::generate().unwrap();
+        let source_connector = Connector::new(source);
+        let sealed = source_connector
+            .seal_selected_accounts(std::slice::from_ref(&id), &key, b"setup-1")
+            .unwrap();
+        let target_connector = Connector::new(target.clone());
+        assert!(
+            target_connector
+                .import_sealed_accounts(&sealed, &key, b"setup-2")
+                .is_err()
+        );
+        assert!(
+            target_connector
+                .import_sealed_accounts(&sealed, &SymmetricKey::generate().unwrap(), b"setup-1")
+                .is_err()
+        );
+        assert!(
+            target_connector
+                .import_sealed_accounts(&sealed, &key, b"")
+                .is_err()
+        );
+        let mut tampered = sealed.as_bytes().to_vec();
+        *tampered.last_mut().unwrap() ^= 1;
+        let tampered = SealedAccounts::from_bytes(&tampered).unwrap();
+        assert!(
+            target_connector
+                .import_sealed_accounts(&tampered, &key, b"setup-1")
+                .is_err()
+        );
+        assert!(!target.exists());
+        assert!(
+            source_connector
+                .seal_selected_accounts(&[id.clone(), id], &key, b"setup-1")
+                .is_err()
+        );
+        assert!(SealedAccounts::from_bytes(&vec![0; MAX_PLAINTEXT + 257]).is_err());
+    }
 
-#[test]
-fn later_conflicting_account_refuses_entire_selection_before_any_import() {
-    let fixture = tempfile::tempdir().unwrap();
-    let source = fixture.path().join("source");
-    let target = fixture.path().join("target");
-    let first = connect(&source, "First selected", "first-private-password");
-    let conflicting = connect(&source, "Second selected", "second-private-password");
-    let target_connector = Connector::new(target.clone());
-    target_connector.import_tilo(&source, &conflicting).unwrap();
-    let mut store = accounts::AccountStore::load_in(&target);
-    let mut existing = store.get(&conflicting).unwrap().clone();
-    existing.display_name = "Changed by target owner".into();
-    store.upsert(existing);
-    store.save_in(&target).unwrap();
-    let before = std::fs::read(accounts::store_path_in(&target)).unwrap();
-    let key = SymmetricKey::generate().unwrap();
-    let source_connector = Connector::new(source.clone());
-    let sealed = source_connector
-        .seal_selected_accounts(&[first.clone(), conflicting], &key, b"setup-1")
-        .unwrap();
-    assert_eq!(
-        target_connector.import_sealed_accounts(&sealed, &key, b"setup-1"),
-        Err(ConnectionError::AlreadyPresent)
-    );
-    assert_eq!(
-        std::fs::read(accounts::store_path_in(&target)).unwrap(),
-        before
-    );
-    assert!(
-        accounts::AccountStore::load_in(&target)
-            .get(&first)
-            .is_none()
-    );
-    assert!(SecretVault::open_in(&target).get(&first).is_none());
-    let mut store = accounts::AccountStore::load_in(&source);
-    let mut contributed = store.get(&first).unwrap().clone();
-    contributed.owner = Some("another-collaborator".into());
-    store.upsert(contributed);
-    store.save_in(&source).unwrap();
-    assert!(
-        source_connector
-            .seal_selected_accounts(&[first], &key, b"setup-1")
-            .is_err()
-    );
-}
+    phase later_conflicting_account_refuses_entire_selection_before_any_import;
+    {
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("source");
+        let target = fixture.path().join("target");
+        let first = connect(&source, "First selected", "first-private-password");
+        let conflicting = connect(&source, "Second selected", "second-private-password");
+        let target_connector = Connector::new(target.clone());
+        target_connector.import_tilo(&source, &conflicting).unwrap();
+        let mut store = accounts::AccountStore::load_in(&target);
+        let mut existing = store.get(&conflicting).unwrap().clone();
+        existing.display_name = "Changed by target owner".into();
+        store.upsert(existing);
+        store.save_in(&target).unwrap();
+        let before = std::fs::read(accounts::store_path_in(&target)).unwrap();
+        let key = SymmetricKey::generate().unwrap();
+        let source_connector = Connector::new(source.clone());
+        let sealed = source_connector
+            .seal_selected_accounts(&[first.clone(), conflicting], &key, b"setup-1")
+            .unwrap();
+        assert_eq!(
+            target_connector.import_sealed_accounts(&sealed, &key, b"setup-1"),
+            Err(ConnectionError::AlreadyPresent)
+        );
+        assert_eq!(
+            std::fs::read(accounts::store_path_in(&target)).unwrap(),
+            before
+        );
+        assert!(
+            accounts::AccountStore::load_in(&target)
+                .get(&first)
+                .is_none()
+        );
+        assert!(SecretVault::open_in(&target).get(&first).is_none());
+        let mut store = accounts::AccountStore::load_in(&source);
+        let mut contributed = store.get(&first).unwrap().clone();
+        contributed.owner = Some("another-collaborator".into());
+        store.upsert(contributed);
+        store.save_in(&source).unwrap();
+        assert!(
+            source_connector
+                .seal_selected_accounts(&[first], &key, b"setup-1")
+                .is_err()
+        );
+    }
 
-#[test]
-fn partial_selection_retry_and_corrupt_custody_are_handled_without_overwrite() {
-    let fixture = tempfile::tempdir().unwrap();
-    let source = fixture.path().join("source");
-    let target = fixture.path().join("target");
-    let first = connect(&source, "First", "first-private-password");
-    let second = connect(&source, "Second", "second-private-password");
-    let unrelated = connect(&target, "Existing", "existing-private-password");
-    let source_connector = Connector::new(source.clone());
-    let target_connector = Connector::new(target.clone());
-    let key = SymmetricKey::generate().unwrap();
-    let partial = source_connector
-        .seal_selected_accounts(std::slice::from_ref(&first), &key, b"setup-1")
-        .unwrap();
-    target_connector
-        .import_sealed_accounts(&partial, &key, b"setup-1")
-        .unwrap();
-    let all = source_connector
-        .seal_selected_accounts(&[first.clone(), second.clone()], &key, b"setup-1")
-        .unwrap();
-    // Simulate the canonical vault save succeeding before metadata save:
-    // exact retry must finish this selected account, retaining unrelated data.
-    let mut partial_vault = SecretVault::open_in(&target);
-    let source_secret = SecretVault::open_in(&source).get(&second).unwrap();
-    partial_vault.put(&second, &source_secret);
-    partial_vault.try_save().unwrap();
-    assert_eq!(
+    phase partial_selection_retry_and_corrupt_custody_are_handled_without_overwrite;
+    {
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("source");
+        let target = fixture.path().join("target");
+        let first = connect(&source, "First", "first-private-password");
+        let second = connect(&source, "Second", "second-private-password");
+        let unrelated = connect(&target, "Existing", "existing-private-password");
+        let source_connector = Connector::new(source.clone());
+        let target_connector = Connector::new(target.clone());
+        let key = SymmetricKey::generate().unwrap();
+        let partial = source_connector
+            .seal_selected_accounts(std::slice::from_ref(&first), &key, b"setup-1")
+            .unwrap();
         target_connector
-            .import_sealed_accounts(&all, &key, b"setup-1")
-            .unwrap(),
-        vec![first.clone(), second]
-    );
-    assert_eq!(accounts::AccountStore::load_in(&target).len(), 3);
-    assert_eq!(
-        SecretVault::open_in(&target)
-            .get(&unrelated)
-            .unwrap()
-            .password,
-        "existing-private-password"
-    );
-    let metadata = std::fs::read(accounts::store_path_in(&target)).unwrap();
-    let corrupt = accounts::vault_dir_in(&target).join("vault.enc");
-    std::fs::write(&corrupt, b"corrupt-existing-vault").unwrap();
-    assert_eq!(
-        target_connector.import_sealed_accounts(&all, &key, b"setup-1"),
-        Err(ConnectionError::StorageUnavailable)
-    );
-    assert_eq!(std::fs::read(&corrupt).unwrap(), b"corrupt-existing-vault");
-    assert_eq!(
-        std::fs::read(accounts::store_path_in(&target)).unwrap(),
-        metadata
-    );
-    std::fs::write(
-        accounts::vault_dir_in(&source).join("vault.enc"),
-        b"corrupt-source-vault",
-    )
-    .unwrap();
-    assert!(
-        source_connector
-            .seal_selected_accounts(&[first], &key, b"setup-1")
-            .is_err()
-    );
+            .import_sealed_accounts(&partial, &key, b"setup-1")
+            .unwrap();
+        let all = source_connector
+            .seal_selected_accounts(&[first.clone(), second.clone()], &key, b"setup-1")
+            .unwrap();
+        // Simulate the canonical vault save succeeding before metadata save:
+        // exact retry must finish this selected account, retaining unrelated data.
+        let mut partial_vault = SecretVault::open_in(&target);
+        let source_secret = SecretVault::open_in(&source).get(&second).unwrap();
+        partial_vault.put(&second, &source_secret);
+        partial_vault.try_save().unwrap();
+        assert_eq!(
+            target_connector
+                .import_sealed_accounts(&all, &key, b"setup-1")
+                .unwrap(),
+            vec![first.clone(), second]
+        );
+        assert_eq!(accounts::AccountStore::load_in(&target).len(), 3);
+        assert_eq!(
+            SecretVault::open_in(&target)
+                .get(&unrelated)
+                .unwrap()
+                .password,
+            "existing-private-password"
+        );
+        let metadata = std::fs::read(accounts::store_path_in(&target)).unwrap();
+        let corrupt = accounts::vault_dir_in(&target).join("vault.enc");
+        std::fs::write(&corrupt, b"corrupt-existing-vault").unwrap();
+        assert_eq!(
+            target_connector.import_sealed_accounts(&all, &key, b"setup-1"),
+            Err(ConnectionError::StorageUnavailable)
+        );
+        assert_eq!(std::fs::read(&corrupt).unwrap(), b"corrupt-existing-vault");
+        assert_eq!(
+            std::fs::read(accounts::store_path_in(&target)).unwrap(),
+            metadata
+        );
+        std::fs::write(
+            accounts::vault_dir_in(&source).join("vault.enc"),
+            b"corrupt-source-vault",
+        )
+        .unwrap();
+        assert!(
+            source_connector
+                .seal_selected_accounts(&[first], &key, b"setup-1")
+                .is_err()
+        );
+    }
 }
 
 #[test]

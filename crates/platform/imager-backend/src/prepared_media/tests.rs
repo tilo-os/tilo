@@ -1,50 +1,54 @@
 use super::*;
 
-#[test]
-fn portable_metadata_keeps_its_wire_shape() {
-    let kind = IdentityKind::EnrolledDevice {
-        device_public_key: [3; 32],
-    };
-    let value = serde_json::to_value(&kind).unwrap();
-    assert_eq!(value["kind"], "enrolled_device");
-    assert_eq!(serde_json::from_value::<IdentityKind>(value).unwrap(), kind);
-    assert!(
-        serde_json::from_str::<PortableHomePlan>(
-            r#"{"schema":1,"selection":"full_home","unknown":true}"#
-        )
-        .is_err()
-    );
-    let receipt = DeliveryReceipt {
-        relative_path: PathBuf::from(DIRECTORY).join(FILE),
-        sealed_bytes: 4,
-        ciphertext_sha256: "ab".repeat(32),
-    };
-    assert_eq!(
-        receipt.expectation(),
-        serde_json::json!({
-            "schema": 1, "sealed_bytes": 4, "ciphertext_sha256": "ab".repeat(32)
-        })
-    );
-}
+tilo_test_env::scenario! {
+    fn prepared_media_metadata_and_errors_keep_their_shape;
 
-#[test]
-fn manifest_bindings_reject_ambiguous_or_unbounded_accounts() {
-    assert!(validate_manifest_binding(1, "setup", &["account".into()], Some(1)).is_ok());
-    assert!(validate_manifest_binding(1, "setup", &[], None).is_ok());
-    assert!(validate_manifest_binding(2, "setup", &[], None).is_err());
-    assert!(validate_manifest_binding(1, "setup", &[], Some(1)).is_err());
-    assert!(validate_manifest_binding(1, "setup", &["account".into()], Some(2)).is_err());
-    assert!(validate_manifest_binding(1, "setup", &["same".into(), "same".into()], None).is_err());
-    assert!(validate_manifest_binding(1, "setup", &["bad\nname".into()], None).is_err());
-    assert!(validate_manifest_binding(1, &"x".repeat(257), &[], None).is_err());
-    let accounts = (0..65).map(|index| index.to_string()).collect::<Vec<_>>();
-    assert!(validate_manifest_binding(1, "setup", &accounts, None).is_err());
-}
+    phase portable_metadata_keeps_its_wire_shape;
+    {
+        let kind = IdentityKind::EnrolledDevice {
+            device_public_key: [3; 32],
+        };
+        let value = serde_json::to_value(&kind).unwrap();
+        assert_eq!(value["kind"], "enrolled_device");
+        assert_eq!(serde_json::from_value::<IdentityKind>(value).unwrap(), kind);
+        assert!(
+            serde_json::from_str::<PortableHomePlan>(
+                r#"{"schema":1,"selection":"full_home","unknown":true}"#
+            )
+            .is_err()
+        );
+        let receipt = DeliveryReceipt {
+            relative_path: PathBuf::from(DIRECTORY).join(FILE),
+            sealed_bytes: 4,
+            ciphertext_sha256: "ab".repeat(32),
+        };
+        assert_eq!(
+            receipt.expectation(),
+            serde_json::json!({
+                "schema": 1, "sealed_bytes": 4, "ciphertext_sha256": "ab".repeat(32)
+            })
+        );
+    }
 
-#[test]
-fn unsupported_is_a_typed_error_and_retains_its_io_kind() {
-    let error: io::Error = PreparedMediaError::Unsupported.into();
-    assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+    phase manifest_bindings_reject_ambiguous_or_unbounded_accounts;
+    {
+        assert!(validate_manifest_binding(1, "setup", &["account".into()], Some(1)).is_ok());
+        assert!(validate_manifest_binding(1, "setup", &[], None).is_ok());
+        assert!(validate_manifest_binding(2, "setup", &[], None).is_err());
+        assert!(validate_manifest_binding(1, "setup", &[], Some(1)).is_err());
+        assert!(validate_manifest_binding(1, "setup", &["account".into()], Some(2)).is_err());
+        assert!(validate_manifest_binding(1, "setup", &["same".into(), "same".into()], None).is_err());
+        assert!(validate_manifest_binding(1, "setup", &["bad\nname".into()], None).is_err());
+        assert!(validate_manifest_binding(1, &"x".repeat(257), &[], None).is_err());
+        let accounts = (0..65).map(|index| index.to_string()).collect::<Vec<_>>();
+        assert!(validate_manifest_binding(1, "setup", &accounts, None).is_err());
+    }
+
+    phase unsupported_is_a_typed_error_and_retains_its_io_kind;
+    {
+        let error: io::Error = PreparedMediaError::Unsupported.into();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+    }
 }
 
 #[cfg(not(target_os = "linux"))]

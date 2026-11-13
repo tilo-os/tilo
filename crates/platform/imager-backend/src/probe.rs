@@ -547,111 +547,6 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn linux_lsblk_inventory_parses_and_may_authoritatively_be_empty() {
-        {
-            let json: Value = serde_json::from_str(
-                r#"{
-                  "blockdevices": [
-                    {"name":"sdb","model":"SanDisk Ultra","size":30752000000,"type":"disk",
-                     "rota":false,"tran":"usb","rm":true,
-                     "children":[{"name":"sdb1","size":30745000000,"type":"part","fstype":"exfat","label":"ULTRA","mountpoint":null}]},
-                    {"name":"nvme0n1","model":"Samsung 990","size":1000204886016,"type":"disk",
-                     "rota":false,"tran":"nvme","rm":false,
-                     "children":[
-                       {"name":"nvme0n1p1","size":536870912,"type":"part","fstype":"vfat","label":"EFI","mountpoint":"/boot/efi"},
-                       {"name":"nvme0n1p2","size":999000000000,"type":"part","fstype":"btrfs","label":"root","mountpoint":"/"}
-                     ]}
-                  ]
-                }"#,
-            )
-            .unwrap();
-            let drives = parse_lsblk(&json).unwrap();
-            assert_eq!(drives.len(), 2);
-            assert_eq!(drives[0].kind, TargetKind::Usb);
-            assert!(drives[0].removable);
-            assert!(!drives[0].is_system);
-            assert_eq!(drives[1].kind, TargetKind::Nvme);
-            assert!(drives[1].is_system);
-        }
-
-        {
-            let input: Value = serde_json::from_str(include_str!(
-                "../../../system/block-devices/tests/fixtures/imager.json"
-            ))
-            .unwrap();
-            let expected: Value = serde_json::from_str(include_str!(
-                "../../../../apps/imager/tests/fixtures/lsblk-targets.json"
-            ))
-            .unwrap();
-            assert_eq!(serde_json::to_value(parse_lsblk(&input)).unwrap(), expected);
-        }
-
-        {
-            let json: Value = serde_json::from_str(
-                r#"{"blockdevices":[
-                     {"name":"loop0","size":0,"type":"loop"},
-                     {"name":"sr0","size":0,"type":"rom"}
-                ]}"#,
-            )
-            .unwrap();
-            assert_eq!(parse_lsblk(&json).unwrap().len(), 0);
-            assert!(parse_lsblk(&serde_json::json!({})).is_none());
-        }
-
-        {
-            let json: Value = serde_json::from_str(
-                r#"{"blockdevices":[
-                     {"name":"sdc","model":"Old Stick","size":"8000000000","type":"disk",
-                      "rota":"0","tran":"usb","rm":"1"}
-                ]}"#,
-            )
-            .unwrap();
-            let drives = parse_lsblk(&json).unwrap();
-            assert_eq!(drives.len(), 1);
-            assert_eq!(drives[0].size, 8_000_000_000);
-            assert!(drives[0].removable);
-        }
-    }
-
-    #[test]
-    fn nested_system_mounts_and_stable_identity_survive_inventory_projection() {
-        for mount in ["/", "/boot", "/boot/efi", "/var", "/var/home"] {
-            let inventory = serde_json::json!({"blockdevices": [{
-                "name": "sda", "type": "disk", "size": 64_000_000_000_u64,
-                "wwn": "wwn-disk", "serial": "serial-disk", "tran": "usb", "rm": true,
-                "children": [{"name": "sda1", "type": "part", "size": 60_000_000_000_u64,
-                    "children": [{"name": "crypt-root", "type": "crypt", "size": 59_000_000_000_u64,
-                        "children": [{"name": "root", "type": "lvm", "size": 58_000_000_000_u64,
-                            "mountpoint": mount, "fstype": "ext4", "label": "system"}]}]}]
-            }]});
-            let drives = parse_lsblk(&inventory).expect("controlled nested inventory");
-            assert_eq!(drives.len(), 1);
-            let drive = &drives[0];
-            assert!(
-                drive.is_system,
-                "nested mount {mount} protects the whole disk"
-            );
-            assert_eq!(drive.stable_id.as_deref(), Some("wwn-disk"));
-            assert_eq!(drive.partitions.len(), 3);
-            assert_eq!(drive.partitions[2].label.as_deref(), Some("system"));
-        }
-        let inventory = serde_json::json!({"blockdevices": [{
-            "name": "sdb", "type": "disk", "size": 32_000_000_000_u64,
-            "serial": "serial-only", "tran": "usb", "rm": true,
-            "children": [{"name": "sdb1", "type": "part", "size": 31_000_000_000_u64,
-                "mountpoint": "/run/media/person/backup", "fstype": "ext4"}]
-        }]});
-        let drives = parse_lsblk(&inventory).expect("controlled removable inventory");
-        assert_eq!(drives.len(), 1);
-        assert!(!drives[0].is_system);
-        assert_eq!(drives[0].stable_id.as_deref(), Some("serial-only"));
-    }
-
     /// Builds a file whose ISO-9660 PVD carries `label`, so the reader parses a real volume
     /// descriptor.
     fn iso_with_label(label: &str) -> tempfile::NamedTempFile {
@@ -768,35 +663,139 @@ mod tests {
         );
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn macos_and_windows_inventories_parse_and_may_authoritatively_be_empty() {
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+        )]
+        fn drive_inventories_parse_and_survive_projection;
+
+        phase linux_lsblk_inventory_parses_and_may_authoritatively_be_empty;
         {
-            let json: Value = serde_json::from_str(
-                r#"{
+            {
+                let json: Value = serde_json::from_str(
+                    r#"{
+                  "blockdevices": [
+                    {"name":"sdb","model":"SanDisk Ultra","size":30752000000,"type":"disk",
+                     "rota":false,"tran":"usb","rm":true,
+                     "children":[{"name":"sdb1","size":30745000000,"type":"part","fstype":"exfat","label":"ULTRA","mountpoint":null}]},
+                    {"name":"nvme0n1","model":"Samsung 990","size":1000204886016,"type":"disk",
+                     "rota":false,"tran":"nvme","rm":false,
+                     "children":[
+                       {"name":"nvme0n1p1","size":536870912,"type":"part","fstype":"vfat","label":"EFI","mountpoint":"/boot/efi"},
+                       {"name":"nvme0n1p2","size":999000000000,"type":"part","fstype":"btrfs","label":"root","mountpoint":"/"}
+                     ]}
+                  ]
+                }"#,
+                )
+                .unwrap();
+                let drives = parse_lsblk(&json).unwrap();
+                assert_eq!(drives.len(), 2);
+                assert_eq!(drives[0].kind, TargetKind::Usb);
+                assert!(drives[0].removable);
+                assert!(!drives[0].is_system);
+                assert_eq!(drives[1].kind, TargetKind::Nvme);
+                assert!(drives[1].is_system);
+            }
+
+            {
+                let input: Value = serde_json::from_str(include_str!(
+                    "../../../system/block-devices/tests/fixtures/imager.json"
+                ))
+                .unwrap();
+                let expected: Value = serde_json::from_str(include_str!(
+                    "../../../../apps/imager/tests/fixtures/lsblk-targets.json"
+                ))
+                .unwrap();
+                assert_eq!(serde_json::to_value(parse_lsblk(&input)).unwrap(), expected);
+            }
+
+            {
+                let json: Value = serde_json::from_str(
+                    r#"{"blockdevices":[
+                     {"name":"loop0","size":0,"type":"loop"},
+                     {"name":"sr0","size":0,"type":"rom"}
+                ]}"#,
+                )
+                .unwrap();
+                assert_eq!(parse_lsblk(&json).unwrap().len(), 0);
+                assert!(parse_lsblk(&serde_json::json!({})).is_none());
+            }
+
+            {
+                let json: Value = serde_json::from_str(
+                    r#"{"blockdevices":[
+                     {"name":"sdc","model":"Old Stick","size":"8000000000","type":"disk",
+                      "rota":"0","tran":"usb","rm":"1"}
+                ]}"#,
+                )
+                .unwrap();
+                let drives = parse_lsblk(&json).unwrap();
+                assert_eq!(drives.len(), 1);
+                assert_eq!(drives[0].size, 8_000_000_000);
+                assert!(drives[0].removable);
+            }
+        }
+
+        phase nested_system_mounts_and_stable_identity_survive_inventory_projection;
+        {
+            for mount in ["/", "/boot", "/boot/efi", "/var", "/var/home"] {
+                let inventory = serde_json::json!({"blockdevices": [{
+                    "name": "sda", "type": "disk", "size": 64_000_000_000_u64,
+                    "wwn": "wwn-disk", "serial": "serial-disk", "tran": "usb", "rm": true,
+                    "children": [{"name": "sda1", "type": "part", "size": 60_000_000_000_u64,
+                        "children": [{"name": "crypt-root", "type": "crypt", "size": 59_000_000_000_u64,
+                            "children": [{"name": "root", "type": "lvm", "size": 58_000_000_000_u64,
+                                "mountpoint": mount, "fstype": "ext4", "label": "system"}]}]}]
+                }]});
+                let drives = parse_lsblk(&inventory).expect("controlled nested inventory");
+                assert_eq!(drives.len(), 1);
+                let drive = &drives[0];
+                assert!(
+                    drive.is_system,
+                    "nested mount {mount} protects the whole disk"
+                );
+                assert_eq!(drive.stable_id.as_deref(), Some("wwn-disk"));
+                assert_eq!(drive.partitions.len(), 3);
+                assert_eq!(drive.partitions[2].label.as_deref(), Some("system"));
+            }
+            let inventory = serde_json::json!({"blockdevices": [{
+                "name": "sdb", "type": "disk", "size": 32_000_000_000_u64,
+                "serial": "serial-only", "tran": "usb", "rm": true,
+                "children": [{"name": "sdb1", "type": "part", "size": 31_000_000_000_u64,
+                    "mountpoint": "/run/media/person/backup", "fstype": "ext4"}]
+            }]});
+            let drives = parse_lsblk(&inventory).expect("controlled removable inventory");
+            assert_eq!(drives.len(), 1);
+            assert!(!drives[0].is_system);
+            assert_eq!(drives[0].stable_id.as_deref(), Some("serial-only"));
+        }
+
+        phase macos_and_windows_inventories_parse_and_may_authoritatively_be_empty;
+        {
+            {
+                let json: Value = serde_json::from_str(
+                    r#"{
               "AllDisksAndPartitions":[{"DeviceIdentifier":"disk4","Size":64000000000,
                 "MediaName":"SanDisk USB","Partitions":[{"DeviceIdentifier":"disk4s1",
                 "Size":63900000000,"Content":"ExFAT","VolumeName":"TRANSFER"}]}]}
             "#,
-            )
-            .unwrap();
-            let drives = parse_diskutil(&json).unwrap();
-            assert_eq!(drives[0].name, "disk4");
-            assert!(drives[0].removable);
-            assert_eq!(drives[0].partitions[0].label.as_deref(), Some("TRANSFER"));
-        }
+                )
+                .unwrap();
+                let drives = parse_diskutil(&json).unwrap();
+                assert_eq!(drives[0].name, "disk4");
+                assert!(drives[0].removable);
+                assert_eq!(drives[0].partitions[0].label.as_deref(), Some("TRANSFER"));
+            }
 
-        {
-            let empty = serde_json::json!({"AllDisksAndPartitions": []});
-            assert_eq!(parse_diskutil(&empty).unwrap().len(), 0);
-            assert!(parse_diskutil(&serde_json::json!({})).is_none());
-        }
+            {
+                let empty = serde_json::json!({"AllDisksAndPartitions": []});
+                assert_eq!(parse_diskutil(&empty).unwrap().len(), 0);
+                assert!(parse_diskutil(&serde_json::json!({})).is_none());
+            }
 
-        {
-            let json: Value = serde_json::from_str(r#"[
+            {
+                let json: Value = serde_json::from_str(r#"[
               {"Number":0,"FriendlyName":"Internal NVMe","Size":1000000000000,"BusType":"NVMe","IsBoot":true,"IsSystem":true,"IsReadOnly":false},
               {"Number":2,"FriendlyName":"USB Stick","UniqueId":"usb-stick-serial","Size":32000000000,"BusType":"USB","IsBoot":false,"IsSystem":false,"IsReadOnly":false,
                "Partitions":[
@@ -805,42 +804,43 @@ mod tests {
                ]},
               {"Number":3,"FriendlyName":"Locked card","Size":16000000000,"BusType":"SD","IsBoot":false,"IsSystem":false,"IsReadOnly":true}
             ]"#).unwrap();
-            let drives = parse_windows_disks(&json).unwrap();
-            assert_eq!(drives.len(), 2, "read-only disks are not write targets");
-            assert!(drives[0].is_system);
-            assert_eq!(drives[1].name, "PhysicalDrive2");
-            assert_eq!(drives[1].stable_id.as_deref(), Some("usb-stick-serial"));
-            assert!(drives[1].removable);
-            assert_eq!(drives[1].partitions.len(), 2);
-            assert_eq!(drives[1].partitions[0].name, "E:");
-            assert_eq!(drives[1].partitions[0].fstype.as_deref(), Some("exFAT"));
-            assert_eq!(drives[1].partitions[0].label.as_deref(), Some("TRANSFER"));
-            assert_eq!(drives[1].partitions[1].size, 15_900_000_000);
-            assert_eq!(drives[1].partition_names(), ["TRANSFER"]);
-        }
+                let drives = parse_windows_disks(&json).unwrap();
+                assert_eq!(drives.len(), 2, "read-only disks are not write targets");
+                assert!(drives[0].is_system);
+                assert_eq!(drives[1].name, "PhysicalDrive2");
+                assert_eq!(drives[1].stable_id.as_deref(), Some("usb-stick-serial"));
+                assert!(drives[1].removable);
+                assert_eq!(drives[1].partitions.len(), 2);
+                assert_eq!(drives[1].partitions[0].name, "E:");
+                assert_eq!(drives[1].partitions[0].fstype.as_deref(), Some("exFAT"));
+                assert_eq!(drives[1].partitions[0].label.as_deref(), Some("TRANSFER"));
+                assert_eq!(drives[1].partitions[1].size, 15_900_000_000);
+                assert_eq!(drives[1].partition_names(), ["TRANSFER"]);
+            }
 
-        {
-            let json: Value = serde_json::from_str(
-                r#"{"Number":7,"FriendlyName":"Card reader","UniqueId":"reader-7","Size":64000000000,"BusType":"SD","IsBoot":false,"IsSystem":false,"IsReadOnly":false,
+            {
+                let json: Value = serde_json::from_str(
+                    r#"{"Number":7,"FriendlyName":"Card reader","UniqueId":"reader-7","Size":64000000000,"BusType":"SD","IsBoot":false,"IsSystem":false,"IsReadOnly":false,
                     "Partitions":{"Name":"F:","Size":63900000000,"FileSystem":"FAT32","Label":"CAMERA"}}"#,
-            )
-            .unwrap();
+                )
+                .unwrap();
 
-            let drives = parse_windows_disks(&json).unwrap();
-            assert_eq!(drives.len(), 1);
-            assert_eq!(drives[0].name, "PhysicalDrive7");
-            assert_eq!(drives[0].stable_id.as_deref(), Some("reader-7"));
-            assert_eq!(drives[0].partitions.len(), 1);
-            assert_eq!(drives[0].partitions[0].name, "F:");
-            assert_eq!(drives[0].partition_names(), ["CAMERA"]);
-        }
+                let drives = parse_windows_disks(&json).unwrap();
+                assert_eq!(drives.len(), 1);
+                assert_eq!(drives[0].name, "PhysicalDrive7");
+                assert_eq!(drives[0].stable_id.as_deref(), Some("reader-7"));
+                assert_eq!(drives[0].partitions.len(), 1);
+                assert_eq!(drives[0].partitions[0].name, "F:");
+                assert_eq!(drives[0].partition_names(), ["CAMERA"]);
+            }
 
-        {
-            assert_eq!(
-                parse_windows_disks(&serde_json::json!([])).unwrap().len(),
-                0
-            );
-            assert!(parse_windows_disks(&serde_json::json!({})).is_none());
+            {
+                assert_eq!(
+                    parse_windows_disks(&serde_json::json!([])).unwrap().len(),
+                    0
+                );
+                assert!(parse_windows_disks(&serde_json::json!({})).is_none());
+            }
         }
     }
 }

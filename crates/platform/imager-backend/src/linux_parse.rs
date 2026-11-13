@@ -359,141 +359,145 @@ mod tests {
    }
 }"#;
 
-    #[test]
-    fn sfdisk_partition_extent_overflow_refuses_instead_of_wrapping() {
-        let mut dump: serde_json::Value = serde_json::from_str(SFDISK).unwrap();
-        dump["partitiontable"]["partitions"][0]["start"] = u64::MAX.into();
-        dump["partitiontable"]["partitions"][0]["size"] = 2.into();
-        assert_eq!(
-            disk_from_sfdisk(&dump.to_string(), 1_000_215_216 * 512, 512).unwrap_err(),
-            "partition extent overflows"
-        );
-        dump["partitiontable"]["partitions"][0]["size"] = 1.into();
-        assert_eq!(
-            disk_from_sfdisk(&dump.to_string(), 1_000_215_216 * 512, 512)
-                .unwrap()
-                .partitions[0]
-                .last_lba,
-            u64::MAX
-        );
-    }
+    tilo_test_env::scenario! {
+        fn linux_tool_output_parses_exactly_and_refuses_overflow;
 
-    #[test]
-    fn linux_disk_inventory_parsers_normalise_units_and_backing_devices() {
+        phase sfdisk_partition_extent_overflow_refuses_instead_of_wrapping;
         {
-            let d = disk_from_sfdisk(SFDISK, 1_000_215_216 * 512, 4096).unwrap();
-            assert_eq!(d.guid, "a1b2c3d4-0000-4000-8000-00000000aaaa");
-            assert_eq!(d.sector_bytes, 512, "the dump's sectorsize wins");
-            assert_eq!(d.first_usable_lba, 34);
-            assert_eq!(d.partitions.len(), 2);
-            assert_eq!(d.partitions[0].number, 1);
-            assert_eq!(d.partitions[0].type_guid, super::super::ESP_TYPE);
-            assert_eq!(d.partitions[1].first_lba, 1_230_848);
-            assert_eq!(d.partitions[1].last_lba, 1_230_848 + 2_097_152 - 1);
+            let mut dump: serde_json::Value = serde_json::from_str(SFDISK).unwrap();
+            dump["partitiontable"]["partitions"][0]["start"] = u64::MAX.into();
+            dump["partitiontable"]["partitions"][0]["size"] = 2.into();
             assert_eq!(
-                disk_from_sfdisk(&SFDISK.replace("\"gpt\"", "\"dos\""), 0, 512).unwrap_err(),
-                "not-gpt"
+                disk_from_sfdisk(&dump.to_string(), 1_000_215_216 * 512, 512).unwrap_err(),
+                "partition extent overflows"
+            );
+            dump["partitiontable"]["partitions"][0]["size"] = 1.into();
+            assert_eq!(
+                disk_from_sfdisk(&dump.to_string(), 1_000_215_216 * 512, 512)
+                    .unwrap()
+                    .partitions[0]
+                    .last_lba,
+                u64::MAX
             );
         }
 
+        phase linux_disk_inventory_parsers_normalise_units_and_backing_devices;
         {
-            let json = r#"{"blockdevices":[{"name":"sda","path":"/dev/sda","type":"disk","size":1099511627776,
+            {
+                let d = disk_from_sfdisk(SFDISK, 1_000_215_216 * 512, 4096).unwrap();
+                assert_eq!(d.guid, "a1b2c3d4-0000-4000-8000-00000000aaaa");
+                assert_eq!(d.sector_bytes, 512, "the dump's sectorsize wins");
+                assert_eq!(d.first_usable_lba, 34);
+                assert_eq!(d.partitions.len(), 2);
+                assert_eq!(d.partitions[0].number, 1);
+                assert_eq!(d.partitions[0].type_guid, super::super::ESP_TYPE);
+                assert_eq!(d.partitions[1].first_lba, 1_230_848);
+                assert_eq!(d.partitions[1].last_lba, 1_230_848 + 2_097_152 - 1);
+                assert_eq!(
+                    disk_from_sfdisk(&SFDISK.replace("\"gpt\"", "\"dos\""), 0, 512).unwrap_err(),
+                    "not-gpt"
+                );
+            }
+
+            {
+                let json = r#"{"blockdevices":[{"name":"sda","path":"/dev/sda","type":"disk","size":1099511627776,
                 "log-sec":4096,"rm":"0","ptuuid":"A1B2C3D4-0000-4000-8000-00000000AAAA","pttype":"gpt",
                 "partuuid":null,"parttype":null,"partn":null,
                 "children":[{"name":"sda1","path":"/dev/sda1","type":"part","size":"536870912","log-sec":4096,
                 "rm":"0","ptuuid":"x","pttype":"gpt","partuuid":"0F0E0D0C-0000-4000-8000-000000000001",
                 "parttype":"C12A7328-F81F-11D2-BA4B-00A0C93EC93B","partn":1}]}]}"#;
-            let l = lsblk_disk(json).unwrap();
-            assert!(!l.removable);
-            // sysfs: start 2048 (512-byte units) = LBA 256 on 4Kn.
-            let d =
-                disk_from_lsblk(&l, &|name| (name == "sda1").then_some((2048, 1_048_576))).unwrap();
-            assert_eq!(d.sector_bytes, 4096);
-            assert_eq!(d.partitions[0].first_lba, 256);
-            assert_eq!(d.partitions[0].last_lba, 256 + 131_072 - 1);
-            assert_eq!(d.first_usable_lba, 6);
-            assert_eq!(d.last_usable_lba, 1_099_511_627_776 / 4096 - 6);
-            assert_eq!(
-                disk_from_lsblk(&l, &|_| Some((u64::MAX - 7, 8))).unwrap_err(),
-                "partition extent overflows"
-            );
-            let tiny = LsblkDisk {
-                size_bytes: 4096,
-                ..l.clone()
-            };
-            assert_eq!(
-                disk_from_lsblk(&tiny, &|_| Some((0, 8))).unwrap_err(),
-                "disk too small for GPT"
-            );
-            let dos = LsblkDisk {
-                pttype: Some("dos".into()),
-                ..l
-            };
-            assert!(disk_from_lsblk(&dos, &|_| None).is_err());
-        }
+                let l = lsblk_disk(json).unwrap();
+                assert!(!l.removable);
+                // sysfs: start 2048 (512-byte units) = LBA 256 on 4Kn.
+                let d =
+                    disk_from_lsblk(&l, &|name| (name == "sda1").then_some((2048, 1_048_576))).unwrap();
+                assert_eq!(d.sector_bytes, 4096);
+                assert_eq!(d.partitions[0].first_lba, 256);
+                assert_eq!(d.partitions[0].last_lba, 256 + 131_072 - 1);
+                assert_eq!(d.first_usable_lba, 6);
+                assert_eq!(d.last_usable_lba, 1_099_511_627_776 / 4096 - 6);
+                assert_eq!(
+                    disk_from_lsblk(&l, &|_| Some((u64::MAX - 7, 8))).unwrap_err(),
+                    "partition extent overflows"
+                );
+                let tiny = LsblkDisk {
+                    size_bytes: 4096,
+                    ..l.clone()
+                };
+                assert_eq!(
+                    disk_from_lsblk(&tiny, &|_| Some((0, 8))).unwrap_err(),
+                    "disk too small for GPT"
+                );
+                let dos = LsblkDisk {
+                    pttype: Some("dos".into()),
+                    ..l
+                };
+                assert!(disk_from_lsblk(&dos, &|_| None).is_err());
+            }
 
-        {
-            let info = "\
+            {
+                let info = "\
     22 1 0:21 / / rw,relatime shared:1 - overlay composefs ro\n\
     23 22 259:3 / /sysroot ro shared:2 - xfs /dev/nvme0n1p3 rw\n\
     24 22 0:40 / /var rw shared:3 - btrfs /dev/mapper/luks-abc rw\n\
     25 22 259:1 / /boot/efi rw shared:4 - vfat systemd-1 rw\n";
-            assert_eq!(mount_source(info, "/"), None);
-            assert_eq!(
-                mount_source(info, "/sysroot"),
-                Some(MountSource::Path("/dev/nvme0n1p3".into()))
-            );
-            assert_eq!(
-                mount_source(info, "/var"),
-                Some(MountSource::Path("/dev/mapper/luks-abc".into()))
-            );
-            assert_eq!(
-                mount_source(info, "/boot/efi"),
-                Some(MountSource::Number(259, 1))
-            );
-        }
+                assert_eq!(mount_source(info, "/"), None);
+                assert_eq!(
+                    mount_source(info, "/sysroot"),
+                    Some(MountSource::Path("/dev/nvme0n1p3".into()))
+                );
+                assert_eq!(
+                    mount_source(info, "/var"),
+                    Some(MountSource::Path("/dev/mapper/luks-abc".into()))
+                );
+                assert_eq!(
+                    mount_source(info, "/boot/efi"),
+                    Some(MountSource::Number(259, 1))
+                );
+            }
 
-        {
-            let lvm_two = r#"{"blockdevices":[{"name":"vg-root","type":"lvm","children":[
+            {
+                let lvm_two = r#"{"blockdevices":[{"name":"vg-root","type":"lvm","children":[
                 {"name":"sda2","type":"part","children":[{"name":"sda","type":"disk"}]},
                 {"name":"sdb1","type":"part","children":[{"name":"sdb","type":"disk"}]}]}]}"#;
-            assert_eq!(backing_disks(lvm_two).unwrap(), vec!["sda", "sdb"]);
-            let luks = r#"{"blockdevices":[{"name":"luks-x","type":"crypt","children":[
+                assert_eq!(backing_disks(lvm_two).unwrap(), vec!["sda", "sdb"]);
+                let luks = r#"{"blockdevices":[{"name":"luks-x","type":"crypt","children":[
                 {"name":"nvme0n1p3","type":"part","children":[{"name":"nvme0n1","type":"disk"}]}]}]}"#;
-            assert_eq!(backing_disks(luks).unwrap(), vec!["nvme0n1"]);
-            let raid = r#"{"blockdevices":[{"name":"md0","type":"raid1","children":[]}]}"#;
-            assert!(backing_disks(raid).is_err());
-        }
-    }
-
-    #[test]
-    fn linux_power_and_efivar_facts_parse_exactly() {
-        {
-            let bat = |status: &str, capacity| PowerSupply {
-                kind: "Battery".into(),
-                status: Some(status.into()),
-                capacity: Some(capacity),
-                ..PowerSupply::default()
-            };
-            let ac = |online| PowerSupply {
-                kind: "Mains".into(),
-                online: Some(online),
-                ..PowerSupply::default()
-            };
-            assert!(on_low_battery(&[bat("Discharging", 49), ac(false)]));
-            assert!(!on_low_battery(&[bat("Discharging", 50)]));
-            assert!(!on_low_battery(&[bat("Discharging", 10), ac(true)]));
-            assert!(!on_low_battery(&[bat("Charging", 10)]));
-            assert!(!on_low_battery(&[]));
+                assert_eq!(backing_disks(luks).unwrap(), vec!["nvme0n1"]);
+                let raid = r#"{"blockdevices":[{"name":"md0","type":"raid1","children":[]}]}"#;
+                assert!(backing_disks(raid).is_err());
+            }
         }
 
+        phase linux_power_and_efivar_facts_parse_exactly;
         {
-            let file = efivar_file(&[1, 0]);
-            assert_eq!(file, vec![7, 0, 0, 0, 1, 0]);
-            assert_eq!(efivar_payload(&file).unwrap(), vec![1, 0]);
-            assert!(efivar_payload(&[7, 0]).is_err());
-            assert_eq!(node_number("/dev/nvme0n1p12"), Some(12));
-            assert_eq!(node_number("/dev/sda"), None);
+            {
+                let bat = |status: &str, capacity| PowerSupply {
+                    kind: "Battery".into(),
+                    status: Some(status.into()),
+                    capacity: Some(capacity),
+                    ..PowerSupply::default()
+                };
+                let ac = |online| PowerSupply {
+                    kind: "Mains".into(),
+                    online: Some(online),
+                    ..PowerSupply::default()
+                };
+                assert!(on_low_battery(&[bat("Discharging", 49), ac(false)]));
+                assert!(!on_low_battery(&[bat("Discharging", 50)]));
+                assert!(!on_low_battery(&[bat("Discharging", 10), ac(true)]));
+                assert!(!on_low_battery(&[bat("Charging", 10)]));
+                assert!(!on_low_battery(&[]));
+            }
+
+            {
+                let file = efivar_file(&[1, 0]);
+                assert_eq!(file, vec![7, 0, 0, 0, 1, 0]);
+                assert_eq!(efivar_payload(&file).unwrap(), vec![1, 0]);
+                assert!(efivar_payload(&[7, 0]).is_err());
+                assert_eq!(node_number("/dev/nvme0n1p12"), Some(12));
+                assert_eq!(node_number("/dev/sda"), None);
+            }
         }
     }
 }

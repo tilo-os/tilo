@@ -152,255 +152,263 @@ fn snapshot(fixture: &Fixture) -> Vec<(PathBuf, Vec<u8>, i64, i64)> {
     files
 }
 
-#[test]
-fn closed_home_and_applications_checks_are_read_only() {
-    let fixture = Fixture::new();
-    let before = snapshot(&fixture);
-    assert_eq!(fixture.home_check().unwrap(), fixture.home);
-    assert_eq!(fixture.apps_check().unwrap(), fixture.cap);
-    assert_eq!(snapshot(&fixture), before);
-}
+tilo_test_env::scenario! {
+    fn installed_data_checks_refuse_every_mutation;
 
-#[test]
-fn receipt_mutations() {
-    let fixture = Fixture::new();
-    for (name, proof, key) in [
-        (HOME, fixture.home.clone(), "archive_protocol"),
-        (APPS, fixture.cap.clone(), "subset_protocol"),
-    ] {
-        let mutations: [&dyn Fn(&mut Value); 5] = [
-            &|p| p["unknown"] = true.into(),
-            &|p| {
-                p.as_object_mut().unwrap().remove("schema");
-            },
-            &|p| p["schema"] = true.into(),
-            &|p| p[key] = 1.into(),
-            &|p| p["prepared_helper_sha256"] = "A".repeat(64).into(),
+    phase closed_home_and_applications_checks_are_read_only;
+    {
+        let fixture = Fixture::new();
+        let before = snapshot(&fixture);
+        assert_eq!(fixture.home_check().unwrap(), fixture.home);
+        assert_eq!(fixture.apps_check().unwrap(), fixture.cap);
+        assert_eq!(snapshot(&fixture), before);
+    }
+
+    phase receipt_mutations;
+    {
+        let fixture = Fixture::new();
+        for (name, proof, key) in [
+            (HOME, fixture.home.clone(), "archive_protocol"),
+            (APPS, fixture.cap.clone(), "subset_protocol"),
+        ] {
+            let mutations: [&dyn Fn(&mut Value); 5] = [
+                &|p| p["unknown"] = true.into(),
+                &|p| {
+                    p.as_object_mut().unwrap().remove("schema");
+                },
+                &|p| p["schema"] = true.into(),
+                &|p| p[key] = 1.into(),
+                &|p| p["prepared_helper_sha256"] = "A".repeat(64).into(),
+            ];
+            for mutate in mutations {
+                let mut value = proof.clone();
+                mutate(&mut value);
+                fixture.save(name, &value, true);
+                let result = if name == HOME {
+                    fixture.home_check()
+                } else {
+                    fixture.apps_check()
+                };
+                assert!(result.is_err(), "{name}: {value}");
+            }
+            fixture.save(name, &proof, true);
+        }
+    }
+
+    phase duplicate_and_oversized_proofs;
+    {
+        let fixture = Fixture::new();
+        for payload in [
+            br#"{"schema":1,"schema":1}"#.to_vec(),
+            vec![b' '; 4097],
+            b"[]".to_vec(),
+        ] {
+            std::fs::write(fixture.receipt(HOME), payload).unwrap();
+            assert!(fixture.home_check().is_err());
+        }
+    }
+
+    phase every_actual_artifact_change_refuses;
+    {
+        let fixture = Fixture::new();
+        let change = |name: &str, check: &dyn Fn() -> io::Result<Value>| {
+            let path = fixture.store.path(name).unwrap();
+            let data = std::fs::read(&path).unwrap();
+            std::fs::write(&path, [data.as_slice(), b"changed"].concat()).unwrap();
+            assert!(check().is_err(), "{name}");
+            std::fs::write(&path, data).unwrap();
+        };
+        for name in [
+            HELPER,
+            "/usr/bin/tar",
+            "/usr/libexec/tilo-firstboot-user",
+            "/usr/libexec/tilo-firstboot-home-seeds",
+        ] {
+            change(name, &|| fixture.home_check());
+        }
+        for name in std::iter::once(HELPER).chain(TOOLS) {
+            change(name, &|| fixture.apps_check());
+        }
+        assert!(fixture.home_check().is_ok() && fixture.apps_check().is_ok());
+    }
+
+    phase compiled_firstboot_helper_substitution_during_probe_refuses;
+    {
+        let fixture = Fixture::new();
+        let mut changed = |command: &[OsString], _: usize, _: Duration| -> io::Result<Vec<u8>> {
+            let result = Ok(fixture.answer(command));
+            if command
+                .last()
+                .is_some_and(|mode| mode == "--home-consumer-capability")
+            {
+                let path = fixture
+                    .store
+                    .path("/usr/libexec/tilo-firstboot-files")
+                    .unwrap();
+                std::fs::write(path, "replaced ELF").unwrap();
+            }
+            result
+        };
+        let error = data::home(&fixture.store, true, &mut changed).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Home artifacts changed during probe"),
+            "{error}"
+        );
+    }
+
+    phase namespace_redirect_and_mutable_receipt_refuse;
+    {
+        let fixture = Fixture::new();
+        let path = fixture.receipt(APPS);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(fixture.apps_check().is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let actual = path.with_extension("actual");
+        std::fs::rename(&path, &actual).unwrap();
+        std::os::unix::fs::symlink(actual.file_name().unwrap(), &path).unwrap();
+        assert!(fixture.apps_check().is_err());
+        // A foreign-owned namespace edge refuses too.
+        let foreign = Store::new(fixture.root.clone(), uid() + 1);
+        assert!(data::home(&foreign, true, &mut fixture.runner()).is_err());
+    }
+
+    phase native_report_mutations_even_with_recomputed_digest;
+    {
+        let fixture = Fixture::new();
+        let mutations: [&dyn Fn(&mut Value); 6] = [
+            &|p| p["source_protocol"] = 5.into(),
+            &|p| p["receiving"]["deployments"] = 1.into(),
+            &|p| p["receiving"]["install_commands"] = 4.into(),
+            &|p| p["receiving"]["commits"] = json!([]),
+            &|p| p["receiving"]["selected_data_sha256"] = "g".repeat(64).into(),
+            &|p| p["tools"]["/usr/bin/flatpak"] = "f".repeat(64).into(),
         ];
         for mutate in mutations {
-            let mut value = proof.clone();
-            mutate(&mut value);
-            fixture.save(name, &value, true);
-            let result = if name == HOME {
-                fixture.home_check()
-            } else {
-                fixture.apps_check()
-            };
-            assert!(result.is_err(), "{name}: {value}");
+            let mut native = fixture.native.clone();
+            mutate(&mut native);
+            fixture.save(NATIVE, &native, false);
+            let mut cap = fixture.cap.clone();
+            cap["native_qualification_sha256"] =
+                hex::encode(Sha256::digest(json::canonical(&native))).into();
+            fixture.save(APPS, &cap, true);
+            assert!(fixture.apps_check().is_err(), "{native}");
         }
-        fixture.save(name, &proof, true);
+        // A newline or other noncanonical native bytes refuse as well.
+        fixture.save(APPS, &fixture.cap, true);
+        fixture.save(NATIVE, &fixture.native, true);
+        assert!(fixture.apps_check().is_err());
     }
-}
 
-#[test]
-fn duplicate_and_oversized_proofs() {
-    let fixture = Fixture::new();
-    for payload in [
-        br#"{"schema":1,"schema":1}"#.to_vec(),
-        vec![b' '; 4097],
-        b"[]".to_vec(),
-    ] {
-        std::fs::write(fixture.receipt(HOME), payload).unwrap();
-        assert!(fixture.home_check().is_err());
-    }
-}
-
-#[test]
-fn every_actual_artifact_change_refuses() {
-    let fixture = Fixture::new();
-    let change = |name: &str, check: &dyn Fn() -> io::Result<Value>| {
-        let path = fixture.store.path(name).unwrap();
-        let data = std::fs::read(&path).unwrap();
-        std::fs::write(&path, [data.as_slice(), b"changed"].concat()).unwrap();
-        assert!(check().is_err(), "{name}");
-        std::fs::write(&path, data).unwrap();
-    };
-    for name in [
-        HELPER,
-        "/usr/bin/tar",
-        "/usr/libexec/tilo-firstboot-user",
-        "/usr/libexec/tilo-firstboot-home-seeds",
-    ] {
-        change(name, &|| fixture.home_check());
-    }
-    for name in std::iter::once(HELPER).chain(TOOLS) {
-        change(name, &|| fixture.apps_check());
-    }
-    assert!(fixture.home_check().is_ok() && fixture.apps_check().is_ok());
-}
-
-#[test]
-fn compiled_firstboot_helper_substitution_during_probe_refuses() {
-    let fixture = Fixture::new();
-    let mut changed = |command: &[OsString], _: usize, _: Duration| -> io::Result<Vec<u8>> {
-        let result = Ok(fixture.answer(command));
-        if command
-            .last()
-            .is_some_and(|mode| mode == "--home-consumer-capability")
-        {
-            let path = fixture
-                .store
-                .path("/usr/libexec/tilo-firstboot-files")
-                .unwrap();
-            std::fs::write(path, "replaced ELF").unwrap();
-        }
-        result
-    };
-    let error = data::home(&fixture.store, true, &mut changed).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("Home artifacts changed during probe"),
-        "{error}"
-    );
-}
-
-#[test]
-fn namespace_redirect_and_mutable_receipt_refuse() {
-    let fixture = Fixture::new();
-    let path = fixture.receipt(APPS);
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
-    assert!(fixture.apps_check().is_err());
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let actual = path.with_extension("actual");
-    std::fs::rename(&path, &actual).unwrap();
-    std::os::unix::fs::symlink(actual.file_name().unwrap(), &path).unwrap();
-    assert!(fixture.apps_check().is_err());
-    // A foreign-owned namespace edge refuses too.
-    let foreign = Store::new(fixture.root.clone(), uid() + 1);
-    assert!(data::home(&foreign, true, &mut fixture.runner()).is_err());
-}
-
-#[test]
-fn native_report_mutations_even_with_recomputed_digest() {
-    let fixture = Fixture::new();
-    let mutations: [&dyn Fn(&mut Value); 6] = [
-        &|p| p["source_protocol"] = 5.into(),
-        &|p| p["receiving"]["deployments"] = 1.into(),
-        &|p| p["receiving"]["install_commands"] = 4.into(),
-        &|p| p["receiving"]["commits"] = json!([]),
-        &|p| p["receiving"]["selected_data_sha256"] = "g".repeat(64).into(),
-        &|p| p["tools"]["/usr/bin/flatpak"] = "f".repeat(64).into(),
-    ];
-    for mutate in mutations {
-        let mut native = fixture.native.clone();
-        mutate(&mut native);
-        fixture.save(NATIVE, &native, false);
-        let mut cap = fixture.cap.clone();
-        cap["native_qualification_sha256"] =
-            hex::encode(Sha256::digest(json::canonical(&native))).into();
-        fixture.save(APPS, &cap, true);
-        assert!(fixture.apps_check().is_err(), "{native}");
-    }
-    // A newline or other noncanonical native bytes refuse as well.
-    fixture.save(APPS, &fixture.cap, true);
-    fixture.save(NATIVE, &fixture.native, true);
-    assert!(fixture.apps_check().is_err());
-}
-
-#[test]
-fn signed_cohort_failure_and_during_check_substitution_refuse() {
-    let fixture = Fixture::new();
-    let mut changed = |command: &[OsString], _: usize, _: Duration| -> io::Result<Vec<u8>> {
-        if command
-            .last()
-            .is_some_and(|mode| mode == "--reattest-original-source-consumer-capability")
-        {
-            std::fs::write(fixture.store.path("/usr/bin/flatpak").unwrap(), "replaced").unwrap();
-        }
-        Ok(fixture.answer(command))
-    };
-    assert!(data::applications(&fixture.store, true, &mut changed).is_err());
-    let mut failed = |_: &[OsString], _: usize, _: Duration| -> io::Result<Vec<u8>> {
-        Err(io::Error::other("canonical signature verification failed"))
-    };
-    assert!(data::applications(&fixture.store, true, &mut failed).is_err());
-}
-
-#[test]
-fn producer_calls_real_factory_mode_and_publishes_completion_last() {
-    let fixture = Fixture::new();
-    // Any previous receipt refuses a new qualification.
-    assert!(data::applications(&fixture.store, false, &mut fixture.runner()).is_err());
-    for name in [APPS, NATIVE, ORIGINAL] {
-        std::fs::remove_file(fixture.receipt(name)).unwrap();
-    }
-    let mut modes = Vec::new();
-    let mut observed =
-        |command: &[OsString], limit: usize, timeout: Duration| -> io::Result<Vec<u8>> {
-            let mode = command.last().unwrap().to_str().unwrap().to_owned();
-            if mode == "--applications-consumer-capability" {
-                assert_eq!(
-                    command,
-                    [
-                        fixture.store.path(HELPER).unwrap().into_os_string(),
-                        mode.clone().into()
-                    ]
-                );
-                assert_eq!((limit, timeout), (8192, Duration::from_secs(1800)));
+    phase signed_cohort_failure_and_during_check_substitution_refuse;
+    {
+        let fixture = Fixture::new();
+        let mut changed = |command: &[OsString], _: usize, _: Duration| -> io::Result<Vec<u8>> {
+            if command
+                .last()
+                .is_some_and(|mode| mode == "--reattest-original-source-consumer-capability")
+            {
+                std::fs::write(fixture.store.path("/usr/bin/flatpak").unwrap(), "replaced").unwrap();
             }
-            if mode == "--reattest-original-source-consumer-capability" {
-                // Source receipt first; the app capability is the last marker.
-                assert!(fixture.receipt(ORIGINAL).exists());
-                assert!(!fixture.receipt(NATIVE).exists() && !fixture.receipt(APPS).exists());
-            }
-            modes.push(mode);
             Ok(fixture.answer(command))
         };
-    assert_eq!(
-        data::applications(&fixture.store, false, &mut observed).unwrap(),
-        fixture.cap
-    );
-    assert_eq!(
-        modes,
-        [
-            "--applications-consumer-capability",
-            "--reattest-original-source-consumer-capability"
-        ]
-    );
-    let mut cap = json::canonical(&fixture.cap);
-    cap.push(b'\n');
-    assert_eq!(std::fs::read(fixture.receipt(APPS)).unwrap(), cap);
-    assert_eq!(
-        std::fs::read(fixture.receipt(NATIVE)).unwrap(),
-        json::canonical(&fixture.native)
-    );
-    for name in [APPS, NATIVE, ORIGINAL] {
-        let info = std::fs::symlink_metadata(fixture.receipt(name)).unwrap();
-        assert_eq!((info.mode() & 0o777, info.nlink()), (0o644, 1), "{name}");
+        assert!(data::applications(&fixture.store, true, &mut changed).is_err());
+        let mut failed = |_: &[OsString], _: usize, _: Duration| -> io::Result<Vec<u8>> {
+            Err(io::Error::other("canonical signature verification failed"))
+        };
+        assert!(data::applications(&fixture.store, true, &mut failed).is_err());
     }
-    // The checked receipts now read back, and nothing is ever replaced.
-    assert_eq!(fixture.apps_check().unwrap(), fixture.cap);
-    assert!(data::applications(&fixture.store, false, &mut fixture.runner()).is_err());
 }
 
-#[test]
-fn home_producer_publishes_once() {
-    let fixture = Fixture::new();
-    std::fs::remove_file(fixture.receipt(HOME)).unwrap();
-    assert_eq!(
-        data::home(&fixture.store, false, &mut fixture.runner()).unwrap(),
-        fixture.home
-    );
-    assert_eq!(fixture.home_check().unwrap(), fixture.home);
-    assert!(data::home(&fixture.store, false, &mut fixture.runner()).is_err());
-}
+tilo_test_env::scenario! {
+    fn data_producers_publish_once_and_report_what_was_attempted;
 
-#[test]
-fn catalog_facts_include_applications_only_when_attempted() {
-    let fixture = Fixture::new();
-    let facts = data::catalog_facts(&fixture.store, &mut fixture.runner()).unwrap();
-    assert_eq!(
-        facts,
-        json!({"home_archive": fixture.home, "applications": fixture.cap,
-               "original_source": fixture.original})
-    );
-    std::fs::remove_file(fixture.receipt(APPS)).unwrap();
-    // A partial app publication fails closed instead of downgrading.
-    assert!(data::catalog_facts(&fixture.store, &mut fixture.runner()).is_err());
-    std::fs::remove_file(fixture.receipt(NATIVE)).unwrap();
-    assert_eq!(
-        data::catalog_facts(&fixture.store, &mut fixture.runner()).unwrap(),
-        json!({"home_archive": fixture.home})
-    );
+    phase producer_calls_real_factory_mode_and_publishes_completion_last;
+    {
+        let fixture = Fixture::new();
+        // Any previous receipt refuses a new qualification.
+        assert!(data::applications(&fixture.store, false, &mut fixture.runner()).is_err());
+        for name in [APPS, NATIVE, ORIGINAL] {
+            std::fs::remove_file(fixture.receipt(name)).unwrap();
+        }
+        let mut modes = Vec::new();
+        let mut observed =
+            |command: &[OsString], limit: usize, timeout: Duration| -> io::Result<Vec<u8>> {
+                let mode = command.last().unwrap().to_str().unwrap().to_owned();
+                if mode == "--applications-consumer-capability" {
+                    assert_eq!(
+                        command,
+                        [
+                            fixture.store.path(HELPER).unwrap().into_os_string(),
+                            mode.clone().into()
+                        ]
+                    );
+                    assert_eq!((limit, timeout), (8192, Duration::from_secs(1800)));
+                }
+                if mode == "--reattest-original-source-consumer-capability" {
+                    // Source receipt first; the app capability is the last marker.
+                    assert!(fixture.receipt(ORIGINAL).exists());
+                    assert!(!fixture.receipt(NATIVE).exists() && !fixture.receipt(APPS).exists());
+                }
+                modes.push(mode);
+                Ok(fixture.answer(command))
+            };
+        assert_eq!(
+            data::applications(&fixture.store, false, &mut observed).unwrap(),
+            fixture.cap
+        );
+        assert_eq!(
+            modes,
+            [
+                "--applications-consumer-capability",
+                "--reattest-original-source-consumer-capability"
+            ]
+        );
+        let mut cap = json::canonical(&fixture.cap);
+        cap.push(b'\n');
+        assert_eq!(std::fs::read(fixture.receipt(APPS)).unwrap(), cap);
+        assert_eq!(
+            std::fs::read(fixture.receipt(NATIVE)).unwrap(),
+            json::canonical(&fixture.native)
+        );
+        for name in [APPS, NATIVE, ORIGINAL] {
+            let info = std::fs::symlink_metadata(fixture.receipt(name)).unwrap();
+            assert_eq!((info.mode() & 0o777, info.nlink()), (0o644, 1), "{name}");
+        }
+        // The checked receipts now read back, and nothing is ever replaced.
+        assert_eq!(fixture.apps_check().unwrap(), fixture.cap);
+        assert!(data::applications(&fixture.store, false, &mut fixture.runner()).is_err());
+    }
+
+    phase home_producer_publishes_once;
+    {
+        let fixture = Fixture::new();
+        std::fs::remove_file(fixture.receipt(HOME)).unwrap();
+        assert_eq!(
+            data::home(&fixture.store, false, &mut fixture.runner()).unwrap(),
+            fixture.home
+        );
+        assert_eq!(fixture.home_check().unwrap(), fixture.home);
+        assert!(data::home(&fixture.store, false, &mut fixture.runner()).is_err());
+    }
+
+    phase catalog_facts_include_applications_only_when_attempted;
+    {
+        let fixture = Fixture::new();
+        let facts = data::catalog_facts(&fixture.store, &mut fixture.runner()).unwrap();
+        assert_eq!(
+            facts,
+            json!({"home_archive": fixture.home, "applications": fixture.cap,
+                   "original_source": fixture.original})
+        );
+        std::fs::remove_file(fixture.receipt(APPS)).unwrap();
+        // A partial app publication fails closed instead of downgrading.
+        assert!(data::catalog_facts(&fixture.store, &mut fixture.runner()).is_err());
+        std::fs::remove_file(fixture.receipt(NATIVE)).unwrap();
+        assert_eq!(
+            data::catalog_facts(&fixture.store, &mut fixture.runner()).unwrap(),
+            json!({"home_archive": fixture.home})
+        );
+    }
 }

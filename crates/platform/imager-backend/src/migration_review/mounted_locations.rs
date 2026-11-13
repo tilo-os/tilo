@@ -246,42 +246,47 @@ fn observe_directory_open(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn discovery_never_follows_outside_symlinks_and_refuses_replaced_home() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = std::fs::canonicalize(temporary.path()).unwrap();
-        let home = root.join("home");
-        let outside = root.join("outside");
-        std::fs::create_dir(&home).unwrap();
-        std::fs::create_dir(&outside).unwrap();
-        std::fs::write(outside.join("private"), b"outside bytes").unwrap();
-        std::os::unix::fs::symlink(&outside, home.join("literal-link")).unwrap();
-        std::fs::write(home.join(".hidden"), b"retained bytes").unwrap();
-        let cancel = AtomicBool::new(false);
-        let pin = PinnedDirectory::open_absolute(&home).unwrap();
-        let discovered = MountedHomeLocations::discover(&pin, &home, &cancel).unwrap();
-        assert!(discovered.display_names().is_empty());
-        discovered.require_single_root(&cancel).unwrap();
-        std::fs::rename(&home, root.join("retained-home")).unwrap();
-        std::fs::create_dir(&home).unwrap();
-        assert!(discovered.validate(&cancel).is_err());
-        assert_eq!(
-            std::fs::read(outside.join("private")).unwrap(),
-            b"outside bytes"
-        );
-        assert_eq!(
-            std::fs::read(root.join("retained-home/.hidden")).unwrap(),
-            b"retained bytes"
-        );
-    }
-    #[test]
-    fn cancelled_discovery_does_not_return_a_location_review() {
-        let temporary = tempfile::tempdir().unwrap();
-        let home = std::fs::canonicalize(temporary.path()).unwrap();
-        let pin = PinnedDirectory::open_absolute(&home).unwrap();
-        let error =
-            MountedHomeLocations::discover(&pin, &home, &AtomicBool::new(true)).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert!(!nested_home_mount(&error));
+    tilo_test_env::scenario! {
+        fn mounted_home_discovery_refuses_escapes_and_cancellation;
+
+        phase discovery_never_follows_outside_symlinks_and_refuses_replaced_home;
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let root = std::fs::canonicalize(temporary.path()).unwrap();
+            let home = root.join("home");
+            let outside = root.join("outside");
+            std::fs::create_dir(&home).unwrap();
+            std::fs::create_dir(&outside).unwrap();
+            std::fs::write(outside.join("private"), b"outside bytes").unwrap();
+            std::os::unix::fs::symlink(&outside, home.join("literal-link")).unwrap();
+            std::fs::write(home.join(".hidden"), b"retained bytes").unwrap();
+            let cancel = AtomicBool::new(false);
+            let pin = PinnedDirectory::open_absolute(&home).unwrap();
+            let discovered = MountedHomeLocations::discover(&pin, &home, &cancel).unwrap();
+            assert!(discovered.display_names().is_empty());
+            discovered.require_single_root(&cancel).unwrap();
+            std::fs::rename(&home, root.join("retained-home")).unwrap();
+            std::fs::create_dir(&home).unwrap();
+            assert!(discovered.validate(&cancel).is_err());
+            assert_eq!(
+                std::fs::read(outside.join("private")).unwrap(),
+                b"outside bytes"
+            );
+            assert_eq!(
+                std::fs::read(root.join("retained-home/.hidden")).unwrap(),
+                b"retained bytes"
+            );
+        }
+
+        phase cancelled_discovery_does_not_return_a_location_review;
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let home = std::fs::canonicalize(temporary.path()).unwrap();
+            let pin = PinnedDirectory::open_absolute(&home).unwrap();
+            let error =
+                MountedHomeLocations::discover(&pin, &home, &AtomicBool::new(true)).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+            assert!(!nested_home_mount(&error));
+        }
     }
 }

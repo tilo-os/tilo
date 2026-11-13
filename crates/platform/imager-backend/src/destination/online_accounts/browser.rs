@@ -322,130 +322,138 @@ mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    #[test]
-    fn launch_uses_only_the_approved_installed_browser_route() {
-        let session = LaunchSession {
-            socket: "/run/user/42/wayland-0".into(),
-            environment: vec![],
-        };
-        let url = "https://accounts.example/authorize?state=secret&scope=a%20b";
-        let command = launch_command(&session, url);
-        assert_eq!(command.get_program(), LAUNCHER);
-        let args: Vec<_> = command.get_args().collect();
-        assert_eq!(
-            args,
-            [
-                "exec",
-                "--package",
-                PACKAGE,
-                "--wayland-socket",
-                "/run/user/42/wayland-0",
-                "--open-uri",
-                url
-            ]
-        );
-        assert_eq!(
-            command.get_envs().collect::<Vec<_>>(),
-            [(
-                std::ffi::OsStr::new("PATH"),
-                Some(std::ffi::OsStr::new("/usr/bin:/bin"))
-            )]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_launched_browser_child_is_bounded;
 
-    #[test]
-    fn only_web_authorization_urls_and_loopback_fixtures_are_accepted() {
-        for value in [
-            "https://accounts.example/authorize?state=secret",
-            "http://127.0.0.1:4567/authorize",
-            "http://[::1]:4567/authorize",
-        ] {
-            assert_eq!(validate_url(value), Ok(()));
+        phase early_exit_is_a_failure_even_with_a_success_exit_code;
+        {
+            let mut browser = Some(
+                Command::new("/usr/bin/true")
+                    .process_group(0)
+                    .spawn_locked()
+                    .unwrap(),
+            );
+            let result = startup(
+                &mut browser,
+                Instant::now().checked_add(OPEN_DEADLINE).unwrap(),
+            );
+            stop(&mut browser);
+            assert_eq!(result, Err(BrowserError::LaunchFailed));
         }
-        for value in [
-            "--allow-unsigned-runtime",
-            "file:///etc/passwd",
-            "javascript:alert(1)",
-            "http://accounts.example/",
-            "https://user:password@example.org/",
-            "https://example.org/#secret",
-            "https://example.org/\nsecret",
-        ] {
-            assert_eq!(validate_url(value), Err(BrowserError::InvalidUrl));
+
+        phase a_running_child_is_bounded_and_can_be_closed;
+        {
+            let mut browser = Some(
+                Command::new("/usr/bin/sleep")
+                    .arg("30")
+                    .process_group(0)
+                    .spawn_locked()
+                    .unwrap(),
+            );
+            let result = startup(
+                &mut browser,
+                Instant::now()
+                    .checked_add(Duration::from_millis(50))
+                    .unwrap(),
+            );
+            stop(&mut browser);
+            assert_eq!(result, Err(BrowserError::TimedOut));
+            assert!(browser.is_none());
         }
-        assert_eq!(
-            validate_url(&"x".repeat(MAX_URL_BYTES + 1)),
-            Err(BrowserError::InvalidUrl)
-        );
     }
 
-    #[test]
-    fn cage_socket_must_exist_and_belong_to_the_session() {
-        let directory = tempfile::tempdir().unwrap();
-        let socket = directory.path().join("wayland-0");
-        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        let uid = rustix::process::geteuid().as_raw();
-        assert_eq!(
-            display_socket(directory.path(), std::ffi::OsStr::new("wayland-0"), uid),
-            Ok(socket)
-        );
-        assert_eq!(
-            display_socket(directory.path(), std::ffi::OsStr::new("missing"), uid),
-            Err(BrowserError::DisplayUnavailable)
-        );
-        assert_eq!(
-            display_socket(
-                directory.path(),
-                std::ffi::OsStr::new("wayland-0"),
-                uid.wrapping_add(1)
-            ),
-            Err(BrowserError::DisplayUnavailable)
-        );
-    }
+    tilo_test_env::scenario! {
+        fn browser_launch_takes_only_the_approved_route_and_urls;
 
-    #[test]
-    fn early_exit_is_a_failure_even_with_a_success_exit_code() {
-        let mut browser = Some(
-            Command::new("/usr/bin/true")
-                .process_group(0)
-                .spawn_locked()
-                .unwrap(),
-        );
-        let result = startup(
-            &mut browser,
-            Instant::now().checked_add(OPEN_DEADLINE).unwrap(),
-        );
-        stop(&mut browser);
-        assert_eq!(result, Err(BrowserError::LaunchFailed));
-    }
+        phase launch_uses_only_the_approved_installed_browser_route;
+        {
+            let session = LaunchSession {
+                socket: "/run/user/42/wayland-0".into(),
+                environment: vec![],
+            };
+            let url = "https://accounts.example/authorize?state=secret&scope=a%20b";
+            let command = launch_command(&session, url);
+            assert_eq!(command.get_program(), LAUNCHER);
+            let args: Vec<_> = command.get_args().collect();
+            assert_eq!(
+                args,
+                [
+                    "exec",
+                    "--package",
+                    PACKAGE,
+                    "--wayland-socket",
+                    "/run/user/42/wayland-0",
+                    "--open-uri",
+                    url
+                ]
+            );
+            assert_eq!(
+                command.get_envs().collect::<Vec<_>>(),
+                [(
+                    std::ffi::OsStr::new("PATH"),
+                    Some(std::ffi::OsStr::new("/usr/bin:/bin"))
+                )]
+            );
+        }
 
-    #[test]
-    fn a_running_child_is_bounded_and_can_be_closed() {
-        let mut browser = Some(
-            Command::new("/usr/bin/sleep")
-                .arg("30")
-                .process_group(0)
-                .spawn_locked()
-                .unwrap(),
-        );
-        let result = startup(
-            &mut browser,
-            Instant::now()
-                .checked_add(Duration::from_millis(50))
-                .unwrap(),
-        );
-        stop(&mut browser);
-        assert_eq!(result, Err(BrowserError::TimedOut));
-        assert!(browser.is_none());
-    }
+        phase only_web_authorization_urls_and_loopback_fixtures_are_accepted;
+        {
+            for value in [
+                "https://accounts.example/authorize?state=secret",
+                "http://127.0.0.1:4567/authorize",
+                "http://[::1]:4567/authorize",
+            ] {
+                assert_eq!(validate_url(value), Ok(()));
+            }
+            for value in [
+                "--allow-unsigned-runtime",
+                "file:///etc/passwd",
+                "javascript:alert(1)",
+                "http://accounts.example/",
+                "https://user:password@example.org/",
+                "https://example.org/#secret",
+                "https://example.org/\nsecret",
+            ] {
+                assert_eq!(validate_url(value), Err(BrowserError::InvalidUrl));
+            }
+            assert_eq!(
+                validate_url(&"x".repeat(MAX_URL_BYTES + 1)),
+                Err(BrowserError::InvalidUrl)
+            );
+        }
 
-    #[test]
-    fn browser_policy_keeps_the_canonical_oauth_loopback_reachable() {
-        let manifest = include_str!("../../../../../../apps/browser/tilo-app.toml");
-        // The installed signed manifest is consumed by the launcher, not edited or overridden here;
-        // host mode already supplies --share-net.
-        assert!(manifest.contains("[sandbox.net]\nmode = \"host\""));
-        assert!(manifest.contains("landlock   = \"strict\""));
-        assert!(manifest.contains("seccomp    = \"tilo-web-engine\""));
+        phase cage_socket_must_exist_and_belong_to_the_session;
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let socket = directory.path().join("wayland-0");
+            let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            let uid = rustix::process::geteuid().as_raw();
+            assert_eq!(
+                display_socket(directory.path(), std::ffi::OsStr::new("wayland-0"), uid),
+                Ok(socket)
+            );
+            assert_eq!(
+                display_socket(directory.path(), std::ffi::OsStr::new("missing"), uid),
+                Err(BrowserError::DisplayUnavailable)
+            );
+            assert_eq!(
+                display_socket(
+                    directory.path(),
+                    std::ffi::OsStr::new("wayland-0"),
+                    uid.wrapping_add(1)
+                ),
+                Err(BrowserError::DisplayUnavailable)
+            );
+        }
+
+        phase browser_policy_keeps_the_canonical_oauth_loopback_reachable;
+        {
+            let manifest = include_str!("../../../../../../apps/browser/tilo-app.toml");
+            // The installed signed manifest is consumed by the launcher, not edited or overridden here;
+            // host mode already supplies --share-net.
+            assert!(manifest.contains("[sandbox.net]\nmode = \"host\""));
+            assert!(manifest.contains("landlock   = \"strict\""));
+            assert!(manifest.contains("seccomp    = \"tilo-web-engine\""));
+        }
     }
 }

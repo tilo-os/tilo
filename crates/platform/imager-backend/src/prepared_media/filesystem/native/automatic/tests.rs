@@ -77,82 +77,88 @@ fn fixture() -> (tempfile::TempDir, TargetDrive, Fixture) {
         },
     )
 }
-#[test]
-fn automatic_mount_resolves_actual_grant_and_releases_only_its_own_mount() {
-    let (_temp, target, backend) = fixture();
-    let cancel = AtomicBool::new(false);
-    with_mount(&backend, &target, &cancel, |grant| {
-        assert_eq!(grant.root, backend.root);
-        grant.pin.validate_destination()?;
-        fs::write(
-            grant.root.join("actual-ciphertext-output"),
-            b"verified-output",
-        )?;
-        Ok(())
-    })
-    .unwrap();
-    assert_eq!(*backend.calls.borrow(), ["rescan", "mount", "unmount"]);
-    assert_eq!(
-        fs::read(backend.root.join("actual-ciphertext-output")).unwrap(),
-        b"verified-output"
-    );
-    backend.calls.borrow_mut().clear();
-    backend.rows.borrow_mut()[0].children[0].mountpoints =
-        vec![backend.root.to_string_lossy().into_owned()];
-    with_mount(&backend, &target, &cancel, |_| Ok(())).unwrap();
-    assert_eq!(*backend.calls.borrow(), ["rescan"]);
-}
-#[test]
-fn failed_delivery_and_cancellation_release_mount_but_changed_device_is_never_unmounted() {
-    let (_temp, target, backend) = fixture();
-    let cancel = AtomicBool::new(false);
-    assert!(
-        with_mount(&backend, &target, &cancel, |_| Err::<(), _>(
-            io::Error::other("copy failed")
-        ))
-        .is_err()
-    );
-    assert_eq!(*backend.calls.borrow(), ["rescan", "mount", "unmount"]);
-    backend.calls.borrow_mut().clear();
-    assert!(
-        with_mount(&backend, &target, &cancel, |_| {
-            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-            Err::<(), _>(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
-        })
-        .is_err()
-    );
-    assert_eq!(*backend.calls.borrow(), ["rescan", "mount", "unmount"]);
-    backend.calls.borrow_mut().clear();
-    cancel.store(false, std::sync::atomic::Ordering::Relaxed);
-    assert!(
-        with_mount(&backend, &target, &cancel, |_| {
-            backend.rows.borrow_mut()[0].children[0].partuuid = Some("different-partition".into());
+tilo_test_env::scenario! {
+    fn automatic_efi_mount_serves_only_its_own_trusted_filesystem;
+
+    phase automatic_mount_resolves_actual_grant_and_releases_only_its_own_mount;
+    {
+        let (_temp, target, backend) = fixture();
+        let cancel = AtomicBool::new(false);
+        with_mount(&backend, &target, &cancel, |grant| {
+            assert_eq!(grant.root, backend.root);
+            grant.pin.validate_destination()?;
+            fs::write(
+                grant.root.join("actual-ciphertext-output"),
+                b"verified-output",
+            )?;
             Ok(())
         })
-        .is_err()
-    );
-    assert_eq!(*backend.calls.borrow(), ["rescan", "mount"]);
-}
-#[test]
-fn ambiguous_or_untrusted_efi_filesystems_are_refused_before_mounting() {
-    let (_temp, target, backend) = fixture();
-    let part = backend.rows.borrow()[0].children[0].clone();
-    backend.rows.borrow_mut()[0].children.push(part);
-    assert!(with_mount(&backend, &target, &AtomicBool::new(false), |_| Ok(())).is_err());
-    assert_eq!(*backend.calls.borrow(), ["rescan"]);
-    backend.rows.borrow_mut()[0].children.pop();
-    backend.calls.borrow_mut().clear();
-    backend.rows.borrow_mut()[0].children[0].fstype = Some("ext4".into());
-    assert!(with_mount(&backend, &target, &AtomicBool::new(false), |_| Ok(())).is_err());
-    assert_eq!(*backend.calls.borrow(), ["rescan"]);
-    assert!(
-        selected(
-            &backend.inventory().unwrap(),
-            &TargetDrive {
-                stable_id: None,
-                ..target
-            }
-        )
-        .is_err()
-    );
+        .unwrap();
+        assert_eq!(*backend.calls.borrow(), ["rescan", "mount", "unmount"]);
+        assert_eq!(
+            fs::read(backend.root.join("actual-ciphertext-output")).unwrap(),
+            b"verified-output"
+        );
+        backend.calls.borrow_mut().clear();
+        backend.rows.borrow_mut()[0].children[0].mountpoints =
+            vec![backend.root.to_string_lossy().into_owned()];
+        with_mount(&backend, &target, &cancel, |_| Ok(())).unwrap();
+        assert_eq!(*backend.calls.borrow(), ["rescan"]);
+    }
+
+    phase failed_delivery_and_cancellation_release_mount_but_changed_device_is_never_unmounted;
+    {
+        let (_temp, target, backend) = fixture();
+        let cancel = AtomicBool::new(false);
+        assert!(
+            with_mount(&backend, &target, &cancel, |_| Err::<(), _>(
+                io::Error::other("copy failed")
+            ))
+            .is_err()
+        );
+        assert_eq!(*backend.calls.borrow(), ["rescan", "mount", "unmount"]);
+        backend.calls.borrow_mut().clear();
+        assert!(
+            with_mount(&backend, &target, &cancel, |_| {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                Err::<(), _>(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
+            })
+            .is_err()
+        );
+        assert_eq!(*backend.calls.borrow(), ["rescan", "mount", "unmount"]);
+        backend.calls.borrow_mut().clear();
+        cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            with_mount(&backend, &target, &cancel, |_| {
+                backend.rows.borrow_mut()[0].children[0].partuuid = Some("different-partition".into());
+                Ok(())
+            })
+            .is_err()
+        );
+        assert_eq!(*backend.calls.borrow(), ["rescan", "mount"]);
+    }
+
+    phase ambiguous_or_untrusted_efi_filesystems_are_refused_before_mounting;
+    {
+        let (_temp, target, backend) = fixture();
+        let part = backend.rows.borrow()[0].children[0].clone();
+        backend.rows.borrow_mut()[0].children.push(part);
+        assert!(with_mount(&backend, &target, &AtomicBool::new(false), |_| Ok(())).is_err());
+        assert_eq!(*backend.calls.borrow(), ["rescan"]);
+        backend.rows.borrow_mut()[0].children.pop();
+        backend.calls.borrow_mut().clear();
+        backend.rows.borrow_mut()[0].children[0].fstype = Some("ext4".into());
+        assert!(with_mount(&backend, &target, &AtomicBool::new(false), |_| Ok(())).is_err());
+        assert_eq!(*backend.calls.borrow(), ["rescan"]);
+        assert!(
+            selected(
+                &backend.inventory().unwrap(),
+                &TargetDrive {
+                    stable_id: None,
+                    ..target
+                }
+            )
+            .is_err()
+        );
+    }
 }

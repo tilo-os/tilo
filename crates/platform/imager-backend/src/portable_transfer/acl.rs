@@ -459,84 +459,89 @@ pub(crate) mod fixture {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn acl_parser_rejects_unmapped_principals_and_malformed_metadata() {
-        for value in [
-            b"user::rwx\nuser:99:r--\ngroup::r--\nmask::r--\nother::---".as_slice(),
-            b"user::rwx\ngroup::r--\ngroup:99:r--\nmask::r--\nother::---",
-        ] {
-            assert_eq!(
-                parse_text(value, false).unwrap_err().kind(),
-                io::ErrorKind::Unsupported
+    tilo_test_env::scenario! {
+        fn posix_acls_parse_strictly_and_copy_exactly;
+
+        phase acl_parser_rejects_unmapped_principals_and_malformed_metadata;
+        {
+            for value in [
+                b"user::rwx\nuser:99:r--\ngroup::r--\nmask::r--\nother::---".as_slice(),
+                b"user::rwx\ngroup::r--\ngroup:99:r--\nmask::r--\nother::---",
+            ] {
+                assert_eq!(
+                    parse_text(value, false).unwrap_err().kind(),
+                    io::ErrorKind::Unsupported
+                );
+            }
+            for value in [
+                b"user::rwx\ngroup::r-x".as_slice(),
+                b"user::rwx\nuser::rwx\ngroup::r-x\nother::---",
+                b"user::rwx\ngroup::r-x\nother::rwx:99",
+                b"user::rwx\ngroup::rx-\nother::---",
+            ] {
+                assert!(parse_text(value, false).is_err());
+            }
+            assert!(
+                parse_text(b"user::rwx\ngroup::r-x\nother::---", false)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                parse_text(b"user::rwx\ngroup::r-x\nother::---", true)
+                    .unwrap()
+                    .is_some()
             );
         }
-        for value in [
-            b"user::rwx\ngroup::r-x".as_slice(),
-            b"user::rwx\nuser::rwx\ngroup::r-x\nother::---",
-            b"user::rwx\ngroup::r-x\nother::rwx:99",
-            b"user::rwx\ngroup::rx-\nother::---",
-        ] {
-            assert!(parse_text(value, false).is_err());
-        }
-        assert!(
-            parse_text(b"user::rwx\ngroup::r-x\nother::---", false)
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            parse_text(b"user::rwx\ngroup::r-x\nother::---", true)
-                .unwrap()
-                .is_some()
-        );
-    }
-    #[test]
-    fn actual_acl_copy_preserves_default_and_mask_and_detects_changes() {
-        let temp = tempfile::tempdir().unwrap();
-        let source = temp.path().join("source");
-        let target = temp.path().join("target");
-        std::fs::create_dir(&source).unwrap();
-        std::fs::create_dir(&target).unwrap();
-        fixture::modify(
-            &source,
-            "u::rwx,g::r-x,m::r-x,o::---,d:u::rwx,d:g::r-x,d:m::r-x,d:o::---",
-        );
-        let source_file = File::open(&source).unwrap();
-        let target_file = File::open(&target).unwrap();
-        copy(
-            &source_file,
-            &target_file,
-            false,
-            source_file.metadata().unwrap().mode() & 0o777,
-        )
-        .unwrap();
-        let acl = fixture::state;
-        assert_eq!(acl(&source), acl(&target));
-        copy(
-            &source_file,
-            &target_file,
-            true,
-            source_file.metadata().unwrap().mode() & 0o777,
-        )
-        .unwrap();
-        fixture::modify(&target, "m::---");
-        assert!(
+
+        phase actual_acl_copy_preserves_default_and_mask_and_detects_changes;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("source");
+            let target = temp.path().join("target");
+            std::fs::create_dir(&source).unwrap();
+            std::fs::create_dir(&target).unwrap();
+            fixture::modify(
+                &source,
+                "u::rwx,g::r-x,m::r-x,o::---,d:u::rwx,d:g::r-x,d:m::r-x,d:o::---",
+            );
+            let source_file = File::open(&source).unwrap();
+            let target_file = File::open(&target).unwrap();
+            copy(
+                &source_file,
+                &target_file,
+                false,
+                source_file.metadata().unwrap().mode() & 0o777,
+            )
+            .unwrap();
+            let acl = fixture::state;
+            assert_eq!(acl(&source), acl(&target));
             copy(
                 &source_file,
                 &target_file,
                 true,
-                source_file.metadata().unwrap().mode() & 0o777
+                source_file.metadata().unwrap().mode() & 0o777,
             )
-            .is_err()
-        );
-        fixture::remove(&source);
-        copy(
-            &source_file,
-            &target_file,
-            false,
-            source_file.metadata().unwrap().mode() & 0o777,
-        )
-        .unwrap();
-        assert_eq!(acl(&source), acl(&target));
+            .unwrap();
+            fixture::modify(&target, "m::---");
+            assert!(
+                copy(
+                    &source_file,
+                    &target_file,
+                    true,
+                    source_file.metadata().unwrap().mode() & 0o777
+                )
+                .is_err()
+            );
+            fixture::remove(&source);
+            copy(
+                &source_file,
+                &target_file,
+                false,
+                source_file.metadata().unwrap().mode() & 0o777,
+            )
+            .unwrap();
+            assert_eq!(acl(&source), acl(&target));
+        }
     }
 }
 

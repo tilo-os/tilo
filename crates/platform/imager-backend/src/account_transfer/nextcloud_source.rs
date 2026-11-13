@@ -160,132 +160,138 @@ mod tests {
             Ok(Zeroizing::new("private-native-password".into()))
         }
     }
-    #[test]
-    fn selected_native_nextcloud_credential_enters_canonical_vault_once_without_source_changes() {
-        let fixture = Fixture::new();
-        let source_before = fs::read(&fixture.candidate.profile).unwrap();
-        let mode_before = fs::metadata(&fixture.candidate.profile)
-            .unwrap()
-            .permissions()
-            .mode();
-        let keychain = SelectedKeychain {
-            calls: Cell::new(0),
-            change: None,
-            unavailable: false,
-        };
-        assert!(fixture.candidate.can_import_credentials);
-        assert!(fixture.candidate.needs_sign_in); // discovery has not proved authentication
-        assert_eq!(keychain.calls.get(), 0);
-        let connector = Connector::new(fixture.target.clone());
-        let id = connector
-            .import_nextcloud_with(&fixture.roots, &fixture.candidate, &keychain)
-            .unwrap();
-        assert_eq!(
-            connector
-                .import_nextcloud_with(&fixture.roots, &fixture.candidate, &keychain)
-                .unwrap(),
-            id
-        );
-        let store = AccountStore::load_in(&fixture.target);
-        let account = store.get(&id).unwrap();
-        assert_eq!(store.len(), 1);
-        assert_eq!(account.type_id.as_str(), accounts::cloud_types::NEXTCLOUD);
-        assert_eq!(account.config["username"], "ada");
-        assert_eq!(
-            account.config["server_url"],
-            "https://cloud.example.test/base"
-        );
-        assert_eq!(account.config["use_files"], true);
-        assert!(account.config.get("app_password").is_none());
-        assert!(account_custody::is_copied_secret(
-            &SecretVault::open_in(&fixture.target).get(&id).unwrap()
-        ));
-        assert_eq!(
-            account_custody::password_credential(
-                &SecretVault::open_in(&fixture.target).get(&id).unwrap()
-            )
-            .to_string(),
-            "private-native-password"
-        );
-        assert!(
-            !fs::read_to_string(accounts::store_path_in(&fixture.target))
-                .unwrap()
-                .contains("private-native-password")
-        );
-        assert_eq!(fs::read(&fixture.candidate.profile).unwrap(), source_before);
-        assert_eq!(
-            fs::metadata(&fixture.candidate.profile)
+    tilo_test_env::scenario! {
+        fn native_nextcloud_credentials_enter_the_vault_only_as_selected;
+
+        phase selected_native_nextcloud_credential_enters_canonical_vault_once_without_source_changes;
+        {
+            let fixture = Fixture::new();
+            let source_before = fs::read(&fixture.candidate.profile).unwrap();
+            let mode_before = fs::metadata(&fixture.candidate.profile)
                 .unwrap()
                 .permissions()
-                .mode(),
-            mode_before
-        );
-        assert_eq!(
-            fs::read_dir(fixture.roots.config.join("Nextcloud"))
-                .unwrap()
-                .count(),
-            1
-        );
-    }
-    #[test]
-    fn changed_selected_metadata_and_change_during_keychain_lookup_refuse_target_publication() {
-        let fixture = Fixture::new();
-        let keychain = SelectedKeychain {
-            calls: Cell::new(0),
-            change: None,
-            unavailable: false,
-        };
-        fs::write(&fixture.candidate.profile, CONFIG.replace("ada", "other")).unwrap();
-        let connector = Connector::new(fixture.target.clone());
-        assert!(
-            connector
+                .mode();
+            let keychain = SelectedKeychain {
+                calls: Cell::new(0),
+                change: None,
+                unavailable: false,
+            };
+            assert!(fixture.candidate.can_import_credentials);
+            assert!(fixture.candidate.needs_sign_in); // discovery has not proved authentication
+            assert_eq!(keychain.calls.get(), 0);
+            let connector = Connector::new(fixture.target.clone());
+            let id = connector
                 .import_nextcloud_with(&fixture.roots, &fixture.candidate, &keychain)
-                .is_err()
-        );
-        assert_eq!(keychain.calls.get(), 0);
-        assert!(!fixture.target.exists());
-        fs::write(&fixture.candidate.profile, CONFIG).unwrap();
-        let keychain = SelectedKeychain {
-            calls: Cell::new(0),
-            change: Some(&fixture.candidate.profile),
-            unavailable: false,
-        };
-        assert!(
-            connector
-                .import_nextcloud_with(&fixture.roots, &fixture.candidate, &keychain)
-                .is_err()
-        );
-        assert_eq!(keychain.calls.get(), 1);
-        assert!(!fixture.target.exists());
-    }
-    #[test]
-    fn unavailable_keychain_and_client_certificate_dependencies_require_reconnection() {
-        let fixture = Fixture::new();
-        let keychain = SelectedKeychain {
-            calls: Cell::new(0),
-            change: None,
-            unavailable: true,
-        };
-        let connector = Connector::new(fixture.target.clone());
-        assert!(matches!(
-            connector.import_nextcloud_with(&fixture.roots, &fixture.candidate, &keychain),
-            Err(ConnectionError::CredentialUnavailable)
-        ));
-        assert!(!fixture.target.exists());
-        let configuration = format!("{CONFIG}0\\http_clientCertPkcs12=certificate.p12\n");
-        let mut inventory = Inventory::default();
-        discover(&configuration, &fixture.candidate.profile, &mut inventory);
-        let selected = inventory.candidates.pop().unwrap();
-        assert!(!selected.can_import_credentials);
-        assert!(
-            connector
-                .import_nextcloud_with(&fixture.roots, &selected, &keychain)
-                .is_err()
-        );
-        assert_eq!(keychain.calls.get(), 1);
-        assert_eq!(
-            fs::read_to_string(&fixture.candidate.profile).unwrap(),
-            CONFIG
-        );
+                .unwrap();
+            assert_eq!(
+                connector
+                    .import_nextcloud_with(&fixture.roots, &fixture.candidate, &keychain)
+                    .unwrap(),
+                id
+            );
+            let store = AccountStore::load_in(&fixture.target);
+            let account = store.get(&id).unwrap();
+            assert_eq!(store.len(), 1);
+            assert_eq!(account.type_id.as_str(), accounts::cloud_types::NEXTCLOUD);
+            assert_eq!(account.config["username"], "ada");
+            assert_eq!(
+                account.config["server_url"],
+                "https://cloud.example.test/base"
+            );
+            assert_eq!(account.config["use_files"], true);
+            assert!(account.config.get("app_password").is_none());
+            assert!(account_custody::is_copied_secret(
+                &SecretVault::open_in(&fixture.target).get(&id).unwrap()
+            ));
+            assert_eq!(
+                account_custody::password_credential(
+                    &SecretVault::open_in(&fixture.target).get(&id).unwrap()
+                )
+                .to_string(),
+                "private-native-password"
+            );
+            assert!(
+                !fs::read_to_string(accounts::store_path_in(&fixture.target))
+                    .unwrap()
+                    .contains("private-native-password")
+            );
+            assert_eq!(fs::read(&fixture.candidate.profile).unwrap(), source_before);
+            assert_eq!(
+                fs::metadata(&fixture.candidate.profile)
+                    .unwrap()
+                    .permissions()
+                    .mode(),
+                mode_before
+            );
+            assert_eq!(
+                fs::read_dir(fixture.roots.config.join("Nextcloud"))
+                    .unwrap()
+                    .count(),
+                1
+            );
+        }
+
+        phase changed_selected_metadata_and_change_during_keychain_lookup_refuse_target_publication;
+        {
+            let fixture = Fixture::new();
+            let keychain = SelectedKeychain {
+                calls: Cell::new(0),
+                change: None,
+                unavailable: false,
+            };
+            fs::write(&fixture.candidate.profile, CONFIG.replace("ada", "other")).unwrap();
+            let connector = Connector::new(fixture.target.clone());
+            assert!(
+                connector
+                    .import_nextcloud_with(&fixture.roots, &fixture.candidate, &keychain)
+                    .is_err()
+            );
+            assert_eq!(keychain.calls.get(), 0);
+            assert!(!fixture.target.exists());
+            fs::write(&fixture.candidate.profile, CONFIG).unwrap();
+            let keychain = SelectedKeychain {
+                calls: Cell::new(0),
+                change: Some(&fixture.candidate.profile),
+                unavailable: false,
+            };
+            assert!(
+                connector
+                    .import_nextcloud_with(&fixture.roots, &fixture.candidate, &keychain)
+                    .is_err()
+            );
+            assert_eq!(keychain.calls.get(), 1);
+            assert!(!fixture.target.exists());
+        }
+
+        phase unavailable_keychain_and_client_certificate_dependencies_require_reconnection;
+        {
+            let fixture = Fixture::new();
+            let keychain = SelectedKeychain {
+                calls: Cell::new(0),
+                change: None,
+                unavailable: true,
+            };
+            let connector = Connector::new(fixture.target.clone());
+            assert!(matches!(
+                connector.import_nextcloud_with(&fixture.roots, &fixture.candidate, &keychain),
+                Err(ConnectionError::CredentialUnavailable)
+            ));
+            assert!(!fixture.target.exists());
+            let configuration = format!("{CONFIG}0\\http_clientCertPkcs12=certificate.p12\n");
+            let mut inventory = Inventory::default();
+            discover(&configuration, &fixture.candidate.profile, &mut inventory);
+            let selected = inventory.candidates.pop().unwrap();
+            assert!(!selected.can_import_credentials);
+            assert!(
+                connector
+                    .import_nextcloud_with(&fixture.roots, &selected, &keychain)
+                    .is_err()
+            );
+            assert_eq!(keychain.calls.get(), 1);
+            assert_eq!(
+                fs::read_to_string(&fixture.candidate.profile).unwrap(),
+                CONFIG
+            );
+        }
     }
 }

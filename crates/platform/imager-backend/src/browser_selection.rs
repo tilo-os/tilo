@@ -561,402 +561,407 @@ mod tests {
         Ok((home, before))
     }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn source_inventory_names_each_browser_and_counts_each_data_class() {
-        let (home, _) = inventory_fixture().unwrap();
-        let candidates = crate::account_sources::discover(&crate::account_sources::SourceRoots {
-            home: home.path().into(),
-            config: home.path().join(".config"),
-        });
-        let selection = Selection::discover(home.path(), &candidates.candidates).unwrap();
-        assert!(selection.available());
-        assert!(
-            !selection.inventory_incomplete(),
-            "{}",
-            serde_json::to_string(&selection.inventory_report()).unwrap()
-        );
-        let report = selection.inventory_report();
-        assert_eq!(report.schema, crate::browser_inventory::SCHEMA);
-        assert_eq!(report.profiles.len(), 7);
-        for browser in [
-            crate::browser_inventory::BrowserKind::Chrome,
-            crate::browser_inventory::BrowserKind::Chromium,
-            crate::browser_inventory::BrowserKind::UngoogledChromium,
-            crate::browser_inventory::BrowserKind::Firefox,
-            crate::browser_inventory::BrowserKind::LibreWolf,
-        ] {
+    tilo_test_env::scenario! {
+        #[cfg(target_os = "linux")]
+        fn browser_review_reaches_the_plan_as_selected;
+
+        phase source_inventory_names_each_browser_and_counts_each_data_class;
+        {
+            let (home, _) = inventory_fixture().unwrap();
+            let candidates = crate::account_sources::discover(&crate::account_sources::SourceRoots {
+                home: home.path().into(),
+                config: home.path().join(".config"),
+            });
+            let selection = Selection::discover(home.path(), &candidates.candidates).unwrap();
+            assert!(selection.available());
             assert!(
-                report
-                    .profiles
-                    .iter()
-                    .any(|profile| profile.browser == browser)
+                !selection.inventory_incomplete(),
+                "{}",
+                serde_json::to_string(&selection.inventory_report()).unwrap()
             );
-        }
-        assert!(report.profiles.iter().any(|profile| profile.browser
-            == crate::browser_inventory::BrowserKind::Chrome
-            && profile.installation == crate::browser_inventory::Installation::Flatpak));
-        assert!(report.profiles.iter().any(|profile| profile.browser
-            == crate::browser_inventory::BrowserKind::LibreWolf
-            && profile.installation == crate::browser_inventory::Installation::Flatpak));
-        for profile in &report.profiles {
-            assert_eq!(
-                profile.bookmarks,
-                crate::browser_inventory::Measure::Exact(1)
-            );
-            assert_eq!(profile.history, crate::browser_inventory::Measure::Exact(1));
-            assert_eq!(
-                profile.capabilities.bookmarks,
-                crate::browser_inventory::Capability::Supported
-            );
-            assert_eq!(
-                profile.capabilities.history,
-                crate::browser_inventory::Capability::Supported
-            );
-            assert_eq!(
-                profile.capabilities.passwords,
-                crate::browser_inventory::Capability::Unsupported("browser-passwords-not-exported")
-            );
-            assert_eq!(
-                profile.capabilities.website_data,
-                crate::browser_inventory::Capability::InventoryOnly
-            );
-            assert_eq!(
-                profile.websites.accounts,
-                crate::browser_inventory::Measure::Exact(1)
-            );
-            assert!(profile.websites.account_evidence);
-            assert_eq!(
-                profile.extensions,
-                crate::browser_inventory::Measure::Exact(1)
-            );
-            assert_eq!(
-                profile.settings,
-                crate::browser_inventory::Measure::Exact(1)
-            );
-        }
-        let chrome_inventory = report
-            .profiles
-            .iter()
-            .find(|profile| {
-                profile.browser == crate::browser_inventory::BrowserKind::Chrome
-                    && profile.installation == crate::browser_inventory::Installation::Native
-            })
-            .unwrap();
-        assert_eq!(
-            chrome_inventory.passwords,
-            crate::browser_inventory::Measure::Exact(1)
-        );
-        assert_eq!(
-            chrome_inventory.websites.cookies,
-            crate::browser_inventory::Measure::Exact(2)
-        );
-        assert_eq!(
-            chrome_inventory.websites.origins,
-            crate::browser_inventory::Measure::Exact(2)
-        );
-        assert_eq!(chrome_inventory.websites.services.len(), 1);
-        assert_eq!(
-            chrome_inventory.websites.services[0].cookies,
-            crate::browser_inventory::Measure::Exact(1)
-        );
-        assert!(!chrome_inventory.websites.services[0].account_evidence);
-        let firefox_inventory = report
-            .profiles
-            .iter()
-            .find(|profile| profile.browser == crate::browser_inventory::BrowserKind::Firefox)
-            .unwrap();
-        assert_eq!(
-            firefox_inventory.passwords,
-            crate::browser_inventory::Measure::Exact(1)
-        );
-        assert_eq!(
-            firefox_inventory.websites.services[0].service,
-            browser_continuity::sessions::Service::Discord
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn browser_inventory_report_redacts_private_values_and_preserves_sources() {
-        let (home, before) = inventory_fixture().unwrap();
-        let candidates = crate::account_sources::discover(&crate::account_sources::SourceRoots {
-            home: home.path().into(),
-            config: home.path().join(".config"),
-        });
-        let selection = Selection::discover(home.path(), &candidates.candidates).unwrap();
-        let public = serde_json::to_string(&selection.inventory_report()).unwrap();
-        assert!(!public.contains("PRIVATE_COOKIE_SENTINEL"));
-        assert!(!public.contains("PRIVATE_PASSWORD_SENTINEL"));
-        assert!(!public.contains("person@example.com"));
-        assert!(!public.contains(home.path().to_str().unwrap()));
-        for (path, bytes, mode) in before {
-            assert_eq!(fs::read(&path).unwrap(), bytes);
-            assert_eq!(fs::metadata(path).unwrap().permissions().mode(), mode);
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn profile_and_domain_exclusions_reach_the_authenticated_plan_and_capture() {
-        let home = tempfile::tempdir().unwrap();
-        let chrome = home.path().join(".config/chromium/Default");
-        chromium_profile(&chrome, "Bookmark", "History", &["example.com"]).unwrap();
-        let firefox = firefox_root(home.path(), ".mozilla/firefox", "first.default").unwrap();
-        firefox_profile(&firefox, "Bookmark", "History", "example.com").unwrap();
-        let candidates = crate::account_sources::discover(&crate::account_sources::SourceRoots {
-            home: home.path().into(),
-            config: home.path().join(".config"),
-        });
-        let mut selection = Selection::discover(home.path(), &candidates.candidates).unwrap();
-        assert_eq!(selection.selected().profiles().len(), 2);
-        let firefox_id = selection
-            .inventory()
-            .iter()
-            .find(|profile| profile.browser == crate::browser_inventory::BrowserKind::Firefox)
-            .unwrap()
-            .id
-            .clone();
-        selection.set_profile(&firefox_id, false).unwrap();
-        let plan = selection.selected().plan("setup".into(), [7; 32]).unwrap();
-        assert_eq!(plan.profiles.len(), 1);
-        assert_ne!(plan.profiles[0].id, firefox_id);
-        assert!(
-            !selection
-                .inventory_report()
+            let report = selection.inventory_report();
+            assert_eq!(report.schema, crate::browser_inventory::SCHEMA);
+            assert_eq!(report.profiles.len(), 7);
+            for browser in [
+                crate::browser_inventory::BrowserKind::Chrome,
+                crate::browser_inventory::BrowserKind::Chromium,
+                crate::browser_inventory::BrowserKind::UngoogledChromium,
+                crate::browser_inventory::BrowserKind::Firefox,
+                crate::browser_inventory::BrowserKind::LibreWolf,
+            ] {
+                assert!(
+                    report
+                        .profiles
+                        .iter()
+                        .any(|profile| profile.browser == browser)
+                );
+            }
+            assert!(report.profiles.iter().any(|profile| profile.browser
+                == crate::browser_inventory::BrowserKind::Chrome
+                && profile.installation == crate::browser_inventory::Installation::Flatpak));
+            assert!(report.profiles.iter().any(|profile| profile.browser
+                == crate::browser_inventory::BrowserKind::LibreWolf
+                && profile.installation == crate::browser_inventory::Installation::Flatpak));
+            for profile in &report.profiles {
+                assert_eq!(
+                    profile.bookmarks,
+                    crate::browser_inventory::Measure::Exact(1)
+                );
+                assert_eq!(profile.history, crate::browser_inventory::Measure::Exact(1));
+                assert_eq!(
+                    profile.capabilities.bookmarks,
+                    crate::browser_inventory::Capability::Supported
+                );
+                assert_eq!(
+                    profile.capabilities.history,
+                    crate::browser_inventory::Capability::Supported
+                );
+                assert_eq!(
+                    profile.capabilities.passwords,
+                    crate::browser_inventory::Capability::Unsupported("browser-passwords-not-exported")
+                );
+                assert_eq!(
+                    profile.capabilities.website_data,
+                    crate::browser_inventory::Capability::InventoryOnly
+                );
+                assert_eq!(
+                    profile.websites.accounts,
+                    crate::browser_inventory::Measure::Exact(1)
+                );
+                assert!(profile.websites.account_evidence);
+                assert_eq!(
+                    profile.extensions,
+                    crate::browser_inventory::Measure::Exact(1)
+                );
+                assert_eq!(
+                    profile.settings,
+                    crate::browser_inventory::Measure::Exact(1)
+                );
+            }
+            let chrome_inventory = report
                 .profiles
                 .iter()
-                .any(|profile| profile.id == firefox_id && profile.included)
-        );
-        selection.set(Domain::History, false);
-        let plan = selection.selected().plan("setup".into(), [7; 32]).unwrap();
-        assert_eq!(plan.profiles.len(), 1);
-        assert!(plan.profiles[0].bookmarks);
-        assert!(!plan.profiles[0].history);
-        assert_eq!(plan.profiles[0].allowed_files(), ["Bookmarks"]);
-        let selected_sources = selection.selected();
-        let (source, selected) = &selected_sources.profiles()[0];
-        let captured = source.capture_files(selected).unwrap();
-        assert_eq!(
-            captured
-                .files()
+                .find(|profile| {
+                    profile.browser == crate::browser_inventory::BrowserKind::Chrome
+                        && profile.installation == crate::browser_inventory::Installation::Native
+                })
+                .unwrap();
+            assert_eq!(
+                chrome_inventory.passwords,
+                crate::browser_inventory::Measure::Exact(1)
+            );
+            assert_eq!(
+                chrome_inventory.websites.cookies,
+                crate::browser_inventory::Measure::Exact(2)
+            );
+            assert_eq!(
+                chrome_inventory.websites.origins,
+                crate::browser_inventory::Measure::Exact(2)
+            );
+            assert_eq!(chrome_inventory.websites.services.len(), 1);
+            assert_eq!(
+                chrome_inventory.websites.services[0].cookies,
+                crate::browser_inventory::Measure::Exact(1)
+            );
+            assert!(!chrome_inventory.websites.services[0].account_evidence);
+            let firefox_inventory = report
+                .profiles
                 .iter()
-                .map(crate::browser_selection::CapturedFile::name)
-                .collect::<Vec<_>>(),
-            ["Bookmarks"]
-        );
-        selection.set(Domain::Bookmarks, false);
-        assert!(selection.selected().profiles().is_empty());
-        assert!(!fs::read(firefox.join("places.sqlite")).unwrap().is_empty());
-    }
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn per_profile_domain_choices_stay_independent_and_exclusion_clears_only_its_profile() {
-        let home = tempfile::tempdir().unwrap();
-        let chrome = home.path().join(".config/chromium/Default");
-        chromium_profile(&chrome, "Bookmark", "History", &["example.com"]).unwrap();
-        let firefox = firefox_root(home.path(), ".mozilla/firefox", "first.default").unwrap();
-        firefox_profile(&firefox, "Bookmark", "History", "example.com").unwrap();
-        let candidates = crate::account_sources::discover(&crate::account_sources::SourceRoots {
-            home: home.path().into(),
-            config: home.path().join(".config"),
-        });
-        let mut selection = Selection::discover(home.path(), &candidates.candidates).unwrap();
-        let chrome_id = selection
-            .inventory()
-            .iter()
-            .find(|profile| profile.browser == crate::browser_inventory::BrowserKind::Chromium)
-            .unwrap()
-            .id
-            .clone();
-        let firefox_id = selection
-            .inventory()
-            .iter()
-            .find(|profile| profile.browser == crate::browser_inventory::BrowserKind::Firefox)
-            .unwrap()
-            .id
-            .clone();
+                .find(|profile| profile.browser == crate::browser_inventory::BrowserKind::Firefox)
+                .unwrap();
+            assert_eq!(
+                firefox_inventory.passwords,
+                crate::browser_inventory::Measure::Exact(1)
+            );
+            assert_eq!(
+                firefox_inventory.websites.services[0].service,
+                browser_continuity::sessions::Service::Discord
+            );
+        }
 
-        assert!(
-            selection
-                .set_profile_domain(&chrome_id, Domain::History, false)
+        phase browser_inventory_report_redacts_private_values_and_preserves_sources;
+        {
+            let (home, before) = inventory_fixture().unwrap();
+            let candidates = crate::account_sources::discover(&crate::account_sources::SourceRoots {
+                home: home.path().into(),
+                config: home.path().join(".config"),
+            });
+            let selection = Selection::discover(home.path(), &candidates.candidates).unwrap();
+            let public = serde_json::to_string(&selection.inventory_report()).unwrap();
+            assert!(!public.contains("PRIVATE_COOKIE_SENTINEL"));
+            assert!(!public.contains("PRIVATE_PASSWORD_SENTINEL"));
+            assert!(!public.contains("person@example.com"));
+            assert!(!public.contains(home.path().to_str().unwrap()));
+            for (path, bytes, mode) in before {
+                assert_eq!(fs::read(&path).unwrap(), bytes);
+                assert_eq!(fs::metadata(path).unwrap().permissions().mode(), mode);
+            }
+        }
+
+        phase profile_and_domain_exclusions_reach_the_authenticated_plan_and_capture;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let chrome = home.path().join(".config/chromium/Default");
+            chromium_profile(&chrome, "Bookmark", "History", &["example.com"]).unwrap();
+            let firefox = firefox_root(home.path(), ".mozilla/firefox", "first.default").unwrap();
+            firefox_profile(&firefox, "Bookmark", "History", "example.com").unwrap();
+            let candidates = crate::account_sources::discover(&crate::account_sources::SourceRoots {
+                home: home.path().into(),
+                config: home.path().join(".config"),
+            });
+            let mut selection = Selection::discover(home.path(), &candidates.candidates).unwrap();
+            assert_eq!(selection.selected().profiles().len(), 2);
+            let firefox_id = selection
+                .inventory()
+                .iter()
+                .find(|profile| profile.browser == crate::browser_inventory::BrowserKind::Firefox)
                 .unwrap()
-        );
-        let chrome_state = selection.profile_state(&chrome_id).unwrap();
-        let firefox_state = selection.profile_state(&firefox_id).unwrap();
-        assert!(chrome_state.included && chrome_state.bookmarks && !chrome_state.history);
-        assert!(firefox_state.included && firefox_state.bookmarks && firefox_state.history);
-        let plan = selection.selected().plan("setup".into(), [7; 32]).unwrap();
-        assert_eq!(plan.profiles.len(), 2);
-        let chrome_plan = plan
-            .profiles
-            .iter()
-            .find(|profile| profile.id == chrome_id)
-            .unwrap();
-        assert!(chrome_plan.bookmarks && !chrome_plan.history);
-        let report = selection.inventory_report();
-        let chrome_report = report
-            .profiles
-            .iter()
-            .find(|profile| profile.id == chrome_id)
-            .unwrap();
-        assert!(chrome_report.included);
-        assert!(chrome_report.bookmarks_selected);
-        assert!(!chrome_report.history_selected);
-        let firefox_report = report
-            .profiles
-            .iter()
-            .find(|profile| profile.id == firefox_id)
-            .unwrap();
-        assert!(firefox_report.bookmarks_selected && firefox_report.history_selected);
+                .id
+                .clone();
+            selection.set_profile(&firefox_id, false).unwrap();
+            let plan = selection.selected().plan("setup".into(), [7; 32]).unwrap();
+            assert_eq!(plan.profiles.len(), 1);
+            assert_ne!(plan.profiles[0].id, firefox_id);
+            assert!(
+                !selection
+                    .inventory_report()
+                    .profiles
+                    .iter()
+                    .any(|profile| profile.id == firefox_id && profile.included)
+            );
+            selection.set(Domain::History, false);
+            let plan = selection.selected().plan("setup".into(), [7; 32]).unwrap();
+            assert_eq!(plan.profiles.len(), 1);
+            assert!(plan.profiles[0].bookmarks);
+            assert!(!plan.profiles[0].history);
+            assert_eq!(plan.profiles[0].allowed_files(), ["Bookmarks"]);
+            let selected_sources = selection.selected();
+            let (source, selected) = &selected_sources.profiles()[0];
+            let captured = source.capture_files(selected).unwrap();
+            assert_eq!(
+                captured
+                    .files()
+                    .iter()
+                    .map(crate::browser_selection::CapturedFile::name)
+                    .collect::<Vec<_>>(),
+                ["Bookmarks"]
+            );
+            selection.set(Domain::Bookmarks, false);
+            assert!(selection.selected().profiles().is_empty());
+            assert!(!fs::read(firefox.join("places.sqlite")).unwrap().is_empty());
+        }
 
-        selection.set_profile(&firefox_id, false).unwrap();
-        let excluded = selection.profile_state(&firefox_id).unwrap();
-        assert!(!excluded.included && !excluded.bookmarks && !excluded.history);
-        assert_eq!(selection.selected().profiles().len(), 1);
-        let plan = selection.selected().plan("setup".into(), [7; 32]).unwrap();
-        assert_eq!(plan.profiles.len(), 1);
-        assert_eq!(plan.profiles[0].id, chrome_id);
-        assert!(plan.profiles[0].bookmarks && !plan.profiles[0].history);
-        assert!(
-            !selection
-                .inventory_report()
+        phase per_profile_domain_choices_stay_independent_and_exclusion_clears_only_its_profile;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let chrome = home.path().join(".config/chromium/Default");
+            chromium_profile(&chrome, "Bookmark", "History", &["example.com"]).unwrap();
+            let firefox = firefox_root(home.path(), ".mozilla/firefox", "first.default").unwrap();
+            firefox_profile(&firefox, "Bookmark", "History", "example.com").unwrap();
+            let candidates = crate::account_sources::discover(&crate::account_sources::SourceRoots {
+                home: home.path().into(),
+                config: home.path().join(".config"),
+            });
+            let mut selection = Selection::discover(home.path(), &candidates.candidates).unwrap();
+            let chrome_id = selection
+                .inventory()
+                .iter()
+                .find(|profile| profile.browser == crate::browser_inventory::BrowserKind::Chromium)
+                .unwrap()
+                .id
+                .clone();
+            let firefox_id = selection
+                .inventory()
+                .iter()
+                .find(|profile| profile.browser == crate::browser_inventory::BrowserKind::Firefox)
+                .unwrap()
+                .id
+                .clone();
+
+            assert!(
+                selection
+                    .set_profile_domain(&chrome_id, Domain::History, false)
+                    .unwrap()
+            );
+            let chrome_state = selection.profile_state(&chrome_id).unwrap();
+            let firefox_state = selection.profile_state(&firefox_id).unwrap();
+            assert!(chrome_state.included && chrome_state.bookmarks && !chrome_state.history);
+            assert!(firefox_state.included && firefox_state.bookmarks && firefox_state.history);
+            let plan = selection.selected().plan("setup".into(), [7; 32]).unwrap();
+            assert_eq!(plan.profiles.len(), 2);
+            let chrome_plan = plan
+                .profiles
+                .iter()
+                .find(|profile| profile.id == chrome_id)
+                .unwrap();
+            assert!(chrome_plan.bookmarks && !chrome_plan.history);
+            let report = selection.inventory_report();
+            let chrome_report = report
+                .profiles
+                .iter()
+                .find(|profile| profile.id == chrome_id)
+                .unwrap();
+            assert!(chrome_report.included);
+            assert!(chrome_report.bookmarks_selected);
+            assert!(!chrome_report.history_selected);
+            let firefox_report = report
                 .profiles
                 .iter()
                 .find(|profile| profile.id == firefox_id)
-                .unwrap()
-                .included
-        );
+                .unwrap();
+            assert!(firefox_report.bookmarks_selected && firefox_report.history_selected);
 
-        selection.set_profile(&firefox_id, true).unwrap();
-        let restored = selection.profile_state(&firefox_id).unwrap();
-        assert!(restored.included && restored.bookmarks && restored.history);
-        selection.set(Domain::History, false);
-        let plan = selection.selected().plan("setup".into(), [7; 32]).unwrap();
-        assert_eq!(plan.profiles.len(), 2);
-        assert!(plan.profiles.iter().all(|profile| profile.bookmarks));
-        assert!(plan.profiles.iter().all(|profile| !profile.history));
-        assert!(!selection.chosen(Domain::History));
-        assert!(selection.chosen(Domain::Bookmarks));
-    }
+            selection.set_profile(&firefox_id, false).unwrap();
+            let excluded = selection.profile_state(&firefox_id).unwrap();
+            assert!(!excluded.included && !excluded.bookmarks && !excluded.history);
+            assert_eq!(selection.selected().profiles().len(), 1);
+            let plan = selection.selected().plan("setup".into(), [7; 32]).unwrap();
+            assert_eq!(plan.profiles.len(), 1);
+            assert_eq!(plan.profiles[0].id, chrome_id);
+            assert!(plan.profiles[0].bookmarks && !plan.profiles[0].history);
+            assert!(
+                !selection
+                    .inventory_report()
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id == firefox_id)
+                    .unwrap()
+                    .included
+            );
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn website_only_profile_is_visible_but_never_becomes_an_empty_plan_entry() {
-        let home = tempfile::tempdir().unwrap();
-        let directory = home.path().join(".config/chromium/Default");
-        fs::create_dir_all(directory.join("Network")).unwrap();
-        let cookies = rusqlite::Connection::open(directory.join("Network/Cookies")).unwrap();
-        cookies
-            .execute_batch(
-                "CREATE TABLE cookies(host_key TEXT, value TEXT);
+            selection.set_profile(&firefox_id, true).unwrap();
+            let restored = selection.profile_state(&firefox_id).unwrap();
+            assert!(restored.included && restored.bookmarks && restored.history);
+            selection.set(Domain::History, false);
+            let plan = selection.selected().plan("setup".into(), [7; 32]).unwrap();
+            assert_eq!(plan.profiles.len(), 2);
+            assert!(plan.profiles.iter().all(|profile| profile.bookmarks));
+            assert!(plan.profiles.iter().all(|profile| !profile.history));
+            assert!(!selection.chosen(Domain::History));
+            assert!(selection.chosen(Domain::Bookmarks));
+        }
+
+        phase website_only_profile_is_visible_but_never_becomes_an_empty_plan_entry;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let directory = home.path().join(".config/chromium/Default");
+            fs::create_dir_all(directory.join("Network")).unwrap();
+            let cookies = rusqlite::Connection::open(directory.join("Network/Cookies")).unwrap();
+            cookies
+                .execute_batch(
+                    "CREATE TABLE cookies(host_key TEXT, value TEXT);
                  INSERT INTO cookies VALUES('example.com','PRIVATE_COOKIE_SENTINEL');
                  INSERT INTO cookies VALUES('other.example','PRIVATE_COOKIE_SENTINEL');",
-            )
-            .unwrap();
-        drop(cookies);
-        let candidates = crate::account_sources::discover(&crate::account_sources::SourceRoots {
-            home: home.path().into(),
-            config: home.path().join(".config"),
-        });
-        let mut selection = Selection::discover(home.path(), &candidates.candidates).unwrap();
-        let profile = selection.inventory().first().unwrap();
-        let profile_id = profile.id.clone();
-        assert!(!profile.exportable);
-        assert!(!profile.included);
-        assert_eq!(
-            profile.capabilities.bookmarks,
-            crate::browser_inventory::Capability::Absent
-        );
-        assert_eq!(
-            profile.websites.cookies,
-            crate::browser_inventory::Measure::Exact(2)
-        );
-        assert_eq!(
-            profile.websites.origins,
-            crate::browser_inventory::Measure::Exact(2)
-        );
-        assert!(selection.selected().profiles().is_empty());
-        assert_eq!(
-            selection.set_profile(&profile_id, true),
-            Err("installer-browser-source-not-exportable")
-        );
-        assert!(
-            selection
-                .inventory_report()
-                .profiles
-                .iter()
-                .any(|profile| !profile.exportable && !profile.included)
-        );
+                )
+                .unwrap();
+            drop(cookies);
+            let candidates = crate::account_sources::discover(&crate::account_sources::SourceRoots {
+                home: home.path().into(),
+                config: home.path().join(".config"),
+            });
+            let mut selection = Selection::discover(home.path(), &candidates.candidates).unwrap();
+            let profile = selection.inventory().first().unwrap();
+            let profile_id = profile.id.clone();
+            assert!(!profile.exportable);
+            assert!(!profile.included);
+            assert_eq!(
+                profile.capabilities.bookmarks,
+                crate::browser_inventory::Capability::Absent
+            );
+            assert_eq!(
+                profile.websites.cookies,
+                crate::browser_inventory::Measure::Exact(2)
+            );
+            assert_eq!(
+                profile.websites.origins,
+                crate::browser_inventory::Measure::Exact(2)
+            );
+            assert!(selection.selected().profiles().is_empty());
+            assert_eq!(
+                selection.set_profile(&profile_id, true),
+                Err("installer-browser-source-not-exportable")
+            );
+            assert!(
+                selection
+                    .inventory_report()
+                    .profiles
+                    .iter()
+                    .any(|profile| !profile.exportable && !profile.included)
+            );
+        }
     }
 
-    #[test]
-    fn reviewed_selection_refuses_duplicates_widening_and_changed_identity() {
-        let home = tempfile::tempdir().unwrap();
-        let directory = home.path().join(".config/chromium/Default");
-        fs::create_dir_all(&directory).unwrap();
-        fs::write(directory.join("Bookmarks"), b"bookmarks").unwrap();
-        let inventory = crate::account_sources::discover(&crate::account_sources::SourceRoots {
-            home: home.path().into(),
-            config: home.path().join(".config"),
-        });
-        let selection = Selection::discover(home.path(), &inventory.candidates).unwrap();
-        let selected = selection.selected();
-        let (source, profile) = &selected.profiles()[0];
-        assert!(
-            SelectedSources::from_reviewed(vec![
-                (Arc::clone(source), profile.clone()),
-                (Arc::clone(source), profile.clone()),
-            ])
-            .is_err()
-        );
-        let mut widened = profile.clone();
-        widened.history = true;
-        assert!(SelectedSources::from_reviewed(vec![(Arc::clone(source), widened),]).is_err());
-        let mut changed = profile.clone();
-        changed.relative_path.push("other".into());
-        assert!(SelectedSources::from_reviewed(vec![(Arc::clone(source), changed),]).is_err());
-        fs::rename(&directory, directory.with_file_name("old")).unwrap();
-        fs::create_dir(&directory).unwrap();
-        assert!(source.capture_files(profile).is_err());
-    }
+    tilo_test_env::scenario! {
+        fn reviewed_browser_selection_captures_only_what_was_reviewed;
 
-    #[test]
-    fn browsing_domain_selection_captures_only_its_actual_reviewed_files() {
-        let home = tempfile::tempdir().unwrap();
-        let profile = home.path().join(".config/chromium/Default");
-        fs::create_dir_all(&profile).unwrap();
-        fs::write(profile.join("Bookmarks"), b"bookmarks").unwrap();
-        fs::write(profile.join("History"), b"private history").unwrap();
-        fs::write(profile.join("Cookies"), b"not consented").unwrap();
-        let inventory = crate::account_sources::discover(&crate::account_sources::SourceRoots {
-            home: home.path().into(),
-            config: home.path().join(".config"),
-        });
-        let mut selection = Selection::discover(home.path(), &inventory.candidates).unwrap();
-        assert!(selection.available());
-        assert!(selection.chosen(Domain::Bookmarks));
-        assert!(selection.chosen(Domain::History));
-        selection.set(Domain::History, false);
-        let selected = selection.selected();
-        let plan = selected.plan("exact-setup".into(), [3; 32]).unwrap();
-        assert_eq!(plan.profiles.len(), 1);
-        assert!(!plan.profiles[0].history);
-        assert_eq!(plan.profiles[0].allowed_files(), ["Bookmarks"]);
-        let (source, profile) = &selected.profiles()[0];
-        let captured = source.capture_files(profile).unwrap();
-        assert_eq!(captured.files().len(), 1);
-        assert_eq!(captured.files()[0].name(), "Bookmarks");
-        assert_eq!(captured.files()[0].bytes(), b"bookmarks");
-        selection.set(Domain::Bookmarks, false);
-        assert!(selection.selected().profiles().is_empty());
-        assert_eq!(
-            fs::read(home.path().join(".config/chromium/Default/History")).unwrap(),
-            b"private history"
-        );
-        assert_eq!(
-            fs::read(home.path().join(".config/chromium/Default/Cookies")).unwrap(),
-            b"not consented"
-        );
+        phase reviewed_selection_refuses_duplicates_widening_and_changed_identity;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let directory = home.path().join(".config/chromium/Default");
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join("Bookmarks"), b"bookmarks").unwrap();
+            let inventory = crate::account_sources::discover(&crate::account_sources::SourceRoots {
+                home: home.path().into(),
+                config: home.path().join(".config"),
+            });
+            let selection = Selection::discover(home.path(), &inventory.candidates).unwrap();
+            let selected = selection.selected();
+            let (source, profile) = &selected.profiles()[0];
+            assert!(
+                SelectedSources::from_reviewed(vec![
+                    (Arc::clone(source), profile.clone()),
+                    (Arc::clone(source), profile.clone()),
+                ])
+                .is_err()
+            );
+            let mut widened = profile.clone();
+            widened.history = true;
+            assert!(SelectedSources::from_reviewed(vec![(Arc::clone(source), widened),]).is_err());
+            let mut changed = profile.clone();
+            changed.relative_path.push("other".into());
+            assert!(SelectedSources::from_reviewed(vec![(Arc::clone(source), changed),]).is_err());
+            fs::rename(&directory, directory.with_file_name("old")).unwrap();
+            fs::create_dir(&directory).unwrap();
+            assert!(source.capture_files(profile).is_err());
+        }
+
+        phase browsing_domain_selection_captures_only_its_actual_reviewed_files;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let profile = home.path().join(".config/chromium/Default");
+            fs::create_dir_all(&profile).unwrap();
+            fs::write(profile.join("Bookmarks"), b"bookmarks").unwrap();
+            fs::write(profile.join("History"), b"private history").unwrap();
+            fs::write(profile.join("Cookies"), b"not consented").unwrap();
+            let inventory = crate::account_sources::discover(&crate::account_sources::SourceRoots {
+                home: home.path().into(),
+                config: home.path().join(".config"),
+            });
+            let mut selection = Selection::discover(home.path(), &inventory.candidates).unwrap();
+            assert!(selection.available());
+            assert!(selection.chosen(Domain::Bookmarks));
+            assert!(selection.chosen(Domain::History));
+            selection.set(Domain::History, false);
+            let selected = selection.selected();
+            let plan = selected.plan("exact-setup".into(), [3; 32]).unwrap();
+            assert_eq!(plan.profiles.len(), 1);
+            assert!(!plan.profiles[0].history);
+            assert_eq!(plan.profiles[0].allowed_files(), ["Bookmarks"]);
+            let (source, profile) = &selected.profiles()[0];
+            let captured = source.capture_files(profile).unwrap();
+            assert_eq!(captured.files().len(), 1);
+            assert_eq!(captured.files()[0].name(), "Bookmarks");
+            assert_eq!(captured.files()[0].bytes(), b"bookmarks");
+            selection.set(Domain::Bookmarks, false);
+            assert!(selection.selected().profiles().is_empty());
+            assert_eq!(
+                fs::read(home.path().join(".config/chromium/Default/History")).unwrap(),
+                b"private history"
+            );
+            assert_eq!(
+                fs::read(home.path().join(".config/chromium/Default/Cookies")).unwrap(),
+                b"not consented"
+            );
+        }
     }
 }

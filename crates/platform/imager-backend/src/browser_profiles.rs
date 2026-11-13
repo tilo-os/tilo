@@ -833,93 +833,98 @@ mod tests {
             config: home.join(".config"),
         })
     }
-    #[test]
-    fn actual_granted_browser_discovery_selects_exact_profiles_without_reading_databases() {
-        let home = fixture();
-        let chrome = home.path().join(".config/chromium");
-        let history = chrome.join("Default/History");
-        fs::write(
-            &history,
-            b"not a SQLite database; discovery must not parse it",
-        )
-        .unwrap();
-        fs::write(chrome.join("Default/Bookmarks"), b"not JSON; metadata only").unwrap();
-        symlink("not-a-directory", chrome.join("SingletonLock")).unwrap();
-        let firefox = home.path().join(".mozilla/firefox");
-        let index = b"[Profile0]\nName=Personal\nIsRelative=1\nPath=first.default\n";
-        fs::write(firefox.join("profiles.ini"), index).unwrap();
-        fs::write(
-            firefox.join("first.default/places.sqlite"),
-            b"unparsed private data",
-        )
-        .unwrap();
-        let before = fs::metadata(&history).unwrap();
-        let profiles = discover(home.path(), &inventory(home.path()).candidates).unwrap();
-        assert_eq!(profiles.len(), 2);
-        assert!(
-            profiles
-                .iter()
-                .all(|item| item.profile.bookmarks && item.profile.history)
-        );
-        assert!(
-            profiles
-                .iter()
-                .any(|item| item.profile.relative_path == [".config", "chromium", "Default"])
-        );
-        assert!(
-            profiles
-                .iter()
-                .any(|item| item.profile.relative_path == [".mozilla", "firefox", "first.default"])
-        );
-        for profile in &profiles {
-            profile.validate().unwrap();
+    tilo_test_env::scenario! {
+        fn granted_browser_discovery_selects_only_exact_profiles;
+
+        phase actual_granted_browser_discovery_selects_exact_profiles_without_reading_databases;
+        {
+            let home = fixture();
+            let chrome = home.path().join(".config/chromium");
+            let history = chrome.join("Default/History");
+            fs::write(
+                &history,
+                b"not a SQLite database; discovery must not parse it",
+            )
+            .unwrap();
+            fs::write(chrome.join("Default/Bookmarks"), b"not JSON; metadata only").unwrap();
+            symlink("not-a-directory", chrome.join("SingletonLock")).unwrap();
+            let firefox = home.path().join(".mozilla/firefox");
+            let index = b"[Profile0]\nName=Personal\nIsRelative=1\nPath=first.default\n";
+            fs::write(firefox.join("profiles.ini"), index).unwrap();
+            fs::write(
+                firefox.join("first.default/places.sqlite"),
+                b"unparsed private data",
+            )
+            .unwrap();
+            let before = fs::metadata(&history).unwrap();
+            let profiles = discover(home.path(), &inventory(home.path()).candidates).unwrap();
+            assert_eq!(profiles.len(), 2);
+            assert!(
+                profiles
+                    .iter()
+                    .all(|item| item.profile.bookmarks && item.profile.history)
+            );
+            assert!(
+                profiles
+                    .iter()
+                    .any(|item| item.profile.relative_path == [".config", "chromium", "Default"])
+            );
+            assert!(
+                profiles
+                    .iter()
+                    .any(|item| item.profile.relative_path == [".mozilla", "firefox", "first.default"])
+            );
+            for profile in &profiles {
+                profile.validate().unwrap();
+            }
+            assert_eq!(
+                fs::read(&history).unwrap(),
+                b"not a SQLite database; discovery must not parse it"
+            );
+            assert_eq!(
+                fs::metadata(&history).unwrap().permissions().mode(),
+                before.permissions().mode()
+            );
+            assert_eq!(fs::read(firefox.join("profiles.ini")).unwrap(), index);
+            fs::rename(chrome.join("Default"), chrome.join("old-default")).unwrap();
+            fs::create_dir(chrome.join("Default")).unwrap();
+            assert!(
+                profiles
+                    .iter()
+                    .find(|item| item.profile.provider == Provider::Chromium)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
         }
-        assert_eq!(
-            fs::read(&history).unwrap(),
-            b"not a SQLite database; discovery must not parse it"
-        );
-        assert_eq!(
-            fs::metadata(&history).unwrap().permissions().mode(),
-            before.permissions().mode()
-        );
-        assert_eq!(fs::read(firefox.join("profiles.ini")).unwrap(), index);
-        fs::rename(chrome.join("Default"), chrome.join("old-default")).unwrap();
-        fs::create_dir(chrome.join("Default")).unwrap();
-        assert!(
-            profiles
-                .iter()
-                .find(|item| item.profile.provider == Provider::Chromium)
-                .unwrap()
-                .validate()
-                .is_err()
-        );
-    }
-    #[test]
-    fn redirected_or_external_profiles_are_not_silently_discovered() {
-        let home = fixture();
-        let outside = tempfile::tempdir().unwrap();
-        let chrome = home.path().join(".config/chromium");
-        fs::remove_dir(chrome.join("Default")).unwrap();
-        symlink(outside.path(), chrome.join("Default")).unwrap();
-        let before: Vec<_> = fs::read_dir(outside.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        assert!(discover(home.path(), &inventory(home.path()).candidates).is_err());
-        assert_eq!(
-            fs::read_dir(outside.path())
+
+        phase redirected_or_external_profiles_are_not_silently_discovered;
+        {
+            let home = fixture();
+            let outside = tempfile::tempdir().unwrap();
+            let chrome = home.path().join(".config/chromium");
+            fs::remove_dir(chrome.join("Default")).unwrap();
+            symlink(outside.path(), chrome.join("Default")).unwrap();
+            let before: Vec<_> = fs::read_dir(outside.path())
                 .unwrap()
                 .map(|entry| entry.unwrap().file_name())
-                .collect::<Vec<_>>(),
-            before
-        );
-        fs::remove_file(chrome.join("Default")).unwrap();
-        let firefox = home.path().join(".mozilla/firefox");
-        fs::write(
-            firefox.join("profiles.ini"),
-            "[Profile0]\nName=External\nIsRelative=0\nPath=/elsewhere\n",
-        )
-        .unwrap();
-        assert!(discover(home.path(), &inventory(home.path()).candidates).is_err());
+                .collect();
+            assert!(discover(home.path(), &inventory(home.path()).candidates).is_err());
+            assert_eq!(
+                fs::read_dir(outside.path())
+                    .unwrap()
+                    .map(|entry| entry.unwrap().file_name())
+                    .collect::<Vec<_>>(),
+                before
+            );
+            fs::remove_file(chrome.join("Default")).unwrap();
+            let firefox = home.path().join(".mozilla/firefox");
+            fs::write(
+                firefox.join("profiles.ini"),
+                "[Profile0]\nName=External\nIsRelative=0\nPath=/elsewhere\n",
+            )
+            .unwrap();
+            assert!(discover(home.path(), &inventory(home.path()).candidates).is_err());
+        }
     }
 }
