@@ -7,17 +7,18 @@
 //! another package registers the template at import, every such unqualified reference is
 //! rewritten to the qualified `alias.item` the importer's resolver reads, marked
 //! [`ast::Ident::from_template_of`] so the resolver still admits the package's unoffered helpers.
-//! Names bound inside the template — its parameters, `let`s, loop variables, view state — stand
-//! as they are, and so do `std`'s and the built-ins: the caller's block is not in this AST (it is
-//! inserted at the slot when the template expands), so it keeps the caller's own scope.
+//! Names bound inside the template — its parameters, a lambda's, `let`s, loop variables, `if
+//! let`/`match` patterns, view state — stand as they are, and so do `std`'s and the built-ins: the
+//! caller's block is not in this AST (it is inserted at the slot when the template expands), so it
+//! keeps the caller's own scope.
 
 use std::collections::HashSet;
 
 use crate::ast::{self, Expr, ExprKind, TypeExpr, TypeExprKind, UiKind, UiStmt};
 
-/// The names of a package's top-level items a template's body may write by their plain name:
-/// its views, fns, actions, types, enums, named roots and their state, and the names of its
-/// types' fields' own functions and of its own aliases. What a qualified reference may reach.
+/// The names of a package's top-level items a template's body may write by their plain name: its
+/// views, fns, actions, types, enums, named roots and aliases. What a qualified reference may
+/// reach.
 pub struct PackageNames {
     pub items: HashSet<String>,
 }
@@ -58,31 +59,39 @@ impl PackageNames {
 
 /// Rewrite `view`'s body so every unqualified reference to one of `names` — a top-level item of
 /// the package it came from — is qualified with `alias`, marked [`ast::Ident::from_template_of`]
-/// with `package`. A name bound inside the template (a parameter, a `let`, a loop variable, a
-/// `state`) is left as written, as are built-ins and `std`'s names (`names` holds none of them).
+/// with `package`. A name bound inside the template (a parameter, a lambda's, a `let`, a loop
+/// variable, a pattern, a `state`) is left as written, as are built-ins and `std`'s names
+/// (`names` holds none of them).
 pub fn qualify(view: &mut ast::ViewDecl, alias: &str, package: &str, names: &PackageNames) {
-    let mut scope = Scope::default();
+    let mut scope = Scope::new();
+    // The parameters are the template's own names, before its body reads any of them.
     for p in &view.params {
         scope.bind(p.name.name.clone());
     }
-    // The parameters' types name the package's types too (`a: Arrangement`).
+    // The parameters' types name the package's types too (`a: Arrangement`), and their defaults
+    // read the parameters before them, which are bound already.
     for p in &mut view.params {
         qualify_type(&mut p.ty, alias, package, names);
         if let Some(default) = &mut p.default {
-            qualify_expr(default, alias, package, names, &scope);
+            qualify_expr(default, alias, package, names, &mut scope);
         }
     }
     qualify_ui(&mut view.body, alias, package, names, &mut scope);
 }
 
 /// The names bound so far, innermost last: a plain name found here is the template's own and is
-/// never qualified.
-#[derive(Default)]
+/// never qualified. It always holds at least one frame, so a binding always lands somewhere.
 struct Scope {
     bound: Vec<HashSet<String>>,
 }
 
 impl Scope {
+    fn new() -> Self {
+        Self {
+            bound: vec![HashSet::new()],
+        }
+    }
+
     fn bind(&mut self, name: String) {
         if let Some(top) = self.bound.last_mut() {
             top.insert(name);
@@ -94,7 +103,10 @@ impl Scope {
     }
 
     fn pop(&mut self) {
-        self.bound.pop();
+        // The outermost frame is the template's parameters: never popped.
+        if self.bound.len() > 1 {
+            self.bound.pop();
+        }
     }
 
     fn holds(&self, name: &str) -> bool {
@@ -113,7 +125,9 @@ fn qualify_ui(
     for stmt in body.iter_mut() {
         match &mut stmt.kind {
             UiKind::Call(call) => {
-                // A block opens names (`list(xs) { x -> ... }`): they are the caller's own.
+                // The call's own expression is read with the names around it; the block's opening
+                // names (`list(xs) { x -> ... }`) are bound only inside the block.
+                qualify_expr(&mut call.call, alias, package, names, scope);
                 let opens = !call.params.is_empty();
                 if opens {
                     scope.push();
@@ -121,7 +135,6 @@ fn qualify_ui(
                         scope.bind(p.name.clone());
                     }
                 }
-                qualify_expr(&mut call.call, alias, package, names, scope);
                 if let Some(block) = &mut call.block {
                     qualify_ui(block, alias, package, names, scope);
                 }
@@ -238,11 +251,17 @@ fn qualify_type(ty: &mut TypeExpr, alias: &str, package: &str, names: &PackageNa
     }
 }
 
-fn qualify_expr(expr: &mut Expr, alias: &str, package: &str, names: &PackageNames, scope: &Scope) {
+fn qualify_expr(
+    expr: &mut Expr,
+    alias: &str,
+    package: &str,
+    names: &PackageNames,
+    scope: &mut Scope,
+) {
     match &mut expr.kind {
         ExprKind::Ident(name) => {
             if !scope.holds(name) && names.holds(name) {
-                // `shell.name`: a field of the alias, marked as the template's own.
+                // `alias.name`: a field of the alias, marked as the template's own.
                 let span = expr.span;
                 let base = Expr {
                     kind: ExprKind::Ident(alias.to_owned()),
@@ -285,7 +304,12 @@ fn qualify_expr(expr: &mut Expr, alias: &str, package: &str, names: &PackageName
         ExprKind::Match { scrutinee, arms } => {
             qualify_expr(scrutinee, alias, package, names, scope);
             for arm in arms.iter_mut() {
+                scope.push();
+                for b in &arm.pattern.binds {
+                    scope.bind(b.name.clone());
+                }
                 qualify_expr(&mut arm.body, alias, package, names, scope);
+                scope.pop();
             }
         }
         ExprKind::Variant {
@@ -312,14 +336,31 @@ fn qualify_expr(expr: &mut Expr, alias: &str, package: &str, names: &PackageName
                 qualify_expr(els, alias, package, names, scope);
             }
         }
-        ExprKind::IfLet { then, els, .. } => {
+        ExprKind::IfLet { binds, then, els } => {
+            // The bindings' values are read before the names are bound.
+            for b in binds.iter_mut() {
+                qualify_expr(&mut b.value, alias, package, names, scope);
+            }
+            scope.push();
+            for b in binds.iter() {
+                scope.bind(b.name.name.clone());
+            }
             qualify_block(then, alias, package, names, scope);
+            scope.pop();
             if let Some(els) = els {
                 qualify_expr(els, alias, package, names, scope);
             }
         }
         ExprKind::Block(block) => qualify_block(block, alias, package, names, scope),
-        ExprKind::Lambda { body, .. } => qualify_expr(body, alias, package, names, scope),
+        ExprKind::Lambda { params, body } => {
+            // A lambda's parameters are its own names: `x -> ...` reads `x` as itself.
+            scope.push();
+            for p in params {
+                scope.bind(p.name.clone());
+            }
+            qualify_expr(body, alias, package, names, scope);
+            scope.pop();
+        }
         ExprKind::Try(inner) | ExprKind::Suggest(inner) => {
             qualify_expr(inner, alias, package, names, scope);
         }
@@ -333,15 +374,17 @@ fn qualify_block(
     alias: &str,
     package: &str,
     names: &PackageNames,
-    scope: &Scope,
+    scope: &mut Scope,
 ) {
+    scope.push();
     for stmt in &mut block.stmts {
         match &mut stmt.kind {
-            ast::StmtKind::Let { value, ty, .. } => {
+            ast::StmtKind::Let { name, value, ty } => {
                 qualify_expr(value, alias, package, names, scope);
                 if let Some(ty) = ty {
                     qualify_type(ty, alias, package, names);
                 }
+                scope.bind(name.name.clone());
             }
             ast::StmtKind::Assign { value, place, .. } => {
                 qualify_expr(value, alias, package, names, scope);
@@ -352,9 +395,11 @@ fn qualify_block(
                 }
             }
             ast::StmtKind::For { var, iter, body } => {
-                let _ = var;
                 qualify_expr(iter, alias, package, names, scope);
+                scope.push();
+                scope.bind(var.name.clone());
                 qualify_block(body, alias, package, names, scope);
+                scope.pop();
             }
             ast::StmtKind::Return(e) => {
                 if let Some(e) = e {
@@ -364,4 +409,5 @@ fn qualify_block(
             ast::StmtKind::Expr(e) => qualify_expr(e, alias, package, names, scope),
         }
     }
+    scope.pop();
 }

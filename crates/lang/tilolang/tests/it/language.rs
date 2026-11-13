@@ -646,3 +646,47 @@ fn a_plain_view_called_from_another_package_still_takes_no_block() {
         "a plain view with a block is E063: {diags:#?}"
     );
 }
+
+/// A template's own parameter is the template's name, even when the package also declares a view
+/// of that name: `dock` in `frame(dock: Text)` is the parameter, not `lib.dock`. Before the
+/// scope held the template's parameters, the rewrite read `dock` as the package's view and the
+/// template failed to compile (`E020`, a view where the body wanted text).
+#[test]
+fn a_template_parameter_shadows_a_package_view() {
+    let lib = "view dock() {\n    text(\"the dock\")\n}\n\
+               template view frame(dock: Text) {\n    stack {\n        text(dock)\n    }\n}";
+    let app = "use probe.lib as lib\n\
+               view sheet() {\n    lib.frame(dock: \"mine\")\n}";
+    if let Err(diags) = compile_against(lib, app) {
+        panic!("a template parameter stands as its own name: {diags:#?}");
+    }
+}
+
+/// A lambda's parameter shadows a package name: `surface -> ...` reads the parameter, never
+/// `lib.surface`.
+#[test]
+fn a_lambda_parameter_shadows_a_package_view() {
+    // The lambda is in the template's own body (`items.find(surface -> ...)`), where the
+    // rewrite runs: its parameter `surface` names a fn the package declares, and must stand as
+    // the parameter.
+    let lib = "fn surface(n: Int) -> Int {\n    n + 1\n}\n\
+               template view frame(items: List<Int>) {\n    stack {\n        if let surface = items.find(surface -> surface > 0) {\n            text(\"{surface}\")\n        }\n    }\n}";
+    let app = "use probe.lib as lib\n\
+               view sheet() {\n    lib.frame(items: [1])\n}";
+    if let Err(diags) = compile_against(lib, app) {
+        panic!("a lambda parameter stands as its own name: {diags:#?}");
+    }
+}
+
+/// A `for` variable shadows a package name: `for surface in ...` reads the variable, never
+/// `lib.surface`.
+#[test]
+fn a_for_variable_shadows_a_package_view() {
+    let lib = "view surface() {\n    text(\"the surface\")\n}\n\
+               template view frame(items: List<Text>) {\n    stack {\n        for surface in items {\n            text(surface)\n        }\n    }\n}";
+    let app = "use probe.lib as lib\n\
+               view sheet() {\n    lib.frame(items: [\"a\"])\n}";
+    if let Err(diags) = compile_against(lib, app) {
+        panic!("a for variable stands as its own name: {diags:#?}");
+    }
+}
