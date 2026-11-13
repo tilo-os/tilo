@@ -483,25 +483,28 @@ fn a_right_click_on_a_place_opens_its_actions() {
     for _ in 0..20 {
         session.step(Duration::from_millis(16)).unwrap();
     }
-    let before = session.accessible_labels();
+    // How many of the resource's actions stand on screen: the menu adds its rows to what the
+    // handle's own menu button and the view already show.
+    let offered_shown = |session: &Session| -> usize {
+        session
+            .accessible_labels()
+            .iter()
+            .filter(|label| offered.contains(label))
+            .count()
+    };
+    let before = offered_shown(&session);
     right_click(
         &mut session,
         (handle.0 + handle.2 / 2.0, handle.1 + handle.3 / 2.0),
     );
-    let opened = common::reached(&mut session, |session| {
-        session
-            .accessible_labels()
-            .iter()
-            .any(|label| offered.contains(label) && !before.contains(label))
-    });
-    let after: Vec<String> = session
-        .accessible_labels()
-        .into_iter()
-        .filter(|label| !before.contains(label))
-        .collect();
+    let opened = common::reached(&mut session, |session| offered_shown(session) > before);
     assert!(
         opened,
-        "the place's menu lists its actions {offered:?}; what the right-click showed: {after:?}"
+        "the place's menu lists its actions {offered:?}: {} of them stood before the right-click, \
+         {} after; the session says {:?}",
+        before,
+        offered_shown(&session),
+        session.accessible_labels()
     );
 }
 
