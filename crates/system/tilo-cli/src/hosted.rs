@@ -196,7 +196,7 @@ fn is_uuid(text: &str) -> bool {
 
 /// A name as `-w` matches it: letters and digits, lower case, words joined
 /// by `-` (`Applicant: Jane Doe` and `applicant-jane-doe` match).
-fn slug(name: &str) -> String {
+pub(crate) fn slug(name: &str) -> String {
     name.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|word| !word.is_empty())
@@ -206,7 +206,7 @@ fn slug(name: &str) -> String {
 
 /// The workspace `named`: an id as it is, or the account's workspace of
 /// that name.
-async fn workspace_id(client: &Client, named: &str) -> Result<String> {
+pub(crate) async fn workspace_id(client: &Client, named: &str) -> Result<String> {
     if is_uuid(named) {
         return Ok(named.to_owned());
     }
