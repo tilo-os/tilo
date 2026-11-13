@@ -385,8 +385,11 @@ async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
         .run_until(async {
             use runtime_collab::{SHAPE_ID_BYTES, SurfaceDelta, SurfaceResource};
             use signed_worker::{OriginalWorkspace, directory_state};
-            let workspace =
-                OriginalWorkspace::new(tilo_user_identity::DeviceCapabilities::host(), None, None);
+            let workspace = OriginalWorkspace::new(
+                tilo_user_identity::DeviceCapabilities::member(),
+                None,
+                None,
+            );
             let (worker, _authorize) = workspace.join_worker(905).await;
             let handle = &worker.handle;
             let mut base = directory_state("original-r1")

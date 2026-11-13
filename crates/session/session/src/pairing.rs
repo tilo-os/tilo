@@ -25,12 +25,12 @@ use std::time::Duration;
 use crate::platform::fabric::SharedLink;
 use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionArgs, ActionParam, ParamType};
+use tilo_identity_host::device_admin::DeviceKind;
 use tilo_identity_host::device_admin::{
     Approval, Candidate, ENROLL, KeyHolding, PersonPaths, approval_args, command_error,
     discover_command, node_id,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_user_identity::DeviceRole;
 
 const PKEXEC: &str = "/usr/bin/pkexec";
 /// How long `tilo-enroll` listens for an announcing device.
@@ -245,7 +245,7 @@ pub(crate) type Runner =
 struct Flights {
     discovering: bool,
     /// What discovery found, by device key, until approved or rejected.
-    candidates: HashMap<String, (DeviceRole, Candidate)>,
+    candidates: HashMap<String, (DeviceKind, Candidate)>,
     /// The device whose approval runs, and what stops waiting on it.
     approving: Option<(String, Arc<AtomicBool>)>,
 }
@@ -292,7 +292,7 @@ impl Pairing {
 
     /// Look for a nearby device of `role`; the answer is the device found,
     /// remembered for approval.
-    pub(crate) fn discover(&self, role: DeviceRole) -> Result<Pending<Answer>, String> {
+    pub(crate) fn discover(&self, role: DeviceKind) -> Result<Pending<Answer>, String> {
         {
             let mut flights = self.flights();
             refuse_busy(&flights)?;
@@ -342,15 +342,15 @@ impl Pairing {
         fabric: Option<&SharedLink>,
     ) -> Result<Pending<Answer>, String> {
         let workspace_ids = match approval.role {
-            DeviceRole::Host => approval
+            DeviceKind::HomePeer => approval
                 .workspace_ids
                 .clone()
                 // A new home server keeps no workspace until one adds it.
                 .unwrap_or_default(),
-            DeviceRole::Personal => Vec::new(),
+            DeviceKind::Personal => Vec::new(),
         };
         let holding = (self.holding)(paths)?;
-        if holding != KeyHolding::Whole && approval.role == DeviceRole::Host {
+        if holding != KeyHolding::Whole && approval.role == DeviceKind::HomePeer {
             return Err("a home server is added from the device you set up first".into());
         }
         let (label, candidate, stop) = {
@@ -428,7 +428,7 @@ impl Pairing {
     ) -> Result<Started, String> {
         match step {
             DISCOVER => {
-                let role = DeviceRole::parse(args.text("role").unwrap_or_default())
+                let role = DeviceKind::parse(args.text("role").unwrap_or_default())
                     .ok_or_else(|| "role must be personal-device or home-peer".to_string())?;
                 self.discover(role).map(Started::Later)
             }
@@ -591,7 +591,7 @@ pub(crate) fn run_bounded(command: &HostCommand, stop: &AtomicBool) -> Result<Fi
 }
 
 pub(crate) fn approval(args: &ActionArgs) -> Result<Approval, String> {
-    let role = DeviceRole::parse(args.text("role").unwrap_or_default())
+    let role = DeviceKind::parse(args.text("role").unwrap_or_default())
         .ok_or_else(|| "role must be personal-device or home-peer".to_string())?;
     let workspace_ids = args
         .array("workspace_ids")
@@ -819,7 +819,7 @@ mod tests {
             dir: PathBuf::from("/home/person/.config/tilo/identity"),
         };
 
-        let found = answered(pairing.discover(DeviceRole::Personal).expect("discovery"));
+        let found = answered(pairing.discover(DeviceKind::Personal).expect("discovery"));
         assert_eq!(
             found,
             serde_json::json!({
@@ -833,7 +833,7 @@ mod tests {
 
         // Only a device discovery found here can be approved.
         let unknown = Approval {
-            role: DeviceRole::Personal,
+            role: DeviceKind::Personal,
             device: "cc".repeat(32),
             service: service.clone(),
             workspace_ids: None,
@@ -845,7 +845,7 @@ mod tests {
         assert!(refused.contains("discover it first"), "{refused}");
 
         let approval = Approval {
-            role: DeviceRole::Personal,
+            role: DeviceKind::Personal,
             device: "aa".repeat(32),
             service,
             workspace_ids: None,
@@ -900,9 +900,9 @@ mod tests {
             root: PathBuf::from("/var/lib/tilo"),
             dir: PathBuf::from("/home/person/.config/tilo/identity"),
         };
-        let _ = answered(pairing.discover(DeviceRole::Host).expect("discovery"));
+        let _ = answered(pairing.discover(DeviceKind::HomePeer).expect("discovery"));
         let approval = Approval {
-            role: DeviceRole::Host,
+            role: DeviceKind::HomePeer,
             device: "aa".repeat(32),
             service: "bb".repeat(32),
             workspace_ids: Some(vec![7]),
@@ -926,9 +926,9 @@ mod tests {
             root: PathBuf::from("/var/lib/tilo"),
             dir: PathBuf::from("/home/person/.config/tilo/identity"),
         };
-        let _ = answered(pairing.discover(DeviceRole::Personal).expect("discovery"));
+        let _ = answered(pairing.discover(DeviceKind::Personal).expect("discovery"));
         let approval = Approval {
-            role: DeviceRole::Personal,
+            role: DeviceKind::Personal,
             device: "aa".repeat(32),
             service: "bb".repeat(32),
             workspace_ids: None,

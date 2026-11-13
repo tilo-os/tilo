@@ -91,7 +91,7 @@ async fn session(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_call_is_joined_in_every_kind_of_workspace() {
     let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let host = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let phone = enrol(&alice, "alice-phone", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();

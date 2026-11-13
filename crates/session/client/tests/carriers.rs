@@ -92,7 +92,7 @@ struct Ada {
 impl Ada {
     async fn start() -> Self {
         let (root, _) = UserIdentity::generate("Ada", 1);
-        let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+        let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
         let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
         let state = crate::support::scratch_dir();
         let host = start_host_serving(

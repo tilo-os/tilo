@@ -445,7 +445,6 @@ pub(crate) fn access_fixture(
         devices: vec![
             DeviceView {
                 current: true,
-                can_host: true,
                 ..device(1, "Framework 16")
             },
             DeviceView {

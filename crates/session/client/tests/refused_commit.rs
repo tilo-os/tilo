@@ -132,7 +132,7 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
     // Alice's host governs the workspace and holds guests to a change budget;
     // Bob was invited through the workspace and came in on his browser.
     let (alice, _) = UserIdentity::generate("Alice", 1);
-    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let (bob, _) = UserIdentity::generate("Bob", 1);
     let browser = enrol(&bob, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();

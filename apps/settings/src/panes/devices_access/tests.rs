@@ -136,15 +136,15 @@ fn record(now: i64) -> serde_json::Value {
     let tab = |n: u8| {
         serde_json::json!({"label": "Chrome on Linux", "key_hex": key(n),
             "fingerprint": format!("{n:02X} {n:02X} {n:02X} {n:02X} {n:02X} {n:02X}"),
-            "current": false, "revoked": false, "can_host": false, "browser": BROWSER,
+            "current": false, "revoked": false, "browser": BROWSER,
             "issued_ms": now - 3 * DAY, "last_active_ms": now - 5 * MINUTE})
     };
     serde_json::json!([
         {"label": "Framework 16", "key_hex": THIS_DEVICE, "fingerprint": "11 11 11 11 11 11",
-         "current": true, "revoked": false, "can_host": true},
+         "current": true, "revoked": false},
         {"label": "Claude Code on laptop", "key_hex": LAPTOP_AGENT,
          "fingerprint": "55 55 55 55 55 55", "current": false, "revoked": false,
-         "can_host": false, "kind": "agent", "agent": "Claude Code",
+         "kind": "agent", "agent": "Claude Code",
          "issued_ms": now - 2 * DAY, "expires_ms": now + 28 * DAY, "online": true},
         tab(0x31), tab(0x32),
     ])

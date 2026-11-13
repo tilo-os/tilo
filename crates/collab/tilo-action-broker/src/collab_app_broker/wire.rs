@@ -35,18 +35,13 @@ use presence::presence_event;
 /// native window's once its workspace or document custody ended, checked on
 /// both sides of every wait.
 pub(super) struct Feed<T> {
-    host_guard: Option<HostWorkerReadGuard>,
     native_guard: Option<NativeContextReadGuard>,
     rx: mpsc::UnboundedReceiver<T>,
 }
 
 impl<T> Feed<T> {
-    pub(super) fn new(
-        host_guard: Option<HostWorkerReadGuard>,
-        rx: mpsc::UnboundedReceiver<T>,
-    ) -> Self {
+    pub(super) fn new(rx: mpsc::UnboundedReceiver<T>) -> Self {
         Self {
-            host_guard,
             native_guard: None,
             rx,
         }
@@ -58,7 +53,6 @@ impl<T> Feed<T> {
     }
 
     fn check(&self) -> Result<(), BrokerError> {
-        HostWorkerReadGuard::check(self.host_guard.as_ref())?;
         NativeContextReadGuard::check(self.native_guard.as_ref())
     }
 
@@ -412,14 +406,9 @@ impl JoinedChannel {
         self.state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
         Ok(Feed::new(
-            self.host_guard(),
             self.state
                 .subscribe_ops(&self.channel_id, self.connection_id),
         ))
-    }
-
-    fn host_guard(&self) -> Option<HostWorkerReadGuard> {
-        HostWorkerReadGuard::for_channel(&self.state, self.peer_id, &self.verified_identity)
     }
 
     /// The host's record-content service, for a channel still admitted.
@@ -494,7 +483,7 @@ impl JoinedChannel {
             identity: native.admitted,
             document,
         });
-        Ok(Feed::new(self.host_guard(), rx).with_native_guard(native_guard))
+        Ok(Feed::new(rx).with_native_guard(native_guard))
     }
 
     /// Ask another endpoint holding this channel to publish the document's
@@ -815,10 +804,9 @@ impl JoinedChannel {
         bytes: &[u8],
     ) -> Result<zeroize::Zeroizing<Vec<u8>>, BrokerError> {
         let refused = || BrokerError::failed("private service-session request refused".into());
-        // Only the person's own app connection: never an agent's or a
-        // host's. Which app may ask what is decided per request.
-        if self.verified_identity.agent_id.is_some() || self.verified_identity.host_scope.is_some()
-        {
+        // Only the person's own app connection: never an agent's. Which app
+        // may ask what is decided per request.
+        if self.verified_identity.agent_id.is_some() {
             return Err(refused());
         }
         let read = self.document_read_context().map_err(|_| refused())?;
@@ -939,7 +927,7 @@ impl JoinedChannel {
             runs.retain(|_, run| run.peer_id != self.peer_id);
         }
         self.state.local_turn.notify_one();
-        let feed = Feed::new(self.host_guard(), rx);
+        let feed = Feed::new(rx);
         self.state.refresh_native_task_delivery();
         Ok(feed)
     }
@@ -1297,11 +1285,6 @@ impl JoinedChannel {
             );
         let delivered = invocation_delivery_notice(&self.state.services, app, workspace);
         Ok(InvocationStreamServer {
-            host_guard: HostWorkerReadGuard::for_channel(
-                &self.state,
-                self.peer_id,
-                &self.verified_identity,
-            ),
             rx: invocation_queue(self.peer_id, rx),
             delivered,
         })
@@ -1340,7 +1323,6 @@ impl JoinedChannel {
         let peer_id = self.peer_id;
         let route = self.route();
         let identity = self.verified_identity.clone();
-        let host_guard = HostWorkerReadGuard::for_channel(&state, peer_id, &identity);
         Box::pin(async move {
             let _owner_order = if state.durable_owner_required
                 || state.publisher.requires_owner_for(&route.cluster_id)
@@ -1349,7 +1331,6 @@ impl JoinedChannel {
             } else {
                 None
             };
-            HostWorkerReadGuard::check(host_guard.as_ref())?;
             if state.durable_owner_required || state.publisher.requires_owner_for(&route.cluster_id)
             {
                 state.revalidate_admission(&route, &identity)?;
@@ -1405,7 +1386,6 @@ impl JoinedChannel {
             state
                 .commit_effect_before_terminal(&staged, &update)
                 .await?;
-            HostWorkerReadGuard::check(host_guard.as_ref())?;
             if state.durable_owner_required || state.publisher.requires_owner_for(&route.cluster_id)
             {
                 state.revalidate_admission(&route, &identity)?;
@@ -1431,13 +1411,6 @@ impl JoinedChannel {
     }
 
     fn invocation_cancellation(&self, id: u64) -> Answer<Reply> {
-        let checked = HostWorkerReadGuard::check(
-            HostWorkerReadGuard::for_channel(&self.state, self.peer_id, &self.verified_identity)
-                .as_ref(),
-        );
-        if let Err(error) = checked {
-            return Box::pin(std::future::ready(Err(error)));
-        }
         let owns = self
             .state
             .pending_invocations
@@ -1554,14 +1527,7 @@ impl JoinedChannel {
                 "action catalogue subscriber registry unavailable".into(),
             ));
         }
-        Ok(ActionCatalogueStreamServer {
-            host_guard: HostWorkerReadGuard::for_channel(
-                &self.state,
-                self.peer_id,
-                &self.verified_identity,
-            ),
-            follower,
-        })
+        Ok(ActionCatalogueStreamServer { follower })
     }
 
     /// Open the installed app `app_id` (from `package_root`, if named) for
@@ -1639,7 +1605,7 @@ impl JoinedChannel {
         &self,
     ) -> Result<Feed<crate::record_content::ContentNews>, BrokerError> {
         let (route, content) = self.record_content()?;
-        Ok(Feed::new(self.host_guard(), content.subscribe(&route)))
+        Ok(Feed::new(content.subscribe(&route)))
     }
 }
 
@@ -1714,7 +1680,7 @@ impl JoinedChannel {
             BrokerError::failed("realtime continuity is unsupported by this host".into())
         })?;
         let rx = service.subscribe(&context).map_err(BrokerError::failed)?;
-        Ok(Feed::new(self.host_guard(), rx))
+        Ok(Feed::new(rx))
     }
 }
 

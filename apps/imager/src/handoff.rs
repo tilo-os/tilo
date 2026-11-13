@@ -701,7 +701,6 @@ mod tests {
         );
         assert_eq!(cert.user_public_key, local_cert.user_public_key);
         assert!(cert.capabilities.can_own_workspaces);
-        assert!(cert.capabilities.can_read_all_workspaces);
         let copied: Vec<tilo_relay_protocol::HomePeerRegistration> = serde_json::from_slice(
             &fs::read(tilo_relay_protocol::home_peer_registry_path(
                 &dir.path().join("var/lib/tilo"),

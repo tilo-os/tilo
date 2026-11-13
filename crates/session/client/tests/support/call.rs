@@ -304,7 +304,7 @@ impl GovernedCall {
     /// `packet_relay` says so, as a host serving pages does.
     pub async fn start_relaying(packet_relay: bool) -> Self {
         let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
+        let host = enrol(&alice, "alice-home", DeviceCapabilities::member());
         let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
         let state = tempfile::tempdir().unwrap();
         let TestHost { relay, web } =

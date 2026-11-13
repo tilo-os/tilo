@@ -984,8 +984,7 @@ pub(super) fn change_hashes(payload: &[u8]) -> Vec<[u8; 32]> {
 }
 
 /// A device's certificate as the store admits it: one this store's root
-/// signed, current, and not a store node's. A device that keeps other
-/// people's data holds none of anyone's own documents.
+/// signed, and current.
 fn admitted(
     root: [u8; 32],
     certificate: &DeviceCert,
@@ -994,11 +993,7 @@ fn admitted(
     if certificate.user_public_key != root {
         return Err("the certificate is not this identity's".into());
     }
-    let verified = VerifiedCertificate::new(certificate.clone(), now_ns(now))?;
-    if verified.capabilities.can_act_as_host {
-        return Err("a store node holds no personal documents".into());
-    }
-    Ok(verified)
+    VerifiedCertificate::new(certificate.clone(), now_ns(now))
 }
 
 fn sorted(mut entries: Vec<RevocationEntry>) -> Vec<RevocationEntry> {
@@ -1294,34 +1289,6 @@ mod tests {
                 .devices()
                 .iter()
                 .any(|cert| cert.device_public_key == a_key.verifying_key().to_bytes())
-        );
-    }
-
-    #[test]
-    fn a_store_node_is_admitted_to_none_of_the_persons_documents() {
-        let root = SigningKey::from_bytes(&[1; 32]);
-        let root_key = root.verifying_key().to_bytes();
-        let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
-        let (node_key, node_cert) = device(&root, 4, DeviceCapabilities::host());
-        let mut a = PersonalStore::open(root_key, a_cert, now()).unwrap();
-        a.publish("tube", "prefs", &record("theme", "dark"), &a_key, now())
-            .unwrap();
-        // It cannot open a store at all: a store node keeps no personal data.
-        assert!(PersonalStore::open(root_key, node_cert.clone(), now()).is_err());
-        // And it writes nothing to another device's store.
-        assert!(
-            a.receive(
-                &a_key,
-                node_key.verifying_key().to_bytes(),
-                hello(&node_cert, Vec::new()),
-                now(),
-            )
-            .is_err()
-        );
-        assert!(
-            !a.devices()
-                .iter()
-                .any(|cert| cert.device_public_key == node_key.verifying_key().to_bytes())
         );
     }
 

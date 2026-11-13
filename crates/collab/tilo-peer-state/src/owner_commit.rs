@@ -163,7 +163,6 @@ impl OwnerCommitRequest {
                     || command.source.workspace != self.workspace
                     || (command.source.heads.is_empty() && !placement_independent)
                     || command.source.heads.len() > 128
-                    || caller.capabilities.can_act_as_host
                 {
                     return Err("invalid desktop owner command binding".into());
                 }
@@ -258,7 +257,7 @@ fn import_binding(
     caller: &tilo_user_identity::DeviceCert,
     action: &ImportAction,
 ) -> Result<(CommitTarget, Vec<u8>), String> {
-    if invocation.is_nil() || caller.capabilities.can_act_as_host {
+    if invocation.is_nil() {
         return Err("invalid document import binding".into());
     }
     Ok((

@@ -74,9 +74,7 @@ impl TestGovernor {
         let governor_key = SigningKey::from_bytes(&random());
         let governor = certificate(&person, &governor_key, "Governor");
         let host_key = SigningKey::from_bytes(&random());
-        let mut host = certificate(&person, &host_key, "Certified host");
-        host.capabilities.can_act_as_host = true;
-        tilo_user_identity::sign_device_cert(&mut host, &person).unwrap();
+        let host = certificate(&person, &host_key, "Certified host");
         let workspace = uuid::Builder::from_random_bytes(random()).into_uuid();
         let workspace_id = WorkspaceId::from(workspace);
         let workspace = workspace.to_string();
@@ -631,7 +629,6 @@ mod empty_interactive_tests {
         let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string();
         let governor = TestGovernor::empty_interactive(cert.clone(), key, &workspace).unwrap();
         assert_eq!(governor.workspace_host(), &cert);
-        assert!(!governor.workspace_host().capabilities.can_act_as_host);
         assert!(governor.peer().rows().is_empty());
         let endpoint = iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(
@@ -698,6 +695,5 @@ mod empty_interactive_tests {
         assert_eq!(bootstrap.host, cert);
         assert_eq!(bootstrap.device_cert, cert);
         assert!(bootstrap.records.is_empty());
-        assert!(!bootstrap.host.capabilities.can_act_as_host);
     }
 }

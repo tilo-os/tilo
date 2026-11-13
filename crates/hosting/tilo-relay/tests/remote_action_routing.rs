@@ -119,7 +119,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
     // Phase `the_relay_routes_a_stamped_frame_to_the_addressed_device_only`.
     {
         let user = TestUser::fresh("Alice");
-        let host = user.enrol("home", DeviceCapabilities::host());
+        let host = user.enrol("home", DeviceCapabilities::member());
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let b = user.enrol("desktop", DeviceCapabilities::member());
         let c = user.enrol("phone", DeviceCapabilities::member());
@@ -155,7 +155,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
     // Phase `undeliverable_frames_are_answered_not_stored`.
     {
         let user = TestUser::fresh("Alice");
-        let host = user.enrol("home", DeviceCapabilities::host());
+        let host = user.enrol("home", DeviceCapabilities::member());
         let host_key = host.device_pubkey();
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let b = user.enrol("desktop", DeviceCapabilities::member());
@@ -224,7 +224,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
     // Phase `an_app_serving_host_answers_frames_addressed_to_itself`.
     {
         let user = TestUser::fresh("Alice");
-        let host = user.enrol("home", DeviceCapabilities::host());
+        let host = user.enrol("home", DeviceCapabilities::member());
         let host_key = host.device_pubkey();
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let actions = Arc::new(RecordingHost::default());
@@ -293,7 +293,7 @@ async fn refusal(client: &RelayClient, who: &str) -> Option<UnavailableReason> {
 #[tokio::test]
 async fn removed_member_session_ends_without_serving_an_action() {
     let user = TestUser::fresh("Alice");
-    let host = user.enrol("home", DeviceCapabilities::host());
+    let host = user.enrol("home", DeviceCapabilities::member());
     let host_key = host.device_pubkey();
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let b = user.enrol("desktop", DeviceCapabilities::member());
@@ -339,7 +339,7 @@ async fn removed_member_session_ends_without_serving_an_action() {
 #[tokio::test]
 async fn remote_action_to_removed_target_is_refused() {
     let user = TestUser::fresh("Alice");
-    let host = user.enrol("home", DeviceCapabilities::host());
+    let host = user.enrol("home", DeviceCapabilities::member());
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let c = user.enrol("phone", DeviceCapabilities::member());
     let relay = Box::pin(spawn_relay(
@@ -389,7 +389,7 @@ async fn remote_action_to_removed_target_is_refused() {
 #[tokio::test]
 async fn expired_agent_delegation_cannot_invoke_host() {
     let user = TestUser::fresh("Alice");
-    let host = user.enrol("home", DeviceCapabilities::host());
+    let host = user.enrol("home", DeviceCapabilities::member());
     let host_key = host.device_pubkey();
     let agent = user.enrol("agent", DeviceCapabilities::member());
     let room = "6f1c2a3e-2b7d-4c55-9a0e-5d1f00c0ffee";

@@ -459,7 +459,6 @@ impl AppBrokerState {
         if !collab_types::is_personal_cluster(&certificate.user_public_key, &workspace)
             || checked.effective.is_foreign_device()
             || checked.admission.admitted.agent_id.is_some()
-            || checked.admission.admitted.host_scope.is_some()
         {
             return Err(
                 "native credentials require this person's own admitted device workspace".into(),

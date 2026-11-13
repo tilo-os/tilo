@@ -71,7 +71,7 @@ async fn main() {
     let state = tempfile::tempdir().expect("state directory");
     let root = SigningKey::generate(&mut UnwrapErr(SysRng));
     let user = root.verifying_key().to_bytes();
-    let (host_key, host_cert) = enrol(&root, "dev host", DeviceCapabilities::host());
+    let (host_key, host_cert) = enrol(&root, "dev host", DeviceCapabilities::member());
     let (approver_key, approver_cert) = enrol(&root, "dev approver", DeviceCapabilities::primary());
 
     let cfg = tilo_relay::RelayConfig {

@@ -133,14 +133,14 @@ fn assert_paired(cert: &DeviceCert, host_cert: &DeviceCert, person: [u8; 32], ke
         Some(CertificationPolicy::browser().lifetime_ns)
     );
     tilo_user_identity::verify_device_cert(cert).unwrap();
-    assert!(host_cert.capabilities.can_act_as_host);
+    assert!(host_cert.capabilities.can_own_workspaces);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting() {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let user = root.verifying_key().to_bytes();
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host(
@@ -238,7 +238,7 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
 async fn a_declined_device_gets_no_certificate() {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let user = root.verifying_key().to_bytes();
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host(
         &root,
@@ -314,7 +314,7 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
     // Alice's host governs a workspace Bob, Dave and Erin are guests of: each
     // was invited through the workspace and came in on a browser.
     let (alice, _) = UserIdentity::generate("Alice", 1);
-    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let bob = new_key();
     let dave = new_key();
     let erin = new_key();
@@ -474,7 +474,7 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
 async fn approvals_for_requests_that_do_not_wait_are_refused() {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let user = root.verifying_key().to_bytes();
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host(
         &root,
@@ -572,7 +572,7 @@ async fn approvals_for_requests_that_do_not_wait_are_refused() {
 async fn a_device_paired_through_the_door_enters_the_workspace_as_the_person() {
     // Alice's host keeps a public workspace; its door lets guests in.
     let (alice, _) = UserIdentity::generate("Alice", 1);
-    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
     let workspace = host

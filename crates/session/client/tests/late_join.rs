@@ -35,7 +35,7 @@ fn noise(len: usize, seed: u64) -> Vec<u8> {
 async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_pages() {
     const TAIL: usize = 200;
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let author = enrol(&root, "browser", DeviceCapabilities::member());
     let joiner = enrol(&root, "phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();

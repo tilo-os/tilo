@@ -139,7 +139,7 @@ pub(crate) fn contract(step: &str) -> tilo_actions::ActionContract {
                 "type": "array",
                 "items": {
                     "type": "object",
-                    "required": ["label", "key_hex", "fingerprint", "current", "revoked", "can_host"]
+                    "required": ["label", "key_hex", "fingerprint", "current", "revoked"]
                 }
             })),
             ..ActionContract::view()
@@ -886,7 +886,6 @@ mod tests {
             .complete_enrollment(
                 &identity.id,
                 &token,
-                tilo_identity_host::enrollment::DeviceRole::Personal,
                 phone.verifying_key().to_bytes(),
                 "Phone",
                 issued_at_ns,

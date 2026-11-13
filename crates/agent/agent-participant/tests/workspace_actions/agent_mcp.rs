@@ -46,7 +46,7 @@ async fn tool(server: &McpServer<SessionActions>, name: &str, arguments: Value) 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_sees() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(
         &root,
@@ -361,7 +361,7 @@ fn terminal_runs(browser: &mut Browser) -> Vec<terminal::resource::Run> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(
         &root,
@@ -487,7 +487,7 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(
         &root,
@@ -675,7 +675,7 @@ async fn a_stopped_agent_leaves_who_is_here() {
 async fn leaves_who_is_here(ending: Ending) {
     use tilo_actions::remote::{ActionHost as _, Caller, InvokeRequest, agent_door};
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(
         &root,
@@ -785,7 +785,7 @@ const COMES_BACK_WITHIN: Duration = Duration::from_secs(6);
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_that_comes_back_is_heard_by_an_open_page_every_time() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(
         &root,
@@ -861,7 +861,7 @@ const QUIET: Duration = Duration::from_secs(35);
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_quiet_agent_stays_while_its_session_lasts() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(
         &root,
@@ -949,7 +949,7 @@ async fn a_quiet_agent_stays_while_its_session_lasts() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_is_present_waiting_as_soon_as_it_connects() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(
         &root,
@@ -1024,7 +1024,7 @@ async fn an_agent_is_present_waiting_as_soon_as_it_connects() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_run_after_one_that_ended_is_on_the_page_at_once() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(
         &root,

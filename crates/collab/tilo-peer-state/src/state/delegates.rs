@@ -150,8 +150,6 @@ pub(crate) const fn holds_no_power(cert: &DeviceCert) -> bool {
     let capabilities = &cert.capabilities;
     !(capabilities.can_own_workspaces
         || capabilities.can_admit_devices
-        || capabilities.can_act_as_host
-        || capabilities.can_read_all_workspaces
         || capabilities.can_administer_devices)
 }
 

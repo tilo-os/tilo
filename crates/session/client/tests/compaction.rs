@@ -83,7 +83,7 @@ async fn join_late(
 async fn a_member_compacts_a_sealed_route_the_host_cannot_read() {
     const EDITS: usize = 300;
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let (a, b, c) = (
         enrol(&root, "browser", DeviceCapabilities::member()),
         enrol(&root, "tablet", DeviceCapabilities::member()),

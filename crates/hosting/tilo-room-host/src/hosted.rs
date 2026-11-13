@@ -44,7 +44,7 @@ use web_time::SystemTime;
 use crate::attach::{HostDialer, Upstream};
 use crate::handshake::LiveIdentity;
 use crate::workspaces::WorkspaceServices;
-use tilo_relay_protocol::WorkspaceId;
+use tilo_relay_protocol::{Whose, WorkspaceId};
 
 /// Governance changes the follower of one workspace has yet to take in.
 const NOTICES: usize = 256;
@@ -178,12 +178,10 @@ impl Hosting {
         request: &HostWorkspaceRequest,
     ) -> Result<TransportHint, String> {
         let own = &self.services.cert;
-        if !self
-            .services
-            .work
-            .from
-            .admits(caller.user_public_key, own.user_public_key, None)
-        {
+        if !self.services.work.from.admits(&Whose::of_roots(
+            caller.user_public_key,
+            own.user_public_key,
+        )) {
             return Err(
                 "a device serves a workspace placed on it only when it takes that work".into(),
             );

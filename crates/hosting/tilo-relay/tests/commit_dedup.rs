@@ -61,7 +61,7 @@ async fn resent_commits_keep_their_host_order_and_are_not_fanned_out_again() {
     let host = spawn_relay_on(
         state.path(),
         &user,
-        user.enrol("home-server", DeviceCapabilities::host()),
+        user.enrol("home-server", DeviceCapabilities::member()),
         &[WS],
         &members,
     )
@@ -92,7 +92,7 @@ async fn resent_commits_keep_their_host_order_and_are_not_fanned_out_again() {
     let host = spawn_relay_on(
         state.path(),
         &user,
-        user.enrol("home-server-2", DeviceCapabilities::host()),
+        user.enrol("home-server-2", DeviceCapabilities::member()),
         &[WS],
         &members,
     )

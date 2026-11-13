@@ -134,7 +134,6 @@ mod tests {
             fingerprint: String::new(),
             current,
             revoked,
-            can_host: false,
             kind: ui::tilo_actions::remote::identity_admin::KeyKind::Device,
             ..crate::device_fleet::DeviceView::default()
         }

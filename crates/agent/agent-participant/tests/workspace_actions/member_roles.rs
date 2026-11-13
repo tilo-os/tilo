@@ -327,7 +327,7 @@ async fn titles_after(browser: &mut Browser, notes: &DocumentRoute, marker: &str
 async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (guest, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();

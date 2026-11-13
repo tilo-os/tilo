@@ -41,7 +41,7 @@ struct HomeHost {
 async fn home_host() -> HomeHost {
     let owner = TestUser::fresh("Owner");
     let bob = TestUser::fresh("Bob");
-    let host = owner.enrol("home", DeviceCapabilities::host());
+    let host = owner.enrol("home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = crate::common::start_relay(
         RelayConfig {

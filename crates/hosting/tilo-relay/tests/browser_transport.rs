@@ -18,7 +18,7 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn certified_clients_use_only_the_injected_packet_relay() {
     let user = TestUser::fresh("browser transport test");
-    let host = user.enrol("host", DeviceCapabilities::host());
+    let host = user.enrol("host", DeviceCapabilities::member());
     let a = user.enrol("browser-a", DeviceCapabilities::member());
     let b = user.enrol("browser-b", DeviceCapabilities::member());
     let tmp = tempfile::tempdir().unwrap();

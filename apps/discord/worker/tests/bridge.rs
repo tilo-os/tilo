@@ -62,14 +62,14 @@ impl BlobAccess for Blobs {
 }
 
 fn governor() -> (SigningKey, DeviceCert) {
-    governor_with(DeviceCapabilities::host())
+    governor_with(DeviceCapabilities::member())
 }
 
 /// The same host certified to own the workspaces it governs: their records
 /// are the sealed channels a Lounge's are, and everything that reads or
 /// writes them — the bridge included — goes through their keys.
 fn governor_owning_workspaces() -> (SigningKey, DeviceCert) {
-    governor_with(tilo_user_identity::DeviceCapabilities::host())
+    governor_with(tilo_user_identity::DeviceCapabilities::member())
 }
 
 fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {

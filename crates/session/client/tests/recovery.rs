@@ -23,7 +23,7 @@ use crate::support::{
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host(
@@ -88,7 +88,7 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_backoff() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host(
@@ -158,7 +158,7 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn page_failures_are_scoped_offer_their_recovery_and_clear() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host(

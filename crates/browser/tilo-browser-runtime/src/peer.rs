@@ -577,8 +577,7 @@ pub async fn issue_device_cert(
 ) -> Result<String, JsError> {
     let role = match role.as_str() {
         "browser" => tilo_relay_client::IssuedRole::Browser,
-        "node" => tilo_relay_client::IssuedRole::Node,
-        "session" => tilo_relay_client::IssuedRole::Session,
+        "node" | "session" => tilo_relay_client::IssuedRole::Device,
         _ => return Err(js_error("role must be browser, node or session")),
     };
     let root = PageSigner::from_js(&root)?;

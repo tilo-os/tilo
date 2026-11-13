@@ -346,7 +346,7 @@ async fn undo_run(page: &mut Browser, route: &DocumentRoute, run: &str) {
 async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no_page_open() {
     use base64::Engine as _;
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "tilo.sh", DeviceCapabilities::host());
+    let host = enrol(&root, "tilo.sh", DeviceCapabilities::member());
     let reviewer = enrol(&root, "reviewer's phone", DeviceCapabilities::member());
     let computer = enrol(&root, "visa agent", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();

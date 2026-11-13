@@ -1258,10 +1258,7 @@ pub fn provision_joined_device(
         user_public_key,
         device_public_key: device.verifying_key().to_bytes(),
         device_label: label.to_string(),
-        capabilities: DeviceCapabilities {
-            can_read_all_workspaces: true,
-            ..DeviceCapabilities::member()
-        },
+        capabilities: DeviceCapabilities::member(),
         issued_at_ns: now_ns,
         expires_at_ns: None,
         signature: [0; 64],
@@ -1574,7 +1571,7 @@ mod tests {
 
         assert_eq!(cert.user_public_key, root.verifying_key().to_bytes());
         assert_ne!(cert.device_public_key, cert.user_public_key);
-        assert!(cert.capabilities.can_read_all_workspaces);
+        assert!(cert.capabilities.can_own_workspaces);
         assert!(!cert.capabilities.can_admit_devices);
         verify_device_cert_at(&cert, 1_000).unwrap();
         assert_eq!(read_device_cert(&paths.device_cert).unwrap(), cert);
@@ -1627,7 +1624,7 @@ mod tests {
             cert
         };
         let own = device.verifying_key().to_bytes();
-        let node = crate::DeviceCapabilities::host;
+        let node = crate::DeviceCapabilities::member;
         let refused = |result: Result<(), PersistError>| result.unwrap_err().to_string();
 
         assert!(

@@ -246,7 +246,7 @@ async fn presence_reaches_a_member_in_order() {
     let members = [author.device_pubkey(), reader.device_pubkey()];
     let relay = Box::pin(spawn_relay(
         &user,
-        user.enrol("relay", DeviceCapabilities::host()),
+        user.enrol("relay", DeviceCapabilities::member()),
         &[WORKSPACE],
         &members,
     ))
@@ -364,7 +364,7 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
     let members = [author.device_pubkey(), reader.device_pubkey()];
     let relay = Box::pin(spawn_relay(
         &user,
-        user.enrol("relay", DeviceCapabilities::host()),
+        user.enrol("relay", DeviceCapabilities::member()),
         &[WORKSPACE],
         &members,
     ))
@@ -458,7 +458,7 @@ async fn a_clients_resting_pointer_arrives_without_another_message() {
     let members = [author.device_pubkey(), reader.device_pubkey()];
     let relay = Box::pin(spawn_relay(
         &user,
-        user.enrol("relay", DeviceCapabilities::host()),
+        user.enrol("relay", DeviceCapabilities::member()),
         &[WORKSPACE],
         &members,
     ))

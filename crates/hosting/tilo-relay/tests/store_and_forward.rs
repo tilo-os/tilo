@@ -155,7 +155,7 @@ async fn b_connects_and_drains_queue(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn offline_peer_gets_queued_deltas_on_reconnect() {
     let user = TestUser::fresh("Alice");
-    let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
+    let relay_dev = user.enrol("home-server", DeviceCapabilities::member());
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let b = user.enrol("phone", DeviceCapabilities::member());
 

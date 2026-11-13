@@ -75,7 +75,7 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
     let alice = TestUser::fresh("Fixture governor");
     let bob = TestUser::fresh("Fixture editor");
     let carol = TestUser::fresh("Fixture viewer");
-    let host = alice.enrol("private-host", DeviceCapabilities::host());
+    let host = alice.enrol("private-host", DeviceCapabilities::member());
     let laptop = alice.enrol("private-laptop", DeviceCapabilities::primary());
     let member = bob.enrol("private-member", DeviceCapabilities::member());
     let viewer = carol.enrol("private-viewer", DeviceCapabilities::member());
@@ -225,7 +225,7 @@ async fn an_admitted_member_creates_an_apps_empty_record() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_host_lets_go_of_content_no_record_of_the_workspace_names() {
     let alice = TestUser::fresh("Fixture governor");
-    let host = alice.enrol("collecting-host", DeviceCapabilities::host());
+    let host = alice.enrol("collecting-host", DeviceCapabilities::member());
     let laptop = alice.enrol("collecting-laptop", DeviceCapabilities::primary());
     let scratch = tempfile::tempdir().unwrap();
     let relay = start(scratch.path(), &alice, &host).await;

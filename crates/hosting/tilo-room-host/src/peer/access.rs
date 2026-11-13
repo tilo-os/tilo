@@ -56,14 +56,6 @@ pub(super) async fn audit_subscriber_access(
     Ok(watched)
 }
 
-pub(super) fn current_action_peer(peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> bool {
-    // A device that may own workspaces acts on this host's local action
-    // plane only with this host's own certificate: another host's actions
-    // reach it over that host's own sessions, never through this process.
-    session_peer_authorized(peer, session)
-        && (!peer.cert.capabilities.can_act_as_host || &peer.cert == session.own_device_cert)
-}
-
 pub(super) fn session_peer_authorized(peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> bool {
     session.trust().cert(peer, unix_now_ns()).is_ok()
 }
@@ -80,7 +72,7 @@ pub(super) fn action_peer_admitted(
 ) -> Result<(), UnavailableReason> {
     // Private authority is explicit and current: a same-owner workspace enrols an
     // owner device on Subscribe, never here.
-    if !current_action_peer(peer, session)
+    if !session_peer_authorized(peer, session)
         || !session.admits(wr, peer, WorkspaceOperation::RemoteAction)
     {
         return Err(UnavailableReason::NotAuthorised);

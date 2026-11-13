@@ -5,17 +5,12 @@ use ui::tilo_actions::remote::identity_admin::{self, FleetDevice, KeyKind};
 use ui::tilo_actions::remote::{Confirmation, InvokeArgument};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each flag is a separate fact the list shows about one key"
-)]
 pub struct DeviceView {
     pub label: String,
     pub key: [u8; 32],
     pub fingerprint: String,
     pub current: bool,
     pub revoked: bool,
-    pub can_host: bool,
     pub kind: KeyKind,
     pub browser: Option<String>,
     pub agent: Option<String>,
@@ -114,7 +109,6 @@ pub(crate) fn views(listed: Vec<FleetDevice>) -> Result<Vec<DeviceView>, String>
                 fingerprint: device.fingerprint,
                 current: device.current,
                 revoked: device.revoked,
-                can_host: device.can_host,
                 kind: device.kind,
                 browser: device.browser,
                 agent: device.agent,

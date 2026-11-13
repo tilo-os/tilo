@@ -314,7 +314,7 @@ impl Lounge {
             user_public_key: self.owner_root.verifying_key().to_bytes(),
             device_public_key: key.verifying_key().to_bytes(),
             device_label: "the Lounge's operator".into(),
-            capabilities: DeviceCapabilities::host(),
+            capabilities: DeviceCapabilities::member(),
             issued_at_ns: tilo_clock::unix_now_ns(),
             expires_at_ns: None,
             signature: [0; 64],

@@ -599,6 +599,14 @@ mesh-home-offline = Deine anderen Geräte erreichen dieses gerade nicht.
 mesh-work-hint-nothing = Andere Geräte führen ihre Arbeit dort aus, wo sie sind.
 mesh-work-hint-own = Apps und Dateien deiner anderen Geräte können hier laufen, solange dieses Gerät an ist.
 mesh-work-hint-anyone = Arbeit aller, deren Arbeitsbereich dieses Gerät hält, kann hier laufen.
+mesh-work-charging = Nur beim Laden
+mesh-work-charging-desc = Keine Arbeit übernehmen, solange dieses Gerät mit Akku läuft.
+mesh-work-room-cpu = Freie Prozessoren
+mesh-work-room-cpu-desc = Arbeit wartet, solange weniger als das für dich frei ist.
+mesh-work-room-memory = Freier Arbeitsspeicher
+mesh-work-room-memory-desc = Arbeit wartet, solange weniger als das für dich frei ist.
+mesh-work-room-none = Kein Minimum
+mesh-work-room-percent = { $percent } %
 mesh-pairing = Wird gekoppelt…
 mesh-approve = { $label } freigeben ({ $code })
 mesh-pair-home = Heimserver koppeln
@@ -2790,7 +2798,6 @@ settings-access-tabs = { $count ->
     [one] 1 Tab
    *[other] { $count } Tabs
 }
-settings-access-hosts = Hostet deine Arbeitsbereiche
 settings-access-ends = Endet
 settings-access-added = Hinzugefügt
 settings-access-key = Schlüssel
@@ -2932,6 +2939,8 @@ settings-effect-set-device-trusted = Gerät ohne Nachfrage verbinden lassen
 settings-effect-rename-device = Gerät umbenennen
 settings-effect-forget-device = Vergessen
 settings-effect-set-work = Die Arbeit festlegen, die dieses Gerät übernimmt
+settings-effect-set-work-while-charging = Arbeit nur beim Laden übernehmen
+settings-effect-set-work-room = Prozessoren oder Arbeitsspeicher frei halten
 settings-effect-set-device-service = Gerätedienst anbieten
 settings-effect-add-personal-device = Persönliches Gerät hinzufügen
 settings-effect-rename-home-server = Heimserver umbenennen

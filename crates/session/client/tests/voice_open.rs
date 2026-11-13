@@ -56,7 +56,7 @@ async fn session(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
     let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let host = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let TestHost { relay, web, .. } =

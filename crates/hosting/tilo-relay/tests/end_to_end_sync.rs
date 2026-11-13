@@ -225,7 +225,7 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     const WS: WorkspaceId = WorkspaceId::from_u128(7);
 
     let user = TestUser::fresh("Alice");
-    let host_dev = user.enrol("home-server", DeviceCapabilities::host());
+    let host_dev = user.enrol("home-server", DeviceCapabilities::member());
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let b = user.enrol("phone", DeviceCapabilities::member());
 

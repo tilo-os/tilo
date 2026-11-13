@@ -70,7 +70,7 @@ async fn before_marker(peer: &Link, author: &Link, doc: &mut AutoCommit, marker:
 async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_history() {
     const HISTORY: usize = 100;
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let author = enrol(&root, "browser", DeviceCapabilities::member());
     let observer = enrol(&root, "phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();

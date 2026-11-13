@@ -209,10 +209,7 @@ pub enum Envelope {
     /// attached to each workspace in it.
     ///
     /// Sent by BOTH sides of an attach session: the dialer sends
-    /// first, the accepter replies with its own hosted set. Only
-    /// meaningful when the sender's cert has
-    /// `capabilities.can_act_as_host = true` — otherwise the receiver
-    /// ignores it.
+    /// first, the accepter replies with its own hosted set.
     PeerRelayHello {
         /// Workspace ids this host currently hosts.
         hosted_workspaces: Vec<WorkspaceId>,

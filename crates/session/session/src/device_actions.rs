@@ -29,7 +29,7 @@ use tilo_peer_state::actions::{
 };
 use tilo_power_mgmt::InhibitToken;
 use tilo_power_mgmt::inhibit::INHIBIT_SUSPEND;
-use tilo_relay_protocol::WorkSetting;
+use tilo_relay_protocol::{Whose, WorkSetting};
 use tilo_runtime::offload::{PlanePeers, offer_offload, own_offering};
 
 use crate::engine::Engine;
@@ -443,7 +443,7 @@ impl SessionOffering {
 }
 
 impl Offering for SessionOffering {
-    fn report(&self, _from: [u8; 32], offer: &Query) -> Answer {
+    fn report(&self, _from: [u8; 32], whose: &Whose, offer: &Query) -> Answer {
         let content = self.content.lock_recover().clone();
         let holds = content.map_or_else(Vec::new, |content| {
             offer
@@ -454,7 +454,7 @@ impl Offering for SessionOffering {
                 .filter(|digest| content.holds(&offer.workspace, &offer.route.app, *digest))
                 .collect()
         });
-        own_offering(&self.work, &offer.route.app, holds)
+        own_offering(&self.work, whose, &offer.route.app, holds)
     }
 }
 
@@ -889,8 +889,8 @@ mod tests {
     struct Willing(SessionOffering);
 
     impl Offering for Willing {
-        fn report(&self, from: [u8; 32], offer: &Query) -> Answer {
-            let answer = self.0.report(from, offer);
+        fn report(&self, from: [u8; 32], whose: &Whose, offer: &Query) -> Answer {
+            let answer = self.0.report(from, whose, offer);
             Answer::taking(
                 Rank {
                     power: Power::External,

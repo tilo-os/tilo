@@ -544,18 +544,6 @@ async fn a_device_showing_another_devices_certificate_is_refused() {
     assert!(b.door.arrived.lock().unwrap().is_empty());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_store_node_is_refused() {
-    let person = Person::new();
-    let b = b(&person, &[]).await;
-    let (key, mut node) = device(&person.root, 5, "Home server");
-    node.capabilities.can_act_as_host = true;
-    sign_device_cert(&mut node, &person.root).unwrap();
-    let refused = dial(&b, &key, &node).await.unwrap_err();
-    assert!(refused.contains("store node"), "{refused}");
-    assert!(b.door.arrived.lock().unwrap().is_empty());
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_persons_devices_are_listed_with_whether_each_answers() {
     let person = Person::new();

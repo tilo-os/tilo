@@ -248,8 +248,6 @@ fn cert_capped_in(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AdmittedJoinIdentity {
-    /// Only an actual broker-allocated private descriptor can carry this scope.
-    host_scope: Option<LocalHostWorkerScope>,
     worker_registration: Option<PrivateWorkerRegistration>,
     certificate: Option<tilo_user_identity::DeviceCert>,
     verified: VerifiedJoinIdentity,
@@ -523,7 +521,6 @@ fn admit_verified_join_at(
     if verified.owns_personal_cluster(&route.cluster_id) {
         let role = CapRole::Owner;
         return Ok(AdmittedJoinIdentity {
-            host_scope: None,
             worker_registration: None,
             certificate: None,
             verified,
@@ -544,7 +541,6 @@ fn admit_verified_join_at(
     }
     let role = workspace.role_of(&principal_id).unwrap_or(CapRole::Viewer);
     Ok(AdmittedJoinIdentity {
-        host_scope: None,
         worker_registration: None,
         certificate: None,
         verified,
@@ -631,30 +627,9 @@ fn verify_join_identity(
     trusted_devices: Option<&[[u8; 32]]>,
     authority: Option<&dyn super::certificate_authority::CertificateAuthority>,
 ) -> Result<AdmittedJoinIdentity, String> {
-    verify_join_identity_with_host_scope(
-        route,
-        identity_bytes,
-        membership,
-        trusted_devices,
-        authority,
-        None,
-    )
-}
-
-fn verify_join_identity_with_host_scope(
-    route: &CrdtRoute,
-    identity_bytes: &[u8],
-    membership: Option<&WorkspaceTreeHandle>,
-    trusted_devices: Option<&[[u8; 32]]>,
-    authority: Option<&dyn super::certificate_authority::CertificateAuthority>,
-    host_scope: Option<&LocalHostWorkerScope>,
-) -> Result<AdmittedJoinIdentity, String> {
     if let Some(presentation) = runtime_collab::TaskAgentJoinIdentity::decode(identity_bytes)
         .map_err(|error| format!("task agent join presentation is malformed: {error}"))?
     {
-        if host_scope.is_some() {
-            return Err("a host worker never joins as a task agent".into());
-        }
         return verify_task_agent_join(
             route,
             &presentation,
@@ -669,7 +644,6 @@ fn verify_join_identity_with_host_scope(
         membership,
         trusted_devices,
         authority,
-        host_scope,
     )
 }
 
@@ -688,13 +662,12 @@ fn admit_join_presentation(
     membership: Option<&WorkspaceTreeHandle>,
     trusted_devices: Option<&[[u8; 32]]>,
     authority: Option<&dyn super::certificate_authority::CertificateAuthority>,
-    host_scope: Option<&LocalHostWorkerScope>,
 ) -> Result<AdmittedJoinIdentity, String> {
     let cert: tilo_user_identity::DeviceCert =
         serde_json::from_slice(&presentation.device_certificate)
             .map_err(|error| format!("device certificate is not valid JSON: {error}"))?;
     let (expected_root, revoked, enrolled) =
-        authorize_join_certificate(route, &cert, trusted_devices, authority, host_scope)?;
+        authorize_join_certificate(route, &cert, trusted_devices, authority)?;
     let registered = authority.map_or(
         Ok(None),
         super::certificate_authority::CertificateAuthority::policy_time,
@@ -717,32 +690,19 @@ fn admit_join_presentation(
         admit_verified_join_at(workspace, route, verified, now_ns / 1_000_000_000)
     })??;
     admitted.certificate = Some(cert);
-    admitted.host_scope = host_scope.cloned();
     Ok(admitted)
 }
 
-/// Whether `cert` may join `route`: the host worker scope, else the workspace's
-/// certificate authority (device list, revocations), else the trusted keys.
+/// Whether `cert` may join `route`: the workspace's certificate authority
+/// (device list, revocations), else the trusted keys.
 /// Answers the root expected to certify it, and whether it is revoked or enrolled.
 fn authorize_join_certificate(
     route: &CrdtRoute,
     cert: &tilo_user_identity::DeviceCert,
     trusted_devices: Option<&[[u8; 32]]>,
     authority: Option<&dyn super::certificate_authority::CertificateAuthority>,
-    host_scope: Option<&LocalHostWorkerScope>,
 ) -> Result<([u8; 32], bool, bool), String> {
-    Ok(if let Some(scope) = host_scope {
-        if !cert.capabilities.can_act_as_host || route != &scope.route || *cert != scope.certificate
-        {
-            return Err("host worker descriptor route or certificate mismatch".into());
-        }
-        authority
-            .ok_or("current host worker authority unavailable")?
-            .authorize_host_worker(route, cert)?;
-        (cert.user_public_key, false, true)
-    } else if cert.capabilities.can_act_as_host {
-        return Err("host certificate requires a private host worker descriptor".into());
-    } else if let Some(authority) = authority {
+    Ok(if let Some(authority) = authority {
         let workspace =
             uuid::Uuid::parse_str(&route.cluster_id).map_err(|_| "invalid exact workspace")?;
         authority.authorize_join(workspace, cert)?;
@@ -2685,14 +2645,6 @@ impl CatalogueFollower {
     }
 }
 
-/// Exact pinned host and route, minted only alongside a broker-allocated Unix pair.
-/// This scope is never accepted from the wire or exposed as a public constructor.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct LocalHostWorkerScope {
-    route: CrdtRoute,
-    certificate: tilo_user_identity::DeviceCert,
-}
-
 /// A unique actual private connection, independent of device role. A native
 /// primary device and a delegated Cloud host retain their existing admission paths.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2704,7 +2656,6 @@ struct PrivateWorkerRegistration {
 /// Host-owned admission for one private SDK descriptor. Never serialized on the wire.
 #[derive(Clone)]
 struct WorkerBinding {
-    host_scope: Option<LocalHostWorkerScope>,
     registration: Option<PrivateWorkerRegistration>,
     route: CrdtRoute,
     root: [u8; 32],
@@ -3089,16 +3040,7 @@ impl AppBrokerState {
             .ok_or("current certificate authority unavailable")?;
         let workspace =
             uuid::Uuid::parse_str(&route.cluster_id).map_err(|_| "invalid worker workspace")?;
-        let host_scope = if certificate.capabilities.can_act_as_host {
-            authority.authorize_host_worker(&route, certificate)?;
-            Some(LocalHostWorkerScope {
-                route: route.clone(),
-                certificate: certificate.clone(),
-            })
-        } else {
-            authority.authorize_join(workspace, certificate)?;
-            None
-        };
+        authority.authorize_join(workspace, certificate)?;
         let now = self.policy_now_ns()?;
         tilo_user_identity::verify_device_cert_at(certificate, now)
             .map_err(|_| "worker certificate rejected")?;
@@ -3122,7 +3064,6 @@ impl AppBrokerState {
         workers.push(PendingWorker {
             stream: server,
             binding: WorkerBinding {
-                host_scope,
                 registration: registration.map(|identity| PrivateWorkerRegistration {
                     identity,
                     route: route.clone(),
@@ -6654,42 +6595,13 @@ impl AppBrokerState {
         if let Some(cert) = &admitted.certificate {
             tilo_user_identity::verify_device_cert_at(cert, now)
                 .map_err(|_| BrokerError::failed("certificate no longer valid".into()))?;
-            if let Some(scope) = &admitted.host_scope {
-                if !self.is_accepting()
-                    || !cert.capabilities.can_act_as_host
-                    || route != &scope.route
-                    || cert != &scope.certificate
-                    || admitted.agent_id.is_some()
-                {
-                    return Err(BrokerError::failed(
-                        "host worker scope no longer valid".into(),
-                    ));
-                }
-                self.certificate_authority
-                    .get()
-                    .ok_or_else(|| {
-                        BrokerError::failed("current host worker authority unavailable".into())
-                    })?
-                    .authorize_host_worker(route, cert)
+            if let Some(authority) = self.certificate_authority.get() {
+                let workspace = uuid::Uuid::parse_str(&route.cluster_id)
+                    .map_err(|_| BrokerError::failed("invalid exact workspace".into()))?;
+                authority
+                    .authorize_join(workspace, cert)
                     .map_err(BrokerError::failed)?;
-            } else {
-                if cert.capabilities.can_act_as_host {
-                    return Err(BrokerError::failed(
-                        "host certificate requires a private host worker descriptor".into(),
-                    ));
-                }
-                if let Some(authority) = self.certificate_authority.get() {
-                    let workspace = uuid::Uuid::parse_str(&route.cluster_id)
-                        .map_err(|_| BrokerError::failed("invalid exact workspace".into()))?;
-                    authority
-                        .authorize_join(workspace, cert)
-                        .map_err(BrokerError::failed)?;
-                }
             }
-        } else if admitted.host_scope.is_some() {
-            return Err(BrokerError::failed(
-                "host worker certificate missing".into(),
-            ));
         }
         let membership = self.membership.as_ref().ok_or_else(|| {
             BrokerError::failed("certified session lost its membership authority".into())
@@ -6712,7 +6624,6 @@ impl AppBrokerState {
                             )
                         })?;
                 current.certificate.clone_from(&admitted.certificate);
-                current.host_scope.clone_from(&admitted.host_scope);
                 current
                     .worker_registration
                     .clone_from(&admitted.worker_registration);
@@ -8110,17 +8021,6 @@ fn app_settings_capability(
     };
     let app_id = route.app_id.clone();
     let display = private_display_control(state, &route, &identity);
-    // Personal vocabulary stays on this device. Admission to a workspace is
-    // insufficient: only the host's private local worker descriptor of the
-    // authenticated person receives the read/edit projection.
-    let dictionary_owner = (identity.host_scope.is_some()
-        && identity.agent_id.is_none()
-        && !identity.verified.capped
-        && !identity
-            .certificate
-            .as_ref()
-            .is_some_and(|cert| cert.capabilities.foreign))
-    .then_some(identity.verified.user_public_key);
     let reach = settings_reach(state, &route, &identity);
     let state = Arc::clone(state);
     let revalidate: runtime_collab::settings::host::Revalidate = Arc::new(move || {
@@ -8132,7 +8032,6 @@ fn app_settings_capability(
     Ok(
         runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate)
             .with_reach(reach)
-            .with_dictionary_owner(dictionary_owner)
             .with_display(display),
     )
 }
@@ -9132,44 +9031,6 @@ fn read_scrollback(
 
 // Presence handle + streams
 
-/// A returned stream retains the local descriptor's host identity, not a past
-/// permission decision. Both sides of every await recheck current authority.
-struct HostWorkerReadGuard {
-    state: Arc<AppBrokerState>,
-    peer_id: u64,
-    identity: AdmittedJoinIdentity,
-}
-impl HostWorkerReadGuard {
-    fn for_channel(
-        state: &Arc<AppBrokerState>,
-        peer_id: u64,
-        identity: &AdmittedJoinIdentity,
-    ) -> Option<Self> {
-        identity.host_scope.as_ref().map(|_| Self {
-            state: state.clone(),
-            peer_id,
-            identity: identity.clone(),
-        })
-    }
-    fn check(guard: Option<&Self>) -> Result<(), BrokerError> {
-        if let Some(guard) = guard {
-            let scope = guard
-                .identity
-                .host_scope
-                .as_ref()
-                .ok_or_else(|| BrokerError::failed("host worker scope missing".into()))?;
-            if !guard
-                .state
-                .is_current_host_worker(guard.peer_id, &scope.route, &scope.certificate)
-                .map_err(BrokerError::failed)?
-            {
-                return Err(BrokerError::failed("host worker no longer current".into()));
-            }
-        }
-        Ok(())
-    }
-}
-
 // Stream servers
 
 // The queues below are `Rc<AsyncMutex<mpsc::UnboundedReceiver<_>>>` rather
@@ -9227,7 +9088,6 @@ pub(crate) fn unread_invocations(peer: u64) -> usize {
 }
 
 struct InvocationStreamServer {
-    host_guard: Option<HostWorkerReadGuard>,
     rx: InvocationQueue,
     /// Told each time an invocation is handed to the app.
     delivered: Option<Box<dyn Fn()>>,
@@ -9257,7 +9117,6 @@ fn task_run_json(run: TaskRunEnvelope) -> Result<String, BrokerError> {
 }
 
 struct ActionCatalogueStreamServer {
-    host_guard: Option<HostWorkerReadGuard>,
     follower: Arc<CatalogueFollower>,
 }
 
@@ -9268,13 +9127,11 @@ impl ActionCatalogueStreamServer {
         reason = "the stream is served on the connection's single-threaded local set"
     )]
     async fn next(&self) -> Result<String, BrokerError> {
-        HostWorkerReadGuard::check(self.host_guard.as_ref())?;
         let change = self
             .follower
             .next()
             .await
             .map_err(|()| BrokerError::disconnected("action catalogue stream closed".into()))?;
-        HostWorkerReadGuard::check(self.host_guard.as_ref())?;
         let json = serde_json::to_string(&change)
             .map_err(|error| BrokerError::failed(error.to_string()))?;
         if change.reset {
@@ -9297,13 +9154,11 @@ impl InvocationStreamServer {
         reason = "the stream is served on the connection's single-threaded local set"
     )]
     async fn next(&self) -> Result<InvocationEnvelope, BrokerError> {
-        HostWorkerReadGuard::check(self.host_guard.as_ref())?;
         let mut guard = self.rx.lock().await;
         let invocation = guard.recv().await.ok_or_else(|| {
             BrokerError::disconnected("application invocation stream closed".into())
         })?;
         drop(guard);
-        HostWorkerReadGuard::check(self.host_guard.as_ref())?;
         if let Some(delivered) = &self.delivered {
             delivered();
         }
@@ -11810,7 +11665,6 @@ pub mod tests {
                 connection_id: peer_id,
                 verified_identity: self.source_identity.clone().unwrap_or_else(|| {
                     AdmittedJoinIdentity {
-                        host_scope: None,
                         worker_registration: None,
                         certificate: None,
                         verified: VerifiedJoinIdentity {
@@ -13544,14 +13398,14 @@ pub mod tests {
             queued.try_recv(),
             Ok(ContextUpdate::Snapshot { .. })
         ));
-        let queued = Rc::new(AsyncMutex::new(
-            wire::Feed::new(None, queued).with_native_guard(Some(NativeContextReadGuard {
+        let queued = Rc::new(AsyncMutex::new(wire::Feed::new(queued).with_native_guard(
+            Some(NativeContextReadGuard {
                 state: state.clone(),
                 route: route.clone(),
                 identity: native.admitted,
                 document: None,
-            })),
-        ));
+            }),
+        )));
         let reading = Rc::clone(&queued);
         let mut pending = Box::pin(async move { reading.lock().await.next().await });
         // The actual stream read must be waiting before revocation: it holds
@@ -15122,9 +14976,6 @@ impl AppBrokerState {
         identity: Option<(CrdtRoute, AdmittedJoinIdentity)>,
     ) -> Result<(), BrokerError> {
         let state = self;
-        let host_guard = identity
-            .as_ref()
-            .and_then(|(_, identity)| HostWorkerReadGuard::for_channel(state, peer_id, identity));
         // Copy only the local routing key before awaiting; never hold the registry lock across the owner turn.
         let owner_workspace = state
             .pending_invocations
@@ -15141,7 +14992,6 @@ impl AppBrokerState {
         } else {
             None
         };
-        HostWorkerReadGuard::check(host_guard.as_ref())?;
         if requires_owner && let Some((route, identity)) = &identity {
             state.revalidate_admission(route, identity)?;
         }
@@ -15160,7 +15010,6 @@ impl AppBrokerState {
         state
             .commit_effect_before_terminal(&staged, &update)
             .await?;
-        HostWorkerReadGuard::check(host_guard.as_ref())?;
         if requires_owner && let Some((route, identity)) = &identity {
             state.revalidate_admission(route, identity)?;
         }
@@ -15344,14 +15193,14 @@ mod host_worker_capacity_tests {
         };
         tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
         AdmittedJoinIdentity {
-            host_scope: Some(LocalHostWorkerScope {
+            worker_registration: Some(PrivateWorkerRegistration {
+                identity: uuid::Uuid::from_u128(record as u128),
                 route: CrdtRoute::from_channel_key(&format!(
                     "{}#app:so.tilo.notes#record:tab:{record:016x}",
                     uuid::Uuid::from_u128(7)
                 )),
                 certificate: certificate.clone(),
             }),
-            worker_registration: None,
             certificate: Some(certificate),
             verified: VerifiedJoinIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
@@ -15371,7 +15220,7 @@ mod host_worker_capacity_tests {
     }
     fn retain(state: &AppBrokerState, peer: u64, record: usize) -> Result<(), BrokerError> {
         let worker = host_worker(record);
-        let route = worker.host_scope.clone().unwrap().route;
+        let route = worker.worker_registration.clone().unwrap().route;
         state.retain_host_worker(peer, &route, &worker)
     }
 

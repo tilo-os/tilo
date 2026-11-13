@@ -246,7 +246,11 @@ fn resource_locator_uses_configured_https_host_and_refuses_wildcards() {
 async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
     let signer = SigningKey::from_bytes(&[71; 32]);
     // A workspace service's node, which takes part in its workspaces' channels.
-    let host = host(&signer, 73, tilo_user_identity::DeviceCapabilities::host());
+    let host = host(
+        &signer,
+        73,
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
     let (_, owner) = device(&signer, 74, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
@@ -279,7 +283,7 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
 )]
 async fn the_host_says_a_workspace_was_deleted_to_whoever_names_it() {
     let root = SigningKey::from_bytes(&[131; 32]);
-    let host = host(&root, 132, tilo_user_identity::DeviceCapabilities::host());
+    let host = host(&root, 132, tilo_user_identity::DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let workspaces = relay.workspaces().unwrap().clone();
@@ -325,7 +329,7 @@ async fn the_host_says_a_workspace_was_deleted_to_whoever_names_it() {
 )]
 async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
     let root = SigningKey::from_bytes(&[121; 32]);
-    let host = host(&root, 122, tilo_user_identity::DeviceCapabilities::host());
+    let host = host(&root, 122, tilo_user_identity::DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let workspaces = relay.workspaces().unwrap().clone();
@@ -444,7 +448,7 @@ async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
     use tilo_relay_protocol::sealed_invitations::{Fetched, Stored, TakeBack};
 
     let root = SigningKey::from_bytes(&[131; 32]);
-    let host = host(&root, 132, tilo_user_identity::DeviceCapabilities::host());
+    let host = host(&root, 132, tilo_user_identity::DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let (addr, serving) = serve_web(Arc::new(web_of(&relay, &host))).await;
@@ -563,7 +567,7 @@ async fn a_sealed_invitation_outlives_the_relay_it_was_left_on() {
     use tilo_relay_protocol::sealed_invitations::{Fetched, Stored, TakeBack};
 
     let root = SigningKey::from_bytes(&[133; 32]);
-    let signer = host(&root, 134, tilo_user_identity::DeviceCapabilities::host());
+    let signer = host(&root, 134, tilo_user_identity::DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let keeping = "abcdefghijklmnop";
     let lapsing = "ponmlkjihgfedcba";
@@ -714,7 +718,11 @@ fn header_value<'a>(head: &'a str, name: &str) -> Option<&'a str> {
 async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     let signer = SigningKey::from_bytes(&[81; 32]);
     let watcher = SigningKey::from_bytes(&[82; 32]);
-    let host = host(&signer, 83, tilo_user_identity::DeviceCapabilities::host());
+    let host = host(
+        &signer,
+        83,
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
     let (_, owner) = device(&signer, 84, DeviceCapabilities::member());
     let (joined_key, joined) = device(&watcher, 85, DeviceCapabilities::member());
     let (_, watch) = device(&watcher, 86, DeviceCapabilities::member());
@@ -1032,7 +1040,7 @@ async fn call_json(
 async fn a_login_code_is_resolved_once_followed_and_not_guessed() {
     use tilo_relay_protocol::login_code as wire;
     let root = SigningKey::from_bytes(&[141; 32]);
-    let host = host(&root, 142, DeviceCapabilities::host());
+    let host = host(&root, 142, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let (addr, serving) = serve_web(Arc::new(web_of(&relay, &host))).await;
@@ -1195,7 +1203,7 @@ async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
     use tilo_user_identity::{CertificationRequest, verify_device_cert_at};
 
     let owner = SigningKey::from_bytes(&[151; 32]);
-    let host = host(&owner, 152, DeviceCapabilities::host());
+    let host = host(&owner, 152, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let web = Arc::new(web_of(&relay, &host));
@@ -1502,7 +1510,7 @@ async fn a_computer_setting_up_for_a_tab_not_yet_let_in_waits_for_the_tab() {
     use tilo_user_identity::CertificationRequest;
 
     let owner = SigningKey::from_bytes(&[171; 32]);
-    let host = host(&owner, 172, DeviceCapabilities::host());
+    let host = host(&owner, 172, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let web = Arc::new(web_of(&relay, &host));
@@ -1659,7 +1667,7 @@ async fn invitation_only_host(
     root: &SigningKey,
     seed: u8,
 ) -> (Relay, Host, String, tempfile::TempDir) {
-    let host = host(root, seed, tilo_user_identity::DeviceCapabilities::host());
+    let host = host(root, seed, tilo_user_identity::DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
     let workspaces = relay.workspaces().unwrap().clone();

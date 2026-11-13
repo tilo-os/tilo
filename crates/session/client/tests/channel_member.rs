@@ -283,7 +283,7 @@ impl Laptop {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host(
@@ -427,7 +427,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_edit_held_for_the_keys_survives_a_reload() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host(
@@ -489,7 +489,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host(

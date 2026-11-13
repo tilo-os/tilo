@@ -76,7 +76,7 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
     let alice_root_key = alice_root.verifying_key().to_bytes();
     let bob_root = SigningKey::generate(&mut UnwrapErr(SysRng));
     let bob_root_key = bob_root.verifying_key().to_bytes();
-    let host_device = enrol(&alice_root, "alice-home", DeviceCapabilities::host());
+    let host_device = enrol(&alice_root, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice_root, &host_device, state.path(), false).await;
     let workspace = host

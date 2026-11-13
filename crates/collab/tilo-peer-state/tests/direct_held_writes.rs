@@ -133,7 +133,7 @@ fn sealed(key: &SigningKey) -> NeighbourMsg {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let (host_key, host_cert) = crate::common::device_with(&root, 2, DeviceCapabilities::host());
+    let (host_key, host_cert) = crate::common::device_with(&root, 2, DeviceCapabilities::member());
     let (b_key, b_cert) = device(&root, 3);
     // A third member, whose writes the host passes on to the second.
     let (c_key, c_cert) = device(&root, 4);

@@ -890,7 +890,7 @@ pub async fn dev(
     std::fs::create_dir_all(&state).with_context(|| format!("create {}", state.display()))?;
     let [root, host, approver_key] = dev_identity(&state)?;
     let user = root.verifying_key().to_bytes();
-    let host_cert = enrol(&root, &host, "dev host", DeviceCapabilities::host())?;
+    let host_cert = enrol(&root, &host, "dev host", DeviceCapabilities::member())?;
     let approver_cert = enrol(
         &root,
         &approver_key,
@@ -1251,7 +1251,7 @@ pub async fn workspace(
     let operator = operator_lines()?;
     let [root, host, approver_key] = dev_identity(&state)?;
     let user = root.verifying_key().to_bytes();
-    let host_cert = enrol(&root, &host, "workspace host", DeviceCapabilities::host())?;
+    let host_cert = enrol(&root, &host, "workspace host", DeviceCapabilities::member())?;
     let approver_cert = enrol(
         &root,
         &approver_key,
@@ -1410,7 +1410,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let [root, host, approver_key] = [key(), key(), key()];
         let user = root.verifying_key().to_bytes();
-        let host_cert = enrol(&root, &host, "dev host", DeviceCapabilities::host()).unwrap();
+        let host_cert = enrol(&root, &host, "dev host", DeviceCapabilities::member()).unwrap();
         let approver_cert = enrol(
             &root,
             &approver_key,
@@ -1583,7 +1583,8 @@ mod tests {
         iroh::endpoint::Endpoint,
     ) {
         let [root, host, approver_key] = [key(), key(), key()];
-        let host_cert = enrol(&root, &host, "workspace host", DeviceCapabilities::host()).unwrap();
+        let host_cert =
+            enrol(&root, &host, "workspace host", DeviceCapabilities::member()).unwrap();
         let approver_cert = enrol(
             &root,
             &approver_key,

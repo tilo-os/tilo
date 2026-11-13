@@ -32,7 +32,7 @@ use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ActionPlane, Offering, ReadFuture, Workspaces};
-use tilo_relay_protocol::{Machine, WorkSetting};
+use tilo_relay_protocol::{Machine, Whose, WorkSetting};
 use tokio::sync::Mutex as AsyncMutex;
 
 use super::GovernedWorkspace;
@@ -265,7 +265,7 @@ struct HostOffering {
 }
 
 impl Offering for HostOffering {
-    fn report(&self, from: [u8; 32], offer: &Query) -> Answer {
+    fn report(&self, from: [u8; 32], whose: &Whose, offer: &Query) -> Answer {
         let jobs = self.work.jobs.read_recover().clone();
         let takes = jobs
             .as_ref()
@@ -278,6 +278,7 @@ impl Offering for HostOffering {
             _ => Vec::new(),
         };
         self.setting.answer(
+            whose,
             // A host is the machine that stays on: its power is external.
             Machine::here(Power::External),
             takes,

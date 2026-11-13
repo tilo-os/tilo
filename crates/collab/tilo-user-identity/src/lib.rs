@@ -99,7 +99,6 @@ pub mod nofollow;
 pub mod persist;
 pub mod projection;
 pub mod revocation;
-pub mod role;
 pub mod root_envelope;
 pub mod root_statement;
 pub mod sign;
@@ -172,7 +171,6 @@ pub use revocation::{
     revocation_signing_digest, sign_revocation_entry, sign_revocation_entry_async,
     verify_revocation_entry,
 };
-pub use role::DeviceRole;
 pub use sign::{CallbackSigner, SignError, StatementSigner};
 pub use sign_in::{SIGN_IN_TAG, SignInError, SignInProof, agent_endpoint_audience, sign_in_digest};
 pub use witness::{Answered, HOST_WITNESS_PREIMAGE_TAG, HostWitness, HostWitnessError, Parties};

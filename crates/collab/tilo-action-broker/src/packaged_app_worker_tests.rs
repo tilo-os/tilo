@@ -151,7 +151,6 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
                 .get(APP_PEER, &env.route)
                 .cloned()
                 .expect("the launched app is the worker of its own route");
-            assert!(worker.host_scope.is_none());
             let registration = worker
                 .worker_registration
                 .expect("registered for the app its launcher vouched for");

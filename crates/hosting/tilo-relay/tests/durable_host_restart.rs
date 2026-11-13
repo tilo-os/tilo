@@ -177,7 +177,7 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
 
     // ---- Host boots; A publishes an edit and leaves. B has never
     //      connected. ----
-    let host1_dev = user.enrol("home-server", DeviceCapabilities::host());
+    let host1_dev = user.enrol("home-server", DeviceCapabilities::member());
     let host1 = Box::pin(spawn_relay_on(
         &state_root,
         &user,
@@ -212,7 +212,7 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
         "queued delta must survive the host process dying"
     );
 
-    let host2_dev = user.enrol("home-server-2", DeviceCapabilities::host());
+    let host2_dev = user.enrol("home-server-2", DeviceCapabilities::member());
     let host2 = Box::pin(spawn_relay_on(
         &state_root,
         &user,

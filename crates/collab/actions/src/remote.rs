@@ -313,10 +313,6 @@ pub mod identity_admin {
     }
 
     /// One device trusted under an identity, as [`DEVICES`] answers it.
-    #[expect(
-        clippy::struct_excessive_bools,
-        reason = "each flag says a different thing about the key: whether it is this device, refused, may host, and here now"
-    )]
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub struct FleetDevice {
         /// The name the device was enrolled with.
@@ -328,8 +324,6 @@ pub mod identity_admin {
         pub current: bool,
         /// Whether its trust was revoked.
         pub revoked: bool,
-        /// Whether it may host workspaces for the person.
-        pub can_host: bool,
         /// What the key is: a device of the person's, or a key acting for
         /// them.
         #[serde(default)]

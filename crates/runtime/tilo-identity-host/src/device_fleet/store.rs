@@ -217,7 +217,6 @@ impl DeviceFleetStore {
         &self,
         identity_id: &str,
         encoded_token: &str,
-        role: crate::enrollment::DeviceRole,
         new_device_public_key: [u8; 32],
         device_label: &str,
         now_ns: u64,
@@ -236,7 +235,6 @@ impl DeviceFleetStore {
             &self.nonces(),
             &crate::enrollment::Redemption {
                 token: &token,
-                role,
                 device_public_key: new_device_public_key,
                 label: device_label,
                 now_ns,
@@ -967,7 +965,6 @@ mod tests {
                 .complete_enrollment(
                     &identity_id,
                     &token,
-                    tilo_user_identity::DeviceRole::Personal,
                     phone.verifying_key().to_bytes(),
                     "Phone",
                     issued_at_ns,
@@ -983,7 +980,6 @@ mod tests {
             let replay = store.complete_enrollment(
                 &identity_id,
                 &token,
-                tilo_user_identity::DeviceRole::Personal,
                 replay_device.verifying_key().to_bytes(),
                 "Replay",
                 issued_at_ns + 1,
@@ -1023,7 +1019,6 @@ mod tests {
             let after_issuer_expiry = store.complete_enrollment(
                 &identity_id,
                 &expires_with_issuer,
-                tilo_user_identity::DeviceRole::Personal,
                 replay_device.verifying_key().to_bytes(),
                 "Expired issuer",
                 issued_at_ns + 3,
@@ -1081,7 +1076,6 @@ mod tests {
                 .complete_enrollment(
                     &identity_id,
                     &first_token,
-                    tilo_user_identity::DeviceRole::Personal,
                     first_device.verifying_key().to_bytes(),
                     "First device",
                     issued_at_ns,
@@ -1102,7 +1096,6 @@ mod tests {
                 .complete_enrollment(
                     &identity_id,
                     &second_token,
-                    tilo_user_identity::DeviceRole::Personal,
                     second_device.verifying_key().to_bytes(),
                     "Second device",
                     after_first_expiry,
@@ -1113,7 +1106,6 @@ mod tests {
             let replay = store.complete_enrollment(
                 &identity_id,
                 &first_token,
-                tilo_user_identity::DeviceRole::Personal,
                 replay_device.verifying_key().to_bytes(),
                 "Rollback replay",
                 issued_at_ns + 1,
@@ -1173,7 +1165,6 @@ mod tests {
                     store.complete_enrollment(
                         &identity_id,
                         &token,
-                        tilo_user_identity::DeviceRole::Personal,
                         device.verifying_key().to_bytes(),
                         &format!("Device {seed}"),
                         issued_at_ns,
@@ -1244,7 +1235,6 @@ mod tests {
         let replay = store.complete_enrollment(
             &identity_id,
             &spent_earlier,
-            tilo_user_identity::DeviceRole::Personal,
             [71; 32],
             "Replay",
             issued_at_ns,
@@ -1260,7 +1250,6 @@ mod tests {
             .complete_enrollment(
                 &identity_id,
                 &mint(),
-                tilo_user_identity::DeviceRole::Personal,
                 phone.verifying_key().to_bytes(),
                 "Phone",
                 issued_at_ns,

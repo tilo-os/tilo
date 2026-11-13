@@ -77,7 +77,7 @@ impl Admitted {
         let host_key = SigningKey::from_bytes(&tilo_test_env::node_key());
         let laptop_key = SigningKey::from_bytes(&[4; 32]);
         let desk_key = SigningKey::from_bytes(&[5; 32]);
-        let host = certificate(&alice, &host_key, DeviceCapabilities::host(), 1, None);
+        let host = certificate(&alice, &host_key, DeviceCapabilities::member(), 1, None);
         let laptop = certificate(&alice, &laptop_key, DeviceCapabilities::primary(), 1, None);
         let held = held(&bob, &desk_key);
         let now = tilo_clock::unix_now_ns();

@@ -70,7 +70,7 @@ fn invokers(changes: &[([u8; 32], Vec<u8>)]) -> Vec<tilo_actions::ActionInvoker>
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let laptop_device = enrol(&root, "laptop", DeviceCapabilities::primary());
     let computer = enrol(
@@ -387,7 +387,7 @@ fn agent_groups(changes: &[([u8; 32], Vec<u8>)]) -> Vec<Option<tilo_actions::Wor
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(
         &root,
@@ -637,7 +637,7 @@ async fn notebook_pages(server: &McpServer<SessionActions>) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_logged_in_computers_agents_act_while_the_persons_tab_is_open() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let tab_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(&root, "Claude Code on laptop", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
@@ -701,7 +701,7 @@ async fn a_logged_in_computers_agents_act_while_the_persons_tab_is_open() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_logged_in_computers_agents_act_with_no_tab_open() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let tab_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(&root, "Claude Code on laptop", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();

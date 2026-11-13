@@ -7,8 +7,7 @@
 //! desktop's fleet and the nearby-pairing broker alike — goes through
 //! [`redeem`], so every one of them applies the same rules:
 //!
-//! * the token is genuine, unexpired and grants the shape of its
-//!   [`DeviceRole`];
+//! * the token is genuine, unexpired and admits a device;
 //! * its issuer is this identity's device, was certified both when the token
 //!   was minted and now, and is not revoked; it must be allowed to admit
 //!   devices unless the person's devices that hold the identity's key
@@ -28,7 +27,6 @@ use tilo_user_identity::{
 };
 
 use crate::device_fleet::DeviceFleetStore;
-pub use tilo_user_identity::DeviceRole;
 
 fn refused(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message.into())
@@ -228,8 +226,6 @@ impl NonceStore {
 #[derive(Clone, Copy, Debug)]
 pub struct Redemption<'a> {
     pub token: &'a EnrollmentToken,
-    /// What the approving person admits the device as.
-    pub role: DeviceRole,
     /// The key of the device being admitted.
     pub device_public_key: [u8; 32],
     pub label: &'a str,
@@ -276,8 +272,8 @@ impl Certifier<'_> {
 ///
 /// # Errors
 ///
-/// `PermissionDenied` when the token is not genuine, unexpired and of
-/// `role`'s shape, when the issuer may not admit the device, or when the
+/// `PermissionDenied` when the token is not genuine, unexpired and a
+/// device's, when the issuer may not admit the device, or when the
 /// token was already redeemed; otherwise the error loading, signing or
 /// persisting.
 pub fn redeem(
@@ -288,11 +284,8 @@ pub fn redeem(
 ) -> io::Result<DeviceCert> {
     let token = request.token;
     verify_enrollment_token(token, request.now_ns).map_err(|error| refused(error.to_string()))?;
-    if !request.role.admits(&token.capabilities) {
-        return Err(refused(format!(
-            "enrollment token does not grant the {} role",
-            request.role.name()
-        )));
+    if !token.capabilities.can_own_workspaces {
+        return Err(refused("enrollment token does not admit a device"));
     }
     if request.valid_from_ns > request.now_ns {
         return Err(io::Error::new(
@@ -425,17 +418,6 @@ mod tests {
             .to_bytes()
     }
 
-    #[test]
-    fn roles_have_one_preset_and_refuse_the_other_shape() {
-        for role in [DeviceRole::Personal, DeviceRole::Host] {
-            assert!(role.admits(&role.capabilities()));
-            assert_eq!(DeviceRole::parse(role.name()), Some(role));
-        }
-        assert!(!DeviceRole::Host.admits(&DeviceCapabilities::member()));
-        assert!(!DeviceRole::Personal.admits(&DeviceCapabilities::host()));
-        assert_eq!(DeviceRole::parse("administrator"), None);
-    }
-
     /// One nonce store: a token the nearby-pairing broker redeemed through
     /// [`redeem`] is spent for the fleet's own entry point too, and the
     /// reverse.
@@ -456,7 +438,6 @@ mod tests {
             &store.nonces(),
             &Redemption {
                 token: &token,
-                role: DeviceRole::Personal,
                 device_public_key: device(41),
                 label: "Laptop",
                 now_ns: now,
@@ -471,7 +452,6 @@ mod tests {
         let replay = store.complete_enrollment(
             &fixture.identity_id,
             &encoded,
-            DeviceRole::Personal,
             device(42),
             "Replay",
             now + 1,
@@ -485,21 +465,13 @@ mod tests {
 
         let (encoded, token) = fixture.mint();
         store
-            .complete_enrollment(
-                &fixture.identity_id,
-                &encoded,
-                DeviceRole::Personal,
-                device(43),
-                "Phone",
-                now,
-            )
+            .complete_enrollment(&fixture.identity_id, &encoded, device(43), "Phone", now)
             .expect("fleet redemption");
         let replay = redeem(
             None,
             &store.nonces(),
             &Redemption {
                 token: &token,
-                role: DeviceRole::Personal,
                 device_public_key: device(44),
                 label: "Replay",
                 now_ns: now + 1,
@@ -570,7 +542,6 @@ mod tests {
             &store.nonces(),
             &Redemption {
                 token: &token,
-                role: DeviceRole::Personal,
                 device_public_key: device(51),
                 label: "Phone",
                 now_ns: now + 20,
@@ -641,7 +612,6 @@ mod tests {
         });
         let redemption = |device_public_key, label| Redemption {
             token: &token,
-            role: DeviceRole::Personal,
             device_public_key,
             label,
             now_ns: now,
@@ -698,7 +668,6 @@ mod tests {
             .complete_enrollment(
                 &fixture.identity_id,
                 &encoded,
-                DeviceRole::Personal,
                 device(71),
                 "Lost phone",
                 now,
@@ -717,7 +686,6 @@ mod tests {
             .complete_enrollment(
                 &fixture.identity_id,
                 &encoded,
-                DeviceRole::Personal,
                 device(71),
                 "Found phone",
                 now + 2,
@@ -727,41 +695,24 @@ mod tests {
     }
 
     #[test]
-    fn a_token_of_the_other_role_is_refused_before_anything_is_spent() {
+    fn a_token_that_admits_no_device_is_refused_before_anything_is_spent() {
         let fixture = fixture();
         let store = &fixture.store;
         let now = fixture.issued_at_ns;
         let encoded = store
             .mint_enrollment(
                 &fixture.identity_id,
-                DeviceCapabilities::host(),
+                DeviceCapabilities::administrator(),
                 now,
                 now + 5_000,
             )
             .expect("token");
         let error = store
-            .complete_enrollment(
-                &fixture.identity_id,
-                &encoded,
-                DeviceRole::Personal,
-                device(61),
-                "Server",
-                now,
-            )
-            .expect_err("a home-peer token cannot admit a personal device");
+            .complete_enrollment(&fixture.identity_id, &encoded, device(61), "Server", now)
+            .expect_err("a token without a device's capabilities admits nothing");
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         let token = tilo_user_identity::decode_enrollment_token(&encoded).expect("decode");
         assert!(!store.nonces().is_consumed(&token.nonce).expect("marker"));
-        store
-            .complete_enrollment(
-                &fixture.identity_id,
-                &encoded,
-                DeviceRole::Host,
-                device(61),
-                "Server",
-                now,
-            )
-            .expect("the same token admits its own role");
     }
 
     #[test]

@@ -32,31 +32,19 @@ impl AppConnection {
                 ))
             })?;
         let mut verified_identity = match task_presentation {
-            Some(presentation) => {
-                if self
-                    .worker
+            Some(presentation) => super::verify_task_agent_join(
+                &route,
+                &presentation,
+                state.membership.as_ref(),
+                state
+                    .trusted_devices
                     .as_ref()
-                    .and_then(|worker| worker.host_scope.as_ref())
-                    .is_some()
-                {
-                    return Err(BrokerError::failed(
-                        "a host worker never joins as a task agent".into(),
-                    ));
-                }
-                super::verify_task_agent_join(
-                    &route,
-                    &presentation,
-                    state.membership.as_ref(),
-                    state
-                        .trusted_devices
-                        .as_ref()
-                        .map(|devices| devices.as_slice()),
-                    state.certificate_authority.get().map(Arc::as_ref),
-                )
-                .map_err(|error| {
-                    BrokerError::failed(format!("collaboration join identity rejected: {error}"))
-                })?
-            }
+                    .map(|devices| devices.as_slice()),
+                state.certificate_authority.get().map(Arc::as_ref),
+            )
+            .map_err(|error| {
+                BrokerError::failed(format!("collaboration join identity rejected: {error}"))
+            })?,
             None => admit_join_presentation(
                 &route,
                 &super::join_presentation(&identity).map_err(BrokerError::failed)?,
@@ -66,9 +54,6 @@ impl AppConnection {
                     .as_ref()
                     .map(|devices| devices.as_slice()),
                 state.certificate_authority.get().map(Arc::as_ref),
-                self.worker
-                    .as_ref()
-                    .and_then(|worker| worker.host_scope.as_ref()),
             )
             .map_err(|error| {
                 BrokerError::failed(format!("collaboration join identity rejected: {error}"))
@@ -182,7 +167,7 @@ impl AppConnection {
         // its record (`admit_kept_agent`) like any app of the workspace.
         let descriptor_worker =
             verified_identity.worker_registration.is_some() && !launcher_attested;
-        if (verified_identity.host_scope.is_some() || descriptor_worker) && !person {
+        if descriptor_worker && !person {
             return Err(BrokerError::failed(
                 "host worker cannot delegate an agent identity".into(),
             ));

@@ -126,7 +126,7 @@ fn write_approver_fixture(
     std::fs::create_dir_all(fleet_path.parent().unwrap()).unwrap();
     std::fs::write(fleet_path, serde_json::to_vec_pretty(&fleet).unwrap()).unwrap();
 
-    let home_cert = signed_cert(root, home, "Home peer", DeviceCapabilities::host());
+    let home_cert = signed_cert(root, home, "Home peer", DeviceCapabilities::member());
     let registration = HomePeerRegistration {
         schema_version: HomePeerRegistration::CURRENT_SCHEMA,
         device_node_id: hex::encode(home_cert.device_public_key),
@@ -165,7 +165,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
     let approver = SigningKey::generate(&mut UnwrapErr(SysRng));
     let home = SigningKey::generate(&mut UnwrapErr(SysRng));
     let state = tempfile::tempdir().unwrap();
-    let home_cert = signed_cert(&root, &home, "Home peer", DeviceCapabilities::host());
+    let home_cert = signed_cert(&root, &home, "Home peer", DeviceCapabilities::member());
     let relay = crate::common::start_relay(
         RelayConfig {
             state_root: state.path().to_path_buf(),

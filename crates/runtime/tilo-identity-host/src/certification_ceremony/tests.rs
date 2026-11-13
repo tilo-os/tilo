@@ -103,7 +103,7 @@ fn proposal(person: [u8; 32], label: &str) -> DeviceCert {
             .verifying_key()
             .to_bytes(),
         device_label: label.into(),
-        capabilities: DeviceRole::Personal.capabilities(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
         issued_at_ns: NOW,
         expires_at_ns: None,
         signature: [0; 64],
@@ -284,9 +284,9 @@ fn proposals_are_checked_before_anyone_is_asked() {
     signed.signature = [1; 64];
     assert!(check_proposal(&ask(signed), person, &|_| false, NOW).is_err());
 
-    let mut host = good.clone();
-    host.capabilities = DeviceCapabilities::host();
-    assert!(check_proposal(&ask(host), person, &|_| false, NOW).is_err());
+    let mut admitting = good.clone();
+    admitting.capabilities = DeviceCapabilities::primary();
+    assert!(check_proposal(&ask(admitting), person, &|_| false, NOW).is_err());
 
     let mut stale = good.clone();
     stale.issued_at_ns = NOW - 2 * SESSION_LIFETIME_NS;
@@ -386,7 +386,7 @@ fn a_renewal_that_widens_or_comes_from_another_root_is_refused() {
     // Wider than the certificate it replaces.
     let mut wider = renewal_of(&held, NOW);
     wider.capabilities = DeviceCapabilities {
-        can_read_all_workspaces: true,
+        can_admit_devices: true,
         ..held.capabilities
     };
     let reason = check_renewal(

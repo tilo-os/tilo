@@ -564,12 +564,10 @@ fn install_joined_device_presented(
             "this machine's device key does not match its certificate",
         ));
     }
-    let relay_service = tilo_relay_protocol::relay_service_node_id(&local_device.to_bytes());
     copy_home_peers(
         layout.local_home_peers,
         &target_system,
         &local_cert,
-        relay_service,
         cert.device_public_key,
     )?;
     // Beside the peer lists the shell reads it with.
@@ -737,55 +735,14 @@ pub fn personal_rooms_export_path() -> Option<PathBuf> {
     Some(tilo_paths::xdg::state_home()?.join("tilo/personal-rooms.json"))
 }
 
-fn relay_is_dialable(
-    entries: &[tilo_relay_protocol::HomePeerRegistration],
-    registration: &tilo_relay_protocol::HomePeerRegistration,
-) -> bool {
-    entries.iter().any(|entry| {
-        entry.device_node_id == registration.device_node_id
-            && entry.relay_service_node_id == registration.relay_service_node_id
-            && registration
-                .relay_workspace_ids
-                .iter()
-                .all(|topic| entry.relay_workspace_ids.contains(topic))
-    })
-}
-
 fn copy_home_peers(
     source: &Path,
     target_system: &IdentityPaths,
     local_cert: &DeviceCert,
-    relay_service_node_id: [u8; 32],
     joined_device: [u8; 32],
 ) -> io::Result<()> {
     let identity_id = hex::encode(local_cert.user_public_key);
-    let mut entries = tilo_relay_protocol::read_home_peers(source)?;
-    // Clients reject a relay whose certificate cannot act as a host. A normal
-    // setup machine is dialed directly instead; only a host-capable machine is
-    // recorded as a relay.
-    if local_cert.capabilities.can_act_as_host {
-        let device_id = hex::encode(local_cert.device_public_key);
-        let service_id = hex::encode(relay_service_node_id);
-        let registration = tilo_relay_protocol::HomePeerRegistration {
-            schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
-            device_node_id: device_id,
-            relay_service_node_id: service_id,
-            relay_endpoint: None,
-            label: if local_cert.device_label.trim().is_empty() {
-                "Setup machine".into()
-            } else {
-                local_cert.device_label.trim().to_string()
-            },
-            user_public_key: identity_id.clone(),
-            device_cert: Some(local_cert.clone()),
-            // It serves its person, whichever workspaces it holds.
-            relay_workspace_ids: Vec::new(),
-        };
-        if !relay_is_dialable(&entries, &registration) {
-            entries.push(registration);
-        }
-        tilo_relay_protocol::write_home_peers(source, &entries)?;
-    }
+    let entries = tilo_relay_protocol::read_home_peers(source)?;
     let own: Vec<_> = entries
         .into_iter()
         .filter(|entry| entry.user_public_key == identity_id)
@@ -1925,7 +1882,7 @@ mod tests {
             copied
                 .iter()
                 .all(|entry| entry.relay_service_node_id != service),
-            "a machine that cannot host is not recorded as a relay"
+            "the setup machine is dialed directly, not recorded as a home peer"
         );
         let direct: Vec<String> = serde_json::from_slice(
             &std::fs::read(
@@ -2044,7 +2001,6 @@ mod tests {
             persist::joined_device_is_ready(&target_system, tilo_clock::unix_now_ns()).unwrap()
         );
         assert!(!target_system.user_privkey.exists());
-        assert!(cert.capabilities.can_read_all_workspaces);
         let target_identity = dir.path().join("var/home/quser/.config/tilo/identity");
         let target_record = runtime_identity::resolve_active_identity(&target_identity).unwrap();
         let presentation = runtime_identity::load_metadata_from_path(&target_record).unwrap();

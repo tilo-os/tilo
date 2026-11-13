@@ -47,7 +47,7 @@ struct Lounge {
 
 async fn lounge() -> Lounge {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -274,7 +274,6 @@ impl Doors {
             state_outbound: None,
             connection_live: None,
             own_user_public_key: own_user,
-            own_device_cert: own_cert,
             own_device_public_key: &own_cert.device_public_key,
             app_serving: None,
             metrics: &self.metrics,

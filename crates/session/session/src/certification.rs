@@ -1527,7 +1527,7 @@ mod tests {
             user_public_key: person,
             device_public_key: host_key.verifying_key().to_bytes(),
             device_label: "Home".into(),
-            capabilities: DeviceCapabilities::host(),
+            capabilities: DeviceCapabilities::member(),
             issued_at_ns: tilo_clock::unix_now_ns(),
             expires_at_ns: None,
             signature: [0; 64],

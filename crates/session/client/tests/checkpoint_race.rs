@@ -41,7 +41,7 @@ fn read(doc: &AutoCommit, key: &str) -> Option<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_checkpoint_missing_a_concurrent_change_keeps_it_for_late_joiners() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let (a, b, c) = (
         enrol(&root, "browser", DeviceCapabilities::member()),
         enrol(&root, "laptop", DeviceCapabilities::member()),

@@ -24,7 +24,7 @@ use crate::host::{HostConfig, HostIdentity, WorkspaceHost};
 /// their channels.
 #[must_use]
 pub fn governor() -> (SigningKey, DeviceCert) {
-    governor_with(DeviceCapabilities::host())
+    governor_with(DeviceCapabilities::member())
 }
 
 /// A host device of the person whose root is `[1; 32]`, certified with
@@ -224,9 +224,13 @@ async fn host_on(
     let host = WorkspaceHost::open(
         HostConfig {
             max_workspace_grants: grants,
+            // A host serving other people's workspaces takes their work in them.
             ..HostConfig::new(
                 state_root.to_owned(),
-                tilo_relay_protocol::WorkSetting::own_person(),
+                tilo_relay_protocol::WorkSetting {
+                    from: tilo_relay_protocol::WorkFrom::Anyone,
+                    ..tilo_relay_protocol::WorkSetting::own_person()
+                },
             )
         },
         HostIdentity {

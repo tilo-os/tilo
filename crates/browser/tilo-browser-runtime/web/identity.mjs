@@ -503,11 +503,9 @@ export async function fetchProfile(rootPublicKeyHex, origins, {fetch: fetcher = 
 }
 
 /**
- * Certify another device with the unlocked root. `role` `node` (default): a
- * native node that hosts and governs the person's workspaces (relays, pins,
- * reads and owns them; admits no devices; one year). `browser`: a member
- * for 30 days. `session`: the session beside a node that runs the person's
- * apps and agents, a member for a year. `devicePublicKey` is the device's Ed25519 key (hex or
+ * Certify another device of the person with the unlocked root: a member
+ * device that admits no devices. `role` `node` (default) or `session`: a
+ * machine the person set up, for a year; `browser`: for 30 days. `devicePublicKey` is the device's Ed25519 key (hex or
  * bytes), delivered out of band; never the root's own. Takes the key alone
  * or `{devicePublicKey, identity?, runtime?, label?, role?, encoding?}`;
  * `identity` defaults to the current one, `runtime` to the page host's.

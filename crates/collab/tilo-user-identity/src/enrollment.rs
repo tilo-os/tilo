@@ -419,7 +419,7 @@ mod tests {
             let issuer_sk = issuer(user.public_key);
             let token = mint_enrollment_token(
                 user.public_key,
-                DeviceCapabilities::host(),
+                DeviceCapabilities::member(),
                 5_000,
                 10_000,
                 [42u8; 16],

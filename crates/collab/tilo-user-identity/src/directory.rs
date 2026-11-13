@@ -852,8 +852,12 @@ mod tests {
                 "laptop",
                 DeviceCapabilities::primary(),
             );
-            let (_h_sk, h_pk, _) =
-                enrol_device(&f.user_sk, f.user_pk, "server", DeviceCapabilities::host());
+            let (_h_sk, h_pk, _) = enrol_device(
+                &f.user_sk,
+                f.user_pk,
+                "server",
+                DeviceCapabilities::member(),
+            );
 
             let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
             dir.add_workspace(WorkspaceId::from_u128(9), "Notes")

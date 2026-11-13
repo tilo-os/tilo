@@ -3358,9 +3358,6 @@ impl HostRouteScheduler<'_> {
         let identity = identity.clone();
         let key = Arc::clone(&identity.signer);
         let (device_cert, revocation_entries) = identity.material_for(ws);
-        // A member's device reaches a workspace host over the v2 stream; a
-        // device that can act as a host itself uses the v1 stream.
-        let connect_v2 = !device_cert.capabilities.can_act_as_host;
         let mut revocations = RevocationList::new();
         for entry in revocation_entries {
             if revocations.insert(entry).is_err() {
@@ -3404,31 +3401,18 @@ impl HostRouteScheduler<'_> {
         };
         let tx = internal_tx.clone();
         tokio::spawn(async move {
-            let result = tokio::time::timeout(Duration::from_secs(10), async {
-                if connect_v2 {
-                    RelayClient::connect_v2_to_enrolled_home_peer(
-                        endpoint,
-                        addr.clone(),
-                        expectation.user_public_key,
-                        expectation.device_public_key,
-                        device_cert,
-                        key,
-                        revocations,
-                    )
-                    .await
-                } else {
-                    RelayClient::connect_to_enrolled_home_peer(
-                        endpoint,
-                        addr.clone(),
-                        expectation.user_public_key,
-                        expectation.device_public_key,
-                        device_cert,
-                        key,
-                        revocations,
-                    )
-                    .await
-                }
-            })
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                RelayClient::connect_v2_to_enrolled_home_peer(
+                    endpoint,
+                    addr.clone(),
+                    expectation.user_public_key,
+                    expectation.device_public_key,
+                    device_cert,
+                    key,
+                    revocations,
+                ),
+            )
             .await
             .map_err(|_| "workspace host connection timed out".to_string())
             .and_then(|result| result.map_err(|error| relay_error(&host, &error)))

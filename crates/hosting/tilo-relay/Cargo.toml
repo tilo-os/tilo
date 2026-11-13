@@ -54,9 +54,8 @@ path = "src/approve.rs"
 #
 # Design axioms:
 # - Same identity model as devices — the relay holds a device
-#   keypair + a signed cert (capability `can_act_as_host`) issued by
-#   the user's root. Every inbound peer must present a valid cert
-#   chaining to the same user identity.
+#   keypair + a signed cert issued by the user's root. Every inbound
+#   peer must present a valid cert chaining to the same user identity.
 # - Mostly a store-and-forward peer, not a passive one. Device deltas are
 #   received, retained and forwarded, but the host also originates, under
 #   its own device key:

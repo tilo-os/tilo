@@ -80,7 +80,7 @@ fn app_row(listing: &CataloguePage, app: &str) -> (String, Option<String>) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "tilo.sh", DeviceCapabilities::host());
+    let host = enrol(&root, "tilo.sh", DeviceCapabilities::member());
     let computer = enrol(&root, "visa agent", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     // The relay makes itself the person's stand-in from the root it keeps, as

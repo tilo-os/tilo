@@ -37,7 +37,7 @@ fn new_key() -> SigningKey {
 async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_person() {
     // Alice's host keeps the Lounge; its door lets people in.
     let (alice, _) = UserIdentity::generate("Alice", 1);
-    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
     let lounge = host

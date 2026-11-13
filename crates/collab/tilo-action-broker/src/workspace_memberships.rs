@@ -166,9 +166,6 @@ impl AppBrokerState {
             }
             .into());
         };
-        if certificate.capabilities.can_act_as_host {
-            return Err("membership changes require an ordinary person device".into());
-        }
         let authority = self
             .certificate_authority
             .get()

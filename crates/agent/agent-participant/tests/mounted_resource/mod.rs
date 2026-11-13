@@ -100,7 +100,7 @@ pub async fn run() {
     let host = enrol(
         &alice,
         "fixture-host",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let (remote_author, _) = tilo_user_identity::UserIdentity::generate("Remote fixture writer", 1);
     let publisher = enrol(

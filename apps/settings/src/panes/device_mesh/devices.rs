@@ -6,9 +6,10 @@ use tilo_relay_protocol::WorkFrom;
 use ui::widget::{Button, ButtonRole, DisclosureRow, Dropdown, EditableLabel, Widget};
 
 use super::{
-    DeviceMeshEffect, HomePeerHealth, Page, PairingTarget, RelayRuntimeStatus, WORK_ANYONE,
+    DeviceMeshEffect, HomePeerHealth, Page, PairingTarget, ROOM, RelayRuntimeStatus, WORK_ANYONE,
     WORK_NOTHING, WORK_OWN, home_server_row, last_seen_label, peer_health_badge,
-    peer_health_detail, peer_key, personal_device_key, runtime_status_tone, takes_work, work_shown,
+    peer_health_detail, peer_key, personal_device_key, room_shown, runtime_status_tone, takes_work,
+    work_shown,
 };
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
@@ -257,6 +258,7 @@ impl Page<'_> {
             ));
         }
         if taking {
+            out.extend(self.when_rows());
             out.extend(self.service_rows());
         }
         out.push(note(&t(match self.config.work.from {
@@ -265,6 +267,46 @@ impl Page<'_> {
             WorkFrom::Anyone | WorkFrom::Workspaces(_) => "mesh-work-hint-anyone",
         })));
         out
+    }
+
+    /// The states this device takes work in: only while charging, and how much of the processors
+    /// and memory it leaves to the people at it.
+    fn when_rows(&self) -> [provider_settings_ui::widgets::Item; 3] {
+        let when = self.config.work.when;
+        let room = |part: &'static str, label: &str, desc: &str, percent: u8| {
+            let shown = room_shown(percent);
+            let state = ui::LocalState::new(shown.clone());
+            let choice = Dropdown::from_state(ROOM.into_iter().map(room_shown).collect(), &state)
+                .with_id(&format!("device_mesh.work_room.{part}"))
+                .with_placeholder(&shown);
+            let choice = self.bind(
+                choice,
+                effect(DeviceMeshEffect::SET_WORK_ROOM)
+                    .map(move |percent: String| (part.to_owned(), percent)),
+            );
+            setting_row_described(&t(label), &t(desc), Box::new(choice))
+        };
+        [
+            self.switch(
+                t("mesh-work-charging"),
+                t("mesh-work-charging-desc"),
+                "device_mesh.work_charging".to_owned(),
+                when.charging_only,
+                effect(DeviceMeshEffect::SET_WORK_WHILE_CHARGING),
+            ),
+            room(
+                "processors",
+                "mesh-work-room-cpu",
+                "mesh-work-room-cpu-desc",
+                when.free_cpu_percent,
+            ),
+            room(
+                "memory",
+                "mesh-work-room-memory",
+                "mesh-work-room-memory-desc",
+                when.free_memory_percent,
+            ),
+        ]
     }
 
     fn service_rows(&self) -> [provider_settings_ui::widgets::Item; 5] {

@@ -483,7 +483,7 @@ pub fn build_hello_ack(
 /// # Errors
 ///
 /// Returns [`AuthError::Cert`] if the server's cert doesn't verify or
-/// is expired, [`AuthError::PolicyReject`] if it isn't host-capable or
+/// is expired, [`AuthError::PolicyReject`] if it is no person's device or
 /// doesn't chain to `own_user_public_key`, [`AuthError::Revoked`] if
 /// its device is revoked, or [`AuthError::BadChallengeSig`] if the
 /// nonce signature doesn't verify.
@@ -511,7 +511,7 @@ pub fn verify_hello_ack(
 /// # Errors
 ///
 /// Returns [`AuthError::Cert`] if the server's cert doesn't verify or
-/// is expired, [`AuthError::PolicyReject`] if it isn't host-capable,
+/// is expired, [`AuthError::PolicyReject`] if it is no person's device,
 /// [`AuthError::Revoked`] if its device is revoked, or
 /// [`AuthError::BadChallengeSig`] if the nonce signature doesn't
 /// verify.
@@ -532,7 +532,7 @@ fn verify_hello_ack_inner(
     challenge_client_nonce: &[u8; 32],
 ) -> Result<AuthenticatedPeer, AuthError> {
     verify_hello_ack_cryptographic(ack, revocations, now_ns, challenge_client_nonce)?;
-    if !ack.cert.capabilities.can_act_as_host {
+    if !ack.cert.capabilities.can_own_workspaces {
         return Err(AuthError::PolicyReject);
     }
     // A same-owner client pins the expected user root. A hosted-service
@@ -697,7 +697,7 @@ mod tests {
     }
 
     #[test]
-    fn an_own_device_proves_itself_without_host_capability_and_only_as_the_pinned_device() {
+    fn an_own_device_proves_itself_only_as_the_pinned_device() {
         let (root_sk, user) = UserIdentity::generate("Alice", 1);
         let laptop = enrol(
             &root_sk,
@@ -731,13 +731,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(peer.device_public_key, laptop.cert.device_public_key);
-        assert!(
-            matches!(
-                verify_hello_ack(&ack, &user.public_key, &revs, 1000, &nonce),
-                Err(AuthError::PolicyReject)
-            ),
-            "the host path still asks for host capability"
-        );
         // Another of the person's devices is not the one pinned.
         assert!(matches!(
             verify_own_device_ack(
@@ -784,7 +777,7 @@ mod tests {
             &root_sk,
             user.public_key,
             "server",
-            DeviceCapabilities::host(),
+            DeviceCapabilities::member(),
         );
         let client = enrol(
             &root_sk,
@@ -848,7 +841,7 @@ mod tests {
             &root_sk,
             user.public_key,
             "server",
-            DeviceCapabilities::host(),
+            DeviceCapabilities::member(),
         );
         let client = enrol(
             &root_sk,
@@ -930,7 +923,7 @@ mod tests {
             &alice_root,
             alice.public_key,
             "server",
-            DeviceCapabilities::host(),
+            DeviceCapabilities::member(),
         );
         let laptop = enrol(
             &alice_root,
@@ -1155,7 +1148,7 @@ mod tests {
             AuthError::PolicyReject
         ));
         let mut forged = laptop.cert.clone();
-        forged.capabilities.can_act_as_host = true;
+        forged.capabilities.can_administer_devices = true;
         assert!(matches!(
             authenticate_endpoint_bound(
                 &forged,
@@ -1232,7 +1225,7 @@ mod tests {
             &root_sk,
             alice.public_key,
             "server",
-            DeviceCapabilities::host(),
+            DeviceCapabilities::member(),
         );
         let revs = RevocationList::new();
 
@@ -1243,7 +1236,7 @@ mod tests {
             &bob_root,
             bob.public_key,
             "attacker",
-            DeviceCapabilities::host(),
+            DeviceCapabilities::member(),
         );
         let client_nonce = [7u8; 32];
         let ack = build_hello_ack(bob_dev.cert.clone(), &bob_dev.sk, [0u8; 32], &client_nonce);
@@ -1252,13 +1245,13 @@ mod tests {
             AuthError::PolicyReject
         ));
 
-        // A pinned host must hold the host capability.
+        // A pinned device must be a person's device, not an agent's grant.
         let (provider_root, provider) = UserIdentity::generate("Provider", 1);
         let ordinary_device = enrol(
             &provider_root,
             provider.public_key,
-            "ordinary device",
-            DeviceCapabilities::member(),
+            "agent grant",
+            DeviceCapabilities::nothing(),
         );
         let client_nonce = [8u8; 32];
         let ack = build_hello_ack(

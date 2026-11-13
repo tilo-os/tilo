@@ -95,7 +95,7 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     let host = enrol(
         &owner,
         "lounge-host",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
@@ -255,7 +255,7 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
     let host = enrol(
         &owner,
         "lounge-host",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
@@ -500,7 +500,7 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
     let host = enrol(
         &owner,
         "lounge-host",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;

@@ -101,7 +101,7 @@ async fn a_check_is_shown_the_facts_of_the_record_its_task_changed() {
     let host_device = enrol(
         &root,
         "home-server",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let state = crate::support::scratch_dir();
     let host = start_host(
@@ -290,7 +290,7 @@ async fn ed_planning_with(
     let host_device = enrol(
         &root,
         "home-server",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let state = crate::support::scratch_dir();
     let host = start_host(

@@ -114,7 +114,7 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     tilo_peer_state::decide_with_surfaces(tilo_session_client::surfaces::surfaces(), |_| None);
 
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();

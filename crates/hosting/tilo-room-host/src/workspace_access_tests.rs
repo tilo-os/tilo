@@ -133,7 +133,7 @@ fn peer(
     expires_at_ns: Option<u64>,
 ) -> AuthenticatedPeer {
     let capabilities = if host {
-        DeviceCapabilities::host()
+        DeviceCapabilities::member()
     } else {
         DeviceCapabilities::primary()
     };

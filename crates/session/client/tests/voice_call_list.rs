@@ -73,7 +73,7 @@ fn in_call(list: &[CallSummary], channel: &str) -> usize {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn whoever_watches_a_workspaces_calls_is_told_each_join_and_leave_unasked() {
     let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let host = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let TestHost { relay, web, .. } =
@@ -168,7 +168,7 @@ fn shows(list: &[CallSummary], channel: &str, user: [u8; 32], showing: Showing) 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() {
     let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let host = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let TestHost { relay, web, .. } =

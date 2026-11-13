@@ -77,7 +77,7 @@ impl HostConfig {
 /// Why a host could not open or change.
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
-    /// The identity is invalid, or a device that takes work may not govern workspaces.
+    /// The identity is invalid.
     #[error("identity: {0}")]
     Identity(String),
     /// On-disk persistence.
@@ -163,11 +163,6 @@ impl HostSessions {
         ) -> Option<Arc<dyn AppServingPlane>>,
     ) -> Result<(Self, Option<Governed>), HostError> {
         validate_host_device_identity(&identity)?;
-        if !cfg.work.takes_nothing() && !identity.device_cert.capabilities.can_own_workspaces {
-            return Err(HostError::Identity(
-                "a device that takes work cannot govern workspaces".into(),
-            ));
-        }
         say_when_unsealed(governs, &identity.device_cert);
         std::fs::create_dir_all(&cfg.state_root)?;
         let workspaces: WorkspaceRegistry =
@@ -517,8 +512,7 @@ impl WorkspaceHost {
     ///
     /// # Errors
     ///
-    /// The identity is invalid, or a device that takes work may not govern
-    /// workspaces; `cfg` admits anyone, under which no workspace is governed;
+    /// The identity is invalid; `cfg` admits anyone, under which no workspace is governed;
     /// the state root cannot be created; or the workspaces kept there cannot be
     /// opened.
     pub async fn open(

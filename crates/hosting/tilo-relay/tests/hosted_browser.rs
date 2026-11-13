@@ -530,7 +530,7 @@ async fn fixture(meter: Arc<Counting>) -> Fixture {
 /// a page action's question.
 async fn fixture_with(meter: Arc<Counting>, reconnect: Duration, answer_wait: Duration) -> Fixture {
     let user = TestUser::fresh("Ada");
-    let host = user.enrol("home", DeviceCapabilities::host());
+    let host = user.enrol("home", DeviceCapabilities::member());
     let laptop = user.enrol("laptop", DeviceCapabilities::primary());
     let agent = user.enrol("agent", DeviceCapabilities::member());
     let home = host.device_pubkey();

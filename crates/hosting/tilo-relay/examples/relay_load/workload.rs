@@ -143,7 +143,7 @@ impl Fleet {
             sign_device_cert(&mut cert, &user_sk).map_err(|error| anyhow!("{error}"))?;
             Ok(Device { sk, cert })
         };
-        let relay = enrol("relay".into(), DeviceCapabilities::host())?;
+        let relay = enrol("relay".into(), DeviceCapabilities::member())?;
         let mut rooms = Vec::new();
         let mut enrolled = 0;
         while enrolled < collaborators {

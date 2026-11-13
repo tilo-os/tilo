@@ -188,7 +188,6 @@ fn fleet(value: Option<&Value>, own: &[u8; 32]) -> Value {
                 "fingerprint": fingerprint(&key),
                 "current": key == *own,
                 "revoked": device.get("revoked").and_then(Value::as_bool).unwrap_or(false),
-                "can_host": flag("can_act_as_host"),
                 "kind": kind,
                 "browser": device.get("browser"),
                 "agent": runs,
@@ -344,7 +343,7 @@ mod tests {
             "workspaces": [{"workspace": workspace, "name": "Studio"}],
             "devices": [
                 device(
-                    cert("Laptop", 2, json!({"can_act_as_host": false}), 5_000_000_000, None),
+                    cert("Laptop", 2, json!({}), 5_000_000_000, None),
                     json!({"last_active_ms": 7_000, "online": true}),
                 ),
                 device(

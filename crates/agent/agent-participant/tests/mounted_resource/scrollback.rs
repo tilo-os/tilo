@@ -86,7 +86,7 @@ pub async fn run(bundle: &str) {
     let host = enrol(
         &alice,
         "fixture-host",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let writer = enrol(&alice, "fixture-writer", DeviceCapabilities::primary());
     let reader = enrol(&bob, "fixture-reader", DeviceCapabilities::member());

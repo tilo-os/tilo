@@ -72,7 +72,12 @@ async fn asked_about(
 struct Reported(Answer);
 
 impl Offering for Reported {
-    fn report(&self, _from: [u8; 32], _offer: &Query) -> Answer {
+    fn report(
+        &self,
+        _from: [u8; 32],
+        _whose: &tilo_relay_protocol::Whose,
+        _offer: &Query,
+    ) -> Answer {
         self.0.clone()
     }
 }

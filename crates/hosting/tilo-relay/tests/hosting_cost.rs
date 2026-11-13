@@ -349,7 +349,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
     let members = [author.device_pubkey(), coding.device_pubkey()];
     let relay = Box::pin(spawn_relay(
         &user,
-        user.enrol("relay", DeviceCapabilities::host()),
+        user.enrol("relay", DeviceCapabilities::member()),
         &[WORKSPACE],
         &members,
     ))

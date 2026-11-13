@@ -22,16 +22,6 @@ pub trait CertificateAuthority: Send + Sync {
     ) -> Result<(), String> {
         Err("retained policy time authority unavailable".into())
     }
-    /// Exact current pinned host authority for a broker-allocated private app
-    /// descriptor. Ordinary and remote joins must never use this exception.
-    fn authorize_host_worker(
-        &self,
-        _route: &crate::route::CrdtRoute,
-        _certificate: &tilo_user_identity::DeviceCert,
-    ) -> Result<(), String> {
-        Err("local host worker authority unavailable".into())
-    }
-
     /// Checks `certificate` against the owner's current identity store for `room`.
     fn authorize(
         &self,
@@ -44,20 +34,16 @@ pub trait CertificateAuthority: Send + Sync {
     fn governs(&self, _room: Uuid, _device: Option<&[u8; 32]>) -> bool {
         false
     }
-    /// Local SDK admission may additionally require a host's current enrollment record.
+    /// Local SDK admission may additionally require a current enrollment record.
     ///
     /// # Errors
     ///
-    /// Returns a message when [`Self::authorize`] refuses or the certificate acts as a host.
+    /// Returns a message when [`Self::authorize`] refuses.
     fn authorize_join(
         &self,
         room: Uuid,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
-        self.authorize(room, certificate)?;
-        if certificate.capabilities.can_act_as_host {
-            return Err("device authority required".into());
-        }
-        Ok(())
+        self.authorize(room, certificate)
     }
 }

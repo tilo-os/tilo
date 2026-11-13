@@ -396,7 +396,6 @@ async fn invocation_journal_uuid_collisions_never_reach_application_stream() {
                     empty_rx,
                 )));
                 let stream = InvocationStreamServer {
-                    host_guard: None,
                     rx: rx.clone(),
                     delivered: None,
                 };
@@ -535,7 +534,6 @@ async fn invocation_journal_real_effect_once_across_concurrent_duplicate_respons
                 empty_rx,
             )));
             let stream = InvocationStreamServer {
-                host_guard: None,
                 rx: rx.clone(),
                 delivered: None,
             };
@@ -861,7 +859,6 @@ async fn the_host_learns_each_invocation_an_app_is_handed() {
             };
             let (tx, rx) = mpsc::unbounded_channel();
             let stream = InvocationStreamServer {
-                host_guard: None,
                 rx: Rc::new(AsyncMutex::new(rx)),
                 delivered: invocation_delivery_notice(
                     &services,

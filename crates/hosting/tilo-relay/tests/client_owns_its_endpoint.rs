@@ -40,7 +40,7 @@ async fn next_envelope(client: &RelayClient, what: &str) -> Envelope {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_survives_the_caller_handing_over_its_only_endpoint() {
     let user = TestUser::fresh("Alice");
-    let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
+    let relay_dev = user.enrol("home-server", DeviceCapabilities::member());
     let device = user.enrol("laptop", DeviceCapabilities::primary());
 
     let relay = Box::pin(spawn_relay(

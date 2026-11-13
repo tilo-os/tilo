@@ -33,7 +33,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
     {
         let alice = TestUser::fresh("Alice");
         let bob = TestUser::fresh("Bob");
-        let alice_relay_dev = alice.enrol("home-server", DeviceCapabilities::host());
+        let alice_relay_dev = alice.enrol("home-server", DeviceCapabilities::member());
         let alice_ws_member = alice.enrol("laptop", DeviceCapabilities::primary());
         let bob_intruder = bob.enrol("stranger-laptop", DeviceCapabilities::primary());
 
@@ -64,7 +64,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
     // Phase `revoked_device_is_rejected`.
     {
         let user = TestUser::fresh("Alice");
-        let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
+        let relay_dev = user.enrol("home-server", DeviceCapabilities::member());
         let good_dev = user.enrol("laptop", DeviceCapabilities::primary());
         let bad_dev = user.enrol("stolen-phone", DeviceCapabilities::primary());
 
@@ -129,7 +129,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
     // Phase `newly_persisted_revocation_closes_an_existing_session`.
     {
         let user = TestUser::fresh("Alice");
-        let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
+        let relay_dev = user.enrol("home-server", DeviceCapabilities::member());
         let device = user.enrol("lost-phone", DeviceCapabilities::member());
         let device_key = device.device_pubkey();
         let state = tempfile::tempdir().unwrap();
@@ -190,7 +190,7 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn persisted_revocation_closes_a_member_session_within_a_second() {
     let user = TestUser::fresh("Alice");
-    let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
+    let relay_dev = user.enrol("home-server", DeviceCapabilities::member());
     let device = user.enrol("lost-phone", DeviceCapabilities::member());
     let device_key = device.device_pubkey();
     let state = tempfile::tempdir().unwrap();
@@ -261,7 +261,7 @@ async fn persisted_revocation_closes_a_member_session_within_a_second() {
 async fn management_alpn_rejects_collaborator_admitted_by_live_policy() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
-    let relay_dev = alice.enrol("home-server", DeviceCapabilities::host());
+    let relay_dev = alice.enrol("home-server", DeviceCapabilities::member());
     let relay_key = relay_dev.device_pubkey();
     let alice_laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let bob_laptop = bob.enrol("collaborator-laptop", DeviceCapabilities::primary());

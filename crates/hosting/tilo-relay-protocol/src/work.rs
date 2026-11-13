@@ -75,22 +75,47 @@ pub enum WorkFrom {
 }
 
 impl WorkFrom {
-    /// Whether a device of the person `person`, in `workspace`, may hand work to a device of
-    /// `own_person` that takes work this way.
+    /// Whether this device takes the work `whose` describes from whom asked.
     #[must_use]
-    pub fn admits(
-        &self,
-        person: [u8; 32],
-        own_person: [u8; 32],
-        workspace: Option<WorkspaceId>,
-    ) -> bool {
+    pub fn admits(&self, whose: &Whose) -> bool {
         match self {
             Self::Nobody => false,
-            Self::OwnDevices => person == own_person,
+            Self::OwnDevices => whose.asker == whose.own,
             Self::Workspaces(named) => {
-                person == own_person || workspace.is_some_and(|id| named.contains(&id))
+                whose.asker == whose.own || whose.workspace.is_some_and(|id| named.contains(&id))
             }
             Self::Anyone => true,
+        }
+    }
+}
+
+/// Whose work an offer is, as the workspace it is offered in says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Whose {
+    /// The person whose device asked.
+    pub asker: String,
+    /// The person of the device asked.
+    pub own: String,
+    /// The workspace the work is in.
+    pub workspace: Option<WorkspaceId>,
+}
+
+impl Whose {
+    /// The work of the person with the root `asker`, offered to a device of the person with the
+    /// root `own`, outside any workspace.
+    #[must_use]
+    pub fn of_roots(asker: [u8; 32], own: [u8; 32]) -> Self {
+        let person = |root| {
+            collab_types::Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(
+                root,
+            ))
+            .id()
+            .to_owned()
+        };
+        Self {
+            asker: person(asker),
+            own: person(own),
+            workspace: None,
         }
     }
 }
@@ -165,7 +190,8 @@ impl WorkSetting {
         self.kinds.none() || self.from == WorkFrom::Nobody
     }
 
-    /// What this device answers an offer with: `machine` is the state it is in now, `app_installed`
+    /// What this device answers an offer of `whose` work with: `machine` is the state it is in now,
+    /// `app_installed`
     /// whether it can run the app the work belongs to, `free_slots` how many more jobs it can start
     /// for a device that keeps count, and `holds` which of the work's inputs it already keeps.
     ///
@@ -174,6 +200,7 @@ impl WorkSetting {
     #[must_use]
     pub fn answer(
         &self,
+        whose: &Whose,
         machine: Machine,
         app_installed: bool,
         free_slots: Option<u32>,
@@ -185,7 +212,7 @@ impl WorkSetting {
             // The device that asked measures the round trip itself.
             latency_ms: 0,
         };
-        let decline = if self.takes_nothing() || !self.kinds.actions {
+        let decline = if self.takes_nothing() || !self.kinds.actions || !self.from.admits(whose) {
             Decline::NotTakingWork
         } else if !app_installed {
             Decline::AppNotInstalled
@@ -283,28 +310,42 @@ fn free_memory_percent() -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Machine, WorkFrom, WorkSetting};
+    use super::{Machine, Whose, WorkFrom, WorkSetting};
     use crate::WorkspaceId;
     use neighbour_wire::offer::{Decline, Power};
 
+    /// Work of `asker` in `workspace`, offered to a device of the person `ada`.
+    fn whose(asker: &str, workspace: Option<WorkspaceId>) -> Whose {
+        Whose {
+            asker: asker.to_owned(),
+            own: "ada".into(),
+            workspace,
+        }
+    }
+
     /// A device of the person whose work is at stake may hand it work; another person's device
-    /// only where the setting names the workspace it acts in.
+    /// only where the setting names the workspace it acts in or takes anyone's.
     #[test]
     fn work_is_admitted_by_person_and_named_workspace() {
-        let person = [1; 32];
-        let stranger = [2; 32];
         let workspace = WorkspaceId::from_u128(7);
+        let mine = whose("ada", Some(workspace));
+        let theirs = whose("bea", Some(workspace));
 
-        assert!(!WorkFrom::Nobody.admits(person, person, Some(workspace)));
-        assert!(WorkFrom::OwnDevices.admits(person, person, None));
-        assert!(!WorkFrom::OwnDevices.admits(stranger, person, Some(workspace)));
+        assert!(!WorkFrom::Nobody.admits(&mine));
+        assert!(WorkFrom::OwnDevices.admits(&whose("ada", None)));
+        assert!(!WorkFrom::OwnDevices.admits(&theirs));
         let named = WorkFrom::Workspaces([workspace].into_iter().collect());
-        assert!(named.admits(stranger, person, Some(workspace)));
-        assert!(!named.admits(stranger, person, None));
-        assert!(WorkFrom::Anyone.admits(stranger, person, Some(workspace)));
+        assert!(named.admits(&theirs));
+        assert!(!named.admits(&whose("bea", None)));
+        assert!(WorkFrom::Anyone.admits(&theirs));
         assert_eq!(WorkSetting::own_person().from, WorkFrom::OwnDevices);
         assert!(WorkSetting::none().takes_nothing());
         assert!(!WorkSetting::own_person().takes_nothing());
+    }
+
+    /// The person's own work.
+    fn own() -> Whose {
+        whose("ada", None)
     }
 
     fn roomy() -> Machine {
@@ -320,26 +361,35 @@ mod tests {
     fn a_device_answers_with_the_first_limit_its_setting_sets() {
         assert_eq!(
             WorkSetting::none()
-                .answer(roomy(), true, None, Vec::new())
+                .answer(&own(), roomy(), true, None, Vec::new())
                 .verdict,
             Err(Decline::NotTakingWork),
             "a device that takes nothing says so"
         );
+        assert_eq!(
+            WorkSetting::own_person()
+                .answer(&whose("bea", None), roomy(), true, None, Vec::new())
+                .verdict,
+            Err(Decline::NotTakingWork),
+            "a device that takes its own person's work declines another person's"
+        );
         let mut no_actions = WorkSetting::own_person();
         no_actions.kinds.actions = false;
         assert_eq!(
-            no_actions.answer(roomy(), true, None, Vec::new()).verdict,
+            no_actions
+                .answer(&own(), roomy(), true, None, Vec::new())
+                .verdict,
             Err(Decline::NotTakingWork)
         );
         assert_eq!(
             WorkSetting::own_person()
-                .answer(roomy(), false, None, Vec::new())
+                .answer(&own(), roomy(), false, None, Vec::new())
                 .verdict,
             Err(Decline::AppNotInstalled)
         );
         assert_eq!(
             WorkSetting::own_person()
-                .answer(roomy(), true, Some(0), Vec::new())
+                .answer(&own(), roomy(), true, Some(0), Vec::new())
                 .verdict,
             Err(Decline::AtCapacity)
         );
@@ -354,6 +404,7 @@ mod tests {
         assert_eq!(
             charging
                 .answer(
+                    &own(),
                     Machine {
                         power: Power::Battery,
                         ..roomy()
@@ -369,6 +420,7 @@ mod tests {
         assert!(
             charging
                 .answer(
+                    &own(),
                     Machine {
                         power: Power::Charging,
                         ..roomy()
@@ -400,7 +452,9 @@ mod tests {
         };
         assert_eq!(busy.free_cpu_percent(), 10);
         assert_eq!(
-            room_kept.answer(busy, true, None, Vec::new()).verdict,
+            room_kept
+                .answer(&own(), busy, true, None, Vec::new())
+                .verdict,
             Err(Decline::LowResources),
             "20 percent of the processors is what the setting wants free"
         );
@@ -409,17 +463,19 @@ mod tests {
             ..roomy()
         };
         assert_eq!(
-            room_kept.answer(full, true, None, Vec::new()).verdict,
+            room_kept
+                .answer(&own(), full, true, None, Vec::new())
+                .verdict,
             Err(Decline::LowResources)
         );
         assert!(
             WorkSetting::own_person()
-                .answer(busy, true, None, Vec::new())
+                .answer(&own(), busy, true, None, Vec::new())
                 .verdict
                 .is_ok(),
             "a device told nothing about the states it takes work in takes it whatever its load"
         );
-        let answer = WorkSetting::own_person().answer(roomy(), true, None, vec![[7; 32]]);
+        let answer = WorkSetting::own_person().answer(&own(), roomy(), true, None, vec![[7; 32]]);
         assert!(answer.verdict.is_ok(), "a machine with room takes the work");
         assert_eq!(answer.holds, vec![[7; 32]]);
     }

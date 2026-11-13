@@ -44,7 +44,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
     // Phase `first_time_home_device_bootstraps_from_retained_checkpoint`.
     {
         let user = TestUser::fresh("Alice");
-        let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
+        let relay_dev = user.enrol("home-server", DeviceCapabilities::member());
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let b = user.enrol("new-phone", DeviceCapabilities::member());
         let state = tempfile::tempdir().unwrap();
@@ -133,7 +133,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
     // Phase `home_host_remembers_authenticated_devices_for_offline_delivery`.
     {
         let user = TestUser::fresh("Alice");
-        let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
+        let relay_dev = user.enrol("home-server", DeviceCapabilities::member());
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let b = user.enrol("phone", DeviceCapabilities::member());
         let a_key = a.device_pubkey();
@@ -230,7 +230,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
     // Phase `two_peers_fan_out_through_relay`.
     {
         let user = TestUser::fresh("Alice");
-        let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
+        let relay_dev = user.enrol("home-server", DeviceCapabilities::member());
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let b = user.enrol("phone", DeviceCapabilities::member());
 

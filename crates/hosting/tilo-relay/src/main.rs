@@ -303,7 +303,7 @@ mod tests {
             user_public_key: user.public_key,
             device_public_key: device.public_key,
             device_label: device.label,
-            capabilities: DeviceCapabilities::host(),
+            capabilities: DeviceCapabilities::member(),
             issued_at_ns: 3,
             expires_at_ns: None,
             signature: [0; 64],

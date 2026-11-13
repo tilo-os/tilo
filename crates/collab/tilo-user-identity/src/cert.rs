@@ -242,10 +242,9 @@ impl<'de> Deserialize<'de> for AgentScope {
 /// `crates/session/session/` and `crates/system/fs/`. A user's *primary* device (the one
 /// that holds the root private key) gets `can_own_workspaces:
 /// true, can_admit_devices: true`, their other devices get
-/// `can_own_workspaces: true` but `can_admit_devices: false`, and
-/// dedicated home-server and hosting hosts own and read every workspace
-/// (`can_own_workspaces`, `can_read_all_workspaces`) and `can_act_as_host`.
-/// [`crate::DeviceRole`] is where those sets are written.
+/// `can_own_workspaces: true` but `can_admit_devices: false`. Whether a
+/// device holds a workspace's keys or only stores it, and which work it
+/// takes, is the workspace's and the device's setting, not the certificate's.
 ///
 /// Capabilities are baked into the cert at issue time — they do not
 /// change over the cert's lifetime. To upgrade a device from
@@ -271,18 +270,6 @@ pub struct DeviceCapabilities {
     /// the user's primary device — a phone should not be able to
     /// admit another phone into the fleet.
     pub can_admit_devices: bool,
-
-    /// May act as an always-on host (pins workspaces, relays for
-    /// other devices). Only true for dedicated servers and
-    /// desktop-class machines the user has consciously marked
-    /// "host".
-    pub can_act_as_host: bool,
-
-    /// May read every workspace on the user's directory, regardless
-    /// of per-workspace membership. Reserved for the user's primary
-    /// devices and hosts they explicitly trust with the full data
-    /// set.
-    pub can_read_all_workspaces: bool,
 
     /// The device runs a Tilo runtime on an operating system Tilo does not
     /// control (stock macOS, another Linux desktop). Workspace policy caps
@@ -348,8 +335,6 @@ pub struct DeviceCapabilities {
 struct CapabilitiesJson {
     can_own_workspaces: bool,
     can_admit_devices: bool,
-    can_act_as_host: bool,
-    can_read_all_workspaces: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     foreign: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -370,8 +355,6 @@ impl Serialize for DeviceCapabilities {
             return CapabilitiesJson {
                 can_own_workspaces: self.can_own_workspaces,
                 can_admit_devices: self.can_admit_devices,
-                can_act_as_host: self.can_act_as_host,
-                can_read_all_workspaces: self.can_read_all_workspaces,
                 foreign: self.foreign,
                 can_administer_devices: self.can_administer_devices,
                 agent: self.agent,
@@ -394,13 +377,11 @@ fn serialize_binary_capabilities<S: serde::Serializer>(
 ) -> Result<S::Ok, S::Error> {
     use serde::ser::SerializeTuple;
     // Positional binary formats (postcard) encode each bool as one byte;
-    // a foreign device prefixes the four flags with the marker byte, and
+    // a foreign device prefixes the two flags with the marker byte, and
     // anything more with the extended marker and its byte.
     let flags = [
         capabilities.can_own_workspaces,
         capabilities.can_admit_devices,
-        capabilities.can_act_as_host,
-        capabilities.can_read_all_workspaces,
     ];
     let scope: Vec<u8> = match capabilities.agent {
         None => Vec::new(),
@@ -417,11 +398,11 @@ fn serialize_binary_capabilities<S: serde::Serializer>(
         | bit(capabilities.browser_pages, EXTENDED_BROWSER_PAGES);
     let extended_form = extended & !EXTENDED_FOREIGN != 0;
     let len = if extended_form {
-        scope.len().saturating_add(6)
+        scope.len().saturating_add(4)
     } else if capabilities.foreign {
-        5
+        3
     } else {
-        4
+        2
     };
     let mut tuple = serializer.serialize_tuple(len)?;
     if extended_form {
@@ -446,8 +427,6 @@ impl<'de> Deserialize<'de> for DeviceCapabilities {
             return Ok(Self {
                 can_own_workspaces: json.can_own_workspaces,
                 can_admit_devices: json.can_admit_devices,
-                can_act_as_host: json.can_act_as_host,
-                can_read_all_workspaces: json.can_read_all_workspaces,
                 foreign: json.foreign,
                 can_administer_devices: json.can_administer_devices,
                 agent: json.agent,
@@ -475,10 +454,10 @@ struct BinaryCapabilitiesOf(DeviceCapabilities, bool);
 impl<'de> Deserialize<'de> for BinaryCapabilitiesOf {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // Postcard reads only the elements the visitor asks for, so the upper
-        // bound admits the four native flags, marker + four flags, and the
+        // bound admits the two native flags, marker + two flags, and the
         // extended marker + its byte + an agent's scope (up to 17 bytes) +
-        // four flags.
-        deserializer.deserialize_tuple(23, BinaryCapabilities)
+        // two flags.
+        deserializer.deserialize_tuple(21, BinaryCapabilities)
     }
 }
 
@@ -488,8 +467,7 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
     type Value = BinaryCapabilitiesOf;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .write_str("four capability flags, optionally after the foreign or extended marker")
+        formatter.write_str("two capability flags, optionally after the foreign or extended marker")
     }
 
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
@@ -501,11 +479,11 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
             let index = read;
             read = read.saturating_add(1);
             seq.next_element::<u8>()?
-                .ok_or_else(|| A::Error::invalid_length(index, &"four capability flags"))
+                .ok_or_else(|| A::Error::invalid_length(index, &"two capability flags"))
         };
         let first = next()?;
         let (extended, agent, flags) = match first {
-            FOREIGN_BINARY_MARKER => (EXTENDED_FOREIGN, None, [next()?, next()?, next()?, next()?]),
+            FOREIGN_BINARY_MARKER => (EXTENDED_FOREIGN, None, [next()?, next()?]),
             EXTENDED_BINARY_MARKER => {
                 let extended = next()?;
                 // Only administration, an agent's grant, a stand-in and an
@@ -551,9 +529,9 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                         }
                     }
                 };
-                (extended, agent, [next()?, next()?, next()?, next()?])
+                (extended, agent, [next()?, next()?])
             }
-            _ => (0, None, [first, next()?, next()?, next()?]),
+            _ => (0, None, [first, next()?]),
         };
         let flag = |byte: u8| match byte {
             0 => Ok(false),
@@ -567,8 +545,6 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
             DeviceCapabilities {
                 can_own_workspaces: flag(flags[0])?,
                 can_admit_devices: flag(flags[1])?,
-                can_act_as_host: flag(flags[2])?,
-                can_read_all_workspaces: flag(flags[3])?,
                 foreign: extended & EXTENDED_FOREIGN != 0,
                 can_administer_devices: extended & EXTENDED_ADMINISTER != 0,
                 agent,
@@ -589,8 +565,6 @@ impl DeviceCapabilities {
         Self {
             can_own_workspaces: false,
             can_admit_devices: false,
-            can_act_as_host: false,
-            can_read_all_workspaces: false,
             foreign: false,
             can_administer_devices: false,
             agent: None,
@@ -608,8 +582,6 @@ impl DeviceCapabilities {
         let within = |renewed: bool, held: bool| !renewed || held;
         within(self.can_own_workspaces, held.can_own_workspaces)
             && within(self.can_admit_devices, held.can_admit_devices)
-            && within(self.can_act_as_host, held.can_act_as_host)
-            && within(self.can_read_all_workspaces, held.can_read_all_workspaces)
             && within(self.can_administer_devices, held.can_administer_devices)
             && (self.foreign || !held.foreign)
             && self.agent == held.agent
@@ -660,8 +632,6 @@ impl DeviceCapabilities {
         self.agent.is_none()
             || !(self.can_own_workspaces
                 || self.can_admit_devices
-                || self.can_act_as_host
-                || self.can_read_all_workspaces
                 || self.foreign
                 || self.can_administer_devices
                 || self.stand_in)
@@ -677,12 +647,12 @@ impl DeviceCapabilities {
         }
     }
 
-    /// A device the person uses themselves on a Tilo-controlled system: it
-    /// owns workspaces and is neither a host nor foreign. The person's
-    /// devices of this kind find, dial and trust each other.
+    /// A device of the person on a Tilo-controlled system: it owns
+    /// workspaces and is not foreign. The person's devices of this kind
+    /// find, dial and trust each other.
     #[must_use]
     pub const fn is_personal_device(&self) -> bool {
-        self.can_own_workspaces && !self.can_act_as_host && !self.foreign
+        self.can_own_workspaces && !self.foreign
     }
 
     /// Whether a workspace governed by a device with these capabilities has
@@ -704,12 +674,11 @@ impl DeviceCapabilities {
     }
 
     /// Capability set for the user's primary device (holds root
-    /// private key, admits new devices, reads everything).
+    /// private key, admits new devices).
     pub fn primary() -> Self {
         Self {
             can_own_workspaces: true,
             can_admit_devices: true,
-            can_read_all_workspaces: true,
             ..Self::nothing()
         }
     }
@@ -724,23 +693,8 @@ impl DeviceCapabilities {
         }
     }
 
-    /// Capability set for an always-on host (home server / cloud tenant): it
-    /// owns the person's workspaces and reads them all, so it can keep and pin
-    /// every one; it admits no devices and administers none. A host governs the
-    /// workspaces it hosts, and a workspace whose governor may own workspaces
-    /// keeps its records in sealed channels ([`Self::takes_part_in_workspace_channels`]).
-    pub fn host() -> Self {
-        Self {
-            can_own_workspaces: true,
-            can_act_as_host: true,
-            can_read_all_workspaces: true,
-            ..Self::nothing()
-        }
-    }
-
     /// Capability set for a developer's machine that administers the
-    /// person's devices and does nothing else: it owns, admits, hosts and
-    /// reads nothing.
+    /// person's devices and does nothing else: it owns and admits nothing.
     pub fn administrator() -> Self {
         Self {
             can_administer_devices: true,
@@ -1730,7 +1684,7 @@ mod tests {
 
         // Phase: cert_round_trips_through_canonical.
         {
-            let (_root, cert) = fresh_cert(DeviceCapabilities::host());
+            let (_root, cert) = fresh_cert(DeviceCapabilities::administrator());
             let bytes = crate::canonical::canonical_bytes(&cert).unwrap();
             let back: DeviceCert = crate::canonical::from_canonical_bytes(&bytes).unwrap();
             assert_eq!(cert, back);
@@ -1762,8 +1716,6 @@ mod tests {
                 capabilities: DeviceCapabilities {
                     can_own_workspaces: true,
                     can_admit_devices: false,
-                    can_act_as_host: false,
-                    can_read_all_workspaces: false,
                     foreign: false,
                     can_administer_devices: false,
                     agent: None,
@@ -1814,10 +1766,10 @@ mod tests {
 
             let s_primary = build(DeviceCapabilities::primary());
             let s_member = build(DeviceCapabilities::member());
-            let s_host = build(DeviceCapabilities::host());
+            let s_admin = build(DeviceCapabilities::administrator());
             assert_ne!(s_primary, s_member);
-            assert_ne!(s_member, s_host);
-            assert_ne!(s_primary, s_host);
+            assert_ne!(s_member, s_admin);
+            assert_ne!(s_primary, s_admin);
         }
     }
 
@@ -1915,13 +1867,12 @@ mod tests {
         cert
     }
 
-    const GOLDEN_V1_JSON: &str = r#"{"user_public_key":[138,136,227,221,116,9,241,149,253,82,219,45,60,186,93,114,202,103,9,191,29,148,18,27,243,116,136,1,180,15,111,92],"device_public_key":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"device_label":"golden","capabilities":{"can_own_workspaces":true,"can_admit_devices":false,"can_act_as_host":false,"can_read_all_workspaces":false},"issued_at_ns":1000000,"expires_at_ns":2000000,"signature":[193,94,11,63,27,213,214,122,35,157,141,24,157,200,120,75,180,243,189,153,177,189,224,147,47,142,23,15,234,170,239,9,175,129,176,168,99,254,102,174,97,65,248,91,187,181,93,141,241,211,8,123,41,66,110,172,36,46,39,75,189,14,237,1]}"#;
-    const GOLDEN_V1_POSTCARD: &str = "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c020202020202020202020202020202020202020202020202020202020202020206676f6c64656e01000000c0843d0180897a40c15e0b3f1bd5d67a239d8d189dc8784bb4f3bd99b1bde0932f8e170feaaaef09af81b0a863fe66ae6141f85bbbb55d8df1d3087b29426eac242e274bbd0eed01";
+    const GOLDEN_V1_JSON: &str = r#"{"user_public_key":[138,136,227,221,116,9,241,149,253,82,219,45,60,186,93,114,202,103,9,191,29,148,18,27,243,116,136,1,180,15,111,92],"device_public_key":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"device_label":"golden","capabilities":{"can_own_workspaces":true,"can_admit_devices":false},"issued_at_ns":1000000,"expires_at_ns":2000000,"signature":[245,181,102,84,26,44,221,134,186,208,229,83,10,63,58,99,72,92,12,126,85,253,75,255,15,128,235,183,75,10,232,245,87,169,107,161,216,63,24,77,211,98,6,213,193,85,103,65,149,125,17,165,77,120,67,194,35,241,45,79,223,250,248,12]}"#;
+    const GOLDEN_V1_POSTCARD: &str = "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c020202020202020202020202020202020202020202020202020202020202020206676f6c64656e0100c0843d0180897a40f5b566541a2cdd86bad0e5530a3f3a63485c0c7e55fd4bff0f80ebb74b0ae8f557a96ba1d83f184dd36206d5c1556741957d11a54d7843c223f12d4fdffaf80c";
     const GOLDEN_V1_DIGEST: &str =
-        "0d8271d3aadb5438af000ff5f96b6355102b57a271885ed26142fb698884e623";
+        "c4bb19cab5d8360ba9b7fae7d13aecdf57333890e8318f82c609af90679beb3b";
 
-    /// The certificate encodings and signing digest as they were before the
-    /// foreign marker existed, pinned from the pre-change build.
+    /// A native certificate's encodings and signing digest, pinned.
     #[test]
     fn native_certificates_keep_their_v1_encoding_and_digest() {
         let cert = golden_cert(false);
@@ -1987,8 +1938,6 @@ mod tests {
         pub struct DeviceCapabilities {
             pub can_own_workspaces: bool,
             pub can_admit_devices: bool,
-            pub can_act_as_host: bool,
-            pub can_read_all_workspaces: bool,
         }
 
         #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -2079,7 +2028,7 @@ mod tests {
         // A grant that never expires, outlives the bound, or grants a flag
         // besides its scope is neither signed nor taken.
         let wide = DeviceCapabilities {
-            can_read_all_workspaces: true,
+            can_admit_devices: true,
             ..DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces)
         };
         for (capabilities, expiry) in [
@@ -2214,8 +2163,6 @@ mod tests {
         for widen in [
             |c: &mut DeviceCapabilities| c.can_own_workspaces = true,
             |c: &mut DeviceCapabilities| c.can_admit_devices = true,
-            |c: &mut DeviceCapabilities| c.can_act_as_host = true,
-            |c: &mut DeviceCapabilities| c.can_read_all_workspaces = true,
             |c: &mut DeviceCapabilities| c.foreign = true,
             |c: &mut DeviceCapabilities| c.can_administer_devices = true,
             |c: &mut DeviceCapabilities| c.agent = Some(AgentScope::AllWorkspaces),
@@ -2340,7 +2287,6 @@ mod tests {
         more.capabilities = DeviceCapabilities::primary();
         refused.push((more, &key));
         for caps in [
-            DeviceCapabilities::host(),
             DeviceCapabilities::administrator(),
             DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
             DeviceCapabilities::stand_in_approver(),
@@ -2578,24 +2524,16 @@ mod tests {
         let capabilities = DeviceCapabilities::server_key_grant();
         assert_eq!(
             postcard::to_allocvec(&capabilities).unwrap(),
-            [
-                EXTENDED_BINARY_MARKER,
-                EXTENDED_AGENT | 32,
-                SCOPE_ALL,
-                0,
-                0,
-                0,
-                0
-            ]
+            [EXTENDED_BINARY_MARKER, EXTENDED_AGENT | 32, SCOPE_ALL, 0, 0]
         );
         assert_eq!(
             serde_json::to_string(&capabilities).unwrap(),
-            r#"{"can_own_workspaces":false,"can_admit_devices":false,"can_act_as_host":false,"can_read_all_workspaces":false,"agent":"all","server_key":true}"#
+            r#"{"can_own_workspaces":false,"can_admit_devices":false,"agent":"all","server_key":true}"#
         );
         // A bit the decoder does not know is refused, as decoders before the
         // marker refuse the marker's.
         assert!(
-            postcard::from_bytes::<DeviceCapabilities>(&[3, EXTENDED_AGENT | 128, 0, 0, 0, 0, 0])
+            postcard::from_bytes::<DeviceCapabilities>(&[3, EXTENDED_AGENT | 128, 0, 0, 0])
                 .is_err()
         );
         let lasting = [None, Some(1_000 + 10 * MAX_AGENT_GRANT_LIFETIME_NS)];

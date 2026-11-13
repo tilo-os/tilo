@@ -96,7 +96,7 @@ async fn a_passkey_root_in_chrome_certifies_a_node_and_its_own_page() {
         &root,
         node_key.verifying_key().to_bytes(),
         "Company node",
-        IssuedRole::Node,
+        IssuedRole::Device,
     )
     .await
     .unwrap();

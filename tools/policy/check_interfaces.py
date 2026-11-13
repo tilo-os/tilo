@@ -592,7 +592,10 @@ def rust_schema(spec: Spec, root: Path = ROOT) -> dict[str, str]:
             items.setdefault(item.name, []).append(item)
     schema: dict[str, str] = {}
     seen: set[str] = set()
-    pending = [(name, None) for name in spec.roots]
+    # A root named by two sources is written `path:Name`, as `version_const` is.
+    pending = [
+        (name, path or None) for path, _, name in (root.rpartition(":") for root in spec.roots)
+    ]
     missing: dict[str, str] = {}
     ordered = spec.encoding == "postcard"
 

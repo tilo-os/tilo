@@ -146,7 +146,7 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
     let members = [a.device_pubkey(), b.device_pubkey()];
 
     let state = tempfile::tempdir().unwrap();
-    let host_dev = user.enrol("home-server", DeviceCapabilities::host());
+    let host_dev = user.enrol("home-server", DeviceCapabilities::member());
     let host = Box::pin(spawn_relay_on(
         state.path(),
         &user,

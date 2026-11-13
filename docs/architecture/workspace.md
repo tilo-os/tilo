@@ -630,10 +630,6 @@ the model but instead of it:
   admission caller, the separately written browser peer with its own layout
   schema, and the device-replica wrappers in the shell and the standalone
   runtime.
-- **Devices as a certificate class.** `can_act_as_host` and `can_read_all_workspaces`, a
-  second identity for an always-on machine, and the parallel ideas of where work runs. Per
-  workspace a device holds its keys or stores its ciphertext, and what work a device takes is
-  its person's setting.
 - **A second platform in the shell.** Its own widget host, frame pipeline,
   persistence, collaboration, history, undo and action authority. The shell
   uses the app stack.

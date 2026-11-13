@@ -24,11 +24,12 @@ mod unix {
     use clap::{Parser, Subcommand, ValueEnum};
     use serde_json::{Value, json};
     use tilo_actions::remote::identity_admin::FleetDevice;
+    use tilo_identity_host::device_admin::DeviceKind;
     use tilo_identity_host::device_admin::{self, Approval, PersonPaths};
     use tilo_identity_host::device_fleet::DeviceFleetStore;
     use tilo_identity_host::provisioning::{self, IdentityStorage, ProvisionOutcome};
     use tilo_identity_host::registry::{IdentityProfile, IdentityRegistryStore};
-    use tilo_user_identity::{DeviceCert, DeviceRole, IdentityPaths};
+    use tilo_user_identity::{DeviceCert, IdentityPaths};
 
     /// How long `pair` and `approve` wait at most, as the pairing window
     /// `tilo-enroll` keeps open.
@@ -464,8 +465,6 @@ mod unix {
             "revoked"
         } else if device.current {
             "this device"
-        } else if device.can_host {
-            "home server"
         } else {
             "device"
         };
@@ -796,7 +795,7 @@ mod unix {
             eprintln!("Looking for a device waiting in `tilo-identity pair`...");
         }
         let found = Command::new(device_admin::ENROLL)
-            .arg(device_admin::discover_command(DeviceRole::Personal))
+            .arg(device_admin::discover_command(DeviceKind::Personal))
             .arg("--timeout")
             .arg(timeout.clamp(1, PAIRING_WINDOW_SECS).to_string())
             .stdin(Stdio::null())
@@ -819,7 +818,7 @@ mod unix {
             );
         }
         let approval = Approval {
-            role: DeviceRole::Personal,
+            role: DeviceKind::Personal,
             device: candidate.device_node_id.clone(),
             service: candidate.relay_service_node_id.clone(),
             workspace_ids: None,
@@ -1081,7 +1080,7 @@ mod unix {
         }
         let found = run(
             "identity.device.pair.discover",
-            json!({"role": DeviceRole::Personal.name()}),
+            json!({"role": DeviceKind::Personal.name()}),
         )
         .map_err(|error| {
             guided(
@@ -1121,7 +1120,7 @@ mod unix {
         run(
             "identity.device.pair.approve",
             json!({
-                "role": DeviceRole::Personal.name(),
+                "role": DeviceKind::Personal.name(),
                 "device": key,
                 "service": text("service"),
                 "confirm": true,

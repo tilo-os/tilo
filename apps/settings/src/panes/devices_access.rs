@@ -893,8 +893,6 @@ fn device_lines(device: &DeviceView, now: i64) -> Vec<String> {
     let mut lines = Vec::new();
     if device.current && !device.label.is_empty() {
         lines.push(device.label.clone());
-    } else if device.can_host {
-        lines.push(t("settings-access-hosts"));
     }
     lines.extend(activity(
         device.current || device.online,
@@ -1072,9 +1070,6 @@ fn device_item(cx: &ViewCx<Settings>, state: &PageState, device: &DeviceView, no
         )
     });
     let mut extra = Vec::new();
-    if device.current && device.can_host {
-        extra.push(caption(&t("settings-access-hosts")));
-    }
     if device.current {
         extra.push(caption(&t("settings-access-remove-from-another")));
     }

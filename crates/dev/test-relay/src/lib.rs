@@ -143,7 +143,7 @@ impl Running {
         let host_root = state.path().to_path_buf();
         let host_key = fresh_signing_key(name);
         let user_public_key = owner.verifying_key().to_bytes();
-        let cert = certified(owner, &host_key, name, DeviceCapabilities::host());
+        let cert = certified(owner, &host_key, name, DeviceCapabilities::member());
         let (ready, started) = mpsc::channel();
         let thread = std::thread::Builder::new()
             .name(format!("test relay: {name}"))

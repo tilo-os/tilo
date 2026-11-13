@@ -211,7 +211,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
 
     // The page's root certifies the node, and the page installs it in the
     // canonical encoding `certifyDevice` hands it.
-    let node_cert = issue_device_cert(&root, device, "Acme node", IssuedRole::Node)
+    let node_cert = issue_device_cert(&root, device, "Acme node", IssuedRole::Device)
         .await
         .unwrap();
     let certificate =
@@ -222,7 +222,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         }}))
         .await;
     assert!(refused["error"].is_string(), "{refused}");
-    let session_cert = issue_device_cert(&root, session, "Apps on Acme node", IssuedRole::Session)
+    let session_cert = issue_device_cert(&root, session, "Apps on Acme node", IssuedRole::Device)
         .await
         .unwrap();
     let installed = root
@@ -249,7 +249,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     let delivered = tilo_user_identity::persist::read_device_cert(&session_cert_out).unwrap();
     assert_eq!(delivered, session_cert);
     assert_eq!(delivered.user_public_key, root.public_key);
-    assert!(!delivered.capabilities.can_act_as_host && !delivered.capabilities.can_admit_devices);
+    assert!(!delivered.capabilities.can_admit_devices);
 
     // It starts as `tilo-relay run` then does: the person's host, on the
     // identity it was installed with.

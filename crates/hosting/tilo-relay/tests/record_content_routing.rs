@@ -61,7 +61,7 @@ async fn quiet(client: &RelayClient) -> bool {
 #[tokio::test]
 async fn a_piece_reaches_only_the_device_it_is_addressed_to() {
     let user = TestUser::fresh("Alice");
-    let host = user.enrol("home", DeviceCapabilities::host());
+    let host = user.enrol("home", DeviceCapabilities::member());
     let a = user.enrol("laptop", DeviceCapabilities::primary());
     let b = user.enrol("desktop", DeviceCapabilities::member());
     let c = user.enrol("phone", DeviceCapabilities::member());

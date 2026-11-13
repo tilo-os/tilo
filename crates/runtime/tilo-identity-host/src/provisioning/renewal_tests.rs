@@ -457,7 +457,7 @@ fn a_renewal_a_persons_device_signed_replaces_the_joined_certificate_it_came_fro
     // joined device never widens or replaces another's.
     let mut wider = renewed.clone();
     wider.issued_at_ns = now.saturating_add(1);
-    wider.capabilities.can_read_all_workspaces = true;
+    wider.capabilities.can_admit_devices = true;
     wider.signature = [0; 64];
     let digest = tilo_user_identity::device_cert_signing_digest(&wider).unwrap();
     wider.signature = {

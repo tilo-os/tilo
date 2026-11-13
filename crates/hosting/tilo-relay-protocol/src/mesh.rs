@@ -123,25 +123,6 @@ impl ServiceCapabilities {
         }
     }
 
-    /// Intersect a mutable service advertisement with the immutable authority
-    /// in a verified device certificate. A peer cannot turn itself into a host
-    /// by merely claiming services in discovery metadata.
-    #[must_use]
-    pub fn authorized_by(&self, certified: &tilo_user_identity::DeviceCapabilities) -> Self {
-        if !certified.can_act_as_host {
-            return Self::default();
-        }
-        Self {
-            workspace_replication: self.workspace_replication,
-            full_content_replication: self.full_content_replication
-                && certified.can_read_all_workspaces,
-            inbound_relay: self.inbound_relay,
-            remote_control_relay: self.remote_control_relay,
-            app_serving: self.app_serving,
-            compute: self.compute,
-        }
-    }
-
     /// Intersect two service sets. Used by a process to ensure its wire
     /// advertisement cannot exceed the planes it has actually started.
     #[must_use]
@@ -245,17 +226,6 @@ mod tests {
             ServiceCapabilities::personal_server().limited_to(&services),
             services
         );
-
-        let advertised = ServiceCapabilities::personal_server();
-        assert_eq!(
-            advertised.authorized_by(&tilo_user_identity::DeviceCapabilities::member()),
-            ServiceCapabilities::default()
-        );
-        let mut host_without_global_read = tilo_user_identity::DeviceCapabilities::host();
-        host_without_global_read.can_read_all_workspaces = false;
-        let authorized = advertised.authorized_by(&host_without_global_read);
-        assert!(authorized.workspace_replication);
-        assert!(!authorized.full_content_replication);
     }
 
     #[test]

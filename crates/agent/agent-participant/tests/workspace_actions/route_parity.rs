@@ -389,7 +389,7 @@ fn runs_of(page: &mut Browser, route: &DocumentRoute) -> Vec<tilo_actions::WorkG
 async fn both_routes_decide_every_callers_actions_alike() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (guest, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
     let all_key = enrol(&guest, "visa-backend", DeviceCapabilities::member());
@@ -787,7 +787,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let computer = enrol(&root, "Codex on build-box", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
@@ -877,7 +877,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     let host = enrol(
         &operator,
         "lounge",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let page_device = enrol(&guest, "browser", DeviceCapabilities::member());
     let computer = enrol(

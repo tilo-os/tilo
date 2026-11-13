@@ -195,13 +195,11 @@ pub struct CertificationPolicy {
 }
 
 impl CertificationPolicy {
-    /// A browser device: one of the person's own devices (see
-    /// [`crate::DeviceRole::Personal`]), which may own workspaces but never
-    /// admits devices, hosts, or reads beyond its memberships. Certificates
-    /// last 30 days.
+    /// A browser device: one of the person's own devices, which may own
+    /// workspaces but never admits devices. Certificates last 30 days.
     pub fn browser() -> Self {
         Self {
-            ceiling: crate::DeviceRole::Personal.capabilities(),
+            ceiling: DeviceCapabilities::member(),
             lifetime_ns: 30 * 24 * 60 * 60 * 1_000_000_000,
         }
     }
@@ -221,9 +219,6 @@ impl CertificationPolicy {
         DeviceCapabilities {
             can_own_workspaces: requested.can_own_workspaces && self.ceiling.can_own_workspaces,
             can_admit_devices: requested.can_admit_devices && self.ceiling.can_admit_devices,
-            can_act_as_host: requested.can_act_as_host && self.ceiling.can_act_as_host,
-            can_read_all_workspaces: requested.can_read_all_workspaces
-                && self.ceiling.can_read_all_workspaces,
             // Foreign is a restriction: a request or ceiling that says so keeps it.
             foreign: requested.foreign || self.ceiling.foreign,
             can_administer_devices: requested.can_administer_devices
@@ -249,11 +244,6 @@ impl CertificationPolicy {
         let within = |granted: bool, allowed: bool| !granted || allowed;
         within(granted.can_own_workspaces, ceiling.can_own_workspaces)
             && within(granted.can_admit_devices, ceiling.can_admit_devices)
-            && within(granted.can_act_as_host, ceiling.can_act_as_host)
-            && within(
-                granted.can_read_all_workspaces,
-                ceiling.can_read_all_workspaces,
-            )
             && within(
                 granted.can_administer_devices,
                 ceiling.can_administer_devices,

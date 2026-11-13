@@ -44,7 +44,6 @@ mod eager_bridge_tests {
             route: fixture.route.clone(),
             time: fixture.state.registered_policy_time().unwrap(),
             admitted: Box::new(AdmittedJoinIdentity {
-                host_scope: None,
                 worker_registration: None,
                 certificate: None,
                 verified: VerifiedJoinIdentity {

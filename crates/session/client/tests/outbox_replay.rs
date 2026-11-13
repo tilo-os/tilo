@@ -39,7 +39,7 @@ fn unadmitted(peer: &Link) -> usize {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_barrier_covers_an_edit_held_for_the_workspaces_replay() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host(
@@ -89,7 +89,7 @@ const OFFLINE: usize = 150;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn outbox_survives_a_host_restart_and_is_replayed() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let observer = enrol(&root, "phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();

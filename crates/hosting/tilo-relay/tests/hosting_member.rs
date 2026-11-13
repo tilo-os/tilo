@@ -42,7 +42,7 @@ async fn a_certified_host_of_the_person_serves_a_room_its_device_governs() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
-    let nas = alice.enrol("nas", DeviceCapabilities::host());
+    let nas = alice.enrol("nas", DeviceCapabilities::member());
     let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
     let member = host_on(&alice, &nas, WorkSetting::own_person()).await;
     let rooms = governor.host.workspaces();
@@ -177,7 +177,7 @@ async fn a_detached_host_lets_the_room_go_and_serves_it_again_from_its_files() {
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let tablet = alice.enrol("tablet", DeviceCapabilities::primary());
-    let nas = alice.enrol("nas", DeviceCapabilities::host());
+    let nas = alice.enrol("nas", DeviceCapabilities::member());
     let governor = host_on(&alice, &laptop, WorkSetting::none()).await;
     let member = host_on(&alice, &nas, WorkSetting::own_person()).await;
     let rooms = governor.host.workspaces();

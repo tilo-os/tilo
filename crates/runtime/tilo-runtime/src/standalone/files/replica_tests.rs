@@ -71,7 +71,7 @@ async fn relay(state: &Path, operator: &SigningKey) -> tilo_relay::Relay {
         &key,
         DeviceCapabilities {
             can_own_workspaces: true,
-            ..DeviceCapabilities::host()
+            ..DeviceCapabilities::member()
         },
     );
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)

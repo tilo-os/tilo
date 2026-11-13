@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn only_another_device_that_takes_the_work_runs_the_records() {
-        let (taker, device) = hint(true, DeviceCapabilities::host());
+        let (taker, device) = hint(true, DeviceCapabilities::member());
         assert!(
             placed_on_host(&taker, [7; 32]).is_some(),
             "a device that takes the work runs the workspace's records"

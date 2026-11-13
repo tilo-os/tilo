@@ -142,7 +142,7 @@ fn channel() -> ChannelId {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_member_syncs_with_the_host_and_a_late_joiner_catches_up_from_its_store() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let (host_key, host_cert) = crate::common::device_with(&root, 2, DeviceCapabilities::host());
+    let (host_key, host_cert) = crate::common::device_with(&root, 2, DeviceCapabilities::member());
     let (a_key, a_cert) = device(&root, 3);
     let (b_key, b_cert) = device(&root, 4);
     let (c_key, c_cert) = device(&root, 5);
@@ -428,14 +428,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     let root = SigningKey::from_bytes(&[1; 32]);
     // A device that holds the workspaces and admits the devices joining them: an always-on
     // device of a person's fleet.
-    let (host_key, host_cert) = crate::common::device_with(
-        &root,
-        2,
-        DeviceCapabilities {
-            can_act_as_host: true,
-            ..DeviceCapabilities::primary()
-        },
-    );
+    let (host_key, host_cert) = crate::common::device_with(&root, 2, DeviceCapabilities::primary());
     let (b_key, b_cert) = device(&root, 3);
     let (c_key, c_cert) = device(&root, 4);
     let now = SystemTime::now();
@@ -737,7 +730,7 @@ async fn hears(
 #[tokio::test(flavor = "multi_thread")]
 async fn what_the_host_wrote_long_ago_reaches_a_member_that_links_later() {
     let root = SigningKey::from_bytes(&[2; 32]);
-    let (host_key, host_cert) = crate::common::device_with(&root, 6, DeviceCapabilities::host());
+    let (host_key, host_cert) = crate::common::device_with(&root, 6, DeviceCapabilities::member());
     let (a_key, a_cert) = device(&root, 7);
     let now = SystemTime::now();
     let devices = vec![host_cert.clone(), a_cert.clone()];
@@ -836,7 +829,7 @@ async fn what_the_host_wrote_long_ago_reaches_a_member_that_links_later() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_deleted_workspace_ends_its_links_and_refuses_the_next_dial_as_deleted() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let (host_key, host_cert) = crate::common::device_with(&root, 2, DeviceCapabilities::host());
+    let (host_key, host_cert) = crate::common::device_with(&root, 2, DeviceCapabilities::member());
     let (a_key, a_cert) = device(&root, 3);
     let now = SystemTime::now();
     let devices = vec![host_cert.clone(), a_cert];
@@ -921,14 +914,7 @@ async fn what_a_device_commits_to_the_workspace_it_hosts_reaches_its_members_liv
     use tilo_peer_state::owner::OwnerJoinWorkspaces;
 
     let root = SigningKey::from_bytes(&[3; 32]);
-    let (host_key, host_cert) = crate::common::device_with(
-        &root,
-        8,
-        DeviceCapabilities {
-            can_act_as_host: true,
-            ..DeviceCapabilities::primary()
-        },
-    );
+    let (host_key, host_cert) = crate::common::device_with(&root, 8, DeviceCapabilities::primary());
     let (b_key, b_cert) = device(&root, 9);
     let (c_key, c_cert) = device(&root, 10);
     let now = SystemTime::now();
@@ -1106,14 +1092,7 @@ fn commit_record(
 #[tokio::test]
 async fn a_catch_up_is_durable_and_a_restarted_device_numbers_past_it() {
     let root = SigningKey::from_bytes(&[4; 32]);
-    let (key, cert) = crate::common::device_with(
-        &root,
-        11,
-        DeviceCapabilities {
-            can_act_as_host: true,
-            ..DeviceCapabilities::primary()
-        },
-    );
+    let (key, cert) = crate::common::device_with(&root, 11, DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let workspace = tilo_desktop_model::WorkspaceId::parse(WORKSPACE).unwrap();
     let owner = owner_at(state.path());

@@ -95,45 +95,6 @@ impl HostWorkers {
 }
 
 impl AppBrokerState {
-    /// Host-local observation only; this predicate is never a wire proof.
-    pub fn is_current_host_worker(
-        &self,
-        peer: u64,
-        route: &CrdtRoute,
-        certificate: &tilo_user_identity::DeviceCert,
-    ) -> Result<bool, String> {
-        if !self.is_accepting() {
-            return Ok(false);
-        }
-        let admitted = self
-            .host_workers
-            .lock()
-            .map_err(|_| "host worker provenance unavailable")?
-            .get(peer, route)
-            .cloned();
-        let Some(admitted) = admitted else {
-            return Ok(false);
-        };
-        if !admitted
-            .host_scope
-            .as_ref()
-            .is_some_and(|scope| &scope.route == route && &scope.certificate == certificate)
-        {
-            return Ok(false);
-        }
-        // The current owner callback may open Store. Never call it under the registry lock.
-        if self.revalidate_admission(route, &admitted).is_err() {
-            return Ok(false);
-        }
-        let workers = self
-            .host_workers
-            .lock()
-            .map_err(|_| "host worker provenance unavailable")?;
-        let unchanged = workers.get(peer, route) == Some(&admitted);
-        drop(workers);
-        Ok(self.is_accepting() && unchanged)
-    }
-
     /// Keep `peer`'s admitted join on `route` while its connection lives,
     /// when it is a worker there.
     pub(super) fn retain_host_worker(
@@ -142,7 +103,7 @@ impl AppBrokerState {
         route: &CrdtRoute,
         admitted: &AdmittedJoinIdentity,
     ) -> Result<(), BrokerError> {
-        if admitted.host_scope.is_none() && admitted.worker_registration.is_none() {
+        if admitted.worker_registration.is_none() {
             return Ok(());
         }
         if !self.is_accepting() {
@@ -153,9 +114,7 @@ impl AppBrokerState {
             .lock()
             .map_err(|_| BrokerError::failed("host worker provenance unavailable".into()))?;
         if let Some(previous) = workers.get(peer, route) {
-            if previous.host_scope != admitted.host_scope
-                || previous.worker_registration != admitted.worker_registration
-            {
+            if previous.worker_registration != admitted.worker_registration {
                 return Err(BrokerError::failed(
                     "host worker scope replacement rejected".into(),
                 ));

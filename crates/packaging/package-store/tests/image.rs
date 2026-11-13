@@ -459,7 +459,7 @@ fn images_from_the_users_certified_devices_are_trusted_while_they_are_certified(
     let bobs_laptop = SigningIdentity::generate();
     ada.enrol(&laptop, DeviceCapabilities::primary());
     ada.enrol(&phone, DeviceCapabilities::member());
-    ada.enrol(&home_relay, DeviceCapabilities::host());
+    ada.enrol(&home_relay, DeviceCapabilities::member());
     bob.enrol(&bobs_laptop, DeviceCapabilities::primary());
 
     let runtime = PackageId::from_bytes([3; 32]);

@@ -186,8 +186,8 @@ async fn peers_use_several_relays_and_fail_over() {
     // Phase `peer_can_dial_multiple_relays_and_pending_stays_local`.
     {
         let user = TestUser::fresh("Alice");
-        let relay_dev_1 = user.enrol("home-server-1", DeviceCapabilities::host());
-        let relay_dev_2 = user.enrol("home-server-2", DeviceCapabilities::host());
+        let relay_dev_1 = user.enrol("home-server-1", DeviceCapabilities::member());
+        let relay_dev_2 = user.enrol("home-server-2", DeviceCapabilities::member());
         let p1 = user.enrol("laptop", DeviceCapabilities::primary());
         let p2 = user.enrol("phone", DeviceCapabilities::member());
 
@@ -322,7 +322,7 @@ async fn peers_use_several_relays_and_fail_over() {
     // the next dial should succeed within the same time budget.
     {
         let user = TestUser::fresh("Alice");
-        let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
+        let relay_dev = user.enrol("home-server", DeviceCapabilities::member());
         let a = user.enrol("laptop", DeviceCapabilities::primary());
         let relay = Box::pin(spawn_relay(
             &user,

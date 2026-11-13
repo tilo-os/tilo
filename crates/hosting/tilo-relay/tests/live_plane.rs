@@ -24,7 +24,7 @@ const WS: WorkspaceId = WorkspaceId::from_u128(41);
 )]
 async fn commits_are_acknowledged_and_live_joins_are_announced() {
     let user = TestUser::fresh("Ada");
-    let host = user.enrol("home-server", DeviceCapabilities::host());
+    let host = user.enrol("home-server", DeviceCapabilities::member());
     let a = user.enrol("browser", DeviceCapabilities::member());
     let b = user.enrol("laptop", DeviceCapabilities::primary());
     let c = user.enrol("phone", DeviceCapabilities::member());

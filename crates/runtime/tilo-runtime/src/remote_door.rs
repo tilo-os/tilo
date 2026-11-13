@@ -11,10 +11,9 @@
 //! B knows who dials from the transport alone. The connection's endpoint id is
 //! the dialing device's key, which the QUIC handshake proved; the certificate
 //! the dialer presents first must name that key, be signed by the identity root
-//! of B's person, hold now, not be a store node's, and not be revoked in the
-//! person's own store ([`PersonalDevices`]). Anything else is refused, with the
-//! reason, before anyone is asked and before anything is read of the MCP
-//! stream.
+//! of B's person, hold now, and not be revoked in the person's own store
+//! ([`PersonalDevices`]). Anything else is refused, with the reason, before
+//! anyone is asked and before anything is read of the MCP stream.
 //!
 //! On A the connection is opened by A's host — the desktop session or a
 //! standalone runtime, whichever holds A's device key and endpoint
@@ -107,8 +106,6 @@ pub enum Refusal {
     OtherPerson,
     /// Its certificate does not hold now.
     NotCertified(String),
-    /// It is a store node, which never acts for the person.
-    StoreNode,
     /// The person removed it from their devices.
     Revoked,
     /// This device serves no agents now.
@@ -135,7 +132,6 @@ impl Refusal {
                     .to_owned()
             }
             Self::NotCertified(why) => format!("that device's certificate does not hold: {why}"),
-            Self::StoreNode => "a store node never acts for its person".to_owned(),
             Self::Revoked => {
                 "that device was removed from its person's devices; it no longer reaches them"
                     .to_owned()
@@ -243,17 +239,13 @@ impl PersonsDevices for PersonalDevices {
 }
 
 /// Whether `certificate` is one of `root`'s devices that acts for them now:
-/// signed by it, current, and not a store node's.
+/// signed by it and current.
 fn holds(root: [u8; 32], certificate: &DeviceCert, now: SystemTime) -> Result<(), Refusal> {
     if certificate.user_public_key != root {
         return Err(Refusal::OtherPerson);
     }
     tilo_user_identity::verify_device_cert_at(certificate, now_ns(now))
-        .map_err(|error| Refusal::NotCertified(error.to_string()))?;
-    if certificate.capabilities.can_act_as_host {
-        return Err(Refusal::StoreNode);
-    }
-    Ok(())
+        .map_err(|error| Refusal::NotCertified(error.to_string()))
 }
 
 /// What a hello asks of a door.

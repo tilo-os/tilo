@@ -193,7 +193,7 @@ async fn session() -> (
     crate::participant::Participant,
 ) {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host(
         &root,
@@ -2054,7 +2054,7 @@ impl RelayWorkspace {
         content: tilo_content::ContentStore,
     ) -> Self {
         let (ada, _) = UserIdentity::generate("Ada", 1);
-        let host_device = enrol(&ada, "home-server", DeviceCapabilities::host());
+        let host_device = enrol(&ada, "home-server", DeviceCapabilities::member());
         let state = tempfile::tempdir().unwrap();
         let host = start_host(
             &ada,

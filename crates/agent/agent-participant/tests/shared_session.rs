@@ -322,7 +322,7 @@ fn body(app: &impl crate::common::Body) -> String {
 async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let user = root.verifying_key().to_bytes();
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let state = crate::support::scratch_dir();
 

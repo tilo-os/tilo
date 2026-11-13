@@ -103,7 +103,6 @@ impl Doors {
             state_outbound: None,
             connection_live: None,
             own_user_public_key: who.0,
-            own_device_cert: who.1,
             own_device_public_key: &who.1.device_public_key,
             app_serving: None,
             metrics: &self.metrics,

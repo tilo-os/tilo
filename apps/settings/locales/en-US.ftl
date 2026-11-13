@@ -599,6 +599,14 @@ mesh-home-offline = Your other devices can't reach this one right now.
 mesh-work-hint-nothing = Other devices run their work where they are.
 mesh-work-hint-own = Apps and files of your other devices can run here while this device is on.
 mesh-work-hint-anyone = Work from anyone whose workspace this device holds can run here.
+mesh-work-charging = Only while charging
+mesh-work-charging-desc = Take no work while this device runs on its battery.
+mesh-work-room-cpu = Processors kept free
+mesh-work-room-cpu-desc = Work waits while less than this is free for you.
+mesh-work-room-memory = Memory kept free
+mesh-work-room-memory-desc = Work waits while less than this is free for you.
+mesh-work-room-none = No minimum
+mesh-work-room-percent = { $percent } %
 mesh-pairing = Pairing…
 mesh-approve = Approve { $label } ({ $code })
 mesh-pair-home = Pair home server
@@ -2790,7 +2798,6 @@ settings-access-tabs = { $count ->
     [one] 1 tab
    *[other] { $count } tabs
 }
-settings-access-hosts = Hosts your workspaces
 settings-access-ends = Ends
 settings-access-added = Added
 settings-access-key = Key
@@ -2932,6 +2939,8 @@ settings-effect-set-device-trusted = Let a device connect without asking
 settings-effect-rename-device = Rename device
 settings-effect-forget-device = Forget
 settings-effect-set-work = Set the work this device takes
+settings-effect-set-work-while-charging = Take work only while charging
+settings-effect-set-work-room = Keep processors or memory free
 settings-effect-set-device-service = Offer a device service
 settings-effect-add-personal-device = Add personal device
 settings-effect-rename-home-server = Rename home server

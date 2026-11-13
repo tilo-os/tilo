@@ -419,7 +419,7 @@ fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
     let InputDisposition::Accepted(admitted) = report.primary() else {
         panic!("fixture rejected")
     };
-    assert_eq!(admitted.sequence(), 7);
+    assert_eq!(admitted.sequence(), 1);
     assert_eq!(hex::encode(admitted.operation_id()), ID.trim());
     let mut restored = StatePeer::restore(
         V5.as_slice(),

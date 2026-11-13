@@ -238,7 +238,7 @@ fn governed_room(granted: Role) -> std::pin::Pin<Box<dyn Future<Output = Governe
     Box::pin(async move {
         let alice = TestUser::fresh("Alice");
         let bob = TestUser::fresh("Bob");
-        let host = alice.enrol("alice-home", DeviceCapabilities::host());
+        let host = alice.enrol("alice-home", DeviceCapabilities::member());
         let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
         let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
         let state = tempfile::tempdir().unwrap();
@@ -544,7 +544,7 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
 async fn a_restarted_host_names_its_relay_before_its_first_invitation() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
@@ -827,7 +827,7 @@ params = []
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_nobody() {
     let alice = TestUser::fresh("Alice");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;

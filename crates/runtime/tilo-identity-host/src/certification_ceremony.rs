@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 use threshold_identity::{SigningRound1Commitment, SigningRound2Partial, SigningSessionNonces};
-use tilo_user_identity::{DeviceCert, DeviceRole, device_cert_signing_digest, verify_device_cert};
+use tilo_user_identity::{DeviceCert, device_cert_signing_digest, verify_device_cert};
 
 /// How long an approved FROST share waits for the signing round, and how
 /// far a proposed certificate may start from the key holder's clock.
@@ -147,7 +147,7 @@ pub fn check_proposal(
     if revoked(&cert.device_public_key) {
         return Err("that device was removed from this identity and cannot join again".into());
     }
-    if cert.capabilities != DeviceRole::Personal.capabilities() {
+    if cert.capabilities != tilo_user_identity::DeviceCapabilities::member() {
         return Err("a home server is added from the device you set up first".into());
     }
     let label = cert.device_label.trim();

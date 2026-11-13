@@ -106,7 +106,7 @@ async fn durable(peer: &Link) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let author = enrol(&root, "browser", DeviceCapabilities::member());
     let early = enrol(&root, "tablet", DeviceCapabilities::member());
     let reader = enrol(&root, "phone", DeviceCapabilities::member());

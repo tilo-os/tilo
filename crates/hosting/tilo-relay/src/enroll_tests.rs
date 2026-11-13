@@ -131,10 +131,7 @@ fn a_held_root_certifies_an_administrator_into_the_fleet() {
     };
     let shell = ["shell".to_owned()];
     let unknown = certify(&options(&shell)).unwrap_err();
-    assert!(
-        unknown.to_string().contains("read-all or admin"),
-        "{unknown}"
-    );
+    assert!(unknown.to_string().contains("admit or admin"), "{unknown}");
 
     let admin_only = ["admin".to_owned()];
     certify(&options(&admin_only)).unwrap();
@@ -162,7 +159,7 @@ fn an_out_of_band_certificate_joins_its_identity() {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key,
             device_label: "Node".into(),
-            capabilities: DeviceCapabilities::host(),
+            capabilities: DeviceCapabilities::member(),
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
@@ -184,7 +181,7 @@ fn an_out_of_band_certificate_joins_its_identity() {
     let root_key = identity_dir.path().join("root.key");
     tilo_user_identity::persist::write_signing_key(&root_key, &root).unwrap();
     let own = identity_dir.path().join("own.cert");
-    let capabilities = ["own", "host", "read-all"].map(String::from);
+    let capabilities = ["own"].map(String::from);
     certify(&CertifyOptions {
         root_key: Some(&root_key),
         identity_root: identity_root.path(),
@@ -200,7 +197,7 @@ fn an_out_of_band_certificate_joins_its_identity() {
     install_cert(identity_root.path(), identity_dir.path(), &own).unwrap();
     let installed = tilo_user_identity::persist::read_device_cert(&paths.device_cert).unwrap();
     assert_eq!(installed.user_public_key, user);
-    assert!(installed.capabilities.can_act_as_host && !installed.capabilities.can_admit_devices);
+    assert!(installed.capabilities.can_own_workspaces && !installed.capabilities.can_admit_devices);
     assert_eq!(
         tilo_user_identity::persist::read_public_key(&paths.user_pubkey).unwrap(),
         user
@@ -256,7 +253,7 @@ fn token_from(
 ) -> tilo_user_identity::EnrollmentToken {
     tilo_user_identity::mint_enrollment_token(
         user,
-        DeviceCapabilities::host(),
+        DeviceCapabilities::member(),
         10,
         1_000,
         [3; 16],
@@ -276,7 +273,7 @@ fn payload(root: &ed25519_dalek::SigningKey) -> ResponsePayload {
         user_public_key,
         device_public_key: [7; 32],
         device_label: "NAS".into(),
-        capabilities: DeviceCapabilities::host(),
+        capabilities: DeviceCapabilities::member(),
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
@@ -703,7 +700,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             user_public_key: other_root.verifying_key().to_bytes(),
             device_public_key: other_device.verifying_key().to_bytes(),
             device_label: "Other identity home".into(),
-            capabilities: DeviceCapabilities::host(),
+            capabilities: DeviceCapabilities::member(),
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
@@ -745,7 +742,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: device.verifying_key().to_bytes(),
             device_label: "Verified home peer".into(),
-            capabilities: DeviceCapabilities::host(),
+            capabilities: DeviceCapabilities::member(),
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
@@ -907,7 +904,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: home_device.verifying_key().to_bytes(),
         device_label: "Home peer".into(),
-        capabilities: DeviceCapabilities::host(),
+        capabilities: DeviceCapabilities::member(),
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
@@ -1272,7 +1269,7 @@ fn a_joining_device_records_only_certified_live_personal_devices() {
     let approver = cert(1, DeviceCapabilities::primary(), &root);
     let sibling = cert(2, DeviceCapabilities::member(), &root);
     let revoked = cert(3, DeviceCapabilities::member(), &root);
-    let host = cert(4, DeviceCapabilities::host(), &root);
+    let host = cert(4, DeviceCapabilities::member(), &root);
     let administrator = cert(5, DeviceCapabilities::administrator(), &root);
     let foreign_root = cert(6, DeviceCapabilities::member(), &stranger);
     let mut forged = cert(7, DeviceCapabilities::member(), &root);

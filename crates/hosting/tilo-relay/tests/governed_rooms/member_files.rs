@@ -32,7 +32,7 @@ impl Room {
     async fn start(limits: AttachmentLimits) -> Self {
         let alice = TestUser::fresh("Alice");
         let bob = TestUser::fresh("Bob");
-        let host = alice.enrol("alice-home", DeviceCapabilities::host());
+        let host = alice.enrol("alice-home", DeviceCapabilities::member());
         let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
         let phone = bob.enrol("bob-browser", DeviceCapabilities::member());
         let state = tempfile::tempdir().unwrap();

@@ -37,7 +37,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ActionPlane, FOLLOW_DEADLINE, OFFER_DEADLINE, RemoteDevice};
 use tilo_peer_state::offload::{OffloadPeers, RanAway};
 use tilo_peer_state::placement::Choice;
-use tilo_relay_protocol::{Machine, WorkSetting};
+use tilo_relay_protocol::{Machine, Whose, WorkSetting};
 
 // A host that keeps the workspaces' content itself implements the media a
 // route binds its inputs from in the same scope the apps' own content is
@@ -239,16 +239,16 @@ impl WorkspaceMedia for RouteMedia {
 }
 
 /// What this device says of itself when another device of one of its
-/// workspaces offers it work: what its person's work setting `work` takes in
-/// the state this machine is in, and which of the job's inputs it holds
+/// workspaces offers it `whose` work: what its person's work setting `work`
+/// takes in the state this machine is in, and which of the job's inputs it holds
 /// already — a device that has them is not weighed as receiving them.
 ///
 /// The setting is the whole of the decision ([`WorkSetting::answer`]): no
 /// other path here asks the battery or the load what to take.
 #[must_use]
-pub fn own_offering(work: &WorkSetting, app: &str, holds: Vec<[u8; 32]>) -> Answer {
+pub fn own_offering(work: &WorkSetting, whose: &Whose, app: &str, holds: Vec<[u8; 32]>) -> Answer {
     let installed = app_catalogue::apps::read_one_from_env(app).is_ok_and(|row| row.is_some());
-    work.answer(Machine::here(power()), installed, None, holds)
+    work.answer(whose, Machine::here(power()), installed, None, holds)
 }
 
 /// How this device is powered, for the round to weigh it by.

@@ -27,11 +27,11 @@ async fn a_page_root_certifies_its_node_and_then_itself() {
         &root,
         node_key.verifying_key().to_bytes(),
         "Company node",
-        IssuedRole::Node,
+        IssuedRole::Device,
     )
     .await
     .unwrap();
-    assert!(node_cert.capabilities.can_act_as_host);
+    assert!(node_cert.capabilities.can_own_workspaces);
     assert!(node_cert.capabilities.can_own_workspaces);
     assert!(!node_cert.capabilities.can_admit_devices);
     let state = tempfile::tempdir().unwrap();

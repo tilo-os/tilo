@@ -115,7 +115,7 @@ pub(super) async fn lounge() -> Lounge {
 /// `capacity` frames it did not read yet; `0` keeps the link's own.
 async fn lounge_reading(capacity: usize) -> Lounge {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     if capacity > 0 {
@@ -727,7 +727,7 @@ async fn a_member_opens_a_call_in_a_chat_its_members_seal() {
     const CHAT: &str = "so.tilo.chat";
     const LOBBY: &str = "lobby";
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let workspace = workspaces.create("Lounge").await.unwrap().workspace;
@@ -819,7 +819,7 @@ async fn retained_once(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_record_of_a_sealed_room_is_sealed_from_its_first_write() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -853,7 +853,7 @@ async fn a_record_of_a_sealed_room_is_sealed_from_its_first_write() {
 async fn a_record_written_in_the_clear_is_sealed_with_its_whole_history() {
     const LEGACY: &str = "legacy";
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -929,7 +929,7 @@ async fn a_newcomer_is_replayed_a_note_written_before_they_were_admitted() {
     use super::super::tests::{door_join, guest_device};
     const NOTE: &str = "tab:0000000000000001";
     let dir = tempfile::tempdir().unwrap();
-    let (key, ada) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, ada) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     let relay = test_host_taking_part(dir.path(), &key, &ada).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -1410,7 +1410,7 @@ async fn a_device_that_holds_changes_the_repair_lacks_still_reaches_a_joiner() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_member_linked_directly_hears_the_nodes_channel_governance() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     let relay = test_host_taking_part(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let created = workspaces.create("Lounge").await.unwrap();
@@ -2263,7 +2263,7 @@ async fn readers_that_fell_behind_read_every_write_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_desk_linking_later_holds_every_part_a_page_wrote_before_the_link_kept_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     // The host after the restart holds the channel keys the one before it took part with.
     let keys = std::sync::Arc::<crate::workspaces::fixtures::TestChannelKeys>::default();
     let relay = crate::workspaces::fixtures::test_host_holding(
@@ -2369,7 +2369,7 @@ async fn a_desk_linking_later_holds_every_part_a_page_wrote_before_the_link_kept
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_page_opening_a_part_only_the_link_kept_is_sent_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     let keys = std::sync::Arc::<crate::workspaces::fixtures::TestChannelKeys>::default();
     let relay = crate::workspaces::fixtures::test_host_holding(
         dir.path(),
@@ -2688,7 +2688,7 @@ async fn a_write_built_on_a_change_its_writer_never_sent_is_folded_away() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_store_holding_a_stuck_write_is_repaired_when_its_relay_starts() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::host());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
     // The relay after the restart holds the channel keys the one before it took part with.
     let keys = std::sync::Arc::<crate::workspaces::fixtures::TestChannelKeys>::default();
     let relay = crate::workspaces::fixtures::test_host_holding(

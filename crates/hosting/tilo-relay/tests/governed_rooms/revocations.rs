@@ -100,7 +100,7 @@ async fn until_refused(what: &str, relay: &Relay, device: &TestDevice, workspace
 async fn a_revocation_announced_in_one_room_reaches_the_relay_and_every_room_it_governs() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("alice-phone", DeviceCapabilities::primary());
     let tablet = bob.enrol("bob-tablet", DeviceCapabilities::member());
@@ -212,7 +212,7 @@ async fn a_revocation_announced_in_one_room_reaches_the_relay_and_every_room_it_
 async fn a_stand_in_revoked_in_a_room_is_refused_by_what_it_signs_after() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let tablet = bob.enrol("bob-tablet", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
@@ -326,7 +326,7 @@ async fn a_stand_in_revoked_in_a_room_is_refused_by_what_it_signs_after() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_revocation_is_refused_after_a_restart() {
     let alice = TestUser::fresh("Alice");
-    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let host = alice.enrol("alice-home", DeviceCapabilities::member());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("alice-phone", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();

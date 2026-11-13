@@ -849,7 +849,7 @@ impl Person {
         self.certify_with(
             paths,
             label,
-            Some(tilo_user_identity::DeviceCapabilities::host()),
+            Some(tilo_user_identity::DeviceCapabilities::member()),
         )
     }
 

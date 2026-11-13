@@ -102,7 +102,7 @@ pub(super) fn verify_task_agent_join(
         serde_json::from_slice(&presentation.device_certificate)
             .map_err(|error| format!("device certificate is not valid JSON: {error}"))?;
     let (_, revoked, enrolled) =
-        authorize_join_certificate(route, &cert, trusted_devices, authority, None)?;
+        authorize_join_certificate(route, &cert, trusted_devices, authority)?;
     if revoked {
         return Err("the delegating device has been revoked".into());
     }

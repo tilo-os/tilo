@@ -142,7 +142,7 @@ fn until_done(agent: &mut AgentParticipant, control: &AgentControl) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let host = start_host(
         &root,

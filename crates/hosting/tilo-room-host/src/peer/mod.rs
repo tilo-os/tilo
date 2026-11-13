@@ -243,9 +243,6 @@ struct SessionCtx<'a> {
     state_outbound: Option<&'a mpsc::Sender<StateDelivery>>,
     connection_live: Option<&'a Arc<std::sync::atomic::AtomicBool>>,
     own_user_public_key: &'a [u8; 32],
-    /// The certificate of the device running this relay, so a session can
-    /// recognise its own host's local self-connection.
-    own_device_cert: &'a tilo_user_identity::DeviceCert,
     metrics: &'a Arc<crate::metrics::Metrics>,
     trust_policy: &'a Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     disconnect: &'a mpsc::Sender<()>,

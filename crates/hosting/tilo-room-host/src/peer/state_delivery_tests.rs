@@ -77,7 +77,6 @@ async fn a_fanned_delivery_skips_the_rooms_lock_until_authority_moves() {
         state_outbound: Some(&state_tx),
         connection_live: None,
         own_user_public_key: &user.public_key,
-        own_device_cert: &recipient.cert,
         own_device_public_key: &recipient.cert.device_public_key,
         app_serving: None,
         metrics: &metrics,

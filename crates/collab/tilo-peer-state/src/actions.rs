@@ -52,6 +52,7 @@ use tilo_actions::remote::{
     RemoteActionMessage, UpdateMark,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::{Whose, WorkspaceId};
 use web_time::SystemTime;
 
 /// ALPN of the device-to-device action plane.
@@ -241,14 +242,14 @@ impl ActionHost for NoActions {
 /// app is not installed, so it never claims work it cannot run.
 pub trait Offering: Send + Sync {
     /// What this device says of running `offer`'s route on `offer`'s work,
-    /// asked by the device `from`: its own state and which of the job's
-    /// inputs it already holds, never another device's.
+    /// `whose` it is, asked by the device `from`: its own state and which of
+    /// the job's inputs it already holds, never another device's.
     ///
     /// An answer that takes the work remembers the offer under `from` and
     /// [`Query::request_id`], which is the invocation it would run: the
     /// invocation that follows names it, so the work run is the work this
     /// device answered for, for the device that asked.
-    fn report(&self, from: [u8; 32], offer: &Query) -> Answer;
+    fn report(&self, from: [u8; 32], whose: &Whose, offer: &Query) -> Answer;
 }
 
 /// A device's action plane: it serves the requests other devices of its
@@ -548,27 +549,31 @@ impl ActionPlane {
 
     /// Answer one offer: what this device says of itself, or `None` when
     /// nothing is to be said — this device does not hold the workspace, it is
-    /// not a member of it, or the device that asked is not.
+    /// not a member of it, or the device that asked is not. Whose work it is,
+    /// as the workspace's roster says, is the device's work setting's to weigh.
     async fn answer_offer(&self, remote: [u8; 32], query: &Query) -> Option<Answer> {
         let now = tilo_clock::wall();
         let device = self.device();
-        let (admits_asker, is_member) = self
+        let (asker, own) = self
             .read_workspace(&query.workspace, |peer| {
                 (
-                    peer.permissions(remote, now).is_ok(),
-                    peer.permissions(device, now).is_ok(),
+                    peer.permissions(remote, now).ok().map(|asker| asker.person),
+                    peer.permissions(device, now).ok().map(|own| own.person),
                 )
             })
             .await?;
-        // An offer is answered as a member device: one the workspace's
-        // roster no longer holds offers nothing, as it may act nowhere in it.
-        if !admits_asker || !is_member {
-            return None;
-        }
+        // An offer is answered as a member device, to one: a device the
+        // workspace's roster does not hold is told nothing about this one.
+        let (asker, own) = (asker?, own?);
         let Some(offering) = self.0.offering.lock_recover().clone() else {
             return Some(Answer::declining(Decline::AppNotInstalled));
         };
-        let mut answer = offering.report(remote, query);
+        let whose = Whose {
+            asker,
+            own,
+            workspace: WorkspaceId::parse(&query.workspace),
+        };
+        let mut answer = offering.report(remote, &whose, query);
         // Only the inputs the job named, so no answer carries more than the
         // question did.
         answer

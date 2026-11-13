@@ -189,7 +189,6 @@ where
         state_outbound: Some(&state_tx),
         connection_live: Some(&connection_live.0),
         own_user_public_key: &own_user_public_key,
-        own_device_cert: &own_device_cert,
         metrics: &metrics,
         trust_policy: &trust_policy,
         disconnect: &disconnect_tx,

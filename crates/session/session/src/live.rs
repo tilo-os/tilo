@@ -1,25 +1,18 @@
 //! The live plane between the devices of a workspace: one sealed `moq-lite` session per workspace,
-//! carried over this session's own iroh endpoint, and the relay role one member of the workspace
-//! serves for the others.
-//! Which members relay is durable workspace state, not presence and not the plane itself, so every
-//! device names the same ones without asking anyone ([`relays_of`]): every member whose certificate
-//! says it may act as a host ([`DeviceCapabilities::can_act_as_host`]), by ascending device key; and
-//! in a workspace with none of those, the device hosting it, which every member already reaches:
-//! two people's own devices sharing a workspace one of them hosts have a live plane without a
-//! server. Every session serves [`tilo_live::relay::Relay`] on its endpoint, and its ALPN handler
-//! admits a connection only for a workspace the session relays now, as the workspace's state names
-//! it: a device only when the certificate it presents is the roster's own and the handshake proved
-//! the key. It cuts a session when the workspace's membership or keys move.
-//! A device joins the first of those relays it reaches, so an elected relay that is offline costs a
-//! member the one above it and not the workspace's live plane. Whichever relay a member reaches,
-//! every relay bridges the other relays into its own: members split across two relays of one
-//! workspace still hear each other.
+//! carried over this session's own iroh endpoint, and the relay role the device serving the
+//! workspace takes for the others.
+//! Which device relays is durable workspace state, not presence and not the plane itself, so every
+//! device names the same one without asking anyone ([`relays_of`]): the device whose signed
+//! address the workspace's governance holds, while it is a member. Two people's own devices
+//! sharing a workspace one of them serves have a live plane without a server. Every session
+//! serves [`tilo_live::relay::Relay`] on its endpoint, and its ALPN handler admits a connection
+//! only for a workspace the session relays now, as the workspace's state names it: a device only
+//! when the certificate it presents is the roster's own and the handshake proved the key. It cuts
+//! a session when the workspace's membership or keys move.
 //! Every other member dials that relay over iroh ([`tilo_live::native`]) with its device
 //! certificate as its grant, and each participant seals its own tracks under the scope's channel
 //! content keys ([`tilo_live::plane::Plane`]): the relay copies bytes it cannot open, and it is a
 //! member that holds them already.
-//!
-//! [`DeviceCapabilities::can_act_as_host`]: tilo_user_identity::DeviceCapabilities::can_act_as_host
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -50,30 +43,16 @@ fn scope_of(workspace: WorkspaceId) -> Scope {
     Scope::workspace(workspace.to_string())
 }
 
-/// The workspace's relays, as its state names them: every device whose certificate says it takes
-/// the work, by ascending device key, so every device tries them in the same order without another
-/// round trip; and when none does, `host`, the device hosting the workspace, while it is a member.
-/// Empty when neither is, which is a workspace with no live plane.
+/// The workspace's relays, as its state names them: `host`, the device serving the workspace,
+/// while it is a current member. Empty otherwise, which is a workspace with no live plane.
 pub(crate) fn relays_of(devices: &[Device], host: Option<[u8; 32]>, now_ns: u64) -> Vec<[u8; 32]> {
-    let current = |device: &&Device| !device.cert.is_expired_at(now_ns);
-    let mut relays: Vec<[u8; 32]> = devices
+    devices
         .iter()
-        .filter(current)
-        .filter(|device| device.cert.capabilities.can_act_as_host)
+        .filter(|device| !device.cert.is_expired_at(now_ns))
         .map(|device| device.device)
-        .collect();
-    if relays.is_empty() {
-        relays.extend(
-            devices
-                .iter()
-                .filter(current)
-                .map(|device| device.device)
-                .filter(|device| Some(*device) == host),
-        );
-    }
-    relays.sort_unstable();
-    relays.dedup();
-    relays
+        .filter(|device| Some(*device) == host)
+        .take(1)
+        .collect()
 }
 
 /// Join budget of a bridge: a relay this device cannot reach is not one to wait on, since the plane
@@ -123,8 +102,7 @@ fn bind(
     if grant.scope != scope_of(workspace).id() {
         return Err(Denied);
     }
-    // Every member that may relay serves one: it is reached when the ones above it are not, and
-    // bridges the others while they are.
+    // Only the device the workspace's state names relays.
     if !relays_of(devices, host, now_ns).contains(&own) {
         return Err(Denied);
     }
@@ -905,16 +883,12 @@ mod tests {
     use super::*;
     use tilo_user_identity::DeviceCapabilities;
 
-    fn cert(device: [u8; 32], host: bool, expires_at_ns: Option<u64>) -> DeviceCert {
+    fn cert(device: [u8; 32], expires_at_ns: Option<u64>) -> DeviceCert {
         DeviceCert {
             user_public_key: [1; 32],
             device_public_key: device,
             device_label: format!("device {}", device[0]),
-            capabilities: DeviceCapabilities {
-                can_act_as_host: host,
-                can_own_workspaces: !host,
-                ..DeviceCapabilities::nothing()
-            },
+            capabilities: DeviceCapabilities::member(),
             issued_at_ns: 1,
             expires_at_ns,
             signature: [0; 64],
@@ -922,22 +896,11 @@ mod tests {
         }
     }
 
-    fn device(device: [u8; 32], host: bool, expires_at_ns: Option<u64>) -> Device {
+    fn device(device: [u8; 32], expires_at_ns: Option<u64>) -> Device {
         Device {
             device,
-            cert: cert(device, host, expires_at_ns),
+            cert: cert(device, expires_at_ns),
         }
-    }
-
-    #[test]
-    fn the_relays_are_the_host_capable_devices_in_key_order() {
-        let devices = vec![
-            device([9; 32], false, None),
-            device([5; 32], true, None),
-            device([3; 32], true, None),
-            device([1; 32], false, None),
-        ];
-        assert_eq!(relays_of(&devices, None, 10), vec![[3; 32], [5; 32]]);
     }
 
     #[tokio::test]
@@ -970,8 +933,8 @@ mod tests {
     }
 
     #[test]
-    fn without_a_host_capable_member_the_device_hosting_the_workspace_relays() {
-        let devices = vec![device([1; 32], false, None), device([2; 32], false, None)];
+    fn the_device_serving_the_workspace_relays() {
+        let devices = vec![device([1; 32], None), device([2; 32], None)];
         assert_eq!(relays_of(&devices, Some([2; 32]), 10), vec![[2; 32]]);
         assert!(
             relays_of(&devices, None, 10).is_empty(),
@@ -981,24 +944,15 @@ mod tests {
             relays_of(&devices, Some([7; 32]), 10).is_empty(),
             "a host that is no member relays nothing"
         );
-        let devices = vec![device([1; 32], false, None), device([5; 32], true, None)];
-        assert_eq!(
-            relays_of(&devices, Some([1; 32]), 10),
-            vec![[5; 32]],
-            "a host-capable member takes the work from the device hosting the workspace"
-        );
-        let devices = vec![
-            device([1; 32], false, Some(10)),
-            device([2; 32], false, None),
-        ];
+        let devices = vec![device([1; 32], Some(10)), device([2; 32], None)];
         assert!(relays_of(&devices, Some([1; 32]), 10).is_empty());
     }
 
     #[test]
     fn an_ordinary_device_hosting_the_workspace_admits_its_devices() {
         let workspace = WorkspaceId::new();
-        let mine = cert([1; 32], false, None);
-        let other = cert([2; 32], false, None);
+        let mine = cert([1; 32], None);
+        let other = cert([2; 32], None);
         let devices = vec![
             Device {
                 device: [1; 32],
@@ -1022,10 +976,10 @@ mod tests {
 
     #[test]
     fn an_expired_certificate_relays_nothing() {
-        let devices = vec![device([1; 32], true, Some(10)), device([2; 32], true, None)];
+        let devices = vec![device([1; 32], Some(10)), device([2; 32], None)];
         assert_eq!(relays_of(&devices, None, 10), vec![[2; 32]]);
         assert_eq!(relays_of(&devices, None, 11), vec![[2; 32]]);
-        let devices = vec![device([1; 32], true, Some(10))];
+        let devices = vec![device([1; 32], Some(10))];
         assert!(relays_of(&devices, None, 10).is_empty());
     }
 
@@ -1038,7 +992,7 @@ mod tests {
         own: [u8; 32],
         now_ns: u64,
     ) -> bool {
-        bind(Peer(peer), grant, devices, None, own, now_ns).is_ok()
+        bind(Peer(peer), grant, devices, Some(own), own, now_ns).is_ok()
     }
 
     fn grant(workspace: WorkspaceId, device: &DeviceCert) -> grant::Native {
@@ -1055,8 +1009,8 @@ mod tests {
     #[test]
     fn a_grant_is_admitted_only_for_the_handshakes_own_device() {
         let workspace = WorkspaceId::new();
-        let mine = cert([1; 32], true, None);
-        let other = cert([2; 32], false, None);
+        let mine = cert([1; 32], None);
+        let other = cert([2; 32], None);
         let devices = vec![
             Device {
                 device: [1; 32],
@@ -1090,7 +1044,7 @@ mod tests {
         let device_key = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
         let page_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let page = page_key.verifying_key().to_bytes();
-        let mine = cert(device_key.verifying_key().to_bytes(), true, None);
+        let mine = cert(device_key.verifying_key().to_bytes(), None);
         let devices = vec![Device {
             device: mine.device_public_key,
             cert: mine.clone(),
@@ -1137,8 +1091,8 @@ mod tests {
     #[test]
     fn a_grant_must_name_a_relay_of_this_workspace_and_this_scope() {
         let workspace = WorkspaceId::new();
-        let mine = cert([2; 32], true, None);
-        let lower = cert([1; 32], true, None);
+        let mine = cert([2; 32], None);
+        let lower = cert([1; 32], None);
         let devices = vec![
             Device {
                 device: [2; 32],
@@ -1151,7 +1105,7 @@ mod tests {
         ];
         assert!(
             admits([2; 32], &grant(workspace, &mine), &devices, [2; 32], 10),
-            "every host-capable device relays, so this one admits too"
+            "the device serving the workspace admits"
         );
         let mut elsewhere = grant(workspace, &mine);
         elsewhere.scope =
@@ -1165,7 +1119,7 @@ mod tests {
     #[test]
     fn an_expired_certificate_is_refused_at_the_preface() {
         let workspace = WorkspaceId::new();
-        let expired = cert([1; 32], true, Some(5));
+        let expired = cert([1; 32], Some(5));
         let devices = vec![Device {
             device: [1; 32],
             cert: expired.clone(),

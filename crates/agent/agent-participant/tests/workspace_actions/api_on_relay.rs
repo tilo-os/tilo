@@ -124,7 +124,7 @@ pub async fn api_on_relay_limiting(
     let host = enrol(
         &operator,
         "relay",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let state = crate::support::scratch_dir();
     let hosted = crate::harness::hosted::start(

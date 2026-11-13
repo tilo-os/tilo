@@ -58,7 +58,7 @@ fn cert() -> DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: device.verifying_key().to_bytes(),
         device_label: "wire".into(),
-        capabilities: DeviceCapabilities::host(),
+        capabilities: DeviceCapabilities::member(),
         issued_at_ns: 7,
         expires_at_ns: Some(9),
         signature: [0; 64],

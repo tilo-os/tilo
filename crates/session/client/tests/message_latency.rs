@@ -63,7 +63,7 @@ impl Pages {
         let ada_person = hex::encode(ada_root.verifying_key().to_bytes());
         let (bob_root, _) = UserIdentity::generate("Bob", 2);
         let bob_person = bob_root.verifying_key().to_bytes();
-        let host_device = enrol(&ada_root, "home-server", DeviceCapabilities::host());
+        let host_device = enrol(&ada_root, "home-server", DeviceCapabilities::member());
         let ada = enrol(&ada_root, "ada-laptop", DeviceCapabilities::member());
         let bob = enrol(&bob_root, "bob-laptop", DeviceCapabilities::member());
         let state = tempfile::tempdir().unwrap();

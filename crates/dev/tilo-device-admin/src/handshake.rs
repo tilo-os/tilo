@@ -395,7 +395,7 @@ mod tests {
         for preset in [
             DeviceCapabilities::primary(),
             DeviceCapabilities::member(),
-            DeviceCapabilities::host(),
+            DeviceCapabilities::member(),
         ] {
             let cert = person.certify(&key, preset);
             assert_eq!(

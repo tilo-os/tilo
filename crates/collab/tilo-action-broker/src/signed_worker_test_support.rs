@@ -60,16 +60,9 @@ impl crate::certificate_authority::CertificateAuthority for CurrentHost {
         }
         Ok(())
     }
-    // A permissive ordinary provider still cannot create descriptor provenance.
     fn authorize_join(&self, workspace: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
-        self.authorize(workspace, cert)
-    }
-    fn authorize_host_worker(&self, route: &CrdtRoute, cert: &DeviceCert) -> Result<(), String> {
         self.checks.fetch_add(1, Ordering::SeqCst);
-        if route != &self.route || !cert.capabilities.can_act_as_host {
-            return Err("wrong host worker route or role".into());
-        }
-        self.authorize(route.cluster_id.parse().unwrap(), cert)
+        self.authorize(workspace, cert)
     }
 }
 
@@ -194,11 +187,6 @@ pub fn directory_server(
     wire_answerer(Rc::new(TestActionDirectoryServer {
         state: state.clone(),
     }))
-}
-
-pub fn empty_directories() -> Rc<LocalActionDirectoryRegistry> {
-    let (_, rx) = std::sync::mpsc::channel();
-    Rc::new(LocalActionDirectoryRegistry::new(rx))
 }
 
 /// The certified join presentation `cert`/`key` sign for `workspace`.
@@ -364,7 +352,7 @@ impl OriginalWorkspace {
         workspace: Option<tilo_desktop_model::WorkspaceId>,
     ) -> Self {
         Self::hosting(
-            DeviceCapabilities::host(),
+            DeviceCapabilities::member(),
             None,
             None,
             Some((content, workspace)),

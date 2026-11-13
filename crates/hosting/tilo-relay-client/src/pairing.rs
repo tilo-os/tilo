@@ -11,9 +11,9 @@ use tilo_relay_protocol::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, MemberApproval,
 };
 use tilo_user_identity::{
-    CertificationPolicy, DeviceCapabilities, DeviceCert, DeviceRole, RevocationEntry,
-    RevocationReason, STAND_IN_LIFETIME_NS, certification::MAX_CERTIFICATION_LABEL_BYTES,
-    check_agent_grant, sign_device_cert_async, sign_revocation_entry_async, verify_device_cert_at,
+    CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason,
+    STAND_IN_LIFETIME_NS, certification::MAX_CERTIFICATION_LABEL_BYTES, check_agent_grant,
+    sign_device_cert_async, sign_revocation_entry_async, verify_device_cert_at,
 };
 // Answering a pairing is the dialer's: a page holds no root and answers none.
 #[cfg(any(feature = "dial", test))]
@@ -28,34 +28,21 @@ use crate::signer::DeviceSigner;
 /// How long a node's certificate lasts.
 pub const NODE_CERT_LIFETIME_NS: u64 = 365 * 24 * 60 * 60 * 1_000_000_000;
 
-/// What a certificate the person's root issues lets its device do.
+/// Which device a certificate the person's root issues is for: every one is
+/// a member device of the person, and how long it lasts is the difference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IssuedRole {
-    /// A browser: [`CertificationPolicy::browser`] (a member, 30 days).
+    /// A browser: [`CertificationPolicy::browser`] (30 days).
     Browser,
-    /// A node that hosts and governs the person's workspaces, admitting no
-    /// devices. One year.
-    Node,
-    /// The session beside a node, running the person's apps and agents: a
-    /// member device of theirs with its own key, never a host. One year.
-    Session,
+    /// A machine the person set up: one year.
+    Device,
 }
 
 impl IssuedRole {
-    /// The capabilities granted: a page's browser and the session beside a node
-    /// are one of the person's own devices, a node is a host.
-    #[must_use]
-    pub fn capabilities(self) -> DeviceCapabilities {
-        match self {
-            Self::Browser | Self::Session => DeviceRole::Personal.capabilities(),
-            Self::Node => DeviceRole::Host.capabilities(),
-        }
-    }
-
     fn lifetime_ns(self) -> u64 {
         match self {
             Self::Browser => CertificationPolicy::browser().lifetime_ns,
-            Self::Node | Self::Session => NODE_CERT_LIFETIME_NS,
+            Self::Device => NODE_CERT_LIFETIME_NS,
         }
     }
 }
@@ -84,7 +71,7 @@ pub async fn issue_device_cert(
         user_public_key,
         device_public_key,
         device_label: label.to_owned(),
-        capabilities: role.capabilities(),
+        capabilities: DeviceCapabilities::member(),
         issued_at_ns: now,
         expires_at_ns: Some(now.saturating_add(role.lifetime_ns())),
         signature: [0; 64],
@@ -407,7 +394,7 @@ pub async fn decide_pairing(
 /// # Errors
 ///
 /// [`CertifyError::Transport`] when the host is not reached,
-/// [`CertifyError::Denied`] when it is not a host of this root, or the errors
+/// [`CertifyError::Denied`] when it is not a device of this root, or the errors
 /// of [`issue_device_cert`].
 pub async fn certify_with_root(
     client: &dyn HttpClient,
@@ -425,9 +412,9 @@ pub async fn certify_with_root(
 fn check_host(host_cert: &DeviceCert, user_public_key: [u8; 32]) -> Result<(), CertifyError> {
     verify_device_cert_at(host_cert, tilo_clock::unix_now_ns())
         .map_err(|error| CertifyError::Denied(format!("host certificate refused: {error}")))?;
-    if host_cert.user_public_key != user_public_key || !host_cert.capabilities.can_act_as_host {
+    if host_cert.user_public_key != user_public_key || !host_cert.capabilities.can_own_workspaces {
         return Err(CertifyError::Denied(
-            "host certificate is not a host of this user".into(),
+            "the certificate is not a device of this person".into(),
         ));
     }
     Ok(())
@@ -456,32 +443,19 @@ mod tests {
         let lifetime = browser.expires_at_ns.unwrap() - browser.issued_at_ns;
         assert_eq!(lifetime, CertificationPolicy::browser().lifetime_ns);
 
-        let node = issue_device_cert(&root, device, "Company node", IssuedRole::Node)
+        let node = issue_device_cert(&root, device, "Company node", IssuedRole::Device)
             .await
             .unwrap();
         verify_device_cert(&node).unwrap();
-        let caps = node.capabilities;
-        assert!(caps.can_act_as_host && caps.can_own_workspaces && caps.can_read_all_workspaces);
-        assert!(!caps.can_admit_devices && !caps.foreign);
+        assert_eq!(node.capabilities, DeviceCapabilities::member());
         assert_eq!(
             node.expires_at_ns.unwrap() - node.issued_at_ns,
             NODE_CERT_LIFETIME_NS
         );
 
-        let session = issue_device_cert(&root, device, "Apps on the node", IssuedRole::Session)
-            .await
-            .unwrap();
-        verify_device_cert(&session).unwrap();
-        assert_eq!(session.capabilities, DeviceCapabilities::member());
-        assert!(!session.capabilities.can_act_as_host);
-        assert_eq!(
-            session.expires_at_ns.unwrap() - session.issued_at_ns,
-            NODE_CERT_LIFETIME_NS
-        );
-
         let own = root.verifying_key().to_bytes();
         assert!(matches!(
-            issue_device_cert(&root, own, "Root", IssuedRole::Node).await,
+            issue_device_cert(&root, own, "Root", IssuedRole::Device).await,
             Err(CertifyError::Request(_))
         ));
     }

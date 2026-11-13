@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use ui::time::{Duration, Instant, SystemTime};
 
 use provider_settings_ui::bound::SettingRows as _;
-use tilo_relay_protocol::{RelayConfig, WorkFrom, WorkSetting};
+use tilo_relay_protocol::{RelayConfig, WorkFrom, WorkSetting, WorkWhen};
 use ui::LocalState;
 use ui::framework::{Actions, EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
 use ui::tilo_resource::{self, Effect};
@@ -96,8 +96,8 @@ fn work_from_label(label: &str) -> Option<WorkFrom> {
 }
 
 /// The work setting a person picked: every kind of work when it takes any, and none when it takes
-/// nobody's.
-fn work_from(from: WorkFrom) -> WorkSetting {
+/// nobody's, in the states `when` the device took work in before.
+fn work_from(from: WorkFrom, when: WorkWhen) -> WorkSetting {
     WorkSetting {
         kinds: if from == WorkFrom::Nobody {
             tilo_relay_protocol::WorkKinds::NONE
@@ -105,8 +105,28 @@ fn work_from(from: WorkFrom) -> WorkSetting {
             tilo_relay_protocol::WorkKinds::ALL
         },
         from,
-        ..WorkSetting::default()
+        when,
     }
+}
+
+/// The shares of the processors or memory a person may keep free from work.
+const ROOM: [u8; 3] = [0, 20, 50];
+
+/// How a share of the machine kept free is shown.
+fn room_shown(percent: u8) -> String {
+    if percent == 0 {
+        t("mesh-work-room-none")
+    } else {
+        t_args(
+            "mesh-work-room-percent",
+            &[("percent", ui::i18n::ArgValue::Number(f64::from(percent)))],
+        )
+    }
+}
+
+fn room_from_label(label: &str) -> Option<u8> {
+    ROOM.into_iter()
+        .find(|percent| room_shown(*percent) == label)
 }
 
 fn takes_work(work: &WorkSetting) -> bool {
@@ -333,6 +353,19 @@ pub enum DeviceMeshEffect {
         #[param("Nothing, My own devices' work, or Anyone's work in my workspaces", choices = WORK_FROM)]
         work: String,
     },
+    /// Take work only while charging.
+    #[effect(idempotent)]
+    SetWorkWhileCharging {
+        on: bool,
+    },
+    /// Keep processors or memory free.
+    #[effect(idempotent)]
+    SetWorkRoom {
+        #[param("processors or memory", choices = ROOM_PARTS)]
+        part: String,
+        #[param("No minimum, 20 % or 50 %")]
+        percent: String,
+    },
     /// Offer or stop one service of a device that takes work.
     #[effect(idempotent)]
     SetDeviceService {
@@ -379,6 +412,7 @@ pub enum DeviceMeshEffect {
 }
 
 const WORK_FROM: [&str; 3] = [WORK_NOTHING, WORK_OWN, WORK_ANYONE];
+const ROOM_PARTS: [&str; 2] = ["processors", "memory"];
 const SERVICES: [&str; 5] = [
     "full_content_replication",
     "inbound_relay",
@@ -1067,7 +1101,23 @@ impl DeviceMeshModel {
             DeviceMeshEffect::SetWork { work } => {
                 let from =
                     work_from_label(work).ok_or_else(|| "unsupported work setting".to_string())?;
-                self.apply_work(work_from(from));
+                self.apply_work(work_from(from, self.config.work.when));
+                true
+            }
+            DeviceMeshEffect::SetWorkWhileCharging { on } => {
+                self.config.work.when.charging_only = *on;
+                true
+            }
+            DeviceMeshEffect::SetWorkRoom { part, percent } => {
+                let percent = room_from_label(percent)
+                    .or_else(|| percent.trim_end_matches('%').trim().parse().ok())
+                    .filter(|percent| ROOM.contains(percent))
+                    .ok_or_else(|| "unsupported share to keep free".to_string())?;
+                match part.as_str() {
+                    "processors" => self.config.work.when.free_cpu_percent = percent,
+                    "memory" => self.config.work.when.free_memory_percent = percent,
+                    _ => return Err("unsupported part of the machine".into()),
+                }
                 true
             }
             DeviceMeshEffect::SetDeviceService { service, on } => {
@@ -2322,8 +2372,8 @@ mod tests {
             assert_eq!(work_from_label(WORK_OWN), Some(WorkFrom::OwnDevices));
             assert_eq!(work_from_label(WORK_ANYONE), Some(WorkFrom::Anyone));
             assert_eq!(work_from_label("Personal device"), None);
-            assert!(work_from(WorkFrom::Nobody).takes_nothing());
-            assert!(!work_from(WorkFrom::OwnDevices).takes_nothing());
+            assert!(work_from(WorkFrom::Nobody, WorkWhen::always()).takes_nothing());
+            assert!(!work_from(WorkFrom::OwnDevices, WorkWhen::always()).takes_nothing());
         }
 
         {
@@ -2344,6 +2394,52 @@ mod tests {
             assert!(pane.apply_queued);
             pane.apply_child = None;
         }
+    }
+
+    /// The states a device takes work in are saved as the page sets them, and picking whose work
+    /// it takes keeps them.
+    #[test]
+    fn the_states_a_device_takes_work_in_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay.toml");
+        RelayConfig::default().save(&path).unwrap();
+        let mut pane = DeviceMeshModel::with_path(&path);
+        let _ = pane.poll();
+
+        pane.apply(&DeviceMeshEffect::SetWorkWhileCharging { on: true })
+            .unwrap();
+        pane.apply(&DeviceMeshEffect::SetWorkRoom {
+            part: "processors".into(),
+            percent: room_shown(20),
+        })
+        .unwrap();
+        pane.apply(&DeviceMeshEffect::SetWorkRoom {
+            part: "memory".into(),
+            percent: "50".into(),
+        })
+        .unwrap();
+        assert!(
+            pane.apply(&DeviceMeshEffect::SetWorkRoom {
+                part: "memory".into(),
+                percent: "35".into(),
+            })
+            .is_err(),
+            "only the shares the page offers are kept"
+        );
+        pane.apply(&DeviceMeshEffect::SetWork {
+            work: WORK_OWN.into(),
+        })
+        .unwrap();
+        let saved = RelayConfig::load(&path).unwrap();
+        assert_eq!(
+            saved.work.when,
+            WorkWhen {
+                charging_only: true,
+                free_cpu_percent: 20,
+                free_memory_percent: 50,
+            },
+            "whose work a device takes leaves the states it takes it in"
+        );
     }
 
     #[test]

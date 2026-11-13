@@ -21,7 +21,7 @@ use crate::support::{HostSettings, enrol, restart_host, start_host_serving, star
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reset_host_refuses_its_forgotten_guest() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let (guest_root, _) = UserIdentity::generate("Guest", 1);
     let guest = enrol(&guest_root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();

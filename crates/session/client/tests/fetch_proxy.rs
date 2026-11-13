@@ -77,7 +77,7 @@ async fn session(peer: &Link) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_admitted_page_reads_a_site_without_cors_through_its_host() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "workspace-host", DeviceCapabilities::host());
+    let host_device = enrol(&root, "workspace-host", DeviceCapabilities::member());
     let laptop = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host_serving(
@@ -163,7 +163,7 @@ async fn an_admitted_page_reads_a_site_without_cors_through_its_host() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_host_without_the_proxy_names_none() {
     let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let laptop = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_host_plain(

@@ -84,7 +84,7 @@ mod tests {
             user_public_key: user.public_key,
             device_public_key: dev.public_key,
             device_label: dev.label,
-            capabilities: DeviceCapabilities::host(),
+            capabilities: DeviceCapabilities::member(),
             issued_at_ns: 3,
             expires_at_ns: None,
             signature: [0u8; 64],

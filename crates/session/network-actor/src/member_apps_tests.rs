@@ -296,10 +296,7 @@ async fn event(
 #[tokio::test(flavor = "multi_thread")]
 async fn a_members_change_reaches_the_apps_of_the_device_it_entered_through() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let hosting = DeviceCapabilities {
-        can_act_as_host: true,
-        ..DeviceCapabilities::primary()
-    };
+    let hosting = DeviceCapabilities::primary();
     let (host_key, host_cert) = device_with(&root, 2, hosting.clone());
     let (far_key, far_cert) = device_with(&root, 3, hosting);
     let (guest_key, guest_cert) = device_with(&root, 4, DeviceCapabilities::member());

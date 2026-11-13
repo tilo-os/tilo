@@ -51,7 +51,7 @@ fn entering<'a>(held: Option<&'a Held>, root: &'a SigningKey) -> Entering<'a> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_door_says_why() {
     let (alice, _) = UserIdentity::generate("Alice", 1);
-    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
     let workspaces = host.relay.workspaces().unwrap();
@@ -203,7 +203,7 @@ async fn says_nothing_more(recv: &mut iroh::endpoint::RecvStream) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
     let (alice, _) = UserIdentity::generate("Alice", 1);
-    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::host());
+    let host_device = enrol(&alice, "alice-home", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
     let workspaces = host.relay.workspaces().unwrap();

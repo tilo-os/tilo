@@ -116,7 +116,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
     let host_device = enrol(
         &owner,
         "lounge-host",
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     );
     let state = crate::support::scratch_dir();
     let host = start_workspace_host(&owner, &host_device, state.path(), false).await;

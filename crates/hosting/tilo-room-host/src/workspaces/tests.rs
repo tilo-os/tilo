@@ -1546,7 +1546,7 @@ impl AskedForAChannel {
 /// for whoever takes part.
 #[tokio::test]
 async fn a_store_host_retains_what_its_members_send_for_a_channels_group() {
-    let asked = a_member_asks_for_a_channel(DeviceCapabilities::host()).await;
+    let asked = a_member_asks_for_a_channel(DeviceCapabilities::member()).await;
     assert!(
         asked.workspaces.device_keys().is_none(),
         "a host runs no channel service and holds no channel keys"
@@ -1565,7 +1565,8 @@ async fn a_store_host_retains_what_its_members_send_for_a_channels_group() {
 #[tokio::test]
 async fn a_request_the_relay_kept_is_not_kept_again_as_the_hosts() {
     let asked =
-        a_member_asks_for_a_channel_through(DeviceCapabilities::host(), super::Carried::Kept).await;
+        a_member_asks_for_a_channel_through(DeviceCapabilities::member(), super::Carried::Kept)
+            .await;
     assert!(
         !asked.retains_the_request().await,
         "the host kept a second copy of a request its relay keeps as the member's"
@@ -2789,7 +2790,7 @@ async fn a_host_serves_the_workspaces_its_renamed_certificate_governs() {
         user_public_key: other_root.verifying_key().to_bytes(),
         device_public_key: other_key.verifying_key().to_bytes(),
         device_label: "another host".into(),
-        capabilities: DeviceCapabilities::host(),
+        capabilities: DeviceCapabilities::member(),
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],

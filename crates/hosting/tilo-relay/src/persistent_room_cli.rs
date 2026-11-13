@@ -1218,7 +1218,7 @@ pub(crate) async fn run(
         &root,
         &host,
         &format!("{name} workspace host"),
-        tilo_user_identity::DeviceCapabilities::host(),
+        tilo_user_identity::DeviceCapabilities::member(),
     )?;
     let config = tilo_relay::RelayConfig {
         state_root: tilo_relay_protocol::metrics::room_relay_root(&state),
@@ -1914,7 +1914,7 @@ mod tests {
     async fn a_fresh_workspace_seeds_its_apps_and_keeps_them() {
         let dir = tempfile::tempdir().unwrap();
         let (relay, workspaces, host_cert) =
-            host_with(dir.path(), tilo_user_identity::DeviceCapabilities::host()).await;
+            host_with(dir.path(), tilo_user_identity::DeviceCapabilities::member()).await;
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
         let apps = ["so.tilo.notes", "so.tilo.chat"];
         let first = seeded(dir.path(), &host_cert, &workspaces, &workspace, &apps).await;
@@ -1933,7 +1933,7 @@ mod tests {
     /// The relay of [`plaza`] started on `dir`, as every start signs its
     /// certificate afresh.
     async fn host(dir: &Path) -> (tilo_relay::daemon::Relay, Workspaces, DeviceCert) {
-        host_with(dir, DeviceCapabilities::host()).await
+        host_with(dir, DeviceCapabilities::member()).await
     }
 
     /// [`host`] whose certificate carries `capabilities`: the host of a
@@ -2013,7 +2013,7 @@ mod tests {
         let relay_state = tilo_relay_protocol::metrics::room_relay_root(&state);
         let root = SigningKey::from_bytes(&[0x11; 32]);
         let host = SigningKey::from_bytes(&[0x22; 32]);
-        let host_cert = enrol(&root, &host, "host", DeviceCapabilities::host()).unwrap();
+        let host_cert = enrol(&root, &host, "host", DeviceCapabilities::member()).unwrap();
         let leaked = SigningKey::from_bytes(&[0x33; 32]);
         let leaked_cert = enrol(&root, &leaked, "leaked", DeviceCapabilities::member()).unwrap();
         let sibling = SigningKey::from_bytes(&[0x44; 32]);

@@ -360,7 +360,6 @@ pub(crate) fn install(
         || verify_device_cert_at(&certificate, now_ns).is_err()
         || !certificate.capabilities.can_own_workspaces
         || certificate.capabilities.can_admit_devices
-        || certificate.capabilities.can_act_as_host
     {
         return Err(invalid("The device certificate is for another device"));
     }

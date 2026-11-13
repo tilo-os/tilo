@@ -906,19 +906,6 @@ pub struct BrokerHandle {
     channels: Arc<Mutex<BrokerChannels>>,
 }
 impl BrokerHandle {
-    /// Observe current private host-worker provenance for a native publication.
-    pub fn is_current_host_worker(
-        &self,
-        peer: u64,
-        route: &CrdtRoute,
-        certificate: &tilo_user_identity::DeviceCert,
-    ) -> Result<bool, String> {
-        match self.fanout.app_broker() {
-            Some(state) => state.is_current_host_worker(peer, route, certificate),
-            None => Ok(false),
-        }
-    }
-
     /// Connects one local host worker for `route` under `certificate`.
     pub fn connect_local_worker(
         &self,
