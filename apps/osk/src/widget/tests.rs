@@ -1104,30 +1104,22 @@ fn field_change_drops_the_composition() {
 
 #[test]
 fn visibility_defaults_toggle_and_collapse_height() {
+    // Each default is read from a keyboard as it was built, through `&self`,
+    // before anything touches it; the same two keyboards are laid out after.
     eprintln!("phase keyboard_is_visible_by_default");
-    {
-        assert!(
-            OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())).is_visible()
-        );
-    }
+    let mut visible = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
+    assert!(visible.is_visible());
 
     eprintln!("phase hidden_builder_starts_invisible");
-    {
-        assert!(
-            !OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()))
-                .hidden()
-                .is_visible()
-        );
-    }
+    let mut hidden =
+        OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())).hidden();
+    assert!(!hidden.is_visible());
 
     eprintln!("phase hidden_keyboard_takes_zero_height");
     {
-        let mut visible = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
         lay_out(&mut visible, 720.0, 360.0);
         assert!(visible.get_rect().height() > 0.0);
 
-        let mut hidden =
-            OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())).hidden();
         lay_out(&mut hidden, 720.0, 360.0);
         assert_eq!(hidden.get_rect().height(), 0.0);
     }
