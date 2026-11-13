@@ -1,14 +1,10 @@
-//! What the window shows while it has nothing to list
-//! ([`NavShell::nothing_listed`]): one screen where the overview, the
-//! content and the inspector stand, so a first run or an empty library is
-//! a whole window's empty state, never a narrow list's beside a blank pane.
-//! The sidebar stays. The app's own columns are held while it shows and
-//! come back, split as before, once it is cleared.
+//! What the window shows while it has nothing to list ([`NavShell::nothing_listed`]): one
+//! screen where the overview, the content and the inspector stand, so a first run or an empty
+//! library is a whole window's empty state, never a narrow list's beside a blank pane.
 
 use super::{Column, NavShell, Staged, at, at_mut};
 use crate::widget::Element;
 
-/// The app's columns, held while the empty state stands in for them.
 pub(super) struct Held {
     overview: Option<Element>,
     content: Element,
@@ -16,10 +12,8 @@ pub(super) struct Held {
 }
 
 impl NavShell {
-    /// Show `empty` in place of the overview, content and inspector while
-    /// there is nothing to list: a first run, an empty library. The sidebar
-    /// stays; the columns given before or after come back once
-    /// [`Self::set_nothing_listed`] clears it.
+    /// Show `empty` in place of the overview, content and inspector while there is nothing to
+    /// list: a first run, an empty library.
     #[must_use]
     pub fn nothing_listed(mut self, empty: Element) -> Self {
         self.set_nothing_listed(Some(empty));
@@ -33,7 +27,6 @@ impl NavShell {
         self.pending_changed();
     }
 
-    /// Whether the empty state shows at the next build.
     pub(super) fn nothing_listed_shown(&self) -> bool {
         match &self.pending.empty {
             Some(Staged(empty)) => empty.is_some(),
@@ -115,7 +108,6 @@ impl NavShell {
     }
 }
 
-/// Where a body goes: a column that may be absent, or the content.
 pub(super) enum BodySlot<'a> {
     Optional(&'a mut Option<Element>),
     Required(&'a mut Element),

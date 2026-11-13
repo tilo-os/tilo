@@ -3084,11 +3084,11 @@
     },
     {
       "name": "NavList",
-      "doc": "The places of an app, in its sidebar: choosing one shows it. Selection follows the person's choice and is reported, never kept by the app beside it.",
+      "doc": "A sidebar of places whose choice is reported to the app: choosing one shows it.",
       "props": [
         {
           "name": "title",
-          "doc": "What the places are, as a heading over them.",
+          "doc": "The heading over the places.",
           "type": {
             "option": "text"
           }
@@ -3111,7 +3111,7 @@
       "slots": [
         {
           "name": "items",
-          "doc": "The places, in order: places, and sections of them under a heading.",
+          "doc": "The places, in order, and sections of them under a heading.",
           "accepts": {
             "one_of": [
               "NavItem",
@@ -3125,7 +3125,7 @@
       "events": [
         {
           "name": "select",
-          "doc": "A place was chosen; carries its key.",
+          "doc": "A place was chosen: its key is the value.",
           "value": "text"
         }
       ],
@@ -3136,7 +3136,7 @@
     },
     {
       "name": "NavShell",
-      "doc": "The one window shell: a sidebar of places, an overview list, the content and an inspector, side by side while they fit and one at a time, with Back, when they do not. The header of each column holds its title, its count and its actions.",
+      "doc": "A window's shell: a sidebar of places, an overview list, the content and an inspector side by side while they fit, and one at a time with Back when they do not.",
       "props": [
         {
           "name": "content_kind",
@@ -3197,14 +3197,14 @@
         },
         {
           "name": "nothing_listed",
-          "doc": "The window has nothing at all to list: what stands in `content` is the window's one empty state, in place of the overview, the content and the inspector ([`NavShell::nothing_listed`]).",
+          "doc": "Nothing at all to list: what `content` gives is the window's empty state, in place of the overview, the content and the inspector.",
           "type": "bool"
         }
       ],
       "slots": [
         {
           "name": "sidebar_actions",
-          "doc": "The sidebar's own controls, in its header: the action that makes the thing the sidebar lists (a \"+\"), where the thing a person adds then stands.",
+          "doc": "The sidebar's controls in its header: the action that makes what it lists (a \"+\"), and where a person's new thing goes.",
           "accepts": "view",
           "many": true
         },
@@ -3249,7 +3249,7 @@
         },
         {
           "name": "search",
-          "doc": "The window's search holds this text now: the frame narrows what it lists to it, the way a place chosen in its sidebar narrows it. Empty when the search closed. A view that declares it says what the window's search writes; one that does not is searched in place by its document, or not at all.",
+          "doc": "The text the window's search holds, narrowing what the frame lists as a chosen place does; empty while the search is closed.",
           "value": "text"
         }
       ],
@@ -6915,11 +6915,11 @@
     },
     {
       "name": "NavSection",
-      "doc": "A group of places under a heading in a navigation list: a category of channels, a folder of notebooks. A collapsible one folds away under its heading.",
+      "doc": "A group of places under a heading (a category of channels, a folder of notebooks); a collapsible one folds away.",
       "props": [
         {
           "name": "title",
-          "doc": "What the places are, as the heading over them.",
+          "doc": "The heading over the places.",
           "type": "text",
           "required": true,
           "positional": true
@@ -6931,7 +6931,7 @@
         },
         {
           "name": "add",
-          "doc": "The action that makes another of the places in the group (\"New project\"), drawn at the end of the heading and run when the person presses it.",
+          "doc": "The action that makes another place in the group (\"New project\"), drawn at the end of the heading.",
           "type": {
             "option": "action"
           }
@@ -6959,7 +6959,7 @@
       "props": [
         {
           "name": "key",
-          "doc": "What names the place across changes: what selection reports.",
+          "doc": "What names the place across changes, and what its selection reports.",
           "type": "text",
           "required": true,
           "positional": true,
@@ -6982,14 +6982,14 @@
         },
         {
           "name": "count",
-          "doc": "How many things it holds: a quiet count in tertiary ink.",
+          "doc": "How many things it has: a quiet count in tertiary ink.",
           "type": {
             "option": "int"
           }
         },
         {
           "name": "live",
-          "doc": "How many things wait for attention (unread, mentions): the list's one filled badge, in the person's colour; zero shows nothing.",
+          "doc": "How many things wait for attention (unread, mentions): the list's one filled badge in the person's colour, nothing at zero.",
           "type": {
             "option": "int"
           }
@@ -7001,21 +7001,21 @@
         },
         {
           "name": "mentions",
-          "doc": "How many things behind the place name the person (mentions): more specific than the place's unread count, so it takes the badge's place while there are any, as Slack's one badge counts what names you rather than everything new.",
+          "doc": "How many things behind the place name the person: more specific than the unread count, it replaces the badge while there are any.",
           "type": {
             "option": "int"
           }
         },
         {
           "name": "item",
-          "doc": "The resource the place stands for, when it is one (a channel): the host says how much of it the person has not seen, in `live`, and lifts the label while anything is.",
+          "doc": "The resource the place shows, when it is one (a channel): the host says in `live` how much of it is unseen, and the label lifts while anything is.",
           "type": {
             "option": "resource"
           }
         },
         {
           "name": "person",
-          "doc": "The person the place stands for, when it is one (a direct conversation): their avatar in the icon's place, ringed in their presence colour, and their presence badge. The icon and the avatar never both show: the person takes the icon's place.",
+          "doc": "The person the place shows, when it is one (a direct conversation): their avatar and presence ring in the icon's place.",
           "type": {
             "option": "principal"
           }
@@ -7024,7 +7024,7 @@
       "events": [
         {
           "name": "select",
-          "doc": "The place was chosen: what choosing it does, beside the list's own `select`.",
+          "doc": "The place was chosen: what choosing it does, beside the list's `select`.",
           "press": true
         }
       ],

@@ -1,14 +1,6 @@
-//! `NavShell` — the one window shell: an optional sidebar of destinations, an optional
-//! overview list beside the content, the content, and an optional inspector, laid out at
-//! `theme.tokens.metrics`. The app hands it columns and headers; the shell owns the geometry,
-//! the responsive layout (docked sidebar, push stack or floating drawer — never a modal one),
-//! motion and semantics. An app reads [`NavGeometry::size_class`], never a width.
-//!
-//! The sidebar stands beside the content only while the pane beside it keeps the width class its
-//! kind asks for there ([`ContentKind::beside_sidebar_class`]): a column of text is no phone's
-//! screen, so below a column the sidebar folds behind the bar's toggle (or floats over a
-//! content-primary app) and the content takes its room back. The window's own width decides it,
-//! never the display's, so a window in a strip, a tiled window and a phone follow one rule.
+//! `NavShell` — the one window shell: an optional sidebar of destinations, an optional overview
+//! list beside the content, the content, and an optional inspector, laid out at
+//! `theme.tokens.metrics`.
 
 use crate::num::f64_of_usize;
 use std::cell::RefCell;
@@ -69,12 +61,10 @@ use sidebar_resize::AdaptiveSidebar;
 use window_toolbar::Requests;
 pub use window_toolbar::{WINDOW_BACK, WINDOW_SIDEBAR, WindowBarLink};
 
-/// What the sidebar becomes when the window is too narrow to dock it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NavMode {
     /// The first screen of a push stack: one column fills the window and choosing a destination
-    /// pushes the content behind a Back button. Every app's compact layout unless its content is a
-    /// `Document`.
+    /// pushes the content behind a Back button.
     #[default]
     Push,
     /// Always docked: a compact icon rail (`NavList::rail`) that fits beside
@@ -143,7 +133,6 @@ impl ContentKind {
     }
 }
 
-/// A screen of the narrow push stack.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NavPane {
     /// The sidebar, as the first screen of a narrow window.
@@ -155,7 +144,6 @@ pub enum NavPane {
     Content,
 }
 
-/// Where the sidebar is this frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SidebarPlacement {
     /// No sidebar.
@@ -169,7 +157,6 @@ pub enum SidebarPlacement {
     Screen,
 }
 
-/// Where the inspector is this frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum InspectorPlacement {
     #[default]
@@ -180,7 +167,6 @@ pub enum InspectorPlacement {
     Sheet,
 }
 
-/// Where the overview is this frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OverviewPlacement {
     /// No overview.
@@ -227,7 +213,6 @@ impl Column {
     }
 }
 
-/// `array`'s entry for `column`.
 fn at<T>(array: &[T; 4], column: Column) -> &T {
     let [sidebar, overview, content, inspector] = array;
     match column {
@@ -238,7 +223,6 @@ fn at<T>(array: &[T; 4], column: Column) -> &T {
     }
 }
 
-/// `array`'s entry for `column`, to change.
 fn at_mut<T>(array: &mut [T; 4], column: Column) -> &mut T {
     let [sidebar, overview, content, inspector] = array;
     match column {
@@ -249,7 +233,6 @@ fn at_mut<T>(array: &mut [T; 4], column: Column) -> &mut T {
     }
 }
 
-/// One retained child of the shell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Part {
     Body(Column),
@@ -279,7 +262,6 @@ enum Part {
     Band,
 }
 
-/// A column's header: a title the shell paints and actions the app owns.
 struct Header {
     title: HeaderTitle,
     binding: Option<LocalBinding<String>>,
@@ -300,7 +282,6 @@ impl Header {
     }
 }
 
-/// What an optional slot becomes at the next build: the element, or none.
 struct Staged(Option<Element>);
 
 impl Staged {
@@ -309,7 +290,6 @@ impl Staged {
     }
 }
 
-/// Slot and header changes waiting for the next build of the host tree.
 #[derive(Default)]
 struct Pending {
     bodies: [Option<Staged>; 4],
@@ -331,7 +311,6 @@ impl Pending {
     }
 }
 
-/// The shell metrics resolved against the theme the tree was built with.
 #[derive(Clone, Copy, Debug)]
 struct Metrics {
     row: HeaderRowMetrics,
@@ -368,9 +347,7 @@ struct Metrics {
     /// classes are measured in, so the content beside a sidebar keeps a column's width at every
     /// text size.
     rem: f32,
-    /// The line a document's body runs to, past which the page centres it.
     reading_measure: f64,
-    /// What a page scroller keeps free for its bar on its trailing edge.
     scroll_gutter: f64,
     /// A page column's inset: a `Column`'s own padding (`s6`).
     page_pad: f64,
@@ -388,9 +365,7 @@ impl Metrics {
     }
 
     /// The narrowest content of `kind` stands at beside a sidebar: its own minimum, and never
-    /// below the width class it is in there ([`ContentKind::beside_sidebar_class`]). Narrower, the
-    /// pane is a phone's screen, so the sidebar folds behind the bar's toggle instead of squeezing
-    /// it (`layout.md`, "Responding to space").
+    /// below the width class it is in there ([`ContentKind::beside_sidebar_class`]).
     fn beside_sidebar_min(&self, kind: ContentKind) -> f64 {
         self.content_min(kind)
             .max(f64::from(crate::widget::arrange::class_min_width(
@@ -448,16 +423,11 @@ impl Default for Metrics {
     }
 }
 
-/// How a column's actions fit its header, decided by the layout policy.
 #[derive(Clone, Debug, Default)]
 struct ColumnFit {
-    /// Which actions are buttons that can show their icon alone.
     capable: Vec<bool>,
-    /// Which of them show their icon alone right now.
     compact_now: Vec<bool>,
-    /// Each action's width with its label, measured while it showed it.
     full: Vec<Option<f64>>,
-    /// The labelled buttons collapse to their icons.
     compact: bool,
     /// The index of the first action that belongs in the menu: the row shows its everyday actions
     /// and the menu holds the rest. `None` while they all fit.
@@ -468,7 +438,6 @@ struct ColumnFit {
     /// How many actions stand in the row; the rest are in the More menu.
     /// `None` until the first layout decides.
     shown: Option<usize>,
-    /// What the last layout settled on for the row, for an audit to read.
     header: Option<crate::widget::HeaderRowLayout>,
 }
 
@@ -499,9 +468,7 @@ struct Inputs {
     has_inspector: bool,
     has_filter: bool,
     has_controls: bool,
-    /// The window's History control, where the host gave the shell one.
     history: Option<HistoryControl>,
-    /// The window's sync status has a button beside it.
     status_action: bool,
     /// Room for the window's controls at the trailing end of the row, while
     /// the host merged the window's bar into it (a maximized window).
@@ -525,7 +492,6 @@ struct Inputs {
     nothing_listed: bool,
     /// The docked sidebar width a person dragged to, authored at 1×.
     user_sidebar: Option<f64>,
-    /// A navigation-list sidebar: rail while narrow, list while wide.
     adaptive: Option<AdaptiveSidebar>,
     sidebar: FlapState,
     inspector: FlapState,
@@ -538,15 +504,11 @@ struct Inputs {
     push: crate::motion::MotionValue<f64>,
     /// The parts in the order they were built (their placement index).
     parts: Vec<Part>,
-    /// How each column's actions fit, written by the layout policy.
     fit: Rc<RefCell<[ColumnFit; 4]>>,
-    /// The layout the last applied geometry chose, for hysteresis.
     held: Held,
 }
 
-/// Which side of each threshold the last applied layout stood on (`None` before the first). A
-/// layout that switched away switches back only once the window is `metrics.hysteresis` past its
-/// threshold.
+/// Which side of each threshold the last applied layout stood on (`None` before the first).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Held {
     sidebar_docked: Option<bool>,
@@ -561,7 +523,6 @@ impl Held {
             sidebar_docked: Some(g.sidebar == SidebarPlacement::Docked),
             inspector_docked: Some(g.inspector == InspectorPlacement::Docked),
             list_fits: Some(g.overview == OverviewPlacement::List && g.side_by_side),
-            // Wherever the list fits, its rail does too.
             rail_fits: Some(g.side_by_side),
         }
     }
@@ -632,7 +593,6 @@ impl Inputs {
             .clamp(narrowest, m.sidebar_max.max(narrowest))
     }
 
-    /// The narrowest the content still works at, for its kind.
     fn content_min(&self) -> f64 {
         if !self.has_content {
             return 0.0;
@@ -686,14 +646,12 @@ fn unit_f32(v: f64) -> f32 {
     v.clamp(0.0, 1.0) as f32
 }
 
-/// A drag of the sidebar's trailing edge.
 #[derive(Clone, Copy, Debug)]
 struct Resize {
     start_x: f64,
     start_width: f64,
 }
 
-/// An app's own page stack, which the shell's Back chip pops.
 struct ContentBack {
     can_go_back: Box<dyn Fn() -> bool>,
     go_back: Box<dyn FnMut()>,
@@ -702,7 +660,6 @@ struct ContentBack {
 /// An open/closed state the app keeps in a [`LocalState`].
 struct OpenBinding {
     binding: LocalBinding<bool>,
-    /// A value to apply once the layout knows the placement.
     wanted: Option<bool>,
 }
 
@@ -732,7 +689,6 @@ impl Widget for InertPart {
     }
 }
 
-/// The one window shell. See the module docs.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "structure, layout and paint dirtiness and the cross-fade are independent flags"
@@ -757,8 +713,6 @@ pub struct NavShell {
     toggle: Box<Button>,
     back: Box<Button>,
     inspector_toggle: Box<Button>,
-    /// The window's History control: the one that opens History and the
-    /// one, on, that closes it.
     history_open: Box<Button>,
     history_close: Box<Button>,
     requests: Rc<Requests>,
@@ -776,8 +730,6 @@ pub struct NavShell {
     baseline: Vec<(NodeId, Style)>,
     /// The parts in the host tree, in build order.
     host_parts: Vec<Part>,
-    /// What the host meets in place of a part of a screen not in front, one
-    /// per part in the tree.
     inert_parts: Vec<InertPart>,
     layout_theme: Box<Theme>,
     conventions: PlatformConventions,
@@ -791,7 +743,6 @@ pub struct NavShell {
     /// The push stack and front screen the tree was built for before any layout said how wide the
     /// shell is: the first layout rebuilds only when it lands elsewhere.
     planned: Option<(Vec<NavPane>, NavPane)>,
-    /// The app or the person chose the front screen.
     pane_chosen: bool,
     resize: Option<Resize>,
     /// The sidebar's resize edge holds keyboard focus (given through its
@@ -799,7 +750,6 @@ pub struct NavShell {
     resize_focused: bool,
     edge: sidebar_resize::Edge,
     last_cursor: Point,
-    /// Reduced motion: the sidebar and drawers fade in instead of sliding.
     fade: crate::motion::Presence,
     /// The columns a layout switch brought in fading in: those that appeared or moved where no
     /// slide carries them, and under reduced motion every one of them.
@@ -812,7 +762,6 @@ pub struct NavShell {
     /// The frame after a motion ended rebuilds the structure (a part the
     /// last pose hides goes): the host owes the shell that frame too.
     settling: bool,
-    /// The host tree has been built once.
     built: bool,
     /// The window's bar presents search for the window, so the headers carry no button of their own
     /// that opens the app's search.
@@ -828,23 +777,17 @@ pub struct NavShell {
     /// The notice whose button the person pressed, for
     /// [`Self::take_toast_action`].
     notice_pressed: Option<String>,
-    /// The window's sync status, quiet text before the trailing controls
-    /// of the row History stands in.
     sync_status: crate::widget::HeaderStatus,
     /// The status changed since the last frame drawn: only where it was
     /// ([`Self::status_drawn`]) and where it is repaint, not the whole shell.
     status_dirty: bool,
-    /// The status text's box as last drawn.
     status_drawn: Rect,
     /// The span of the header row the status was last painted into; empty
     /// until the shell has painted, when where the status goes is unknown.
     status_span: Rect,
-    /// The button beside the sync status (Retry), and what it was made from.
     status_action: Option<Button>,
     band: Option<Element>,
     status_action_spec: Option<crate::widget::StatusAction>,
-    /// Buttons replaced since the host last built its tree, which may still
-    /// point at them.
     retired_status_actions: Vec<Button>,
     /// Whether Back goes back now, for a shell made from its description with a `back`
     /// event: taken in place as the description changes.
@@ -979,8 +922,6 @@ impl NavShell {
         Button::icon_only(id, icon, name).on_view(on_press)
     }
 
-    // --- slots -------------------------------------------------------------
-
     /// The sidebar of destinations (usually a [`crate::widget::NavList`]).
     #[must_use]
     pub fn sidebar(mut self, sidebar: Element) -> Self {
@@ -1005,23 +946,19 @@ impl NavShell {
         self
     }
 
-    /// The content.
     #[must_use]
     pub fn content(mut self, content: Element) -> Self {
         self.set_content(content);
         self
     }
 
-    /// Whether the window shows a content column. A window whose content only stands in for what
-    /// its overview has not opened yet says `false`: the overview then lists for the whole window,
-    /// and the content column appears when there is something to show in it.
+    /// Whether the window shows a content column.
     #[must_use]
     pub fn content_shown(mut self, shown: bool) -> Self {
         self.set_content_shown(shown);
         self
     }
 
-    /// The inspector at the trailing edge: properties of the selection.
     #[must_use]
     pub fn inspector(mut self, inspector: Element) -> Self {
         self.set_inspector(Some(inspector));
@@ -1044,14 +981,12 @@ impl NavShell {
         self
     }
 
-    /// The overview column's header (the list's title and its actions).
     #[must_use]
     pub fn overview_header(mut self, title: impl Into<String>, actions: Vec<Element>) -> Self {
         self.set_overview_header(title, actions);
         self
     }
 
-    /// The content column's header: the detail title and toolbar actions.
     #[must_use]
     pub fn content_header(mut self, title: impl Into<String>, actions: Vec<Element>) -> Self {
         self.set_content_header(title, actions);
@@ -1083,21 +1018,18 @@ impl NavShell {
         self
     }
 
-    /// The inspector column's header.
     #[must_use]
     pub fn inspector_header(mut self, title: impl Into<String>, actions: Vec<Element>) -> Self {
         self.set_inspector_header(title, actions);
         self
     }
 
-    /// How many items the overview lists, after its title.
     #[must_use]
     pub fn overview_count(mut self, count: usize) -> Self {
         self.set_count(Column::Overview, Some(count));
         self
     }
 
-    /// How many items the content shows, after its title.
     #[must_use]
     pub fn content_count(mut self, count: usize) -> Self {
         self.set_count(Column::Content, Some(count));
@@ -1174,25 +1106,21 @@ impl NavShell {
         self
     }
 
-    /// The window's search narrows the sidebar's list
-    /// ([`crate::widget::Filterable`]) wherever it stands: also while a
-    /// narrow window shows the content screen, whose content may then show
-    /// what the list's filter finds. Without it the search reaches the list
-    /// only while it is on screen.
+    /// The window's search narrows the sidebar's list ([`crate::widget::Filterable`]) wherever
+    /// it stands: also while a narrow window shows the content screen, whose content may then
+    /// show what the list's filter finds.
     #[must_use]
     pub fn search_sidebar(mut self) -> Self {
         self.sidebar_search = true;
         self
     }
 
-    /// Start with the sidebar hidden (where it docks).
     #[must_use]
     pub fn with_sidebar_hidden(self) -> Self {
         self.inputs.borrow_mut().sidebar.snap(false);
         self
     }
 
-    /// Start with the inspector hidden (where it docks).
     #[must_use]
     pub fn with_inspector_hidden(self) -> Self {
         self.inputs.borrow_mut().inspector.snap(false);
@@ -1211,11 +1139,9 @@ impl NavShell {
         self
     }
 
-    /// Bind the content's Back to the app's page stack: while `stack` can go
-    /// back the shell shows its Back chip at the leading edge of the
-    /// content's header, and pressing it pops the stack (browse history, a
-    /// drill-down from a dashboard into a queue). A narrow window's push
-    /// stack shares the chip: Back pops the app's pages first.
+    /// Bind the content's Back to the app's page stack: while `stack` can go back the shell
+    /// shows its Back chip at the leading edge of the content's header, and pressing it pops
+    /// the stack (browse history, a drill-down from a dashboard into a queue).
     #[must_use]
     pub fn with_back<T>(self, stack: &LocalState<crate::NavStack<T>>) -> Self
     where
@@ -1251,12 +1177,6 @@ impl NavShell {
         self
     }
 
-    // --- live slot swap ----------------------------------------------------
-    //
-    // A host that rebuilds its children keeps the shell and swaps them in
-    // here: the shell's responsive state lives on the shell. A swap made
-    // while the host holds the tree waits for the next build.
-
     pub fn set_sidebar(&mut self, sidebar: Option<Element>) {
         self.stage_body(Column::Sidebar, sidebar);
     }
@@ -1270,7 +1190,6 @@ impl NavShell {
         self.stage_body(Column::Content, Some(content));
     }
 
-    /// [`Self::content_shown`] on a kept shell.
     pub fn set_content_shown(&mut self, shown: bool) {
         if self.content_shown == shown {
             return;
@@ -1307,23 +1226,18 @@ impl NavShell {
         self.pending_changed();
     }
 
-    /// Change the sidebar's header in place: its title and actions.
     pub fn set_sidebar_header(&mut self, title: impl Into<String>, actions: Vec<Element>) {
         self.stage_header(Column::Sidebar, title.into(), actions);
     }
 
-    /// Change the overview's header in place.
     pub fn set_overview_header(&mut self, title: impl Into<String>, actions: Vec<Element>) {
         self.stage_header(Column::Overview, title.into(), actions);
     }
 
-    /// Change the content's header in place (the selected message's subject
-    /// and what can be done to it).
     pub fn set_content_header(&mut self, title: impl Into<String>, actions: Vec<Element>) {
         self.stage_header(Column::Content, title.into(), actions);
     }
 
-    /// Change the inspector's header in place.
     pub fn set_inspector_header(&mut self, title: impl Into<String>, actions: Vec<Element>) {
         self.stage_header(Column::Inspector, title.into(), actions);
     }
@@ -1339,32 +1253,26 @@ impl NavShell {
         self.pending_changed();
     }
 
-    /// Change the sidebar's title in place.
     pub fn set_sidebar_title(&mut self, title: impl Into<String>) {
         self.set_title(Column::Sidebar, title.into());
     }
 
-    /// Change the overview's title in place.
     pub fn set_overview_title(&mut self, title: impl Into<String>) {
         self.set_title(Column::Overview, title.into());
     }
 
-    /// Change the content's title in place (the selected message's subject).
     pub fn set_content_title(&mut self, title: impl Into<String>) {
         self.set_title(Column::Content, title.into());
     }
 
-    /// Change the inspector's title in place.
     pub fn set_inspector_title(&mut self, title: impl Into<String>) {
         self.set_title(Column::Inspector, title.into());
     }
 
-    /// Show or clear the count after the content's title.
     pub fn set_content_count(&mut self, count: Option<usize>) {
         self.set_count(Column::Content, count);
     }
 
-    /// Show or clear the count after the overview's title.
     pub fn set_overview_count(&mut self, count: Option<usize>) {
         self.set_count(Column::Overview, count);
     }
@@ -1403,7 +1311,6 @@ impl NavShell {
         }
     }
 
-    /// The count is drawn inside the title's part, which measures and paints it again.
     fn set_count(&mut self, column: Column, count: Option<usize>) {
         if let Some(header) = self.headers.get_mut(column.index())
             && header.title.count != count
@@ -1413,10 +1320,8 @@ impl NavShell {
         }
     }
 
-    /// A slot or header waits for the next build; before the first one there
-    /// is no tree to wait for.
-    /// The window's bar presents search: put away each header's button that
-    /// opens the app's search ([`crate::search::APP_SEARCH_BUTTON_ID`]).
+    /// A slot or header waits for the next build; before the first one there is no tree to wait
+    /// for.
     fn drop_app_search(&mut self) {
         let mut changed = false;
         for column in Column::ALL {
@@ -1480,8 +1385,6 @@ impl NavShell {
             rail,
             empty,
         } = pending;
-        // Leaving the empty state brings the app's columns back before
-        // their swaps land; entering it holds them after.
         let (leave, enter) = match empty {
             Some(Staged(None)) => (Some(Staged(None)), None),
             enter => (None, enter),
@@ -1517,7 +1420,6 @@ impl NavShell {
         self.reset_fit();
     }
 
-    /// Forget how the actions fit: new actions are measured afresh.
     fn reset_fit(&mut self) {
         let inputs = self.inputs.borrow();
         let mut fit = inputs.fit.borrow_mut();
@@ -1543,8 +1445,6 @@ impl NavShell {
         }
     }
 
-    /// A slot, header or column changed: the shell plans its parts again and the host builds
-    /// the tree anew.
     fn slots_changed(&mut self) {
         self.refresh_slot_inputs();
         self.structure_dirty = true;
@@ -1568,14 +1468,10 @@ impl NavShell {
             inputs.has_content = self.content_shown || self.nothing_listed_shown();
             inputs.nothing_listed = self.nothing_listed_shown();
             inputs.has_inspector = body(Column::Inspector);
-            // The overview's rail and controls go with it.
             let listed = !self.nothing_listed_shown();
             inputs.has_rail = listed && has(self.rail.is_some(), self.pending.rail.as_ref());
             inputs.has_controls =
                 listed && has(self.controls.is_some(), self.pending.controls.as_ref());
-            // A toolbar in the window's bar searches with the bar's own
-            // search, which narrows the list through the same field: the
-            // field keeps no band of its own while the bar presents it.
             inputs.has_filter =
                 self.filter.is_some() && !(inputs.toolbar_in_bar && self.window_search);
             for column in Column::ALL {
@@ -1597,8 +1493,6 @@ impl NavShell {
         self.layout_dirty = true;
         self.paint_dirty = true;
     }
-
-    // --- typed access ------------------------------------------------------
 
     /// The sidebar as the widget the app gave it (the one waiting to be
     /// shown, if a swap is pending), through its `Widget::as_any_mut`
@@ -1623,7 +1517,6 @@ impl NavShell {
             .and_then(|any| any.downcast_ref::<T>())
     }
 
-    /// The overview as the widget the app gave it.
     pub fn overview_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
         downcast(self.app_body_mut(Column::Overview))
     }
@@ -1634,7 +1527,6 @@ impl NavShell {
         crate::widget::find_mut::<DescribedList>(self.app_body_mut(Column::Overview)?)
     }
 
-    /// The content as the widget the app gave it.
     pub fn content_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
         downcast(self.app_body_mut(Column::Content))
     }
@@ -1649,9 +1541,6 @@ impl NavShell {
         self.filter.as_deref_mut()
     }
 
-    // --- state -------------------------------------------------------------
-
-    /// The geometry of the last layout, in window coordinates.
     pub fn geometry(&self) -> &NavGeometry {
         &self.geometry
     }
@@ -1699,16 +1588,11 @@ impl NavShell {
         }
     }
 
-    /// The front screen of the push stack (meaningful when it has more than
-    /// one screen).
     pub fn front_pane(&self) -> NavPane {
         self.inputs.borrow().pane
     }
 
-    /// Show or hide the sidebar, remembering the choice for this window size
-    /// class. In [`NavMode::Push`] narrow, the sidebar is a screen: showing
-    /// it goes back to it, and hiding it goes on to the screen the person
-    /// left for it.
+    /// Show or hide the sidebar, remembering the choice for this window size class.
     pub fn toggle_sidebar(&mut self) {
         if !self.has_sidebar() || self.sidebar_folded() {
             return;
@@ -1810,12 +1694,7 @@ impl NavShell {
     }
 
     /// Give each column's title back to the content while the content shows the same words as
-    /// its page's own heading: one title on screen, and the one the page sets in the body. The
-    /// bar takes it again once the heading scrolls out of the column's body.
-    ///
-    /// A page may also edit its title in a field, which is not a heading: a field names itself
-    /// rather than the page, so the bar keeps its heading node, standing where the field does and
-    /// saying the words the field holds. That is the page's name, and the one title on screen.
+    /// its page's own heading: one title on screen, and the one the page sets in the body.
     fn mirror_own_page_titles(&mut self) -> bool {
         let mut covered = [false; 4];
         let mut edited: [Option<TitleShown>; 4] = [None, None, None, None];
@@ -1826,8 +1705,6 @@ impl NavShell {
             let Some(shown) = page_title_shown(body, self.geometry.body(column)) else {
                 continue;
             };
-            // A heading repeats the bar's title only when it says the same words; a field names
-            // itself rather than the page, so its words are the page's name whatever the bar says.
             let repeats = self.headers[column.index()]
                 .title
                 .title
@@ -1837,8 +1714,6 @@ impl NavShell {
                 continue;
             }
             covered[column.index()] = true;
-            // The words the page shows, when they are a field's rather than a heading's: the bar
-            // names the page by them, where the field stands.
             if !shown.heading {
                 edited[column.index()] = Some(shown);
             }
@@ -1862,7 +1737,6 @@ impl NavShell {
 
     fn after_flap_change(&mut self) {
         if self.layout_theme.reduce_motion {
-            // Under reduced motion the panel does not slide; it fades in.
             self.fade = Self::fading_in(self.layout_theme.motion());
         }
         self.animating = true;
@@ -1872,7 +1746,6 @@ impl NavShell {
         self.invalidate();
     }
 
-    /// Write the sidebar's and inspector's openness to bound states.
     fn publish_open_states(&mut self) {
         let sidebar = self.is_sidebar_open();
         let inspector = self.is_inspector_open();
@@ -1938,15 +1811,8 @@ impl NavShell {
         }
     }
 
-    /// Bring `pane` to the front of a narrow window's push stack. In a wide
-    /// window every pane is already showing; this records which one a later
-    /// collapse keeps in front.
-    ///
-    /// The push follows the input that asked for it (HIG §9.7): a click or a
-    /// tap the person just made slides the screen in; a key, or a show nobody
-    /// visibly caused (an agent, a script, a sync, a restore), lands at once.
-    /// A host that knows where the open came from says so with
-    /// [`Self::show_from`].
+    /// Bring `pane` to the front of a narrow window's push stack. In a wide window every pane
+    /// is already showing; this records which one a later collapse keeps in front.
     pub fn show(&mut self, pane: NavPane) {
         let source = crate::motion::recent_input(crate::time::now())
             .unwrap_or(crate::tokens::MotionSource::Action);
@@ -1984,8 +1850,6 @@ impl NavShell {
                 inputs.push.snap(to);
                 inputs.push_pos = None;
             } else {
-                // Deeper is an enter; a push mid-slide continues from where
-                // it is drawn (`motion::Drill`).
                 let direction = crate::motion::Direction::of(to >= inputs.push.target());
                 let timing = crate::motion::Drill::SPEC.timing(
                     direction,
@@ -1999,11 +1863,6 @@ impl NavShell {
         if let Some(binding) = self.pane_binding.as_mut() {
             binding.publish(&pane);
         }
-        // A sidebar that is a screen shows or hides with the screen in
-        // front: its toggle and the window bar's slots say so now, not at
-        // the next layout, so an app that builds its slots from the shell's
-        // ([`WindowBarLink::slots`]) while the sidebar covers it reads them
-        // current.
         self.update_toggle_names();
         self.publish_open_states();
         self.animating = true;
@@ -2011,7 +1870,6 @@ impl NavShell {
         self.invalidate();
     }
 
-    /// Ask the app's page stack whether it can go back.
     fn refresh_content_back(&mut self) {
         let Some(back) = self.content_back.as_ref() else {
             return;
@@ -2021,10 +1879,6 @@ impl NavShell {
     }
 
     /// The parts a frame paints: laid out, and on screen inside the shell.
-    /// A part a push screen holds beside the window (the content behind a
-    /// sidebar that is a screen of its own) is culled when the shell draws,
-    /// so what it would show next waits until it is back on screen: asked
-    /// for, it would keep the window drawing frames that never paint it.
     fn painted_parts(&self) -> impl Iterator<Item = &dyn Widget> {
         self.host_parts
             .iter()
@@ -2032,7 +1886,6 @@ impl NavShell {
             .filter(|part| part.paint_bounds().intersect(self.rect).area() > 0.0)
     }
 
-    /// Snap every animation to its end (deterministic shots and tests).
     pub fn snap(&mut self) {
         {
             let mut inputs = self.inputs.borrow_mut();
@@ -2079,8 +1932,6 @@ impl NavShell {
         self.inspector_toggle.set_tooltip(Some(name));
     }
 
-    // --- parts -------------------------------------------------------------
-
     fn for_each_owned(&self, mut visit: impl FnMut(&dyn Widget)) {
         for part in self.all_parts() {
             if let Some(widget) = self.part(part) {
@@ -2105,8 +1956,6 @@ impl NavShell {
             .map_or(count, |shown| shown.min(count))
     }
 
-    /// A part the layout put away: an action in the More menu, or the More
-    /// button while everything fits.
     fn part_hidden(&self, part: Part) -> bool {
         match part {
             Part::Action(column, i) => i >= self.shown_actions(column),
@@ -2123,9 +1972,8 @@ impl NavShell {
     /// is not modal, so nothing beside it is inert.
     fn part_inert(&self, part: Part) -> bool {
         let g = &self.geometry;
-        // Both screens remain laid out during a push animation, but only
-        // the chosen screen is operable. AT and keyboard routing must switch
-        // immediately, without waiting for the outgoing pixels to slide away.
+        // Both screens remain laid out during a push animation, but only the chosen screen is
+        // operable.
         let column = match part {
             Part::Body(column)
             | Part::Title(column)
@@ -2139,9 +1987,6 @@ impl NavShell {
         if !g.stack.is_empty()
             && let Some(column) = column
         {
-            // `side_by_side` describes only overview/content. A sidebar
-            // can still push that pair as one screen, including when no
-            // overview exists. Use the actual stack for admission.
             let pane = match column {
                 Column::Sidebar => Some(NavPane::Sidebar),
                 Column::Overview if g.side_by_side => Some(NavPane::Content),
@@ -2160,7 +2005,6 @@ impl NavShell {
         false
     }
 
-    /// Which column's theme a part draws with.
     fn part_column(&self, part: Part) -> Option<Column> {
         match part {
             Part::Body(column)
@@ -2193,8 +2037,6 @@ impl NavShell {
         }
     }
 
-    /// Open a More menu whose button was pressed, with the actions that did
-    /// not fit.
     fn open_more_menus(&mut self) {
         let viewport = self.rect;
         for column in Column::ALL {
@@ -2203,8 +2045,6 @@ impl NavShell {
             if !header.more.take_open_request() {
                 continue;
             }
-            // The menu rows read as the actions' own: their glyph, the key that runs them,
-            // what they wait on, and the run of commands each stands in.
             let items = header
                 .actions
                 .iter()
@@ -2268,7 +2108,6 @@ impl NavShell {
         acted
     }
 
-    /// Poll the bound content title and the app's page stack.
     fn poll_bindings(&mut self) {
         let mut titles = Vec::new();
         for column in Column::ALL {
@@ -2284,7 +2123,6 @@ impl NavShell {
         self.refresh_content_back();
     }
 
-    /// Carry the filter field's query to the column it filters.
     fn sync_filter(&mut self) {
         let Some(column) = self.geometry.filter_column(&self.inputs.borrow()) else {
             return;
@@ -2337,10 +2175,7 @@ impl NavShell {
         from_sidebar || from_rail || from_overview
     }
 
-    /// Advance the slides to this frame's time. Every one runs on the
-    /// standard motions: the sidebar and inspector on the panel slide, the
-    /// push stack on the drill, a layout switch's columns and the
-    /// reduced-motion reveal on the cross-fade.
+    /// Advance the slides to this frame's time.
     fn tick(&mut self, theme: &Theme) {
         let now = crate::motion::frame_now();
         let motion = theme.motion();
@@ -2348,11 +2183,7 @@ impl NavShell {
         let inspector_layout = inspector_layout_of(self.geometry.inspector);
         let stack_empty = self.geometry.stack.is_empty();
         let mut moving = false;
-        // The poses this frame was laid out and painted with. A tick runs
-        // after the paint, so a pose it advances to (the last one of a
-        // slide, or the only one of a toggle that lands at once: a key, or a
-        // frame that came after the whole slide's time) is laid out by the
-        // next frame, which the host must be asked for.
+        // The poses this frame was laid out and painted with.
         let advanced = {
             let mut inputs = self.inputs.borrow_mut();
             let before = (
@@ -2365,7 +2196,6 @@ impl NavShell {
             moving |= inputs.inspector.advance(inspector_layout, now, motion);
             moving |= inputs.sheet.advance(now);
             if stack_empty || !inputs.push.is_moving(now) {
-                // Settled: the front screen's index, exactly.
                 inputs.push_pos = None;
             } else {
                 inputs.push_pos = Some(inputs.push.get(now));
@@ -2392,13 +2222,9 @@ impl NavShell {
         }
         self.settling = false;
         if moving || advanced {
-            // Still moving, or landed after this frame was laid out: one
-            // more frame lays the landed pose out.
             self.invalidate();
             self.animating = true;
         } else if self.animating {
-            // The last frame of a slide may hide a part: the next frame
-            // rebuilds the structure without it.
             self.structure_dirty = true;
             self.invalidate();
             self.animating = false;
@@ -2406,7 +2232,6 @@ impl NavShell {
         }
     }
 
-    /// A fade-in starting now on the standard cross-fade.
     fn fading_in(motion: crate::tokens::EffectiveMotion) -> crate::motion::Presence {
         let mut fade = crate::motion::Presence::closed();
         fade.show(
@@ -2420,10 +2245,8 @@ impl NavShell {
     }
 
     fn refresh_geometry(&mut self) {
-        // The class this pass's rect asks for, held through the hysteresis
-        // band: derived from the rect every pass, never stored by an app or
-        // seeded by the host. Larger text holds less in the same width, so the
-        // rect is compared in the space its tokens are measured in.
+        // The class this pass's rect asks for, held through the hysteresis band: derived from
+        // the rect every pass, never stored by an app or seeded by the host.
         let growth = f64::from(self.layout_theme.text_growth()).max(f64::from(f32::EPSILON));
         let tokens = self.layout_theme.tokens.metrics;
         let size_class = self.size_class.derive(self.rect.width() / growth, &tokens);
@@ -2462,13 +2285,7 @@ impl NavShell {
         }
         if previous.as_ref() != Some(&stack) {
             let switched = previous.is_some();
-            // The first layout opens on the stack's first screen unless the
-            // app chose one. A later collapse lands where the keyboard is (a
-            // list the person is arrowing through stays in front, focus with
-            // it), else on the pane they last worked in.
-            // An app that opened a page keeps it in front. Where the content
-            // is only a placeholder (nothing chosen yet), the app shows its
-            // list first ([`Self::show`]), and that choice is kept.
+            // The first layout opens on the stack's first screen unless the app chose one.
             let chosen = self.pane_chosen.then(|| self.inputs.borrow().pane);
             let keep = match (previous, chosen) {
                 (None, None) => self.opening_pane(&stack),
@@ -2491,20 +2308,12 @@ impl NavShell {
             inputs.push.snap(at);
             let pane = inputs.pane;
             drop(inputs);
-            // A layout the person switched at a fixed size carries its
-            // columns from where they stood. A layout a **resize** switched
-            // lands at once: the rect this pass was given is the truth this
-            // frame draws, so a window narrowed across the breakpoint shows
-            // the one-column layout immediately — never the wide one sliding
-            // out, clipped at the new edge (and, in a capture whose clock is
-            // pinned, never landing at all).
+            // A layout the person switched at a fixed size carries its columns from where they
+            // stood.
             let resized = before.size != self.geometry.size;
             if switched && !resized {
                 self.move_into_layout(before);
             }
-            // The tree a first layout finds was built for the screens it
-            // planned at an assumed size; where the window's real size lands
-            // on the same ones, it is already the tree this layout needs.
             let planned = self.planned.take();
             if switched || planned != Some((stack, pane)) {
                 self.structure_dirty = true;
@@ -2516,17 +2325,14 @@ impl NavShell {
 
     /// Carry the columns from where they stood into the layout a switch at one size made
     /// (`motion.durations.base`), so nothing jumps: into one column, the front screen slides to
-    /// fill the window while the sidebar slides out under the leading edge; widening into a sidebar
-    /// the person was not looking at slides it in. A column that appears or moves where no slide
-    /// carries it fades in, and under reduced motion every one fades. A switch a resize makes lands
-    /// at once.
+    /// fill the window while the sidebar slides out under the leading edge; widening into a
+    /// sidebar the person was not looking at slides it in.
     fn move_into_layout(&mut self, before: &NavGeometry) {
         let (w, h) = (self.rect.width(), self.rect.height());
         if w <= 0.0 || h <= 0.0 {
             return;
         }
         let reduce = self.layout_theme.reduce_motion;
-        // The new layout, settled on its front screen.
         let after = plan(&self.inputs.borrow(), w, h);
         let mut carried = [false; 4];
         if !reduce {
@@ -2544,8 +2350,6 @@ impl NavShell {
                 && is.width() > 0.0
                 && (was.x0 - is.x0).abs() > 0.5
             {
-                // Screen `i` stands at `(i - pos) * w` from its settled
-                // place: start the slide where the front screen stood.
                 let i = f64_of_usize(stack_index(&after.stack, front));
                 let last = f64_of_usize(after.stack.len().saturating_sub(1));
                 let from = (i - (was.x0 - is.x0) / w).clamp(0.0, last);
@@ -2571,8 +2375,6 @@ impl NavShell {
                 && before.sidebar_column.width() <= 0.0
             {
                 inputs.sidebar.slide_in(SplitLayout::Docked);
-                // The sidebar slides in and the columns beside it make
-                // room as it does.
                 carried = [true; 4];
             }
         }
@@ -2611,8 +2413,6 @@ impl NavShell {
         }
     }
 
-    /// Show each column's actions with their labels or their icons alone,
-    /// as the layout decided.
     fn apply_fit(&mut self) {
         let (fit, listed) = {
             let inputs = self.inputs.borrow();
@@ -2621,11 +2421,7 @@ impl NavShell {
         let mut fit = fit.borrow_mut();
         let mut gave = false;
         for (slot, header) in fit.iter_mut().zip(self.headers.iter_mut()) {
-            // The buttons as the host has them now: an action gains its icon after the tree is
-            // built, so the row reads them again before it decides what gives way.
             let (capable, compact_now, menu_from, primary) = fit_of(header);
-            // What the row gave way to was decided from the actions as they stood then: when
-            // they stand differently now, that decision is the row's to take again.
             gave |= slot.capable != capable
                 || slot.compact_now != compact_now
                 || slot.primary != primary;
@@ -2659,22 +2455,13 @@ impl NavShell {
                 }
             }
         }
-        // A control that took or gave its label back, or an action that only now says what it
-        // can give, is another width in the row: the row lays itself out again, so the title
-        // and whatever stands beside it are placed for it.
         self.layout_dirty |= gave;
     }
 
-    // --- painting ----------------------------------------------------------
-
     fn paint(&mut self, f: &mut Frame<'_>) {
         let g = self.geometry.clone();
-        // Under reduced motion a sidebar or drawer that just appeared fades
-        // in instead of sliding.
         let fade = unit_f32(self.fade.progress(crate::motion::frame_now()));
 
-        // Docked regions painted just before their column: while a panel slides, the content beside
-        // it keeps its width and passes under the panel, which covers it.
         let inspector_region =
             g.inspector == InspectorPlacement::Docked && g.inspector_column.width() > 0.0;
         let sidebar_region = matches!(
@@ -2686,7 +2473,6 @@ impl NavShell {
             let local = self.column_theme(f.theme, Some(Column::Overview));
             f.draw(self.part_mut(Part::Rail), &local);
         }
-        // Columns standing in the window, back to front.
         for column in [
             Column::Overview,
             Column::Content,
@@ -2734,8 +2520,6 @@ impl NavShell {
             crate::widget::paint_focus_ring(f.scene, f.transform, g.resize_handle, 2.0, f.theme);
         }
 
-        // Drawers over the columns, under the header row; the row's buttons stay above everything.
-        // No scrim: a drawer is not modal and dims nothing.
         if g.open_drawer().is_some() {
             let faded = fade < 1.0;
             if faded {
@@ -2775,7 +2559,6 @@ impl NavShell {
         self.paint_band(f);
     }
 
-    /// The button beside the sync status, where layout found it room.
     fn paint_status_action(&mut self, f: &mut Frame<'_>) {
         if !self.built_has(Part::StatusAction) || self.part_hidden(Part::StatusAction) {
             return;
@@ -2855,7 +2638,6 @@ impl NavShell {
         }
         let local = self.column_theme(f.theme, Some(column));
         let clip = rect.intersect(self.rect);
-        // A column a layout switch brought in fades in.
         let alpha = if self.switch_columns[column.index()] {
             unit_f32(self.switch_fade.progress(crate::motion::frame_now()))
         } else {
@@ -2868,8 +2650,6 @@ impl NavShell {
             f.transform,
             &clip,
         );
-        // The column's content first, then its header row: a row in the
-        // window's bar stands over the content with its own ground.
         let mut under = vec![Part::Body(column)];
         if self.geometry.filter_column(&self.inputs.borrow()) == Some(column) {
             under.push(Part::Filter);
@@ -2947,7 +2727,6 @@ fn downcast<'a, T: Widget + 'static>(
         .and_then(|any| any.downcast_mut::<T>())
 }
 
-/// What one paint pass draws into.
 struct Frame<'a> {
     scene: &'a mut Scene,
     transform: Affine,
@@ -2957,8 +2736,6 @@ struct Frame<'a> {
 }
 
 impl Frame<'_> {
-    /// Draw one of the shell's children with the theme of the ground it
-    /// stands on.
     fn draw(&mut self, widget: Option<&mut (dyn Widget + 'static)>, theme: &Theme) {
         if let Some(widget) = widget {
             crate::widget::draw_child(
@@ -3003,11 +2780,7 @@ impl Widget for NavShell {
         self.nav_gesture_availability()
     }
 
-    // The shell frames the app; what the window is (its view, presence, what continues on another
-    // device, what a diagnostic input reads) is the content it frames.
     fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
-        // The shell itself, for a harness that reads its sidebar through a
-        // root that stands in for it (a framework app's view).
         if request.wants::<Self>() {
             request.provide::<Self>(self);
         } else if request.wants::<dyn crate::widget::controls::ActionControls>() {
@@ -3090,8 +2863,6 @@ impl Widget for NavShell {
         // A command chosen from a header's menu by assistive technology has no pointer event to
         // carry it, so the settle pass runs it.
         self.take_more_choices(edits, path);
-        // Settling is the data pass: a column a narrow window put away
-        // still takes its writes and feeds the column on screen.
         self.for_each_owned_mut(|child| child.settle(edits, path));
         self.sync_status.settle(edits, path);
     }
@@ -3103,8 +2874,6 @@ impl Widget for NavShell {
         changed |= self.follow_navigation();
         changed |= self.notice.expire();
         self.publish_notice();
-        // A slide moves the columns, which the layout places; it changes no
-        // model, so the frame neither syncs nor republishes for it.
         if self.animating || self.settling {
             crate::widget::note_layout_moved();
         }
@@ -3117,8 +2886,6 @@ impl Widget for NavShell {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The host is building a new tree: what waited for it goes in now, and the parts are
-        // planned from it. Building is what a change asked for, so it asks for no other.
         self.finish_slot_edit();
         self.apply_pending();
         self.tell_parts_input();
@@ -3127,7 +2894,6 @@ impl Widget for NavShell {
         let size = if self.rect.width() > 0.0 {
             (self.rect.width(), self.rect.height())
         } else {
-            // Before the first layout, assume a regular window.
             (
                 f64::from(theme.tokens.metrics.compact_breakpoint) * 4.0,
                 f64::from(theme.tokens.metrics.compact_breakpoint),
@@ -3180,15 +2946,11 @@ impl Widget for NavShell {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // The layout as it stood, in the shell's own coordinates: a switch
-        // of layout moves on from there.
         let before = self
             .geometry
             .translated(Vec2::new(-self.rect.x0, -self.rect.y0));
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         let stale = self.replan(&before);
-        // The side of each threshold this layout stands on: the next one
-        // switches back only past the hysteresis band.
         self.inputs.borrow_mut().held = Held::of(&self.geometry);
         self.follow_sidebar_width(self.geometry.body(Column::Sidebar).width());
         let child_origin = Point::new(self.rect.x0, self.rect.y0);
@@ -3201,8 +2963,6 @@ impl Widget for NavShell {
         }
         self.apply_fit();
         let mirrored = self.mirror_header_counts();
-        // The content's own page heading stands where the layout just put it, at this scroll
-        // offset: the bar keeps its title out of its way.
         let covered = self.mirror_own_page_titles();
         self.invalidation.acknowledge_applied();
         self.layout_dirty =
@@ -3298,8 +3058,6 @@ impl Widget for NavShell {
         visitor(&self.sync_status);
     }
 
-    /// The parts themselves, also those of a screen not in front, which the
-    /// host meets only as stand-ins.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
         for part in self.exposed_parts() {
             if let Some(widget) = self.part(part) {
@@ -3436,11 +3194,8 @@ impl Widget for NavShell {
         Some(self.minimum_width())
     }
 
-    /// Each column's header row as the last layout left it: what its title says against what the
-    /// row gave it, and what its actions kept of their labels and their place in the row. Beside
-    /// it, where the sidebar stood and how wide the pane beside it is: the shell stands a sidebar
-    /// beside content of a column's width, and folds it behind the bar's toggle where the content
-    /// would be a phone's screen.
+    /// Each column's header row as the last layout left it: what its title says against what
+    /// the row gave it, and what its actions kept of their labels and their place in the row.
     fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
         let inputs = self.inputs.borrow();
         let fit = inputs.fit.borrow();
@@ -3551,8 +3306,6 @@ impl Widget for NavShell {
     }
 
     fn serve_deadline(&mut self, now: Instant) -> bool {
-        // A part's own clock (a call's run time, a countdown) changes nothing in the model or the
-        // tree: serving it asks for the frame that reads it again.
         let mut served = false;
         self.for_each_owned_mut(|child| served |= child.serve_deadline(now));
         served
@@ -3613,21 +3366,14 @@ impl Widget for NavShell {
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        // The shell's own geometry, materials and transitions can change outside a child's box, so
-        // a settled shell preserves local control damage rather than rasterising every pane for a
-        // hover.
         if self.paint_dirty || self.animating || self.fade.is_moving(crate::motion::frame_now()) {
             regions.push(self.rect);
         } else {
             self.for_each_owned(|child| child.collect_damage(regions));
-            // The status where it was and where it may be now.
             if self.status_dirty {
                 if self.status_span.is_zero_area() {
-                    // Not painted yet: where the status goes is not known.
                     regions.push(self.rect);
                 } else {
-                    // Damage is collected after the frame painted, so the
-                    // status's box is where it now is.
                     regions.extend(
                         [self.status_drawn, self.sync_status.get_rect()]
                             .into_iter()
@@ -3645,10 +3391,8 @@ impl Widget for NavShell {
         dirty
     }
 
-    /// The shell's own changes (a column shown or hidden, a part swapped) rebuild; what its parts
-    /// describe (a column's content changed in place) stays described. Every owned part's change is
-    /// taken so none keeps a stale one, and a part outside the tree is built whole when it comes
-    /// in.
+    /// The shell's own changes (a column shown or hidden, a part swapped) rebuild; what its
+    /// parts describe (a column's content changed in place) stays described.
     fn take_structure_change(&mut self) -> StructureChange {
         self.take_requests();
         let mut change = StructureChange::of(std::mem::take(&mut self.structure_dirty));
@@ -3693,8 +3437,7 @@ impl Widget for NavShell {
 
 /// What a header's actions can do as they stand now: which give up their label when the row is
 /// short, which have already done so, where the row's menu begins, and the one action the row
-/// never gives up. The host can hand an action its icon after the tree that holds it is built,
-/// so the row asks again each time it lays out rather than once per change.
+/// never gives up.
 fn fit_of(header: &Header) -> (Vec<bool>, Vec<bool>, Option<usize>, Option<usize>) {
     let capable: Vec<bool> = header
         .actions
@@ -3741,10 +3484,9 @@ fn button_of(action: &dyn Widget) -> Option<&Button> {
         .find_map(|child| child.as_any().and_then(|any| any.downcast_ref::<Button>()))
 }
 
-/// The accessibility node a header action speaks with: its own, or the one
-/// of the control it shows as, for an action wrapped in a view of the
-/// window's state (which is presentational and says nothing itself). The
-/// More menu reads the action's words and state from it.
+/// The accessibility node a header action speaks with: its own, or the one of the control it
+/// shows as, for an action wrapped in a view of the window's state (which is presentational and
+/// says nothing itself).
 fn action_node(action: &dyn Widget) -> Option<crate::a11y::AccessNode> {
     if let Some(node) = action.accessibility() {
         return Some(node);
@@ -3772,13 +3514,7 @@ fn is_app_search(action: &dyn Widget) -> bool {
 }
 
 /// Whether `body` shows, inside `region`, a text of its own that is the page's title and says
-/// `title`: what a bar naming the page would repeat. Only what the region and the body's own
-/// clips leave on screen counts, so a heading scrolled out of its column frees the bar's title.
-///
-/// Where the words stand in a field the person types them in, they are no heading: the field
-/// names itself (its prompt), not the page. The bar still gives its own title up — one title is
-/// on screen, the field's — and keeps a heading of the words the field holds, standing where the
-/// field does, so the page keeps the name a screen reader reads.
+/// `title`: what a bar naming the page would repeat.
 fn page_title_shown(body: &dyn Widget, region: Rect) -> Option<TitleShown> {
     fn walk(widget: &dyn Widget, clip: Rect) -> Option<TitleShown> {
         // An item opened in place among its list's rows titles that item, never the page: the
@@ -3792,7 +3528,6 @@ fn page_title_shown(body: &dyn Widget, region: Rect) -> Option<TitleShown> {
         if let Some(own) = widget.own_page_title() {
             let rect = widget.get_rect();
             let shown = rect.intersect(clip);
-            // What stands on screen counts: a title scrolled out of its column frees the bar's.
             if shown.width() > 0.0 && shown.height() > 0.0 {
                 return Some(TitleShown {
                     rect,
@@ -3822,7 +3557,6 @@ pub(super) struct TitleShown {
     pub(super) heading: bool,
 }
 
-/// Whether two titles say the same words, however their spacing or case was set.
 fn same_words(a: &str, b: &str) -> bool {
     let words = |text: &str| -> Vec<String> {
         text.split_whitespace()
@@ -3832,11 +3566,9 @@ fn same_words(a: &str, b: &str) -> bool {
     words(a) == words(b)
 }
 
-/// Controls in a column the shell is not showing (a hidden sidebar, a closed drawer, a pushed-away
-/// screen) still belong to the window: custody, invocations and availability reach every part the
-/// shell owns.
-// The shell answers for itself: its content's own resources and operations are the content's,
-// reached as the tree is walked, never taken for the shell's.
+/// Controls in a column the shell is not showing (a hidden sidebar, a closed drawer, a
+/// pushed-away screen) still belong to the window: custody, invocations and availability reach
+/// every part the shell owns.
 impl crate::resources::PublishesResources for NavShell {}
 
 impl crate::widget::ResourceOperations for NavShell {}
@@ -3900,7 +3632,6 @@ impl crate::widget::controls::ActionControls for NavShell {
 }
 
 impl NavShell {
-    /// The shell fills the window it is given.
     fn region_size() -> Size<taffy::Dimension> {
         Size::from_percent(1.0, 1.0)
     }
@@ -4010,9 +3741,6 @@ impl NavShell {
             }
         }
         if *key == Key::Named(NamedKey::Escape) {
-            // Escape goes back the way the bar's Back does, one step at a time: the inspector's
-            // sheet, a sidebar floating over the window, the app's page stack, then a narrow
-            // window's push stack.
             if self.back() {
                 return true;
             }
@@ -4034,8 +3762,6 @@ impl NavShell {
             });
             return true;
         }
-        // A press on the content beside an open drawer puts the drawer away and does nothing else;
-        // the header row and the band stay live, as does the content above the inspector's sheet.
         if let Some(column) = g.open_drawer()
             && column == Column::Sidebar
             && !g.column(column).contains(p)
@@ -4045,7 +3771,6 @@ impl NavShell {
             self.toggle_sidebar();
             return true;
         }
-        // Remember which content pane the person works in.
         if g.content_column.contains(p) {
             self.active_hint = Some(NavPane::Content);
         } else if g.overview_column.contains(p) || g.rail.contains(p) {
@@ -4078,10 +3803,9 @@ impl NavShell {
         }
     }
 
-    /// Route `event` to the live parts, front to back: a part whose overlay holds the pointer (a
-    /// popover a header button owns) hears pointer events first, then the part under the pointer,
-    /// so a release or wheel lands where it happened. Parts under a scrim and actions in the More
-    /// menu hear nothing.
+    /// Route `event` to the live parts, front to back: a part whose overlay holds the pointer
+    /// (a popover a header button owns) hears pointer events first, then the part under the
+    /// pointer, so a release or wheel lands where it happened.
     fn route_event_to_children(
         &mut self,
         event: &WindowEvent,

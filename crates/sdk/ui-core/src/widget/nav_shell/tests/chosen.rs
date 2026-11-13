@@ -6,8 +6,7 @@ const W: u32 = 1280;
 const H: u32 = 800;
 
 /// Until something is shown, the list lists for the whole window: no content column stands
-/// beside it, and its rows run to the window's trailing edge. Showing the content splits the
-/// window, and hiding it hands the room back to the list.
+/// beside it, and its rows run to the window's trailing edge.
 #[test]
 fn the_list_lists_for_the_window_until_something_is_shown() {
     let shell = mail_shell().content_shown(false);
@@ -46,9 +45,8 @@ fn the_list_lists_for_the_window_until_something_is_shown() {
     );
 }
 
-/// A phone-shaped window lands on the list: it is the screen the window opens on, with nothing to
-/// go back to, and the places stand a toggle away behind it. There is no empty content screen
-/// between the two.
+/// A phone-shaped window lands on the list: it is the screen the window opens on, with nothing
+/// to go back to, and the places stand a toggle away behind it.
 #[test]
 fn a_phone_shows_its_list_with_the_places_a_toggle_away() {
     const NARROW: u32 = 390;

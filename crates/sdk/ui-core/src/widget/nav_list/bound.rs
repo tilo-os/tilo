@@ -1,9 +1,6 @@
-//! A navigation list's gestures as published actions: a row's buttons, a
-//! section header's button, renaming, deleting, dragging and checking a row
-//! each run an action the app binds, with the row or section the gesture
-//! was on. A press, a key, assistive technology, the palette and an agent
-//! all reach it the same way, and an action the person may not run shows
-//! disabled and does nothing.
+//! A navigation list's gestures as published actions: a row's buttons, a section header's
+//! button, renaming, deleting, dragging and checking a row each run an action the app binds,
+//! with the row or section the gesture was on.
 
 use std::collections::{HashMap, HashSet};
 
@@ -16,17 +13,11 @@ use crate::widget::{ActionEmitter, ControlBindingMetadata};
 /// list, so new sections keep them and the host's custody of them.
 #[derive(Default)]
 pub(super) struct NavBindings {
-    /// Row actions, by action id, run with the item's id.
     pub(super) items: HashMap<String, ActionEmitter<String>>,
-    /// Section header actions, by action id, run with the section's id.
     pub(super) sections: HashMap<String, ActionEmitter<String>>,
-    /// An item renamed: its id and the new label.
     pub(super) rename: Option<ActionEmitter<(String, String)>>,
-    /// Delete on an item: its id.
     pub(super) delete: Option<ActionEmitter<String>>,
-    /// An item dropped: its id and where it landed.
     pub(super) moves: Option<ActionEmitter<(String, NavDrop)>>,
-    /// A checkable item toggled: its id and its new state.
     pub(super) check: Option<ActionEmitter<(String, bool)>>,
 }
 
@@ -107,7 +98,6 @@ impl NavBindings {
                 .any(|producer| !producer.available())
     }
 
-    /// Whether a checkable row's check is bound to an unavailable action.
     pub(super) fn unavailable_check(&self, checkable: bool) -> bool {
         checkable
             && self
@@ -174,7 +164,6 @@ impl NavBindings {
             .collect()
     }
 
-    /// A checkable row's control, when its check is bound.
     pub(super) fn check_control(&self, node: &str) -> Option<ControlBindingMetadata> {
         self.check
             .as_ref()
@@ -182,7 +171,6 @@ impl NavBindings {
     }
 }
 
-/// What the list does with each of its emitters, whatever its input.
 trait Producer {
     fn install(
         &mut self,
@@ -215,9 +203,8 @@ impl<I> Producer for ActionEmitter<I> {
 
 impl NavList {
     /// A button at the trailing edge of every item that has not opted out
-    /// ([`NavItem::without_actions`](super::NavItem::without_actions)),
-    /// running `binding` with the item's id. Each call adds one, after the
-    /// ones before it.
+    /// ([`NavItem::without_actions`](super::NavItem::without_actions)), running `binding` with
+    /// the item's id.
     #[must_use]
     pub fn item_action(mut self, action: NavAction, binding: ActionBinding<String>) -> Self {
         self.shared

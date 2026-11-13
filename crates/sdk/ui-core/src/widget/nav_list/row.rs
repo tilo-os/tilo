@@ -1,13 +1,5 @@
-//! One row of a [`NavList`](super::NavList) as the list scrolls it: a
-//! destination, a section header, an empty section's caption or a row still
-//! being read.
-//!
-//! Every row paints through [`crate::chrome::paint_nav_row`] and every
-//! section header through [`crate::chrome::paint_nav_section`], so a
-//! `NavList` and a painted app calling those painters are the same pixels.
-//! The list hit-tests its rows with the same geometry
-//! ([`crate::chrome::nav_row_layout`], [`crate::chrome::nav_section_layout`]),
-//! through the functions here.
+//! One row of a [`NavList`](super::NavList) as the list scrolls it: a destination, a section
+//! header, an empty section's caption or a row still being read.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -35,18 +27,13 @@ use crate::widget::{RowActionRects, RowRenameField, TaffyTreeExt, Theme, Widget}
 /// What every row of one list paints from beyond its own data: kept by the
 /// list, read by its rows at paint time.
 pub(crate) struct NavPaint {
-    /// The rows paint as a rail's tiles (icon over caption).
     pub rail: bool,
-    /// The item actions' icons and what each is called.
     pub actions: Vec<(Icon, String)>,
     /// The theme the list was last laid out with, for geometry read outside
     /// the paint pass (hit-testing, semantics).
     pub theme: Theme,
-    /// The list's width, which a rail tile's caption wraps in.
     pub width: f64,
-    /// The row under the pointer, and the pointer.
     pub hovered: Option<(String, Point)>,
-    /// The row renamed in place: its label gives way to the field.
     pub renaming: Option<String>,
     /// The row holding the keyboard while the list has it.
     pub focused: Option<String>,
@@ -54,13 +41,11 @@ pub(crate) struct NavPaint {
     /// `section-action:…`, `row-action:…`, `check:…`), which Enter and Space
     /// press.
     pub focused_control: Option<String>,
-    /// A row is being dragged: no row shows its hover.
     pub dragging: bool,
     /// The input the list was last laid out for: a trailing action's hit
     /// target grows to the smallest target that input takes, as every
     /// compact control's does, while its painted square keeps its size.
     pub interaction: InteractionEnvironment,
-    /// The check marks as they move.
     pub faces: crate::widget::FaceMotions,
 }
 
@@ -102,7 +87,6 @@ impl NavPaint {
             .map(|(_, point)| *point)
     }
 
-    /// The height row `row` stands at.
     pub(crate) fn height(&self, row: &NavRowData) -> f64 {
         let theme = &self.theme;
         let rail = self.rail;
@@ -132,8 +116,6 @@ impl NavPaint {
             NavRowKind::Pending { .. } if rail => nav_rail_row_height(theme),
             NavRowKind::Pending { .. } => nav_item_height(theme, false, false),
         };
-        // A destination is pressed with a finger where the input is a finger's: the row is as
-        // tall as the target that input takes, as every compact control of the toolkit is.
         let height = if matches!(&row.kind, NavRowKind::Item { .. }) {
             height.max(f64::from(self.interaction.minimum_target()))
         } else {
@@ -169,17 +151,14 @@ impl NavPaint {
         }
         let icons: Vec<Icon> = self.actions.iter().map(|(icon, _)| *icon).collect();
         let face = NavRowFace::new(rect, "").actions(&icons, None);
-        // Action geometry does not depend on measured text.
         crate::text_render::with_layout_renderer(&self.theme, |text| {
             let painted = nav_row_layout(&self.theme, text, &face).actions;
             painted.into_iter().map(|rect| self.target(rect)).collect()
         })
     }
 
-    /// The smallest target the input takes, about `rect`'s centre: a finger
-    /// needs 48 where a mouse needs 32. A control paints at its own size and
-    /// is pressed at this one, as [`InteractionEnvironment::minimum_target_rect`]
-    /// has it for every compact control.
+    /// The smallest target the input takes, about `rect`'s centre: a finger needs 48 where a
+    /// mouse needs 32.
     fn target(&self, rect: Rect) -> Rect {
         self.interaction.minimum_target_rect(rect)
     }
@@ -288,7 +267,6 @@ fn plain_face<'a>(spec: &'a NavItemSpec, row: Rect, label: &'a str) -> NavRowFac
     face
 }
 
-/// One mounted row of a navigation list.
 pub(crate) struct NavRow {
     row: NavRowData,
     paint: Rc<RefCell<NavPaint>>,
@@ -299,11 +277,8 @@ pub(crate) struct NavRow {
     drawn: std::cell::Cell<Option<NavLook>>,
 }
 
-/// What a row shows of the list's shared state.
 #[derive(Clone, Copy, PartialEq)]
 struct NavLook {
-    /// The pointer is over the row: over which of its actions, and over a
-    /// header's action.
     pointer: Option<(Option<usize>, bool)>,
     selected: bool,
     focused: bool,
@@ -428,7 +403,6 @@ impl NavRow {
         else {
             return;
         };
-        // The rename field stands where the title was.
         let title = if self.renaming(paint) { "" } else { title };
         let pointer = paint.pointer_on(&self.row.key);
         let mut face = NavSectionFace::new(self.rect, title).hovered(pointer.is_some());
@@ -479,8 +453,6 @@ impl NavRow {
             }
             NavRowKind::Item { label, spec, .. } => {
                 if let Some(checked) = spec.checked {
-                    // The box the row paints, as the control it is: a reader
-                    // hears it, and a toggle reaches the app's own callback.
                     let target = format!("check:{key}");
                     children.push(
                         AccessNode::new(Role::Checkbox)
@@ -511,8 +483,6 @@ impl NavRow {
         children
     }
 
-    /// The full title of a row or section header that is elided where it
-    /// paints.
     fn elided_label(&self, paint: &NavPaint) -> Option<String> {
         let theme = &paint.theme;
         let row = self.rect;
@@ -605,15 +575,12 @@ impl Widget for NavRow {
         let mut paint = self.paint.borrow_mut();
         if paint.interaction != environment {
             paint.interaction = environment;
-            // Which action the pointer is over is a target, not a face.
             self.drawn.set(None);
         }
     }
 
-    /// A row takes its box from the list and the tokens: the width it stands
-    /// in, and the height its kind of row has. What it shows (the pointer, the
-    /// keyboard, its own data) repaints it and never resizes it, so a frame
-    /// laid out again measures nothing here.
+    /// A row takes its box from the list and the tokens: the width it stands in, and the height
+    /// its kind of row has.
     fn is_layout_dirty(&self) -> bool {
         false
     }
@@ -697,8 +664,6 @@ impl Widget for NavRow {
             // keyboard hears what it waits for, not an unnamed control.
             NavRowKind::Pending { .. } => ("Loading".to_owned(), None, None),
         };
-        // A destination is an entry of the tree the list is: it says it is one, and whether it
-        // is the one the person picked. A header and a caption group what stands under them.
         let item = matches!(self.row.kind, NavRowKind::Item { .. });
         let mut node = AccessNode::new(if item { Role::TreeItem } else { Role::Group })
             .with_name(name)
@@ -708,8 +673,6 @@ impl Widget for NavRow {
         if item {
             node.state.selected = self.selection.selected;
         }
-        // Where the row stands in the navigation tree: a header heads its
-        // items, nested items stand deeper.
         node.level = Some(match &self.row.kind {
             NavRowKind::Section { .. } => 1,
             NavRowKind::Item { spec, .. } => spec.depth.saturating_add(2),
@@ -726,8 +689,6 @@ impl Widget for NavRow {
             } => Some(*open),
             _ => None,
         };
-        // How many things the place holds, where it draws that number: a
-        // reader hears the count the row shows beside it.
         if let NavRowKind::Item { spec, .. } = &self.row.kind {
             node.value = spec.count.map(|count| count.value().to_string());
         }
@@ -767,8 +728,6 @@ fn paint_nav_pending(
 ) {
     let face = NavRowFace::new(row, "").icon(Icon::HardDrive);
     let layout = nav_row_layout(theme, text_renderer, &face);
-    // The tone every skeleton in the window takes, so the stand-ins read as
-    // one loading page.
     let tone = crate::widget::skeleton_tone(theme.tokens.colors.surfaces.content);
     let radius = f64::from(theme.tokens.radii.detail);
     let fill = |scene: &mut Scene, rect: Rect| {
@@ -783,7 +742,6 @@ fn paint_nav_pending(
     if let Some(icon) = layout.icon {
         fill(scene, icon);
     }
-    // The label's bar is the line box's x-height band, as a skeleton's is.
     let line = f64::from(theme.text(TextRole::Body).line_height_px());
     let bar = (line * PENDING_BAR_SHARE).round();
     let top = layout.label_top + (line - bar) / 2.0;
@@ -794,12 +752,9 @@ fn paint_nav_pending(
     );
 }
 
-/// How much of the label's line box a pending row's bar fills.
 const PENDING_BAR_SHARE: f64 = 0.6;
-/// How far along the label's run a pending row's bar goes.
 const PENDING_LABEL_SHARE: f64 = 0.7;
 
-/// The one quiet line of an empty section, where its first row would be.
 fn paint_nav_caption(
     scene: &mut Scene,
     transform: Affine,

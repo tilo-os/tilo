@@ -50,10 +50,8 @@ fn the_feed_shows_the_apps_places_and_hands_back_the_persons_choice() {
     assert!(feed.take_chosen().is_empty(), "each choice comes back once");
 }
 
-/// The shell's own buttons are the app's slots in the window's bar: the
-/// sidebar's toggle shows where the sidebar stands, and pressing it in the
-/// bar hides and shows the sidebar. What is not the shell's stays the
-/// app's.
+/// The shell's own buttons are the app's slots in the window's bar: the sidebar's toggle shows
+/// where the sidebar stands, and pressing it in the bar hides and shows the sidebar.
 #[test]
 fn the_link_puts_the_shells_toggle_in_the_apps_window_bar() {
     let (mut h, _, link) = hosted();
@@ -96,14 +94,12 @@ fn a_narrow_window_with_its_toolbar_in_the_bar_opens_on_its_list() {
     assert!(list.width() >= 500.0, "back on the list: {list:?}");
 }
 
-/// Whether the shell shows a Back part of its own.
 fn shows_back_part(h: &FrameHarness) -> bool {
     h.root::<NavShell>()
         .part(Part::Back)
         .is_some_and(|back| back.get_rect().width() > 0.0)
 }
 
-/// Whether the shell's slots for the window's bar hold Back.
 fn bar_back(h: &FrameHarness) -> bool {
     h.root::<NavShell>()
         .window_toolbar()
@@ -112,14 +108,12 @@ fn bar_back(h: &FrameHarness) -> bool {
         .any(|action| action.id == crate::widget::nav_shell::window_toolbar::WINDOW_BACK)
 }
 
-/// A phone-wide (420 px) window whose bar holds the sidebar's toggle opens
-/// on its top-level page with nowhere to go back to: the toggle reaches the
-/// sidebar, and no Back stands beside it, in the bar or in the shell. The
-/// places it reaches then carry Back to the page the toggle covered.
+/// A phone-wide (420 px) window whose bar holds the sidebar's toggle opens on its top-level
+/// page with nowhere to go back to: the toggle reaches the sidebar, and no Back stands beside
+/// it, in the bar or in the shell.
 #[test]
 fn a_top_level_page_has_no_back_beside_the_bars_toggle() {
     const NARROW: u32 = 420;
-    // Containers, Clocks: a sidebar of sections and the section's page.
     let shell = NavShell::new()
         .content_kind(ContentKind::List)
         .sidebar(Probe::boxed("sidebar").0)
@@ -197,8 +191,6 @@ fn back_shows_once_there_is_somewhere_to_go_back_to() {
 #[test]
 fn a_narrow_stack_with_its_toggle_in_the_bar_draws_no_row_under_it() {
     const NARROW: u32 = 420;
-    // The shell keeps the row's chevron beside the bar's toggle, where
-    // Back goes somewhere; a top-level page has none to draw.
     let no_row = |h: &FrameHarness, at: &str, back_room: bool| {
         let g = geometry(h);
         assert_eq!(g.header_height, 0.0, "{at}: no header row");
@@ -208,7 +200,6 @@ fn a_narrow_stack_with_its_toggle_in_the_bar_draws_no_row_under_it() {
         );
         assert_eq!(shows_back_part(h), back_room, "{at}: a Back of its own");
     };
-    // Passwords: places, the list, the item.
     let mut shell = NavShell::new()
         .content_kind(ContentKind::Page)
         .sidebar(Probe::boxed("sidebar").0)
@@ -232,7 +223,6 @@ fn a_narrow_stack_with_its_toggle_in_the_bar_draws_no_row_under_it() {
     settle(&mut h, NARROW, H);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
 
-    // Files: places and the folder.
     let mut shell = NavShell::new()
         .content_kind(ContentKind::List)
         .sidebar(Probe::boxed("sidebar").0)
@@ -245,8 +235,6 @@ fn a_narrow_stack_with_its_toggle_in_the_bar_draws_no_row_under_it() {
     no_row(&h, "the folder", false);
 }
 
-/// Content that shows the feed a new place whenever it settles, as an app
-/// shows what it took up.
 struct SettleShower {
     feed: NavFeed,
     rect: Rect,
@@ -306,7 +294,6 @@ fn a_narrow_window_on_its_list_still_settles_the_content_behind_it() {
     let mut h = harness(shell, 480, 800, Theme::dark());
     settle(&mut h, 480, 800);
     assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
-    // The window opens on its content; the person brings the list up.
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
     h.root_mut::<NavShell>().show(NavPane::Sidebar);
     settle(&mut h, 480, 800);
@@ -448,7 +435,6 @@ fn a_sections_menu_and_rename_come_back_through_the_feed() {
         header.contains(menus[0].1.center()),
         "its lift is the header"
     );
-    // The app's Rename, from its own content.
     h.click_at(f64::from(W) - 40.0, f64::from(H) / 2.0);
     settle(&mut h, W, H);
     let list = h
@@ -557,8 +543,8 @@ fn a_hosted_shell_keeps_every_columns_header_in_its_own_row() {
 }
 
 /// A conversation floated as a card beside the window it was sent from shows only itself: no
-/// list stands over it and the bar offers no toggle for one, whatever the app last remembered of
-/// its sidebar. Snapped into its strip, still narrow, the window keeps the conversation in front.
+/// list stands over it and the bar offers no toggle for one, whatever the app last remembered
+/// of its sidebar.
 #[test]
 fn a_narrow_window_floating_as_a_card_shows_its_content_alone() {
     let shell = NavShell::new()
@@ -570,7 +556,6 @@ fn a_narrow_window_floating_as_a_card_shows_its_content_alone() {
         .content(Probe::boxed("content").0);
     let mut h = harness(shell, 360, 520, Theme::dark());
     crate::window_toolbar::deliver(ToolbarEvent::Floating { floating: true });
-    // What the app remembered: its list shown. What it opened: a conversation.
     link.stage_sidebar(true);
     link.put_drawer_away();
     settle(&mut h, 360, 520);

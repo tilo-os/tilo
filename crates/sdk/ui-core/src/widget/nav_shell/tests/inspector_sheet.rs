@@ -46,7 +46,6 @@ fn drag_grip_to(h: &mut FrameHarness, y: f64) {
     settle(h, W, H);
 }
 
-/// The top of the sheet at `detent`, in this window.
 fn top_at(h: &FrameHarness, detent: SheetDetent) -> f64 {
     let frame = geometry(h).sheet;
     let [peek, half, full] = [SheetDetent::Peek, SheetDetent::Half, SheetDetent::Full].map(|d| {
@@ -174,7 +173,6 @@ fn dragging_the_grip_moves_the_sheet_between_its_detents() {
             "the sheet rests at {expected:?}: {top}"
         );
     }
-    // A finger drags it as the pointer does.
     let from = grip(&h);
     let to = top_at(&h, SheetDetent::Half) + 4.0;
     h.touch(7, winit::event::TouchPhase::Started, from.x, from.y);
@@ -248,7 +246,6 @@ fn the_sheet_is_a_named_region_whose_grip_steps_its_detent() {
     assert_eq!(detent(&h), Some(SheetDetent::Half));
 }
 
-/// The window's pixels as the CPU rasterizes the frame's scene, RGBA rows.
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 fn pixels(h: &FrameHarness, ground: vello::peniko::Color) -> Vec<u8> {
     let mut canvas = crate::cpu_raster::CpuCanvas::new();
@@ -296,8 +293,6 @@ fn the_sheet_stands_off_the_content_above_it_in_both_themes() {
             "the sheet's face is its own level, not the window's ({})",
             theme.name
         );
-        // Its top edge is drawn: the floating hairline (and, on a light
-        // ground, the shadow it casts) parts it from the content above.
         let stands_off =
             |p: [i32; 3]| (lum(p) - lum(face)).abs() > 3 && (lum(p) - lum(window)).abs() > 3;
         let edge = (-3..4)
@@ -311,8 +306,6 @@ fn the_sheet_stands_off_the_content_above_it_in_both_themes() {
     }
 }
 
-/// What takes Back's step: the window bar's Back, Escape, or the system's
-/// back gesture.
 #[derive(Clone, Copy, Debug)]
 enum BackInput {
     Bar,
@@ -420,7 +413,6 @@ fn the_inspector_frame_is_what_the_sheet_shows_at_each_detent() {
             "{detent:?}: the frame shows the sheet under its grip down to the foot"
         );
     }
-    // The link moves the sheet and puts it away, as the shell's own calls do.
     link.set_detent(SheetDetent::Full);
     settle(&mut h, W, H);
     assert_eq!(detent(&h), Some(SheetDetent::Full));

@@ -45,13 +45,11 @@ fn widget_rect(node: &InspectionNode, widget: &str) -> Option<Rect> {
 
 /// A window bar's controls keep the bar's control height on a touchscreen, as they do for a
 /// mouse: the target a finger needs stands in each control's hit rect, beyond the shape it
-/// draws. The header row keeps its height, so nothing under it moves.
+/// draws.
 #[test]
 fn the_shells_buttons_keep_the_bars_control_height_on_touch() {
     let theme = Theme::light();
     let side = f64::from(theme.tokens.metrics.min_pointer_target);
-    // A tablet shows the sidebar toggle; a phone pushes to the content, with Back and the
-    // actions behind More.
     for ((w, h), ids) in [
         ((768, 1024), &["nav-shell-sidebar"][..]),
         (
@@ -140,8 +138,7 @@ fn actions_handed_over_on_a_touchscreen_are_bar_controls() {
 }
 
 /// A screen that went somewhere deeper has one navigation affordance: its way back, at the
-/// leading edge. On a phone, where the sidebar floats over the page as a drawer, its toggle
-/// stands aside for Back and comes back with the first screen.
+/// leading edge.
 #[test]
 fn a_pushed_phone_screen_shows_only_its_way_back() {
     let theme = Theme::light();

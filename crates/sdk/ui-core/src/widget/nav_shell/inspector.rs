@@ -21,20 +21,16 @@ use crate::widget::flap::SplitLayout;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct InspectorFrame {
     pub placement: InspectorPlacement,
-    /// Whether it is open or opening.
     pub open: bool,
-    /// Where its body is laid out, under its header: the docked column, or
-    /// the sheet under its grip as tall as it is laid out (at half height
-    /// while it peeks, at the whole window while it moves), so it reflows
-    /// once a detent is reached, never on every frame. `Rect::ZERO`: not
-    /// laid out.
+    /// Where its body is laid out, under its header: the docked column, or the sheet under its
+    /// grip as tall as it is laid out (at half height while it peeks, at the whole window while
+    /// it moves), so it reflows once a detent is reached, never on every frame.
     pub body: Rect,
     /// The part of [`Self::body`] in view: all of it docked; the sheet's
     /// at its current height, clipped at the window's foot.
     pub shown: Rect,
     /// How far its slide or rise has come, `0..=1`.
     pub reveal: f64,
-    /// Where the sheet rests or is going, while the inspector is one.
     pub detent: Option<SheetDetent>,
 }
 
@@ -46,7 +42,6 @@ pub struct InspectorFrame {
 pub struct InspectorLink(pub(super) Rc<Requests>);
 
 impl InspectorLink {
-    /// The inspector's frame as the shell last laid it out.
     #[must_use]
     pub fn frame(&self) -> InspectorFrame {
         self.0.inspector_frame.get()
@@ -95,7 +90,6 @@ pub(super) fn keep_clear(g: &mut NavGeometry, h: f64) {
 }
 
 impl NavShell {
-    /// Whether the inspector shows.
     pub fn is_inspector_open(&self) -> bool {
         let layout = match self.geometry.inspector {
             InspectorPlacement::None => return false,
@@ -128,7 +122,6 @@ impl NavShell {
         }
     }
 
-    /// Where the inspector stands this frame ([`InspectorFrame`]).
     #[must_use]
     pub fn inspector_frame(&self) -> InspectorFrame {
         let g = &self.geometry;
@@ -194,7 +187,6 @@ impl NavShell {
         acted
     }
 
-    /// Where the inspector's sheet rests, while the inspector is one.
     #[must_use]
     pub fn inspector_detent(&self) -> Option<SheetDetent> {
         (self.geometry.inspector == InspectorPlacement::Sheet)
@@ -217,11 +209,8 @@ impl NavShell {
         self.geometry.inspector == InspectorPlacement::Sheet && self.is_inspector_open()
     }
 
-    /// Back's first step while the inspector is a sheet: a sheet raised to
-    /// the whole window comes down to half ([`BottomSheet::lower`]), else it
-    /// is put away. Returns whether there was a sheet to take the step.
-    ///
-    /// [`BottomSheet::lower`]: crate::widget::BottomSheet::lower
+    /// Back's first step while the inspector is a sheet: a sheet raised to the whole window
+    /// comes down to half ([`BottomSheet::lower`]), else it is put away.
     pub(super) fn sheet_back(&mut self) -> bool {
         if !self.sheet_shown() {
             return false;
@@ -235,7 +224,6 @@ impl NavShell {
         true
     }
 
-    /// Stand the sheet where this layout put it.
     pub(super) fn place_sheet(&self) {
         let shown = self.geometry.inspector == InspectorPlacement::Sheet;
         let (reveal, open) = if shown {
@@ -278,7 +266,6 @@ impl NavShell {
                 if moved {
                     self.sheet_moved();
                 } else {
-                    // The grip's focus shows.
                     self.paint_dirty = true;
                     self.invalidation.invalidate();
                 }
@@ -305,7 +292,6 @@ impl NavShell {
         )
     }
 
-    /// The sheet as a named region, its grip a slider holding the detent.
     pub(super) fn sheet_accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.sheet_shown().then(|| {
             let name = crate::i18n::widget_format("widget-inspector", &[]);
@@ -340,8 +326,6 @@ impl NavShell {
                 .borrow()
                 .sheet
                 .paint(f.scene, f.transform, f.theme);
-            // The sheet's header row ends in the rule every header row
-            // does, as the sidebar's sheet's does.
             let header = self.geometry.header(Column::Inspector);
             if header.height() > 0.0 {
                 let local = self.column_theme(f.theme, Some(Column::Inspector));

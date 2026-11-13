@@ -2,14 +2,12 @@
 
 use super::*;
 
-/// The column's header title, as the row laid it out.
 fn title_rect(h: &FrameHarness) -> Rect {
     h.root::<NavShell>()
         .part(Part::Title(Column::Content))
         .map_or(Rect::ZERO, Widget::get_rect)
 }
 
-/// A page of `content` under the bar of `title`.
 fn page(title: &str, content: Element) -> NavShell {
     NavShell::new()
         .content_kind(ContentKind::Document)
@@ -137,14 +135,11 @@ fn a_page_that_edits_its_title_in_a_field_still_names_itself() {
     ) as Element;
     let mut h = harness(page(words, field), 390, 844, Theme::dark());
     settle(&mut h, 390, 844);
-    // One title is drawn: the bar's own is given no room.
     assert_eq!(
         title_rect(&h).width(),
         0.0,
         "the page's field shows the title, so the bar draws none"
     );
-    // And the page keeps its name: a heading says the words, and it stands where the field
-    // does, inside the page.
     let named = h
         .a11y_node_named(words)
         .unwrap_or_else(|| panic!("the page's title stands as its name: {:?}", outcomes(&h)));
@@ -206,7 +201,6 @@ fn an_item_opened_among_a_lists_rows_leaves_the_column_its_title() {
     );
 }
 
-/// A row of a list opened where it stands into the item it shows.
 struct ListRow(crate::widget::Column);
 
 impl crate::widget::Decorator for ListRow {

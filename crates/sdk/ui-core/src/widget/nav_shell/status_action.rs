@@ -7,10 +7,8 @@ use super::{Inputs, NavGeometry, Part, measure};
 use crate::widget::WidgetLayoutError;
 use crate::widget::manual::ManualContext;
 
-/// The button beside the window's sync status: at the trailing end of the
-/// row that carries the status, before that row's actions and the window's
-/// own controls, at its natural size. Where it would run into the row's
-/// title it is not shown.
+/// The button beside the window's sync status: at the trailing end of the row that carries the
+/// status, before that row's actions and the window's own controls, at its natural size.
 pub(super) fn place_status_action(
     inputs: &Inputs,
     g: &NavGeometry,

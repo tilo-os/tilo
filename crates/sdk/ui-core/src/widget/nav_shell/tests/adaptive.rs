@@ -5,7 +5,6 @@
 use super::*;
 use crate::widget::{NavItem, NavList, NavSection};
 
-/// Tube's destinations: a short, flat set of places, each with an icon.
 fn places() -> NavList {
     NavList::new(place_sections()).with_id("places")
 }
@@ -25,7 +24,6 @@ fn place_sections() -> Vec<NavSection> {
     )]
 }
 
-/// Mailboxes under headings, with a "New folder" action: a list.
 fn mailboxes() -> NavList {
     let item = |id: &str, label: &str, icon: Icon| NavItem::new(id, label).icon(icon);
     NavList::new(vec![
@@ -111,11 +109,8 @@ fn release(h: &mut FrameHarness) {
     settle(h, W, H);
 }
 
-/// A short, flat set of places opens as a labeled list at the sidebar's
-/// width: the rail holds short captions, and a window with room for the
-/// labels gives them. Dragging the edge out, the edge stays under the
-/// pointer at every step and the rows stay a list; dragging in, they turn
-/// into a rail exactly where the width crosses the threshold.
+/// A short, flat set of places opens as a labeled list at the sidebar's width: the rail holds
+/// short captions, and a window with room for the labels gives them.
 #[test]
 fn a_sidebar_opens_as_a_list_and_the_width_switches_it_to_a_rail() {
     let theme = Theme::dark();
@@ -153,8 +148,6 @@ fn a_sidebar_opens_as_a_list_and_the_width_switches_it_to_a_rail() {
         assert!(!shows_rail(&h), "still a list at {width}");
     }
 
-    // Back in, toward the rail: a rail below the threshold, and the
-    // narrowest it gets while it shows is the rail's width.
     move_pointer(&mut h, edge.x - (start - adaptive.list_from) - 20.0, edge.y);
     let narrow = sidebar_width(&h);
     assert!(

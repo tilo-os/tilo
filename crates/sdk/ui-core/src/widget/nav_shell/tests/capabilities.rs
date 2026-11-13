@@ -100,8 +100,6 @@ fn a_header_takes_new_actions_in_place() {
         Box::new(Button::new("five", "Five").in_menu().on_view(|| {})) as Element,
         Box::new(Button::new("six", "Six").in_menu().on_view(|| {})) as Element,
     ];
-    // The host changes the actions in place, by key, as it brings a slot to the ones it is
-    // given: the shell stages them for the next build and plans its parts from them there.
     {
         let mut shell = h.root_mut::<NavShell>();
         let views = shell
@@ -202,7 +200,6 @@ fn the_actions_start_after_the_title_and_the_title_at_the_gutter() {
     );
     assert!(reply.x1 < 1024.0 && reply.width() > 0.0);
 
-    // With the sidebar hidden the toggle leads, and the title follows it.
     let shell = NavShell::new()
         .sidebar(Probe::boxed("sidebar").0)
         .content(Probe::boxed("content").0)
@@ -299,7 +296,6 @@ fn a_title_is_cut_only_once_its_actions_have_given_what_they_can() {
                 primary.width() > 0.0,
                 "at {width} the primary action left the row ({primary:?})"
             );
-            // Nothing the row stands leaves it, however little room the column has.
             let edge = h.root::<NavShell>().get_rect().x1;
             for part in (0..4)
                 .map(|i| Part::Action(Column::Content, i))
@@ -378,14 +374,12 @@ fn actions_collapse_to_icons_then_overflow_into_more() {
             ) as Element,
         ]
     };
-    // Wide: labels.
     let mut h = harness(titled_content(actions()), 1400, 700, Theme::dark());
     settle(&mut h, 1400, 700);
     let wide = part_rect(&h, Part::Action(Column::Content, 0));
     assert!(wide.width() > wide.height() * 1.5, "a labelled button");
     assert!(part_rect(&h, Part::More(Column::Content)).width() <= 0.0);
 
-    // Narrower: icons.
     let mut h = harness(titled_content(actions()), 640, 700, Theme::dark());
     settle(&mut h, 640, 700);
     let compact = part_rect(&h, Part::Action(Column::Content, 0));
@@ -404,7 +398,6 @@ fn actions_collapse_to_icons_then_overflow_into_more() {
         "the label stays its name"
     );
 
-    // Narrow: the rest go into More.
     let mut h = harness(titled_content(actions()), 220, 700, Theme::dark());
     settle(&mut h, 220, 700);
     let shown = h.root::<NavShell>().shown_actions(Column::Content);
@@ -421,7 +414,6 @@ fn actions_collapse_to_icons_then_overflow_into_more() {
             .exposed_parts()
             .contains(&Part::More(Column::Content))
     );
-    // Press More: the menu lists what did not fit.
     h.click_at(more.center().x, more.center().y);
     settle(&mut h, 220, 700);
     let doc = automerge::AutoCommit::new();
@@ -430,12 +422,10 @@ fn actions_collapse_to_icons_then_overflow_into_more() {
         .more
         .menu_labels();
     assert_eq!(labels.last().map(String::as_str), Some("Delete message"));
-    // Choose it: the action runs through its door.
     let row = labels.len() - 1;
     at_mut(&mut h.root_mut::<NavShell>().headers, Column::Content)
         .more
         .choose(row);
-    // The choice runs with the event that made it.
     h.send(&crate::synthetic_input::cursor_moved(10.0, 300.0));
     assert!(deleted.get(), "the chosen action ran through its door");
 }
@@ -552,8 +542,6 @@ fn back_follows_the_apps_page_stack() {
     settle(&mut h, 1024, 700);
     assert_eq!(geometry(&h).back, Rect::ZERO);
 
-    // A page that went deeper has one way back at the leading edge: a hidden sidebar's toggle
-    // stands aside for it, and comes back with the first page.
     let pages = LocalState::new(crate::NavStack::new("watch"));
     pages.update(|stack| stack.push("creator"));
     let shell = NavShell::new()
@@ -739,7 +727,6 @@ fn the_inspector_remembers_its_choice_across_removal() {
     assert!(!h.root::<NavShell>().is_inspector_open());
 }
 
-/// A widget whose overlay holds the pointer (an open popover).
 struct Capturing {
     rect: Rect,
     capture: Rect,
@@ -807,7 +794,6 @@ fn a_popover_owned_by_a_header_button_hears_the_pointer_first() {
     assert_eq!(content_events.get(), before, "the column under it did not");
 }
 
-/// A pane that can be filtered and reports its count.
 struct Filtered {
     query: SharedRc<RefCell<String>>,
     inner: Probe,
@@ -890,7 +876,6 @@ fn typed_access_controls_and_the_filter_reach_the_apps_widgets() {
     let overview = child_rect(&h, "overview").expect("overview laid out");
     assert!(overview.y0 >= g.controls.y1);
 
-    // A fluid control (a dropdown) stands at the band's height.
     let order = LocalState::new("Name".to_owned());
     let shell = NavShell::new()
         .overview(Probe::boxed("list").0)
@@ -945,7 +930,6 @@ fn the_overview_collapses_into_its_rail_before_it_pushes() {
     let mut h = harness(shell, 1280, 800, theme.clone());
     settle(&mut h, 1280, 800);
     assert_eq!(geometry(&h).overview, OverviewPlacement::List);
-    // Wider than the rail and the detail, narrower than the list and it.
     assert!(m.rail + m.page_min < 600.0 && 600.0 < m.overview + m.page_min);
     settle(&mut h, 600, 800);
     let g = geometry(&h);
@@ -974,7 +958,6 @@ fn a_shell_with_overflowing_actions_passes_the_native_audits() {
     assert!(native.issues.is_empty(), "{:?}", native.issues);
 }
 
-/// A full-width row of a page that reports where it was laid out.
 struct EdgeProbe {
     rect: Rect,
     seen: SharedRc<Cell<Rect>>,
@@ -1131,7 +1114,6 @@ fn a_headers_actions_stand_at_their_columns_trailing_edge() {
         ends_at(quiet, edge),
         "the list's action ends at the list's edge {edge} while the detail is quiet: {quiet:?}"
     );
-    // A selection fills the detail's header beside the list.
     h.root_mut::<NavShell>()
         .set_content_header("Move flat", vec![icon("board", Icon::Send, "Board")]);
     settle(&mut h, 1024, 700);
@@ -1179,7 +1161,6 @@ fn a_row_gives_its_labels_up_when_its_actions_are_offered_again() {
         "an action with no icon to give up stands labelled ({stood:?})"
     );
 
-    // The same action, offered again as the app draws it: its icon and its label.
     h.root_mut::<NavShell>().set_content_header(
         title,
         vec![

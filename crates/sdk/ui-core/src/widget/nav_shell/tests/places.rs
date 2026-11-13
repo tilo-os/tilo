@@ -1,6 +1,4 @@
-//! A phone's places screen: the sidebar in front of the list the window opens on. Back, Escape and
-//! the system's back gesture return to the screen its toggle covered, so the places are never a
-//! dead end.
+//! A phone's places screen: the sidebar in front of the list the window opens on.
 
 use super::*;
 use crate::gesture::NavDirection;
@@ -37,9 +35,8 @@ fn go_back(h: &mut FrameHarness, input: BackInput) {
 }
 
 /// The places of a phone-wide window stand in front of the list the window opened on: their own
-/// screen has one navigation affordance, Back, at the leading corner of its header, and it takes
-/// the person to that list — its title starts after the chip rather than under it. Every way of
-/// going back takes the same step.
+/// screen has one navigation affordance, Back, at the leading corner of its header, and it
+/// takes the person to that list — its title starts after the chip rather than under it.
 #[test]
 fn a_phone_places_screen_goes_back_to_the_list_it_covered() {
     let _settled = crate::motion::testing::settled();

@@ -39,8 +39,6 @@ pub(super) fn place_parts(
                 if band.width() <= 0.0 {
                     Some(Rect::ZERO)
                 } else {
-                    // Its own width (the band's when it has none of its
-                    // own), a control's height: the band is one control tall.
                     let measured = measure(ctx, index, Some(band.width()))?;
                     let w = if measured.0 > 0.0 {
                         measured.0.min(band.width())
@@ -56,8 +54,6 @@ pub(super) fn place_parts(
                     Some(Rect::new(band.x0, y0, band.x0 + w, y0 + h))
                 }
             }
-            // Placed with the header rows; the status action once they are
-            // ([`place_status_action`]).
             Part::Title(_)
             | Part::Leading(_)
             | Part::Action(..)
@@ -84,9 +80,7 @@ pub(super) fn place_parts(
     Ok(size)
 }
 
-/// A bar control's rect inside the slot the bar gives it: its own drawn size, centred
-/// there. The slot is the target a finger reaches, which may stand beyond the control's
-/// drawn shape, so a bar control is never stretched to it.
+/// A bar control's rect inside the slot the bar gives it: its own drawn size, centred there.
 fn bar_control(
     ctx: &mut ManualContext<'_>,
     index: usize,
@@ -116,11 +110,6 @@ fn bar_control(
 }
 
 /// A part's natural size, within `width` when given.
-///
-/// The natural size comes first: a bounded proposal replaces the part's own
-/// width with `auto`, so a control that states a fixed size and measures
-/// nothing (a switch) would come back zero wide. Only a part wider than
-/// `width` is measured again within it, so a label can wrap or shrink.
 pub(super) fn measure(
     ctx: &mut ManualContext<'_>,
     index: usize,
@@ -175,8 +164,6 @@ fn place_header(
     let header = g.header(column);
     let ci = column.index();
     let index_of = |part: Part| inputs.parts.iter().position(|p| *p == part);
-    // The row's account of itself stands only while the row does: a column the window folds
-    // away has nothing to be held to.
     publish(inputs, column, None);
     if header == Rect::ZERO || header.width() <= 0.0 {
         return Ok(());
@@ -184,9 +171,6 @@ fn place_header(
     let m = &inputs.metrics;
     let cy = header.center().y;
     let lead = g.lead_end(column, m);
-    // A section's actions end at its own column's trailing edge, whether the columns after it
-    // are quiet or say something of their own: they stay beside what they act on, and they do
-    // not move as a person selects and deselects beside them.
     let trail = g.trail_start(column, m).max(lead);
     let avail = trail - lead;
     let gap = m.gap;
@@ -195,7 +179,6 @@ fn place_header(
         Rect::new(x0, cy - h / 2.0, x0 + w.max(0.0), cy + h / 2.0)
     };
 
-    // The actions, at their natural sizes.
     let count = inputs.actions.get(ci).copied().unwrap_or(0);
     let mut items: Vec<(usize, f64, f64)> = Vec::with_capacity(count);
     for i in 0..count {
@@ -235,18 +218,12 @@ fn place_header(
             widths.iter().sum::<f64>() + gap * f64_of_usize(widths.len().saturating_sub(1))
         }
     };
-    // Labels, icons, or the More menu. Where the host lists the window's
-    // actions, the row keeps none of them and has no door either: the
-    // person reaches them where the host lists them.
     let more = index_of(Part::More(column));
     let door = more.filter(|_| !inputs.actions_listed);
     let door_w = match door {
         Some(index) => measure(ctx, index, None)?.0,
         None => 0.0,
     };
-    // What stands at the trailing edge when `shown` of the row's actions stand there: those, at
-    // `widths`, and the door behind whatever else there is (it is there only when something is
-    // behind it).
     let trailing = |widths: &[f64], shown: usize| -> f64 {
         let mut width = run(widths.get(..shown).unwrap_or(&[]));
         if shown < items.len() {
@@ -255,8 +232,7 @@ fn place_header(
         width
     };
     // The actions the row never gives up: the column's primary one and those before it, since a
-    // row stands its controls from the start. Where the host lists the window's actions, the row
-    // keeps none of them.
+    // row stands its controls from the start.
     let never = if inputs.actions_listed {
         0
     } else {
@@ -271,7 +247,6 @@ fn place_header(
     } else {
         0
     };
-    // The actions the app stands in the row rather than only in its menu.
     let kept = if inputs.actions_listed {
         0
     } else {
@@ -279,9 +254,7 @@ fn place_header(
             .map_or(items.len(), |from| from.min(items.len()))
     };
 
-    // The title: what it says, and what its actions must leave it. The actions give way first —
-    // a label for its icon, then a place in the row for the menu's door — so the title is cut
-    // only once they have nothing left to give.
+    // The title: what it says, and what its actions must leave it.
     let mut start = lead;
     let mut title: Option<(usize, f64, f64, f64)> = None;
     if let Some(index) = index_of(Part::Title(column)) {
@@ -316,8 +289,6 @@ fn place_header(
     };
     fit.compact = use_compact;
     fit.shown = Some(shown);
-    // The row's own account of what it kept, for an audit to hold it to its rule once the
-    // rects stand.
     let keeps = (0..shown).any(|i| fit.capable.get(i).copied().unwrap_or(false));
     let primary = fit.primary;
     let widths = if use_compact { &compact } else { &full };
@@ -371,7 +342,6 @@ fn place_header(
     }
     drop(fits);
 
-    // The leading fill: its own width, or what is left when it needs more.
     if let Some(index) = index_of(Part::Leading(column)) {
         let end = if total > 0.0 { actions_x0 - gap } else { trail };
         let room = (end - start).max(0.0);
@@ -380,15 +350,11 @@ fn place_header(
             *slot = Some(centred(start, lw.min(room), lh));
         }
     }
-    // What the row settled on, for an audit to hold it to its own rule. A row with no title has
-    // nothing to be cut, but still answers for the actions it kept.
     let placed_at = |index: usize| placed.get(index).copied().flatten().unwrap_or(Rect::ZERO);
     if avail > 0.0 {
         let (needs, has, free) = match title {
             Some((index, width, tw, _)) => {
                 let rect = placed_at(index);
-                // Where the next thing in the row stands: the leading fill, an action, or the
-                // door on the title's trailing side, or the row's own trailing edge.
                 let next = [Part::Leading(column), Part::More(column)]
                     .into_iter()
                     .filter_map(index_of)

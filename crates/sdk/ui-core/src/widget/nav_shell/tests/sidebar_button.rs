@@ -6,8 +6,8 @@ use super::*;
 use crate::headless::SidebarShown;
 
 /// Click the sidebar button the shell's header row holds three times in a window `width` wide
-/// that the desktop's bar hosts; each click flips the sidebar, and the shell and its frame agree.
-/// Returns where it stood before the first click.
+/// that the desktop's bar hosts; each click flips the sidebar, and the shell and its frame
+/// agree.
 fn three_clicks(shell: NavShell, width: u32, placement: SidebarPlacement) -> bool {
     let mut h = harness(shell, width, 800, Theme::dark());
     h.present_in_window_bar();
@@ -107,8 +107,6 @@ fn a_sidebar_screen_holds_the_way_back_and_the_place_before_it_the_places() {
     );
 }
 
-/// With an overview, putting the sidebar's screen away goes back to the screen that was in
-/// front.
 #[test]
 fn hiding_a_sidebar_screen_returns_to_the_screen_in_front() {
     let mut h = harness(mail_shell(), 560, 800, Theme::dark());
@@ -126,7 +124,6 @@ fn hiding_a_sidebar_screen_returns_to_the_screen_in_front() {
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
 }
 
-/// A document's sidebar floats over it as a drawer in a narrow window.
 #[test]
 fn the_bars_sidebar_button_flips_a_sidebar_drawer() {
     let shell = NavShell::new()
@@ -145,10 +142,9 @@ fn agreement_needs_the_bar_the_shell_and_the_frame() {
     assert_eq!(state(false, false, true).agreed(), None);
 }
 
-/// A narrow window whose sidebar is its places — a page beside the sections it has: the places are
-/// the window's first screen, and the page a row of them opens keeps the way back, the desktop's
-/// bar over the row or not. A window whose content is a list of its own opens on that list instead
-/// (`a_sidebar_screen_holds_the_way_back_and_the_place_before_it_the_places`).
+/// A narrow window whose sidebar is its places — a page beside the sections it has: the places
+/// are the window's first screen, and the page a row of them opens keeps the way back, the
+/// desktop's bar over the row or not.
 #[test]
 fn the_page_a_row_of_the_places_opens_keeps_back_to_them() {
     let shell = || {

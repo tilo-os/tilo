@@ -1,7 +1,6 @@
-//! The band across the window's foot ([`NavShell::bottom_band`]): what
-//! belongs to the whole window rather than to what it shows, such as a song
-//! playing whatever page is open or a call's controls. Every column, the
-//! drawers and the push stack's screens stand over it.
+//! The band across the window's foot ([`NavShell::bottom_band`]): what belongs to the whole
+//! window rather than to what it shows, such as a song playing whatever page is open or a
+//! call's controls.
 
 use std::cell::Cell;
 
@@ -13,8 +12,6 @@ use super::{
 };
 use crate::widget::Element;
 
-/// Whether the shell has a band, and how tall it measured at the last
-/// layout.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Band {
     pub(super) has: bool,
@@ -22,11 +19,8 @@ pub(super) struct Band {
 }
 
 impl NavShell {
-    /// Put `band` across the window's foot, under every column: the
-    /// sidebar, the inspector and their drawers stop above it, and it is as
-    /// tall as it measures at the window's width. It stays whatever the
-    /// window shows: a narrow window's screens slide over it, never with
-    /// it.
+    /// Put `band` across the window's foot, under every column: the sidebar, the inspector and
+    /// their drawers stop above it, and it is as tall as it measures at the window's width.
     #[must_use]
     pub fn bottom_band(mut self, band: Element) -> Self {
         self.inputs.borrow_mut().band.has = true;
@@ -35,8 +29,6 @@ impl NavShell {
         self
     }
 
-    /// Paint the band on the window's ground, ruled off from the columns
-    /// over it.
     pub(super) fn paint_band(&mut self, f: &mut Frame<'_>) {
         let rect = self.geometry.band;
         if !self.built_has(Part::Band) || rect.height() <= 0.0 {
@@ -56,7 +48,6 @@ impl NavShell {
     }
 }
 
-/// The columns over the band, and the band: as tall as it last measured.
 pub(super) fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     let band = if inputs.band.has {
         inputs.band.height.get().clamp(0.0, h)
@@ -70,8 +61,6 @@ pub(super) fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     g
 }
 
-/// Measure the band at the window's width, before the columns are planned
-/// over it.
 pub(super) fn measure_band(
     inputs: &Inputs,
     ctx: &mut ManualContext<'_>,
