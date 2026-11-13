@@ -7,8 +7,8 @@ use vello::kurbo::Rect;
 
 use crate::resource::FirewallShell;
 
-/// The bare widget showing the sample ruleset, framed in a window of
-/// `w`×`h`: for its layout and pointer input.
+/// The bare widget showing the sample ruleset, framed in a window of `w`×`h`: for its
+/// layout and pointer input.
 fn framed(w: f64, h: f64) -> Framed<FirewallWindow> {
     framed_app(FirewallWindow::bare(Store::demo()), w, h)
 }
@@ -19,8 +19,8 @@ fn framed_app(app: FirewallWindow, w: f64, h: f64) -> Framed<FirewallWindow> {
     Framed::new(state, app, ui::headless::viewport((w, h)), Theme::dark())
 }
 
-/// The app hosted on its resource, holding the sample ruleset: every
-/// control below reaches the document through the dispatcher.
+/// The app hosted on its resource, holding the sample ruleset: every control below reaches
+/// the document through the dispatcher.
 fn hosted() -> TestApp<FirewallShell> {
     let mut app = TestApp::<FirewallShell>::new().unwrap();
     app.invoke(Firewall::import_of(&crate::sample::sample_config()))
@@ -47,18 +47,15 @@ fn click(app: &mut Framed<FirewallWindow>, rect: Rect) {
     Framed::harness_mut(app).click_at(c.x, c.y);
 }
 
-/// Click the hosted control whose target id ends with `suffix`, where a
-/// person sees it, and run the frame that follows.
+/// Click the hosted control whose target id ends with `suffix`, where a person sees it, and
+/// run the frame that follows.
 fn press(app: &mut TestApp<FirewallShell>, suffix: &str) {
     let c = find_target(app.harness(), suffix).center();
     app.harness().click_at(c.x, c.y);
     app.settle();
 }
 
-/// Run frames until `landed` holds of the stored configuration. A press
-/// submits its edit through the door, which applies it after the event; on a
-/// loaded machine that can take more than the one frame a press runs, so a
-/// test asserting right after the press saw the document unchanged.
+/// Run frames until `landed` holds of the stored configuration.
 fn until_stored(
     app: &mut TestApp<FirewallShell>,
     what: &str,
@@ -70,16 +67,16 @@ fn until_stored(
     });
 }
 
-/// Press the window bar's slot `id`, as the desktop hands the press over,
-/// and run the frame that follows.
+/// Press the window bar's slot `id`, as the desktop hands the press over, and run the frame
+/// that follows.
 fn press_bar(app: &mut TestApp<FirewallShell>, id: &str) {
     app.harness()
         .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.to_owned() });
     app.settle();
 }
 
-/// Open a zone other than the active one from the zone list: the first
-/// row whose page offers to make it active.
+/// Open a zone other than the active one from the zone list: the first row whose page
+/// offers to make it active.
 fn open_another_zone(app: &mut TestApp<FirewallShell>) {
     let list = find_target(app.harness(), "NavList");
     let row = f64::from(Theme::dark().tokens.metrics.nav_row_height);
@@ -130,14 +127,14 @@ fn populated_firewall_passes_native_certification() {
     }
 }
 
-/// Nothing shown is fabricated, an unavailable firewall is one empty state
-/// with one action, and a failed recovery changes nothing and says why.
+/// Nothing shown is fabricated, an unavailable firewall is one empty state with one action,
+/// and a failed recovery changes nothing and says why.
 #[test]
 fn backend_availability_governs_what_is_shown_and_announced() {
     // --- phase: nothing_shown_is_fabricated ---
     {
-        // Before the document's configuration is shown the window shows
-        // none, never the fabricated sample.
+        // Before the document's configuration is shown the window shows none, never the
+        // fabricated sample.
         let live = Store::new();
         assert!(!live.available);
         assert!(live.config.zones.is_empty());
@@ -181,8 +178,8 @@ fn backend_availability_governs_what_is_shown_and_announced() {
     }
 }
 
-/// The zones dock beside the page while the page keeps its minimum width
-/// beside them, and become a screen of their own below that.
+/// The zones dock beside the page while the page keeps its minimum width beside them, and
+/// become a screen of their own below that.
 #[test]
 fn the_zones_dock_while_they_fit_and_become_a_screen_when_narrow() {
     for width in [1280.0, 640.0] {
@@ -203,7 +200,6 @@ fn the_zones_dock_while_they_fit_and_become_a_screen_when_narrow() {
 fn choosing_a_zone_in_the_list_opens_its_page() {
     let mut app = framed(1280.0, 800.0);
     let list = target(&app, "NavList");
-    // The active zone (public) heads the list; the other zones follow it.
     let row = f64::from(Theme::dark().tokens.metrics.nav_row_height);
     let rows: Vec<f64> = (0..20)
         .map(|i| list.y0 + row * (f64::from(i) + 0.5))
@@ -279,8 +275,7 @@ fn the_add_rule_form_validates_each_field() {
     assert!(app.draft.port().is_empty(), "the draft clears once added");
 }
 
-/// Deleting asks first; only the confirmation removes the rule, and undo
-/// brings it back.
+/// Deleting asks first; only the confirmation removes the rule, and undo brings it back.
 #[test]
 fn deleting_a_rule_asks_first() {
     // --- phase: cancel_keeps_the_rule ---
@@ -304,7 +299,6 @@ fn deleting_a_rule_asks_first() {
             public_rules(&app).iter().any(|r| r.id == rule.id),
             "the first press only asks for confirmation"
         );
-        // Return is the safe answer in a destructive confirmation.
         app.harness().key("Enter");
         app.settle();
         assert!(
@@ -327,7 +321,8 @@ fn deleting_a_rule_asks_first() {
     }
 }
 
-/// Rule and service switches write the document; the window bar's switches toggle panic mode and the firewall.
+/// Rule and service switches write the document; the window bar's switches toggle panic
+/// mode and the firewall.
 #[test]
 fn switches_round_trip_through_the_document() {
     let mut app = hosted();
@@ -347,8 +342,8 @@ fn switches_round_trip_through_the_document() {
         |config| !config.zone(ZoneKind::Public).unwrap().has_service("ssh"),
     );
 
-    // Panic mode and stopping the firewall cut traffic: each waits for the
-    // person to confirm what the host asks.
+    // Panic mode and stopping the firewall cut traffic: each waits for the person to
+    // confirm what the host asks.
     assert!(!app.state().config().panic_mode);
     press_bar(&mut app, view::PANIC_MODE);
     assert!(
@@ -406,8 +401,8 @@ fn the_row_delete_button_opens_the_confirmation() {
     assert_eq!(app.store.borrow().pending_delete, Some(first));
 }
 
-/// Applying now runs through the same door as the palette and reports how
-/// it ended; a unit test plans the same commands without touching the host.
+/// Applying now runs through the same door as the palette and reports how it ended; a unit
+/// test plans the same commands without touching the host.
 #[test]
 fn apply_now_reports_the_checked_changes() {
     let mut app = hosted();
@@ -417,8 +412,8 @@ fn apply_now_reports_the_checked_changes() {
     assert!(frame.contains("changes"), "{frame}");
 }
 
-/// The rules are one list, allows first; pressing a header sorts by that
-/// column and pressing it again flips the order.
+/// The rules are one list, allows first; pressing a header sorts by that column and
+/// pressing it again flips the order.
 #[test]
 fn the_rules_are_one_list_sorted_from_its_headers() {
     let mut app = framed(1280.0, 800.0);
@@ -462,10 +457,9 @@ fn the_rules_are_one_list_sorted_from_its_headers() {
     assert!(flipped.is_sorted_by_key(|action| *action == Action::Allow));
 }
 
-/// The firewall's controls are the window bar's slots: the open zone names
-/// the window, the switch, Apply and Add rule are its actions with panic
-/// mode in its menu, and Rules and Services are its views. The window draws
-/// no header row, tabs or switches of its own.
+/// The firewall's controls are the window bar's slots: the open zone names the window, the
+/// switch, Apply and Add rule are its actions with panic mode in its menu, and Rules and
+/// Services are its views.
 #[test]
 fn the_firewalls_controls_are_in_the_window_bar() {
     let mut app = hosted();
@@ -522,9 +516,8 @@ fn the_firewalls_controls_are_in_the_window_bar() {
     );
 }
 
-/// The frames `app` runs until it asks for none: no queued work and no
-/// animation, what a host wakes an idle window for. `None` when it still
-/// asks after `limit` frames.
+/// The frames `app` runs until it asks for none: no queued work and no animation, what a
+/// host wakes an idle window for.
 fn frames_to_rest(app: &mut TestApp<FirewallShell>, limit: usize) -> Option<usize> {
     for frame in 0..=limit {
         let schedule = app.harness().frame_schedule();
@@ -536,10 +529,10 @@ fn frames_to_rest(app: &mut TestApp<FirewallShell>, limit: usize) -> Option<usiz
     None
 }
 
-/// Nobody touching the window, it asks for nothing within a few frames:
-/// opened on the add-rule scenario in the desktop's window bar, and again
-/// once the bar's sidebar button has hidden the docked sidebar of a window
-/// that wide. Apply is not left waiting on an apply that never runs.
+/// Nobody touching the window, it asks for nothing within a few frames: opened on the
+/// add-rule scenario in the desktop's window bar, and again once the bar's sidebar button
+/// has hidden the docked sidebar of a window that wide. Apply is not left waiting on an
+/// apply that never runs.
 #[test]
 fn an_idle_window_comes_to_rest_within_a_few_frames() {
     let _landed = ui::motion::testing::settled();

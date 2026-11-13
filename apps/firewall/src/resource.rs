@@ -1,15 +1,5 @@
-//! Firewall as a resource: the stored configuration ([`Firewall`]) is the
-//! shared document, and firewalld on each device is its projection.
-//!
-//! A zone's policy, members, rules and the active zone are field edits at
-//! their paths; starting, stopping and panic mode are verbs, the switches a
-//! running firewall is turned with; deleting a rule is a verb
-//! because the deletion must win over a concurrent edit; taking in what
-//! firewalld reported is the `import` verb. After every change, each device
-//! running the app applies the stored configuration to its own firewalld (a
-//! job of its window, the latest configuration winning); what each device
-//! applied last is in a record beside it ([`AppliedConfig`]), so an
-//! unchanged configuration is not pushed again.
+//! The stored configuration as the shared document, with firewalld on each device as its
+//! projection.
 
 use std::collections::BTreeMap;
 
@@ -26,13 +16,8 @@ use crate::model::{FirewallConfig, ZoneKind};
 use ui::capability_door::Door;
 
 impl Firewall {
-    /// What the record holds: the stored configuration — each zone's policy, members and rules,
-    /// and the active zone.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds: the stored configuration — each zone's policy, members and
+    /// rules, and the active zone.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -59,8 +44,8 @@ impl Firewall {
 
     /// Stop firewall.
     ///
-    /// Undo starts it again but cannot take back what reached the machine
-    /// while it was open, so this is asked first.
+    /// Undo starts it again but cannot take back what reached the machine while it was
+    /// open, so this is asked first.
     #[action(destructive, irreversible)]
     pub fn stop(&mut self) {
         self.enabled = false;
@@ -68,8 +53,7 @@ impl Firewall {
 
     /// Enter panic mode: drop all traffic in and out.
     ///
-    /// Undo lifts it but cannot restore the connections it cut, so this is
-    /// asked first.
+    /// Undo lifts it but cannot restore the connections it cut, so this is asked first.
     #[action(destructive, irreversible)]
     pub fn enter_panic_mode(&mut self) {
         self.panic_mode = true;
@@ -116,8 +100,7 @@ impl Firewall {
         Self::IMPORT.with(serde_json::to_value(config).unwrap_or_default())
     }
 
-    /// Start, stop and panic mode apply to a configured firewall in the
-    /// other state.
+    /// Start, stop and panic mode apply to a configured firewall in the other state.
     fn available(&self, verb: firewall::Verb) -> Availability {
         let unavailable = |code: &str, reason: &str| Availability::Unavailable {
             code: code.into(),
@@ -183,22 +166,17 @@ impl Firewall {
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "firewall.effect")]
 pub enum FirewallEffect {
-    /// Apply firewall configuration.
     #[effect(job)]
     ApplyConfig,
     /// Retry firewalld connection.
     #[effect(job)]
     Retry,
-    /// Read dropped traffic from the system journal.
     #[effect(kind = "read")]
     ReadBlocked,
 }
 
-/// What each device last pushed to (or read from) its firewalld, by device,
-/// so the projection applies a configuration once rather than on every
-/// launch: a record Firewall keeps beside its own in the workspace, each
-/// device reading and writing only its own entry, since another device's
-/// firewalld is its own.
+/// What each device last pushed to its firewalld, so a launch applies a configuration once
+/// rather than again.
 #[derive(tilo_resource::Model, Clone, Debug, Default, PartialEq)]
 pub struct AppliedConfig {
     /// The applied configuration in canonical JSON, by device.
@@ -207,11 +185,6 @@ pub struct AppliedConfig {
 
 impl AppliedConfig {
     /// What the record holds: what each device last pushed to, or read from, its firewalld.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -240,12 +213,11 @@ impl AppliedConfig {
     }
 }
 
-/// The [`AppliedConfig`] record and this device's id.
 pub(crate) type AppliedOnDevice = (PersonRecord<AppliedConfig>, String);
 
-/// The stored configuration still to apply on a device that last applied
-/// `applied`, keyed by its canonical form: nothing while there is none,
-/// while it is invalid, or once the device applied exactly it.
+/// The stored configuration still to apply on a device that last applied `applied`, keyed
+/// by its canonical form: nothing while there is none, while it is invalid, or once the
+/// device applied exactly it.
 pub(crate) fn pending_apply(
     config: &FirewallConfig,
     applied: Option<&str>,
@@ -263,9 +235,6 @@ pub(crate) fn pending_apply(
 /// How one apply ended: how many commands ran, or why it failed.
 pub(crate) type Applied = Result<usize, String>;
 
-/// Push `config` to this device's firewalld. Only a granted capability may
-/// apply: the app passes its door, and no other caller can slip past it.
-/// Blocking: runs off the UI thread.
 pub(crate) fn apply_on_device(config: &FirewallConfig, door: &Door, allow_host: bool) -> Applied {
     if !door.is_granted() {
         return Err(format!(
@@ -274,11 +243,8 @@ pub(crate) fn apply_on_device(config: &FirewallConfig, door: &Door, allow_host: 
         ));
     }
     let mut backend = Backend::new();
-    // A unit test must never change the host it runs on. The plan is the
-    // same data the product path would execute.
+    // A unit test must never change the host it runs on.
     if allow_host && !cfg!(test) {
-        // A firewalld that holds the configuration already, as the one it
-        // was imported from does, is not given it again.
         if crate::backend::import().map(|held| held.canonical().to_json())
             == Some(config.canonical().to_json())
         {
@@ -306,7 +272,6 @@ pub(crate) fn applied_status(applied: &Applied) -> Notice {
     }
 }
 
-/// Remember that this device's firewalld holds `config`.
 pub(crate) fn remember_applied((record, device): &AppliedOnDevice, config: &FirewallConfig) {
     let applied = AppliedConfig::APPLIED.with((device.clone(), config.to_json()));
     if let Err(error) = record.invoke(&applied) {
@@ -325,11 +290,8 @@ pub(crate) fn read_device() -> Result<FirewallConfig, String> {
     }
 }
 
-/// Framework app: the firewall widget over [`Firewall`].
 pub struct FirewallShell;
 
-/// Every screenshot scenario. All but `service-error` show the sample
-/// ruleset; the rest is view state the view stages.
 #[cfg(feature = "samples")]
 const SCENARIOS: &[&str] = &[
     "empty",
@@ -381,9 +343,7 @@ impl ResourceApp for FirewallShell {
             .unwrap_or((1280, 800))
     }
 
-    /// The bundled sample ruleset, never the capturing machine's; the
-    /// active-change scenario has just made `home` the active zone, and
-    /// the panic and stopped scenarios have turned those switches.
+    /// The bundled sample ruleset, never the capturing machine's.
     #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Firewall>> {
         if name == Some("service-error") {
@@ -400,11 +360,8 @@ impl ResourceApp for FirewallShell {
         invokes
     }
 
-    /// A new record starts with what firewalld on the creating device
-    /// already has, which that device therefore does not push again
-    /// ([`apply_on_device`]). A device without a readable firewalld starts
-    /// empty and offers a retry, and so does a record created without a
-    /// window: it is no device's.
+    /// A new record starts with what firewalld already holds on the creating device; a
+    /// record created without a window is no device's and starts empty with a retry.
     fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Firewall>> {
         if cx.host().is_none_or(|host| host.capture().is_some()) {
             return Vec::new();
@@ -429,9 +386,8 @@ mod tests {
             .find(|row| row["resource"] == "firewall.config" && row["action"] == id)
     }
 
-    /// A configuration from before a rule's match was stored as its variant
-    /// and fields: each match was one JSON string. Opened now, every rule
-    /// matches what it matched.
+    /// A configuration from before a rule's match was stored as its variant and fields:
+    /// each match was one JSON string.
     #[test]
     fn rules_kept_with_json_matches_migrate_to_their_variants() {
         use ui::tilo_resource::{Replica, Slot, evolution, read_key};
@@ -469,9 +425,8 @@ mod tests {
         assert_eq!(evolution::read_checked::<Firewall>(&old).unwrap(), expected);
     }
 
-    /// A configuration of version 2 stored each rule's match with its fields
-    /// flat beside its variant's name. Opened now, every rule matches what it
-    /// matched, its fields stored by its variant.
+    /// A configuration of version 2 stored each rule's match with its fields flat beside
+    /// its variant's name.
     #[test]
     fn rules_kept_with_flat_matches_migrate_to_fields_stored_by_variant() {
         use ui::automerge::{ObjType, ReadDoc as _, ScalarValue};
@@ -517,8 +472,8 @@ mod tests {
         }
     }
 
-    /// The configuration still to apply is the stored one until this device
-    /// applied exactly it; an empty or invalid one is never applied.
+    /// The configuration still to apply is the stored one until this device applied exactly
+    /// it; an empty or invalid one is never applied.
     #[test]
     fn a_device_applies_each_stored_configuration_once() {
         let config = sample_config().canonical();
@@ -539,11 +494,9 @@ mod tests {
         assert!(pending_apply(&invalid, None).is_empty());
     }
 
-    /// The published root offers start/stop and panic as document edits
-    /// bound to the stored state, and apply/retry as effects whose
-    /// availability follows whether there is a configuration. Once there
-    /// is one, this device applies it (planned only in a unit test) and
-    /// remembers that it did.
+    /// The published root offers start/stop and panic as document edits bound to the stored
+    /// state, and apply/retry as effects whose availability follows whether there is a
+    /// configuration.
     #[test]
     fn stored_configuration_is_applied_on_the_device_and_toggles_are_edits() {
         let empty = ui::tilo_resource::publish::<Firewall>(
@@ -588,8 +541,6 @@ mod tests {
         });
         assert!(applied, "the device remembers the configuration it applied");
 
-        // Stopping the firewall is an edit like any other: confirmed, in
-        // the document, and applied by the device in turn.
         app.invoke_confirmed(Firewall::STOP.invoke()).unwrap();
         assert!(!app.state().enabled);
         let stopped = app.state().config().to_json();
@@ -599,9 +550,9 @@ mod tests {
         assert!(reapplied, "the edit reached this device's firewall");
     }
 
-    /// The palette row and the confirmation's title name the switch by the
-    /// first line of its doc alone; why it asks first stays in the
-    /// description, never runs on into the name.
+    /// The palette row and the confirmation's title name the switch by the first line of
+    /// its doc alone; why it asks first stays in the description, never runs on into the
+    /// name.
     #[test]
     fn the_traffic_cutting_switches_are_named_by_what_they_do() {
         let published = ui::tilo_resource::publish::<Firewall>(
@@ -631,9 +582,8 @@ mod tests {
         }
     }
 
-    /// Every screenshot is the sample ruleset staged through actions, with
-    /// the view state its scenario names; the service error shows no
-    /// configuration at all.
+    /// Every screenshot is the sample ruleset staged through actions, with the view state
+    /// its scenario names; the service error shows no configuration at all.
     #[test]
     fn captures_stage_the_sample_through_actions() {
         let mut active = TestApp::<FirewallShell>::capture(Some("active-change")).unwrap();
@@ -675,8 +625,8 @@ mod tests {
             .map_err(|error| error.to_string())
     }
 
-    /// The record reads back as the canonical configuration, and an import
-    /// removes the members and rules firewalld no longer reports.
+    /// The record reads back as the canonical configuration, and an import removes the
+    /// members and rules firewalld no longer reports.
     #[test]
     fn the_record_round_trips_and_an_import_reconciles() {
         let config = sample_config();
@@ -698,7 +648,6 @@ mod tests {
         assert!(!zone.interfaces.iter().any(|interface| interface == "eth0"));
         assert!(!zone.rules.iter().any(|rule| rule.id == stale_rule));
 
-        // An import of the old configuration does not bring the rule back.
         replica.apply(Firewall::import_of(&config)).unwrap();
         let again = replica.state().unwrap().config();
         assert!(
@@ -711,8 +660,8 @@ mod tests {
         );
     }
 
-    /// Concurrent edits to independent fields, rules and services merge; a
-    /// deletion wins over a concurrent edit of the rule.
+    /// Concurrent edits to independent fields, rules and services merge; a deletion wins
+    /// over a concurrent edit of the rule.
     #[test]
     fn concurrent_edits_merge_per_field_and_delete_wins() {
         let config = sample_config();
@@ -757,9 +706,8 @@ mod tests {
         );
     }
 
-    /// The stored configuration is held to what firewalld accepts, however
-    /// it is changed; an agent edits it in one call; history says what
-    /// changed.
+    /// The stored configuration is held to what firewalld accepts, however it is changed;
+    /// an agent edits it in one call; history says what changed.
     #[test]
     fn edits_are_held_to_the_configuration_rules_and_history_names_them() {
         let mut app = TestApp::<FirewallShell>::new().unwrap();
@@ -835,8 +783,8 @@ ui::reach_tests!(FirewallShell);
 
 #[cfg(test)]
 mod window_bar_tests {
-    /// The window bar's sidebar button flips the sidebar on every click, in a
-    /// window wide enough to dock it and in a narrow one.
+    /// The window bar's sidebar button flips the sidebar on every click, in a window wide
+    /// enough to dock it and in a narrow one.
     #[test]
     fn the_window_bars_sidebar_button_flips_the_sidebar() {
         ui::framework::testing::check_window_sidebar_button(|| {
@@ -846,9 +794,9 @@ mod window_bar_tests {
     }
 }
 
-/// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-DE.ftl`, never from the English source beside
-/// it, so a device set to German reads a German window.
+/// German is one of the languages the app ships, and it reads in German: the copy comes
+/// from `locales/de-DE.ftl`, never from the English source beside it, so a device set to
+/// German reads a German window.
 #[cfg(test)]
 mod german_catalogue_tests {
     #[test]
@@ -863,8 +811,6 @@ mod german_catalogue_tests {
             crate::locales::CATALOG.t("firewall-start"),
             "Die Firewall gestartet"
         );
-        // The words a table holds read in German too: a zone's name, the
-        // action on a rule, and a dropped-traffic row.
         assert_eq!(
             crate::locales::CATALOG.t(crate::model::ZoneKind::Trusted.title_message()),
             "Trusted"

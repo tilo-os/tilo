@@ -1,22 +1,7 @@
-//! Firewall — Tilo native app (CRDT-native, built on the `ui` toolkit).
-//!
-//! A firewalld/nftables front-end: the zones in a sidebar, and for the open
-//! zone its state, a rules table with an add-rule form, and the services it
-//! lets through, each with a switch. The
-//! configuration lives in a field-addressable shared Automerge document (see
-//! [`resource`]), so two instances pointed at one collab socket edit independent
-//! rules and services without clobbering each other. The live app reads/applies via
-//! `firewall-cmd` under the `network.firewall` capability (see [`backend`]);
-//! `--shots` bundles a realistic sample ruleset so the headless screenshot is
-//! fully populated offline.
-//!
-//! Each device running the app applies the stored configuration to its own
-//! firewalld after every change (see [`resource`]); a screenshot shows a
-//! bundled sample ruleset and never touches the host.
+//! Firewall — a firewalld front end: the zones, their rules and services in a shared
+//! record, each device applying it to its own firewalld.
 
-// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
-// Panic-producing lints remain denied; shared crates retain the full lint set
-// because a fault there can affect the session or every app.
+// Apps run isolated, so app-local arithmetic checks are relaxed; a fault in a shared crate reaches the session, so its lints stay.
 #![allow(
     clippy::arithmetic_side_effects,
     reason = "app-local arithmetic; see the note above"
@@ -34,7 +19,6 @@ mod view;
 
 pub use resource::{Firewall, FirewallShell};
 
-/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(FirewallShell)
 }

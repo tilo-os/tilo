@@ -1,13 +1,6 @@
 //! What the kernel dropped, read from this device's journal.
 //!
-//! A firewall UI that cannot show dropped traffic cannot answer the two
-//! questions people actually have: "are my deny rules working?" and "what is
-//! hammering this machine?". Netfilter logs one record per dropped packet, so
-//! the journal is the honest source; no packet is ever inferred.
-//!
-//! [`read`] runs `journalctl` read-only. It never changes the firewall, never
-//! needs the apply capability, and classifies a failed read instead of
-//! pretending the window was quiet.
+//! It never changes the firewall and needs no apply capability.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -19,30 +12,21 @@ use ui::time::SystemTime;
 
 use crate::locales::CATALOG;
 
-/// How many buckets a report's time series has.
 pub const BUCKETS: usize = 12;
 
-/// One group of dropped packets: the rule that dropped them, how many, when
-/// the last one was seen, and how they were distributed over the window.
+/// One group of dropped packets: the rule that dropped them, how many, when the last one
+/// was seen, and how they were distributed over the window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockedGroup {
-    /// What the kernel did (`DROP` or `REJECT`).
     pub action: String,
-    /// `tcp`, `udp`, `icmp`, or empty when the record did not say.
     pub protocol: String,
-    /// The destination port, when the record names one.
     pub port: Option<String>,
-    /// The interface the packet arrived on, when the record names one.
     pub interface: Option<String>,
-    /// How many packets this group accounts for.
     pub packets: u64,
     /// Distinct source addresses seen for this group.
     pub sources: u64,
-    /// When the newest packet of this group was logged.
     pub last_seen: SystemTime,
-    /// Packets per equal slice of the report window, oldest first.
     pub buckets: Vec<u32>,
-    /// The report's whole window, in minutes, so a bucket's length is known.
     pub window_minutes: u32,
 }
 
@@ -86,9 +70,7 @@ impl BlockedGroup {
         }
     }
 
-    /// The window's shape as bars, oldest first. The tallest bucket is full
-    /// height; [`Self::trend_scale`] names what a full bar is, so the shape
-    /// is a scale and not a decoration.
+    /// The window's shape as bars, oldest first.
     pub fn trend(&self) -> String {
         const BARS: [char; 8] = [
             '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
@@ -120,25 +102,17 @@ impl BlockedGroup {
     }
 }
 
-/// One read of dropped traffic.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockedReport {
-    /// The groups, busiest first.
     pub groups: Vec<BlockedGroup>,
-    /// How many packets all groups account for.
     pub total: u64,
-    /// When the read happened.
     pub read_at: SystemTime,
-    /// The window the read covers, in minutes.
     pub window_minutes: u32,
-    /// The journal had records that are not netfilter drops, so the read is
-    /// partial; the person is told rather than shown a confident zero.
     pub note: Option<String>,
 }
 
 impl BlockedReport {
-    /// A report with nothing dropped in its window. This is a measured zero,
-    /// unlike a failed read.
+    /// A report with nothing dropped in its window.
     pub fn empty(read_at: SystemTime, window_minutes: u32) -> Self {
         Self {
             groups: Vec::new(),
@@ -154,8 +128,7 @@ impl BlockedReport {
 ///
 /// # Errors
 ///
-/// A sentence safe to show: the journal is unavailable, permission was
-/// denied, or the read failed. The command's own stderr is never relayed.
+/// Why the read failed; the command's own stderr is never relayed.
 pub fn read(window: Duration) -> Result<BlockedReport, String> {
     let minutes = u32::try_from(window.as_secs() / 60).unwrap_or(60).max(1);
     let since = format!("-{minutes} min");
@@ -187,8 +160,7 @@ pub fn read(window: Duration) -> Result<BlockedReport, String> {
     Ok(parse(&String::from_utf8_lossy(&output.stdout), minutes))
 }
 
-/// Parse `journalctl -o json` lines into a report. Pure, so the grouping and
-/// time buckets are testable against captured records.
+/// Parse `journalctl -o json` lines into a report.
 pub fn parse(text: &str, window_minutes: u32) -> BlockedReport {
     let now = ui::time::wall();
     let window = Duration::from_secs(u64::from(window_minutes) * 60);
@@ -298,9 +270,8 @@ struct Drop {
 
 /// Read netfilter's `key=value` record, when `message` is one.
 fn parse_drop(message: &str) -> Option<Drop> {
-    // Netfilter's LOG record may or may not spell `DROP=1`; the stable
-    // shape is the packet's own fields. A record with no source or packet
-    // field is ordinary kernel output, not a drop.
+    // Netfilter's LOG record may or may not spell `DROP=1`; the stable shape is the
+    // packet's own fields.
     let looks_like_packet = (message.contains("PROTO=") || message.contains("DPT="))
         && (message.contains("SRC=")
             || message.contains("DROP=")
@@ -331,8 +302,8 @@ fn parse_drop(message: &str) -> Option<Drop> {
     })
 }
 
-/// A representative report for a capture, laid out from the pinned clock.
-/// It is never shown in a live window: the live app reads the journal.
+/// A representative report for a capture, laid out from the pinned clock. It is never shown
+/// in a live window: the live app reads the journal.
 pub fn sample() -> BlockedReport {
     let now = ui::time::wall();
     let group = |action: &str,

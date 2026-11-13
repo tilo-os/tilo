@@ -1,12 +1,8 @@
-//! The window's content, built from the toolkit's widgets.
-//!
-//! The zones are a [`NavList`] in the shell's sidebar; the selected zone is
-//! one scrolling page: its state at a glance, then the rules (with the
-//! add-rule form) or the services it lets through. Nothing here paints,
-//! sizes or colours anything: every control says what it is and the theme
-//! decides how it looks. Interaction leaves as an [`Intent`] (or, for a
-//! switch, a changed [`Switches`] state) that the app applies to the shared
-//! document.
+//! The window's content, built from the toolkit's widgets. The zones are a [`NavList`] in
+//! the shell's sidebar; the selected zone is one scrolling page: its state at a glance,
+//! then the rules (with the add-rule form) or the services it lets through. Nothing here
+//! paints, sizes or colours anything: every control says what it is and the theme decides
+//! how it looks.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -33,9 +29,7 @@ use crate::blocked::BlockedReport;
 use crate::locales::CATALOG;
 use crate::model::{Action, FirewallConfig, Proto, Rule, RuleId, ServiceCatalog, Zone, ZoneKind};
 
-/// What a control in the window asks for. The app applies each one to the
-/// shared document or to its own view state, the same way for a click, a
-/// key or an accessibility action.
+/// What a control in the window asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Intent {
     SelectZone(ZoneKind),
@@ -59,8 +53,7 @@ pub(crate) enum Intent {
     RefreshBlocked,
 }
 
-/// The global switches whose change can cut the session being used to fix the
-/// machine. Both ask before they act.
+/// The global switches whose change can cut the session being used to fix the machine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PendingSwitch {
     Stop,
@@ -75,7 +68,6 @@ fn action_rank(action: Action) -> u8 {
     }
 }
 
-/// The queue controls write to and the app drains.
 pub(crate) type Intents = ui::Intents<Intent>;
 
 /// What a switch on the page turns on or off.
@@ -88,9 +80,7 @@ pub(crate) enum SwitchKey {
 /// One switch: what it turns on or off, its state, and the value it shows.
 type SwitchEntry = (SwitchKey, LocalState<bool>, bool);
 
-/// The switches on the page, each bound to its own local state. The app
-/// compares every state with the value the page was built from and applies
-/// the ones the person flipped.
+/// The switches on the page, each bound to its own local state.
 #[derive(Clone, Default)]
 pub(crate) struct Switches(Rc<RefCell<Vec<SwitchEntry>>>);
 
@@ -99,7 +89,6 @@ impl Switches {
         self.0.borrow_mut().clear();
     }
 
-    /// The state a switch for `key` binds to, showing `value`.
     pub(crate) fn state(&self, key: SwitchKey, value: bool) -> LocalState<bool> {
         let mut entries = self.0.borrow_mut();
         if let Some((_, state, _)) = entries.iter().find(|(k, _, _)| *k == key) {
@@ -110,8 +99,8 @@ impl Switches {
         state
     }
 
-    /// The switches whose state differs from the value they were built
-    /// with, and their new value. Each is reported once.
+    /// The switches whose state differs from the value they were built with, and their new
+    /// value.
     pub(crate) fn flipped(&self) -> Vec<(SwitchKey, bool)> {
         let mut entries = self.0.borrow_mut();
         let mut out = Vec::new();
@@ -137,7 +126,6 @@ pub(crate) enum Tab {
 impl Tab {
     pub(crate) const ALL: [Tab; 3] = [Tab::Rules, Tab::Services, Tab::Blocked];
 
-    /// The view's id in the window bar's switcher.
     pub(crate) fn view_id(self) -> &'static str {
         match self {
             Tab::Rules => "firewall.view.rules",
@@ -155,10 +143,7 @@ impl Tab {
     }
 }
 
-/// The add-rule draft. The typed values live in local state so they
-/// survive a rebuild of the page; the choices are the app's.
 pub(crate) struct Draft {
-    /// The rule being edited, or `None` when adding.
     pub editing: Option<RuleId>,
     pub service: bool,
     pub proto: Proto,
@@ -202,8 +187,8 @@ impl Draft {
     }
 }
 
-/// The zone list, in firewalld's order from least to most trusted; the
-/// active zone says so on its row.
+/// The zone list, in firewalld's order from least to most trusted; the active zone says so
+/// on its row.
 pub(crate) fn zone_list(config: &FirewallConfig, selected: ZoneKind, intents: &Intents) -> NavList {
     let zones: Vec<NavItem> = ZoneKind::ALL
         .iter()
@@ -233,17 +218,14 @@ pub(crate) fn zone_id(zone: ZoneKind) -> String {
     format!("zone:{}", zone.name())
 }
 
-/// The window bar's action that turns the firewall on and off.
 pub(crate) const FIREWALL_ON: &str = "firewall.enabled";
 /// The window bar's action that enters and leaves panic mode.
 pub(crate) const PANIC_MODE: &str = "firewall.panic";
-/// The window bar's action that applies the configuration to the system.
 pub(crate) const APPLY: &str = "firewall.apply";
-/// The window bar's action that opens the add-rule dialog.
 pub(crate) const ADD_RULE: &str = "firewall.add-rule";
 
-/// The firewall's commands in the window bar: its switch, Apply, Add rule
-/// while the rules show, and panic mode in the bar's menu.
+/// The firewall's commands in the window bar: its switch, Apply, Add rule while the rules
+/// show, and panic mode in the bar's menu.
 pub(crate) fn window_actions(
     enabled: bool,
     panic: bool,
@@ -251,8 +233,6 @@ pub(crate) fn window_actions(
     applying: bool,
 ) -> Vec<ToolbarAction> {
     let mut actions = vec![
-        // The switch is named by what a press does; it shows on while the
-        // rules are enforced.
         ToolbarAction::new(
             FIREWALL_ON,
             Icon::Shield.name(),
@@ -308,7 +288,7 @@ pub(crate) fn window_views(tab: Tab) -> ToolbarViews {
     }
 }
 
-/// Nothing to show: firewalld cannot be read. One sentence, one action.
+/// Nothing to show: firewalld cannot be read.
 pub(crate) fn unavailable(detail: Option<&str>, intents: &Intents) -> Element {
     let state = match detail {
         Some(detail) => EmptyState::error("Firewall service unavailable", detail),
@@ -327,13 +307,9 @@ pub(crate) fn unavailable(detail: Option<&str>, intents: &Intents) -> Element {
 /// Where the read of dropped traffic stands, as the Blocked tab shows it.
 #[derive(Clone, Copy)]
 pub(crate) enum BlockedRead<'a> {
-    /// Not read yet in this window.
     Unread,
-    /// Reading the system journal, whatever an earlier read found.
     Reading,
-    /// The last read failed, and why.
     Failed(&'a str),
-    /// What the last read found.
     Read(&'a BlockedReport),
 }
 
@@ -353,35 +329,27 @@ impl<'a> BlockedRead<'a> {
     }
 }
 
-/// Everything a zone's page shows, borrowed from the app.
 pub(crate) struct PageModel<'a> {
     pub config: &'a FirewallConfig,
     pub zone: &'a Zone,
     pub tab: Tab,
     pub selected_rule: Option<RuleId>,
-    /// The order a person chose for the rules, kept across rebuilds.
     pub rule_sort: &'a LocalState<Option<TableSort>>,
     pub pending_delete: Option<&'a Rule>,
     pub pending_switch: Option<PendingSwitch>,
     pub draft: &'a Draft,
-    /// The add/edit-rule dialog is open.
     pub adding: bool,
     pub applying: bool,
     pub blocked: BlockedRead<'a>,
-    /// The content column is wide enough for the services' descriptions.
     pub wide: bool,
 }
 
-/// The selected zone's page.
 pub(crate) fn zone_page(
     model: &PageModel<'_>,
     intents: &Intents,
     switches: &Switches,
     offset: &Rc<Cell<(f32, f32)>>,
 ) -> Element {
-    // The banners, the zone's state, its numbers, its details and the
-    // tabbed rules are groups of the page, a group apart; a tab sits a
-    // sibling step over its content.
     let mut page = Column::new()
         .with_intrinsic_height()
         .with_rhythm(Rhythm::Group);
@@ -452,8 +420,6 @@ fn banners(config: &FirewallConfig) -> Vec<Element> {
 fn zone_status(model: &PageModel<'_>, intents: &Intents) -> Column {
     let active = model.zone.kind == model.config.default_zone;
     let mut column = Column::new().with_intrinsic_height().with_no_padding();
-    // The zone list marks the active zone; the page offers to make another
-    // one active, and says nothing more about it.
     if !active {
         let intents = intents.clone();
         column = column.push(Box::new(
@@ -554,8 +520,8 @@ impl RuleRow {
     }
 }
 
-/// The zone's rules in one list: what each does is a badge in its own
-/// column, and the list sorts by any of its text columns.
+/// The zone's rules in one list: what each does is a badge in its own column, and the list
+/// sorts by any of its text columns.
 fn rules(model: &PageModel<'_>, intents: &Intents, switches: &Switches) -> Element {
     if model.zone.rules.is_empty() {
         return Box::new(
@@ -673,8 +639,8 @@ fn rule_table(
     })
 }
 
-/// A segmented choice that takes its accessible name from the form field
-/// it sits in, like the toolkit's own form controls.
+/// A segmented choice that takes its accessible name from the form field it sits in, like
+/// the toolkit's own form controls.
 struct Choice {
     group: ToggleGroup,
     name: Option<String>,
@@ -739,8 +705,8 @@ fn choice<T: Copy + PartialEq + 'static>(
     )
 }
 
-/// A field of the add-rule dialog: its label above the control, so every
-/// control in the dialog starts on one edge.
+/// A field of the add-rule dialog: its label above the control, so every control in the
+/// dialog starts on one edge.
 fn stacked<C: FormControl + 'static>(label: &str, control: C) -> Field {
     Field::new(label, control).with_label_placement(Some(LabelPlacement::Above))
 }
@@ -750,8 +716,8 @@ fn choice_field(label: &str, control: Choice) -> Field {
     stacked(label, control).with_trailing_control()
 }
 
-/// The add-rule dialog: what the rule matches, what it does and where the
-/// traffic comes from. Each field says what is wrong with it.
+/// The add-rule dialog: what the rule matches, what it does and where the traffic comes
+/// from.
 fn add_rule_dialog(zone: ZoneKind, draft: &Draft, intents: &Intents) -> ModalDialog<Column> {
     let editing = draft.editing.is_some();
     let mut fields: Vec<Field> = vec![choice_field(
@@ -1059,8 +1025,6 @@ struct ServiceRow {
 }
 
 /// The catalog's services, each with a switch that lets it through the zone.
-/// A column too narrow for the descriptions leaves them out rather than
-/// cutting each one short.
 fn services(zone: &Zone, wide: bool, switches: &Switches) -> DataTable<ServiceRow> {
     let toggles = switches.clone();
     let mut columns = Vec::new();
