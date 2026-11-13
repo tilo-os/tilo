@@ -1,23 +1,20 @@
 //! Starting an app in the mode its signature earns.
 //!
-//! Both paths spawn with `POSIX_SPAWN_CLOEXEC_DEFAULT`: the child inherits
-//! stdio and exactly the descriptors the request names — the runtime's
-//! pre-connected service sockets — and nothing else the launcher holds.
+//! Both paths spawn with `POSIX_SPAWN_CLOEXEC_DEFAULT`: the child inherits stdio and exactly the
+//! descriptors the request names (the runtime's pre-connected service sockets), and nothing else
+//! the launcher holds.
 //!
-//! **App Sandbox.** The file was inspected before launch, but a file can be
-//! replaced between inspection and exec. So the process is spawned
-//! suspended, the *running* image is verified ([`verify_process`]: trusted
-//! identity, not ad-hoc, App Sandbox enabled), and only then resumed; a
-//! process that fails is killed before it executes an instruction. App
-//! Sandbox itself is applied by `libsystem_secinit` as the process starts,
-//! which aborts the process if it cannot.
+//! **App Sandbox.** A file can be replaced between inspection and exec, so the process is spawned
+//! suspended, the running image is verified ([`verify_process`]: trusted identity, not ad-hoc, App
+//! Sandbox enabled), and only then resumed; a process that fails is killed before it executes an
+//! instruction. `libsystem_secinit` applies the sandbox as the process starts, and aborts the
+//! process if it cannot.
 //!
-//! **Seatbelt.** The profile is applied by `/usr/bin/sandbox-exec` (SIP
-//! protected), which calls `sandbox_init_with_parameters` in the child and
-//! only then execs the app; if the profile does not apply it exits without
-//! exec'ing anything. A preflight runs the same profile against a target
-//! that cannot exist first, so a profile the kernel rejects becomes a
-//! [`LaunchError::SeatbeltUnavailable`] rather than a dead child.
+//! **Seatbelt.** `/usr/bin/sandbox-exec` (SIP protected) calls `sandbox_init_with_parameters` in
+//! the child and only then execs the app; if the profile does not apply it exits without exec'ing
+//! anything. A preflight runs the same profile against a target that cannot exist first, so a
+//! profile the kernel rejects becomes a [`LaunchError::SeatbeltUnavailable`] rather than a dead
+//! child.
 
 use std::collections::BTreeMap;
 use std::ffi::{CString, OsStr, OsString, c_char, c_int};
@@ -41,8 +38,8 @@ use crate::sbpl::{self, SeatbeltProfile};
 
 /// The system's Seatbelt trampoline.
 pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
-/// `sandbox-exec` exits `EX_OSERR` when the profile applied and only the
-/// exec failed; a profile that did not apply exits `EX_DATAERR`.
+/// `sandbox-exec` exits `EX_OSERR` when the profile applied and only the exec failed; a profile that
+/// did not apply exits `EX_DATAERR`.
 const EXEC_FAILED_AFTER_APPLY: i32 = 71;
 /// Inside a root-owned directory that is empty by definition.
 const PREFLIGHT_TARGET: &str = "/var/empty/tilo-seatbelt-preflight";
@@ -51,35 +48,30 @@ const INHERITED_ENV: &[&str] = &["LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES"];
 const PATH_ENV: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
 unsafe extern "C" {
-    /// Apple extension: keep `fd` open across a spawn that sets
-    /// `POSIX_SPAWN_CLOEXEC_DEFAULT`.
+    /// Apple extension: keep `fd` open across a spawn that sets `POSIX_SPAWN_CLOEXEC_DEFAULT`.
     fn posix_spawn_file_actions_addinherit_np(
         actions: *mut libc::posix_spawn_file_actions_t,
         fd: c_int,
     ) -> c_int;
 }
 
-/// One app launch.
 #[derive(Debug, Clone)]
 pub struct LaunchRequest {
     pub package_id: String,
     /// The Mach-O to exec; must resolve inside [`Self::payload_dir`].
     pub executable: PathBuf,
     pub args: Vec<OsString>,
-    /// The installed package, already verified against the registry's
-    /// signed index.
+    /// The installed package, already verified against the registry's signed index.
     pub payload_dir: PathBuf,
     pub runtime_dylib_dir: Option<PathBuf>,
-    /// The app's container, from [`crate::policy::prepare_container`].
     pub container_dir: PathBuf,
     pub capabilities: CapabilityPlan,
-    /// A [`EgressDecision::Filtered`] launch is served by a
-    /// [`LoopbackGate`] the launched app holds.
+    /// A [`EgressDecision::Filtered`] launch is served by a [`LoopbackGate`] the launched app holds.
     pub egress: EgressDecision,
     /// Pre-connected service descriptors, inherited at the same numbers.
     pub inherit_fds: Vec<RawFd>,
-    /// Extra environment. Under Seatbelt the container variables
-    /// (`HOME`, `XDG_*`, `TMPDIR`) are set last and cannot be overridden.
+    /// Extra environment. Under Seatbelt the container variables (`HOME`, `XDG_*`, `TMPDIR`) are set
+    /// last and cannot be overridden.
     pub env: Vec<(OsString, OsString)>,
     pub trust: TrustRequirement,
 }
@@ -127,8 +119,8 @@ pub enum LaunchError {
     },
 }
 
-/// A launched app. Dropping it leaves the app running, but stops its egress
-/// gate; call [`LaunchedApp::wait`] to reap it.
+/// A launched app. Dropping it leaves the app running but stops its egress gate; call
+/// [`LaunchedApp::wait`] to reap it.
 #[derive(Debug)]
 pub struct LaunchedApp {
     pid: libc::pid_t,
@@ -149,19 +141,17 @@ impl LaunchedApp {
         wait_pid(self.pid)
     }
 
-    /// Send `SIGKILL`.
     pub fn kill(&self) -> io::Result<()> {
         signal(self.pid, libc::SIGKILL)
     }
 }
 
-/// Launch `request` under App Sandbox or Seatbelt — never neither.
+/// Launch `request` under App Sandbox or Seatbelt, never neither.
 ///
 /// # Errors
 ///
-/// Returns [`LaunchError`] when the executable is outside its payload, the
-/// policy cannot be resolved, the chosen sandbox cannot be applied or
-/// verified, or the process cannot be spawned.
+/// [`LaunchError`] when the executable is outside its payload, the policy cannot be resolved, the
+/// chosen sandbox cannot be applied or verified, or the process cannot be spawned.
 pub fn launch(request: &LaunchRequest) -> Result<LaunchedApp, LaunchError> {
     let payload = resolve(&request.payload_dir)?;
     let executable = resolve(&request.executable)?;
@@ -313,9 +303,8 @@ fn start_seatbelted(
     Ok((pid, gate))
 }
 
-/// The app's own per-user cache directory, so Metal keeps its compiled
-/// shaders across launches. Without one the app still runs; its shaders
-/// compile on every launch.
+/// The app's own per-user cache directory, so Metal keeps its compiled shaders across launches;
+/// without one the app still runs, compiling them on every launch.
 fn darwin_cache(request: &LaunchRequest) -> Option<DarwinCache> {
     let prepared = user_cache_dir()
         .and_then(|user_cache| prepare_darwin_cache(&user_cache, &request.container_dir));
@@ -332,8 +321,7 @@ fn darwin_cache(request: &LaunchRequest) -> Option<DarwinCache> {
     }
 }
 
-/// `confstr(_CS_DARWIN_USER_CACHE_DIR)`: this user's cache directory below
-/// `/var/folders`.
+/// `confstr(_CS_DARWIN_USER_CACHE_DIR)`: this user's cache directory below `/var/folders`.
 fn user_cache_dir() -> io::Result<PathBuf> {
     let mut buf = vec![0_u8; libc::PATH_MAX as usize];
     // SAFETY: `buf` is writable for `buf.len()` bytes; confstr writes at most
@@ -352,8 +340,8 @@ fn user_cache_dir() -> io::Result<PathBuf> {
     Ok(PathBuf::from(OsString::from_vec(buf)))
 }
 
-/// Apply `profile` to a throwaway child that then tries to exec a path that
-/// cannot exist. Only "applied, and the exec failed" passes.
+/// Apply `profile` to a throwaway child that then tries to exec a path that cannot exist. Only
+/// "applied, and the exec failed" passes.
 pub(crate) fn preflight(profile: &SeatbeltProfile) -> Result<(), String> {
     let output = Command::new(SANDBOX_EXEC)
         .args(profile_args(profile))
@@ -390,10 +378,8 @@ fn app_argv(executable: &Path, args: &[OsString]) -> Vec<OsString> {
         .collect()
 }
 
-/// `PATH`, the launcher's locale, the request's variables, then `fixed`.
-/// The surface the package ships (`surface.toml` at its payload root), by
-/// path and hash: the app reads it, checks the hash and names it in every
-/// change it signs. None for a package without one.
+/// The surface the package ships (`surface.toml` at its payload root), by path and hash: the app
+/// reads it, checks the hash and names it in every change it signs. None for a package without one.
 fn surface_env(payload_dir: &Path) -> Vec<(String, String)> {
     let file = payload_dir.join("surface.toml");
     let Ok(bytes) = std::fs::read(&file) else {
@@ -565,8 +551,8 @@ fn wait_pid(pid: libc::pid_t) -> io::Result<ExitStatus> {
     }
 }
 
-/// A process spawned suspended does not act on `SIGKILL` until it is
-/// resumed; the pending kill is taken before any user instruction runs.
+/// A process spawned suspended does not act on `SIGKILL` until it is resumed; the pending kill is
+/// taken before any user instruction runs.
 fn kill_and_reap(pid: libc::pid_t) {
     let _ = signal(pid, libc::SIGKILL);
     let _ = signal(pid, libc::SIGCONT);
@@ -577,9 +563,8 @@ fn kill_and_reap(pid: libc::pid_t) {
 mod tests {
     use super::*;
 
-    /// Apple-signed with `com.apple.security.app-sandbox`, and — unlike
-    /// Apple's apps, which launch constraints kill unless launchd starts
-    /// them — exec'able from any parent.
+    /// Apple-signed with `com.apple.security.app-sandbox`, and, unlike Apple's apps (which launch
+    /// constraints kill unless launchd starts them), exec'able from any parent.
     const SANDBOXED: &str = "/usr/libexec/languageassetd";
 
     fn request(executable: &str, trust: TrustRequirement) -> LaunchRequest {

@@ -1,16 +1,12 @@
-//! Code-signature inspection through Security.framework.
+//! Code-signature inspection through Security.framework. [`inspect`] answers, for a file on disk,
+//! the questions [`crate::classify::decide`] needs: is there a signature, does it verify under
+//! strict validation, is it ad-hoc, does its signer satisfy the [`TrustRequirement`] (notarization
+//! included), and does it enable App Sandbox. [`verify_process`] asks the identity and entitlement
+//! questions again of a running process, which closes the window between inspecting a file and
+//! exec'ing it.
 //!
-//! [`inspect`] answers, for a file on disk, the questions
-//! [`crate::classify::decide`] needs: is there a signature, does it verify
-//! under strict validation, is it ad-hoc, does its signer satisfy the
-//! [`TrustRequirement`] (notarization included), and does it enable App
-//! Sandbox. [`verify_process`] asks the identity and entitlement questions
-//! again of a *running* process, which is what closes the window between
-//! inspecting a file and exec'ing it.
-//!
-//! Every failure is a verdict, never an error to route around: an API that
-//! does not answer yields [`CodeSignature::Unreadable`] or
-//! [`CodeSignature::Invalid`], both of which mean Seatbelt.
+//! Every failure is a verdict, never an error to route around: an API that does not answer yields
+//! [`CodeSignature::Unreadable`] or [`CodeSignature::Invalid`], both of which mean Seatbelt.
 
 use std::ffi::c_void;
 use std::os::unix::ffi::OsStrExt;
@@ -121,16 +117,16 @@ const K_SEC_CODE_SIGNATURE_ADHOC: i64 = 0x0002;
 /// `errSecCSUnsigned`.
 const ERR_SEC_CS_UNSIGNED: OSStatus = -67062;
 
-/// Strict validation: every architecture, nested code, no symlinks leaving
-/// the bundle, no resources stored outside the signature.
+/// Strict validation: every architecture, nested code, no symlinks leaving the bundle, no resources
+/// stored outside the signature.
 const STRICT: SecCSFlags = K_SEC_CS_CHECK_ALL_ARCHITECTURES
     | K_SEC_CS_CHECK_NESTED_CODE
     | K_SEC_CS_STRICT_VALIDATE
     | K_SEC_CS_RESTRICT_SYMLINKS
     | K_SEC_CS_RESTRICT_SIDEBAND_DATA;
 
-/// What `SecCodeCheckValidity` accepts of [`STRICT`] for a running process;
-/// the on-disk layout checks are static-only and rejected as invalid flags.
+/// What `SecCodeCheckValidity` accepts of [`STRICT`] for a running process; the on-disk layout
+/// checks are static-only and rejected as invalid flags.
 const STRICT_DYNAMIC: SecCSFlags = K_SEC_CS_STRICT_VALIDATE;
 
 /// An owned CoreFoundation reference, released on drop.
@@ -175,7 +171,6 @@ fn requirement(text: &str) -> Result<Cf, OSStatus> {
     Cf::new(out).ok_or(-1)
 }
 
-/// Inspect the code signature of the file or bundle at `path`.
 pub fn inspect(path: &Path, trust: &TrustRequirement) -> CodeSignature {
     let bytes = path.as_os_str().as_bytes();
     let Ok(len) = CFIndex::try_from(bytes.len()) else {
@@ -240,9 +235,8 @@ pub fn classify(path: &Path, trust: &TrustRequirement) -> MacLaunchMode {
     decide(&inspect(path, trust))
 }
 
-/// Check that the process `pid` — normally spawned suspended — is running
-/// code that validly satisfies `trust`'s identity requirement, is not
-/// ad-hoc, and enables App Sandbox.
+/// Check that the process `pid`, normally spawned suspended, is running code that validly satisfies
+/// `trust`'s identity requirement, is not ad-hoc, and enables App Sandbox.
 pub fn verify_process(pid: libc::pid_t, trust: &TrustRequirement) -> Result<(), String> {
     // SAFETY: an immutable framework constant initialised at load.
     let key = unsafe { kSecGuestAttributePid };
