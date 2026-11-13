@@ -224,6 +224,14 @@ impl Chooser {
             .map(|selection| selection.model.output_tokens())
     }
 
+    /// The most tokens one answer of the model this chooser asks may take,
+    /// only when its descriptor declares it: what compaction leaves room for,
+    /// which an undeclared limit must not size by the default request ceiling.
+    pub fn declared_output_tokens(&self) -> Option<u32> {
+        self.selection()
+            .and_then(|selection| selection.model.max_output_tokens)
+    }
+
     /// Whether the model this chooser asks sees pictures.
     pub fn sees(&self) -> bool {
         self.selection()

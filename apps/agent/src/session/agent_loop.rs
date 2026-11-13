@@ -337,6 +337,15 @@ fn is_output_limit(body: &str) -> bool {
 
 /// The longest prefix of `text` within `max` bytes, cut on a character
 /// boundary.
+/// The input tokens the provider counted for the request a turn's `body`
+/// answers, when it said.
+fn input_tokens(body: &str) -> Option<u64> {
+    serde_json::from_str::<agent_provider_config::protocol::ModelResponse>(body)
+        .ok()
+        .map(|response| response.usage.input_tokens)
+        .filter(|tokens| *tokens > 0)
+}
+
 fn head(text: &str, max: usize) -> &str {
     if text.len() <= max {
         return text;
@@ -450,6 +459,9 @@ pub(super) struct LoopState {
     /// Whether the model was asked, once, to say what it did when it finished
     /// with work done and no words.
     asked_for_words: bool,
+    /// The last turn's request as compaction estimated it, and the input
+    /// tokens the provider counted for it, when it said.
+    counted: Option<(usize, u64)>,
 }
 
 /// An independent invoke running in its application while the turn goes on.
@@ -641,6 +653,7 @@ impl LoopState {
             programs: program_steps::ProgramWorld::default(),
             malformed_turns: 0,
             continuations: 0,
+            counted: None,
             reply: None,
             silent_finishes: 0,
             asked_for_words: false,
@@ -1137,7 +1150,7 @@ impl Session {
         // limit is not made to overflow by its answer.
         let mut context = compaction::Context::of_context(
             self.chooser.context_tokens(),
-            self.chooser.output_tokens(),
+            self.chooser.declared_output_tokens(),
         );
         let began = ui::time::now();
         self.chooser.begin_trace();
@@ -1199,6 +1212,9 @@ impl Session {
             }
             // What the next turn is sent stays within the model's context:
             // results read long ago give way to their handles.
+            if let Some((sent, input_tokens)) = state.counted.take() {
+                context.counted(sent, input_tokens);
+            }
             context.compact(&mut conversation, &mut state.pages);
             turn += 1;
         }
@@ -1431,6 +1447,7 @@ impl Session {
         }
         self.incorporate_native_directions(run, conversation)?;
         let body = conversation.body(&tools::typed_loop_definitions());
+        let sent = compaction::Context::tokens_of(&body);
         // The model starts first. The cancellation poll is a round trip to
         // the host and is not waited for: its answer is read while the model
         // thinks, and before any step of this turn reaches the host.
@@ -1656,6 +1673,9 @@ impl Session {
             }
         };
         self.charge_turn(run, &body)?;
+        if let Some(input_tokens) = input_tokens(&body) {
+            state.counted = Some((sent, input_tokens));
+        }
         // A turn the model cut off at its output limit is not a failed plan:
         // it is an answer that stopped early. Its text — what it wrote of the
         // answer or of its calls — is kept, and the model is asked to go on
