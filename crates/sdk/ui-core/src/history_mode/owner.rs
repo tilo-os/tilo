@@ -434,14 +434,25 @@ impl HistoryOwner {
             } => store.route(checkout).ok(),
         }
     }
+    /// Merge a peer's `mutation` into the record. A merge is an action boundary, as an undo or a
+    /// save is: the word still being typed in the window's document `outer` becomes its own step,
+    /// named by the action typing it, and the peer's change lands after it. Waiting for the
+    /// person's next boundary instead held every peer's change for as long as they kept typing or
+    /// sat idle. A step no action names stays open: committed unnamed, the identity service would
+    /// refuse it, so the change waits for that step's end.
     pub(crate) fn merge_remote(
         &self,
         mutation: &collab_types::DocumentMutation,
+        outer: &mut AutoCommit,
     ) -> Result<super::routes::MergedRemote, super::routes::RemoteApplyError> {
         self.validate()
             .map_err(|error| super::routes::RemoteApplyError::Unavailable(error.to_string()))?;
         let (store, checkout) = self.store_checkout();
-        crate::bound_dispatch::merge_remote_owned_document(store, checkout, mutation)
+        let merged = crate::bound_dispatch::merge_remote_owned_document(store, checkout, mutation)?;
+        if merged.changed.is_none() && self.close_named_step(outer) {
+            return crate::bound_dispatch::merge_remote_owned_document(store, checkout, mutation);
+        }
+        Ok(merged)
     }
 
     pub(crate) fn with_restore_authority<T>(

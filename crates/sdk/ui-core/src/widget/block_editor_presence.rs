@@ -106,7 +106,15 @@ impl BlockEditor {
                 .among(self.ink_around(i, ctx.theme), text_right),
             );
         }
-        if let Some(list) = ctx.presence.carets.get(&key) {
+        // A peer's caret arrives under the block's key, or under its digest when the key was too
+        // long to travel whole ([`crate::presence::PresenceKey::digest_form`]).
+        let digest = key.digest_form();
+        let carets = ctx.presence.carets.get(&key).into_iter().chain(
+            digest
+                .as_ref()
+                .and_then(|digest| ctx.presence.carets.get(digest)),
+        );
+        for list in carets {
             // What sits above the editor (a note's title and dates) is not
             // the editor's to cover: a chip on the first line hangs below.
             let top = self
@@ -130,7 +138,12 @@ impl BlockEditor {
                 );
             }
         }
-        if let Some(list) = ctx.presence.selections.get(&key) {
+        let selections = ctx.presence.selections.get(&key).into_iter().chain(
+            digest
+                .as_ref()
+                .and_then(|digest| ctx.presence.selections.get(digest)),
+        );
+        for list in selections {
             for (user, range) in list {
                 ctx.presence.draw_peer_selection(
                     ctx.scene,
