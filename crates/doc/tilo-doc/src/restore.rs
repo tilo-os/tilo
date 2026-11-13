@@ -471,7 +471,7 @@ mod tests {
         let mut peer = AutoCommit::load(&peer.save()).unwrap();
         merged.merge_incoming(&mut peer).unwrap();
         let merged = texts(&merged.save());
-        assert_eq!(merged.len(), 2, "{merged:?}");
+        assert_eq!(merged.len(), 2, "a concurrent edit: {merged:?}");
         assert_eq!(merged[1], "beta", "a concurrent edit: {merged:?}");
         assert!(
             merged[0].starts_with("alpha") && merged[0].ends_with('!'),

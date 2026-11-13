@@ -230,6 +230,7 @@ mod tests {
             ("BA", 53),
             ("ZZ", 702),
             ("AAA", 703),
+            ("XFD", 16_384),
         ] {
             assert_eq!(col_to_index(letters), Some(idx), "{letters} → {idx}");
             assert_eq!(index_to_col(idx), letters, "{idx} → {letters}");
@@ -244,16 +245,25 @@ mod tests {
             assert_eq!(make_ref(col, row), r, "({col},{row})");
         }
         assert_eq!(parse_ref("$B$3"), Some((2, 3)));
+        assert_eq!(parse_ref("a1"), Some((1, 1)), "lower-case letters");
+        assert_eq!(index_to_col(0), "", "no column before the first");
         for (r, why) in [
             ("", "empty"),
             ("1", "no column letters"),
             ("A", "no row digits"),
             ("A0", "row must be >= 1"),
             ("A2000000", "row over the bound"),
+            ("A1048577", "one row past the bound"),
+            ("A99999999999", "a row no u32 holds"),
+            ("A1B", "letters after the row"),
+            ("A-1", "a sign among the column letters"),
+            ("é1", "a letter outside A to Z"),
+            ("AAAA1", "over 3 column letters"),
         ] {
             assert_eq!(parse_ref(r), None, "{why}");
         }
         assert_eq!(col_to_index("AAAA"), None, "over 3 letters");
+        assert_eq!(col_to_index(""), None, "no letters");
         assert_eq!(col_to_index("A1"), None, "non-letter");
     }
 
@@ -276,6 +286,21 @@ mod tests {
         assert_eq!(shift_formula("A1+XFD1", 1, 0), "B1+XFD1");
         assert_eq!(shift_formula("B2", -1, -1), "A1");
         assert_eq!(shift_formula("A1", -1, 0), "A1");
+        assert_eq!(
+            shift_formula("A1048576", 0, 1),
+            "A1048576",
+            "a row past the last stays"
+        );
+        assert_eq!(
+            shift_formula("B2:C3", -1, -1),
+            "A1:B2",
+            "a range moves whole"
+        );
+        assert_eq!(
+            shift_formula("B2:C3", -2, 0),
+            "B2:C3",
+            "a range one end of which would leave the grid stays whole"
+        );
         assert_eq!(shift_formula("", 1, 1), "");
     }
 }
