@@ -467,6 +467,10 @@ tilo_test_env::scenario! {
         );
     }
 
+    // Every example package building from its directory is `tilolang-cli`'s test rather than this one: a
+    // package may `use` a native app (the shell calls the session's actions), and the native app's described
+    // package, which only the catalogue reads, is what compiling it needs.
+
     phase a_missing_import_names_the_app_and_where_it_looked;
     {
         let scratch = Scratch::new("missing");
@@ -673,10 +677,6 @@ tilo_test_env::scenario! {
         );
     }
 }
-
-// Every example package building from its directory is `tilolang-cli`'s test rather than this one: a
-// package may `use` a native app (the shell calls the session's actions), and the native app's described
-// package, which only the catalogue reads, is what compiling it needs.
 
 /// A library: a record type of its own, an enum, a function over its resource type, the action that writes
 /// its records, and the view of its root.
