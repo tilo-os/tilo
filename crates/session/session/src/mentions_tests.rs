@@ -243,6 +243,28 @@ fn a_mention_in_a_record_is_one_notice_for_the_reader_it_names() {
     assert_eq!(Place::from_activation(&place.activation()), Some(place));
 }
 
+/// An app's own record is the workspace's document, which also keeps its index, and travels
+/// under the empty route: a mention in it is read there, as any other record's is.
+#[test]
+fn a_mention_in_an_apps_own_record_is_told() {
+    let device = Device::empty();
+    let shown = Rc::new(Shown::default());
+    let mentions = device.role(&shown);
+    let mut written = notebook("Ask @Bea about the date", Some((4, 8, BEA)), ADA);
+    Device::write_doc(
+        &device.store,
+        &StorageKey::workspace_index(NOTES, WORKSPACE),
+        &mut written,
+    );
+    mentions.step();
+    let up = shown.up.borrow();
+    assert_eq!(up.len(), 1, "{up:?}");
+    assert_eq!(
+        up.values().next().unwrap().title,
+        "Ada mentioned you in ‘Launch plan’"
+    );
+}
+
 #[test]
 fn nobody_else_in_the_workspace_is_told() {
     let written = notebook("Ask @Bea about the date", Some((4, 8, BEA)), ADA);

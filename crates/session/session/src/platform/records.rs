@@ -386,7 +386,8 @@ fn index_document(store: &dyn DurableStore, app: &str, workspace: &str) -> Optio
     .ok()
 }
 
-/// The document `app` keeps for `record` in `workspace`, as its app last committed it.
+/// The document `app` keeps for `record` in `workspace`, as its app last committed it. The empty
+/// route is the app's own record, the workspace document that also keeps its index.
 #[must_use]
 pub fn document(
     store: &dyn DurableStore,
@@ -394,6 +395,9 @@ pub fn document(
     workspace: &str,
     record: &str,
 ) -> Option<AutoCommit> {
+    if record.is_empty() {
+        return index_document(store, app, workspace);
+    }
     let stored = match store.read(&StorageKey::document(app, workspace, record)) {
         Ok(stored) => stored?,
         Err(error) => {
