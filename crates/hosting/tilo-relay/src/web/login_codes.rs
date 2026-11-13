@@ -1,7 +1,10 @@
 //! Login codes ([`tilo_relay_protocol::login_code`]): the short code a
 //! person's tab shows and their agent types into `tilo login`.
 //!
-//! Codes live in memory only, a bounded number at once. Each is drawn from
+//! Codes live in memory, a bounded number at once, and are kept on the
+//! host's disk with its state ([`LoginCodes::kept`]): a code a tab shows, or
+//! an agent was handed, still resolves after the host restarts, as every
+//! deploy restarts it. Each is drawn from
 //! the operating system's random source, resolves once (the first resolve
 //! spends it) within [`CODE_LIFETIME_MS`], and keeps what the computer
 //! reports for [`FOLLOW_LIFETIME_MS`] after that. Only the tab holding the
@@ -20,6 +23,9 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
 
 use tilo_relay_protocol::login_code::{
     CODE_LETTERS, CODE_LIFETIME_MS, ClaimedFor, Created, FOLLOW_LIFETIME_MS, MAX_AGENT_CHARS,
@@ -68,6 +74,7 @@ impl Refusal {
 }
 
 /// A claim a device of a person made for a sign-in code.
+#[derive(Serialize, Deserialize)]
 struct Claim {
     user: [u8; 32],
     invite: [u8; 16],
@@ -79,6 +86,7 @@ struct Claim {
 }
 
 /// What a computer did with a code it resolved.
+#[derive(Serialize, Deserialize)]
 struct Resolution {
     report: [u8; 32],
     at_ms: u64,
@@ -88,6 +96,7 @@ struct Resolution {
     claim: Option<Claim>,
 }
 
+#[derive(Serialize, Deserialize)]
 struct Entry {
     code: String,
     link: Option<String>,
@@ -208,6 +217,22 @@ impl State {
         });
     }
 
+    /// The live codes `kept` names, with the indexes they are found by.
+    fn of(kept: Kept, now_ms: u64) -> Self {
+        let mut state = Self::default();
+        for (follow, entry) in kept.codes {
+            if entry.resolution.is_none() {
+                state.unspent.insert(entry.code.clone(), follow);
+            }
+            if let Some(resolved) = &entry.resolution {
+                state.reports.insert(resolved.report, follow);
+            }
+            state.entries.insert(follow, entry);
+        }
+        state.prune(now_ms);
+        state
+    }
+
     fn by_report(&mut self, report: &str) -> Result<&mut Entry, Refusal> {
         let report = secret(report).ok_or(Refusal::Malformed("a report secret is 32 bytes hex"))?;
         let follow = self.reports.get(&report).ok_or(Refusal::Unknown)?;
@@ -215,12 +240,59 @@ impl State {
     }
 }
 
+/// What the host keeps of its codes on disk: each live code by its follow
+/// secret. The indexes and the budgets are rebuilt or start over.
+#[derive(Serialize, Deserialize)]
+struct Kept {
+    version: u32,
+    codes: Vec<([u8; 32], Entry)>,
+}
+
+/// [`Kept`] as the host writes it, from the codes it holds.
+#[derive(Serialize)]
+struct Keeping<'a> {
+    version: u32,
+    codes: Vec<(&'a [u8; 32], &'a Entry)>,
+}
+
+/// The codes kept at `path`; `None` when there are none, or the file is not
+/// one this host reads (another version, or damaged).
+fn read_kept(path: &Path) -> Option<Kept> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            tracing::warn!(%error, "kept login codes not read; starting without them");
+            return None;
+        }
+    };
+    match serde_json::from_slice::<Kept>(&bytes) {
+        Ok(kept) if kept.version == KEPT_VERSION => Some(kept),
+        Ok(kept) => {
+            tracing::warn!(
+                version = kept.version,
+                "kept login codes of another version; starting without them"
+            );
+            None
+        }
+        Err(error) => {
+            tracing::warn!(%error, "kept login codes damaged; starting without them");
+            None
+        }
+    }
+}
+
+/// The version of [`Kept`] this host writes; a file of another is not read.
+const KEPT_VERSION: u32 = 1;
+
 /// The host's login codes.
 pub(super) struct LoginCodes {
     state: std::sync::Mutex<State>,
     /// This host's own origin as pages reach it, which a code's link must
     /// name; `None` when the host knows no origin to check against.
     host_origin: Option<String>,
+    /// Where the codes are kept across restarts; `None` keeps them in memory.
+    path: Option<PathBuf>,
 }
 
 fn secret(hex_text: &str) -> Option<[u8; 32]> {
@@ -230,11 +302,56 @@ fn secret(hex_text: &str) -> Option<[u8; 32]> {
 }
 
 impl LoginCodes {
+    #[cfg(test)]
     pub(super) fn new(host_origin: Option<String>) -> Self {
         Self {
             state: std::sync::Mutex::default(),
             host_origin,
+            path: None,
         }
+    }
+
+    /// The codes kept at `path` (those still live at `now_ms`), kept there
+    /// again on every change.
+    pub(super) fn kept(host_origin: Option<String>, path: PathBuf, now_ms: u64) -> Self {
+        let state = read_kept(&path).map_or_else(State::default, |kept| State::of(kept, now_ms));
+        Self {
+            state: std::sync::Mutex::new(state),
+            host_origin,
+            path: Some(path),
+        }
+    }
+
+    /// Keep `state`'s codes on disk, readable by this host's user only: they
+    /// hold the secrets that follow and report them.
+    fn save(&self, state: &State) {
+        let Some(path) = &self.path else { return };
+        let kept = Keeping {
+            version: KEPT_VERSION,
+            codes: state.entries.iter().collect(),
+        };
+        let written = serde_json::to_vec(&kept)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| {
+                if let Some(dir) = path.parent() {
+                    std::fs::create_dir_all(dir)?;
+                }
+                tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
+            });
+        if let Err(error) = written {
+            tracing::warn!(%error, "login codes not kept; a restart forgets them");
+        }
+    }
+
+    /// Run `f` on the codes still live at `now_ms`, under the lock, and keep
+    /// what it changed.
+    fn changed<R>(&self, now_ms: u64, f: impl FnOnce(&mut State) -> R) -> R {
+        let mut state = self.lock();
+        state.prune(now_ms);
+        let answer = f(&mut state);
+        self.save(&state);
+        drop(state);
+        answer
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -294,6 +411,7 @@ impl LoginCodes {
                 resolution: None,
             },
         );
+        self.save(&state);
         drop(state);
         Ok(Created {
             code,
@@ -339,6 +457,7 @@ impl LoginCodes {
         if let Some(follow) = follow {
             state.reports.insert(report, follow);
         }
+        self.save(&state);
         drop(state);
         Ok(resolved)
     }
@@ -366,7 +485,7 @@ impl LoginCodes {
                 "a failure's sentence is at most 300 characters",
             ));
         }
-        self.pruned(now_ms, |state| {
+        self.changed(now_ms, |state| {
             let resolved = state
                 .by_report(&report.report)?
                 .resolution
@@ -411,6 +530,7 @@ impl LoginCodes {
             expires_at_ms,
             approved: false,
         });
+        self.save(&state);
         drop(state);
         Ok(expires_at_ms)
     }
@@ -443,7 +563,7 @@ impl LoginCodes {
     /// Take the claim for `user` that minted `invite`, so it approves
     /// nothing again; `true` when there was one to take.
     pub(super) fn take_claim(&self, user: &[u8; 32], invite: &[u8; 16], now_ms: u64) -> bool {
-        self.pruned(now_ms, |state| {
+        self.changed(now_ms, |state| {
             let claim = state.entries.values_mut().find_map(|entry| {
                 entry
                     .resolution
@@ -469,6 +589,7 @@ impl LoginCodes {
             (claim.user == *user && claim.invite == *invite).then_some(resolved)
         }) {
             record(resolved, Step::Approved);
+            self.save(&state);
         }
     }
 
@@ -709,6 +830,52 @@ mod tests {
             codes.report(&report(&resolved.report, Step::Entered), later),
             Err(Refusal::Unknown)
         );
+    }
+
+    #[test]
+    fn codes_outlive_a_restart_of_the_host_and_expire_as_they_would_have() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("login-codes.json");
+        let host = || Some("https://eu1.tilo.sh".to_owned());
+        let codes = LoginCodes::kept(host(), path.clone(), NOW);
+        let shown = codes.create(Some(link()), None, NOW).unwrap();
+        let typed = codes.create(None, None, NOW).unwrap();
+        let resolved = codes.resolve(&typed.code, None, NOW + 1).unwrap();
+        codes
+            .report(&report(&resolved.report, Step::LoggedIn), NOW + 2)
+            .unwrap();
+        let soon = codes
+            .create(None, None, NOW - CODE_LIFETIME_MS + 10)
+            .unwrap();
+        drop(codes);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "the secrets are the host's alone"
+        );
+
+        // The host restarts: the code its tab still shows resolves, and the
+        // tab follows the one an agent resolved before it.
+        let codes = LoginCodes::kept(host(), path.clone(), NOW + 20);
+        let polled = codes.follow(&typed.follow, NOW + 20).unwrap();
+        assert!(polled.resolved && !polled.expired);
+        assert_eq!(polled.steps, vec![Step::Resolved, Step::LoggedIn]);
+        assert_eq!(
+            codes.resolve(&typed.code, None, NOW + 20),
+            Err(Refusal::Unknown),
+            "a code resolves once, restart or not"
+        );
+        let resolved = codes.resolve(&shown.code, None, NOW + 21).unwrap();
+        assert_eq!(resolved.link, Some(link()));
+        assert!(codes.sets_up(&[0xab; 32], &[0x7f; 16], NOW + 22));
+        assert!(codes.follow(&soon.follow, NOW + 22).unwrap().expired);
+
+        // A file the host cannot read is no reason not to start.
+        std::fs::write(&path, b"{").unwrap();
+        let codes = LoginCodes::kept(host(), path, NOW + 30);
+        assert!(codes.follow(&shown.follow, NOW + 30).unwrap().expired);
+        codes.create(None, None, NOW + 31).unwrap();
     }
 
     #[test]

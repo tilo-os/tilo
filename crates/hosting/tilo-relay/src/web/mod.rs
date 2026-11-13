@@ -354,7 +354,7 @@ impl Relay {
                 self.state_root().join("invitations"),
                 tilo_clock::unix_now_ns(),
             ),
-            login_codes: Arc::new(login_codes::LoginCodes::new(public_origin.clone())),
+            login_codes: Arc::new(kept_login_codes(self.state_root(), public_origin.clone())),
             stand_ins: Arc::new(stand_in::StandIns::new(stand_ins_dir(self.state_root()))),
             door: config.door.clone(),
         });
@@ -887,6 +887,19 @@ fn refused(code: StatusCode, message: &str) -> Response<Body> {
             .insert(header::RETRY_AFTER, header::HeaderValue::from_static("60"));
     }
     response
+}
+
+/// This host's login codes, kept under `state_root`: every deploy restarts
+/// the host, and a code a tab shows, or an agent was handed, outlives that.
+fn kept_login_codes(
+    state_root: &std::path::Path,
+    public_origin: Option<String>,
+) -> login_codes::LoginCodes {
+    login_codes::LoginCodes::kept(
+        public_origin,
+        state_root.join("login-codes.json"),
+        tilo_clock::unix_now_ms(),
+    )
 }
 
 fn code_refused(refusal: &login_codes::Refusal) -> Response<Body> {
