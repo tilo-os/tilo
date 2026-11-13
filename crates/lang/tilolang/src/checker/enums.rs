@@ -243,6 +243,7 @@ impl Checker<'_> {
                 name: ast::Ident {
                     name: "none".into(),
                     span,
+                    from_template_of: None,
                 },
                 args: None,
             },
@@ -251,7 +252,11 @@ impl Checker<'_> {
                 let shape = Shape::of(self, ty)?;
                 let name = shape.variants().into_iter().find(|v| v.id == id)?.name;
                 ast::ExprKind::Variant {
-                    name: ast::Ident { name, span },
+                    name: ast::Ident {
+                        name,
+                        span,
+                        from_template_of: None,
+                    },
                     args: None,
                 }
             }

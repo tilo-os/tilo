@@ -74,7 +74,11 @@ impl Checker<'_> {
                     .filter(|v| v.fields.is_empty());
                 match (shape, first) {
                     (Some(shape), Some(v)) => {
-                        let name = ast::Ident { name: v.name, span };
+                        let name = ast::Ident {
+                            name: v.name,
+                            span,
+                            from_template_of: None,
+                        };
                         self.construct_variant(&shape, ty, &name, None, span)
                     }
                     _ => {
@@ -548,7 +552,13 @@ impl Checker<'_> {
                 let path = dotted(base).unwrap_or_default().join(".");
                 let found = env
                     .find_import(&path)
-                    .and_then(|i| env.foreign_callable(&i.app, &name.name))
+                    .and_then(|i| {
+                        env.foreign_callable_marked(
+                            &i.app,
+                            &name.name,
+                            name.from_template_of.as_deref(),
+                        )
+                    })
                     .cloned();
                 match found {
                     Some(v) => self.view_call(&v, c, args, span),

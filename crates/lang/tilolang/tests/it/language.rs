@@ -448,17 +448,25 @@ fn a_function_argument_binds_the_type_its_result_names() {
         crate::common::compile_with(&format!("app t.x \"X\"\n{C}{ROWS}{rest}"), &[])
             .unwrap_or_else(|d| panic!("{rest}\n{d:#?}"))
     };
+    // What the code emits: the metadata section carries the package's declarations as text
+    // (a template's body among them), so the scan is over the module without it.
+    let code = |c: &tilolang::Compiled| {
+        tilolang::meta::without_section(&c.wasm, tilolang::meta::META_SECTION)
+    };
     let day = compiled("view w(c: C) {\n    rows(c.items, group: .due)\n}");
-    let has = |name: &str| day.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    let body = code(&day);
+    let has = |name: &str| body.windows(name.len()).any(|w| w == name.as_bytes());
     assert!(has("group:as"), "a day's heading is dated for the host");
     crate::common::validate(&day.wasm);
     let word = compiled("view w(c: C) {\n    rows(c.items, group: x -> .some(x.t))\n}");
-    let has = |name: &str| word.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    let body = code(&word);
+    let has = |name: &str| body.windows(name.len()).any(|w| w == name.as_bytes());
     assert!(!has("group:as"), "a word's heading is the word it is");
     crate::common::validate(&word.wasm);
     // A list that groups nothing names no key at all, and rows keep no heading.
     let plain = compiled("view w(c: C) {\n    rows(c.items)\n}");
-    let has = |name: &str| plain.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    let body = code(&plain);
+    let has = |name: &str| body.windows(name.len()).any(|w| w == name.as_bytes());
     assert!(!has("group"), "a plain list has no heading");
     crate::common::validate(&plain.wasm);
     // A function that makes something else than the key is told so.
@@ -577,4 +585,108 @@ fn check_fails_on_a_stale_ids_lock_and_writes_it_when_asked() {
     );
     assert!(!dir.join("app.wasm").exists());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- a template view another package calls with a block --------------------------------
+
+/// Compiles `lib` as one package, then `app` against the metadata it publishes: the templates a
+/// package carries for its importers travel there.
+fn compile_against(lib: &str, app: &str) -> Result<(), Vec<tilolang::Diagnostic>> {
+    let lib = crate::common::compile(&format!("app probe.lib \"Lib\"\n{lib}\n")).meta;
+    let src = format!("app probe.consumer \"Consumer\"\n{app}\n");
+    crate::common::compile_with(&src, &[lib]).map(|_| ())
+}
+
+/// A `template view` another package calls with a block compiles, and the block is the
+/// template's `View` parameter: a template is the language's way to take a block, so a package
+/// that imports it calls it as its own does (`shell.desk_style(a, false) { ... }`).
+///
+/// The template's body resolves in its own package: it calls that package's helper (`helper`),
+/// which the importer's own names cannot shadow.
+#[test]
+fn a_template_view_called_from_another_package_takes_its_block() {
+    let lib = "fn helper(n: Int) -> Int {\n    n + 1\n}\n\
+               template view frame(body: View) {\n    stack {\n        text(\"head {helper(1)}\")\n        body\n    }\n}";
+    let app = "use probe.lib as lib\n\
+               view mine() {\n    text(\"mine\")\n}\n\
+               view sheet() {\n    lib.frame {\n        mine()\n    }\n}";
+    if let Err(diags) = compile_against(lib, app) {
+        panic!("{diags:#?}");
+    }
+}
+
+/// The template's body resolves in its **own package**: a name the caller happens to have too
+/// (`helper`, declared by the consumer with a different meaning) is not what the template calls.
+/// The template's `helper(1)` is its package's, so the compiled text reads that fn's export and
+/// never the caller's.
+#[test]
+fn a_callers_name_does_not_shadow_what_a_template_calls() {
+    let lib = "fn helper(n: Int) -> Int {\n    n + 1\n}\n\
+               template view frame(body: View) {\n    stack {\n        text(\"head {helper(1)}\")\n        body\n    }\n}";
+    let app = "use probe.lib as lib\n\
+               fn helper(n: Int) -> Text {\n    \"caller {n}\"\n}\n\
+               view sheet() {\n    lib.frame {\n        text(helper(1))\n    }\n}";
+    // The template's `helper(1)` is `probe.lib`'s (a number); the caller's own `helper(1)` is
+    // `probe.consumer`'s (text). Both compile, each against its own package's fn.
+    if let Err(diags) = compile_against(lib, app) {
+        panic!("{diags:#?}");
+    }
+}
+
+/// A plain view of another package still takes no child block: only a template is the
+/// language's way to take one, so a plain view called with a block is `E063` there as here.
+#[test]
+fn a_plain_view_called_from_another_package_still_takes_no_block() {
+    let lib = "view plain() {\n    text(\"plain\")\n}";
+    let app = "use probe.lib as lib\n\
+               view sheet() {\n    lib.plain {\n        text(\"no\")\n    }\n}";
+    let diags = compile_against(lib, app).err().unwrap_or_default();
+    assert!(
+        diags.iter().any(|d| d.code == "E063"),
+        "a plain view with a block is E063: {diags:#?}"
+    );
+}
+
+/// A template's own parameter is the template's name, even when the package also declares a view
+/// of that name: `dock` in `frame(dock: Text)` is the parameter, not `lib.dock`. Before the
+/// scope held the template's parameters, the rewrite read `dock` as the package's view and the
+/// template failed to compile (`E020`, a view where the body wanted text).
+#[test]
+fn a_template_parameter_shadows_a_package_view() {
+    let lib = "view dock() {\n    text(\"the dock\")\n}\n\
+               template view frame(dock: Text) {\n    stack {\n        text(dock)\n    }\n}";
+    let app = "use probe.lib as lib\n\
+               view sheet() {\n    lib.frame(dock: \"mine\")\n}";
+    if let Err(diags) = compile_against(lib, app) {
+        panic!("a template parameter stands as its own name: {diags:#?}");
+    }
+}
+
+/// A lambda's parameter shadows a package name: `surface -> ...` reads the parameter, never
+/// `lib.surface`.
+#[test]
+fn a_lambda_parameter_shadows_a_package_view() {
+    // The lambda is in the template's own body (`items.find(surface -> ...)`), where the
+    // rewrite runs: its parameter `surface` names a fn the package declares, and must stand as
+    // the parameter.
+    let lib = "fn surface(n: Int) -> Int {\n    n + 1\n}\n\
+               template view frame(items: List<Int>) {\n    stack {\n        if let surface = items.find(surface -> surface > 0) {\n            text(\"{surface}\")\n        }\n    }\n}";
+    let app = "use probe.lib as lib\n\
+               view sheet() {\n    lib.frame(items: [1])\n}";
+    if let Err(diags) = compile_against(lib, app) {
+        panic!("a lambda parameter stands as its own name: {diags:#?}");
+    }
+}
+
+/// A `for` variable shadows a package name: `for surface in ...` reads the variable, never
+/// `lib.surface`.
+#[test]
+fn a_for_variable_shadows_a_package_view() {
+    let lib = "view surface() {\n    text(\"the surface\")\n}\n\
+               template view frame(items: List<Text>) {\n    stack {\n        for surface in items {\n            text(surface)\n        }\n    }\n}";
+    let app = "use probe.lib as lib\n\
+               view sheet() {\n    lib.frame(items: [\"a\"])\n}";
+    if let Err(diags) = compile_against(lib, app) {
+        panic!("a for variable stands as its own name: {diags:#?}");
+    }
 }

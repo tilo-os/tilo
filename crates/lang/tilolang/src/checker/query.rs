@@ -505,6 +505,7 @@ impl Checker<'_> {
                         let name = ast::Ident {
                             name: one.name.clone(),
                             span: e.span,
+                            from_template_of: None,
                         };
                         Some(self.field_read(x, &name))
                     }

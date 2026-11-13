@@ -209,6 +209,9 @@ pub struct Callable {
     pub present: Presentation,
     /// The hidden action of a `scenario`; its name is the scenario's, which source cannot call.
     pub scenario: bool,
+    /// A view the package does not offer: an action's presentation view, a loop's row view. Only
+    /// a `template view` of the same package may call it (its body carries the package's mark).
+    pub private: bool,
 }
 
 /// What a button or a menu shows for an action, from its declaration.
@@ -294,6 +297,13 @@ impl Callable {
     /// A callable source never names: a scenario's action or an action's presentation view.
     pub fn hidden(&self) -> bool {
         self.scenario || self.name.ends_with(crate::ids::PRESENT_SUFFIX)
+    }
+
+    /// Whether `caller` may call this callable by the name it is written: a private view only
+    /// from its own package's `template view` (the caller's `from_template_of` names the
+    /// package), and nothing else refused here.
+    pub fn callable_by(&self, from_template_of: Option<&str>) -> bool {
+        !self.private || from_template_of == Some(self.app.as_str())
     }
 
     pub fn signature(&self, own_app: &str) -> String {
