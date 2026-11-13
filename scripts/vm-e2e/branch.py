@@ -1069,7 +1069,11 @@ def branch(facts: dict, run: Run) -> None:
     re-keyed and taken into every workspace box hosts, and stops them all again."""
     box = run.vm(SOURCE)
     started = time.monotonic()
-    out = box.vm_cmd("branch", SOURCE, *BRANCHES, "--stop", timeout=2400)
+    try:
+        out = box.vm_cmd("branch", SOURCE, *BRANCHES, "--stop", timeout=2400)
+    except VmError:
+        keep_admission(run)
+        raise
     facts["branch_seconds"] = round(time.monotonic() - started, 1)
     facts["branch_said"] = out.strip().splitlines()[-12:]
     run.write("S04-branch.txt", out)
@@ -1077,6 +1081,36 @@ def branch(facts: dict, run: Run) -> None:
         plug_lan(run, name)
     listing = box.vm_cmd("list", timeout=120, check=False)
     run.write("S04-list.txt", listing)
+
+
+# What a session said of joining and its workspaces' hosts, every boot of the journal: a branch's
+# admission boot during `vm branch` is a boot before this one.
+JOINING = ("journalctl -m --no-pager -o short-iso SYSLOG_IDENTIFIER=tilo-session-me 2>&1 "
+           "| grep -a 'join_flow\\|join:\\|take this device in\\|admitted\\|host hint\\|"
+           "the workspace.s own host\\|direct\\|relay\\|workspace_sync\\|refus' "
+           "| grep -av 'was not named' | tail -n 250 | cut -c1-500")
+
+
+def keep_admission(run: Run) -> None:
+    """When `vm branch` did not have the branches taken in: what box and a said of it, and what
+    a's session says of its workspaces now, booted again beside box on the same network."""
+    for name in (SOURCE, "a"):
+        try:
+            run.vm(name).vm_cmd("start", name, timeout=900)
+        except VmError as exc:
+            run.write(f"admission-{name}.txt", f"could not start: {exc}")
+    for name in (SOURCE, "a"):
+        vm = run.vm(name)
+        try:
+            wait_session(vm)
+            time.sleep(90)
+            said = vm.root_exec(JOINING, timeout=120, check=False)
+            hosts = json.dumps(hosts_of(vm), indent=1)
+            addresses = vm.root_exec("ip -o addr; ip route", timeout=60, check=False)
+        except (VmError, Failed) as exc:
+            said, hosts, addresses = f"could not read: {exc}", "", ""
+        run.write(f"admission-{name}.txt",
+                  f"== workspace_hosts\n{hosts}\n== addresses\n{addresses}\n== joining\n{said}")
 
 
 def setup_shown(vm: TiloVm) -> list[str]:

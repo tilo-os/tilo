@@ -91,7 +91,7 @@ as_user env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_
 # A failed check keeps no outputs: its evidence (each box's boot journal of its device identity,
 # the person's session where a step could not reach it) is printed here.
 if (( status != 0 )); then
-  for f in "$reports"/data/*-boot.txt "$reports"/data/*-session.txt "$reports"/data/*-session.log "$reports"/data/S03-box-person.txt "$reports"/data/*-actions.txt "$reports"/data/invoke-*.txt; do
+  for f in "$reports"/data/*-boot.txt "$reports"/data/*-session.txt "$reports"/data/*-session.log "$reports"/data/S03-box-person.txt "$reports"/data/*-actions.txt "$reports"/data/invoke-*.txt "$reports"/data/admission-*.txt; do
     [[ -f $f ]] || continue
     echo "== evidence: ${f##*/}"
     { grep -av 'FRAME-LIFECYCLE\|paint-stats' "$f" | tail -n 450 | cut -c1-1500; } || true
