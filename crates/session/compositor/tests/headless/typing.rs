@@ -62,83 +62,86 @@ fn tap(compositor: &mut Compositor, keycode: u32) {
     }
 }
 
-#[test]
-fn a_dead_key_and_the_key_it_accents_type_one_character() {
-    let mut compositor = headless(Box::new(StackPolicy));
-    let log = typing_field(
-        &mut compositor,
-        &KeyboardLayout {
-            layout: "de".into(),
-            ..KeyboardLayout::default()
-        },
-    );
-
-    // The accent key right of zero, then `e` .
-    tap(&mut compositor, KEY_EQUAL);
-    tap(&mut compositor, KEY_E);
-    let keys = log.borrow().keys.clone();
-    assert_eq!(keys.len(), 4, "the field heard both keys press and release");
-    assert_eq!(keys[0].text, None, "the accent types nothing on its own");
-    assert_eq!(
-        keys[2].text.as_deref(),
-        Some("é"),
-        "the two keys type one letter"
-    );
+/// One row of [`a_sequence_of_keys_types_what_the_layout_makes_of_it`]: the person's layout, the
+/// keys they tap in order, and what each press types.
+struct Typed {
+    name: &'static str,
+    layout: KeyboardLayout,
+    taps: &'static [u32],
+    types: &'static [Option<&'static str>],
 }
 
 #[test]
-fn the_compose_key_types_a_sequence_of_keys_as_one() {
-    let mut compositor = headless(Box::new(StackPolicy));
-    let log = typing_field(
-        &mut compositor,
-        &KeyboardLayout {
-            options: "compose:menu".into(),
-            ..KeyboardLayout::default()
+fn a_sequence_of_keys_types_what_the_layout_makes_of_it() {
+    let german = || KeyboardLayout {
+        layout: "de".into(),
+        ..KeyboardLayout::default()
+    };
+    // Menu is the Compose key here.
+    let compose = || KeyboardLayout {
+        options: "compose:menu".into(),
+        ..KeyboardLayout::default()
+    };
+    let rows = [
+        Typed {
+            // The accent key right of zero, then `e`: the accent types nothing on its own, and
+            // the two keys type one letter.
+            name: "a dead key and the key it accents type one character",
+            layout: german(),
+            taps: &[KEY_EQUAL, KEY_E],
+            types: &[None, Some("é")],
         },
-    );
-
-    // Menu is the Compose key here: Compose, `o` , `c` is the copyright sign.
-    tap(&mut compositor, KEY_COMPOSE);
-    tap(&mut compositor, KEY_O);
-    tap(&mut compositor, KEY_C);
-    let keys = log.borrow().keys.clone();
-    assert_eq!(keys.len(), 6);
-    assert_eq!(keys[0].text, None, "the Compose key types nothing itself");
-    assert_eq!(keys[2].text, None, "a sequence still open types nothing");
-    assert_eq!(keys[4].text.as_deref(), Some("©"));
-}
-
-#[test]
-fn a_key_outside_a_sequence_types_its_own_character() {
-    let mut compositor = headless(Box::new(StackPolicy));
-    let log = typing_field(
-        &mut compositor,
-        &KeyboardLayout {
-            layout: "de".into(),
-            ..KeyboardLayout::default()
+        Typed {
+            // Compose, `o`, `c` is the copyright sign: the Compose key types nothing itself, and
+            // a sequence still open types nothing.
+            name: "the Compose key types a sequence of keys as one",
+            layout: compose(),
+            taps: &[KEY_COMPOSE, KEY_O, KEY_C],
+            types: &[None, None, Some("©")],
         },
-    );
-
-    tap(&mut compositor, KEY_E);
-    assert_eq!(
-        log.borrow().keys[0].text.as_deref(),
-        Some("e"),
-        "a key with no sequence in front of it types itself"
-    );
-
-    // `x` has no accented form: the accent is abandoned and `x` types.
-    tap(&mut compositor, KEY_EQUAL);
-    tap(&mut compositor, KEY_X);
-    let keys = log.borrow().keys.clone();
-    assert_eq!(keys[2].text, None, "the accent waits for a key it knows");
-    assert_eq!(keys[4].text.as_deref(), Some("x"));
-
-    tap(&mut compositor, KEY_E);
-    assert_eq!(
-        log.borrow().keys[6].text.as_deref(),
-        Some("e"),
-        "the abandoned sequence leaves nothing open"
-    );
+        Typed {
+            // A key with no sequence in front of it types itself. `x` has no accented form: the
+            // accent waits for a key it knows, is abandoned, and `x` types. The abandoned
+            // sequence leaves nothing open.
+            name: "a key outside a sequence types its own character",
+            layout: german(),
+            taps: &[KEY_E, KEY_EQUAL, KEY_X, KEY_E],
+            types: &[Some("e"), None, Some("x"), Some("e")],
+        },
+        Typed {
+            name: "a key after a finished Compose sequence types its own character",
+            layout: compose(),
+            taps: &[KEY_E, KEY_COMPOSE, KEY_O, KEY_C, KEY_E],
+            types: &[Some("e"), None, None, Some("©"), Some("e")],
+        },
+        Typed {
+            name: "no key types nothing",
+            layout: german(),
+            taps: &[],
+            types: &[],
+        },
+    ];
+    for row in rows {
+        let mut compositor = headless(Box::new(StackPolicy));
+        let log = typing_field(&mut compositor, &row.layout);
+        for &keycode in row.taps {
+            tap(&mut compositor, keycode);
+        }
+        let keys = log.borrow().keys.clone();
+        assert_eq!(
+            keys.len(),
+            row.taps.len() * 2,
+            "{}: the field heard every key press and release",
+            row.name
+        );
+        // A tap is a press and then a release: the presses are what type.
+        let typed: Vec<Option<&str>> = keys
+            .iter()
+            .step_by(2)
+            .map(|key| key.text.as_deref())
+            .collect();
+        assert_eq!(typed, row.types, "{}: what each press typed", row.name);
+    }
 }
 
 #[test]

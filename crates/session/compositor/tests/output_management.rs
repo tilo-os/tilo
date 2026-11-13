@@ -115,20 +115,33 @@ fn two_outputs() -> Compositor {
     compositor
 }
 
+/// A client the session did not start is offered neither display tool: not the manager that
+/// configures displays, nor the one that switches panels off. A client the session started is
+/// offered both, in the listing the ordinary client was sent without them.
 #[test]
-fn ordinary_clients_cannot_configure_displays() {
+fn ordinary_clients_are_offered_no_display_tool() {
+    const TOOLS: [(&str, &str); 2] = [
+        ("zwlr_output_manager_v1", "configure displays"),
+        ("zwlr_output_power_manager_v1", "switch panels off"),
+    ];
     let mut compositor = two_outputs();
     let mut client = Client::connect(&mut compositor, false);
     pump(&mut compositor, &mut client, |tool| {
         tool.globals.iter().any(|global| global == "wl_compositor")
     });
-    assert!(
-        !client
-            .tool
-            .globals
+    for (withheld, what) in TOOLS {
+        assert!(
+            !client.tool.globals.iter().any(|global| global == withheld),
+            "an ordinary client is offered {withheld}, which would let it {what}"
+        );
+    }
+
+    let mut trusted = Client::connect(&mut compositor, true);
+    pump(&mut compositor, &mut trusted, |tool| {
+        TOOLS
             .iter()
-            .any(|global| global == "zwlr_output_manager_v1")
-    );
+            .all(|(offered, _)| tool.globals.iter().any(|global| global == *offered))
+    });
 }
 
 #[test]
@@ -287,22 +300,6 @@ fn a_power_tool_switches_one_panel_off_and_on() {
         tool.power == Some(zwlr_output_power_v1::Mode::On)
     });
     assert!(compositor.output_lit("HEADLESS-1"));
-}
-
-#[test]
-fn ordinary_clients_cannot_switch_panels_off() {
-    let mut compositor = two_outputs();
-    let mut client = Client::connect(&mut compositor, false);
-    pump(&mut compositor, &mut client, |tool| {
-        tool.globals.iter().any(|global| global == "wl_compositor")
-    });
-    assert!(
-        !client
-            .tool
-            .globals
-            .iter()
-            .any(|global| global == "zwlr_output_power_manager_v1")
-    );
 }
 
 #[test]

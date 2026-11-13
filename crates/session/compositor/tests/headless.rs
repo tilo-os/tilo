@@ -11,6 +11,8 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+#[path = "headless/assists.rs"]
+mod assists;
 #[path = "headless/framing.rs"]
 mod framing;
 #[path = "headless/idle_inhibit.rs"]
@@ -2469,39 +2471,6 @@ fn count(frame: &tilo_compositor::Screenshot, wanted: [u8; 4]) -> usize {
 }
 
 #[test]
-fn sticky_keys_hold_a_modifier_for_one_chord() {
-    const KEY_LEFTSHIFT: u32 = 42;
-    let mut compositor = headless(Box::new(StackPolicy));
-    let mut client = mapped_client(&mut compositor, "sticky", (200, 100), [0, 255, 0, 255]);
-    with_a11y(&mut compositor, |a11y| a11y.assists.sticky_keys = true);
-
-    // Shift, pressed and let go, then a letter: the shift stays down for the letter and comes up
-    // with it.
-    for (keycode, pressed) in [
-        (KEY_LEFTSHIFT, true),
-        (KEY_LEFTSHIFT, false),
-        (KEY_A, true),
-        (KEY_A, false),
-    ] {
-        compositor
-            .input(InputEvent::Key { keycode, pressed })
-            .expect("input");
-    }
-    pump(&mut compositor, &mut [&mut client], |_, clients| {
-        clients[0].seen.keys.len() == 4
-    });
-    assert_eq!(
-        client.seen.keys,
-        vec![
-            (KEY_LEFTSHIFT, true),
-            (KEY_A, true),
-            (KEY_A, false),
-            (KEY_LEFTSHIFT, false)
-        ]
-    );
-}
-
-#[test]
 fn slow_keys_wait_for_a_key_to_be_held_long_enough() {
     let mut compositor = headless(Box::new(StackPolicy));
     let mut client = mapped_client(&mut compositor, "slow", (200, 100), [0, 255, 0, 255]);
@@ -2537,43 +2506,6 @@ fn slow_keys_wait_for_a_key_to_be_held_long_enough() {
         clients[0].seen.keys.len() == 2
     });
     assert_eq!(client.seen.keys, vec![(KEY_A, true), (KEY_A, false)]);
-}
-
-#[test]
-fn switch_keys_step_the_focus_and_activate_it() {
-    const KEY_F6: u32 = 64;
-    const KEY_F7: u32 = 65;
-    const KEY_TAB: u32 = 15;
-    const KEY_RETURN: u32 = 28;
-    let mut compositor = headless(Box::new(StackPolicy));
-    let mut client = mapped_client(&mut compositor, "switch", (200, 100), [0, 255, 0, 255]);
-    with_a11y(&mut compositor, |a11y| {
-        a11y.assists.switch = Some(tilo_compositor::SwitchConfig {
-            pair: tilo_compositor::SwitchPair::F6F7,
-            period: None,
-        });
-    });
-
-    for keycode in [KEY_F6, KEY_F7] {
-        for pressed in [true, false] {
-            compositor
-                .input(InputEvent::Key { keycode, pressed })
-                .expect("input");
-        }
-    }
-    pump(&mut compositor, &mut [&mut client], |_, clients| {
-        clients[0].seen.keys.len() == 4
-    });
-    assert_eq!(
-        client.seen.keys,
-        vec![
-            (KEY_TAB, true),
-            (KEY_TAB, false),
-            (KEY_RETURN, true),
-            (KEY_RETURN, false)
-        ],
-        "the switches become the keys that move on and activate"
-    );
 }
 
 #[test]
