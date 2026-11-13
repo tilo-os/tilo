@@ -175,7 +175,6 @@ def locked():
         (r / 'seeds.py').write_text('#!/usr/bin/env python3\n' + common + f"""locked()
 fail('seeds')
 import importlib.util, stat
-from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('seeds', {str(ROOT / 'os/tests/oracles/tilo-firstboot-home-seeds.py')!r})
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
@@ -188,10 +187,12 @@ writer = helper.atomic.write_file
 def write(directory, name, source, mode, uid, gid):
     writer(directory, name, source, mode, os.getuid() if uid == 0 else uid,
            os.getgid() if gid == 0 else gid)
-with patch.object(helper.os, 'geteuid', return_value=0), \\
-        patch.object(helper, 'trusted', side_effect=trusted), \\
-        patch.object(helper.atomic, 'write_file', side_effect=write):
-    helper.seed(r / 'home/fixtureuser', r / 'skel', os.getuid(), os.getgid(), r / 'state/seeds')
+# This process seeds once and exits, so the three substitutions are assigned,
+# not patched: importing unittest.mock took longer than the rest of the boot.
+helper.os.geteuid = lambda: 0
+helper.trusted = trusted
+helper.atomic.write_file = write
+helper.seed(r / 'home/fixtureuser', r / 'skel', os.getuid(), os.getgid(), r / 'state/seeds')
 fail('seeds-after')
 """)
         (r / 'seeds.py').chmod(0o755)
