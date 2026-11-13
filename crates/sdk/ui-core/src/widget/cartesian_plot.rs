@@ -684,14 +684,15 @@ pub struct CartesianMarks {
     transition_started: Instant,
     reduce_motion: bool,
     domain_cache: RefCell<Option<DomainCache>>,
-    /// The bands around the plot, measured from the theme and the labels
-    /// at the last draw.
+    /// The bands around the plot, measured from the theme and the labels as
+    /// the layout places them.
     bands: Bands,
 }
 
 /// The space around a plot: tick labels, axis titles, the chart's title and
-/// its legend, each from the theme's type and spacing and measured text.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// its legend, each from the theme's type and spacing and measured text. The
+/// layout places them; all zero until it has.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Bands {
     left: f64,
     top: f64,
@@ -701,19 +702,6 @@ struct Bands {
     legend_top: f64,
     gap: f64,
     tick_line: f64,
-}
-
-impl Bands {
-    /// Before the first draw: the stock theme's caption metrics.
-    const STOCK: Self = Self {
-        left: 56.0,
-        top: 30.0,
-        right: 12.0,
-        bottom: 34.0,
-        legend_top: 12.0,
-        gap: 8.0,
-        tick_line: 16.0,
-    };
 }
 
 /// A Cartesian plot: see the [module docs](self).
@@ -738,7 +726,7 @@ impl CartesianPlot {
             transition_started: crate::time::now(),
             reduce_motion: false,
             domain_cache: RefCell::new(None),
-            bands: Bands::STOCK,
+            bands: Bands::default(),
         })
     }
 
@@ -2394,16 +2382,12 @@ impl CartesianMarks {
         );
     }
 
-    fn draw_legend(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        self.toggles.clear_hits();
+    /// Where the legend's entries stand, once the bands are placed: under the
+    /// chart's title, or above its bottom edge, between the content edges the
+    /// labels beside the plot leave. `None` while the chart shows no legend.
+    fn legend_area(&self) -> Option<Rect> {
         if self.style.legend == LegendPosition::Hidden {
-            return;
+            return None;
         }
         // The key stands on the content edge, like the labels beside it.
         let left = self.frame.rect.x0;
@@ -2418,6 +2402,26 @@ impl CartesianMarks {
             );
             self.frame.rect.y1 - crate::num::f64_of_usize(rows) * chart_legend::ROW_HEIGHT
         };
+        Some(Rect::new(left, y, right, y))
+    }
+
+    /// Place the legend's entries, where a press on one has to land.
+    fn place_legend(&mut self) {
+        self.toggles.place(
+            self.series
+                .iter()
+                .map(|series| (series.id.as_str(), series.name.as_str())),
+            self.legend_area(),
+        );
+    }
+
+    fn draw_legend(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         self.toggles.paint(
             scene,
             transform,
@@ -2426,7 +2430,6 @@ impl CartesianMarks {
             self.series
                 .iter()
                 .map(|series| (series.id.as_str(), series.name.as_str(), series.color)),
-            Rect::new(left, y, right, y),
         );
     }
 
@@ -2936,6 +2939,13 @@ impl PlotMarks for CartesianMarks {
         }
         *ctx.handled
     }
+    /// Measure the bands around the plot in `theme`, then place the legend in
+    /// what they leave: the layout runs this, so a hover on a mark or a press
+    /// on the legend lands where the chart draws them before it has painted.
+    fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        self.bands = self.measure_bands(tr, theme);
+        self.place_legend();
+    }
     fn paint(
         &mut self,
         scene: &mut Scene,
@@ -2945,7 +2955,6 @@ impl PlotMarks for CartesianMarks {
     ) {
         self.reduce_motion = theme.reduce_motion;
         let now = crate::time::now();
-        self.bands = self.measure_bands(tr, theme);
         self.follow_keyboard_anchor();
         let plot = self.plot_rect();
         let xd = self.domain(&self.style.x_axis, true);
@@ -3001,7 +3010,135 @@ impl PlotMarks for CartesianMarks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::Widget as _;
+    use crate::presence::PresenceCtx;
+    use crate::widget::Widget;
+    use crate::widget::chart_navigation::InteractiveChart as _;
+
+    /// A plot of three long-named series, titled, with its legend at the top
+    /// and a band across the middle: what it draws takes room that no stock
+    /// metric guesses at.
+    fn band_plot() -> CartesianPlot {
+        let series = [
+            "Storage over time",
+            "Second long series",
+            "Third long series",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            PlotSeries::new(
+                format!("series-{index}"),
+                *name,
+                Color::WHITE,
+                vec![PlotDatum::new("a", 1.0, 2.0), PlotDatum::new("b", 9.0, 6.0)],
+            )
+        })
+        .collect();
+        CartesianPlot::new(series)
+            .titled("Capacity")
+            .with_height(300.0)
+            .with_annotations([CartesianAnnotation::x_band(
+                "middle",
+                4.0,
+                6.0,
+                Color::WHITE,
+            )])
+    }
+
+    fn draw_once(plot: &mut CartesianPlot, theme: &Theme) {
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        plot.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            theme,
+            &PresenceCtx::default(),
+        );
+    }
+
+    #[test]
+    fn a_plot_draws_where_the_layout_placed_it() {
+        let theme = Theme::dark();
+        let (mut laid_out, mut painted) = (band_plot(), band_plot());
+        for chart in [&mut laid_out, &mut painted] {
+            crate::testing::lay_out_in(chart, 360.0, 300.0, &theme).expect("the plot lays out");
+        }
+        draw_once(&mut painted, &theme);
+        assert_eq!(
+            laid_out.marks.plot_rect(),
+            painted.marks.plot_rect(),
+            "painting adds no places"
+        );
+
+        let plot = painted.marks.plot_rect();
+        let middle = Point::new(plot.center().x, plot.center().y);
+        assert_eq!(
+            laid_out.marks.hit(middle),
+            Some(CartesianHover::Annotation(0)),
+            "the band drawn across the middle is what a hover there names"
+        );
+        assert_eq!(laid_out.marks.hit(middle), painted.marks.hit(middle));
+
+        let legend = laid_out.marks.frame.rect.y0 + laid_out.marks.bands.legend_top + 4.0;
+        assert_eq!(
+            laid_out.marks.hit(Point::new(middle.x, legend)),
+            None,
+            "the legend's rows hold no mark"
+        );
+    }
+
+    #[test]
+    fn a_legend_entry_takes_a_press_before_anything_paints() {
+        let theme = Theme::dark();
+        let mut chart = band_plot();
+        crate::testing::lay_out_in(&mut chart, 360.0, 300.0, &theme).expect("the plot lays out");
+        let ids: Vec<String> = chart.marks.series.iter().map(|s| s.id.clone()).collect();
+        for id in ids {
+            let entry = chart
+                .marks
+                .toggles
+                .entry(&id)
+                .unwrap_or_else(|| panic!("the layout placed {id}'s legend entry"));
+            assert!(
+                chart.toggle_legend_at(entry.center()),
+                "a press on {id}'s entry toggles it"
+            );
+            assert!(!chart.is_series_visible(&id));
+        }
+    }
+
+    #[test]
+    fn a_series_change_places_the_legend_again() {
+        let theme = Theme::dark();
+        let mut chart = band_plot();
+        crate::testing::lay_out_in(&mut chart, 360.0, 300.0, &theme).expect("the plot lays out");
+        Widget::layout_measured(&mut chart);
+        assert!(!Widget::is_layout_dirty(&chart));
+        let before = chart.marks.toggles.entry("series-0").expect("placed");
+
+        chart.set_series_immediate(
+            [(
+                "series-0",
+                "Storage over time, every device and every backup",
+            )]
+            .into_iter()
+            .map(|(id, name)| {
+                PlotSeries::new(id, name, Color::WHITE, vec![PlotDatum::new("a", 1.0, 2.0)])
+            })
+            .collect(),
+        );
+        assert!(
+            Widget::is_layout_dirty(&chart),
+            "new data re-places the legend"
+        );
+        crate::testing::lay_out_in(&mut chart, 360.0, 300.0, &theme).expect("the plot lays out");
+        let after = chart.marks.toggles.entry("series-0").expect("placed again");
+        assert!(
+            after.width() >= before.width(),
+            "the longer name takes at least the room the short one did: {before:?} then {after:?}"
+        );
+    }
 
     #[test]
     fn auto_domains_and_ticks_expand_preserve_and_thin() {
