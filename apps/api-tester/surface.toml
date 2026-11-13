@@ -73,13 +73,6 @@ fields = [
 ]
 
 [[resources.verbs]]
-id = "import-workspace"
-kind = "undoable"
-params = [
-  { name = "workspace", required = true, schema = {} },
-]
-
-[[resources.verbs]]
 id = "new-request"
 kind = "undoable"
 

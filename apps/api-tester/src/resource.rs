@@ -44,23 +44,6 @@ impl Workspace {
     read_content = Workspace::read_document
 )]
 impl Workspace {
-    /// Apply a reference-only legacy import after this device has stored its credentials.
-    #[action]
-    pub fn import_workspace(
-        &mut self,
-        #[param("The converted workspace, with device-local credential references")]
-        workspace: serde_json::Value,
-    ) -> Result<(), Refusal> {
-        use ui::tilo_resource::Model;
-        if *self != Self::blank() {
-            return Err(Refusal::new("Import requires a new, empty workspace"));
-        }
-        let imported = Self::from_json(&workspace)
-            .map_err(|_| Refusal::new("Invalid converted API workspace"))?;
-        *self = imported;
-        Ok(())
-    }
-
     /// Start a new request in the builder.
     #[action]
     pub fn new_request(&mut self, cx: &mut ActionCx) {
@@ -428,10 +411,6 @@ impl ResourceApp for ApiTesterShell {
     const TITLE: &'static str = "API Tester";
     const TITLE_KEY: &'static str = "api-tester-app-title";
     const ICON: Option<&'static str> = Some("api-tester");
-
-    fn import_record(context: &ui::application::HostContext) -> Result<(), String> {
-        crate::migration::open(context)
-    }
 
     fn view(cx: &mut ViewCx<Workspace>) -> Element {
         crate::app::window(cx)

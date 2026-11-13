@@ -2513,16 +2513,6 @@
         "required": [],
         "description": ""
       },
-      "api-tester.workspace.import-workspace.Arguments": {
-        "type": "object",
-        "properties": {
-          "workspace": {}
-        },
-        "required": [
-          "workspace"
-        ],
-        "description": ""
-      },
       "api-tester.workspace.new-request.Arguments": {
         "type": "object",
         "properties": {},
@@ -25349,12 +25339,6 @@
       "resource": "activity.filter",
       "action": "clear-filters",
       "arguments": "#/components/schemas/activity.filter.clear-filters.Arguments"
-    },
-    {
-      "app": "so.tilo.api-tester",
-      "resource": "api-tester.workspace",
-      "action": "import-workspace",
-      "arguments": "#/components/schemas/api-tester.workspace.import-workspace.Arguments"
     },
     {
       "app": "so.tilo.api-tester",

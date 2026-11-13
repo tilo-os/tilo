@@ -38,8 +38,6 @@ use tilo_fs::{
 /// The profile directory holding the workspace files' state.
 const FILES: &str = "files";
 const NAMESPACE: &str = "namespace.bin";
-/// Where releases before the versions moved into the namespace kept them.
-const LEGACY_HISTORY: &str = "history.json";
 /// Workspace changes reach the folder, and are persisted, within this.
 const INTERVAL: Duration = Duration::from_secs(2);
 
@@ -155,7 +153,6 @@ impl Files {
     ) -> io::Result<Self> {
         crate::unix::private_directory(state)?;
         let namespace = NamespaceFile::open(state.join(NAMESPACE), hex::encode(author.device))?;
-        import_legacy_history(&namespace, state)?;
         let hydrator = {
             let _entered = tilo_rt::app().handle().enter();
             let hydrator = Hydrator::new(endpoint, store);
@@ -191,32 +188,6 @@ impl Files {
         let commit = Box::new(move || namespace.save_if_changed());
         SyncFolder::open(Arc::new(self.quick_fs()?), folder, &self.state, commit)
     }
-}
-
-/// Take a profile's separate version history into its namespace document.
-///
-/// Releases before the versions moved into the document kept them in
-/// `history.json`; the profile keeps everything it recorded and the file is
-/// moved aside. A database this release cannot read stays where it is.
-fn import_legacy_history(namespace: &NamespaceFile, state: &Path) -> io::Result<()> {
-    let path = state.join(LEGACY_HISTORY);
-    let imported = namespace
-        .namespace
-        .lock()
-        .map_err(|_| io::Error::other("workspace namespace lock poisoned"))
-        .and_then(|mut namespace| {
-            tilo_fs::legacy_history::import(&mut namespace, &path).map_err(io::Error::other)
-        });
-    match imported {
-        Ok(imported) => {
-            if imported {
-                namespace.save_if_changed()?;
-            }
-            tilo_fs::legacy_history::retire(&path);
-        }
-        Err(error) => tracing::warn!(%error, "the profile's old version history stays unread"),
-    }
-    Ok(())
 }
 
 /// The workspace namespace and the profile file that keeps it.

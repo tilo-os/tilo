@@ -18,8 +18,8 @@ use std::collections::{HashMap, HashSet};
 use tilo_document::action::{RegionKind, Span};
 use tilo_document::{ClipBlock, RichText, RichTextAction};
 use ui::tilo_resource::{
-    self, ActionCx, Atom, Bytes, Collection, Id, Map, Model, NonBlank, Reactions, Refusal, Set,
-    resource,
+    self, ActionCx, Atom, Bytes, Collection, Fields, Id, Map, Model, NonBlank, Reactions, Refusal,
+    Set, resource,
 };
 use ui::widget::BlockContent;
 use ui::widget::marks::Mark;
@@ -205,10 +205,28 @@ pub fn page_of(id: &Id) -> Option<PageId> {
     id.as_str().parse().ok()
 }
 
+/// Bring a notebook stored at version `from` up to this one: a document
+/// already stored as a [`Notebook`] record is only checked. A notebook from
+/// before the record has no migration, and says so rather than opening empty.
+fn migrate_stored(doc: &tilo_resource::Doc, from: u32) -> Result<(), tilo_resource::ModelError> {
+    use automerge::ReadDoc as _;
+    if from != 1 {
+        return Err(tilo_resource::ModelError::invalid(format!(
+            "Notes has no migration from storage version {from}"
+        )));
+    }
+    if doc.get(&automerge::ROOT, "notes_schema_version")?.is_some() {
+        return Err(tilo_resource::ModelError::invalid(
+            "this notebook was written before notes were kept as a record, and is not migrated",
+        ));
+    }
+    Notebook::read_fields(doc, &automerge::ROOT).map(|_| ())
+}
+
 #[resource(
     kind = "notes.notebook",
     version = 2,
-    migrate = crate::legacy::migrate,
+    migrate = migrate_stored,
     search = crate::search::entries,
     read_content_in_doc = Notebook::read_note,
     document_child = Notebook::document_projection_child,

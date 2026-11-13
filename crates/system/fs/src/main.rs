@@ -1063,11 +1063,6 @@ async fn replica_workspace(
         endpoint.id().to_string(),
         namespace_path.as_deref(),
     )?));
-    import_legacy_history(
-        &namespace,
-        Some(bundle.cache_dir.as_path()),
-        namespace_path.as_deref(),
-    );
     // A home peer keeps the workspace's tree and every byte it names: the
     // tree is the Files record it follows, and the content it hydrates.
     let workspace = Workspace::join(
@@ -1316,7 +1311,6 @@ async fn serve(
     let fresh = !np.as_ref().is_some_and(|path| path.exists());
     let ns_value = open_namespace(author.clone(), np.as_deref())?;
     let namespace = Arc::new(Mutex::new(ns_value));
-    import_legacy_history(&namespace, cache_dir.as_deref(), np.as_deref());
     // This mount's tree, as the Files app's person record of the workspace
     // that holds it: this daemon is the app's windowless endpoint, so what
     // changes here reaches the person's other devices, and the members of a
@@ -1589,7 +1583,6 @@ async fn mount(
     }
 
     let namespace = Arc::new(Mutex::new(open_namespace(author, np.as_deref())?));
-    import_legacy_history(&namespace, cache_dir.as_deref(), np.as_deref());
     // The shared workspace's Files record holds this tree for every member: a
     // mount that has none yet is given it whole, and every change here is
     // published as the Files app's.
@@ -1693,29 +1686,6 @@ fn open_eviction_queue(
         .transpose()
         .map(|queue| queue.map(|queue| Arc::new(tokio::sync::Mutex::new(queue))))
         .map_err(Into::into)
-}
-
-/// Take in the history earlier releases kept beside the namespace document,
-/// persisting the document before the old files are moved aside: a crash in
-/// between imports the same versions again instead of losing them.
-fn import_legacy_history(
-    namespace: &Arc<Mutex<Namespace>>,
-    cache_dir: Option<&Path>,
-    namespace_path: Option<&Path>,
-) {
-    let (Some(cache_dir), Some(namespace_path)) = (cache_dir, namespace_path) else {
-        return;
-    };
-    let path = cache_dir.join("file-history.json");
-    let imported = fs::legacy_history::import(&mut namespace.lock_recover(), &path);
-    match imported {
-        Ok(true) => {
-            persist_now(namespace, namespace_path);
-            fs::legacy_history::retire(&path);
-        }
-        Ok(false) => fs::legacy_history::retire(&path),
-        Err(error) => eprintln!("could not import {}: {error:#}", path.display()),
-    }
 }
 
 /// Atomically persist the namespace document and retain bounded known-good

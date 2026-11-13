@@ -84,7 +84,7 @@ class Variable(TypedDict):
 
 class Workspace(Resource):
     """API workspace — `api-tester.workspace`."""
-    __surface__ = "so.tilo.api-tester@2dc7adfdb370ac66"
+    __surface__ = "so.tilo.api-tester@1b9454972cc61625"
     collections: list[SavedCollection]
     environments: list[Environment]
     active_environment: str | None
@@ -97,10 +97,6 @@ class Workspace(Resource):
     def history(self) -> list[Sent]:
         """Read only."""
         return self.fields["history"]
-
-    def import_workspace(self, *, workspace: Any) -> Run | None:
-        """Runs the app's action."""
-        return self.action("import-workspace", workspace=workspace)
 
     def new_request(self) -> Run | None:
         """Runs the app's action."""

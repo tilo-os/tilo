@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.api-tester@2dc7adfdb370ac66";
+export const SURFACE = "so.tilo.api-tester@1b9454972cc61625";
 
 /** One of "none", "bearer", "basic", "api_key". */
 export type AuthScheme = "none" | "bearer" | "basic" | "api_key";
@@ -91,9 +91,6 @@ export interface Workspace extends tilo.Resource {
   request: RequestRecord;
   readonly opened: string;
   readonly history: Sent[];
-  importWorkspace(args: {
-    workspace: unknown;
-  }): Promise<tilo.Run | void>;
   newRequest(): Promise<tilo.Run | void>;
   newCollection(args: {
     name: string;
