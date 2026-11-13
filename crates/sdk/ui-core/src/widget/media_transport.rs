@@ -242,8 +242,10 @@ impl Shared {
         self.song.borrow_mut().show(&song, theme.motion(), now);
     }
 
+    /// Asked while a frame lays out, so it reads at the frame's instant, as every motion that sizes
+    /// or places what it moves does.
     fn song_moving(&self) -> bool {
-        self.song.borrow().is_moving(crate::time::now())
+        self.song.borrow().is_moving(crate::motion::frame_now())
     }
 
     fn follow_art(&self) -> bool {
