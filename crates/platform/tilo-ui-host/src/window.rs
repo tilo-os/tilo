@@ -2574,10 +2574,11 @@ fn rebinding(
     node: &UiNode,
 ) -> bool {
     node.events.values().any(|event| {
-        let Some((resource, action)) = event.invokes.as_ref() else {
+        let Some(invoked) = event.invokes.as_ref() else {
             return false;
         };
-        before.holds(resource, action) != after.holds(resource, action)
+        before.holds(&invoked.resource, &invoked.action)
+            != after.holds(&invoked.resource, &invoked.action)
     }) || node
         .children
         .iter()

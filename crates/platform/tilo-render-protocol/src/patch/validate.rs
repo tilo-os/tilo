@@ -489,9 +489,10 @@ impl<'a> Validator<'a> {
             self.key(target)?;
             self.key(field)?;
         }
-        if let Some((target, action)) = &event.invokes {
-            self.key(target)?;
-            self.key(action)?;
+        if let Some(invoked) = &event.invokes {
+            self.key(&invoked.resource)?;
+            self.key(&invoked.action)?;
+            self.key(&invoked.declared)?;
         }
         Ok(())
     }
