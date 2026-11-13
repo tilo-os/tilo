@@ -7,7 +7,7 @@
  * devices do. Without `TILO_KEY_FILE` this is skipped; with it, a missing
  * binary fails.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { Host, open } from "../index.js";
 
@@ -27,6 +27,9 @@ async function whole(
   const text = new TextDecoder().decode(reply.body);
   return { status: reply.status, headers: reply.headers, json: text ? JSON.parse(text) : null };
 }
+
+// A host enters a workspace and starts its apps on the first call: seconds, not milliseconds.
+setDefaultTimeout(60_000);
 
 describe.skipIf(!KEY_FILE)("the native part on a real host", () => {
   const host = () => new Host(KEY_FILE as string);
