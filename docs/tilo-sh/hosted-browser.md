@@ -14,7 +14,7 @@ An agent opens Browser with an ordinary action, `browser#open` — the same one 
 The call answers once the window is live: the first open of a sleeping workspace wakes its machine, which
 costs seconds, and one that is already up answers in about a second. Opening again attaches to the same
 window instead of making a second one. The window is a normal Browser window in the workspace: its members
-see it on their desk, in the desktop app and on the web page, live.
+see it in their window, in the desktop app and on the web page, live.
 
 The window it answers with has a page, and the page's actions are what an agent drives:
 

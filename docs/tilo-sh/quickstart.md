@@ -6,7 +6,7 @@ TypeScript. Everything below works on the same workspace, from every way in.
 ## 1. Sign in and make a workspace
 
 Open [tilo.sh](https://tilo.sh) and sign in. In the workspace overview, choose **New workspace** and
-name it `First steps`. You are in it now: a desk with its apps, and nothing else of anyone's.
+name it `First steps`. You are in it now: a workspace with its apps, and nothing else of anyone's.
 
 > [!NOTE]
 > A workspace can also be made without touching the page: `tilo account workspaces create "First

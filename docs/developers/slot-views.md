@@ -1,7 +1,7 @@
 # Draw a part of the shell
 
 Parts of the Tilo shell are **slots**: the window menu, the bar, the
-switcher, the overview, quick settings, the launcher, notifications, the desk
+switcher, the overview, quick settings, the launcher, notifications, the layout
 widgets, the people list, the emoji picker, the on-screen displays, the
 workspace menu, the window decoration and the window manager, plus every
 sheet that is not asking the person to trust something (`sheet:power`,

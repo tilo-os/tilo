@@ -78,7 +78,7 @@ integration a01f8006bee, where wasmtime imports and calls converted every value 
 | keystroke, notes (typing) | 1.40 | 1.46 | 1.33 | 1.42 | 1.35 | 1.37 |
 | keystroke, tasks | 1.95 | 2.33 | 1.89 | 2.11 | 1.92 | 1.85 |
 | peer edit, tasks | 1.24 | 1.50 | 1.20 | 1.33 | 1.23 | 1.18 |
-| peer edit, shell bar (the session changes the desk) | | | 0.624 | 0.635 | 0.623 | 0.639 |
+| peer edit, shell bar (the session changes the layout) | | | 0.624 | 0.635 | 0.623 | 0.639 |
 | send in a thread, chat | 6.43 | 6.69 | 6.57 | 6.74 | 6.80 | 6.33 |
 | compute, guest calls (2^20) | 104 | 14.3 | 14.3 | 105 | 14.3 | 23.9 |
 | compute, loops over a list (2^20) | 216 | 231 | 77.5 | 212 | 77.6 | 95.9 |
