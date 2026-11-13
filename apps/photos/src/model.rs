@@ -1286,9 +1286,27 @@ fn label_patch(now: &Set<String>, patch: &MetadataLabelsPatch) -> Vec<String> {
 mod tests {
     #[test]
     fn capture_times_read_with_a_space_not_the_iso_separator() {
-        assert_eq!(capture_label("2026-07-12T18:16"), "2026-07-12 18:16");
-        assert_eq!(capture_label("2026-07-12"), "2026-07-12");
-        assert_eq!(capture_label("June 2026"), "June 2026");
+        for (stored, shown) in [
+            ("2026-07-12T18:16", "2026-07-12 18:16"),
+            ("2026-07-12", "2026-07-12"),
+            ("June 2026", "June 2026"),
+            // Seconds and an offset follow the time as they are stored.
+            ("2026-07-12T18:16:05+02:00", "2026-07-12 18:16:05+02:00"),
+            ("2024-02-29T23:59", "2024-02-29 23:59"),
+            // Nothing, no time after the separator, and no separator to replace.
+            ("", ""),
+            ("2026-07-12T", "2026-07-12T"),
+            ("2026-07-12 18:16", "2026-07-12 18:16"),
+            ("2026-07-12t18:16", "2026-07-12t18:16"),
+            // A day the calendar does not have is not a capture time.
+            ("2026-02-30T08:00", "2026-02-30T08:00"),
+            ("2026-13-01T08:00", "2026-13-01T08:00"),
+            // A character that straddles the day's end or the separator.
+            ("2026-07-1éT18:16", "2026-07-1éT18:16"),
+            ("2026-07-12é18:16", "2026-07-12é18:16"),
+        ] {
+            assert_eq!(capture_label(stored), shown, "stored as {stored:?}");
+        }
     }
 
     use super::*;

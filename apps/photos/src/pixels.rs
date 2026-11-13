@@ -246,17 +246,33 @@ mod tests {
 
     #[test]
     fn decoding_is_bounded_round_trips_png_and_refuses_non_images() {
-        assert_eq!(
-            read_bounded(Cursor::new([1, 2, 3, 4]), 4),
-            Some(vec![1, 2, 3, 4])
-        );
-        assert_eq!(read_bounded(Cursor::new([1, 2, 3, 4, 5]), 4), None);
+        for (bytes, max_bytes, kept) in [
+            (&[1_u8, 2, 3, 4][..], 4, true),
+            (&[1, 2, 3, 4, 5][..], 4, false),
+            (&[0_u8; 0][..], 4, true),
+            (&[0_u8; 0][..], 0, true),
+            (&[1][..], 0, false),
+            (&[1, 2, 3][..], usize::MAX, true),
+        ] {
+            assert_eq!(
+                read_bounded(Cursor::new(bytes), max_bytes),
+                kept.then(|| bytes.to_vec()),
+                "{} bytes read within {max_bytes}",
+                bytes.len()
+            );
+        }
 
         for (w, h, ok) in [
             (8_000, 4_000, true),
             (8_193, 4_096, false),
             (u32::MAX, u32::MAX, false),
             (0, 1, false),
+            (1, 0, false),
+            (1, 1, true),
+            // Exactly the budget, as a frame and as one row, and one pixel past it.
+            (8_192, 4_096, true),
+            (33_554_432, 1, true),
+            (33_554_433, 1, false),
         ] {
             assert_eq!(within_decode_limits(w, h), ok, "decode limits for {w}x{h}");
         }
