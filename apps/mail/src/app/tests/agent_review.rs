@@ -243,10 +243,12 @@ fn cvs_open_through_the_desktop(
         let tilo_actions::remote::InvokeArgument::Json(arguments) = &request.argument else {
             panic!("the desktop's open takes typed arguments: {request:?}");
         };
-        let hash = tilo_content::hash_bytes(bytes);
         assert_eq!(
-            arguments["target"],
-            tilo_actions::content_resource(&hash).unwrap(),
+            arguments["target"]
+                .as_str()
+                .and_then(tilo_actions::content_hash)
+                .and_then(|reference| app.content().read(reference)),
+            Some(bytes.clone()),
             "the CV's own content: {arguments:?}"
         );
         assert_eq!(arguments["place"], "tab-of");
