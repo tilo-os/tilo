@@ -145,31 +145,60 @@ fn words_follow_a_path_and_export_as_outlines() {
     );
 }
 
+/// Each finish is tried on the same plain hill in one window: it is applied,
+/// looked at and taken back, and the artwork is the plain one again before
+/// the next is tried.
 #[test]
 fn grain_tooth_inner_shadow_and_feather_change_what_is_drawn() {
     let region = [0.0, 0.0, 400.0, 400.0];
-    let plain = |app: &mut TestApp<App>| {
-        draw(
-            app,
-            &json!([{"id": "hill", "shape": {"kind": "rect", "x": 100, "y": 100, "width": 200, "height": 200}, "fill": "#507090"}]),
-        );
-    };
     let mut app = TestApp::<App>::new().unwrap();
-    plain(&mut app);
+    draw(
+        &mut app,
+        &json!([{"id": "hill", "shape": {"kind": "rect", "x": 100, "y": 100, "width": 200, "height": 200}, "fill": "#507090"}]),
+    );
+    let plain = app.state();
     let before = pixels(&app, region);
     for edit in [
         json!({"ids": ["hill"], "grain": 0.6}),
         json!({"ids": ["hill"], "inner_shadow": {"offset": [0, 12], "blur": 16, "colour": "#000000aa"}}),
         json!({"ids": ["hill"], "feather": 24}),
     ] {
-        let mut app = TestApp::<App>::new().unwrap();
-        plain(&mut app);
         app.call("edit-marks", edit.clone()).unwrap();
         let after = pixels(&app, region);
         assert!(distance(&before, &after) > 0.5, "{edit} shows");
+        assert!(app.undo(), "{edit} is one step to take back");
+        assert_eq!(app.state(), plain, "the hill is plain again after {edit}");
     }
-    let mut app = TestApp::<App>::new().unwrap();
-    plain(&mut app);
+    // Past its range a finish is refused, saying which, and nothing changes.
+    for (edit, says) in [
+        (
+            json!({"ids": ["hill"], "grain": 1.5}),
+            "grain must be within 0..=1",
+        ),
+        (
+            json!({"ids": ["hill"], "inner_shadow": {"offset": [0, 12], "blur": 501, "colour": "#000000aa"}}),
+            "blur 0 to 500",
+        ),
+        (
+            json!({"ids": ["hill"], "feather": 501}),
+            "feather is 0 to 500",
+        ),
+    ] {
+        let refused = app
+            .call("edit-marks", edit.clone())
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains(says), "{edit}: {refused}");
+        assert_eq!(app.state(), plain, "{edit} changed nothing");
+    }
+    // None of a finish is no finish: the hill stays plain.
+    for edit in [
+        json!({"ids": ["hill"], "grain": 0}),
+        json!({"ids": ["hill"], "feather": 0}),
+    ] {
+        app.call("edit-marks", edit.clone()).unwrap();
+        assert_eq!(app.state(), plain, "{edit} is no finish");
+    }
     app.call("edit-layer", json!({"id": "layer-1", "texture": 1.0}))
         .unwrap();
     let after = pixels(&app, region);
