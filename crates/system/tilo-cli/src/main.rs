@@ -1737,6 +1737,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+        )]
         fn providers_are_found_and_an_update_runs_the_ones_there_are;
 
         phase providers_are_discovered_forwarded_and_overridable;
