@@ -459,7 +459,9 @@ def lan_of(run: Run, name: str) -> str:
     def read() -> str:
         return run.vm(name).root_exec(
             "ip -o link show dev tilolan0; ip -o -4 addr show dev tilolan0; "
-            "systemctl show tilo-vm-lan.service -p ActiveState -p Result --value | paste -sd, -",
+            "systemctl show tilo-vm-lan.service -p ActiveState -p Result --value | paste -sd, -; "
+            "journalctl -b --no-pager -o cat -u tilo-vm-lan.service | tail -n 20; "
+            "udevadm info /sys/class/net/tilolan0 2>&1 | grep -i 'systemd\\|INTERFACE\\|ID_NET' | head -n 12",
             timeout=120, check=False)
     def addressed() -> str | None:
         text = read()

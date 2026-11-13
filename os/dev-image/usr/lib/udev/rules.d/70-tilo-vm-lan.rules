@@ -1,4 +1,6 @@
 # The NIC tilo-vm gives every VM on the network its host's VMs share (its MAC
 # starts 52:54:01:00) is tilolan0, and tilo-vm-lan.service gives it its address
 # (`tilo-vm guide platforms`, "One network for a host's VMs"). Dev images only.
-SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="52:54:01:00:*", NAME="tilolan0", TAG+="systemd", ENV{SYSTEMD_WANTS}+="tilo-vm-lan.service"
+# The service is started by name once the NIC has its name, at every boot: a
+# want on the renamed device's unit did not start it.
+SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="52:54:01:00:*", NAME="tilolan0", RUN+="/usr/bin/systemctl --no-block start tilo-vm-lan.service"

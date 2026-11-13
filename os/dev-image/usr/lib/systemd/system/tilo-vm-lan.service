@@ -1,10 +1,15 @@
 # The address of this VM on the network the VMs tilo-vm runs on one host share,
 # from its NIC's MAC (/usr/libexec/tilo/tilo-vm-lan). Started by
-# 70-tilo-vm-lan.rules when that NIC appears. Dev images only.
+# 70-tilo-vm-lan.rules once that NIC is named tilolan0. Dev images only.
+#
+# It does not bind to the NIC's device unit: renamed by udev after it first
+# appeared under its kernel name, the NIC's sys-subsystem-net-devices-tilolan0
+# unit was not plugged when the service started, and BindsTo stopped the
+# service at once, leaving tilolan0 down with no address (e2e-branch
+# r3bad4f0d6f: "inactive", "success").
 [Unit]
 Description=Address on tilo-vm's host network
-BindsTo=sys-subsystem-net-devices-tilolan0.device
-After=sys-subsystem-net-devices-tilolan0.device
+ConditionPathExists=/sys/class/net/tilolan0
 
 [Service]
 Type=oneshot
