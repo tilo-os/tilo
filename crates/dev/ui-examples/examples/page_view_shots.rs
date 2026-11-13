@@ -1,16 +1,4 @@
 //! Offscreen shots of a window's page another device published, as this toolkit draws it.
-//!
-//! A hosted Browser window's page travels the workspace's live plane as a display list
-//! (`tilo-page/1`), and a desk draws it with the same Vello and text stack it draws everything
-//! else with. These shots prove what a viewer sees:
-//!
-//! - `page-desk-{dark,light}.png` — a desk whose window is another device's: the page the
-//!   publisher's engine drew, in the window's tile, with the desk's own chrome.
-//! - `page-tile-{dark,light}.png` — that tile alone, which is what a browser tab mounts for the
-//!   same window: the same code, in a page.
-//!
-//! Writes into `OUT_DIR` (else the first argument, else `target/look/page-view`).
-//!
 //! Run: `cargo run -p ui-examples --example page-view-shots [OUT_DIR]`
 
 #![allow(

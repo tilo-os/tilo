@@ -7,11 +7,7 @@
 //! window (the History bar included), an option menu and a content popover,
 //! a transient notice in the window's bar, a sheet up from the foot, the
 //! status surfaces, and video controls on the floating material.
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- window_chrome [OUT_DIR]`
-//! Out:  `OUT_DIR` (default `/tmp/window_chrome`): `modal-<theme>.png`,
-//!       `popover-<theme>.png`, `app-menu-<theme>.png`, `notice-<theme>.png`,
-//!       `sheet-<theme>.png`, `status-<theme>.png`, `video-<theme>.png`.
 
 use std::path::{Path, PathBuf};
 

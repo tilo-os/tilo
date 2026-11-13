@@ -4,9 +4,7 @@
 //! each writing `:name:` of emoji a registered workspace has, in dark and
 //! light, at one and two device pixels per point. A `:name:` the workspace
 //! lacks, and inline code, stay text.
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- inline_emoji_shots`
-//! Out:  `$INLINE_EMOJI_SHOTS_OUT` (default `/tmp/inline_emoji_shots`)
 
 use std::cell::Cell;
 use std::collections::HashMap;

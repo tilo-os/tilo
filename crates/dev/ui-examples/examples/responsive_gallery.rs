@@ -1,6 +1,5 @@
 //! Responsive gallery showing flex/wrap behavior and CRDT session persistence.
 //! `SearchField`, `Chip`, `StatTile`, and `Banner` reflow as the window narrows.
-//!
 //! Run:  cargo run -p ui-examples --example ui-lab -- `responsive_gallery`
 
 use std::fs;

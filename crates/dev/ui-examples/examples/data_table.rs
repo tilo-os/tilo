@@ -5,21 +5,7 @@
 
 //! Offscreen shots for the `DataTable` primitive's built-in draggable
 //! scrollbar.
-//!
-//! A 40-row table is put into internal-virtualization mode (a 300-px body
-//! viewport over ~960 px of rows) so the built-in vertical scrollbar is
-//! live, then two frames are rendered:
-//!   1. `data_table-top.png`    — `scroll_y = 0`: the thumb sits at the top.
-//!   2. `data_table-bottom.png` — `scroll_y = max`: the thumb sits at the
-//!      bottom, proving it tracks the offset.
-//!
-//! The example also *asserts* the thumb rect matches the offset (top thumb
-//! at the track top, bottom thumb at the track bottom) so it doubles as a
-//! self-checking geometry probe — a green run means "the thumb is where the
-//! offset says".
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- data_table`
-//! Out:  `$DATA_TABLE_SHOTS_OUT` (default `/tmp/data_table_shots`)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

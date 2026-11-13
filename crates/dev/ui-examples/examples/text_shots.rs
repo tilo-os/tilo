@@ -2,14 +2,7 @@
 //! sheets adopt: [`tilo_ui::widget::TextInput`] with a live selection highlight,
 //! the click-to-type [`tilo_ui::widget::NumberInput`] (value + steppers), and the
 //! embeddable [`tilo_ui::widget::ColorPicker`].
-//!
-//! Every widget is exercised through its real five-pass pipeline and event
-//! handler — no private-field pokes. The point is a picture you can eyeball
-//! that the selection band renders, the number field + steppers lay out, and
-//! the colour picker embeds cleanly.
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- text_shots`
-//! Out:  `$TEXT_SHOTS_OUT` (default `/tmp/text_shots`)
 
 use std::collections::HashMap;
 use std::path::PathBuf;

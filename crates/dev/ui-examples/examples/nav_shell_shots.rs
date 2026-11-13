@@ -6,37 +6,6 @@
 //! Offscreen shots of the one window shell (`NavShell`) and the one
 //! navigation list (`NavList`), through the same `FrameHarness` frame the
 //! live window and every app's `--shots` use.
-//!
-//! Writes, into `OUT_DIR` (else `$NAV_SHELL_SHOTS_OUT`, else
-//! `target/look/nav-shell`):
-//!
-//! - `mail-1280-{dark,light,high-contrast}.png` — sidebar, overview and
-//!   content docked, one header row across the window.
-//! - `mail-1280-hidden.png` — the sidebar hidden; the toggle stays
-//!   top-leading.
-//! - `mail-800.png` — too narrow to dock: the mailboxes are the first
-//!   screen, one column at a time.
-//! - `mail-800-drawer.png` — a content-primary window (`ContentKind::Document`)
-//!   floats its sidebar as a drawer over the content instead, with no scrim.
-//! - `mail-560.png`, `mail-560-detail.png` — overview and content become
-//!   push screens with a Back button.
-//! - `mail-1280-text2x.png` — 200 % text.
-//! - `settings-360.png` — phone width: the sidebar is the first screen.
-//! - `rail-1280.png` — a docked icon rail.
-//! - `mail-1280-history-{dark,light}.png` — a document with History: its
-//!   control at the trailing edge of the header row.
-//! - `mail-1280-history-open-{dark,light}.png` — History showing beside the
-//!   app, its control reading as on.
-//! - `mail-800-drawer-history-{dark,light}.png` — the mailboxes screen at
-//!   800 × 600: History stays reachable.
-//! - `mail-800-history-open-{dark,light}.png` — History showing at 800 × 600.
-//! - `actions-{1280,800,520}-{dark,light}.png` — labelled actions, then
-//!   their icons, then the More menu, as the row narrows.
-//! - `pages-back-{dark,light}.png` — the shell's Back for an app's page
-//!   stack, with a count after the title.
-//! - `files-path-{dark,light}.png` — a path bar as the content header's
-//!   leading fill.
-//!
 //! Run: `cargo run -p ui-examples --example ui-shots -- nav_shell_shots [OUT_DIR]`
 
 use std::path::{Path, PathBuf};

@@ -1,12 +1,7 @@
 //! Offscreen shots for `TextInput`'s **multiline** mode (soft-wrapped rows,
 //! cross-line selection, and caret) and **secret** mode (masked bullets, a
 //! revealed variant, and keyboard focus on the built-in show/hide control).
-//!
-//! The shots use the normal five-pass pipeline. `set_selection` only prepares
-//! the public selection state for the still frame.
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- textinput_ext_shots`
-//! Out:  `$TEXTINPUT_EXT_SHOTS_OUT` (default `target/textinput_ext_shots`)
 
 use std::path::PathBuf;
 
