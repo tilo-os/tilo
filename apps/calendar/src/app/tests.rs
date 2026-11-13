@@ -142,6 +142,19 @@ fn demo_fixtures_are_separate_copies_of_one_seed() {
         demo_calendar(second.today),
         "another day is seeded on its own"
     );
+    let standup = |calendar: &Calendar| {
+        calendar
+            .events
+            .iter()
+            .find(|event| event.title == "Team standup")
+            .map(|event| event.start.date())
+    };
+    assert_eq!(standup(&second.model), Some(second.today));
+    assert_eq!(
+        standup(&demo_calendar(tomorrow)),
+        Some(tomorrow),
+        "and its events are that day's, not the first day's"
+    );
 }
 
 fn waits_for_upload(doc: &AutoCommit, id: Id) -> bool {
