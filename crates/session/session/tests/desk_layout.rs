@@ -44,18 +44,17 @@ fn state_of(home: &tilo_test_env::TestHome) -> PathBuf {
     home.state().to_path_buf()
 }
 
-/// Where the session reads the desk this device left.
-fn desk_file(state: &Path) -> PathBuf {
-    tilo_session_core::desk::path(state)
-}
-
 /// The person at this device, whose desk its sessions open.
 const PERSON: &str = "ada";
 
-/// Write `tree` as the desk this device left, where the next session reads it.
+/// Write `tree` as the desk this device left, where the next session reads it: the document a
+/// session that ends keeps, written the way that session writes it.
 fn save_desk(state: &Path, tree: &DesktopTree) {
-    tilo_session_core::desk::leave(state, tree, PERSON, tilo_clock::unix_now_i64())
-        .expect("the desk this device left");
+    let desk = tilo_session_core::desk::Desk::new(automerge::AutoCommit::new(), PERSON, None);
+    desk.record_now(tree, tilo_clock::unix_now_i64(), &[], None);
+    let path = tilo_session_core::desk::path(state);
+    fs::create_dir_all(path.parent().expect("a tilo directory")).expect("the state directory");
+    fs::write(path, desk.document().save()).expect("the desk this device left");
 }
 
 fn tab(id: u64, label: &str, app: &str) -> Tab {
@@ -365,7 +364,7 @@ fn a_restart_brings_back_the_desk_the_session_kept() {
     drop(kept);
 
     assert!(
-        desk_file(&state).exists(),
+        tilo_session_core::desk::path(&state).exists(),
         "the desk is kept as its one document"
     );
 
@@ -685,7 +684,7 @@ fn a_desk_that_cannot_be_read_starts_empty_and_says_the_desk_is_still_there() {
     let _settled = ui::motion::testing::settled();
     let home = tilo_test_env::TestHome::new().unwrap();
     let state = state_of(&home);
-    let path = desk_file(&state);
+    let path = tilo_session_core::desk::path(&state);
     fs::create_dir_all(path.parent().expect("a tilo directory")).expect("the state directory");
     fs::write(&path, "{ not a desk").expect("a desk file that cannot be read");
 

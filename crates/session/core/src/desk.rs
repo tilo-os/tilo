@@ -136,24 +136,6 @@ pub fn actor_of_person(person: &str) -> automerge::ActorId {
     automerge::ActorId::from(person.as_bytes())
 }
 
-/// Write `desktop` as the desk this device left: the one document a session opens, kept under
-/// `state` with its changes authored by `person` and dated `time`. What a session that ends leaves
-/// behind is written here, so a harness that says which desk a device left writes it the same way
-/// and the session that starts next opens it as any other.
-///
-/// # Errors
-/// The state directory cannot be made, or the desk cannot be written.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn leave(state: &Path, desktop: &DesktopTree, person: &str, time: i64) -> std::io::Result<()> {
-    let at = path(state);
-    if let Some(directory) = at.parent() {
-        std::fs::create_dir_all(directory)?;
-    }
-    let desk = Desk::new(AutoCommit::new(), person, None);
-    desk.record_now(desktop, time, &[], None);
-    std::fs::write(at, desk.document().save())
-}
-
 /// The desk's document as this device keeps it, and how the person here changed it.
 pub struct Desk {
     doc: Rc<RefCell<AutoCommit>>,
