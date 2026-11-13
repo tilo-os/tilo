@@ -100,86 +100,90 @@ fn original_remote_authorizer_with_spec(
     })
 }
 
-#[test]
-fn published_authorization_delayed_original_remote_grant_denies_before_document_handler() {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    };
-    let time = Arc::new(AtomicU64::new(99));
-    let grant = original_remote_grant(time.clone());
-    assert!(grant.check(&crate::permissions::PermissionScope::app(
-        "test.counter",
-        crate::permissions::ActionKind::Undoable
-    )));
-    let request = remote_request(851, "bump");
-    let mut app = app();
-    app.collaboration.manager = admitted_delivery_manager();
-    app.require_published_invocation_authorizer();
-    app.install_published_invocation_authorizer(original_remote_authorizer(request.clone(), grant))
-        .unwrap();
-    let before = app.state.doc.get_heads();
-    time.store(100, Ordering::Release);
-    deliver_remote(&mut app, &request);
-    assert_eq!(
-        counter(&app),
-        0,
-        "host permission must not replace expired remote caller"
-    );
-    assert_eq!(app.state.doc.get_heads(), before);
-}
+tilo_test_env::scenario! {
+    fn published_authorization_never_executes_without_its_exact_grant;
 
-#[test]
-fn published_authorization_missing_unknown_or_mismatched_request_never_executes() {
-    use std::sync::{Arc, atomic::AtomicU64};
-    for case in 0..5 {
-        let expected = remote_request(852, "bump");
-        let mut delivered = expected.clone();
+    phase published_authorization_delayed_original_remote_grant_denies_before_document_handler;
+    {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        };
+        let time = Arc::new(AtomicU64::new(99));
+        let grant = original_remote_grant(time.clone());
+        assert!(grant.check(&crate::permissions::PermissionScope::app(
+            "test.counter",
+            crate::permissions::ActionKind::Undoable
+        )));
+        let request = remote_request(851, "bump");
         let mut app = app();
         app.collaboration.manager = admitted_delivery_manager();
         app.require_published_invocation_authorizer();
-        if case != 0 {
-            app.install_published_invocation_authorizer(original_remote_authorizer(
-                expected,
-                original_remote_grant(Arc::new(AtomicU64::new(99))),
-            ))
+        app.install_published_invocation_authorizer(original_remote_authorizer(request.clone(), grant))
             .unwrap();
-        }
-        match case {
-            1 => delivered.wire_id += 1,
-            2 => delivered.invocation = tilo_actions::InvocationId::new(),
-            3 => delivered.actor = "remote:other".into(),
-            4 => delivered.argument = Some("altered".into()),
-            _ => {}
-        }
-        deliver_remote(&mut app, &delivered);
-        assert_eq!(counter(&app), 0, "case {case} entered the handler");
+        let before = app.state.doc.get_heads();
+        time.store(100, Ordering::Release);
+        deliver_remote(&mut app, &request);
+        assert_eq!(
+            counter(&app),
+            0,
+            "host permission must not replace expired remote caller"
+        );
+        assert_eq!(app.state.doc.get_heads(), before);
     }
-}
 
-#[test]
-fn published_authorization_wrong_lease_never_executes() {
-    use std::sync::Arc;
-    let request = remote_request(853, "bump");
-    let mut app = app();
-    app.collaboration.manager = admitted_delivery_manager();
-    app.require_published_invocation_authorizer();
-    app.install_published_invocation_authorizer(Arc::new(move |delivered| {
-        let mut wrong = delivered.clone();
-        wrong.wire_id += 1;
-        Ok(crate::invocation_scope::PublishedInvocationLease::new(
-            wrong,
-            crate::collaboration::RouteSpec::record(
-                "test.counter",
-                uuid::Uuid::from_u128(1),
-                crate::RecordId::for_tab(900).as_str(),
-            ),
-            Arc::new(|| Ok(())),
-        ))
-    }))
-    .unwrap();
-    deliver_remote(&mut app, &request);
-    assert_eq!(counter(&app), 0);
+    phase published_authorization_missing_unknown_or_mismatched_request_never_executes;
+    {
+        use std::sync::{Arc, atomic::AtomicU64};
+        for case in 0..5 {
+            let expected = remote_request(852, "bump");
+            let mut delivered = expected.clone();
+            let mut app = app();
+            app.collaboration.manager = admitted_delivery_manager();
+            app.require_published_invocation_authorizer();
+            if case != 0 {
+                app.install_published_invocation_authorizer(original_remote_authorizer(
+                    expected,
+                    original_remote_grant(Arc::new(AtomicU64::new(99))),
+                ))
+                .unwrap();
+            }
+            match case {
+                1 => delivered.wire_id += 1,
+                2 => delivered.invocation = tilo_actions::InvocationId::new(),
+                3 => delivered.actor = "remote:other".into(),
+                4 => delivered.argument = Some("altered".into()),
+                _ => {}
+            }
+            deliver_remote(&mut app, &delivered);
+            assert_eq!(counter(&app), 0, "case {case} entered the handler");
+        }
+    }
+
+    phase published_authorization_wrong_lease_never_executes;
+    {
+        use std::sync::Arc;
+        let request = remote_request(853, "bump");
+        let mut app = app();
+        app.collaboration.manager = admitted_delivery_manager();
+        app.require_published_invocation_authorizer();
+        app.install_published_invocation_authorizer(Arc::new(move |delivered| {
+            let mut wrong = delivered.clone();
+            wrong.wire_id += 1;
+            Ok(crate::invocation_scope::PublishedInvocationLease::new(
+                wrong,
+                crate::collaboration::RouteSpec::record(
+                    "test.counter",
+                    uuid::Uuid::from_u128(1),
+                    crate::RecordId::for_tab(900).as_str(),
+                ),
+                Arc::new(|| Ok(())),
+            ))
+        }))
+        .unwrap();
+        deliver_remote(&mut app, &request);
+        assert_eq!(counter(&app), 0);
+    }
 }
 
 crate::testing::test_app_widget!(

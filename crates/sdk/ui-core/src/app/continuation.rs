@@ -139,37 +139,42 @@ pub fn with_continuation_record(
 mod continuation_record_tests {
     use super::*;
 
-    #[test]
-    fn a_checkpoint_names_its_record_but_never_a_file() {
-        let base = compose_structural_continuation_metadata(crate::view::View::default(), None)
-            .expect("a checkpoint");
-        assert_eq!(structural_continuation_record(&base.bytes), None);
-        let minted = crate::record::RecordId::minted();
-        let named = with_continuation_record(base.clone(), &minted);
-        assert_eq!(structural_continuation_record(&named.bytes), Some(minted));
-        assert!(
-            sanitize_structural_continuation_metadata(&named.bytes, |_, _| true).is_some(),
-            "a named record passes the shell boundary"
-        );
-        let file = crate::record::RecordId::for_file("/home/ada/secret.txt");
-        let unnamed = with_continuation_record(base.clone(), &file);
-        assert_eq!(unnamed, base, "a file's path never travels in a checkpoint");
-    }
-    #[test]
-    fn nested_derived_records_never_disclose_private_file_identity() {
-        let base =
-            compose_structural_continuation_metadata(crate::view::View::default(), None).unwrap();
-        for file in [
-            crate::record::RecordId::for_file("/home/ada/secret.txt"),
-            crate::record::RecordId::for_file_record(uuid::Uuid::new_v4()),
-        ] {
-            let inner = crate::record::RecordId::derived("editor", &file);
-            let nested = crate::record::RecordId::derived("buffer", &inner);
-            assert_eq!(with_continuation_record(base.clone(), &nested), base);
+    tilo_test_env::scenario! {
+        fn continuation_records_never_name_a_private_file;
+
+        phase a_checkpoint_names_its_record_but_never_a_file;
+        {
+            let base = compose_structural_continuation_metadata(crate::view::View::default(), None)
+                .expect("a checkpoint");
+            assert_eq!(structural_continuation_record(&base.bytes), None);
+            let minted = crate::record::RecordId::minted();
+            let named = with_continuation_record(base.clone(), &minted);
+            assert_eq!(structural_continuation_record(&named.bytes), Some(minted));
+            assert!(
+                sanitize_structural_continuation_metadata(&named.bytes, |_, _| true).is_some(),
+                "a named record passes the shell boundary"
+            );
+            let file = crate::record::RecordId::for_file("/home/ada/secret.txt");
+            let unnamed = with_continuation_record(base.clone(), &file);
+            assert_eq!(unnamed, base, "a file's path never travels in a checkpoint");
         }
-        let safe = crate::record::RecordId::derived("editor", &crate::record::RecordId::minted());
-        let named = with_continuation_record(base, &safe);
-        assert_eq!(structural_continuation_record(&named.bytes), Some(safe));
+
+        phase nested_derived_records_never_disclose_private_file_identity;
+        {
+            let base =
+                compose_structural_continuation_metadata(crate::view::View::default(), None).unwrap();
+            for file in [
+                crate::record::RecordId::for_file("/home/ada/secret.txt"),
+                crate::record::RecordId::for_file_record(uuid::Uuid::new_v4()),
+            ] {
+                let inner = crate::record::RecordId::derived("editor", &file);
+                let nested = crate::record::RecordId::derived("buffer", &inner);
+                assert_eq!(with_continuation_record(base.clone(), &nested), base);
+            }
+            let safe = crate::record::RecordId::derived("editor", &crate::record::RecordId::minted());
+            let named = with_continuation_record(base, &safe);
+            assert_eq!(structural_continuation_record(&named.bytes), Some(safe));
+        }
     }
 }
 

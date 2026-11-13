@@ -1068,192 +1068,139 @@ mod tests {
         }
     }
 
-    #[test]
-    fn only_a_recorded_edit_makes_unmanaged_history_unsigned() {
-        let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
-        let mut doc = automerge::AutoCommit::new();
-        let mut host = crate::local_dispatch::LocalDispatch::new();
-        // Input that edits nothing, even one running a no-op action.
-        for _ in 0..3 {
+    tilo_test_env::scenario! {
+        fn local_input_capture_signs_only_what_it_recorded;
+
+        phase only_a_recorded_edit_makes_unmanaged_history_unsigned;
+        {
+            let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
+            let mut doc = automerge::AutoCommit::new();
+            let mut host = crate::local_dispatch::LocalDispatch::new();
+            // Input that edits nothing, even one running a no-op action.
+            for _ in 0..3 {
+                let input = app.begin_local_input_capture();
+                host.try_dispatch(&mut doc, "noop", &Noop).unwrap();
+                drop(input);
+                app.needs_sync = false;
+                app.drain_local_input_capture();
+                assert!(app.local_input_capture.failure.is_none());
+                assert!(app.document_sync_status().is_none());
+                assert!(
+                    !app.needs_sync,
+                    "input that edits nothing asks for no frame"
+                );
+            }
+            // An edit outside input is not this person's unsigned history.
+            host.try_dispatch(&mut doc, "put", &Put(1)).unwrap();
+            app.drain_local_input_capture();
+            assert!(app.local_input_capture.failure.is_none());
             let input = app.begin_local_input_capture();
-            host.try_dispatch(&mut doc, "noop", &Noop).unwrap();
+            host.try_dispatch(&mut doc, "put", &Put(2)).unwrap();
             drop(input);
+            app.drain_local_input_capture();
+            assert_eq!(
+                app.document_sync_status(),
+                None,
+                "an edit no action reports is the person's, saved here: nothing to say"
+            );
+        }
+
+        phase a_refused_action_that_committed_an_edit_is_unsigned_history;
+        {
+            let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
+            let mut doc = automerge::AutoCommit::new();
+            let mut host = crate::local_dispatch::LocalDispatch::new();
+            let input = app.begin_local_input_capture();
+            assert!(
+                host.try_dispatch(&mut doc, "commit-then-refuse", &CommitThenRefuse)
+                    .is_err()
+            );
+            drop(input);
+            assert!(
+                automerge::ReadDoc::get(&doc, &automerge::ROOT, "committed")
+                    .unwrap()
+                    .is_some(),
+                "the action's committed edit survives its refusal"
+            );
+            app.drain_local_input_capture();
+            assert_eq!(
+                app.document_sync_status(),
+                None,
+                "a surviving unmanaged edit is the person's, saved here: nothing to say"
+            );
+        }
+
+        phase a_refused_action_without_a_commit_leaves_history_silent;
+        {
+            let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
+            let mut doc = automerge::AutoCommit::new();
+            let mut host = crate::local_dispatch::LocalDispatch::new();
+            let input = app.begin_local_input_capture();
+            assert!(
+                host.try_dispatch(&mut doc, "write-then-refuse", &WriteThenRefuse)
+                    .is_err()
+            );
+            drop(input);
+            assert!(
+                automerge::ReadDoc::get(&doc, &automerge::ROOT, "pending")
+                    .unwrap()
+                    .is_none(),
+                "the executor rolled back the uncommitted write"
+            );
             app.needs_sync = false;
             app.drain_local_input_capture();
             assert!(app.local_input_capture.failure.is_none());
             assert!(app.document_sync_status().is_none());
             assert!(
                 !app.needs_sync,
-                "input that edits nothing asks for no frame"
+                "a refused action that left no edit asks for no frame"
             );
         }
-        // An edit outside input is not this person's unsigned history.
-        host.try_dispatch(&mut doc, "put", &Put(1)).unwrap();
-        app.drain_local_input_capture();
-        assert!(app.local_input_capture.failure.is_none());
-        let input = app.begin_local_input_capture();
-        host.try_dispatch(&mut doc, "put", &Put(2)).unwrap();
-        drop(input);
-        app.drain_local_input_capture();
-        assert_eq!(
-            app.document_sync_status(),
-            None,
-            "an edit no action reports is the person's, saved here: nothing to say"
-        );
-    }
 
-    #[test]
-    fn a_refused_action_that_committed_an_edit_is_unsigned_history() {
-        let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
-        let mut doc = automerge::AutoCommit::new();
-        let mut host = crate::local_dispatch::LocalDispatch::new();
-        let input = app.begin_local_input_capture();
-        assert!(
-            host.try_dispatch(&mut doc, "commit-then-refuse", &CommitThenRefuse)
-                .is_err()
-        );
-        drop(input);
-        assert!(
-            automerge::ReadDoc::get(&doc, &automerge::ROOT, "committed")
-                .unwrap()
-                .is_some(),
-            "the action's committed edit survives its refusal"
-        );
-        app.drain_local_input_capture();
-        assert_eq!(
-            app.document_sync_status(),
-            None,
-            "a surviving unmanaged edit is the person's, saved here: nothing to say"
-        );
-    }
-
-    #[test]
-    fn a_refused_action_without_a_commit_leaves_history_silent() {
-        let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
-        let mut doc = automerge::AutoCommit::new();
-        let mut host = crate::local_dispatch::LocalDispatch::new();
-        let input = app.begin_local_input_capture();
-        assert!(
-            host.try_dispatch(&mut doc, "write-then-refuse", &WriteThenRefuse)
-                .is_err()
-        );
-        drop(input);
-        assert!(
-            automerge::ReadDoc::get(&doc, &automerge::ROOT, "pending")
-                .unwrap()
-                .is_none(),
-            "the executor rolled back the uncommitted write"
-        );
-        app.needs_sync = false;
-        app.drain_local_input_capture();
-        assert!(app.local_input_capture.failure.is_none());
-        assert!(app.document_sync_status().is_none());
-        assert!(
-            !app.needs_sync,
-            "a refused action that left no edit asks for no frame"
-        );
-    }
-
-    #[test]
-    fn legacy_capture_without_custody_is_not_relabelled_by_a_live_connection() {
-        let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
-        let requests = Rc::new(RefCell::new(Vec::new()));
-        app.collaboration.manager =
-            crate::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
-        let route = RouteSpec::app("notes", uuid::Uuid::new_v4());
-        let queue = Queue::new();
-        app.local_input_capture.queues.insert(route, queue.clone());
-        let mut doc = automerge::AutoCommit::new();
+        phase legacy_capture_without_custody_is_not_relabelled_by_a_live_connection;
         {
-            // The compatibility queue has no authenticated host provenance.
-            let _scope = queue.enter("snapshot".into());
-            let _invocation = crate::local_document_action::with_invocation(
-                crate::local_document_action::PublishedInvocation {
-                    resource: "body".into(),
-                    action: "read".into(),
-                    arguments: serde_json::Map::new(),
-                },
-            );
-            crate::local_dispatch::LocalDispatch::new()
-                .try_dispatch(&mut doc, "noop", &Noop)
-                .unwrap();
+            let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
+            let requests = Rc::new(RefCell::new(Vec::new()));
+            app.collaboration.manager =
+                crate::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
+            let route = RouteSpec::app("notes", uuid::Uuid::new_v4());
+            let queue = Queue::new();
+            app.local_input_capture.queues.insert(route, queue.clone());
+            let mut doc = automerge::AutoCommit::new();
+            {
+                // The compatibility queue has no authenticated host provenance.
+                let _scope = queue.enter("snapshot".into());
+                let _invocation = crate::local_document_action::with_invocation(
+                    crate::local_document_action::PublishedInvocation {
+                        resource: "body".into(),
+                        action: "read".into(),
+                        arguments: serde_json::Map::new(),
+                    },
+                );
+                crate::local_dispatch::LocalDispatch::new()
+                    .try_dispatch(&mut doc, "noop", &Noop)
+                    .unwrap();
+            }
+            app.drain_local_input_capture();
+            assert!(requests.borrow().is_empty());
+            assert_eq!(app.local_input_capture.pending_count(), 1);
+            assert!(queue.has_outstanding());
+            assert!(app.local_input_capture.failure.is_some());
         }
-        app.drain_local_input_capture();
-        assert!(requests.borrow().is_empty());
-        assert_eq!(app.local_input_capture.pending_count(), 1);
-        assert!(queue.has_outstanding());
-        assert!(app.local_input_capture.failure.is_some());
-    }
 
-    #[test]
-    fn retired_route_is_released_after_uncertain_capture_is_reconciled() {
-        let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
-        let requests = Rc::new(RefCell::new(Vec::new()));
-        app.collaboration.manager =
-            crate::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
-        let queue = Queue::new();
-        let route = RouteSpec::app("retired", uuid::Uuid::new_v4());
-        app.local_input_capture
-            .queues
-            .insert(route.clone(), queue.clone());
-        let mut doc = automerge::AutoCommit::new();
-        let mut host = crate::local_dispatch::LocalDispatch::new();
+        phase retired_route_is_released_after_uncertain_capture_is_reconciled;
         {
-            let _scope = input(&queue, &route);
-            let _invocation = crate::local_document_action::with_invocation(
-                crate::local_document_action::PublishedInvocation {
-                    resource: "body".into(),
-                    action: "read".into(),
-                    arguments: serde_json::Map::new(),
-                },
-            );
-            host.try_dispatch(&mut doc, "noop", &Noop).unwrap();
-        }
-        app.drain_local_input_capture();
-        let request_id = requests
-            .borrow()
-            .iter()
-            .find_map(|request| match request {
-                CollabRequest::ReportLocalDocumentAction { request_id, .. } => Some(*request_id),
-                _ => None,
-            })
-            .unwrap();
-        app.observe_local_input_capture(
-            request_id,
-            Err(runtime_collab::LocalDocumentActionError::Uncertain(
-                "reply lost".into(),
-            )),
-        );
-        app.drain_local_input_capture();
-        assert!(queue.has_outstanding());
-        assert_eq!(app.local_input_capture.route_count(), 1);
-        app.observe_local_input_capture(
-            request_id,
-            Err(runtime_collab::LocalDocumentActionError::Rejected(
-                "worker retired".into(),
-            )),
-        );
-        app.drain_local_input_capture();
-        assert!(!queue.has_outstanding());
-        assert_eq!(app.local_input_capture.route_count(), 0);
-        assert_eq!(app.local_input_capture.pending_count(), 0);
-    }
-
-    #[test]
-    fn noops_are_submitted_and_authenticated_admissions_have_bounded_private_history() {
-        let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
-        let requests = Rc::new(RefCell::new(Vec::new()));
-        app.collaboration.manager =
-            crate::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
-        let route = RouteSpec::app("test", uuid::Uuid::new_v4());
-        let queue = Queue::new();
-        app.local_input_capture
-            .queues
-            .insert(route.clone(), queue.clone());
-        let mut doc = automerge::AutoCommit::new();
-        let mut host = crate::local_dispatch::LocalDispatch::new();
-        let mut first = None;
-        for _ in 0..130 {
+            let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
+            let requests = Rc::new(RefCell::new(Vec::new()));
+            app.collaboration.manager =
+                crate::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
+            let queue = Queue::new();
+            let route = RouteSpec::app("retired", uuid::Uuid::new_v4());
+            app.local_input_capture
+                .queues
+                .insert(route.clone(), queue.clone());
+            let mut doc = automerge::AutoCommit::new();
+            let mut host = crate::local_dispatch::LocalDispatch::new();
             {
                 let _scope = input(&queue, &route);
                 let _invocation = crate::local_document_action::with_invocation(
@@ -1266,48 +1213,105 @@ mod tests {
                 host.try_dispatch(&mut doc, "noop", &Noop).unwrap();
             }
             app.drain_local_input_capture();
-            let (request_id, invocation) = requests
+            let request_id = requests
                 .borrow()
                 .iter()
-                .rev()
                 .find_map(|request| match request {
-                    CollabRequest::ReportLocalDocumentAction { request_id, report } => {
-                        assert!(report.mutation_hashes.is_empty());
-                        Some((*request_id, report.invocation))
-                    }
+                    CollabRequest::ReportLocalDocumentAction { request_id, .. } => Some(*request_id),
                     _ => None,
                 })
-                .expect("read/no-op must be submitted");
-            first.get_or_insert(invocation);
+                .unwrap();
             app.observe_local_input_capture(
                 request_id,
-                Ok(runtime_collab::PublishedInvocationObservation {
-                    host: [1; 16],
-                    invocation: *invocation.as_bytes(),
-                    result: Some(runtime_collab::PublishedInvocationResult {
-                        id: request_id,
-                        update_json: serde_json::to_string(
-                            &tilo_actions::InvocationUpdate::Accepted {
-                                invocation: tilo_actions::InvocationId(invocation),
-                            },
-                        )
-                        .unwrap(),
-                        admission_json: Some("{\"admitted\":true}".into()),
-                        terminal_json: None,
-                        uncertain: false,
-                        cancellation_requested: false,
-                    }),
-                }),
+                Err(runtime_collab::LocalDocumentActionError::Uncertain(
+                    "reply lost".into(),
+                )),
             );
+            app.drain_local_input_capture();
+            assert!(queue.has_outstanding());
+            assert_eq!(app.local_input_capture.route_count(), 1);
+            app.observe_local_input_capture(
+                request_id,
+                Err(runtime_collab::LocalDocumentActionError::Rejected(
+                    "worker retired".into(),
+                )),
+            );
+            app.drain_local_input_capture();
             assert!(!queue.has_outstanding());
+            assert_eq!(app.local_input_capture.route_count(), 0);
+            assert_eq!(app.local_input_capture.pending_count(), 0);
         }
-        assert_eq!(app.local_document_action_admissions().count(), 128);
-        assert_eq!(app.local_document_action_admission_evictions(), 2);
-        assert!(
-            app.local_document_action_admissions()
-                .all(|(capture, admission)| {
-                    Some(capture.invocation) != first && admission == "{\"admitted\":true}"
-                })
-        );
+
+        phase noops_are_submitted_and_authenticated_admissions_have_bounded_private_history;
+        {
+            let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
+            let requests = Rc::new(RefCell::new(Vec::new()));
+            app.collaboration.manager =
+                crate::collaboration::CollaborationManager::with_peer_transport(Peer(requests.clone()));
+            let route = RouteSpec::app("test", uuid::Uuid::new_v4());
+            let queue = Queue::new();
+            app.local_input_capture
+                .queues
+                .insert(route.clone(), queue.clone());
+            let mut doc = automerge::AutoCommit::new();
+            let mut host = crate::local_dispatch::LocalDispatch::new();
+            let mut first = None;
+            for _ in 0..130 {
+                {
+                    let _scope = input(&queue, &route);
+                    let _invocation = crate::local_document_action::with_invocation(
+                        crate::local_document_action::PublishedInvocation {
+                            resource: "body".into(),
+                            action: "read".into(),
+                            arguments: serde_json::Map::new(),
+                        },
+                    );
+                    host.try_dispatch(&mut doc, "noop", &Noop).unwrap();
+                }
+                app.drain_local_input_capture();
+                let (request_id, invocation) = requests
+                    .borrow()
+                    .iter()
+                    .rev()
+                    .find_map(|request| match request {
+                        CollabRequest::ReportLocalDocumentAction { request_id, report } => {
+                            assert!(report.mutation_hashes.is_empty());
+                            Some((*request_id, report.invocation))
+                        }
+                        _ => None,
+                    })
+                    .expect("read/no-op must be submitted");
+                first.get_or_insert(invocation);
+                app.observe_local_input_capture(
+                    request_id,
+                    Ok(runtime_collab::PublishedInvocationObservation {
+                        host: [1; 16],
+                        invocation: *invocation.as_bytes(),
+                        result: Some(runtime_collab::PublishedInvocationResult {
+                            id: request_id,
+                            update_json: serde_json::to_string(
+                                &tilo_actions::InvocationUpdate::Accepted {
+                                    invocation: tilo_actions::InvocationId(invocation),
+                                },
+                            )
+                            .unwrap(),
+                            admission_json: Some("{\"admitted\":true}".into()),
+                            terminal_json: None,
+                            uncertain: false,
+                            cancellation_requested: false,
+                        }),
+                    }),
+                );
+                assert!(!queue.has_outstanding());
+            }
+            assert_eq!(app.local_document_action_admissions().count(), 128);
+            assert_eq!(app.local_document_action_admission_evictions(), 2);
+            assert!(
+                app.local_document_action_admissions()
+                    .all(|(capture, admission)| {
+                        Some(capture.invocation) != first && admission == "{\"admitted\":true}"
+                    })
+            );
+        }
     }
 }

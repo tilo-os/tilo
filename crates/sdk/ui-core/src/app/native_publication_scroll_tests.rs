@@ -415,118 +415,6 @@ impl ViewScrollFixture {
     }
 }
 
-/// A wheel only the scroller took is view-only whether the root declares it
-/// up front or the scroller reports its pan: either way neither the document
-/// sync nor the resource projection runs again. Settings declared nothing,
-/// so every notch republished its whole tree.
-#[test]
-fn view_only_native_scroll_keeps_publication_and_updates_accessibility_geometry() {
-    for view_only in [false, true] {
-        let mut fixture = ViewScrollFixture::new(view_only, false);
-        let before_doc = crate::doc::settle_mark(&fixture.app.state.doc);
-        fixture.app.refresh_semantic_tree();
-        let before_geometry = fixture
-            .app
-            .semantic_tree()
-            .iter()
-            .filter_map(|node| node.bounds.map(|bounds| (node.id.clone(), bounds)))
-            .collect::<Vec<_>>();
-        let syncs = fixture.syncs.get();
-        let declarations = fixture.declarations.get();
-        let directory = fixture.app.actions.last_published_actions.clone();
-        for sample in 0..10 {
-            let input_ns = fixture.wheel();
-            assert!(
-                !fixture.app.needs_sync,
-                "view-only wheel must not request document sync"
-            );
-            let frame_ns = fixture.frame();
-            eprintln!(
-                "native-view-only-wheel {}",
-                serde_json::json!({
-                    "view_only":view_only,"sample":sample,"input_ns":input_ns,"frame_ns":frame_ns,
-                    "paragraphs":fixture.paragraphs,"viewport":[fixture.region.size.0,fixture.region.size.1],"architecture":std::env::consts::ARCH,
-                    "profile":if cfg!(debug_assertions) {"test-debug"} else {"optimized"},
-                    "connected_publication":true,"notes_framework":false,"gpu_or_scanout":false,
-                    "sync_calls":fixture.syncs.get()-syncs,"declaration_calls":fixture.declarations.get()-declarations,
-                })
-            );
-        }
-        assert_eq!(
-            crate::doc::settle_mark(&fixture.app.state.doc),
-            before_doc,
-            "view input leaves the canonical document unchanged"
-        );
-        assert_eq!(
-            fixture.app.actions.last_published_actions, directory,
-            "the action surface remains available"
-        );
-        assert_eq!(
-            fixture.syncs.get(),
-            syncs,
-            "no repeated document synchronization"
-        );
-        assert_eq!(
-            fixture.declarations.get(),
-            declarations,
-            "no repeated resource projection"
-        );
-        fixture.app.refresh_semantic_tree();
-        assert!(
-            before_geometry.iter().any(|(id, bounds)| fixture
-                .app
-                .semantic_tree()
-                .node(id)
-                .is_some_and(|node| node.bounds.is_some_and(|after| after != *bounds))),
-            "fresh semantic geometry follows scrolling even while publication is cached"
-        );
-    }
-}
-
-#[test]
-fn view_only_native_scroll_refuses_pending_and_dispatch_edits() {
-    use automerge::{ReadDoc, transaction::Transactable};
-    for (edit_during_dispatch, declared) in
-        [(false, true), (true, true), (false, false), (true, false)]
-    {
-        let mut fixture = ViewScrollFixture::new(declared, edit_during_dispatch);
-        if !edit_during_dispatch {
-            fixture
-                .app
-                .state
-                .doc
-                .put(automerge::ROOT, "pending-edit", true)
-                .unwrap();
-            assert!(fixture.app.state.doc.pending_ops() > 0);
-        }
-        let syncs = fixture.syncs.get();
-        let declarations = fixture.declarations.get();
-        fixture.wheel();
-        assert!(
-            fixture.app.needs_sync,
-            "actual or pending edits must retain synchronization"
-        );
-        fixture.frame();
-        assert!(fixture.syncs.get() > syncs);
-        assert!(fixture.declarations.get() > declarations);
-        let key = if edit_during_dispatch {
-            "wheel-edit"
-        } else {
-            "pending-edit"
-        };
-        assert!(
-            fixture
-                .app
-                .state
-                .doc
-                .get(automerge::ROOT, key)
-                .unwrap()
-                .is_some(),
-            "the real edit survives the fallback"
-        );
-    }
-}
-
 #[cfg(unix)]
 #[test]
 fn bound_view_only_native_scroll_carries_owner_without_hiding_record_edits() {
@@ -585,26 +473,142 @@ fn bound_view_only_native_scroll_carries_owner_without_hiding_record_edits() {
     }
 }
 
-#[test]
-fn view_only_native_scroll_keeps_modified_input_and_model_work_on_full_path() {
-    for model_pending in [false, true] {
-        let mut fixture = ViewScrollFixture::new(true, false);
-        if model_pending {
-            fixture.app.needs_sync = true;
-        } else {
-            // Alt, not Ctrl: Ctrl+wheel zooms the window instead of scrolling.
-            fixture
+tilo_test_env::scenario! {
+    fn view_only_native_scroll_keeps_publication_and_refuses_edits;
+
+    phase view_only_native_scroll_keeps_publication_and_updates_accessibility_geometry;
+    // A wheel only the scroller took is view-only whether the root declares it
+    // up front or the scroller reports its pan: either way neither the document
+    // sync nor the resource projection runs again. Settings declared nothing,
+    // so every notch republished its whole tree.
+    {
+        for view_only in [false, true] {
+            let mut fixture = ViewScrollFixture::new(view_only, false);
+            let before_doc = crate::doc::settle_mark(&fixture.app.state.doc);
+            fixture.app.refresh_semantic_tree();
+            let before_geometry = fixture
                 .app
-                .set_surface_modifiers(winit::event::Modifiers::from(
-                    winit::keyboard::ModifiersState::ALT,
-                ));
+                .semantic_tree()
+                .iter()
+                .filter_map(|node| node.bounds.map(|bounds| (node.id.clone(), bounds)))
+                .collect::<Vec<_>>();
+            let syncs = fixture.syncs.get();
+            let declarations = fixture.declarations.get();
+            let directory = fixture.app.actions.last_published_actions.clone();
+            for sample in 0..10 {
+                let input_ns = fixture.wheel();
+                assert!(
+                    !fixture.app.needs_sync,
+                    "view-only wheel must not request document sync"
+                );
+                let frame_ns = fixture.frame();
+                eprintln!(
+                    "native-view-only-wheel {}",
+                    serde_json::json!({
+                        "view_only":view_only,"sample":sample,"input_ns":input_ns,"frame_ns":frame_ns,
+                        "paragraphs":fixture.paragraphs,"viewport":[fixture.region.size.0,fixture.region.size.1],"architecture":std::env::consts::ARCH,
+                        "profile":if cfg!(debug_assertions) {"test-debug"} else {"optimized"},
+                        "connected_publication":true,"notes_framework":false,"gpu_or_scanout":false,
+                        "sync_calls":fixture.syncs.get()-syncs,"declaration_calls":fixture.declarations.get()-declarations,
+                    })
+                );
+            }
+            assert_eq!(
+                crate::doc::settle_mark(&fixture.app.state.doc),
+                before_doc,
+                "view input leaves the canonical document unchanged"
+            );
+            assert_eq!(
+                fixture.app.actions.last_published_actions, directory,
+                "the action surface remains available"
+            );
+            assert_eq!(
+                fixture.syncs.get(),
+                syncs,
+                "no repeated document synchronization"
+            );
+            assert_eq!(
+                fixture.declarations.get(),
+                declarations,
+                "no repeated resource projection"
+            );
+            fixture.app.refresh_semantic_tree();
+            assert!(
+                before_geometry.iter().any(|(id, bounds)| fixture
+                    .app
+                    .semantic_tree()
+                    .node(id)
+                    .is_some_and(|node| node.bounds.is_some_and(|after| after != *bounds))),
+                "fresh semantic geometry follows scrolling even while publication is cached"
+            );
         }
-        let syncs = fixture.syncs.get();
-        let declarations = fixture.declarations.get();
-        fixture.wheel();
-        fixture.frame();
-        assert!(fixture.syncs.get() > syncs);
-        assert!(fixture.declarations.get() > declarations);
+    }
+
+    phase view_only_native_scroll_refuses_pending_and_dispatch_edits;
+    {
+        use automerge::{ReadDoc, transaction::Transactable};
+        for (edit_during_dispatch, declared) in
+            [(false, true), (true, true), (false, false), (true, false)]
+        {
+            let mut fixture = ViewScrollFixture::new(declared, edit_during_dispatch);
+            if !edit_during_dispatch {
+                fixture
+                    .app
+                    .state
+                    .doc
+                    .put(automerge::ROOT, "pending-edit", true)
+                    .unwrap();
+                assert!(fixture.app.state.doc.pending_ops() > 0);
+            }
+            let syncs = fixture.syncs.get();
+            let declarations = fixture.declarations.get();
+            fixture.wheel();
+            assert!(
+                fixture.app.needs_sync,
+                "actual or pending edits must retain synchronization"
+            );
+            fixture.frame();
+            assert!(fixture.syncs.get() > syncs);
+            assert!(fixture.declarations.get() > declarations);
+            let key = if edit_during_dispatch {
+                "wheel-edit"
+            } else {
+                "pending-edit"
+            };
+            assert!(
+                fixture
+                    .app
+                    .state
+                    .doc
+                    .get(automerge::ROOT, key)
+                    .unwrap()
+                    .is_some(),
+                "the real edit survives the fallback"
+            );
+        }
+    }
+
+    phase view_only_native_scroll_keeps_modified_input_and_model_work_on_full_path;
+    {
+        for model_pending in [false, true] {
+            let mut fixture = ViewScrollFixture::new(true, false);
+            if model_pending {
+                fixture.app.needs_sync = true;
+            } else {
+                // Alt, not Ctrl: Ctrl+wheel zooms the window instead of scrolling.
+                fixture
+                    .app
+                    .set_surface_modifiers(winit::event::Modifiers::from(
+                        winit::keyboard::ModifiersState::ALT,
+                    ));
+            }
+            let syncs = fixture.syncs.get();
+            let declarations = fixture.declarations.get();
+            fixture.wheel();
+            fixture.frame();
+            assert!(fixture.syncs.get() > syncs);
+            assert!(fixture.declarations.get() > declarations);
+        }
     }
 }
 

@@ -2539,112 +2539,6 @@ fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
     );
 }
 
-/// The host opens a hosted component's anchored hits (a video, a search of
-/// the app's service) through the `open` its provider names, so the
-/// component's provider must say which `open` that is.
-#[test]
-fn a_hosted_components_provider_names_the_open_its_hits_go_through() {
-    let fixture = ActionFixture::new();
-    let opens: Vec<_> = crate::widget::published_search_providers(fixture.app.root_widget.as_ref())
-        .iter()
-        .map(|provider| provider.open_action())
-        .collect();
-    assert!(!opens.is_empty());
-    assert!(
-        opens
-            .iter()
-            .all(|open| open == &Some(tilo_actions::ActionAddress::new("bound:sealed", "open"))),
-        "{opens:?}"
-    );
-}
-
-/// Inside the Tilo shell the app's window does not present search: a
-/// component's request to open it is handed to the host as an intent, and
-/// the host's tile drains it.
-#[test]
-fn a_hosted_components_search_request_becomes_a_host_intent() {
-    let request = crate::search::SearchRequest::within(crate::search::ScopeDecl::new(
-        "folder:inbox",
-        "Inbox",
-    ))
-    .with_query("invoice");
-
-    let mut fixture = ActionFixture::new();
-    fixture.bindings[0]
-        .queued_controls
-        .borrow_mut()
-        .push_back(crate::search::open_search_invocation(&request));
-    assert!(fixture.app.dispatch_control_invocations() > 0);
-    assert!(
-        fixture.app.action_palette().is_none(),
-        "a window that does not present search opens no palette of its own"
-    );
-    assert_eq!(
-        fixture.bindings[0].take_search_request(),
-        Some(request.clone())
-    );
-    assert_eq!(fixture.bindings[1].take_search_request(), None);
-
-    // The tile hosting the component hands the request to the shell once.
-    let temp = tempfile::tempdir().unwrap();
-    let mut owners = crate::record::RecordOwners::new(temp.path().into());
-    let records = owners
-        .open(
-            "so.tilo.binding-probe",
-            "00000000-0000-0000-0000-000000000009",
-        )
-        .unwrap();
-    let views = Rc::new(
-        crate::application_view::InstanceViewStore::new(
-            temp.path().into(),
-            "D",
-            "00000000-0000-0000-0000-000000000009",
-        )
-        .unwrap(),
-    );
-    let definition = ApplicationDefinition {
-        app_id: "so.tilo.binding-probe".into(),
-        title: "Probe".into(),
-        icon: IconDescriptor::Glyph("P"),
-        record_kind: crate::record::RecordKind::new("probe"),
-        workspace_record: true,
-        member_record: false,
-        opens_before_record: false,
-        required: vec![],
-        optional: vec![],
-        opens: &[],
-        create: factory,
-    };
-    let context = HostContext::prepare(
-        &definition,
-        HostContextInputs {
-            records,
-            views,
-            device_id: "D".into(),
-            instance_id: 21,
-            permissions: crate::permissions::SharedPermissions::new(
-                crate::permissions::PermissionContext::permissive(),
-            ),
-            author: crate::permissions::UserId("fixture-user".into()),
-            action_context: tilo_actions::ActionContext::default(),
-        },
-        &LaunchTarget::New,
-    )
-    .unwrap();
-    let component = definition
-        .instantiate(context, LaunchTarget::New, RestoreInput::None)
-        .unwrap();
-    let binding = component.callback_binding();
-    let mut tile = TileHost::from_component(component);
-    assert!(tile.take_host_intent().is_none());
-    binding.request_search(request.clone());
-    assert_eq!(
-        tile.take_host_intent(),
-        Some(crate::widget::AppHostIntent::OpenSearch(request))
-    );
-    assert!(tile.take_host_intent().is_none(), "the request drains once");
-}
-
 fn behaviour_probe_factory(
     context: HostContext,
     target: LaunchTarget,
@@ -2706,21 +2600,131 @@ fn hosted_behaviour(
     }
 }
 
-#[test]
-fn the_hosting_window_takes_the_components_behaviour() {
-    assert_eq!(
-        hosted_behaviour(collaboration_probe_factory),
-        crate::application::ComponentBehaviour::default()
-    );
-    assert_eq!(
-        hosted_behaviour(behaviour_probe_factory),
-        crate::application::ComponentBehaviour {
-            autofocus_on_structure_change: true,
-            appearance_reconcile: true,
-            capture_protected: true,
-            window: crate::application::WindowRole::InputSurface,
-        }
-    );
+tilo_test_env::scenario! {
+    fn a_hosted_component_reaches_its_host;
+
+    phase a_hosted_components_provider_names_the_open_its_hits_go_through;
+    // The host opens a hosted component's anchored hits (a video, a search of
+    // the app's service) through the `open` its provider names, so the
+    // component's provider must say which `open` that is.
+    {
+        let fixture = ActionFixture::new();
+        let opens: Vec<_> = crate::widget::published_search_providers(fixture.app.root_widget.as_ref())
+            .iter()
+            .map(|provider| provider.open_action())
+            .collect();
+        assert!(!opens.is_empty());
+        assert!(
+            opens
+                .iter()
+                .all(|open| open == &Some(tilo_actions::ActionAddress::new("bound:sealed", "open"))),
+            "{opens:?}"
+        );
+    }
+
+    phase a_hosted_components_search_request_becomes_a_host_intent;
+    // Inside the Tilo shell the app's window does not present search: a
+    // component's request to open it is handed to the host as an intent, and
+    // the host's tile drains it.
+    {
+        let request = crate::search::SearchRequest::within(crate::search::ScopeDecl::new(
+            "folder:inbox",
+            "Inbox",
+        ))
+        .with_query("invoice");
+
+        let mut fixture = ActionFixture::new();
+        fixture.bindings[0]
+            .queued_controls
+            .borrow_mut()
+            .push_back(crate::search::open_search_invocation(&request));
+        assert!(fixture.app.dispatch_control_invocations() > 0);
+        assert!(
+            fixture.app.action_palette().is_none(),
+            "a window that does not present search opens no palette of its own"
+        );
+        assert_eq!(
+            fixture.bindings[0].take_search_request(),
+            Some(request.clone())
+        );
+        assert_eq!(fixture.bindings[1].take_search_request(), None);
+
+        // The tile hosting the component hands the request to the shell once.
+        let temp = tempfile::tempdir().unwrap();
+        let mut owners = crate::record::RecordOwners::new(temp.path().into());
+        let records = owners
+            .open(
+                "so.tilo.binding-probe",
+                "00000000-0000-0000-0000-000000000009",
+            )
+            .unwrap();
+        let views = Rc::new(
+            crate::application_view::InstanceViewStore::new(
+                temp.path().into(),
+                "D",
+                "00000000-0000-0000-0000-000000000009",
+            )
+            .unwrap(),
+        );
+        let definition = ApplicationDefinition {
+            app_id: "so.tilo.binding-probe".into(),
+            title: "Probe".into(),
+            icon: IconDescriptor::Glyph("P"),
+            record_kind: crate::record::RecordKind::new("probe"),
+            workspace_record: true,
+            member_record: false,
+            opens_before_record: false,
+            required: vec![],
+            optional: vec![],
+            opens: &[],
+            create: factory,
+        };
+        let context = HostContext::prepare(
+            &definition,
+            HostContextInputs {
+                records,
+                views,
+                device_id: "D".into(),
+                instance_id: 21,
+                permissions: crate::permissions::SharedPermissions::new(
+                    crate::permissions::PermissionContext::permissive(),
+                ),
+                author: crate::permissions::UserId("fixture-user".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
+            &LaunchTarget::New,
+        )
+        .unwrap();
+        let component = definition
+            .instantiate(context, LaunchTarget::New, RestoreInput::None)
+            .unwrap();
+        let binding = component.callback_binding();
+        let mut tile = TileHost::from_component(component);
+        assert!(tile.take_host_intent().is_none());
+        binding.request_search(request.clone());
+        assert_eq!(
+            tile.take_host_intent(),
+            Some(crate::widget::AppHostIntent::OpenSearch(request))
+        );
+        assert!(tile.take_host_intent().is_none(), "the request drains once");
+    }
+
+    phase the_hosting_window_takes_the_components_behaviour;
+    {
+        assert_eq!(
+            hosted_behaviour(collaboration_probe_factory),
+            crate::application::ComponentBehaviour::default()
+        );
+        assert_eq!(
+            hosted_behaviour(behaviour_probe_factory),
+            crate::application::ComponentBehaviour {
+                autofocus_on_structure_change: true,
+                appearance_reconcile: true,
+                capture_protected: true,
+                window: crate::application::WindowRole::InputSurface,
+            }
+        );
+    }
 }
 
 #[test]

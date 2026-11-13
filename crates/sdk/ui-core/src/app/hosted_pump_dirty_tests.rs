@@ -235,413 +235,6 @@ impl HostedPumpFixture {
     }
 }
 
-#[test]
-fn hosted_pump_idle_keeps_resource_cache_and_published_surface() {
-    let mut fixture = HostedPumpFixture::new(1);
-    assert_eq!(fixture.labels(), vec!["Before 0".to_string()]);
-    for _ in 0..3 {
-        fixture.assert_idle();
-    }
-    assert!(fixture.app.actions.resource_cache.borrow().is_some());
-}
-
-#[test]
-fn completed_view_syncs_its_local_projection_before_returning_to_idle() {
-    let mut fixture = HostedPumpFixture::new(1);
-    fixture.assert_idle();
-    let before = fixture.app.state.doc.save();
-    let address = tilo_actions::ActionAddress::new("probe:0", "inspect:0");
-    let actor = fixture.app.collaboration.local_author.0.clone();
-    let started = fixture
-        .app
-        .invoke_resource_action(ResourceInvocation::new(&address, &actor))
-        .unwrap();
-    assert!(matches!(
-        started,
-        crate::widget::ResourceOperationStart::Completed(_)
-    ));
-    assert_eq!(
-        fixture.app.state.doc.save(),
-        before,
-        "navigation writes no document state"
-    );
-    fixture.pump();
-    assert_eq!(
-        fixture.labels(),
-        ["After 0"],
-        "the native worker applies the completed view's queued local projection without another input"
-    );
-    fixture.assert_idle();
-}
-
-#[test]
-fn hosted_pump_idle_keeps_directory_cursor() {
-    let mut fixture = HostedPumpFixture::with_three_roots(1);
-    let page = fixture
-        .app
-        .action_directory_page(directory_query("", "", 1, 8192, 8));
-    assert_eq!(page.rows.len(), 1);
-    assert!(!page.next_cursor.is_empty());
-    fixture.assert_idle();
-    let mut query = directory_query(&page.revision, "", 1, 8192, 8);
-    query.cursor = page.next_cursor;
-    let next = fixture.app.action_directory_page(query);
-    assert!(
-        !next.stale_cursor,
-        "idle pump must retain the issued cursor"
-    );
-    assert_eq!(next.rows.len(), 1);
-}
-
-#[test]
-fn hosted_pump_async_notification_wake_refreshes_widget_resources() {
-    let mut fixture = HostedPumpFixture::new(1);
-    *fixture.pending_label.borrow_mut() = Some("After".into());
-    // Without a wake the pump cannot know (same contract as the window
-    // runner, whose redraw syncs only on a model-dirty wake).
-    fixture.assert_idle();
-    fixture.wake.wake();
-    let generation = fixture.app.actions.resource_generation.get();
-    let report = fixture.pump();
-    assert!(report.synced && report.published);
-    assert_ne!(fixture.app.actions.resource_generation.get(), generation);
-    assert_eq!(fixture.labels(), vec!["After 0".to_string()]);
-    fixture.assert_idle();
-}
-
-#[test]
-fn hosted_pump_queue_only_notification_updates_without_forced_sync() {
-    let mut fixture = HostedPumpFixture::new(1);
-    let syncs = fixture.syncs.get();
-    fixture.wake.notify_events();
-    let report = fixture.pump();
-    assert!(
-        report.updated,
-        "queue notification drains update-driven work"
-    );
-    assert!(!report.synced, "a queue wake alone is not model-dirty");
-    assert_eq!(fixture.syncs.get(), syncs);
-    fixture.assert_idle();
-}
-
-#[test]
-fn hosted_pump_inbound_event_refreshes_remote_document_state() {
-    let mut fixture = HostedPumpFixture::new(1);
-    // Remote document bytes enter only with an inbound collaboration event.
-    fixture.app.state.doc.put(ROOT, "more", true).unwrap();
-    fixture.events.borrow_mut().push(CollabEvent::Context {
-        members: vec![],
-        permissions: vec![],
-        apps: Vec::new(),
-    });
-    let report = fixture.pump();
-    assert!(report.synced && report.published);
-    assert_eq!(fixture.labels().len(), 3);
-    fixture.assert_idle();
-}
-
-#[test]
-fn idle_nearby_snapshot_reply_does_not_request_a_hosted_pump() {
-    let mut fixture = HostedPumpFixture::new(1);
-    fixture
-        .events
-        .borrow_mut()
-        .push(CollabEvent::NearbyTransferCommandResult {
-            request_id: 1,
-            result: Ok(crate::collaboration::NearbyTransferReply::Snapshot {
-                snapshot: crate::collaboration::NearbyTransferSnapshot::default(),
-            }),
-        });
-    assert!(
-        !fixture.app.pump_collab_presence(),
-        "an unchanged Nearby snapshot must not keep requesting frames"
-    );
-    fixture.assert_idle();
-}
-
-#[test]
-fn hosted_pump_invocation_advances_and_publishes_then_idles() {
-    let scope = crate::wake::WakeScope::new();
-    let mut app = App::from_scoped_parts_with_controlled_inputs(
-        scope,
-        State::new(),
-        Box::new(CounterCard::with_async_post_bump_reset()),
-    );
-    app.action_registry_mut()
-        .register::<CounterAction>(COUNTER_TYPE);
-    app.init_layout();
-    let sent = std::rc::Rc::new(RefCell::new(vec![]));
-    app.collaboration.manager =
-        CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
-    app.pump_hosted_model_as(false);
-    app.pump_hosted_model_as(false);
-    let invocation = tilo_actions::InvocationId::new();
-    app.invoke_published_action(
-        872,
-        invocation,
-        "test.counter".into(),
-        "async-bump".into(),
-        None,
-        "original-caller",
-        None,
-    );
-    assert!(app.pump_hosted_model_as(false).synced);
-    assert_eq!(counter(&app), 1, "accepted work advances without a wake");
-    app.pump_hosted_model_as(false);
-    assert!(!app.actions.directed_invocations.contains_key(&invocation));
-    assert_eq!(sent.borrow().iter().filter(|request| matches!(request,
-        CollabRequest::UpdateInvocation { update: tilo_actions::InvocationUpdate::Succeeded { invocation: observed, .. }, .. } if *observed == invocation
-    )).count(), 1);
-    app.pump_hosted_model_as(false);
-    let generation = app.actions.resource_generation.get();
-    assert_eq!(
-        app.pump_hosted_model_as(false),
-        model_lifecycle::HostedPumpReport::default(),
-        "after completion the worker returns to idle"
-    );
-    assert_eq!(app.actions.resource_generation.get(), generation);
-    assert_eq!(counter(&app), 1);
-}
-
-#[test]
-fn hosted_pump_policy_change_and_expiry_refresh() {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    };
-    let mut fixture = HostedPumpFixture::new(1);
-    let time = Arc::new(AtomicU64::new(100));
-    let sample = time.clone();
-    fixture.app.permission_ctx = crate::permissions::PermissionContext::granted(
-        "fixture-user",
-        &crate::permissions::TreePath::root(),
-        crate::permissions::policy::KindSet::ALL,
-        Some(110),
-    )
-    .with_policy_time_sampler(Arc::new(move || Ok(sample.load(Ordering::Acquire))));
-    let generation = fixture.app.actions.resource_generation.get();
-    assert!(fixture.pump().synced, "a replaced policy refreshes");
-    assert_ne!(fixture.app.actions.resource_generation.get(), generation);
-    fixture.assert_idle();
-    time.store(105, Ordering::Release);
-    fixture.assert_idle();
-    time.store(110, Ordering::Release);
-    assert!(
-        fixture.pump().synced,
-        "capability expiry is a policy change"
-    );
-    fixture.assert_idle();
-}
-
-#[test]
-fn hosted_pump_host_owner_permission_replacement_refreshes() {
-    use crate::application::{
-        ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
-    };
-    let temp = tempfile::tempdir().unwrap();
-    let mut owners = crate::record::RecordOwners::new(temp.path().into());
-    let records = owners
-        .open("test.directory", "00000000-0000-0000-0000-000000000005")
-        .unwrap();
-    let views = Rc::new(
-        crate::application_view::InstanceViewStore::new(
-            temp.path().into(),
-            "D",
-            "00000000-0000-0000-0000-000000000005",
-        )
-        .unwrap(),
-    );
-    let definition = ApplicationDefinition {
-        app_id: "test.directory".into(),
-        title: "Directory".into(),
-        icon: crate::widget::IconDescriptor::Glyph("D"),
-        record_kind: crate::record::RecordKind::new("directory"),
-        required: vec![],
-        optional: vec![],
-        opens: &[],
-        workspace_record: false,
-        member_record: false,
-        opens_before_record: false,
-        create: owned_declared_directory_factory,
-    };
-    let permissions = crate::permissions::SharedPermissions::new(
-        crate::permissions::PermissionContext::permissive(),
-    );
-    let context = HostContext::prepare(
-        &definition,
-        HostContextInputs {
-            records,
-            views,
-            device_id: "D".into(),
-            instance_id: 82,
-            permissions: permissions.clone(),
-            author: crate::permissions::UserId("fixture-user".into()),
-            action_context: tilo_actions::ActionContext::default(),
-        },
-        &LaunchTarget::New,
-    )
-    .unwrap();
-    let component = definition
-        .instantiate(context, LaunchTarget::New, RestoreInput::None)
-        .unwrap();
-    let binding = component.callback_binding();
-    let inputs = crate::application::ComponentRunnerInputs {
-        theme: Theme::dark(),
-        text_renderer: crate::font_catalog::fixture_renderer(),
-    };
-    let mut app = App::from_component_using(component, inputs, |_, _| {
-        AppConstructionInputs::controlled()
-    })
-    .unwrap();
-    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
-    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
-        route: binding.broker_route().unwrap(),
-        epoch: uuid::Uuid::new_v4(),
-    });
-    app.init_layout();
-    // The first pass joins the record route, whose initial catalogue arrives
-    // only once the broker worker has processed the join: settle on the
-    // worker, not on a count of passes.
-    let mut settled = false;
-    for _ in 0..8 {
-        app.collaboration.manager.wait_for_commands_for_test();
-        if app.pump_hosted_model_as(false) == model_lifecycle::HostedPumpReport::default() {
-            settled = true;
-            break;
-        }
-    }
-    assert!(settled, "hosted pump never went idle");
-    app.collaboration.manager.wait_for_commands_for_test();
-    let before = tilo_actions::door::survey(&app.publication_resources()).len();
-    assert!(before > 0);
-    let generation = app.actions.resource_generation.get();
-    assert_eq!(
-        app.pump_hosted_model_as(false),
-        model_lifecycle::HostedPumpReport::default()
-    );
-    assert_eq!(app.actions.resource_generation.get(), generation);
-    // What a host does with its recomputed authority before a pump.
-    permissions.set(crate::permissions::PermissionContext::stranger(
-        "fixture-user",
-    ));
-    let report = app.pump_hosted_model_as(false);
-    assert!(report.synced && report.published);
-    assert_ne!(app.actions.resource_generation.get(), generation);
-    assert!(
-        tilo_actions::door::survey(&app.publication_resources()).len() < before,
-        "revoked authority must filter the published surface"
-    );
-}
-
-/// A component's event-queue notification reaches the App that runs it as
-/// one, not as a model-dirty wake: a directory request answered in the pass
-/// it woke keeps the directory's revision and the continuation it issued.
-#[test]
-fn a_component_queue_notification_reaches_its_app_without_forcing_a_sync() {
-    use crate::application::{
-        ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
-    };
-    let temp = tempfile::tempdir().unwrap();
-    let mut owners = crate::record::RecordOwners::new(temp.path().into());
-    let records = owners
-        .open("test.directory", "00000000-0000-0000-0000-000000000006")
-        .unwrap();
-    let views = Rc::new(
-        crate::application_view::InstanceViewStore::new(
-            temp.path().into(),
-            "D",
-            "00000000-0000-0000-0000-000000000006",
-        )
-        .unwrap(),
-    );
-    let definition = ApplicationDefinition {
-        app_id: "test.directory".into(),
-        title: "Directory".into(),
-        icon: crate::widget::IconDescriptor::Glyph("D"),
-        record_kind: crate::record::RecordKind::new("directory"),
-        required: vec![],
-        optional: vec![],
-        opens: &[],
-        workspace_record: false,
-        member_record: false,
-        opens_before_record: false,
-        create: owned_declared_directory_factory,
-    };
-    let context = HostContext::prepare(
-        &definition,
-        HostContextInputs {
-            records,
-            views,
-            device_id: "D".into(),
-            instance_id: 83,
-            permissions: crate::permissions::SharedPermissions::new(
-                crate::permissions::PermissionContext::permissive(),
-            ),
-            author: crate::permissions::UserId("fixture-user".into()),
-            action_context: tilo_actions::ActionContext::default(),
-        },
-        &LaunchTarget::New,
-    )
-    .unwrap();
-    let component_wake = context.wake_handle();
-    let component = definition
-        .instantiate(context, LaunchTarget::New, RestoreInput::None)
-        .unwrap();
-    let binding = component.callback_binding();
-    let inputs = crate::application::ComponentRunnerInputs {
-        theme: Theme::dark(),
-        text_renderer: crate::font_catalog::fixture_renderer(),
-    };
-    let mut app = App::from_component_using(component, inputs, |_, _| {
-        AppConstructionInputs::controlled()
-    })
-    .unwrap();
-    app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
-    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
-        route: binding.broker_route().unwrap(),
-        epoch: uuid::Uuid::new_v4(),
-    });
-    app.init_layout();
-    let mut settled = false;
-    for _ in 0..8 {
-        app.collaboration.manager.wait_for_commands_for_test();
-        if app.pump_hosted_model_as(false) == model_lifecycle::HostedPumpReport::default() {
-            settled = true;
-            break;
-        }
-    }
-    assert!(settled, "hosted pump never went idle");
-    let revision = app.action_directory_revision();
-
-    component_wake.notify_events();
-    let report = app.pump_hosted_model_as(false);
-    assert!(
-        !report.synced,
-        "a component's queue notification is not model-dirty"
-    );
-    assert_eq!(
-        app.action_directory_revision(),
-        revision,
-        "a queue notification keeps the directory revision"
-    );
-
-    component_wake.wake();
-    assert!(
-        app.pump_hosted_model_as(false).synced,
-        "a component's model-dirty wake still syncs its App"
-    );
-}
-
-#[test]
-fn hosted_pump_baseline_always_refreshes() {
-    let mut fixture = HostedPumpFixture::new(1);
-    let generation = fixture.app.actions.resource_generation.get();
-    let report = fixture.app.pump_hosted_model_as(true);
-    assert!(report.synced && report.published);
-    assert_ne!(fixture.app.actions.resource_generation.get(), generation);
-    assert!(!fixture.sent.borrow().is_empty());
-}
-
 /// `cargo test -p tilo-ui --lib hosted_pump_cost -- --ignored --nocapture`
 #[test]
 #[ignore = "timing measurement"]
@@ -658,144 +251,559 @@ fn hosted_pump_cost_idle_before_after() {
     }
 }
 
-#[test]
-fn hosted_pump_action_authority_revoke_refreshes_without_forced_sync() {
-    use crate::permissions::{PermissionContext, Role};
-    use std::sync::{Arc, Mutex};
-    let current = Arc::new(Mutex::new(Some(Role::Owner)));
-    let sample = current.clone();
-    let mut fixture = HostedPumpFixture::new(1);
-    fixture.app.permission_ctx =
-        crate::permissions::PermissionContext::member("fixture-user", Role::Editor)
-            .with_action_authority(
-                "test.directory".into(),
-                Arc::new(move || {
-                    Ok(match *sample.lock().unwrap() {
-                        Some(role) => PermissionContext::member("fixture-user", role),
-                        None => PermissionContext::stranger("fixture-user"),
-                    })
-                }),
-            );
-    assert!(fixture.pump().synced);
-    fixture.assert_idle();
-    *current.lock().unwrap() = None;
-    let generation = fixture.app.actions.resource_generation.get();
-    assert!(
-        fixture.pump().synced,
-        "ordinary worker observes revoked owner authority"
-    );
-    assert_ne!(fixture.app.actions.resource_generation.get(), generation);
-    fixture.assert_idle();
-}
+tilo_test_env::scenario! {
+    fn the_hosted_pump_refreshes_only_what_a_wake_changed;
 
-/// The broker uses an event-only wake for pull-directory requests. Route the
-/// real queue through the owner pump, rather than calling the page helper alone.
-#[test]
-fn hosted_directory_rpc_wake_preserves_no_change_cursor_and_rejects_model_change() {
-    let mut fixture = HostedPumpFixture::with_three_roots(1);
-    let before = fixture.app.state.doc.save();
-    let mut query = directory_query("", "", 1, 8192, 8);
-    let mut revision = None;
-    let mut rows = Vec::new();
-    for _ in 0..4 {
-        let (page, report) = fixture.ask_directory(query.clone(), true);
-        let page = page.unwrap();
-        assert!(
-            !page.stale_cursor,
-            "metadata-only owner wakes keep consecutive pages valid"
+    phase hosted_pump_idle_keeps_resource_cache_and_published_surface;
+    {
+        let mut fixture = HostedPumpFixture::new(1);
+        assert_eq!(fixture.labels(), vec!["Before 0".to_string()]);
+        for _ in 0..3 {
+            fixture.assert_idle();
+        }
+        assert!(fixture.app.actions.resource_cache.borrow().is_some());
+    }
+
+    phase completed_view_syncs_its_local_projection_before_returning_to_idle;
+    {
+        let mut fixture = HostedPumpFixture::new(1);
+        fixture.assert_idle();
+        let before = fixture.app.state.doc.save();
+        let address = tilo_actions::ActionAddress::new("probe:0", "inspect:0");
+        let actor = fixture.app.collaboration.local_author.0.clone();
+        let started = fixture
+            .app
+            .invoke_resource_action(ResourceInvocation::new(&address, &actor))
+            .unwrap();
+        assert!(matches!(
+            started,
+            crate::widget::ResourceOperationStart::Completed(_)
+        ));
+        assert_eq!(
+            fixture.app.state.doc.save(),
+            before,
+            "navigation writes no document state"
         );
+        fixture.pump();
+        assert_eq!(
+            fixture.labels(),
+            ["After 0"],
+            "the native worker applies the completed view's queued local projection without another input"
+        );
+        fixture.assert_idle();
+    }
+
+    phase hosted_pump_idle_keeps_directory_cursor;
+    {
+        let mut fixture = HostedPumpFixture::with_three_roots(1);
+        let page = fixture
+            .app
+            .action_directory_page(directory_query("", "", 1, 8192, 8));
+        assert_eq!(page.rows.len(), 1);
+        assert!(!page.next_cursor.is_empty());
+        fixture.assert_idle();
+        let mut query = directory_query(&page.revision, "", 1, 8192, 8);
+        query.cursor = page.next_cursor;
+        let next = fixture.app.action_directory_page(query);
+        assert!(
+            !next.stale_cursor,
+            "idle pump must retain the issued cursor"
+        );
+        assert_eq!(next.rows.len(), 1);
+    }
+
+    phase hosted_pump_async_notification_wake_refreshes_widget_resources;
+    {
+        let mut fixture = HostedPumpFixture::new(1);
+        *fixture.pending_label.borrow_mut() = Some("After".into());
+        // Without a wake the pump cannot know (same contract as the window
+        // runner, whose redraw syncs only on a model-dirty wake).
+        fixture.assert_idle();
+        fixture.wake.wake();
+        let generation = fixture.app.actions.resource_generation.get();
+        let report = fixture.pump();
+        assert!(report.synced && report.published);
+        assert_ne!(fixture.app.actions.resource_generation.get(), generation);
+        assert_eq!(fixture.labels(), vec!["After 0".to_string()]);
+        fixture.assert_idle();
+    }
+
+    phase hosted_pump_queue_only_notification_updates_without_forced_sync;
+    {
+        let mut fixture = HostedPumpFixture::new(1);
+        let syncs = fixture.syncs.get();
+        fixture.wake.notify_events();
+        let report = fixture.pump();
+        assert!(
+            report.updated,
+            "queue notification drains update-driven work"
+        );
+        assert!(!report.synced, "a queue wake alone is not model-dirty");
+        assert_eq!(fixture.syncs.get(), syncs);
+        fixture.assert_idle();
+    }
+
+    phase hosted_pump_inbound_event_refreshes_remote_document_state;
+    {
+        let mut fixture = HostedPumpFixture::new(1);
+        // Remote document bytes enter only with an inbound collaboration event.
+        fixture.app.state.doc.put(ROOT, "more", true).unwrap();
+        fixture.events.borrow_mut().push(CollabEvent::Context {
+            members: vec![],
+            permissions: vec![],
+            apps: Vec::new(),
+        });
+        let report = fixture.pump();
+        assert!(report.synced && report.published);
+        assert_eq!(fixture.labels().len(), 3);
+        fixture.assert_idle();
+    }
+
+    phase idle_nearby_snapshot_reply_does_not_request_a_hosted_pump;
+    {
+        let mut fixture = HostedPumpFixture::new(1);
+        fixture
+            .events
+            .borrow_mut()
+            .push(CollabEvent::NearbyTransferCommandResult {
+                request_id: 1,
+                result: Ok(crate::collaboration::NearbyTransferReply::Snapshot {
+                    snapshot: crate::collaboration::NearbyTransferSnapshot::default(),
+                }),
+            });
+        assert!(
+            !fixture.app.pump_collab_presence(),
+            "an unchanged Nearby snapshot must not keep requesting frames"
+        );
+        fixture.assert_idle();
+    }
+
+    phase hosted_pump_invocation_advances_and_publishes_then_idles;
+    {
+        let scope = crate::wake::WakeScope::new();
+        let mut app = App::from_scoped_parts_with_controlled_inputs(
+            scope,
+            State::new(),
+            Box::new(CounterCard::with_async_post_bump_reset()),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+        let sent = std::rc::Rc::new(RefCell::new(vec![]));
+        app.collaboration.manager =
+            CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
+        app.pump_hosted_model_as(false);
+        app.pump_hosted_model_as(false);
+        let invocation = tilo_actions::InvocationId::new();
+        app.invoke_published_action(
+            872,
+            invocation,
+            "test.counter".into(),
+            "async-bump".into(),
+            None,
+            "original-caller",
+            None,
+        );
+        assert!(app.pump_hosted_model_as(false).synced);
+        assert_eq!(counter(&app), 1, "accepted work advances without a wake");
+        app.pump_hosted_model_as(false);
+        assert!(!app.actions.directed_invocations.contains_key(&invocation));
+        assert_eq!(sent.borrow().iter().filter(|request| matches!(request,
+            CollabRequest::UpdateInvocation { update: tilo_actions::InvocationUpdate::Succeeded { invocation: observed, .. }, .. } if *observed == invocation
+        )).count(), 1);
+        app.pump_hosted_model_as(false);
+        let generation = app.actions.resource_generation.get();
+        assert_eq!(
+            app.pump_hosted_model_as(false),
+            model_lifecycle::HostedPumpReport::default(),
+            "after completion the worker returns to idle"
+        );
+        assert_eq!(app.actions.resource_generation.get(), generation);
+        assert_eq!(counter(&app), 1);
+    }
+
+    phase hosted_pump_policy_change_and_expiry_refresh;
+    {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        };
+        let mut fixture = HostedPumpFixture::new(1);
+        let time = Arc::new(AtomicU64::new(100));
+        let sample = time.clone();
+        fixture.app.permission_ctx = crate::permissions::PermissionContext::granted(
+            "fixture-user",
+            &crate::permissions::TreePath::root(),
+            crate::permissions::policy::KindSet::ALL,
+            Some(110),
+        )
+        .with_policy_time_sampler(Arc::new(move || Ok(sample.load(Ordering::Acquire))));
+        let generation = fixture.app.actions.resource_generation.get();
+        assert!(fixture.pump().synced, "a replaced policy refreshes");
+        assert_ne!(fixture.app.actions.resource_generation.get(), generation);
+        fixture.assert_idle();
+        time.store(105, Ordering::Release);
+        fixture.assert_idle();
+        time.store(110, Ordering::Release);
+        assert!(
+            fixture.pump().synced,
+            "capability expiry is a policy change"
+        );
+        fixture.assert_idle();
+    }
+
+    phase hosted_pump_host_owner_permission_replacement_refreshes;
+    {
+        use crate::application::{
+            ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let mut owners = crate::record::RecordOwners::new(temp.path().into());
+        let records = owners
+            .open("test.directory", "00000000-0000-0000-0000-000000000005")
+            .unwrap();
+        let views = Rc::new(
+            crate::application_view::InstanceViewStore::new(
+                temp.path().into(),
+                "D",
+                "00000000-0000-0000-0000-000000000005",
+            )
+            .unwrap(),
+        );
+        let definition = ApplicationDefinition {
+            app_id: "test.directory".into(),
+            title: "Directory".into(),
+            icon: crate::widget::IconDescriptor::Glyph("D"),
+            record_kind: crate::record::RecordKind::new("directory"),
+            required: vec![],
+            optional: vec![],
+            opens: &[],
+            workspace_record: false,
+            member_record: false,
+            opens_before_record: false,
+            create: owned_declared_directory_factory,
+        };
+        let permissions = crate::permissions::SharedPermissions::new(
+            crate::permissions::PermissionContext::permissive(),
+        );
+        let context = HostContext::prepare(
+            &definition,
+            HostContextInputs {
+                records,
+                views,
+                device_id: "D".into(),
+                instance_id: 82,
+                permissions: permissions.clone(),
+                author: crate::permissions::UserId("fixture-user".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
+            &LaunchTarget::New,
+        )
+        .unwrap();
+        let component = definition
+            .instantiate(context, LaunchTarget::New, RestoreInput::None)
+            .unwrap();
+        let binding = component.callback_binding();
+        let inputs = crate::application::ComponentRunnerInputs {
+            theme: Theme::dark(),
+            text_renderer: crate::font_catalog::fixture_renderer(),
+        };
+        let mut app = App::from_component_using(component, inputs, |_, _| {
+            AppConstructionInputs::controlled()
+        })
+        .unwrap();
+        app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+            route: binding.broker_route().unwrap(),
+            epoch: uuid::Uuid::new_v4(),
+        });
+        app.init_layout();
+        // The first pass joins the record route, whose initial catalogue arrives
+        // only once the broker worker has processed the join: settle on the
+        // worker, not on a count of passes.
+        let mut settled = false;
+        for _ in 0..8 {
+            app.collaboration.manager.wait_for_commands_for_test();
+            if app.pump_hosted_model_as(false) == model_lifecycle::HostedPumpReport::default() {
+                settled = true;
+                break;
+            }
+        }
+        assert!(settled, "hosted pump never went idle");
+        app.collaboration.manager.wait_for_commands_for_test();
+        let before = tilo_actions::door::survey(&app.publication_resources()).len();
+        assert!(before > 0);
+        let generation = app.actions.resource_generation.get();
+        assert_eq!(
+            app.pump_hosted_model_as(false),
+            model_lifecycle::HostedPumpReport::default()
+        );
+        assert_eq!(app.actions.resource_generation.get(), generation);
+        // What a host does with its recomputed authority before a pump.
+        permissions.set(crate::permissions::PermissionContext::stranger(
+            "fixture-user",
+        ));
+        let report = app.pump_hosted_model_as(false);
+        assert!(report.synced && report.published);
+        assert_ne!(app.actions.resource_generation.get(), generation);
+        assert!(
+            tilo_actions::door::survey(&app.publication_resources()).len() < before,
+            "revoked authority must filter the published surface"
+        );
+    }
+
+    phase a_component_queue_notification_reaches_its_app_without_forcing_a_sync;
+    // A component's event-queue notification reaches the App that runs it as
+    // one, not as a model-dirty wake: a directory request answered in the pass
+    // it woke keeps the directory's revision and the continuation it issued.
+    {
+        use crate::application::{
+            ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let mut owners = crate::record::RecordOwners::new(temp.path().into());
+        let records = owners
+            .open("test.directory", "00000000-0000-0000-0000-000000000006")
+            .unwrap();
+        let views = Rc::new(
+            crate::application_view::InstanceViewStore::new(
+                temp.path().into(),
+                "D",
+                "00000000-0000-0000-0000-000000000006",
+            )
+            .unwrap(),
+        );
+        let definition = ApplicationDefinition {
+            app_id: "test.directory".into(),
+            title: "Directory".into(),
+            icon: crate::widget::IconDescriptor::Glyph("D"),
+            record_kind: crate::record::RecordKind::new("directory"),
+            required: vec![],
+            optional: vec![],
+            opens: &[],
+            workspace_record: false,
+            member_record: false,
+            opens_before_record: false,
+            create: owned_declared_directory_factory,
+        };
+        let context = HostContext::prepare(
+            &definition,
+            HostContextInputs {
+                records,
+                views,
+                device_id: "D".into(),
+                instance_id: 83,
+                permissions: crate::permissions::SharedPermissions::new(
+                    crate::permissions::PermissionContext::permissive(),
+                ),
+                author: crate::permissions::UserId("fixture-user".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
+            &LaunchTarget::New,
+        )
+        .unwrap();
+        let component_wake = context.wake_handle();
+        let component = definition
+            .instantiate(context, LaunchTarget::New, RestoreInput::None)
+            .unwrap();
+        let binding = component.callback_binding();
+        let inputs = crate::application::ComponentRunnerInputs {
+            theme: Theme::dark(),
+            text_renderer: crate::font_catalog::fixture_renderer(),
+        };
+        let mut app = App::from_component_using(component, inputs, |_, _| {
+            AppConstructionInputs::controlled()
+        })
+        .unwrap();
+        app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+            route: binding.broker_route().unwrap(),
+            epoch: uuid::Uuid::new_v4(),
+        });
+        app.init_layout();
+        let mut settled = false;
+        for _ in 0..8 {
+            app.collaboration.manager.wait_for_commands_for_test();
+            if app.pump_hosted_model_as(false) == model_lifecycle::HostedPumpReport::default() {
+                settled = true;
+                break;
+            }
+        }
+        assert!(settled, "hosted pump never went idle");
+        let revision = app.action_directory_revision();
+
+        component_wake.notify_events();
+        let report = app.pump_hosted_model_as(false);
         assert!(
             !report.synced,
-            "directory event wake alone must not force model sync"
+            "a component's queue notification is not model-dirty"
         );
+        assert_eq!(
+            app.action_directory_revision(),
+            revision,
+            "a queue notification keeps the directory revision"
+        );
+
+        component_wake.wake();
         assert!(
-            !report.published,
-            "directory reads must not republish declarations"
+            app.pump_hosted_model_as(false).synced,
+            "a component's model-dirty wake still syncs its App"
         );
-        if let Some(revision) = &revision {
-            assert_eq!(&page.revision, revision);
-        } else {
-            revision = Some(page.revision.clone());
-        }
-        rows.extend(page.rows);
-        if page.exhausted {
-            break;
-        }
-        query.revision = page.revision;
-        query.cursor = page.next_cursor;
     }
-    assert_eq!(
-        rows.iter()
-            .map(|row| row.resource.as_str())
-            .collect::<Vec<_>>(),
-        ["probe:0", "probe:1", "probe:2"],
-        "all declared roots appear once across real queue turns"
-    );
-    assert_eq!(fixture.app.state.doc.save(), before);
-    let page = fixture
-        .app
-        .action_directory_page(directory_query("", "", 1, 8192, 8));
-    assert!(!page.next_cursor.is_empty());
-    *fixture.pending_label.borrow_mut() = Some("Changed".into());
-    fixture.wake.wake();
-    assert!(fixture.pump().synced);
-    let mut query = directory_query(&page.revision, "", 1, 8192, 8);
-    query.cursor = page.next_cursor;
-    assert!(
-        fixture.ask_directory(query, true).0.unwrap().stale_cursor,
-        "a real changed model still invalidates the old cursor"
-    );
+
+    phase hosted_pump_baseline_always_refreshes;
+    {
+        let mut fixture = HostedPumpFixture::new(1);
+        let generation = fixture.app.actions.resource_generation.get();
+        let report = fixture.app.pump_hosted_model_as(true);
+        assert!(report.synced && report.published);
+        assert_ne!(fixture.app.actions.resource_generation.get(), generation);
+        assert!(!fixture.sent.borrow().is_empty());
+    }
+
+    phase hosted_pump_action_authority_revoke_refreshes_without_forced_sync;
+    {
+        use crate::permissions::{PermissionContext, Role};
+        use std::sync::{Arc, Mutex};
+        let current = Arc::new(Mutex::new(Some(Role::Owner)));
+        let sample = current.clone();
+        let mut fixture = HostedPumpFixture::new(1);
+        fixture.app.permission_ctx =
+            crate::permissions::PermissionContext::member("fixture-user", Role::Editor)
+                .with_action_authority(
+                    "test.directory".into(),
+                    Arc::new(move || {
+                        Ok(match *sample.lock().unwrap() {
+                            Some(role) => PermissionContext::member("fixture-user", role),
+                            None => PermissionContext::stranger("fixture-user"),
+                        })
+                    }),
+                );
+        assert!(fixture.pump().synced);
+        fixture.assert_idle();
+        *current.lock().unwrap() = None;
+        let generation = fixture.app.actions.resource_generation.get();
+        assert!(
+            fixture.pump().synced,
+            "ordinary worker observes revoked owner authority"
+        );
+        assert_ne!(fixture.app.actions.resource_generation.get(), generation);
+        fixture.assert_idle();
+    }
 }
 
-/// A remount between pumps sets the directory aside until the next
-/// publication. A listing asked for in that gap reads the publication the
-/// pump owes, never an empty directory; once current, reads republish
-/// nothing.
-#[test]
-fn directory_rpc_after_a_remount_lists_what_is_published() {
-    let mut fixture = HostedPumpFixture::with_three_roots(1);
-    let query = || directory_query("", "", 8, 8192, 8);
-    let listed = fixture.ask_directory(query(), true).0.unwrap().rows;
-    assert_eq!(listed.len(), 3);
-    crate::host_core::HostCore::remounted(&mut fixture.app, 0);
-    assert!(fixture.app.actions.action_directory_snapshot.is_none());
-    let (page, _) = fixture.ask_directory(query(), true);
-    assert_eq!(page.unwrap().rows, listed, "a remount keeps the listing");
-    let (page, report) = fixture.ask_directory(query(), true);
-    assert_eq!(page.unwrap().rows, listed);
-    assert!(!report.published, "a current listing republishes nothing");
-}
+tilo_test_env::scenario! {
+    fn directory_rpcs_keep_the_cursor_they_did_not_deliver;
 
-#[test]
-fn cancelled_directory_rpc_does_not_consume_undelivered_cursor() {
-    let mut fixture = HostedPumpFixture::with_three_roots(1);
-    let cursors = fixture.app.actions.action_directory_cursors.len();
-    let (_, report) = fixture.ask_directory(directory_query("", "", 1, 8192, 8), false);
-    assert!(!report.synced && !report.published);
-    assert_eq!(
-        fixture.app.actions.action_directory_cursors.len(),
-        cursors,
-        "a cancelled root request must not allocate an undeliverable cursor"
-    );
-    let page = fixture
-        .app
-        .action_directory_page(directory_query("", "", 1, 8192, 8));
-    assert!(!page.next_cursor.is_empty());
-    let mut query = directory_query(&page.revision, "", 1, 8192, 8);
-    query.cursor = page.next_cursor;
-    let report = fixture.ask_directory(query.clone(), false).1;
-    assert!(!report.synced && !report.published);
-    let next = fixture.ask_directory(query.clone(), true).0.unwrap();
-    assert!(
-        !next.stale_cursor,
-        "a request cancelled before owner admission must not consume the offered continuation"
-    );
-    assert_eq!(next.rows.len(), 1);
-    assert_eq!(next.rows.first().unwrap().resource, "probe:1");
-    assert!(
-        fixture.ask_directory(query, true).0.unwrap().stale_cursor,
-        "a delivered continuation remains strictly one-use"
-    );
+    phase hosted_directory_rpc_wake_preserves_no_change_cursor_and_rejects_model_change;
+    // The broker uses an event-only wake for pull-directory requests. Route the
+    // real queue through the owner pump, rather than calling the page helper alone.
+    {
+        let mut fixture = HostedPumpFixture::with_three_roots(1);
+        let before = fixture.app.state.doc.save();
+        let mut query = directory_query("", "", 1, 8192, 8);
+        let mut revision = None;
+        let mut rows = Vec::new();
+        for _ in 0..4 {
+            let (page, report) = fixture.ask_directory(query.clone(), true);
+            let page = page.unwrap();
+            assert!(
+                !page.stale_cursor,
+                "metadata-only owner wakes keep consecutive pages valid"
+            );
+            assert!(
+                !report.synced,
+                "directory event wake alone must not force model sync"
+            );
+            assert!(
+                !report.published,
+                "directory reads must not republish declarations"
+            );
+            if let Some(revision) = &revision {
+                assert_eq!(&page.revision, revision);
+            } else {
+                revision = Some(page.revision.clone());
+            }
+            rows.extend(page.rows);
+            if page.exhausted {
+                break;
+            }
+            query.revision = page.revision;
+            query.cursor = page.next_cursor;
+        }
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.resource.as_str())
+                .collect::<Vec<_>>(),
+            ["probe:0", "probe:1", "probe:2"],
+            "all declared roots appear once across real queue turns"
+        );
+        assert_eq!(fixture.app.state.doc.save(), before);
+        let page = fixture
+            .app
+            .action_directory_page(directory_query("", "", 1, 8192, 8));
+        assert!(!page.next_cursor.is_empty());
+        *fixture.pending_label.borrow_mut() = Some("Changed".into());
+        fixture.wake.wake();
+        assert!(fixture.pump().synced);
+        let mut query = directory_query(&page.revision, "", 1, 8192, 8);
+        query.cursor = page.next_cursor;
+        assert!(
+            fixture.ask_directory(query, true).0.unwrap().stale_cursor,
+            "a real changed model still invalidates the old cursor"
+        );
+    }
+
+    phase directory_rpc_after_a_remount_lists_what_is_published;
+    // A remount between pumps sets the directory aside until the next
+    // publication. A listing asked for in that gap reads the publication the
+    // pump owes, never an empty directory; once current, reads republish
+    // nothing.
+    {
+        let mut fixture = HostedPumpFixture::with_three_roots(1);
+        let query = || directory_query("", "", 8, 8192, 8);
+        let listed = fixture.ask_directory(query(), true).0.unwrap().rows;
+        assert_eq!(listed.len(), 3);
+        crate::host_core::HostCore::remounted(&mut fixture.app, 0);
+        assert!(fixture.app.actions.action_directory_snapshot.is_none());
+        let (page, _) = fixture.ask_directory(query(), true);
+        assert_eq!(page.unwrap().rows, listed, "a remount keeps the listing");
+        let (page, report) = fixture.ask_directory(query(), true);
+        assert_eq!(page.unwrap().rows, listed);
+        assert!(!report.published, "a current listing republishes nothing");
+    }
+
+    phase cancelled_directory_rpc_does_not_consume_undelivered_cursor;
+    {
+        let mut fixture = HostedPumpFixture::with_three_roots(1);
+        let cursors = fixture.app.actions.action_directory_cursors.len();
+        let (_, report) = fixture.ask_directory(directory_query("", "", 1, 8192, 8), false);
+        assert!(!report.synced && !report.published);
+        assert_eq!(
+            fixture.app.actions.action_directory_cursors.len(),
+            cursors,
+            "a cancelled root request must not allocate an undeliverable cursor"
+        );
+        let page = fixture
+            .app
+            .action_directory_page(directory_query("", "", 1, 8192, 8));
+        assert!(!page.next_cursor.is_empty());
+        let mut query = directory_query(&page.revision, "", 1, 8192, 8);
+        query.cursor = page.next_cursor;
+        let report = fixture.ask_directory(query.clone(), false).1;
+        assert!(!report.synced && !report.published);
+        let next = fixture.ask_directory(query.clone(), true).0.unwrap();
+        assert!(
+            !next.stale_cursor,
+            "a request cancelled before owner admission must not consume the offered continuation"
+        );
+        assert_eq!(next.rows.len(), 1);
+        assert_eq!(next.rows.first().unwrap().resource, "probe:1");
+        assert!(
+            fixture.ask_directory(query, true).0.unwrap().stale_cursor,
+            "a delivered continuation remains strictly one-use"
+        );
+    }
 }
 
 /// Bare pointer motion keeps the published resource tree; every change an
@@ -963,162 +971,166 @@ mod input_publication {
             .label
     }
 
-    #[test]
-    fn pointer_motion_without_state_change_does_not_regenerate_declarations() {
-        let (mut app, calls) = app();
-        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
-        let generation = app.actions.resource_generation.get();
-        let before = calls.get();
-        for step in 0..100 {
-            move_to(&mut app, f64::from(step), 20.0);
+    tilo_test_env::scenario! {
+        fn input_republishes_only_what_it_changed;
+
+        phase pointer_motion_without_state_change_does_not_regenerate_declarations;
+        {
+            let (mut app, calls) = app();
+            assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+            let generation = app.actions.resource_generation.get();
+            let before = calls.get();
+            for step in 0..100 {
+                move_to(&mut app, f64::from(step), 20.0);
+            }
+            let regenerated = calls.get() - before;
+            assert!(
+                regenerated <= 1,
+                "100 hover moves regenerated declarations {regenerated} times"
+            );
+            assert_eq!(app.actions.resource_generation.get(), generation);
+            assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+            assert_eq!(
+                calls.get() - before,
+                regenerated,
+                "reading the kept tree regenerates nothing"
+            );
         }
-        let regenerated = calls.get() - before;
-        assert!(
-            regenerated <= 1,
-            "100 hover moves regenerated declarations {regenerated} times"
-        );
-        assert_eq!(app.actions.resource_generation.get(), generation);
-        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
-        assert_eq!(
-            calls.get() - before,
-            regenerated,
-            "reading the kept tree regenerates nothing"
-        );
-    }
 
-    #[test]
-    fn presentation_only_change_still_republishes() {
-        let (mut app, _) = app();
-        move_to(&mut app, 10.0, 20.0);
-        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
-        // The probe switches tabs on a press it does not mark handled.
-        button(&mut app, ElementState::Pressed);
-        button(&mut app, ElementState::Released);
-        assert_eq!(published(&app), "tab 1 menu false drag None hovered false");
-    }
-
-    #[test]
-    fn hover_that_reports_a_presentation_change_republishes() {
-        let (mut app, _) = app();
-        move_to(&mut app, 10.0, 20.0);
-        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
-        move_to(&mut app, 600.0, 20.0);
-        assert_eq!(published(&app), "tab 0 menu true drag None hovered false");
-    }
-
-    #[test]
-    fn hover_that_edits_the_document_republishes() {
-        let (mut app, _) = app();
-        move_to(&mut app, 10.0, 20.0);
-        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
-        move_to(&mut app, 10.0, 600.0);
-        assert_eq!(published(&app), "tab 0 menu false drag None hovered true");
-    }
-
-    #[test]
-    fn drag_motion_republishes_without_being_reported() {
-        let (mut app, _) = app();
-        move_to(&mut app, 10.0, 20.0);
-        button(&mut app, ElementState::Pressed);
-        assert_eq!(published(&app), "tab 1 menu false drag None hovered false");
-        move_to(&mut app, 50.0, 20.0);
-        assert_eq!(
-            published(&app),
-            "tab 1 menu false drag Some(50.0) hovered false"
-        );
-        button(&mut app, ElementState::Released);
-        move_to(&mut app, 70.0, 20.0);
-        assert_eq!(
-            published(&app),
-            "tab 1 menu false drag Some(50.0) hovered false",
-            "released, motion is hover again"
-        );
-    }
-
-    /// Every keystroke ends in a release. One that nothing consumed and that
-    /// moved nothing keeps the tree its press published.
-    #[test]
-    fn key_release_without_state_change_does_not_regenerate_declarations() {
-        let (mut app, calls) = app();
-        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
-        let generation = app.actions.resource_generation.get();
-        let before = calls.get();
-        for _ in 0..100 {
-            release(&mut app, "k");
+        phase presentation_only_change_still_republishes;
+        {
+            let (mut app, _) = app();
+            move_to(&mut app, 10.0, 20.0);
+            assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+            // The probe switches tabs on a press it does not mark handled.
+            button(&mut app, ElementState::Pressed);
+            button(&mut app, ElementState::Released);
+            assert_eq!(published(&app), "tab 1 menu false drag None hovered false");
         }
-        let regenerated = calls.get() - before;
-        assert!(
-            regenerated <= 1,
-            "100 key releases regenerated declarations {regenerated} times"
-        );
-        assert_eq!(app.actions.resource_generation.get(), generation);
-        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
-    }
 
-    /// Each keystroke begins by publishing the surface its edits are
-    /// attributed to. A surface built from nothing that changed since the
-    /// last is not built again: the route carries it.
-    #[test]
-    fn an_unchanged_surface_is_not_built_again() {
-        let mut fixture = super::HostedPumpFixture::new(1);
-        let app = &mut fixture.app;
-        app.publish_action_surface();
-        let attempts = app.actions.action_surface_publication_attempts;
-        for _ in 0..10 {
+        phase hover_that_reports_a_presentation_change_republishes;
+        {
+            let (mut app, _) = app();
+            move_to(&mut app, 10.0, 20.0);
+            assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+            move_to(&mut app, 600.0, 20.0);
+            assert_eq!(published(&app), "tab 0 menu true drag None hovered false");
+        }
+
+        phase hover_that_edits_the_document_republishes;
+        {
+            let (mut app, _) = app();
+            move_to(&mut app, 10.0, 20.0);
+            assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+            move_to(&mut app, 10.0, 600.0);
+            assert_eq!(published(&app), "tab 0 menu false drag None hovered true");
+        }
+
+        phase drag_motion_republishes_without_being_reported;
+        {
+            let (mut app, _) = app();
+            move_to(&mut app, 10.0, 20.0);
+            button(&mut app, ElementState::Pressed);
+            assert_eq!(published(&app), "tab 1 menu false drag None hovered false");
+            move_to(&mut app, 50.0, 20.0);
+            assert_eq!(
+                published(&app),
+                "tab 1 menu false drag Some(50.0) hovered false"
+            );
+            button(&mut app, ElementState::Released);
+            move_to(&mut app, 70.0, 20.0);
+            assert_eq!(
+                published(&app),
+                "tab 1 menu false drag Some(50.0) hovered false",
+                "released, motion is hover again"
+            );
+        }
+
+        phase key_release_without_state_change_does_not_regenerate_declarations;
+        // Every keystroke ends in a release. One that nothing consumed and that
+        // moved nothing keeps the tree its press published.
+        {
+            let (mut app, calls) = app();
+            assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+            let generation = app.actions.resource_generation.get();
+            let before = calls.get();
+            for _ in 0..100 {
+                release(&mut app, "k");
+            }
+            let regenerated = calls.get() - before;
+            assert!(
+                regenerated <= 1,
+                "100 key releases regenerated declarations {regenerated} times"
+            );
+            assert_eq!(app.actions.resource_generation.get(), generation);
+            assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+        }
+
+        phase an_unchanged_surface_is_not_built_again;
+        // Each keystroke begins by publishing the surface its edits are
+        // attributed to. A surface built from nothing that changed since the
+        // last is not built again: the route carries it.
+        {
+            let mut fixture = super::HostedPumpFixture::new(1);
+            let app = &mut fixture.app;
             app.publish_action_surface();
+            let attempts = app.actions.action_surface_publication_attempts;
+            for _ in 0..10 {
+                app.publish_action_surface();
+            }
+            assert_eq!(
+                app.actions.action_surface_publication_attempts, attempts,
+                "ten publications of an unchanged surface built it again"
+            );
+            app.invalidate_widget_resource_cache();
+            app.publish_action_surface();
+            assert_eq!(
+                app.actions.action_surface_publication_attempts,
+                attempts + 1,
+                "a change to what the surface is built from builds it once"
+            );
         }
-        assert_eq!(
-            app.actions.action_surface_publication_attempts, attempts,
-            "ten publications of an unchanged surface built it again"
-        );
-        app.invalidate_widget_resource_cache();
-        app.publish_action_surface();
-        assert_eq!(
-            app.actions.action_surface_publication_attempts,
-            attempts + 1,
-            "a change to what the surface is built from builds it once"
-        );
-    }
 
-    /// A handled input asks for a sync and a frame, and that sync can move
-    /// what the tree shows. The input leaves its publication to the frame,
-    /// which publishes once after the sync, instead of the input building
-    /// the tree for itself and the frame building it again.
-    #[test]
-    fn a_handled_input_leaves_its_publication_to_the_frame_after_its_sync() {
-        let (mut app, _) = app();
-        let attempts = app.actions.action_surface_publication_attempts;
-        release(&mut app, "t");
-        assert!(app.needs_sync, "the handled release asks for a sync");
-        assert!(app.actions.action_surface_owed);
-        assert_eq!(
-            app.actions.action_surface_publication_attempts, attempts,
-            "the input published nothing itself"
-        );
-        let _ = app.sync_model(false);
-        app.publish_owed_action_surface();
-        assert!(!app.actions.action_surface_owed);
-        assert_eq!(
-            app.actions.action_surface_publication_attempts,
-            attempts + 1,
-            "the frame published once"
-        );
-        assert_eq!(published(&app), "tab 1 menu false drag None hovered false");
-    }
+        phase a_handled_input_leaves_its_publication_to_the_frame_after_its_sync;
+        // A handled input asks for a sync and a frame, and that sync can move
+        // what the tree shows. The input leaves its publication to the frame,
+        // which publishes once after the sync, instead of the input building
+        // the tree for itself and the frame building it again.
+        {
+            let (mut app, _) = app();
+            let attempts = app.actions.action_surface_publication_attempts;
+            release(&mut app, "t");
+            assert!(app.needs_sync, "the handled release asks for a sync");
+            assert!(app.actions.action_surface_owed);
+            assert_eq!(
+                app.actions.action_surface_publication_attempts, attempts,
+                "the input published nothing itself"
+            );
+            let _ = app.sync_model(false);
+            app.publish_owed_action_surface();
+            assert!(!app.actions.action_surface_owed);
+            assert_eq!(
+                app.actions.action_surface_publication_attempts,
+                attempts + 1,
+                "the frame published once"
+            );
+            assert_eq!(published(&app), "tab 1 menu false drag None hovered false");
+        }
 
-    #[test]
-    fn consumed_key_release_still_republishes() {
-        let (mut app, _) = app();
-        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
-        release(&mut app, "t");
-        assert_eq!(published(&app), "tab 1 menu false drag None hovered false");
-    }
+        phase consumed_key_release_still_republishes;
+        {
+            let (mut app, _) = app();
+            assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+            release(&mut app, "t");
+            assert_eq!(published(&app), "tab 1 menu false drag None hovered false");
+        }
 
-    #[test]
-    fn key_release_that_edits_the_document_republishes() {
-        let (mut app, _) = app();
-        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
-        release(&mut app, "w");
-        assert_eq!(published(&app), "tab 0 menu false drag None hovered true");
+        phase key_release_that_edits_the_document_republishes;
+        {
+            let (mut app, _) = app();
+            assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+            release(&mut app, "w");
+            assert_eq!(published(&app), "tab 0 menu false drag None hovered true");
+        }
     }
 }

@@ -158,257 +158,261 @@ impl Fixture {
     }
 }
 
-#[test]
-fn original_final_is_private_and_ack_waits_for_renderer_outcome() {
-    let mut f = Fixture::new(false, false);
-    let stamp = f.start();
-    f.operation(3, PrivateImeKind::Final, stamp);
-    assert!(f.bridge.event(
-        &mut f.app,
-        &f.wire,
-        &WindowEvent::Ime(Ime::Commit("日本語 café العربية".into()))
-    ));
-    assert_eq!(
-        f.wire.acknowledgments.borrow().as_slice(),
-        &[(1, 0), (2, 0)]
-    );
-    let (text, _, resolver) = f.calls[0]
-        .borrow_mut()
-        .finals
-        .pop()
-        .expect("original final callback");
-    assert_eq!(text, "日本語 café العربية");
-    assert!(f.calls[1].borrow().finals.is_empty());
-    resolver.complete(Err(Failure::Unknown));
-    f.service();
-    assert_eq!(f.wire.acknowledgments.borrow().last(), Some(&(3, 2)));
-    assert!(!f.bridge.admitted());
-}
+tilo_test_env::scenario! {
+    fn private_text_input_acknowledges_only_what_the_renderer_took;
 
-#[test]
-fn focus_move_after_final_metadata_consumes_text_without_successor_dispatch() {
-    let mut f = Fixture::new(false, false);
-    let stamp = f.start();
-    f.operation(3, PrivateImeKind::Final, stamp);
-    f.app.set_focused_node(Some(f.nodes[1]));
-    f.service();
-    assert!(f.bridge.event(
-        &mut f.app,
-        &f.wire,
-        &WindowEvent::Ime(Ime::Commit("must not move".into()))
-    ));
-    assert!(f.calls.iter().all(|calls| calls.borrow().finals.is_empty()));
-    assert_eq!(f.wire.acknowledgments.borrow().last(), Some(&(3, 1)));
-    assert_eq!(f.app.focused_node, Some(f.nodes[1]));
-}
+    phase original_final_is_private_and_ack_waits_for_renderer_outcome;
+    {
+        let mut f = Fixture::new(false, false);
+        let stamp = f.start();
+        f.operation(3, PrivateImeKind::Final, stamp);
+        assert!(f.bridge.event(
+            &mut f.app,
+            &f.wire,
+            &WindowEvent::Ime(Ime::Commit("日本語 café العربية".into()))
+        ));
+        assert_eq!(
+            f.wire.acknowledgments.borrow().as_slice(),
+            &[(1, 0), (2, 0)]
+        );
+        let (text, _, resolver) = f.calls[0]
+            .borrow_mut()
+            .finals
+            .pop()
+            .expect("original final callback");
+        assert_eq!(text, "日本語 café العربية");
+        assert!(f.calls[1].borrow().finals.is_empty());
+        resolver.complete(Err(Failure::Unknown));
+        f.service();
+        assert_eq!(f.wire.acknowledgments.borrow().last(), Some(&(3, 2)));
+        assert!(!f.bridge.admitted());
+    }
 
-#[test]
-fn stale_start_does_not_acquire_successor_at_same_stamp_lifetime() {
-    let mut f = Fixture::new(false, false);
-    let stamp = f.bridge.advertised.expect("first field").stamp;
-    f.operation(1, PrivateImeKind::Prepare, stamp);
-    f.app.set_focused_node(Some(f.nodes[1]));
-    f.operation(2, PrivateImeKind::Start, stamp);
-    assert!(f.calls.iter().all(|calls| calls.borrow().starts.is_empty()));
-    assert_eq!(f.wire.acknowledgments.borrow().last(), Some(&(2, 1)));
-}
+    phase focus_move_after_final_metadata_consumes_text_without_successor_dispatch;
+    {
+        let mut f = Fixture::new(false, false);
+        let stamp = f.start();
+        f.operation(3, PrivateImeKind::Final, stamp);
+        f.app.set_focused_node(Some(f.nodes[1]));
+        f.service();
+        assert!(f.bridge.event(
+            &mut f.app,
+            &f.wire,
+            &WindowEvent::Ime(Ime::Commit("must not move".into()))
+        ));
+        assert!(f.calls.iter().all(|calls| calls.borrow().finals.is_empty()));
+        assert_eq!(f.wire.acknowledgments.borrow().last(), Some(&(3, 1)));
+        assert_eq!(f.app.focused_node, Some(f.nodes[1]));
+    }
 
-#[test]
-fn canceled_marked_final_is_consumed_before_renderer_dispatch() {
-    let mut f = Fixture::new(false, false);
-    let stamp = f.start();
-    f.operation(3, PrivateImeKind::Final, stamp);
-    // The compositor can retire the pending final independently of its earlier
-    // start grant. Its cancellation names the final operation's serial.
-    f.operation(3, PrivateImeKind::Cancel, stamp);
-    assert!(f.bridge.event(
-        &mut f.app,
-        &f.wire,
-        &WindowEvent::Ime(Ime::Commit("retired 日本語".into()))
-    ));
-    assert!(f.calls.iter().all(|calls| calls.borrow().finals.is_empty()));
-    assert_eq!(f.wire.acknowledgments.borrow().last(), Some(&(3, 1)));
-    assert!(!f.bridge.admitted());
-    assert!(!f.bridge.busy());
-    f.operation(4, PrivateImeKind::Prepare, stamp);
-    assert!(f.bridge.admitted(), "a fresh session remains available");
-    f.operation(3, PrivateImeKind::Cancel, stamp);
-    assert!(f.bridge.admitted(), "retired cancellation cannot revoke it");
-}
+    phase stale_start_does_not_acquire_successor_at_same_stamp_lifetime;
+    {
+        let mut f = Fixture::new(false, false);
+        let stamp = f.bridge.advertised.expect("first field").stamp;
+        f.operation(1, PrivateImeKind::Prepare, stamp);
+        f.app.set_focused_node(Some(f.nodes[1]));
+        f.operation(2, PrivateImeKind::Start, stamp);
+        assert!(f.calls.iter().all(|calls| calls.borrow().starts.is_empty()));
+        assert_eq!(f.wire.acknowledgments.borrow().last(), Some(&(2, 1)));
+    }
 
-#[test]
-fn revoked_field_cannot_acknowledge_an_asynchronous_start() {
-    for change in ["secret", "disabled", "edit", "focus", "overlay"] {
-        for resolved in [true, false] {
-            let mut f = Fixture::new(false, false);
-            let stamp = f.bridge.advertised.expect("original field").stamp;
-            f.operation(1, PrivateImeKind::Prepare, stamp);
-            f.operation(2, PrivateImeKind::Start, stamp);
-            let (receipt, resolver) = f.calls[0].borrow_mut().starts.pop().unwrap();
-            if change == "focus" {
-                f.app.set_focused_node(Some(f.nodes[1]));
-            } else if change != "overlay" {
-                f.app
-                    .mutate_node(f.nodes[0], |widget| {
-                        let field = widget
-                            .as_any_mut()
-                            .unwrap()
-                            .downcast_mut::<Deferred>()
-                            .unwrap();
-                        match change {
-                            "disabled" => field.inner.set_disabled(true),
-                            "secret" => field.inner.set_secret(true),
-                            "edit" => field.inner.set_text("changed before start"),
-                            _ => unreachable!(),
-                        }
-                    })
-                    .unwrap();
+    phase canceled_marked_final_is_consumed_before_renderer_dispatch;
+    {
+        let mut f = Fixture::new(false, false);
+        let stamp = f.start();
+        f.operation(3, PrivateImeKind::Final, stamp);
+        // The compositor can retire the pending final independently of its earlier
+        // start grant. Its cancellation names the final operation's serial.
+        f.operation(3, PrivateImeKind::Cancel, stamp);
+        assert!(f.bridge.event(
+            &mut f.app,
+            &f.wire,
+            &WindowEvent::Ime(Ime::Commit("retired 日本語".into()))
+        ));
+        assert!(f.calls.iter().all(|calls| calls.borrow().finals.is_empty()));
+        assert_eq!(f.wire.acknowledgments.borrow().last(), Some(&(3, 1)));
+        assert!(!f.bridge.admitted());
+        assert!(!f.bridge.busy());
+        f.operation(4, PrivateImeKind::Prepare, stamp);
+        assert!(f.bridge.admitted(), "a fresh session remains available");
+        f.operation(3, PrivateImeKind::Cancel, stamp);
+        assert!(f.bridge.admitted(), "retired cancellation cannot revoke it");
+    }
+
+    phase revoked_field_cannot_acknowledge_an_asynchronous_start;
+    {
+        for change in ["secret", "disabled", "edit", "focus", "overlay"] {
+            for resolved in [true, false] {
+                let mut f = Fixture::new(false, false);
+                let stamp = f.bridge.advertised.expect("original field").stamp;
+                f.operation(1, PrivateImeKind::Prepare, stamp);
+                f.operation(2, PrivateImeKind::Start, stamp);
+                let (receipt, resolver) = f.calls[0].borrow_mut().starts.pop().unwrap();
+                if change == "focus" {
+                    f.app.set_focused_node(Some(f.nodes[1]));
+                } else if change != "overlay" {
+                    f.app
+                        .mutate_node(f.nodes[0], |widget| {
+                            let field = widget
+                                .as_any_mut()
+                                .unwrap()
+                                .downcast_mut::<Deferred>()
+                                .unwrap();
+                            match change {
+                                "disabled" => field.inner.set_disabled(true),
+                                "secret" => field.inner.set_secret(true),
+                                "edit" => field.inner.set_text("changed before start"),
+                                _ => unreachable!(),
+                            }
+                        })
+                        .unwrap();
+                }
+                if resolved {
+                    resolver.complete(Ok(None));
+                }
+                f.bridge.service(&f.app, &f.wire, change != "overlay");
+                assert!(receipt.was_canceled(), "{change}, resolved={resolved}");
+                assert_eq!(
+                    f.wire.acknowledgments.borrow().as_slice(),
+                    &[(1, 0), (2, 1)],
+                    "{change}, resolved={resolved}"
+                );
+                assert!(!f.bridge.admitted());
+                assert!(!f.bridge.pending());
+                assert!(f.calls.iter().all(|calls| calls.borrow().finals.is_empty()));
             }
-            if resolved {
-                resolver.complete(Ok(None));
-            }
-            f.bridge.service(&f.app, &f.wire, change != "overlay");
-            assert!(receipt.was_canceled(), "{change}, resolved={resolved}");
-            assert_eq!(
-                f.wire.acknowledgments.borrow().as_slice(),
-                &[(1, 0), (2, 1)],
-                "{change}, resolved={resolved}"
-            );
-            assert!(!f.bridge.admitted());
-            assert!(!f.bridge.pending());
-            assert!(f.calls.iter().all(|calls| calls.borrow().finals.is_empty()));
         }
     }
-}
 
-#[test]
-fn applied_final_keeps_its_receipt_across_the_resulting_edit_revision() {
-    let mut f = Fixture::new(false, false);
-    let stamp = f.start();
-    f.operation(3, PrivateImeKind::Final, stamp);
-    assert!(f.bridge.event(
-        &mut f.app,
-        &f.wire,
-        &WindowEvent::Ime(Ime::Commit("accepted 日本語".into()))
-    ));
-    let (_, receipt, resolver) = f.calls[0].borrow_mut().finals.pop().unwrap();
-    f.app
-        .mutate_node(f.nodes[0], |widget| {
-            widget
-                .as_any_mut()
-                .unwrap()
-                .downcast_mut::<Deferred>()
-                .unwrap()
-                .inner
-                .set_text("accepted 日本語");
-        })
-        .unwrap();
-    f.service();
-    assert!(!receipt.was_canceled());
-    assert!(f.bridge.pending());
-    resolver.complete(Ok(None));
-    f.service();
-    assert_eq!(f.wire.acknowledgments.borrow().last(), Some(&(3, 0)));
-    assert!(!f.bridge.busy());
-}
+    phase applied_final_keeps_its_receipt_across_the_resulting_edit_revision;
+    {
+        let mut f = Fixture::new(false, false);
+        let stamp = f.start();
+        f.operation(3, PrivateImeKind::Final, stamp);
+        assert!(f.bridge.event(
+            &mut f.app,
+            &f.wire,
+            &WindowEvent::Ime(Ime::Commit("accepted 日本語".into()))
+        ));
+        let (_, receipt, resolver) = f.calls[0].borrow_mut().finals.pop().unwrap();
+        f.app
+            .mutate_node(f.nodes[0], |widget| {
+                widget
+                    .as_any_mut()
+                    .unwrap()
+                    .downcast_mut::<Deferred>()
+                    .unwrap()
+                    .inner
+                    .set_text("accepted 日本語");
+            })
+            .unwrap();
+        f.service();
+        assert!(!receipt.was_canceled());
+        assert!(f.bridge.pending());
+        resolver.complete(Ok(None));
+        f.service();
+        assert_eq!(f.wire.acknowledgments.borrow().last(), Some(&(3, 0)));
+        assert!(!f.bridge.busy());
+    }
 
-#[test]
-fn late_cancel_cannot_revoke_repeated_session_and_unmarked_commit_is_consumed() {
-    let mut f = Fixture::new(false, false);
-    let stamp = f.start();
-    f.operation(2, PrivateImeKind::Cancel, stamp);
-    f.operation(4, PrivateImeKind::Prepare, stamp);
-    f.operation(2, PrivateImeKind::Cancel, stamp);
-    assert!(f.bridge.admitted());
-    assert!(f.bridge.event(
-        &mut f.app,
-        &f.wire,
-        &WindowEvent::Ime(Ime::Commit("unmarked".into()))
-    ));
-    assert!(f.calls.iter().all(|calls| calls.borrow().finals.is_empty()));
-    f.operation(5, PrivateImeKind::Start, stamp);
-    assert_eq!(f.calls[0].borrow().starts.len(), 1);
-}
+    phase late_cancel_cannot_revoke_repeated_session_and_unmarked_commit_is_consumed;
+    {
+        let mut f = Fixture::new(false, false);
+        let stamp = f.start();
+        f.operation(2, PrivateImeKind::Cancel, stamp);
+        f.operation(4, PrivateImeKind::Prepare, stamp);
+        f.operation(2, PrivateImeKind::Cancel, stamp);
+        assert!(f.bridge.admitted());
+        assert!(f.bridge.event(
+            &mut f.app,
+            &f.wire,
+            &WindowEvent::Ime(Ime::Commit("unmarked".into()))
+        ));
+        assert!(f.calls.iter().all(|calls| calls.borrow().finals.is_empty()));
+        f.operation(5, PrivateImeKind::Start, stamp);
+        assert_eq!(f.calls[0].borrow().starts.len(), 1);
+    }
 
-#[test]
-fn protected_disabled_or_missing_protocol_fields_never_advertise_voice_admission() {
-    for (secret, disabled) in [(true, false), (false, true)] {
-        let f = Fixture::new(secret, disabled);
+    phase protected_disabled_or_missing_protocol_fields_never_advertise_voice_admission;
+    {
+        for (secret, disabled) in [(true, false), (false, true)] {
+            let f = Fixture::new(secret, disabled);
+            assert!(f.bridge.advertised.is_none());
+            assert!(!f.bridge.admitted());
+        }
+        let mut f = Fixture::new(false, false);
+        f.wire.unavailable = true;
+        f.bridge.advertised = None;
+        f.service();
         assert!(f.bridge.advertised.is_none());
         assert!(!f.bridge.admitted());
     }
-    let mut f = Fixture::new(false, false);
-    f.wire.unavailable = true;
-    f.bridge.advertised = None;
-    f.service();
-    assert!(f.bridge.advertised.is_none());
-    assert!(!f.bridge.admitted());
-}
 
-#[test]
-fn preparation_lease_is_not_a_successful_start_acknowledgment() {
-    let mut f = Fixture::new(false, false);
-    let stamp = f.bridge.advertised.expect("eligible field").stamp;
-    f.operation(1, PrivateImeKind::Prepare, stamp);
-    f.operation(2, PrivateImeKind::Start, stamp);
-    let (_, resolver) = f.calls[0]
-        .borrow_mut()
-        .starts
-        .pop()
-        .expect("original start");
-    let lease = crate::webview::text_input::Lease::parse("00000000000000000000000000000000")
-        .expect("synthetic preparation lease");
-    resolver.complete(Ok(Some(lease)));
-    f.service();
-    assert_eq!(f.wire.acknowledgments.borrow().last(), Some(&(2, 2)));
-    assert!(!f.bridge.admitted());
-}
+    phase preparation_lease_is_not_a_successful_start_acknowledgment;
+    {
+        let mut f = Fixture::new(false, false);
+        let stamp = f.bridge.advertised.expect("eligible field").stamp;
+        f.operation(1, PrivateImeKind::Prepare, stamp);
+        f.operation(2, PrivateImeKind::Start, stamp);
+        let (_, resolver) = f.calls[0]
+            .borrow_mut()
+            .starts
+            .pop()
+            .expect("original start");
+        let lease = crate::webview::text_input::Lease::parse("00000000000000000000000000000000")
+            .expect("synthetic preparation lease");
+        resolver.complete(Ok(Some(lease)));
+        f.service();
+        assert_eq!(f.wire.acknowledgments.borrow().last(), Some(&(2, 2)));
+        assert!(!f.bridge.admitted());
+    }
 
-/// A field that takes text only through deferred receipts keeps standard text
-/// input, and with it the on-screen keyboard, closed until dictation prepares
-/// it; one that turns ordinary commits into its own acknowledged edits (the
-/// Terminal at a native editor prompt) is served like any text field.
-#[test]
-fn ordinary_commit_fields_open_standard_input_without_dictation() {
-    let mut f = Fixture::new(false, false);
-    assert!(
-        f.bridge.advertised.is_some(),
-        "the field is offered to dictation"
-    );
-    assert!(
-        !f.bridge.standard_input_open(&f.app),
-        "a receipts-only field stays closed outside dictation"
-    );
-    let stamp = f.bridge.advertised.expect("eligible field").stamp;
-    f.operation(1, PrivateImeKind::Prepare, stamp);
-    assert!(
-        f.bridge.standard_input_open(&f.app),
-        "dictation's preparation opens it"
-    );
+    phase ordinary_commit_fields_open_standard_input_without_dictation;
+    // A field that takes text only through deferred receipts keeps standard text
+    // input, and with it the on-screen keyboard, closed until dictation prepares
+    // it; one that turns ordinary commits into its own acknowledged edits (the
+    // Terminal at a native editor prompt) is served like any text field.
+    {
+        let mut f = Fixture::new(false, false);
+        assert!(
+            f.bridge.advertised.is_some(),
+            "the field is offered to dictation"
+        );
+        assert!(
+            !f.bridge.standard_input_open(&f.app),
+            "a receipts-only field stays closed outside dictation"
+        );
+        let stamp = f.bridge.advertised.expect("eligible field").stamp;
+        f.operation(1, PrivateImeKind::Prepare, stamp);
+        assert!(
+            f.bridge.standard_input_open(&f.app),
+            "dictation's preparation opens it"
+        );
 
-    let mut f = Fixture::new(false, false);
-    f.app
-        .mutate_node(f.nodes[0], |widget| {
-            widget
-                .as_any_mut()
-                .and_then(|any| any.downcast_mut::<Deferred>())
-                .expect("the deferred field")
-                .takes_ordinary_commits = true;
-        })
-        .expect("the focused field");
-    f.service();
-    assert!(
-        f.bridge.advertised.is_some(),
-        "it is still offered to dictation through receipts"
-    );
-    assert!(
-        f.bridge.standard_input_open(&f.app),
-        "ordinary commits reach it, so standard input serves it"
-    );
-    assert!(f.app.ime_window_state().is_some());
-    assert!(!f.bridge.event(
-        &mut f.app,
-        &f.wire,
-        &WindowEvent::Ime(Ime::Commit("ls".into()))
-    ));
+        let mut f = Fixture::new(false, false);
+        f.app
+            .mutate_node(f.nodes[0], |widget| {
+                widget
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<Deferred>())
+                    .expect("the deferred field")
+                    .takes_ordinary_commits = true;
+            })
+            .expect("the focused field");
+        f.service();
+        assert!(
+            f.bridge.advertised.is_some(),
+            "it is still offered to dictation through receipts"
+        );
+        assert!(
+            f.bridge.standard_input_open(&f.app),
+            "ordinary commits reach it, so standard input serves it"
+        );
+        assert!(f.app.ime_window_state().is_some());
+        assert!(!f.bridge.event(
+            &mut f.app,
+            &f.wire,
+            &WindowEvent::Ime(Ime::Commit("ls".into()))
+        ));
+    }
 }

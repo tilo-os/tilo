@@ -579,152 +579,6 @@ mod tests {
             )]
         }
     }
-    #[test]
-    fn close_refusal_and_failure_dialogs_persist_until_an_explicit_choice() {
-        {
-            use automerge::{ReadDoc, transaction::Transactable};
-            let fail = std::rc::Rc::new(std::cell::Cell::new(true));
-            let flushes = std::rc::Rc::new(std::cell::Cell::new(0));
-            let root = OwnedRoot {
-                text: crate::widget::Text::new("body"),
-                fail: fail.clone(),
-                flushes: flushes.clone(),
-                document: None,
-                save_allowed: false,
-            };
-            let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root));
-            assert!(!app.request_close());
-            assert!(!app.close_admission.admitted);
-            assert!(app.close_admission.dialog.is_some());
-            let resource = app.close_admission.resources()[0].id.clone();
-            let dialog = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
-            let dialog = (dialog as *const dyn Widget).cast::<()>() as usize;
-            app.state
-                .doc
-                .put(automerge::ROOT, "edited_after_refusal", true)
-                .unwrap();
-            fail.set(false);
-            assert!(
-                !app.request_close(),
-                "a duplicate native close cannot replace the failure decision"
-            );
-            assert_eq!(
-                flushes.get(),
-                1,
-                "duplicate close does not retry persistence"
-            );
-            assert_eq!(app.close_admission.resources()[0].id, resource);
-            let actual = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
-            assert_eq!((actual as *const dyn Widget).cast::<()>() as usize, dialog);
-
-            close_choice(&mut app, Choice::Retry);
-            assert_eq!(
-                flushes.get(),
-                2,
-                "explicit Retry re-evaluates the same checked owner exactly once"
-            );
-            assert!(
-                app.state
-                    .doc
-                    .get(automerge::ROOT, "edited_after_refusal")
-                    .unwrap()
-                    .is_some()
-            );
-            assert!(
-                !app.close_admission.admitted,
-                "checkpoint does not destroy the live tree"
-            );
-            assert!(app.close_admission.ready);
-        }
-
-        {
-            let mut app = App::new_with_controlled_inputs(
-                crate::State::new(),
-                Box::new(crate::widget::Text::new("body")),
-            )
-            .with_autosave(app_state::DocWriter::disabled(
-                "required writer unavailable",
-            ));
-            assert!(
-                !app.request_close(),
-                "ordinary unavailable host writer cannot be skipped"
-            );
-            assert!(!app.close_admission.admitted);
-        }
-
-        {
-            let calls = std::rc::Rc::new(std::cell::Cell::new(0));
-            let observed = calls.clone();
-            let resource = crate::widget::resource_actions::resource(
-                "test.close",
-                "Replacement",
-                "save",
-                "Save",
-            );
-            let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "save");
-            let root = crate::widget::resource_actions::immediate(
-                Box::new(crate::widget::Text::new("replacement")),
-                resource,
-                move |_| {
-                    observed.set(observed.get() + 1);
-                    Ok(tilo_actions::ActionOutput::default())
-                },
-            );
-            let mut app = App::new_with_controlled_inputs(crate::State::new(), root);
-            app.close_admission.reviewed = vec![crate::close_admission::UnsavedDocument {
-                save: address,
-                identity: "old-document.md".into(),
-                revision: vec![1],
-            }];
-            app.close_admission.show(
-                "close-title",
-                "close-unsaved",
-                &[Choice::Save, Choice::Discard, Choice::KeepEditing],
-                app.input.platform,
-            );
-            let resources = app.close_admission.resources();
-            let action = resources[0]
-                .actions
-                .iter()
-                .find(|action| action.id == "save")
-                .unwrap();
-            let Some(encoded) = action.encode_immediate() else {
-                panic!("unit close action")
-            };
-            assert!(app.invoke_close_encoded(&encoded).is_err());
-            assert_eq!(
-                calls.get(),
-                0,
-                "the replacement exposes a real Save action, but was not the reviewed document"
-            );
-        }
-
-        {
-            use automerge::transaction::Transactable;
-            let (mut app, dirty) = quit_fixture(false);
-            let mut quit = native_quit_request::QuitRequest::new();
-            quit.set_target(Some(1));
-            assert!(!deliver_quit(&mut quit, &mut app));
-            let old_resource = app.close_admission.resources()[0].id.clone();
-            let old_reviewed = app.close_admission.reviewed.clone();
-
-            app.state
-                .doc
-                .put(automerge::ROOT, "draft", "newer collaborative revision")
-                .unwrap();
-            assert!(!deliver_quit(&mut quit, &mut app));
-            assert_eq!(app.close_admission.resources()[0].id, old_resource);
-            assert_eq!(app.close_admission.reviewed, old_reviewed);
-
-            assert_eq!(
-                invoke_close_choice(&mut app, Choice::Save),
-                Err("document changed since the close question was shown".into())
-            );
-            assert_ne!(app.close_admission.resources()[0].id, old_resource);
-            assert_ne!(app.close_admission.reviewed, old_reviewed);
-            assert!(dirty.get(), "stale Save cannot reach the document action");
-        }
-    }
 
     fn quit_fixture(save_allowed: bool) -> (App, std::rc::Rc<std::cell::Cell<bool>>) {
         use automerge::transaction::Transactable;
@@ -787,161 +641,312 @@ mod tests {
         app.admit_native_close_request()
     }
 
-    #[test]
-    fn native_quit_retains_the_pending_document_session_and_focus() {
+    tilo_test_env::scenario! {
+        fn close_admission_keeps_its_dialogs_and_the_pending_session;
+
+        phase close_refusal_and_failure_dialogs_persist_until_an_explicit_choice;
         {
-            use automerge::{ReadDoc, transaction::Transactable};
-            let (mut app, dirty) = quit_fixture(false);
-            let pending = app.state.doc.pending_ops();
-            assert!(pending > 0);
-            let mut quit = native_quit_request::QuitRequest::new();
-            quit.set_target(Some(1));
-            assert!(!deliver_quit(&mut quit, &mut app));
-            close_choice(&mut app, Choice::KeepEditing);
-            assert!(!app.finish_close_if_ready());
-            assert_eq!(
-                app.state.doc.pending_ops(),
-                pending,
-                "cancel must not checkpoint pending edits"
-            );
-            assert!(dirty.get());
-            app.state
-                .doc
-                .put(automerge::ROOT, "draft", "edited after cancelled Quit")
-                .unwrap();
-            assert!(
-                !deliver_quit(&mut quit, &mut app),
-                "later Quit must ask again"
-            );
-            close_choice(&mut app, Choice::Save);
-            assert!(
-                !app.finish_close_if_ready(),
-                "cancelled save cannot admit Quit"
-            );
-            assert!(dirty.get());
-            close_choice(&mut app, Choice::KeepEditing);
-            assert_eq!(
+            {
+                use automerge::{ReadDoc, transaction::Transactable};
+                let fail = std::rc::Rc::new(std::cell::Cell::new(true));
+                let flushes = std::rc::Rc::new(std::cell::Cell::new(0));
+                let root = OwnedRoot {
+                    text: crate::widget::Text::new("body"),
+                    fail: fail.clone(),
+                    flushes: flushes.clone(),
+                    document: None,
+                    save_allowed: false,
+                };
+                let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root));
+                assert!(!app.request_close());
+                assert!(!app.close_admission.admitted);
+                assert!(app.close_admission.dialog.is_some());
+                let resource = app.close_admission.resources()[0].id.clone();
+                let dialog = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
+                let dialog = (dialog as *const dyn Widget).cast::<()>() as usize;
                 app.state
                     .doc
-                    .get(automerge::ROOT, "draft")
-                    .unwrap()
-                    .unwrap()
-                    .0
-                    .as_str(),
-                Some("edited after cancelled Quit")
-            );
-            assert!(!app.close_admission.admitted);
-        }
+                    .put(automerge::ROOT, "edited_after_refusal", true)
+                    .unwrap();
+                fail.set(false);
+                assert!(
+                    !app.request_close(),
+                    "a duplicate native close cannot replace the failure decision"
+                );
+                assert_eq!(
+                    flushes.get(),
+                    1,
+                    "duplicate close does not retry persistence"
+                );
+                assert_eq!(app.close_admission.resources()[0].id, resource);
+                let actual = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
+                assert_eq!((actual as *const dyn Widget).cast::<()>() as usize, dialog);
 
-        {
-            let (mut app, dirty) = quit_fixture(false);
-            let mut quit = native_quit_request::QuitRequest::new();
-            quit.set_target(Some(1));
-            assert!(!deliver_quit(&mut quit, &mut app));
-            app.init_layout();
-            app.layout_close_dialog((640.0, 480.0));
-            app.refresh_semantic_tree();
-            assert!(app.focus_tab(false));
-
-            let resources = app.close_admission.resources();
-            let addresses: Vec<_> = resources[0]
-                .actions
-                .iter()
-                .map(|action| (resources[0].id.clone(), action.id.clone()))
-                .collect();
-            let reviewed = app.close_admission.reviewed.clone();
-            let focused = app.focused_node;
-            let dialog = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
-            let dialog = (dialog as *const dyn Widget).cast::<()>() as usize;
-
-            assert!(!deliver_quit(&mut quit, &mut app));
-            let repeated = app.close_admission.resources();
-            let repeated_addresses: Vec<_> = repeated[0]
-                .actions
-                .iter()
-                .map(|action| (repeated[0].id.clone(), action.id.clone()))
-                .collect();
-            assert_eq!(repeated_addresses, addresses);
-            assert_eq!(app.close_admission.reviewed, reviewed);
-            assert_eq!(app.focused_node, focused);
-            let actual = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
-            assert_eq!((actual as *const dyn Widget).cast::<()>() as usize, dialog);
-            assert!(dirty.get());
-        }
-
-        {
-            use automerge::transaction::Transactable;
-            let (mut app, dirty) = quit_fixture(true);
-            let mut quit = native_quit_request::QuitRequest::new();
-            quit.set_target(Some(1));
-            assert!(!deliver_quit(&mut quit, &mut app));
-            close_choice(&mut app, Choice::Save);
-            assert!(!dirty.get(), "Save uses the document's declared action");
-            assert!(app.finish_close_if_ready());
-            assert!(app.close_admission.admitted);
-
-            let (mut app, dirty) = quit_fixture(false);
-            assert!(!deliver_quit(&mut quit, &mut app));
-            close_choice(&mut app, Choice::Discard);
-            app.state
-                .doc
-                .put(automerge::ROOT, "draft", "arrived before exit")
-                .unwrap();
-            assert!(
-                !app.finish_close_if_ready(),
-                "discard never covers a newer revision"
-            );
-            assert!(dirty.get());
-            assert!(!app.close_admission.admitted);
-            close_choice(&mut app, Choice::Discard);
-            assert!(app.finish_close_if_ready());
-            assert!(app.close_admission.admitted);
-        }
-
-        {
-            let mut app = App::new_with_controlled_inputs(
-                crate::State::new(),
-                Box::new(crate::widget::Text::new("body")),
-            );
-            app.close_admission.show(
-                "close-title",
-                "close-unsaved",
-                &[Choice::Save, Choice::Discard, Choice::KeepEditing],
-                app.input.platform,
-            );
-            app.init_layout();
-            let modal = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
-            let admitted = (modal as *const dyn Widget).cast::<()>() as usize;
-            let root = app.layout.root_node.unwrap();
-            assert_eq!(app.layout.node_map[&root].cast::<()>() as usize, admitted);
-            // Move the entire initialized App into a different allocation. Compare
-            // real tree addresses to the map before dereferencing a single map entry.
-            let mut moved = Box::new(app);
-            let actual = moved.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
-            assert_eq!(
-                (actual as *const dyn Widget).cast::<()>() as usize,
-                admitted
-            );
-            fn addresses(widget: &dyn Widget, result: &mut Vec<usize>) {
-                result.push((widget as *const dyn Widget).cast::<()>() as usize);
-                for child in widget.children() {
-                    addresses(child, result);
-                }
+                close_choice(&mut app, Choice::Retry);
+                assert_eq!(
+                    flushes.get(),
+                    2,
+                    "explicit Retry re-evaluates the same checked owner exactly once"
+                );
+                assert!(
+                    app.state
+                        .doc
+                        .get(automerge::ROOT, "edited_after_refusal")
+                        .unwrap()
+                        .is_some()
+                );
+                assert!(
+                    !app.close_admission.admitted,
+                    "checkpoint does not destroy the live tree"
+                );
+                assert!(app.close_admission.ready);
             }
-            let mut actual_addresses = Vec::new();
-            addresses(actual, &mut actual_addresses);
-            assert!(
-                moved
-                    .layout
-                    .node_map
-                    .values()
-                    .all(|ptr| actual_addresses.contains(&((*ptr).cast::<()>() as usize)))
-            );
-            moved.layout_close_dialog((640.0, 480.0));
-            assert_eq!(moved.focusable_order.len(), 3);
-            moved.refresh_semantic_tree();
-            assert!(moved.focus_tab(false));
-            assert!(!moved.close_admission.admitted);
+
+            {
+                let mut app = App::new_with_controlled_inputs(
+                    crate::State::new(),
+                    Box::new(crate::widget::Text::new("body")),
+                )
+                .with_autosave(app_state::DocWriter::disabled(
+                    "required writer unavailable",
+                ));
+                assert!(
+                    !app.request_close(),
+                    "ordinary unavailable host writer cannot be skipped"
+                );
+                assert!(!app.close_admission.admitted);
+            }
+
+            {
+                let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                let observed = calls.clone();
+                let resource = crate::widget::resource_actions::resource(
+                    "test.close",
+                    "Replacement",
+                    "save",
+                    "Save",
+                );
+                let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "save");
+                let root = crate::widget::resource_actions::immediate(
+                    Box::new(crate::widget::Text::new("replacement")),
+                    resource,
+                    move |_| {
+                        observed.set(observed.get() + 1);
+                        Ok(tilo_actions::ActionOutput::default())
+                    },
+                );
+                let mut app = App::new_with_controlled_inputs(crate::State::new(), root);
+                app.close_admission.reviewed = vec![crate::close_admission::UnsavedDocument {
+                    save: address,
+                    identity: "old-document.md".into(),
+                    revision: vec![1],
+                }];
+                app.close_admission.show(
+                    "close-title",
+                    "close-unsaved",
+                    &[Choice::Save, Choice::Discard, Choice::KeepEditing],
+                    app.input.platform,
+                );
+                let resources = app.close_admission.resources();
+                let action = resources[0]
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "save")
+                    .unwrap();
+                let Some(encoded) = action.encode_immediate() else {
+                    panic!("unit close action")
+                };
+                assert!(app.invoke_close_encoded(&encoded).is_err());
+                assert_eq!(
+                    calls.get(),
+                    0,
+                    "the replacement exposes a real Save action, but was not the reviewed document"
+                );
+            }
+
+            {
+                use automerge::transaction::Transactable;
+                let (mut app, dirty) = quit_fixture(false);
+                let mut quit = native_quit_request::QuitRequest::new();
+                quit.set_target(Some(1));
+                assert!(!deliver_quit(&mut quit, &mut app));
+                let old_resource = app.close_admission.resources()[0].id.clone();
+                let old_reviewed = app.close_admission.reviewed.clone();
+
+                app.state
+                    .doc
+                    .put(automerge::ROOT, "draft", "newer collaborative revision")
+                    .unwrap();
+                assert!(!deliver_quit(&mut quit, &mut app));
+                assert_eq!(app.close_admission.resources()[0].id, old_resource);
+                assert_eq!(app.close_admission.reviewed, old_reviewed);
+
+                assert_eq!(
+                    invoke_close_choice(&mut app, Choice::Save),
+                    Err("document changed since the close question was shown".into())
+                );
+                assert_ne!(app.close_admission.resources()[0].id, old_resource);
+                assert_ne!(app.close_admission.reviewed, old_reviewed);
+                assert!(dirty.get(), "stale Save cannot reach the document action");
+            }
+        }
+
+        phase native_quit_retains_the_pending_document_session_and_focus;
+        {
+            {
+                use automerge::{ReadDoc, transaction::Transactable};
+                let (mut app, dirty) = quit_fixture(false);
+                let pending = app.state.doc.pending_ops();
+                assert!(pending > 0);
+                let mut quit = native_quit_request::QuitRequest::new();
+                quit.set_target(Some(1));
+                assert!(!deliver_quit(&mut quit, &mut app));
+                close_choice(&mut app, Choice::KeepEditing);
+                assert!(!app.finish_close_if_ready());
+                assert_eq!(
+                    app.state.doc.pending_ops(),
+                    pending,
+                    "cancel must not checkpoint pending edits"
+                );
+                assert!(dirty.get());
+                app.state
+                    .doc
+                    .put(automerge::ROOT, "draft", "edited after cancelled Quit")
+                    .unwrap();
+                assert!(
+                    !deliver_quit(&mut quit, &mut app),
+                    "later Quit must ask again"
+                );
+                close_choice(&mut app, Choice::Save);
+                assert!(
+                    !app.finish_close_if_ready(),
+                    "cancelled save cannot admit Quit"
+                );
+                assert!(dirty.get());
+                close_choice(&mut app, Choice::KeepEditing);
+                assert_eq!(
+                    app.state
+                        .doc
+                        .get(automerge::ROOT, "draft")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .as_str(),
+                    Some("edited after cancelled Quit")
+                );
+                assert!(!app.close_admission.admitted);
+            }
+
+            {
+                let (mut app, dirty) = quit_fixture(false);
+                let mut quit = native_quit_request::QuitRequest::new();
+                quit.set_target(Some(1));
+                assert!(!deliver_quit(&mut quit, &mut app));
+                app.init_layout();
+                app.layout_close_dialog((640.0, 480.0));
+                app.refresh_semantic_tree();
+                assert!(app.focus_tab(false));
+
+                let resources = app.close_admission.resources();
+                let addresses: Vec<_> = resources[0]
+                    .actions
+                    .iter()
+                    .map(|action| (resources[0].id.clone(), action.id.clone()))
+                    .collect();
+                let reviewed = app.close_admission.reviewed.clone();
+                let focused = app.focused_node;
+                let dialog = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
+                let dialog = (dialog as *const dyn Widget).cast::<()>() as usize;
+
+                assert!(!deliver_quit(&mut quit, &mut app));
+                let repeated = app.close_admission.resources();
+                let repeated_addresses: Vec<_> = repeated[0]
+                    .actions
+                    .iter()
+                    .map(|action| (repeated[0].id.clone(), action.id.clone()))
+                    .collect();
+                assert_eq!(repeated_addresses, addresses);
+                assert_eq!(app.close_admission.reviewed, reviewed);
+                assert_eq!(app.focused_node, focused);
+                let actual = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
+                assert_eq!((actual as *const dyn Widget).cast::<()>() as usize, dialog);
+                assert!(dirty.get());
+            }
+
+            {
+                use automerge::transaction::Transactable;
+                let (mut app, dirty) = quit_fixture(true);
+                let mut quit = native_quit_request::QuitRequest::new();
+                quit.set_target(Some(1));
+                assert!(!deliver_quit(&mut quit, &mut app));
+                close_choice(&mut app, Choice::Save);
+                assert!(!dirty.get(), "Save uses the document's declared action");
+                assert!(app.finish_close_if_ready());
+                assert!(app.close_admission.admitted);
+
+                let (mut app, dirty) = quit_fixture(false);
+                assert!(!deliver_quit(&mut quit, &mut app));
+                close_choice(&mut app, Choice::Discard);
+                app.state
+                    .doc
+                    .put(automerge::ROOT, "draft", "arrived before exit")
+                    .unwrap();
+                assert!(
+                    !app.finish_close_if_ready(),
+                    "discard never covers a newer revision"
+                );
+                assert!(dirty.get());
+                assert!(!app.close_admission.admitted);
+                close_choice(&mut app, Choice::Discard);
+                assert!(app.finish_close_if_ready());
+                assert!(app.close_admission.admitted);
+            }
+
+            {
+                let mut app = App::new_with_controlled_inputs(
+                    crate::State::new(),
+                    Box::new(crate::widget::Text::new("body")),
+                );
+                app.close_admission.show(
+                    "close-title",
+                    "close-unsaved",
+                    &[Choice::Save, Choice::Discard, Choice::KeepEditing],
+                    app.input.platform,
+                );
+                app.init_layout();
+                let modal = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
+                let admitted = (modal as *const dyn Widget).cast::<()>() as usize;
+                let root = app.layout.root_node.unwrap();
+                assert_eq!(app.layout.node_map[&root].cast::<()>() as usize, admitted);
+                // Move the entire initialized App into a different allocation. Compare
+                // real tree addresses to the map before dereferencing a single map entry.
+                let mut moved = Box::new(app);
+                let actual = moved.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
+                assert_eq!(
+                    (actual as *const dyn Widget).cast::<()>() as usize,
+                    admitted
+                );
+                fn addresses(widget: &dyn Widget, result: &mut Vec<usize>) {
+                    result.push((widget as *const dyn Widget).cast::<()>() as usize);
+                    for child in widget.children() {
+                        addresses(child, result);
+                    }
+                }
+                let mut actual_addresses = Vec::new();
+                addresses(actual, &mut actual_addresses);
+                assert!(
+                    moved
+                        .layout
+                        .node_map
+                        .values()
+                        .all(|ptr| actual_addresses.contains(&((*ptr).cast::<()>() as usize)))
+                );
+                moved.layout_close_dialog((640.0, 480.0));
+                assert_eq!(moved.focusable_order.len(), 3);
+                moved.refresh_semantic_tree();
+                assert!(moved.focus_tab(false));
+                assert!(!moved.close_admission.admitted);
+            }
         }
     }
 }

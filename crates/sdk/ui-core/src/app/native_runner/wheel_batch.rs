@@ -134,71 +134,75 @@ mod tests {
         }
     }
 
-    #[test]
-    fn deltas_in_one_wake_are_handed_on_as_their_sum() {
-        let mut batch = WheelBatch::default();
-        assert!(
-            batch
-                .push(window(), pixels(-3.0, TouchPhase::Moved))
-                .is_empty()
-        );
-        assert!(
-            batch
-                .push(window(), pixels(-4.0, TouchPhase::Moved))
-                .is_empty()
-        );
-        assert!(
-            batch
-                .push(window(), pixels(-5.0, TouchPhase::Moved))
-                .is_empty()
-        );
-        let (_, sum) = batch.flush().expect("the sum waits for the wake's end");
-        assert!((dy(&sum) + 12.0).abs() < 1e-9);
-        assert!(batch.flush().is_none());
+    tilo_test_env::scenario! {
+        fn wheel_deltas_in_one_wake_are_summed_in_order;
 
-        assert!(batch.push(window(), lines(-1.0)).is_empty());
-        assert!(batch.push(window(), lines(-1.0)).is_empty());
-        assert!((dy(&batch.flush().unwrap().1) + 2.0).abs() < 1e-9);
-    }
+        phase deltas_in_one_wake_are_handed_on_as_their_sum;
+        {
+            let mut batch = WheelBatch::default();
+            assert!(
+                batch
+                    .push(window(), pixels(-3.0, TouchPhase::Moved))
+                    .is_empty()
+            );
+            assert!(
+                batch
+                    .push(window(), pixels(-4.0, TouchPhase::Moved))
+                    .is_empty()
+            );
+            assert!(
+                batch
+                    .push(window(), pixels(-5.0, TouchPhase::Moved))
+                    .is_empty()
+            );
+            let (_, sum) = batch.flush().expect("the sum waits for the wake's end");
+            assert!((dy(&sum) + 12.0).abs() < 1e-9);
+            assert!(batch.flush().is_none());
 
-    #[test]
-    fn another_event_or_kind_hands_the_sum_on_first_and_keeps_the_order() {
-        let mut batch = WheelBatch::default();
-        batch.push(window(), pixels(-3.0, TouchPhase::Moved));
-        batch.push(window(), pixels(-4.0, TouchPhase::Moved));
-        let routed = batch.push(window(), pixels(0.0, TouchPhase::Ended));
-        assert_eq!(routed.len(), 2, "{routed:?}");
-        assert!((dy(&routed[0].1) + 7.0).abs() < 1e-9);
-        assert!(matches!(
-            routed[1].1,
-            WindowEvent::MouseWheel {
-                phase: TouchPhase::Ended,
-                ..
-            }
-        ));
-        assert!(batch.flush().is_none());
+            assert!(batch.push(window(), lines(-1.0)).is_empty());
+            assert!(batch.push(window(), lines(-1.0)).is_empty());
+            assert!((dy(&batch.flush().unwrap().1) + 2.0).abs() < 1e-9);
+        }
 
-        batch.push(window(), pixels(-3.0, TouchPhase::Moved));
-        let routed = batch.push(window(), lines(-1.0));
-        assert_eq!(routed.len(), 1, "a line delta does not join pixels");
-        assert!((dy(&routed[0].1) + 3.0).abs() < 1e-9);
-        assert!((dy(&batch.flush().unwrap().1) + 1.0).abs() < 1e-9);
+        phase another_event_or_kind_hands_the_sum_on_first_and_keeps_the_order;
+        {
+            let mut batch = WheelBatch::default();
+            batch.push(window(), pixels(-3.0, TouchPhase::Moved));
+            batch.push(window(), pixels(-4.0, TouchPhase::Moved));
+            let routed = batch.push(window(), pixels(0.0, TouchPhase::Ended));
+            assert_eq!(routed.len(), 2, "{routed:?}");
+            assert!((dy(&routed[0].1) + 7.0).abs() < 1e-9);
+            assert!(matches!(
+                routed[1].1,
+                WindowEvent::MouseWheel {
+                    phase: TouchPhase::Ended,
+                    ..
+                }
+            ));
+            assert!(batch.flush().is_none());
 
-        batch.push(window(), lines(-1.0));
-        let routed = batch.push(window(), WindowEvent::Focused(false));
-        assert_eq!(routed.len(), 2);
-        assert!(matches!(routed[1].1, WindowEvent::Focused(false)));
-    }
+            batch.push(window(), pixels(-3.0, TouchPhase::Moved));
+            let routed = batch.push(window(), lines(-1.0));
+            assert_eq!(routed.len(), 1, "a line delta does not join pixels");
+            assert!((dy(&routed[0].1) + 3.0).abs() < 1e-9);
+            assert!((dy(&batch.flush().unwrap().1) + 1.0).abs() < 1e-9);
 
-    #[test]
-    fn a_gesture_start_is_never_summed() {
-        let mut batch = WheelBatch::default();
-        let routed = batch.push(window(), pixels(-2.0, TouchPhase::Started));
-        assert_eq!(routed.len(), 1, "a start routes at once");
-        assert!(
-            batch
-                .push(window(), pixels(-3.0, TouchPhase::Moved))
-                .is_empty()
-        );
+            batch.push(window(), lines(-1.0));
+            let routed = batch.push(window(), WindowEvent::Focused(false));
+            assert_eq!(routed.len(), 2);
+            assert!(matches!(routed[1].1, WindowEvent::Focused(false)));
+        }
+
+        phase a_gesture_start_is_never_summed;
+        {
+            let mut batch = WheelBatch::default();
+            let routed = batch.push(window(), pixels(-2.0, TouchPhase::Started));
+            assert_eq!(routed.len(), 1, "a start routes at once");
+            assert!(
+                batch
+                    .push(window(), pixels(-3.0, TouchPhase::Moved))
+                    .is_empty()
+            );
+        }
     }
 }

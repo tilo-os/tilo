@@ -10,87 +10,91 @@ use std::sync::{Arc, Mutex};
 #[path = "peer_delivery_tests.rs"]
 mod peer_delivery;
 
-#[test]
-fn native_focus_order_enumerates_history_once() {
-    let state = State::new();
-    let (root, visits) = crate::history_mode::focus_tests::FocusHistoryRoot::new(2_000, &state);
-    let mut app = App::new_with_controlled_inputs(state, Box::new(root));
-    layout(&mut app);
-    visits.set(0);
-    app.update_focusable_order();
-    assert!(
-        app.focusable_order.len() >= 2_000,
-        "all live rows remain focusable"
-    );
-    assert_eq!(visits.get(), 1, "one History enumeration per recomputation");
-}
+tilo_test_env::scenario! {
+    fn native_focus_order_lists_history_once_after_live_rows;
 
-#[test]
-fn native_focus_order_walks_history_ownership_once() {
-    use crate::history_mode::host::OWNERSHIP_WALKS;
-    let walks = || OWNERSHIP_WALKS.with(Cell::get);
-    let ids: Vec<String> = (0..2_000).map(|row| format!("row-{row}")).collect();
-    let root = ids.iter().fold(crate::widget::Column::new(), |column, id| {
-        column.push(Box::new(crate::widget::Button::new(id, "Row")))
-    });
-    let mut app = app_with_root(State::new(), Box::new(root));
-    layout(&mut app);
-    // History closed: the live rows, then History's own controls last.
-    OWNERSHIP_WALKS.with(|count| count.set(0));
-    app.update_focusable_order();
-    assert!(
-        app.focusable_order.len() > 2_000,
-        "every live row and History's toggle take focus"
-    );
-    assert_eq!(walks(), 1, "one ownership walk per recomputation");
-    // History open: it captures input, so only its own controls take focus.
-    let history = named(&mut app, "History");
-    app.dispatch_a11y_action(history, &crate::a11y::Action::Activate);
-    layout(&mut app);
-    assert!(app.history.as_ref().unwrap().captures_input());
-    OWNERSHIP_WALKS.with(|count| count.set(0));
-    app.update_focusable_order();
-    assert_eq!(walks(), 1, "one ownership walk per recomputation");
-    let history = app.history.as_ref().unwrap();
-    assert!(!app.focusable_order.is_empty());
-    assert!(
-        app.focusable_order
-            .iter()
-            .all(|&node| history.owns_node(node, &app.layout.taffy)),
-        "only History's controls take focus while it captures input"
-    );
-}
+    phase native_focus_order_enumerates_history_once;
+    {
+        let state = State::new();
+        let (root, visits) = crate::history_mode::focus_tests::FocusHistoryRoot::new(2_000, &state);
+        let mut app = App::new_with_controlled_inputs(state, Box::new(root));
+        layout(&mut app);
+        visits.set(0);
+        app.update_focusable_order();
+        assert!(
+            app.focusable_order.len() >= 2_000,
+            "all live rows remain focusable"
+        );
+        assert_eq!(visits.get(), 1, "one History enumeration per recomputation");
+    }
 
-#[test]
-fn native_focus_order_keeps_live_rows_before_history_controls() {
-    let root = crate::widget::Column::new()
-        .push(Box::new(crate::widget::Button::new("first-row", "First")))
-        .push(Box::new(crate::widget::Button::new("second-row", "Second")));
-    let mut app = app_with_root(State::new(), Box::new(root));
-    layout(&mut app);
-    app.update_focusable_order();
-    let history = app.history.as_ref().unwrap();
-    let first_owned = app
-        .focusable_order
-        .iter()
-        .position(|&node| history.owns_node(node, &app.layout.taffy))
-        .expect("History contributes a focusable control");
-    let live_ids: Vec<_> = app.focusable_order[..first_owned]
-        .iter()
-        .map(|&node| {
-            app.inspect_node(node, |widget| widget.test_id().map(str::to_owned))
-                .unwrap()
-        })
-        .collect();
-    assert_eq!(
-        live_ids,
-        vec![Some("first-row".into()), Some("second-row".into())]
-    );
-    assert!(
-        app.focusable_order[first_owned..]
+    phase native_focus_order_walks_history_ownership_once;
+    {
+        use crate::history_mode::host::OWNERSHIP_WALKS;
+        let walks = || OWNERSHIP_WALKS.with(Cell::get);
+        let ids: Vec<String> = (0..2_000).map(|row| format!("row-{row}")).collect();
+        let root = ids.iter().fold(crate::widget::Column::new(), |column, id| {
+            column.push(Box::new(crate::widget::Button::new(id, "Row")))
+        });
+        let mut app = app_with_root(State::new(), Box::new(root));
+        layout(&mut app);
+        // History closed: the live rows, then History's own controls last.
+        OWNERSHIP_WALKS.with(|count| count.set(0));
+        app.update_focusable_order();
+        assert!(
+            app.focusable_order.len() > 2_000,
+            "every live row and History's toggle take focus"
+        );
+        assert_eq!(walks(), 1, "one ownership walk per recomputation");
+        // History open: it captures input, so only its own controls take focus.
+        let history = named(&mut app, "History");
+        app.dispatch_a11y_action(history, &crate::a11y::Action::Activate);
+        layout(&mut app);
+        assert!(app.history.as_ref().unwrap().captures_input());
+        OWNERSHIP_WALKS.with(|count| count.set(0));
+        app.update_focusable_order();
+        assert_eq!(walks(), 1, "one ownership walk per recomputation");
+        let history = app.history.as_ref().unwrap();
+        assert!(!app.focusable_order.is_empty());
+        assert!(
+            app.focusable_order
+                .iter()
+                .all(|&node| history.owns_node(node, &app.layout.taffy)),
+            "only History's controls take focus while it captures input"
+        );
+    }
+
+    phase native_focus_order_keeps_live_rows_before_history_controls;
+    {
+        let root = crate::widget::Column::new()
+            .push(Box::new(crate::widget::Button::new("first-row", "First")))
+            .push(Box::new(crate::widget::Button::new("second-row", "Second")));
+        let mut app = app_with_root(State::new(), Box::new(root));
+        layout(&mut app);
+        app.update_focusable_order();
+        let history = app.history.as_ref().unwrap();
+        let first_owned = app
+            .focusable_order
             .iter()
-            .all(|&node| history.owns_node(node, &app.layout.taffy))
-    );
+            .position(|&node| history.owns_node(node, &app.layout.taffy))
+            .expect("History contributes a focusable control");
+        let live_ids: Vec<_> = app.focusable_order[..first_owned]
+            .iter()
+            .map(|&node| {
+                app.inspect_node(node, |widget| widget.test_id().map(str::to_owned))
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            live_ids,
+            vec![Some("first-row".into()), Some("second-row".into())]
+        );
+        assert!(
+            app.focusable_order[first_owned..]
+                .iter()
+                .all(|&node| history.owns_node(node, &app.layout.taffy))
+        );
+    }
 }
 static HISTORY: HistoryDefinition = HistoryDefinition {
     app_id: "dev.tilo.native-history-fixture",
@@ -149,263 +153,6 @@ pub(crate) fn native_chrome_app() -> App {
     app.prepare_native_presentation(crate::host_chrome::HostChrome::Native);
     layout(&mut app);
     app
-}
-#[test]
-fn native_history_surface_composes_installs_and_keeps_editor_state() {
-    {
-        let mut app = app();
-        layout(&mut app);
-        let tree = app.build_a11y_tree_update(1.0);
-        let history = tree
-            .nodes
-            .iter()
-            .find(|(_, node)| node.label() == Some("History"))
-            .map(|(id, _)| *id)
-            .expect("native managed App must expose shared History");
-        app.dispatch_a11y_action(history, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        assert!(
-            app.build_a11y_tree_update(1.0)
-                .nodes
-                .iter()
-                .any(|(_, node)| node.role() == accesskit::Role::List)
-        );
-    }
-
-    {
-        let mut app = app();
-        app.root_widget = Box::new(crate::widget::Column::new().push(Box::new(
-            crate::widget::TextInput::local().with_id("draft-editor"),
-        )));
-        app.root_widget.sync(&app.state.doc, &ROOT);
-        layout(&mut app);
-        let editor = node_for_test_id(&app, "draft-editor");
-        app.set_focused_node(Some(editor));
-        app.perform_node_action(editor, &crate::a11y::Action::SetValue("unfinished".into()))
-            .unwrap();
-        app.perform_node_action(
-            editor,
-            &crate::a11y::Action::SetSelection {
-                anchor: 2,
-                focus: 7,
-            },
-        )
-        .unwrap();
-        app.state.doc.put(ROOT, "in-progress", "pending").unwrap();
-        let heads = app.state.doc.base_heads();
-        let ops = app.state.doc.pending_ops();
-        let editor_before = app
-            .inspect_node(editor, |widget| widget.accessibility())
-            .unwrap()
-            .unwrap();
-        let open = node_for_test_id(&app, "history-open");
-        let bounds = app.inspect_node(open, |widget| widget.get_rect()).unwrap();
-        app.dispatch_semantic_click(bounds.center().x, bounds.center().y);
-        layout(&mut app);
-        assert_eq!(app.state.doc.base_heads(), heads);
-        assert_eq!(app.state.doc.pending_ops(), ops);
-        let close = named(&mut app, "History");
-        app.dispatch_a11y_action(close, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        assert_eq!(app.state.doc.base_heads(), heads);
-        assert_eq!(app.state.doc.pending_ops(), ops);
-        let restored = app.focused_node.expect("stable editor focus restored");
-        let after = app
-            .inspect_node(restored, |widget| widget.accessibility())
-            .unwrap()
-            .unwrap();
-        assert_eq!(editor_before.value, after.value);
-        assert_eq!(editor_before.text_selection, after.text_selection);
-    }
-
-    {
-        let mut app = app();
-        layout(&mut app);
-        let before = app.state.doc.base_heads();
-        let target = named(&mut app, "History");
-        app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        let node = app
-            .build_a11y_tree_update(1.0)
-            .nodes
-            .iter()
-            .find(|(_, node)| node.role() == accesskit::Role::ListItem)
-            .unwrap()
-            .1
-            .clone();
-        let rect = node.bounds().unwrap();
-        app.dispatch_semantic_click((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0);
-        layout(&mut app);
-        assert!(
-            app.build_a11y_tree_update(1.0)
-                .nodes
-                .iter()
-                .any(|(_, node)| node
-                    .label()
-                    .is_some_and(|label| label.starts_with("Notebook:")))
-        );
-        let target = named(&mut app, "Restore…");
-        app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        assert!(
-            app.build_a11y_tree_update(1.0)
-                .nodes
-                .iter()
-                .any(|(_, node)| node.label() == Some("Restore version"))
-        );
-        native_key(&mut app, "Escape");
-        assert_eq!(app.state.doc.base_heads(), before);
-        let target = named(&mut app, "Back to live");
-        app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        assert!(app.history.as_ref().unwrap().live_visible());
-    }
-
-    {
-        let (_host, component) = crate::history_mode::integration_tests::component_with_history();
-        let mut app = App::from_component(
-            component,
-            crate::application::ComponentRunnerInputs {
-                theme: crate::Theme::dark(),
-                text_renderer: crate::font_catalog::fixture_renderer(),
-            },
-        )
-        .unwrap();
-        let handle = {
-            let _scope = app.enter_wake_scope();
-            crate::WakeHandle::new()
-        };
-        layout(&mut app);
-        assert!(app.validate_history_registration().is_ok());
-        let history = named(&mut app, "History");
-        app.dispatch_a11y_action(history, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        assert!(
-            app.build_a11y_tree_update(1.0)
-                .nodes
-                .iter()
-                .any(|(_, node)| node.role() == accesskit::Role::List)
-        );
-        assert!(handle.is_active());
-        drop(app);
-        assert!(!handle.is_active());
-    }
-
-    {
-        let mut app = app();
-        layout(&mut app);
-        let target = named(&mut app, "History");
-        app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        let row = app
-            .build_a11y_tree_update(1.0)
-            .nodes
-            .iter()
-            .find(|(_, node)| node.role() == accesskit::Role::ListItem)
-            .map(|(id, _)| *id)
-            .unwrap();
-        app.dispatch_a11y_action(row, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        let target = named(&mut app, "Restore…");
-        app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        let old = named(&mut app, "Restore version");
-        let heads = app.state.doc.base_heads();
-        app = app.with_autosave(app_state::DocWriter::disabled("replacement"));
-        layout(&mut app);
-        assert!(app.validate_history_registration().is_err());
-        app.dispatch_a11y_action(old, &crate::a11y::Action::Activate);
-        assert_eq!(app.state.doc.base_heads(), heads);
-    }
-
-    {
-        let probe = crate::history_mode::isolation_tests::native_effect_probe_parts(
-            "live",
-            "fixture.export",
-        );
-        let starts = probe.starts;
-        let mut app = app();
-        app.root_widget = probe.root;
-        layout(&mut app);
-        let declared = app.collect_declared_resources();
-        let violations = tilo_actions::validate_surface(
-            &declared,
-            &app.actions.action_registry,
-            &crate::widget::resource_operation_handlers(&*app.root_widget),
-        );
-        assert!(violations.is_empty(), "{violations:?}");
-        let export = crate::accesskit_bridge::resource_action_node_id("live", "export");
-        assert!(
-            app.build_a11y_tree_update(1.0)
-                .nodes
-                .iter()
-                .any(|(id, _)| *id == export),
-            "the live resource action remains exported beside closed History chrome"
-        );
-        app.dispatch_a11y_action(export, &crate::a11y::Action::Activate);
-        assert_eq!(starts.get(), 1, "live positive control must execute");
-        probe.finish.set(true);
-        assert!(app.poll_directed_invocations());
-        assert_eq!(probe.completions.get(), 1);
-        assert!(
-            app.actions.local_invocations.is_empty(),
-            "hidden retry cannot be rejected merely because first invocation is in flight"
-        );
-        let target = named(&mut app, "History");
-        app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        app.dispatch_a11y_action(export, &crate::a11y::Action::Activate);
-        assert_eq!(
-            starts.get(),
-            1,
-            "hidden local resource action cannot start during History"
-        );
-    }
-
-    {
-        let mut app = app();
-        app.root_widget = Box::new(crate::widget::TextInput::local().with_id("pending-editor"));
-        layout(&mut app);
-        let editor = node_for_test_id(&app, "pending-editor");
-        app.set_focused_node(Some(editor));
-        app.perform_node_action(editor, &crate::a11y::Action::SetValue("draft".into()))
-            .unwrap();
-        app.state.doc.put(ROOT, "unrelated", "pending").unwrap();
-        let before = (app.state.doc.base_heads(), app.state.doc.pending_ops());
-        let target = named(&mut app, "History");
-        app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        native_key(&mut app, "Tab");
-        let tabbed = app.focused_node;
-        assert!(tabbed.is_some_and(|node| {
-            app.history
-                .as_ref()
-                .unwrap()
-                .owns_node(node, &app.layout.taffy)
-        }));
-        app.input.modifiers = winit::keyboard::ModifiersState::SHIFT.into();
-        native_key(&mut app, "Tab");
-        app.input.modifiers = winit::event::Modifiers::default();
-        native_key(&mut app, "Tab");
-        assert_eq!(
-            app.focused_node, tabbed,
-            "Shift+Tab reverses the same chrome focus order"
-        );
-        for ime in [
-            winit::event::Ime::Preedit("候補".into(), Some((0, 6))),
-            winit::event::Ime::Commit("界".into()),
-        ] {
-            let event = WindowEvent::Ime(ime);
-            assert!(app.history_controls_event(&event, 1.0));
-            app.dispatch_framework_history_event(&event, 1.0);
-        }
-        assert_eq!(
-            (app.state.doc.base_heads(), app.state.doc.pending_ops()),
-            before
-        );
-        assert!(!app.framework_input.get());
-        assert!(!crate::history_mode::frame::FrameworkInputFrame::active());
-    }
 }
 
 fn named(app: &mut App, label: &str) -> accesskit::NodeId {
@@ -981,64 +728,6 @@ impl RoutedOwners {
     }
 }
 
-#[test]
-fn signed_owned_foreign_identity_is_rejected_without_mutating_live_record() {
-    use automerge::ReadDoc;
-
-    let mut fixture = RoutedOwners::new();
-    let binding = &fixture.bindings[0];
-    let before = fixture
-        .records
-        .read_history(&binding.checkout.id, |doc, history| {
-            (doc.base_heads(), doc.pending_ops(), history.revision())
-        })
-        .unwrap();
-    let generation = fixture
-        .records
-        .action_generation(&binding.checkout.id)
-        .unwrap();
-    let mut remote = fixture
-        .records
-        .read_checked(&binding.checkout.id, Clone::clone)
-        .unwrap();
-    remote.set_actor(automerge::ActorId::from(b"foreign-identity".as_slice()));
-    let metadata = remote.get(ROOT, "tilo:record").unwrap().unwrap().1;
-    remote
-        .put(&metadata, "id", "uuid:00000000-0000-4000-8000-000000000099")
-        .unwrap();
-    remote
-        .put(ROOT, "foreign-content", "must not enter")
-        .unwrap();
-    remote.commit();
-    let incoming = routed_document(
-        &binding.broker_route().unwrap(),
-        collab_types::DocumentMutation::Snapshot(remote.save()),
-    );
-
-    fixture.app.apply_signed_document_envelope(&incoming, None);
-
-    assert_eq!(
-        fixture
-            .records
-            .read_history(&binding.checkout.id, |doc, history| (
-                doc.base_heads(),
-                doc.pending_ops(),
-                history.revision(),
-            ))
-            .unwrap(),
-        before,
-    );
-    assert_eq!(
-        fixture
-            .records
-            .action_generation(&binding.checkout.id)
-            .unwrap(),
-        generation,
-    );
-    assert_eq!(fixture.value(0, "foreign-content"), None);
-    assert!(fixture.app.document_sync_status().is_some());
-}
-
 fn identity_mutation(
     fixture: &RoutedOwners,
     index: usize,
@@ -1078,139 +767,201 @@ fn identity_mutation(
     )
 }
 
-#[test]
-fn signed_owned_identity_mutations_are_atomic_invalid_and_recover_with_fresh_snapshot() {
-    for incremental in [false, true] {
-        for field in ["id", "kind", "room", "home"] {
-            let mut fixture = RoutedOwners::new();
-            let family = "tilo:record";
-            let incoming = identity_mutation(&fixture, 0, family, field, incremental);
-            let before = fixture.observation(0);
-            fixture.app.apply_signed_document_envelope(&incoming, None);
-            assert_eq!(fixture.observation(0), before, "{family} {field}");
-            assert_eq!(fixture.value(0, "foreign-content"), None);
-            assert!(
-                fixture
-                    .app
-                    .document_sync_status()
-                    .is_some_and(|status| status.contains("could not be applied"))
-            );
-            let route = fixture.bindings[0].broker_route().unwrap();
-            let pending = &fixture
-                .app
-                .document_routes
-                .owners
-                .iter()
-                .find(|entry| entry.route == route)
-                .unwrap()
-                .pending;
-            assert!(pending.is_empty(), "invalid front must be quarantined");
+tilo_test_env::scenario! {
+    fn signed_owned_records_reject_what_their_identity_does_not_allow;
 
-            let mut recovery = fixture
-                .records
-                .read_checked(&fixture.bindings[0].checkout.id, Clone::clone)
-                .unwrap();
-            recovery.set_actor(automerge::ActorId::from(b"valid-recovery".as_slice()));
-            recovery.put(ROOT, "valid-after-recovery", field).unwrap();
-            recovery.commit();
-            let recovery = routed_document(
-                &route,
-                collab_types::DocumentMutation::Snapshot(recovery.save()),
-            );
-            fixture.app.apply_signed_document_envelope(&recovery, None);
-            assert_eq!(
-                fixture.value(0, "valid-after-recovery").as_deref(),
-                Some(field)
-            );
-            assert_eq!(fixture.app.document_sync_status(), None);
-            let (_, _, revision, generation, statuses) = fixture.observation(0);
-            assert_eq!(revision, before.2);
-            assert_eq!(generation, before.3.and_then(|value| value.checked_add(1)));
-            assert!(statuses.is_empty());
-        }
-    }
-}
+    phase signed_owned_foreign_identity_is_rejected_without_mutating_live_record;
+    {
+        use automerge::ReadDoc;
 
-#[test]
-fn signed_owned_corrupt_incremental_preserves_document_history_generation_and_statuses() {
-    let mut fixture = RoutedOwners::new();
-    let binding = &fixture.bindings[0];
-    let mut remote = fixture
-        .records
-        .read_checked(&binding.checkout.id, Clone::clone)
-        .unwrap();
-    let baseline = remote.base_heads();
-    remote.put(ROOT, "valid-prefix", "must not enter").unwrap();
-    remote.commit();
-    let mut bytes = remote.save_after(&baseline);
-    bytes.extend_from_slice(b"corrupt trailing chunk");
-    let incoming = routed_document(
-        &binding.broker_route().unwrap(),
-        collab_types::DocumentMutation::Incremental(bytes),
-    );
-    let before = fixture.observation(0);
-    fixture.app.apply_signed_document_envelope(&incoming, None);
-    assert_eq!(fixture.observation(0), before);
-    assert_eq!(fixture.value(0, "valid-prefix"), None);
-}
+        let mut fixture = RoutedOwners::new();
+        let binding = &fixture.bindings[0];
+        let before = fixture
+            .records
+            .read_history(&binding.checkout.id, |doc, history| {
+                (doc.base_heads(), doc.pending_ops(), history.revision())
+            })
+            .unwrap();
+        let generation = fixture
+            .records
+            .action_generation(&binding.checkout.id)
+            .unwrap();
+        let mut remote = fixture
+            .records
+            .read_checked(&binding.checkout.id, Clone::clone)
+            .unwrap();
+        remote.set_actor(automerge::ActorId::from(b"foreign-identity".as_slice()));
+        let metadata = remote.get(ROOT, "tilo:record").unwrap().unwrap().1;
+        remote
+            .put(&metadata, "id", "uuid:00000000-0000-4000-8000-000000000099")
+            .unwrap();
+        remote
+            .put(ROOT, "foreign-content", "must not enter")
+            .unwrap();
+        remote.commit();
+        let incoming = routed_document(
+            &binding.broker_route().unwrap(),
+            collab_types::DocumentMutation::Snapshot(remote.save()),
+        );
 
-#[test]
-fn signed_owned_concurrent_losing_identity_values_are_rejected() {
-    use automerge::ReadDoc;
-    for incremental in [false, true] {
-        for field in ["id", "kind", "room", "home"] {
-            let mut fixture = RoutedOwners::new();
-            let binding = &fixture.bindings[0];
-            let family = "tilo:record";
-            let base = fixture
-                .records
-                .read_checked(&binding.checkout.id, Clone::clone)
-                .unwrap();
-            let base_heads = base.base_heads();
-            let metadata = base.get(ROOT, family).unwrap().unwrap().1;
-            let expected = base
-                .get(&metadata, field)
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str()
-                .unwrap()
-                .to_string();
-            let mut remote = base.clone();
-            remote.set_actor(automerge::ActorId::from(b"foreign-concurrent".as_slice()));
-            let remote_meta = remote.get(ROOT, family).unwrap().unwrap().1;
-            remote
-                .put(
-                    &remote_meta,
-                    field,
-                    if field == "id" {
-                        "uuid:00000000-0000-4000-8000-000000000099"
-                    } else {
-                        "foreign-concurrent"
-                    },
-                )
-                .unwrap();
-            remote.commit();
+        fixture.app.apply_signed_document_envelope(&incoming, None);
+
+        assert_eq!(
             fixture
                 .records
-                .with_action_state(&binding.checkout.id, |doc, history, _| {
-                    let local_meta = doc.get(ROOT, family).unwrap().unwrap().1;
-                    doc.put(&local_meta, field, expected).unwrap();
-                    doc.commit();
-                    history.rebase(doc);
-                })
-                .unwrap();
-            let incoming = routed_document(
-                &binding.broker_route().unwrap(),
-                if incremental {
-                    collab_types::DocumentMutation::Incremental(remote.save_after(&base_heads))
-                } else {
-                    collab_types::DocumentMutation::Snapshot(remote.save())
-                },
-            );
-            let before = fixture.observation(0);
-            fixture.app.apply_signed_document_envelope(&incoming, None);
-            assert_eq!(fixture.observation(0), before, "{family} {field}");
+                .read_history(&binding.checkout.id, |doc, history| (
+                    doc.base_heads(),
+                    doc.pending_ops(),
+                    history.revision(),
+                ))
+                .unwrap(),
+            before,
+        );
+        assert_eq!(
+            fixture
+                .records
+                .action_generation(&binding.checkout.id)
+                .unwrap(),
+            generation,
+        );
+        assert_eq!(fixture.value(0, "foreign-content"), None);
+        assert!(fixture.app.document_sync_status().is_some());
+    }
+
+    phase signed_owned_identity_mutations_are_atomic_invalid_and_recover_with_fresh_snapshot;
+    {
+        for incremental in [false, true] {
+            for field in ["id", "kind", "room", "home"] {
+                let mut fixture = RoutedOwners::new();
+                let family = "tilo:record";
+                let incoming = identity_mutation(&fixture, 0, family, field, incremental);
+                let before = fixture.observation(0);
+                fixture.app.apply_signed_document_envelope(&incoming, None);
+                assert_eq!(fixture.observation(0), before, "{family} {field}");
+                assert_eq!(fixture.value(0, "foreign-content"), None);
+                assert!(
+                    fixture
+                        .app
+                        .document_sync_status()
+                        .is_some_and(|status| status.contains("could not be applied"))
+                );
+                let route = fixture.bindings[0].broker_route().unwrap();
+                let pending = &fixture
+                    .app
+                    .document_routes
+                    .owners
+                    .iter()
+                    .find(|entry| entry.route == route)
+                    .unwrap()
+                    .pending;
+                assert!(pending.is_empty(), "invalid front must be quarantined");
+
+                let mut recovery = fixture
+                    .records
+                    .read_checked(&fixture.bindings[0].checkout.id, Clone::clone)
+                    .unwrap();
+                recovery.set_actor(automerge::ActorId::from(b"valid-recovery".as_slice()));
+                recovery.put(ROOT, "valid-after-recovery", field).unwrap();
+                recovery.commit();
+                let recovery = routed_document(
+                    &route,
+                    collab_types::DocumentMutation::Snapshot(recovery.save()),
+                );
+                fixture.app.apply_signed_document_envelope(&recovery, None);
+                assert_eq!(
+                    fixture.value(0, "valid-after-recovery").as_deref(),
+                    Some(field)
+                );
+                assert_eq!(fixture.app.document_sync_status(), None);
+                let (_, _, revision, generation, statuses) = fixture.observation(0);
+                assert_eq!(revision, before.2);
+                assert_eq!(generation, before.3.and_then(|value| value.checked_add(1)));
+                assert!(statuses.is_empty());
+            }
+        }
+    }
+
+    phase signed_owned_corrupt_incremental_preserves_document_history_generation_and_statuses;
+    {
+        let mut fixture = RoutedOwners::new();
+        let binding = &fixture.bindings[0];
+        let mut remote = fixture
+            .records
+            .read_checked(&binding.checkout.id, Clone::clone)
+            .unwrap();
+        let baseline = remote.base_heads();
+        remote.put(ROOT, "valid-prefix", "must not enter").unwrap();
+        remote.commit();
+        let mut bytes = remote.save_after(&baseline);
+        bytes.extend_from_slice(b"corrupt trailing chunk");
+        let incoming = routed_document(
+            &binding.broker_route().unwrap(),
+            collab_types::DocumentMutation::Incremental(bytes),
+        );
+        let before = fixture.observation(0);
+        fixture.app.apply_signed_document_envelope(&incoming, None);
+        assert_eq!(fixture.observation(0), before);
+        assert_eq!(fixture.value(0, "valid-prefix"), None);
+    }
+
+    phase signed_owned_concurrent_losing_identity_values_are_rejected;
+    {
+        use automerge::ReadDoc;
+        for incremental in [false, true] {
+            for field in ["id", "kind", "room", "home"] {
+                let mut fixture = RoutedOwners::new();
+                let binding = &fixture.bindings[0];
+                let family = "tilo:record";
+                let base = fixture
+                    .records
+                    .read_checked(&binding.checkout.id, Clone::clone)
+                    .unwrap();
+                let base_heads = base.base_heads();
+                let metadata = base.get(ROOT, family).unwrap().unwrap().1;
+                let expected = base
+                    .get(&metadata, field)
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+                let mut remote = base.clone();
+                remote.set_actor(automerge::ActorId::from(b"foreign-concurrent".as_slice()));
+                let remote_meta = remote.get(ROOT, family).unwrap().unwrap().1;
+                remote
+                    .put(
+                        &remote_meta,
+                        field,
+                        if field == "id" {
+                            "uuid:00000000-0000-4000-8000-000000000099"
+                        } else {
+                            "foreign-concurrent"
+                        },
+                    )
+                    .unwrap();
+                remote.commit();
+                fixture
+                    .records
+                    .with_action_state(&binding.checkout.id, |doc, history, _| {
+                        let local_meta = doc.get(ROOT, family).unwrap().unwrap().1;
+                        doc.put(&local_meta, field, expected).unwrap();
+                        doc.commit();
+                        history.rebase(doc);
+                    })
+                    .unwrap();
+                let incoming = routed_document(
+                    &binding.broker_route().unwrap(),
+                    if incremental {
+                        collab_types::DocumentMutation::Incremental(remote.save_after(&base_heads))
+                    } else {
+                        collab_types::DocumentMutation::Snapshot(remote.save())
+                    },
+                );
+                let before = fixture.observation(0);
+                fixture.app.apply_signed_document_envelope(&incoming, None);
+                assert_eq!(fixture.observation(0), before, "{family} {field}");
+            }
         }
     }
 }
@@ -1403,156 +1154,93 @@ impl RoutedPrimary {
     }
 }
 
-#[test]
-fn signed_package_primary_preserves_each_existing_metadata_shape() {
-    for shape in [
-        PrimaryMetadataShape::None,
-        PrimaryMetadataShape::Tilo(false),
-        PrimaryMetadataShape::Tilo(true),
-    ] {
-        for incremental in [false, true] {
-            let mut fixture = RoutedPrimary::new(shape);
-            let before = fixture.observation();
-            let valid = fixture.envelope(incremental, |doc| {
-                doc.put(ROOT, "valid-primary", "remote").unwrap();
-            });
-            fixture.app.apply_signed_document_envelope(&valid, None);
-            assert_eq!(fixture.value("valid-primary").as_deref(), Some("remote"));
-            let after = fixture.observation();
-            assert_eq!(after.2, before.2);
-            assert_eq!(after.3, before.3.and_then(|value| value.checked_add(1)));
-            assert!(after.4.is_empty());
-        }
-    }
-}
+tilo_test_env::scenario! {
+    fn signed_package_primary_keeps_metadata_and_refuses_identity_changes;
 
-#[test]
-fn signed_package_primary_refuses_identity_stamps_and_scope_changes() {
-    use automerge::ReadDoc;
-
-    for shape in [
-        PrimaryMetadataShape::None,
-        PrimaryMetadataShape::Tilo(false),
-        PrimaryMetadataShape::Tilo(true),
-    ] {
-        for incremental in [false, true] {
-            let mut attacks = vec!["id", "kind", "home", "room"];
-            if shape.scoped() {
-                attacks.extend(["delete-home", "delete-room"]);
-            }
-            for attack in attacks {
+    phase signed_package_primary_preserves_each_existing_metadata_shape;
+    {
+        for shape in [
+            PrimaryMetadataShape::None,
+            PrimaryMetadataShape::Tilo(false),
+            PrimaryMetadataShape::Tilo(true),
+        ] {
+            for incremental in [false, true] {
                 let mut fixture = RoutedPrimary::new(shape);
                 let before = fixture.observation();
-                let incoming = fixture.envelope(incremental, |doc| {
-                    let family = shape.family().unwrap_or("tilo:record");
-                    let meta = if let Some((_, object)) = doc.get(ROOT, family).unwrap() {
-                        object
-                    } else {
-                        doc.put_object(ROOT, family, automerge::ObjType::Map)
-                            .unwrap()
-                    };
-                    match attack {
-                        "id" => doc
-                            .put(&meta, "id", "uuid:00000000-0000-4000-8000-000000000099")
-                            .unwrap(),
-                        "kind" => doc.put(&meta, "kind", "foreign-kind").unwrap(),
-                        "home" => doc.put(&meta, "home", "foreign-home").unwrap(),
-                        "room" => doc
-                            .put(&meta, "room", "00000000-0000-4000-8000-000000000099")
-                            .unwrap(),
-                        "delete-home" => {
-                            let _ = doc.delete(&meta, "home");
-                        }
-                        "delete-room" => {
-                            let _ = doc.delete(&meta, "room");
-                        }
-                        _ => unreachable!(),
-                    }
-                    doc.put(ROOT, "invalid-primary-content", attack).unwrap();
+                let valid = fixture.envelope(incremental, |doc| {
+                    doc.put(ROOT, "valid-primary", "remote").unwrap();
                 });
-                fixture.app.apply_signed_document_envelope(&incoming, None);
-                assert_eq!(fixture.observation(), before, "primary {attack}");
-                assert_eq!(fixture.value("invalid-primary-content"), None);
-                assert!(fixture.app.document_sync_status().is_some());
-                let pending = &fixture.app.document_routes.owners[0].pending;
-                assert!(pending.is_empty());
-
-                let recovery = fixture.envelope(false, |doc| {
-                    doc.put(ROOT, "primary-recovered", attack).unwrap();
-                });
-                fixture.app.apply_signed_document_envelope(&recovery, None);
-                assert_eq!(fixture.value("primary-recovered").as_deref(), Some(attack));
-                assert_eq!(fixture.app.document_sync_status(), None);
+                fixture.app.apply_signed_document_envelope(&valid, None);
+                assert_eq!(fixture.value("valid-primary").as_deref(), Some("remote"));
+                let after = fixture.observation();
+                assert_eq!(after.2, before.2);
+                assert_eq!(after.3, before.3.and_then(|value| value.checked_add(1)));
+                assert!(after.4.is_empty());
             }
         }
     }
-}
-#[test]
-fn native_routed_live_update_keeps_selected_historical_canvas_pinned() {
-    let mut fixture = RoutedOwners::new();
-    let binding = fixture.bindings[0].clone();
-    let selected = fixture
-        .records
-        .with_history(&binding.checkout.id, |doc, history| {
-            doc.put(ROOT, "body", "selected old notebook").unwrap();
-            history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
-            let selected = doc.base_heads()[0];
-            doc.put(ROOT, "body", "live notebook").unwrap();
-            history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
-            selected
-        })
-        .unwrap();
-    fixture.install_history();
-    let target = named(&mut fixture.app, "History");
-    fixture
-        .app
-        .dispatch_a11y_action(target, &crate::a11y::Action::Activate);
-    layout(&mut fixture.app);
-    select_native_version(&mut fixture.app, selected);
-    let preview_before = fixture
-        .app
-        .build_a11y_tree_update(1.0)
-        .nodes
-        .iter()
-        .filter_map(|(_, node)| node.label())
-        .find(|label| label.starts_with("Notebook:"))
-        .unwrap()
-        .to_owned();
-    let mut peer = fixture
-        .records
-        .read_checked(&binding.checkout.id, Clone::clone)
-        .unwrap();
-    peer.put(ROOT, "body", "remote latest notebook").unwrap();
-    peer.commit();
-    fixture
-        .app
-        .apply_collab_event_for_test(CollabEvent::Document {
-            envelope: Box::new(routed_document(
-                &binding.broker_route().unwrap(),
-                collab_types::DocumentMutation::Snapshot(peer.save()),
-            )),
-            from_user_id: "peer".into(),
-            decrypted_payload: None,
-        });
-    layout(&mut fixture.app);
-    assert_eq!(
-        fixture.value(0, "body").as_deref(),
-        Some("remote latest notebook")
-    );
-    let labels = fixture
-        .app
-        .build_a11y_tree_update(1.0)
-        .nodes
-        .iter()
-        .filter_map(|(_, node)| node.label().map(str::to_owned))
-        .collect::<Vec<_>>();
-    assert!(labels.contains(&preview_before));
-    assert!(
-        labels
-            .iter()
-            .any(|label| label.contains("Live content has updates")),
-        "live update notice accompanies pinned historical state: {labels:?}"
-    );
+
+    phase signed_package_primary_refuses_identity_stamps_and_scope_changes;
+    {
+        use automerge::ReadDoc;
+
+        for shape in [
+            PrimaryMetadataShape::None,
+            PrimaryMetadataShape::Tilo(false),
+            PrimaryMetadataShape::Tilo(true),
+        ] {
+            for incremental in [false, true] {
+                let mut attacks = vec!["id", "kind", "home", "room"];
+                if shape.scoped() {
+                    attacks.extend(["delete-home", "delete-room"]);
+                }
+                for attack in attacks {
+                    let mut fixture = RoutedPrimary::new(shape);
+                    let before = fixture.observation();
+                    let incoming = fixture.envelope(incremental, |doc| {
+                        let family = shape.family().unwrap_or("tilo:record");
+                        let meta = if let Some((_, object)) = doc.get(ROOT, family).unwrap() {
+                            object
+                        } else {
+                            doc.put_object(ROOT, family, automerge::ObjType::Map)
+                                .unwrap()
+                        };
+                        match attack {
+                            "id" => doc
+                                .put(&meta, "id", "uuid:00000000-0000-4000-8000-000000000099")
+                                .unwrap(),
+                            "kind" => doc.put(&meta, "kind", "foreign-kind").unwrap(),
+                            "home" => doc.put(&meta, "home", "foreign-home").unwrap(),
+                            "room" => doc
+                                .put(&meta, "room", "00000000-0000-4000-8000-000000000099")
+                                .unwrap(),
+                            "delete-home" => {
+                                let _ = doc.delete(&meta, "home");
+                            }
+                            "delete-room" => {
+                                let _ = doc.delete(&meta, "room");
+                            }
+                            _ => unreachable!(),
+                        }
+                        doc.put(ROOT, "invalid-primary-content", attack).unwrap();
+                    });
+                    fixture.app.apply_signed_document_envelope(&incoming, None);
+                    assert_eq!(fixture.observation(), before, "primary {attack}");
+                    assert_eq!(fixture.value("invalid-primary-content"), None);
+                    assert!(fixture.app.document_sync_status().is_some());
+                    let pending = &fixture.app.document_routes.owners[0].pending;
+                    assert!(pending.is_empty());
+
+                    let recovery = fixture.envelope(false, |doc| {
+                        doc.put(ROOT, "primary-recovered", attack).unwrap();
+                    });
+                    fixture.app.apply_signed_document_envelope(&recovery, None);
+                    assert_eq!(fixture.value("primary-recovered").as_deref(), Some(attack));
+                    assert_eq!(fixture.app.document_sync_status(), None);
+                }
+            }
+        }
+    }
 }
 
 static OWNED_HISTORY: HistoryDefinition = HistoryDefinition {
@@ -1621,85 +1309,157 @@ fn select_native_version(app: &mut App, hash: automerge::ChangeHash) {
     layout(app);
 }
 
-#[test]
-fn round1_top_level_wide_activity_detaches_focused_native_view_until_live_return() {
-    use crate::widget::native_view::{
-        NativeView, NativeViewBackend, NativeViewGeometry, NativeViewHost,
-    };
-    use std::{cell::Cell, rc::Rc};
-    #[derive(Default)]
-    struct NativeState {
-        mounts: Cell<usize>,
-        attached: Cell<bool>,
-        visible: Cell<bool>,
-        enabled: Cell<bool>,
-        focused: Cell<bool>,
+tilo_test_env::scenario! {
+    fn a_live_update_leaves_the_historical_view_where_it_is;
+
+    phase native_routed_live_update_keeps_selected_historical_canvas_pinned;
+    {
+        let mut fixture = RoutedOwners::new();
+        let binding = fixture.bindings[0].clone();
+        let selected = fixture
+            .records
+            .with_history(&binding.checkout.id, |doc, history| {
+                doc.put(ROOT, "body", "selected old notebook").unwrap();
+                history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
+                let selected = doc.base_heads()[0];
+                doc.put(ROOT, "body", "live notebook").unwrap();
+                history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
+                selected
+            })
+            .unwrap();
+        fixture.install_history();
+        let target = named(&mut fixture.app, "History");
+        fixture
+            .app
+            .dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+        layout(&mut fixture.app);
+        select_native_version(&mut fixture.app, selected);
+        let preview_before = fixture
+            .app
+            .build_a11y_tree_update(1.0)
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| node.label())
+            .find(|label| label.starts_with("Notebook:"))
+            .unwrap()
+            .to_owned();
+        let mut peer = fixture
+            .records
+            .read_checked(&binding.checkout.id, Clone::clone)
+            .unwrap();
+        peer.put(ROOT, "body", "remote latest notebook").unwrap();
+        peer.commit();
+        fixture
+            .app
+            .apply_collab_event_for_test(CollabEvent::Document {
+                envelope: Box::new(routed_document(
+                    &binding.broker_route().unwrap(),
+                    collab_types::DocumentMutation::Snapshot(peer.save()),
+                )),
+                from_user_id: "peer".into(),
+                decrypted_payload: None,
+            });
+        layout(&mut fixture.app);
+        assert_eq!(
+            fixture.value(0, "body").as_deref(),
+            Some("remote latest notebook")
+        );
+        let labels = fixture
+            .app
+            .build_a11y_tree_update(1.0)
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&preview_before));
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.contains("Live content has updates")),
+            "live update notice accompanies pinned historical state: {labels:?}"
+        );
     }
-    struct Backend(Rc<NativeState>);
-    impl NativeViewBackend for Backend {
-        fn mount(&mut self, _: &NativeViewHost<'_>) -> Result<(), String> {
-            self.0.mounts.set(self.0.mounts.get() + 1);
-            self.0.attached.set(true);
-            Ok(())
+
+    phase round1_top_level_wide_activity_detaches_focused_native_view_until_live_return;
+    {
+        use crate::widget::native_view::{
+            NativeView, NativeViewBackend, NativeViewGeometry, NativeViewHost,
+        };
+        use std::{cell::Cell, rc::Rc};
+        #[derive(Default)]
+        struct NativeState {
+            mounts: Cell<usize>,
+            attached: Cell<bool>,
+            visible: Cell<bool>,
+            enabled: Cell<bool>,
+            focused: Cell<bool>,
         }
-        fn unmount(&mut self) {
-            self.0.attached.set(false);
+        struct Backend(Rc<NativeState>);
+        impl NativeViewBackend for Backend {
+            fn mount(&mut self, _: &NativeViewHost<'_>) -> Result<(), String> {
+                self.0.mounts.set(self.0.mounts.get() + 1);
+                self.0.attached.set(true);
+                Ok(())
+            }
+            fn unmount(&mut self) {
+                self.0.attached.set(false);
+            }
+            fn set_geometry(&mut self, _: NativeViewGeometry) {}
+            fn set_visible(&mut self, value: bool) {
+                self.0.visible.set(value);
+            }
+            fn set_enabled(&mut self, value: bool) {
+                self.0.enabled.set(value);
+            }
+            fn set_focus(&mut self, value: bool) {
+                self.0.focused.set(value);
+            }
         }
-        fn set_geometry(&mut self, _: NativeViewGeometry) {}
-        fn set_visible(&mut self, value: bool) {
-            self.0.visible.set(value);
-        }
-        fn set_enabled(&mut self, value: bool) {
-            self.0.enabled.set(value);
-        }
-        fn set_focus(&mut self, value: bool) {
-            self.0.focused.set(value);
-        }
+        let native = Rc::new(NativeState::default());
+        let mut view = NativeView::new("Top-level native editor", Backend(native.clone()));
+        view.set_focus(true);
+        let mut app = app();
+        app.root_widget = Box::new(view);
+        let host = NativeViewHost::headless(
+            crate::platform::PlatformConventions::new(crate::platform::Platform::MacOs),
+            1.0,
+        );
+        app.init_layout();
+        let root = app.layout.root_node.unwrap();
+        run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
+        draw_frame_content(&mut app, &mut Scene::new(), 900, 650, 1.0, None);
+        assert!(
+            native.attached.get()
+                && native.visible.get()
+                && native.enabled.get()
+                && native.focused.get()
+        );
+        let target = named(&mut app, "History");
+        app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+        let root = app.layout.root_node.unwrap();
+        run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
+        assert!(
+            app.history.as_ref().unwrap().live_visible(),
+            "wide activity retains the rendered live backdrop"
+        );
+        assert!(!app.history.as_ref().unwrap().live_interactive());
+        assert!(
+            !native.attached.get(),
+            "wide activity must detach independent native input even without a selected preview"
+        );
+        draw_frame_content(&mut app, &mut Scene::new(), 900, 650, 1.0, None);
+        assert!(
+            !native.attached.get() && !native.visible.get(),
+            "drawing the live backdrop must not reactivate native controls"
+        );
+        let target = named(&mut app, "History");
+        app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+        let root = app.layout.root_node.unwrap();
+        run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
+        draw_frame_content(&mut app, &mut Scene::new(), 900, 650, 1.0, None);
+        assert_eq!(native.mounts.get(), 2);
+        assert!(native.attached.get() && native.visible.get() && native.enabled.get());
     }
-    let native = Rc::new(NativeState::default());
-    let mut view = NativeView::new("Top-level native editor", Backend(native.clone()));
-    view.set_focus(true);
-    let mut app = app();
-    app.root_widget = Box::new(view);
-    let host = NativeViewHost::headless(
-        crate::platform::PlatformConventions::new(crate::platform::Platform::MacOs),
-        1.0,
-    );
-    app.init_layout();
-    let root = app.layout.root_node.unwrap();
-    run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
-    draw_frame_content(&mut app, &mut Scene::new(), 900, 650, 1.0, None);
-    assert!(
-        native.attached.get()
-            && native.visible.get()
-            && native.enabled.get()
-            && native.focused.get()
-    );
-    let target = named(&mut app, "History");
-    app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
-    let root = app.layout.root_node.unwrap();
-    run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
-    assert!(
-        app.history.as_ref().unwrap().live_visible(),
-        "wide activity retains the rendered live backdrop"
-    );
-    assert!(!app.history.as_ref().unwrap().live_interactive());
-    assert!(
-        !native.attached.get(),
-        "wide activity must detach independent native input even without a selected preview"
-    );
-    draw_frame_content(&mut app, &mut Scene::new(), 900, 650, 1.0, None);
-    assert!(
-        !native.attached.get() && !native.visible.get(),
-        "drawing the live backdrop must not reactivate native controls"
-    );
-    let target = named(&mut app, "History");
-    app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
-    let root = app.layout.root_node.unwrap();
-    run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
-    draw_frame_content(&mut app, &mut Scene::new(), 900, 650, 1.0, None);
-    assert_eq!(native.mounts.get(), 2);
-    assert!(native.attached.get() && native.visible.get() && native.enabled.get());
 }
 
 fn round1_malformed_mutation(
@@ -1726,22 +1486,272 @@ fn round1_malformed_mutation(
     }
 }
 
-#[test]
-fn malformed_remote_bytes_quarantine_and_recover_with_a_snapshot() {
+tilo_test_env::scenario! {
+    fn remote_recovery_quarantines_bad_bytes_and_asks_for_a_snapshot;
+
+    phase malformed_remote_bytes_quarantine_and_recover_with_a_snapshot;
     {
-        for incremental in [false, true] {
+        {
+            for incremental in [false, true] {
+                let mut fixture = RoutedOwners::new();
+                let binding = fixture.bindings[0].clone();
+                let route = binding.broker_route().unwrap();
+                let before = fixture
+                    .records
+                    .read_checked(&binding.checkout.id, Clone::clone)
+                    .unwrap();
+                let bad = routed_document(
+                    &route,
+                    round1_malformed_mutation(incremental, before.clone()),
+                );
+                fixture.app.apply_signed_document_envelope(&bad, None);
+                assert!(
+                    fixture
+                        .app
+                        .document_sync_status()
+                        .unwrap()
+                        .contains("could not be applied")
+                );
+                let failure = fixture
+                    .app
+                    .document_sync_status()
+                    .map(std::borrow::Cow::into_owned);
+                let invalid_recovery =
+                    routed_document(&route, round1_malformed_mutation(false, before.clone()));
+                fixture
+                    .app
+                    .apply_signed_document_envelope(&invalid_recovery, None);
+                assert_eq!(
+                    fixture.app.document_sync_status().as_deref(),
+                    failure.as_deref()
+                );
+                fixture.app.publish_owned_documents();
+                assert!(
+                    !fixture
+                        .app
+                        .document_routes
+                        .sent
+                        .iter()
+                        .any(|(sent, _)| sent == &route)
+                );
+                assert_eq!(
+                    fixture
+                        .records
+                        .read_checked(&binding.checkout.id, |doc| doc.base_heads())
+                        .unwrap(),
+                    before.base_heads()
+                );
+                let recovery = fixture.remote(0, "recovered", false);
+                fixture
+                    .records
+                    .with_action_state(&binding.checkout.id, |doc, _, _| {
+                        doc.put(ROOT, "local-draft", "preserved").unwrap();
+                    })
+                    .unwrap();
+                let pending = fixture
+                    .records
+                    .read_history(&binding.checkout.id, |doc, history| {
+                        (doc.base_heads(), doc.pending_ops(), history.revision())
+                    })
+                    .unwrap();
+                fixture.app.apply_signed_document_envelope(&recovery, None);
+                assert_eq!(
+                    fixture.app.document_sync_status().as_deref(),
+                    failure.as_deref(),
+                    "recovery remains visible until the snapshot actually merges"
+                );
+                assert_eq!(
+                    fixture
+                        .records
+                        .read_history(&binding.checkout.id, |doc, history| (
+                            doc.base_heads(),
+                            doc.pending_ops(),
+                            history.revision()
+                        ))
+                        .unwrap(),
+                    pending
+                );
+                assert_eq!(fixture.value(0, "recovered"), None);
+                fixture
+                    .records
+                    .with_history(&binding.checkout.id, |doc, history| {
+                        history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
+                    })
+                    .unwrap();
+                let revision = fixture
+                    .records
+                    .read_history(&binding.checkout.id, |_, history| history.revision())
+                    .unwrap();
+                fixture.app.drain_document_routes();
+                assert_eq!(
+                    fixture.value(0, "recovered").as_deref(),
+                    Some("remote"),
+                    "a malformed front must not permanently block a fresh snapshot"
+                );
+                assert_eq!(
+                    fixture.value(0, "local-draft").as_deref(),
+                    Some("preserved")
+                );
+                assert_eq!(
+                    fixture
+                        .records
+                        .read_history(&binding.checkout.id, |_, history| history.revision())
+                        .unwrap(),
+                    revision
+                );
+                assert_eq!(fixture.app.document_sync_status(), None);
+                fixture.app.publish_owned_documents();
+                assert_eq!(
+                    fixture
+                        .app
+                        .document_routes
+                        .sent
+                        .iter()
+                        .filter(|(sent, _)| sent == &route)
+                        .count(),
+                    1,
+                    "recovered exact owner resumes publication"
+                );
+            }
+        }
+
+        {
+            use automerge::ReadDoc;
+            for incremental in [false, true] {
+                let mut fixture = RoutedOwners::new();
+                let route = fixture
+                    .app
+                    .actions
+                    .bound_broker_route_for_test
+                    .as_ref()
+                    .unwrap()
+                    .route
+                    .clone();
+                let before = fixture.app.state.doc.base_heads();
+                let bad = routed_document(
+                    &route,
+                    round1_malformed_mutation(incremental, fixture.app.state.doc.clone()),
+                );
+                fixture.app.apply_signed_document_envelope(&bad, None);
+                assert!(
+                    fixture
+                        .app
+                        .document_sync_status()
+                        .unwrap()
+                        .contains("could not be applied")
+                );
+                let failure = fixture
+                    .app
+                    .document_sync_status()
+                    .map(std::borrow::Cow::into_owned);
+                let invalid_recovery = routed_document(
+                    &route,
+                    round1_malformed_mutation(false, fixture.app.state.doc.clone()),
+                );
+                fixture
+                    .app
+                    .apply_signed_document_envelope(&invalid_recovery, None);
+                assert_eq!(
+                    fixture.app.document_sync_status().as_deref(),
+                    failure.as_deref()
+                );
+                assert_eq!(fixture.app.state.doc.base_heads(), before);
+                let mut peer = fixture.app.state.doc.clone();
+                peer.set_actor(automerge::ActorId::from(b"recovery-peer".as_slice()));
+                peer.put(ROOT, "recovered", "remote").unwrap();
+                peer.commit();
+                let recovery = routed_document(
+                    &route,
+                    collab_types::DocumentMutation::Snapshot(peer.save()),
+                );
+                fixture
+                    .app
+                    .state
+                    .doc
+                    .put(ROOT, "local-draft", "preserved")
+                    .unwrap();
+                let pending = (
+                    fixture.app.state.doc.base_heads(),
+                    fixture.app.state.doc.pending_ops(),
+                    fixture.app.state.history_revision(),
+                );
+                fixture.app.apply_signed_document_envelope(&recovery, None);
+                assert_eq!(
+                    fixture.app.document_sync_status().as_deref(),
+                    failure.as_deref(),
+                    "recovery remains visible until the snapshot actually merges"
+                );
+                assert_eq!(
+                    (
+                        fixture.app.state.doc.base_heads(),
+                        fixture.app.state.doc.pending_ops(),
+                        fixture.app.state.history_revision()
+                    ),
+                    pending
+                );
+                assert!(
+                    fixture
+                        .app
+                        .state
+                        .doc
+                        .get(ROOT, "recovered")
+                        .unwrap()
+                        .is_none()
+                );
+                fixture.app.state.commit_action(None, None);
+                let revision = fixture.app.state.history_revision();
+                fixture.app.drain_document_routes();
+                assert_eq!(
+                    fixture
+                        .app
+                        .state
+                        .doc
+                        .get(ROOT, "recovered")
+                        .unwrap()
+                        .map(|(value, _)| value.as_str().unwrap().to_owned())
+                        .as_deref(),
+                    Some("remote"),
+                    "primary malformed front must not block fresh snapshot recovery"
+                );
+                assert_eq!(
+                    fixture
+                        .app
+                        .state
+                        .doc
+                        .get(ROOT, "local-draft")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .as_str(),
+                    Some("preserved")
+                );
+                assert_eq!(fixture.app.state.history_revision(), revision);
+                assert_eq!(fixture.app.document_sync_status(), None);
+                assert_eq!(fixture.value(0, "recovered"), None);
+                assert_eq!(fixture.value(1, "recovered"), None);
+            }
+        }
+
+        {
             let mut fixture = RoutedOwners::new();
-            let binding = fixture.bindings[0].clone();
-            let route = binding.broker_route().unwrap();
-            let before = fixture
-                .records
-                .read_checked(&binding.checkout.id, Clone::clone)
-                .unwrap();
-            let bad = routed_document(
-                &route,
-                round1_malformed_mutation(incremental, before.clone()),
+            let valid = fixture.remote(0, "must-not-partly-apply", true);
+            let collab_types::DocumentMutation::Incremental(mut bytes) =
+                collab_types::DocumentMutation::decode(&valid.payload).unwrap()
+            else {
+                panic!("fixture delta");
+            };
+            bytes.extend_from_slice(b"invalid trailing chunk");
+            assert!(automerge::AutoCommit::load(&bytes).is_err());
+            let envelope = routed_document(
+                &fixture.bindings[0].broker_route().unwrap(),
+                collab_types::DocumentMutation::Incremental(bytes),
             );
-            fixture.app.apply_signed_document_envelope(&bad, None);
+            fixture.app.apply_signed_document_envelope(&envelope, None);
+            assert_eq!(
+                fixture.value(0, "must-not-partly-apply"),
+                None,
+                "partial incremental parsing must not admit the valid prefix"
+            );
             assert!(
                 fixture
                     .app
@@ -1749,36 +1759,44 @@ fn malformed_remote_bytes_quarantine_and_recover_with_a_snapshot() {
                     .unwrap()
                     .contains("could not be applied")
             );
-            let failure = fixture
-                .app
-                .document_sync_status()
-                .map(std::borrow::Cow::into_owned);
-            let invalid_recovery =
-                routed_document(&route, round1_malformed_mutation(false, before.clone()));
-            fixture
-                .app
-                .apply_signed_document_envelope(&invalid_recovery, None);
-            assert_eq!(
-                fixture.app.document_sync_status().as_deref(),
-                failure.as_deref()
+        }
+
+        {
+            let mut fixture = RoutedOwners::new();
+            let binding = fixture.bindings[0].clone();
+            let baseline = fixture
+                .records
+                .read_checked(&binding.checkout.id, Clone::clone)
+                .unwrap();
+            let bad = routed_document(
+                &binding.broker_route().unwrap(),
+                round1_malformed_mutation(false, baseline.clone()),
             );
-            fixture.app.publish_owned_documents();
+            let delta = fixture.remote(0, "valid-queued-delta", true);
+            let collab_types::DocumentMutation::Incremental(delta_bytes) =
+                collab_types::DocumentMutation::decode(&delta.payload).unwrap()
+            else {
+                panic!("fixture delta");
+            };
             assert!(
-                !fixture
-                    .app
-                    .document_routes
-                    .sent
-                    .iter()
-                    .any(|(sent, _)| sent == &route)
+                matches!(
+                    automerge::AutoCommit::load(&delta_bytes),
+                    Err(automerge::AutomergeError::MissingDeps)
+                ),
+                "valid incremental requires the actual receiver's dependencies"
             );
-            assert_eq!(
-                fixture
-                    .records
-                    .read_checked(&binding.checkout.id, |doc| doc.base_heads())
-                    .unwrap(),
-                before.base_heads()
+            let mut snapshot_peer = baseline;
+            snapshot_peer.set_actor(automerge::ActorId::from(
+                b"independent-snapshot-peer".as_slice(),
+            ));
+            snapshot_peer
+                .put(ROOT, "valid-recovery-snapshot", "remote")
+                .unwrap();
+            snapshot_peer.commit();
+            let snapshot = routed_document(
+                &binding.broker_route().unwrap(),
+                collab_types::DocumentMutation::Snapshot(snapshot_peer.save()),
             );
-            let recovery = fixture.remote(0, "recovered", false);
             fixture
                 .records
                 .with_action_state(&binding.checkout.id, |doc, _, _| {
@@ -1791,12 +1809,9 @@ fn malformed_remote_bytes_quarantine_and_recover_with_a_snapshot() {
                     (doc.base_heads(), doc.pending_ops(), history.revision())
                 })
                 .unwrap();
-            fixture.app.apply_signed_document_envelope(&recovery, None);
-            assert_eq!(
-                fixture.app.document_sync_status().as_deref(),
-                failure.as_deref(),
-                "recovery remains visible until the snapshot actually merges"
-            );
+            for message in [&bad, &delta, &snapshot] {
+                fixture.app.apply_signed_document_envelope(message, None);
+            }
             assert_eq!(
                 fixture
                     .records
@@ -1808,7 +1823,6 @@ fn malformed_remote_bytes_quarantine_and_recover_with_a_snapshot() {
                     .unwrap(),
                 pending
             );
-            assert_eq!(fixture.value(0, "recovered"), None);
             fixture
                 .records
                 .with_history(&binding.checkout.id, |doc, history| {
@@ -1821,9 +1835,12 @@ fn malformed_remote_bytes_quarantine_and_recover_with_a_snapshot() {
                 .unwrap();
             fixture.app.drain_document_routes();
             assert_eq!(
-                fixture.value(0, "recovered").as_deref(),
-                Some("remote"),
-                "a malformed front must not permanently block a fresh snapshot"
+                fixture.value(0, "valid-queued-delta").as_deref(),
+                Some("remote")
+            );
+            assert_eq!(
+                fixture.value(0, "valid-recovery-snapshot").as_deref(),
+                Some("remote")
             );
             assert_eq!(
                 fixture.value(0, "local-draft").as_deref(),
@@ -1837,278 +1854,25 @@ fn malformed_remote_bytes_quarantine_and_recover_with_a_snapshot() {
                 revision
             );
             assert_eq!(fixture.app.document_sync_status(), None);
-            fixture.app.publish_owned_documents();
-            assert_eq!(
-                fixture
-                    .app
-                    .document_routes
-                    .sent
-                    .iter()
-                    .filter(|(sent, _)| sent == &route)
-                    .count(),
-                1,
-                "recovered exact owner resumes publication"
-            );
         }
     }
 
+    phase deferred_remote_recovery_retains_later_deltas_and_requires_a_new_snapshot_on_overflow;
     {
-        use automerge::ReadDoc;
-        for incremental in [false, true] {
-            let mut fixture = RoutedOwners::new();
-            let route = fixture
-                .app
-                .actions
-                .bound_broker_route_for_test
-                .as_ref()
-                .unwrap()
-                .route
-                .clone();
-            let before = fixture.app.state.doc.base_heads();
-            let bad = routed_document(
-                &route,
-                round1_malformed_mutation(incremental, fixture.app.state.doc.clone()),
-            );
-            fixture.app.apply_signed_document_envelope(&bad, None);
-            assert!(
-                fixture
-                    .app
-                    .document_sync_status()
-                    .unwrap()
-                    .contains("could not be applied")
-            );
-            let failure = fixture
-                .app
-                .document_sync_status()
-                .map(std::borrow::Cow::into_owned);
-            let invalid_recovery = routed_document(
-                &route,
-                round1_malformed_mutation(false, fixture.app.state.doc.clone()),
-            );
-            fixture
-                .app
-                .apply_signed_document_envelope(&invalid_recovery, None);
-            assert_eq!(
-                fixture.app.document_sync_status().as_deref(),
-                failure.as_deref()
-            );
-            assert_eq!(fixture.app.state.doc.base_heads(), before);
-            let mut peer = fixture.app.state.doc.clone();
-            peer.set_actor(automerge::ActorId::from(b"recovery-peer".as_slice()));
-            peer.put(ROOT, "recovered", "remote").unwrap();
-            peer.commit();
-            let recovery = routed_document(
-                &route,
-                collab_types::DocumentMutation::Snapshot(peer.save()),
-            );
-            fixture
-                .app
-                .state
-                .doc
-                .put(ROOT, "local-draft", "preserved")
-                .unwrap();
-            let pending = (
-                fixture.app.state.doc.base_heads(),
-                fixture.app.state.doc.pending_ops(),
-                fixture.app.state.history_revision(),
-            );
-            fixture.app.apply_signed_document_envelope(&recovery, None);
-            assert_eq!(
-                fixture.app.document_sync_status().as_deref(),
-                failure.as_deref(),
-                "recovery remains visible until the snapshot actually merges"
-            );
-            assert_eq!(
-                (
-                    fixture.app.state.doc.base_heads(),
-                    fixture.app.state.doc.pending_ops(),
-                    fixture.app.state.history_revision()
-                ),
-                pending
-            );
-            assert!(
-                fixture
-                    .app
-                    .state
-                    .doc
-                    .get(ROOT, "recovered")
-                    .unwrap()
-                    .is_none()
-            );
-            fixture.app.state.commit_action(None, None);
-            let revision = fixture.app.state.history_revision();
-            fixture.app.drain_document_routes();
-            assert_eq!(
-                fixture
-                    .app
-                    .state
-                    .doc
-                    .get(ROOT, "recovered")
-                    .unwrap()
-                    .map(|(value, _)| value.as_str().unwrap().to_owned())
-                    .as_deref(),
-                Some("remote"),
-                "primary malformed front must not block fresh snapshot recovery"
-            );
-            assert_eq!(
-                fixture
-                    .app
-                    .state
-                    .doc
-                    .get(ROOT, "local-draft")
-                    .unwrap()
-                    .unwrap()
-                    .0
-                    .as_str(),
-                Some("preserved")
-            );
-            assert_eq!(fixture.app.state.history_revision(), revision);
-            assert_eq!(fixture.app.document_sync_status(), None);
-            assert_eq!(fixture.value(0, "recovered"), None);
-            assert_eq!(fixture.value(1, "recovered"), None);
+        {
+            for snapshot in [false, true] {
+                round2_deferred_recovery_keeps_later_traffic(true, snapshot, false);
+            }
         }
-    }
-
-    {
-        let mut fixture = RoutedOwners::new();
-        let valid = fixture.remote(0, "must-not-partly-apply", true);
-        let collab_types::DocumentMutation::Incremental(mut bytes) =
-            collab_types::DocumentMutation::decode(&valid.payload).unwrap()
-        else {
-            panic!("fixture delta");
-        };
-        bytes.extend_from_slice(b"invalid trailing chunk");
-        assert!(automerge::AutoCommit::load(&bytes).is_err());
-        let envelope = routed_document(
-            &fixture.bindings[0].broker_route().unwrap(),
-            collab_types::DocumentMutation::Incremental(bytes),
-        );
-        fixture.app.apply_signed_document_envelope(&envelope, None);
-        assert_eq!(
-            fixture.value(0, "must-not-partly-apply"),
-            None,
-            "partial incremental parsing must not admit the valid prefix"
-        );
-        assert!(
-            fixture
-                .app
-                .document_sync_status()
-                .unwrap()
-                .contains("could not be applied")
-        );
-    }
-
-    {
-        let mut fixture = RoutedOwners::new();
-        let binding = fixture.bindings[0].clone();
-        let baseline = fixture
-            .records
-            .read_checked(&binding.checkout.id, Clone::clone)
-            .unwrap();
-        let bad = routed_document(
-            &binding.broker_route().unwrap(),
-            round1_malformed_mutation(false, baseline.clone()),
-        );
-        let delta = fixture.remote(0, "valid-queued-delta", true);
-        let collab_types::DocumentMutation::Incremental(delta_bytes) =
-            collab_types::DocumentMutation::decode(&delta.payload).unwrap()
-        else {
-            panic!("fixture delta");
-        };
-        assert!(
-            matches!(
-                automerge::AutoCommit::load(&delta_bytes),
-                Err(automerge::AutomergeError::MissingDeps)
-            ),
-            "valid incremental requires the actual receiver's dependencies"
-        );
-        let mut snapshot_peer = baseline;
-        snapshot_peer.set_actor(automerge::ActorId::from(
-            b"independent-snapshot-peer".as_slice(),
-        ));
-        snapshot_peer
-            .put(ROOT, "valid-recovery-snapshot", "remote")
-            .unwrap();
-        snapshot_peer.commit();
-        let snapshot = routed_document(
-            &binding.broker_route().unwrap(),
-            collab_types::DocumentMutation::Snapshot(snapshot_peer.save()),
-        );
-        fixture
-            .records
-            .with_action_state(&binding.checkout.id, |doc, _, _| {
-                doc.put(ROOT, "local-draft", "preserved").unwrap();
-            })
-            .unwrap();
-        let pending = fixture
-            .records
-            .read_history(&binding.checkout.id, |doc, history| {
-                (doc.base_heads(), doc.pending_ops(), history.revision())
-            })
-            .unwrap();
-        for message in [&bad, &delta, &snapshot] {
-            fixture.app.apply_signed_document_envelope(message, None);
+        {
+            for snapshot in [false, true] {
+                round2_deferred_recovery_keeps_later_traffic(false, snapshot, false);
+            }
         }
-        assert_eq!(
-            fixture
-                .records
-                .read_history(&binding.checkout.id, |doc, history| (
-                    doc.base_heads(),
-                    doc.pending_ops(),
-                    history.revision()
-                ))
-                .unwrap(),
-            pending
-        );
-        fixture
-            .records
-            .with_history(&binding.checkout.id, |doc, history| {
-                history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
-            })
-            .unwrap();
-        let revision = fixture
-            .records
-            .read_history(&binding.checkout.id, |_, history| history.revision())
-            .unwrap();
-        fixture.app.drain_document_routes();
-        assert_eq!(
-            fixture.value(0, "valid-queued-delta").as_deref(),
-            Some("remote")
-        );
-        assert_eq!(
-            fixture.value(0, "valid-recovery-snapshot").as_deref(),
-            Some("remote")
-        );
-        assert_eq!(
-            fixture.value(0, "local-draft").as_deref(),
-            Some("preserved")
-        );
-        assert_eq!(
-            fixture
-                .records
-                .read_history(&binding.checkout.id, |_, history| history.revision())
-                .unwrap(),
-            revision
-        );
-        assert_eq!(fixture.app.document_sync_status(), None);
-    }
-}
-
-#[test]
-fn deferred_remote_recovery_retains_later_deltas_and_requires_a_new_snapshot_on_overflow() {
-    {
-        for snapshot in [false, true] {
-            round2_deferred_recovery_keeps_later_traffic(true, snapshot, false);
-        }
-    }
-    {
-        for snapshot in [false, true] {
-            round2_deferred_recovery_keeps_later_traffic(false, snapshot, false);
-        }
-    }
-    {
-        for owned in [false, true] {
-            round2_deferred_recovery_keeps_later_traffic(owned, false, true);
+        {
+            for owned in [false, true] {
+                round2_deferred_recovery_keeps_later_traffic(owned, false, true);
+            }
         }
     }
 }
@@ -2345,43 +2109,305 @@ fn round2_deferred_recovery_keeps_later_traffic(owned: bool, later_snapshot: boo
     }
 }
 
-#[test]
-fn native_history_entry_pointer_captures_before_discard() {
-    let probe =
-        crate::history_mode::isolation_tests::native_effect_probe_parts("live", "fixture.export");
-    let mut app = app();
-    app.root_widget = probe.root;
-    layout(&mut app);
-    probe.emitter.borrow_mut().emit(()).unwrap();
+tilo_test_env::scenario! {
+    fn native_history_keeps_editor_state_pointer_capture_and_live_controls;
 
-    let open = node_for_test_id(&app, "history-open");
-    let bounds = app.inspect_node(open, |widget| widget.get_rect()).unwrap();
-    app.dispatch_semantic_click(bounds.center().x, bounds.center().y);
+    phase native_history_surface_composes_installs_and_keeps_editor_state;
+    {
+        {
+            let mut app = app();
+            layout(&mut app);
+            let tree = app.build_a11y_tree_update(1.0);
+            let history = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("History"))
+                .map(|(id, _)| *id)
+                .expect("native managed App must expose shared History");
+            app.dispatch_a11y_action(history, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            assert!(
+                app.build_a11y_tree_update(1.0)
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.role() == accesskit::Role::List)
+            );
+        }
 
-    let retained = app.pending_history_controls();
-    assert_eq!(retained.len(), 1, "entry must seal the pre-entry request");
-    assert_eq!(retained[0].invocation.address.resource, "live");
-    assert_eq!(probe.starts.get(), 0, "entry cannot admit retained work");
-}
+        {
+            let mut app = app();
+            app.root_widget = Box::new(crate::widget::Column::new().push(Box::new(
+                crate::widget::TextInput::local().with_id("draft-editor"),
+            )));
+            app.root_widget.sync(&app.state.doc, &ROOT);
+            layout(&mut app);
+            let editor = node_for_test_id(&app, "draft-editor");
+            app.set_focused_node(Some(editor));
+            app.perform_node_action(editor, &crate::a11y::Action::SetValue("unfinished".into()))
+                .unwrap();
+            app.perform_node_action(
+                editor,
+                &crate::a11y::Action::SetSelection {
+                    anchor: 2,
+                    focus: 7,
+                },
+            )
+            .unwrap();
+            app.state.doc.put(ROOT, "in-progress", "pending").unwrap();
+            let heads = app.state.doc.base_heads();
+            let ops = app.state.doc.pending_ops();
+            let editor_before = app
+                .inspect_node(editor, |widget| widget.accessibility())
+                .unwrap()
+                .unwrap();
+            let open = node_for_test_id(&app, "history-open");
+            let bounds = app.inspect_node(open, |widget| widget.get_rect()).unwrap();
+            app.dispatch_semantic_click(bounds.center().x, bounds.center().y);
+            layout(&mut app);
+            assert_eq!(app.state.doc.base_heads(), heads);
+            assert_eq!(app.state.doc.pending_ops(), ops);
+            let close = named(&mut app, "History");
+            app.dispatch_a11y_action(close, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            assert_eq!(app.state.doc.base_heads(), heads);
+            assert_eq!(app.state.doc.pending_ops(), ops);
+            let restored = app.focused_node.expect("stable editor focus restored");
+            let after = app
+                .inspect_node(restored, |widget| widget.accessibility())
+                .unwrap()
+                .unwrap();
+            assert_eq!(editor_before.value, after.value);
+            assert_eq!(editor_before.text_selection, after.text_selection);
+        }
 
-#[test]
-fn native_history_focus_does_not_drain_live_controls() {
-    let probe =
-        crate::history_mode::isolation_tests::native_effect_probe_parts("live", "fixture.export");
-    let mut app = app();
-    app.root_widget = probe.root;
-    layout(&mut app);
-    probe.emitter.borrow_mut().emit(()).unwrap();
+        {
+            let mut app = app();
+            layout(&mut app);
+            let before = app.state.doc.base_heads();
+            let target = named(&mut app, "History");
+            app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            let node = app
+                .build_a11y_tree_update(1.0)
+                .nodes
+                .iter()
+                .find(|(_, node)| node.role() == accesskit::Role::ListItem)
+                .unwrap()
+                .1
+                .clone();
+            let rect = node.bounds().unwrap();
+            app.dispatch_semantic_click((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0);
+            layout(&mut app);
+            assert!(
+                app.build_a11y_tree_update(1.0)
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node
+                        .label()
+                        .is_some_and(|label| label.starts_with("Notebook:")))
+            );
+            let target = named(&mut app, "Restore…");
+            app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            assert!(
+                app.build_a11y_tree_update(1.0)
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("Restore version"))
+            );
+            native_key(&mut app, "Escape");
+            assert_eq!(app.state.doc.base_heads(), before);
+            let target = named(&mut app, "Back to live");
+            app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            assert!(app.history.as_ref().unwrap().live_visible());
+        }
 
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Focus);
+        {
+            let (_host, component) = crate::history_mode::integration_tests::component_with_history();
+            let mut app = App::from_component(
+                component,
+                crate::application::ComponentRunnerInputs {
+                    theme: crate::Theme::dark(),
+                    text_renderer: crate::font_catalog::fixture_renderer(),
+                },
+            )
+            .unwrap();
+            let handle = {
+                let _scope = app.enter_wake_scope();
+                crate::WakeHandle::new()
+            };
+            layout(&mut app);
+            assert!(app.validate_history_registration().is_ok());
+            let history = named(&mut app, "History");
+            app.dispatch_a11y_action(history, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            assert!(
+                app.build_a11y_tree_update(1.0)
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.role() == accesskit::Role::List)
+            );
+            assert!(handle.is_active());
+            drop(app);
+            assert!(!handle.is_active());
+        }
 
-    assert!(
-        probe.emitter.borrow_mut().take().is_some(),
-        "ordinary framework focus must leave the live request unfinished"
-    );
-    assert_eq!(probe.starts.get(), 0);
-    assert!(app.pending_history_controls().is_empty());
+        {
+            let mut app = app();
+            layout(&mut app);
+            let target = named(&mut app, "History");
+            app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            let row = app
+                .build_a11y_tree_update(1.0)
+                .nodes
+                .iter()
+                .find(|(_, node)| node.role() == accesskit::Role::ListItem)
+                .map(|(id, _)| *id)
+                .unwrap();
+            app.dispatch_a11y_action(row, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            let target = named(&mut app, "Restore…");
+            app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            let old = named(&mut app, "Restore version");
+            let heads = app.state.doc.base_heads();
+            app = app.with_autosave(app_state::DocWriter::disabled("replacement"));
+            layout(&mut app);
+            assert!(app.validate_history_registration().is_err());
+            app.dispatch_a11y_action(old, &crate::a11y::Action::Activate);
+            assert_eq!(app.state.doc.base_heads(), heads);
+        }
+
+        {
+            let probe = crate::history_mode::isolation_tests::native_effect_probe_parts(
+                "live",
+                "fixture.export",
+            );
+            let starts = probe.starts;
+            let mut app = app();
+            app.root_widget = probe.root;
+            layout(&mut app);
+            let declared = app.collect_declared_resources();
+            let violations = tilo_actions::validate_surface(
+                &declared,
+                &app.actions.action_registry,
+                &crate::widget::resource_operation_handlers(&*app.root_widget),
+            );
+            assert!(violations.is_empty(), "{violations:?}");
+            let export = crate::accesskit_bridge::resource_action_node_id("live", "export");
+            assert!(
+                app.build_a11y_tree_update(1.0)
+                    .nodes
+                    .iter()
+                    .any(|(id, _)| *id == export),
+                "the live resource action remains exported beside closed History chrome"
+            );
+            app.dispatch_a11y_action(export, &crate::a11y::Action::Activate);
+            assert_eq!(starts.get(), 1, "live positive control must execute");
+            probe.finish.set(true);
+            assert!(app.poll_directed_invocations());
+            assert_eq!(probe.completions.get(), 1);
+            assert!(
+                app.actions.local_invocations.is_empty(),
+                "hidden retry cannot be rejected merely because first invocation is in flight"
+            );
+            let target = named(&mut app, "History");
+            app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            app.dispatch_a11y_action(export, &crate::a11y::Action::Activate);
+            assert_eq!(
+                starts.get(),
+                1,
+                "hidden local resource action cannot start during History"
+            );
+        }
+
+        {
+            let mut app = app();
+            app.root_widget = Box::new(crate::widget::TextInput::local().with_id("pending-editor"));
+            layout(&mut app);
+            let editor = node_for_test_id(&app, "pending-editor");
+            app.set_focused_node(Some(editor));
+            app.perform_node_action(editor, &crate::a11y::Action::SetValue("draft".into()))
+                .unwrap();
+            app.state.doc.put(ROOT, "unrelated", "pending").unwrap();
+            let before = (app.state.doc.base_heads(), app.state.doc.pending_ops());
+            let target = named(&mut app, "History");
+            app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            native_key(&mut app, "Tab");
+            let tabbed = app.focused_node;
+            assert!(tabbed.is_some_and(|node| {
+                app.history
+                    .as_ref()
+                    .unwrap()
+                    .owns_node(node, &app.layout.taffy)
+            }));
+            app.input.modifiers = winit::keyboard::ModifiersState::SHIFT.into();
+            native_key(&mut app, "Tab");
+            app.input.modifiers = winit::event::Modifiers::default();
+            native_key(&mut app, "Tab");
+            assert_eq!(
+                app.focused_node, tabbed,
+                "Shift+Tab reverses the same chrome focus order"
+            );
+            for ime in [
+                winit::event::Ime::Preedit("候補".into(), Some((0, 6))),
+                winit::event::Ime::Commit("界".into()),
+            ] {
+                let event = WindowEvent::Ime(ime);
+                assert!(app.history_controls_event(&event, 1.0));
+                app.dispatch_framework_history_event(&event, 1.0);
+            }
+            assert_eq!(
+                (app.state.doc.base_heads(), app.state.doc.pending_ops()),
+                before
+            );
+            assert!(!app.framework_input.get());
+            assert!(!crate::history_mode::frame::FrameworkInputFrame::active());
+        }
+    }
+
+    phase native_history_entry_pointer_captures_before_discard;
+    {
+        let probe =
+            crate::history_mode::isolation_tests::native_effect_probe_parts("live", "fixture.export");
+        let mut app = app();
+        app.root_widget = probe.root;
+        layout(&mut app);
+        probe.emitter.borrow_mut().emit(()).unwrap();
+
+        let open = node_for_test_id(&app, "history-open");
+        let bounds = app.inspect_node(open, |widget| widget.get_rect()).unwrap();
+        app.dispatch_semantic_click(bounds.center().x, bounds.center().y);
+
+        let retained = app.pending_history_controls();
+        assert_eq!(retained.len(), 1, "entry must seal the pre-entry request");
+        assert_eq!(retained[0].invocation.address.resource, "live");
+        assert_eq!(probe.starts.get(), 0, "entry cannot admit retained work");
+    }
+
+    phase native_history_focus_does_not_drain_live_controls;
+    {
+        let probe =
+            crate::history_mode::isolation_tests::native_effect_probe_parts("live", "fixture.export");
+        let mut app = app();
+        app.root_widget = probe.root;
+        layout(&mut app);
+        probe.emitter.borrow_mut().emit(()).unwrap();
+
+        let named_action_target = named(&mut app, "History");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Focus);
+
+        assert!(
+            probe.emitter.borrow_mut().take().is_some(),
+            "ordinary framework focus must leave the live request unfinished"
+        );
+        assert_eq!(probe.starts.get(), 0);
+        assert!(app.pending_history_controls().is_empty());
+    }
 }
 
 const PALETTE_TEXT_OPERATION: &str = "fixture.history-palette-text";
@@ -2727,156 +2753,159 @@ fn editor_snapshot(app: &App) -> (String, Option<(usize, usize)>, &'static str) 
     crate::action_palette::observed_history_editor(app.action_palette().unwrap())
 }
 
-#[test]
-fn managed_palette_draft_identity_preserves_text_and_json_editor_and_refuses_changed_or_absent_domain()
- {
-    for (action, partial, complete, mutation, should_start) in [
-        ("text", "ali", "alias-a", "stable", true),
-        ("text", "ali", "alias-a", "changed", false),
-        (
-            "json",
-            r#"{"alias":"a","nested":{"path":"#,
-            r#"{"alias":"a","nested":{"path":{"leaf":1}}}"#,
-            "stable",
-            true,
-        ),
-        (
-            "json",
-            r#"{"alias":"a","nested":{"path":"#,
-            r#"{"alias":"a","nested":{"path":{"leaf":1}}}"#,
-            "absent",
-            false,
-        ),
-    ] {
-        let state = PaletteContinuationState::stable();
-        if mutation == "absent" {
-            state.draft_supported.store(false, Ordering::SeqCst);
-        }
-        let mut app = palette_history_app(state.clone());
-        palette_activate(&mut app, action, partial);
-        let before = editor_snapshot(&app);
-        assert_eq!(before.0, partial);
-        assert!(before.1.is_some(), "the actual editor exposes its cursor");
-        assert_eq!(before.2, "argument");
+tilo_test_env::scenario! {
+    fn managed_palette_drafts_keep_identity_through_history;
 
-        palette_history_round_trip(&mut app);
-        assert_eq!(editor_snapshot(&app), before, "{action}:{mutation}");
-        if mutation == "changed" {
-            state.draft_epoch.store(2, Ordering::SeqCst);
-        }
-        app.actions
-            .action_palette
-            .as_deref_mut()
-            .unwrap()
-            .set_query(complete);
-        palette_enter(&mut app);
-        assert_eq!(editor_snapshot(&app).2, "confirmation");
-        app.actions
-            .action_palette
-            .as_deref_mut()
-            .unwrap()
-            .set_query(PALETTE_CONFIRMATION);
-        palette_confirm(&mut app);
+    phase managed_palette_draft_identity_preserves_text_and_json_editor_and_refuses_changed_or_absent_domain;
+    {
+        for (action, partial, complete, mutation, should_start) in [
+            ("text", "ali", "alias-a", "stable", true),
+            ("text", "ali", "alias-a", "changed", false),
+            (
+                "json",
+                r#"{"alias":"a","nested":{"path":"#,
+                r#"{"alias":"a","nested":{"path":{"leaf":1}}}"#,
+                "stable",
+                true,
+            ),
+            (
+                "json",
+                r#"{"alias":"a","nested":{"path":"#,
+                r#"{"alias":"a","nested":{"path":{"leaf":1}}}"#,
+                "absent",
+                false,
+            ),
+        ] {
+            let state = PaletteContinuationState::stable();
+            if mutation == "absent" {
+                state.draft_supported.store(false, Ordering::SeqCst);
+            }
+            let mut app = palette_history_app(state.clone());
+            palette_activate(&mut app, action, partial);
+            let before = editor_snapshot(&app);
+            assert_eq!(before.0, partial);
+            assert!(before.1.is_some(), "the actual editor exposes its cursor");
+            assert_eq!(before.2, "argument");
 
-        let starts = state.starts.lock().unwrap().len();
-        assert_eq!(starts, usize::from(should_start), "{action}:{mutation}");
-        if should_start {
-            assert!(
-                app.action_palette().is_none(),
-                "successful dispatch closes palette"
-            );
-        } else {
-            let snapshot = editor_snapshot(&app);
-            // The name was typed in the confirmation's own plain field,
-            // never in the search field.
-            assert_eq!(snapshot.0, "");
-            assert_eq!(snapshot.2, "ready");
-            assert!(
-                app.actions
-                    .action_palette
-                    .as_deref_mut()
-                    .unwrap()
-                    .take_search_announcement()
-                    .is_some_and(
-                        |message| message.contains("stale") || message.contains("identity")
-                    ),
-                "refusal remains visibly announced"
-            );
+            palette_history_round_trip(&mut app);
+            assert_eq!(editor_snapshot(&app), before, "{action}:{mutation}");
+            if mutation == "changed" {
+                state.draft_epoch.store(2, Ordering::SeqCst);
+            }
+            app.actions
+                .action_palette
+                .as_deref_mut()
+                .unwrap()
+                .set_query(complete);
+            palette_enter(&mut app);
+            assert_eq!(editor_snapshot(&app).2, "confirmation");
+            app.actions
+                .action_palette
+                .as_deref_mut()
+                .unwrap()
+                .set_query(PALETTE_CONFIRMATION);
+            palette_confirm(&mut app);
+
+            let starts = state.starts.lock().unwrap().len();
+            assert_eq!(starts, usize::from(should_start), "{action}:{mutation}");
+            if should_start {
+                assert!(
+                    app.action_palette().is_none(),
+                    "successful dispatch closes palette"
+                );
+            } else {
+                let snapshot = editor_snapshot(&app);
+                // The name was typed in the confirmation's own plain field,
+                // never in the search field.
+                assert_eq!(snapshot.0, "");
+                assert_eq!(snapshot.2, "ready");
+                assert!(
+                    app.actions
+                        .action_palette
+                        .as_deref_mut()
+                        .unwrap()
+                        .take_search_announcement()
+                        .is_some_and(
+                            |message| message.contains("stale") || message.contains("identity")
+                        ),
+                    "refusal remains visibly announced"
+                );
+            }
         }
     }
-}
 
-#[test]
-fn managed_palette_exact_text_and_nested_json_recheck_alias_and_handler_around_fresh_phrase() {
-    for (action, complete, mutation, should_start) in [
-        ("text", "production", "unrelated", true),
-        (
-            "json",
-            r#"{"alias":"production","nested":{"route":{"shard":7}}}"#,
-            "unrelated",
-            true,
-        ),
-        ("text", "production", "target-before-return", false),
-        (
-            "json",
-            r#"{"alias":"production","nested":{"route":{"shard":7}}}"#,
-            "handler-changed-before-going-ahead",
-            false,
-        ),
-    ] {
-        let state = PaletteContinuationState::stable();
-        let mut app = palette_history_app(state.clone());
-        palette_activate(&mut app, action, complete);
-        palette_enter(&mut app);
-        assert_eq!(editor_snapshot(&app).2, "confirmation");
-        app.actions
-            .action_palette
-            .as_deref_mut()
-            .unwrap()
-            .set_query(PALETTE_CONFIRMATION);
+    phase managed_palette_exact_text_and_nested_json_recheck_alias_and_handler_around_fresh_phrase;
+    {
+        for (action, complete, mutation, should_start) in [
+            ("text", "production", "unrelated", true),
+            (
+                "json",
+                r#"{"alias":"production","nested":{"route":{"shard":7}}}"#,
+                "unrelated",
+                true,
+            ),
+            ("text", "production", "target-before-return", false),
+            (
+                "json",
+                r#"{"alias":"production","nested":{"route":{"shard":7}}}"#,
+                "handler-changed-before-going-ahead",
+                false,
+            ),
+        ] {
+            let state = PaletteContinuationState::stable();
+            let mut app = palette_history_app(state.clone());
+            palette_activate(&mut app, action, complete);
+            palette_enter(&mut app);
+            assert_eq!(editor_snapshot(&app).2, "confirmation");
+            app.actions
+                .action_palette
+                .as_deref_mut()
+                .unwrap()
+                .set_query(PALETTE_CONFIRMATION);
 
-        let named_action_target = named(&mut app, "History");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        if mutation == "target-before-return" {
-            state.target_epoch.store(2, Ordering::SeqCst);
-        } else {
-            app.state
-                .doc
-                .put(ROOT, "unrelated-round3", mutation)
-                .unwrap();
+            let named_action_target = named(&mut app, "History");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            if mutation == "target-before-return" {
+                state.target_epoch.store(2, Ordering::SeqCst);
+            } else {
+                app.state
+                    .doc
+                    .put(ROOT, "unrelated-round3", mutation)
+                    .unwrap();
+            }
+            let named_action_target = named(&mut app, "History");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            assert_eq!(
+                editor_snapshot(&app),
+                (String::new(), Some((0, 0)), "confirmation"),
+                "History return requires a fresh phrase: {action}:{mutation}"
+            );
+
+            if mutation == "handler-changed-before-going-ahead" {
+                assert_eq!(state.starts.lock().unwrap().len(), 0);
+                state.handler_epoch.store(2, Ordering::SeqCst);
+            }
+            app.actions
+                .action_palette
+                .as_deref_mut()
+                .unwrap()
+                .set_query(PALETTE_CONFIRMATION);
+            palette_confirm(&mut app);
+            assert_eq!(
+                state.starts.lock().unwrap().len(),
+                usize::from(should_start),
+                "{action}:{mutation}"
+            );
+            let queries = state.queries.lock().unwrap().clone();
+            assert!(
+                queries
+                    .iter()
+                    .any(|query| query == &format!("exact:{action}:{action}")),
+                "exact Text/JSON representation is passed to the resolver: {queries:?}"
+            );
         }
-        let named_action_target = named(&mut app, "History");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        assert_eq!(
-            editor_snapshot(&app),
-            (String::new(), Some((0, 0)), "confirmation"),
-            "History return requires a fresh phrase: {action}:{mutation}"
-        );
-
-        if mutation == "handler-changed-before-going-ahead" {
-            assert_eq!(state.starts.lock().unwrap().len(), 0);
-            state.handler_epoch.store(2, Ordering::SeqCst);
-        }
-        app.actions
-            .action_palette
-            .as_deref_mut()
-            .unwrap()
-            .set_query(PALETTE_CONFIRMATION);
-        palette_confirm(&mut app);
-        assert_eq!(
-            state.starts.lock().unwrap().len(),
-            usize::from(should_start),
-            "{action}:{mutation}"
-        );
-        let queries = state.queries.lock().unwrap().clone();
-        assert!(
-            queries
-                .iter()
-                .any(|query| query == &format!("exact:{action}:{action}")),
-            "exact Text/JSON representation is passed to the resolver: {queries:?}"
-        );
     }
 }
 
@@ -3534,95 +3563,6 @@ fn nested_control(resource: &str, alias: &str, leaf: i64) -> tilo_actions::Contr
 }
 
 #[test]
-fn managed_history_partial_component_capture_preserves_json_batches_without_double_capture() {
-    let (root, handles, fail_after_first) = component_control_root(&[
-        ("component-a", tilo_actions::ConfirmationPolicy::None),
-        ("component-b", tilo_actions::ConfirmationPolicy::None),
-    ]);
-    handles[0]
-        .binding
-        .queued_controls
-        .borrow_mut()
-        .push_back(nested_control("component-a", "first", 1));
-    handles[1]
-        .binding
-        .queued_controls
-        .borrow_mut()
-        .push_back(nested_control("component-b", "second", 2));
-    fail_after_first.set(true);
-    let mut app = app();
-    app.root_widget = root;
-    layout(&mut app);
-    let resolved = crate::bound_dispatch::resolve_component_resource(
-        app.root_widget.as_mut(),
-        &app.state.doc,
-        &handles[0].binding,
-        "component-a",
-        COMPONENT_CONTROL_ACTION,
-    )
-    .unwrap();
-    assert!(
-        resolved.is_some(),
-        "controlled component resource must resolve"
-    );
-
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    assert_eq!(app.pending_history_controls().len(), 1);
-    assert!(
-        format!("{:?}", app.build_a11y_tree_update(1.0).nodes)
-            .contains("component capture refused")
-    );
-    assert!(handles[0].binding.queued_controls.borrow().is_empty());
-    assert!(
-        handles[1].binding.queued_controls.borrow().is_empty(),
-        "the unvisited owner's original is sealed, with no live queued copy"
-    );
-
-    fail_after_first.set(false);
-    layout(&mut app);
-    assert_eq!(
-        app.pending_history_controls().len(),
-        2,
-        "the next framework refresh resumes the interrupted capture"
-    );
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    layout(&mut app);
-    assert_eq!(
-        handles[0].starts.get(),
-        0,
-        "retained first batch stays inert"
-    );
-    assert_eq!(handles[1].starts.get(), 0, "retained sibling stays inert");
-
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    layout(&mut app);
-    assert_eq!(app.pending_history_controls().len(), 2, "no double capture");
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    layout(&mut app);
-    let named_action_target = named(&mut app, "Continue");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    assert_eq!(
-        handles[0].starts.get(),
-        1,
-        "first retained batch status: {:?}",
-        app.pending_history_controls()
-    );
-    assert_eq!(handles[0].payloads.borrow()[0]["alias"], "first");
-    assert_eq!(handles[1].starts.get(), 0);
-    assert_eq!(app.pending_history_controls().len(), 1);
-    layout(&mut app);
-    let named_action_target = named(&mut app, "Continue");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    assert_eq!(handles[1].starts.get(), 1);
-    assert_eq!(handles[1].payloads.borrow()[0]["alias"], "second");
-    assert!(app.pending_history_controls().is_empty());
-}
-
-#[test]
 fn live_component_bridge_and_direct_take_first_emit_after_return_and_preview_remains_inert() {
     let (root, handles, _) =
         component_control_root(&[("component-live", tilo_actions::ConfirmationPolicy::None)]);
@@ -3692,265 +3632,164 @@ fn emit_pending_control_command(
     commands.remove(0)
 }
 
-#[test]
-fn delayed_framework_continue_confirm_and_cancel_callbacks_cannot_cross_reentry_or_replacement() {
-    for command_kind in ["continue", "confirm", "cancel"] {
-        let confirmation = if command_kind == "confirm" {
-            tilo_actions::ConfirmationPolicy::Phrase {
-                phrase: "RUN COMPONENT".into(),
-            }
-        } else {
-            tilo_actions::ConfirmationPolicy::None
-        };
-        let (root, original, _) =
-            component_control_root(&[("component-replaced", confirmation.clone())]);
-        original[0]
-            .binding
-            .queued_controls
-            .borrow_mut()
-            .push_back(nested_control("component-replaced", "original", 5));
-        let mut app = app();
-        app.root_widget = root;
-        layout(&mut app);
-        palette_history_round_trip(&mut app);
+tilo_test_env::scenario! {
+    fn framework_callbacks_cannot_cross_reentry_or_replacement;
 
-        let command = match command_kind {
-            "continue" => emit_pending_control_command(&mut app, "history-pending-1"),
-            "cancel" => emit_pending_control_command(&mut app, "history-pending-cancel-1"),
-            "confirm" => {
+    phase delayed_framework_continue_confirm_and_cancel_callbacks_cannot_cross_reentry_or_replacement;
+    {
+        for command_kind in ["continue", "confirm", "cancel"] {
+            let confirmation = if command_kind == "confirm" {
+                tilo_actions::ConfirmationPolicy::Phrase {
+                    phrase: "RUN COMPONENT".into(),
+                }
+            } else {
+                tilo_actions::ConfirmationPolicy::None
+            };
+            let (root, original, _) =
+                component_control_root(&[("component-replaced", confirmation.clone())]);
+            original[0]
+                .binding
+                .queued_controls
+                .borrow_mut()
+                .push_back(nested_control("component-replaced", "original", 5));
+            let mut app = app();
+            app.root_widget = root;
+            layout(&mut app);
+            palette_history_round_trip(&mut app);
+
+            let command = match command_kind {
+                "continue" => emit_pending_control_command(&mut app, "history-pending-1"),
+                "cancel" => emit_pending_control_command(&mut app, "history-pending-cancel-1"),
+                "confirm" => {
+                    let named_action_target = named(&mut app, "Continue");
+                    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+                    layout(&mut app);
+                    let phrase = node_for_test_id(&app, "history-pending-1-phrase");
+                    app.perform_node_action(
+                        phrase,
+                        &crate::a11y::Action::SetValue("RUN COMPONENT".into()),
+                    )
+                    .unwrap();
+                    emit_pending_control_command(&mut app, "history-pending-1")
+                }
+                _ => unreachable!(),
+            };
+            assert_eq!(original[0].starts.get(), 0);
+
+            let (replacement, current, _) =
+                component_control_root(&[("component-replaced", confirmation)]);
+            app.root_widget = replacement;
+            layout(&mut app);
+            current[0]
+                .binding
+                .queued_controls
+                .borrow_mut()
+                .push_back(nested_control("component-replaced", "replacement", 6));
+            let named_action_target = named(&mut app, "History");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            let named_action_target = named(&mut app, "History");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            assert_eq!(
+                app.pending_history_controls().len(),
+                2,
+                "replacement contributes one new same-address item"
+            );
+
+            app.history
+                .as_ref()
+                .unwrap()
+                .queue_pending_control_command_for_test(command);
+            app.service_pending_history_commands();
+            assert_eq!(
+                original[0].starts.get(),
+                0,
+                "delayed {command_kind} cannot reenter the retired owner"
+            );
+            assert_eq!(
+                current[0].starts.get(),
+                0,
+                "delayed {command_kind} cannot affect the newer same-address owner"
+            );
+            assert_eq!(
+                app.pending_history_controls().len(),
+                2,
+                "stale callback cannot consume either retained item"
+            );
+        }
+    }
+
+    phase retained_framework_callback_objects_cannot_acquire_current_tokens_after_reentry_and_replacement;
+    {
+        for callback_kind in ["continue", "confirm", "cancel"] {
+            let confirmation = if callback_kind == "confirm" {
+                tilo_actions::ConfirmationPolicy::Phrase {
+                    phrase: "RUN CALLBACK".into(),
+                }
+            } else {
+                tilo_actions::ConfirmationPolicy::None
+            };
+            let (root, original, _) =
+                component_control_root(&[("callback-owner", confirmation.clone())]);
+            original[0]
+                .binding
+                .queued_controls
+                .borrow_mut()
+                .push_back(nested_control("callback-owner", "original", 7));
+            let mut app = app();
+            app.root_widget = root;
+            layout(&mut app);
+            palette_history_round_trip(&mut app);
+
+            let callback_id = if callback_kind == "cancel" {
+                "history-pending-cancel-1"
+            } else {
+                "history-pending-1"
+            };
+            if callback_kind == "confirm" {
                 let named_action_target = named(&mut app, "Continue");
                 app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
                 layout(&mut app);
                 let phrase = node_for_test_id(&app, "history-pending-1-phrase");
                 app.perform_node_action(
                     phrase,
-                    &crate::a11y::Action::SetValue("RUN COMPONENT".into()),
+                    &crate::a11y::Action::SetValue("RUN CALLBACK".into()),
                 )
                 .unwrap();
-                emit_pending_control_command(&mut app, "history-pending-1")
             }
-            _ => unreachable!(),
-        };
-        assert_eq!(original[0].starts.get(), 0);
+            let callback = app
+                .history
+                .as_ref()
+                .unwrap()
+                .pending_control_callback_for_test(callback_id)
+                .expect("the exact callback installed in the public framework toolbar");
 
-        let (replacement, current, _) =
-            component_control_root(&[("component-replaced", confirmation)]);
-        app.root_widget = replacement;
-        layout(&mut app);
-        current[0]
-            .binding
-            .queued_controls
-            .borrow_mut()
-            .push_back(nested_control("component-replaced", "replacement", 6));
-        let named_action_target = named(&mut app, "History");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        let named_action_target = named(&mut app, "History");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        assert_eq!(
-            app.pending_history_controls().len(),
-            2,
-            "replacement contributes one new same-address item"
-        );
-
-        app.history
-            .as_ref()
-            .unwrap()
-            .queue_pending_control_command_for_test(command);
-        app.service_pending_history_commands();
-        assert_eq!(
-            original[0].starts.get(),
-            0,
-            "delayed {command_kind} cannot reenter the retired owner"
-        );
-        assert_eq!(
-            current[0].starts.get(),
-            0,
-            "delayed {command_kind} cannot affect the newer same-address owner"
-        );
-        assert_eq!(
-            app.pending_history_controls().len(),
-            2,
-            "stale callback cannot consume either retained item"
-        );
-    }
-}
-
-#[test]
-fn retained_framework_callback_objects_cannot_acquire_current_tokens_after_reentry_and_replacement()
-{
-    for callback_kind in ["continue", "confirm", "cancel"] {
-        let confirmation = if callback_kind == "confirm" {
-            tilo_actions::ConfirmationPolicy::Phrase {
-                phrase: "RUN CALLBACK".into(),
-            }
-        } else {
-            tilo_actions::ConfirmationPolicy::None
-        };
-        let (root, original, _) =
-            component_control_root(&[("callback-owner", confirmation.clone())]);
-        original[0]
-            .binding
-            .queued_controls
-            .borrow_mut()
-            .push_back(nested_control("callback-owner", "original", 7));
-        let mut app = app();
-        app.root_widget = root;
-        layout(&mut app);
-        palette_history_round_trip(&mut app);
-
-        let callback_id = if callback_kind == "cancel" {
-            "history-pending-cancel-1"
-        } else {
-            "history-pending-1"
-        };
-        if callback_kind == "confirm" {
-            let named_action_target = named(&mut app, "Continue");
+            let (replacement, current, _) = component_control_root(&[("callback-owner", confirmation)]);
+            app.root_widget = replacement;
+            layout(&mut app);
+            current[0]
+                .binding
+                .queued_controls
+                .borrow_mut()
+                .push_back(nested_control("callback-owner", "replacement", 8));
+            let named_action_target = named(&mut app, "History");
             app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
             layout(&mut app);
-            let phrase = node_for_test_id(&app, "history-pending-1-phrase");
-            app.perform_node_action(
-                phrase,
-                &crate::a11y::Action::SetValue("RUN CALLBACK".into()),
-            )
-            .unwrap();
-        }
-        let callback = app
-            .history
-            .as_ref()
-            .unwrap()
-            .pending_control_callback_for_test(callback_id)
-            .expect("the exact callback installed in the public framework toolbar");
+            let named_action_target = named(&mut app, "History");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            assert_eq!(app.pending_history_controls().len(), 2);
 
-        let (replacement, current, _) = component_control_root(&[("callback-owner", confirmation)]);
-        app.root_widget = replacement;
-        layout(&mut app);
-        current[0]
-            .binding
-            .queued_controls
-            .borrow_mut()
-            .push_back(nested_control("callback-owner", "replacement", 8));
-        let named_action_target = named(&mut app, "History");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        let named_action_target = named(&mut app, "History");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        assert_eq!(app.pending_history_controls().len(), 2);
-
-        callback.invoke_for_test();
-        app.service_pending_history_commands();
-        assert_eq!(original[0].starts.get(), 0);
-        assert_eq!(current[0].starts.get(), 0);
-        assert_eq!(
-            app.pending_history_controls().len(),
-            2,
-            "old {callback_kind} callback cannot mint or consume a current token"
-        );
-    }
-}
-
-#[test]
-fn palette_two_round_trips_preserve_original_exact_witness() {
-    for changed in ["target", "handler", "unsupported"] {
-        let state = PaletteContinuationState::stable();
-        if changed == "unsupported" {
-            state.exact_supported.store(false, Ordering::SeqCst);
-        }
-        let mut app = palette_history_app(state.clone());
-        palette_activate(&mut app, "text", "production");
-        palette_enter(&mut app);
-        palette_history_round_trip(&mut app);
-        let original =
-            crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
-        match changed {
-            "target" => state.target_epoch.store(2, Ordering::SeqCst),
-            "handler" => state.handler_epoch.store(2, Ordering::SeqCst),
-            _ => state.exact_supported.store(true, Ordering::SeqCst),
-        }
-        palette_history_round_trip(&mut app);
-        let retained =
-            crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
-        assert_eq!(retained.wire_argument(), original.wire_argument());
-        app.actions
-            .action_palette
-            .as_deref_mut()
-            .unwrap()
-            .set_query(PALETTE_CONFIRMATION);
-        palette_confirm(&mut app);
-        assert_eq!(state.starts.lock().unwrap().len(), 0, "{changed}");
-        assert!(
-            retained.history_witness == original.history_witness,
-            "immutable witness: {changed}"
-        );
-        let refused =
-            crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
-        assert_eq!(refused.wire_argument().as_deref(), Some("production"));
-        assert!(refused.history_witness == original.history_witness);
-    }
-}
-
-#[test]
-fn palette_named_text_parameter_survives_history_and_confirmation() {
-    let state = PaletteContinuationState::stable();
-    let mut app = palette_history_app(state.clone());
-    palette_activate(&mut app, "named", "  original target  ");
-    palette_enter(&mut app);
-    assert_eq!(editor_snapshot(&app).2, "confirmation");
-    palette_history_round_trip(&mut app);
-    app.actions
-        .action_palette
-        .as_deref_mut()
-        .unwrap()
-        .set_query(PALETTE_CONFIRMATION);
-    palette_confirm(&mut app);
-    let starts = state.starts.lock().unwrap();
-    assert_eq!(starts.len(), 1);
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&starts[0].1).unwrap(),
-        serde_json::json!({"target":"  original target  "})
-    );
-    assert!(
-        state
-            .queries
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|query| query == "exact:named:text")
-    );
-}
-
-#[test]
-fn palette_missing_or_unavailable_draft_preserves_editor_and_reason() {
-    for action in ["text", "json"] {
-        for authority in [1, 2] {
-            let state = PaletteContinuationState::stable();
-            let mut app = palette_history_app(state.clone());
-            let partial = if action == "text" {
-                "unfinished alias"
-            } else {
-                r#"{"alias":"unfinished","nested":{"#
-            };
-            palette_activate(&mut app, action, partial);
-            palette_history_round_trip(&mut app);
-            let before = editor_snapshot(&app);
-            state.authority.store(authority, Ordering::SeqCst);
-            palette_enter(&mut app);
-            assert_eq!(editor_snapshot(&app), before, "{action}:{authority}");
-            assert_eq!(state.starts.lock().unwrap().len(), 0);
-            assert!(
-                app.actions
-                    .action_palette
-                    .as_deref_mut()
-                    .unwrap()
-                    .take_search_announcement()
-                    .is_some_and(
-                        |reason| reason.contains("unavailable") || reason.contains("removed")
-                    )
+            callback.invoke_for_test();
+            app.service_pending_history_commands();
+            assert_eq!(original[0].starts.get(), 0);
+            assert_eq!(current[0].starts.get(), 0);
+            assert_eq!(
+                app.pending_history_controls().len(),
+                2,
+                "old {callback_kind} callback cannot mint or consume a current token"
             );
-            palette_history_round_trip(&mut app);
-            assert_eq!(editor_snapshot(&app), before);
         }
     }
 }
@@ -3984,170 +3823,219 @@ fn activate_component_palette(
         .set_query(value);
 }
 
-#[test]
-fn fresh_component_palette_does_not_require_history_identity_even_after_cancel() {
-    let (root, handles, _) =
-        component_control_root(&[("ordinary", tilo_actions::ConfirmationPolicy::None)]);
-    handles[0].identity_supported.set(false);
-    let mut app = app();
-    app.root_widget = root;
-    layout(&mut app);
-    let input = r#"{"alias":"fresh","nested":{"leaf":1}}"#;
-    activate_component_palette(&mut app, &handles[0], "ordinary", input);
-    palette_enter(&mut app);
-    assert_eq!(
-        handles[0].starts.get(),
-        1,
-        "ordinary default ActionSpec executes without History opt-in"
-    );
-    activate_component_palette(&mut app, &handles[0], "ordinary", input);
-    palette_history_round_trip(&mut app);
-    let escape = crate::synthetic_input::key_input(
-        &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
-        winit::event::ElementState::Pressed,
-    );
-    assert!(app.action_palette_handle_key(&escape));
-    activate_component_palette(&mut app, &handles[0], "ordinary", input);
-    palette_enter(&mut app);
-    assert_eq!(
-        handles[0].starts.get(),
-        2,
-        "cancel clears retained status for the next fresh action"
-    );
-}
+tilo_test_env::scenario! {
+    fn palette_round_trips_through_history_keep_the_exact_owner_and_draft;
 
-#[test]
-fn palette_reentry_cannot_replace_exact_component_owner() {
-    let confirmation = tilo_actions::ConfirmationPolicy::Phrase {
-        phrase: PALETTE_CONFIRMATION.into(),
-    };
-    let (root, old, _) = component_control_root(&[("same-address", confirmation.clone())]);
-    let mut app = app();
-    app.root_widget = root;
-    layout(&mut app);
-    let input = r#"{"alias":"original","nested":{"leaf":1}}"#;
-    activate_component_palette(&mut app, &old[0], "same-address", input);
-    palette_enter(&mut app);
-    palette_history_round_trip(&mut app);
-    let original =
-        crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
-    let (replacement, new, _) = component_control_root(&[("same-address", confirmation)]);
-    app.layout.node_map.clear();
-    app.bindings.clear();
-    app.focused_node = None;
-    app.root_widget = replacement;
-    layout(&mut app);
-    palette_history_round_trip(&mut app);
-    app.actions
-        .action_palette
-        .as_deref_mut()
-        .unwrap()
-        .set_query(PALETTE_CONFIRMATION);
-    palette_confirm(&mut app);
-    assert_eq!(old[0].starts.get(), 0);
-    assert_eq!(new[0].starts.get(), 0);
-    let retained =
-        crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
-    assert_eq!(retained.wire_argument(), original.wire_argument());
-    assert!(retained.history_witness == original.history_witness);
-    let Some(crate::bound_dispatch::local_target::LocalResourceTarget::Component(target)) =
-        retained.history_target
-    else {
-        panic!("original component custody remains inspectable")
-    };
-    assert!(target.binding.same_component(&old[0].binding));
-}
+    phase palette_two_round_trips_preserve_original_exact_witness;
+    {
+        for changed in ["target", "handler", "unsupported"] {
+            let state = PaletteContinuationState::stable();
+            if changed == "unsupported" {
+                state.exact_supported.store(false, Ordering::SeqCst);
+            }
+            let mut app = palette_history_app(state.clone());
+            palette_activate(&mut app, "text", "production");
+            palette_enter(&mut app);
+            palette_history_round_trip(&mut app);
+            let original =
+                crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
+            match changed {
+                "target" => state.target_epoch.store(2, Ordering::SeqCst),
+                "handler" => state.handler_epoch.store(2, Ordering::SeqCst),
+                _ => state.exact_supported.store(true, Ordering::SeqCst),
+            }
+            palette_history_round_trip(&mut app);
+            let retained =
+                crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
+            assert_eq!(retained.wire_argument(), original.wire_argument());
+            app.actions
+                .action_palette
+                .as_deref_mut()
+                .unwrap()
+                .set_query(PALETTE_CONFIRMATION);
+            palette_confirm(&mut app);
+            assert_eq!(state.starts.lock().unwrap().len(), 0, "{changed}");
+            assert!(
+                retained.history_witness == original.history_witness,
+                "immutable witness: {changed}"
+            );
+            let refused =
+                crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
+            assert_eq!(refused.wire_argument().as_deref(), Some("production"));
+            assert!(refused.history_witness == original.history_witness);
+        }
+    }
 
-#[test]
-fn component_empty_duplicate_resource_refuses_saved_continuation() {
-    for depth in [1, 2] {
+    phase palette_named_text_parameter_survives_history_and_confirmation;
+    {
+        let state = PaletteContinuationState::stable();
+        let mut app = palette_history_app(state.clone());
+        palette_activate(&mut app, "named", "  original target  ");
+        palette_enter(&mut app);
+        assert_eq!(editor_snapshot(&app).2, "confirmation");
+        palette_history_round_trip(&mut app);
+        app.actions
+            .action_palette
+            .as_deref_mut()
+            .unwrap()
+            .set_query(PALETTE_CONFIRMATION);
+        palette_confirm(&mut app);
+        let starts = state.starts.lock().unwrap();
+        assert_eq!(starts.len(), 1);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&starts[0].1).unwrap(),
+            serde_json::json!({"target":"  original target  "})
+        );
+        assert!(
+            state
+                .queries
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|query| query == "exact:named:text")
+        );
+    }
+
+    phase palette_missing_or_unavailable_draft_preserves_editor_and_reason;
+    {
+        for action in ["text", "json"] {
+            for authority in [1, 2] {
+                let state = PaletteContinuationState::stable();
+                let mut app = palette_history_app(state.clone());
+                let partial = if action == "text" {
+                    "unfinished alias"
+                } else {
+                    r#"{"alias":"unfinished","nested":{"#
+                };
+                palette_activate(&mut app, action, partial);
+                palette_history_round_trip(&mut app);
+                let before = editor_snapshot(&app);
+                state.authority.store(authority, Ordering::SeqCst);
+                palette_enter(&mut app);
+                assert_eq!(editor_snapshot(&app), before, "{action}:{authority}");
+                assert_eq!(state.starts.lock().unwrap().len(), 0);
+                assert!(
+                    app.actions
+                        .action_palette
+                        .as_deref_mut()
+                        .unwrap()
+                        .take_search_announcement()
+                        .is_some_and(
+                            |reason| reason.contains("unavailable") || reason.contains("removed")
+                        )
+                );
+                palette_history_round_trip(&mut app);
+                assert_eq!(editor_snapshot(&app), before);
+            }
+        }
+    }
+
+    phase fresh_component_palette_does_not_require_history_identity_even_after_cancel;
+    {
         let (root, handles, _) =
-            component_control_root(&[("duplicate", tilo_actions::ConfirmationPolicy::None)]);
-        handles[0]
-            .binding
-            .queued_controls
-            .borrow_mut()
-            .push_back(nested_control("duplicate", "original", 1));
+            component_control_root(&[("ordinary", tilo_actions::ConfirmationPolicy::None)]);
+        handles[0].identity_supported.set(false);
         let mut app = app();
         app.root_widget = root;
         layout(&mut app);
-        let named_action_target = named(&mut app, "History");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        handles[0].duplicate_depth.set(depth);
-        let named_action_target = named(&mut app, "History");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        let named_action_target = named(&mut app, "Continue");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        assert_eq!(handles[0].starts.get(), 0, "duplicate depth {depth}");
-        assert!(
-            matches!(&app.pending_history_controls()[0].status, crate::history_mode::pending_controls::PendingControlStatus::Refused(reason) if reason.contains("declaration"))
-        );
+        let input = r#"{"alias":"fresh","nested":{"leaf":1}}"#;
+        activate_component_palette(&mut app, &handles[0], "ordinary", input);
+        palette_enter(&mut app);
         assert_eq!(
-            app.pending_history_controls()[0].invocation,
-            nested_control("duplicate", "original", 1)
+            handles[0].starts.get(),
+            1,
+            "ordinary default ActionSpec executes without History opt-in"
+        );
+        activate_component_palette(&mut app, &handles[0], "ordinary", input);
+        palette_history_round_trip(&mut app);
+        let escape = crate::synthetic_input::key_input(
+            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+            winit::event::ElementState::Pressed,
+        );
+        assert!(app.action_palette_handle_key(&escape));
+        activate_component_palette(&mut app, &handles[0], "ordinary", input);
+        palette_enter(&mut app);
+        assert_eq!(
+            handles[0].starts.get(),
+            2,
+            "cancel clears retained status for the next fresh action"
         );
     }
-}
 
-#[test]
-fn partial_capture_seals_reachable_and_unvisited_queues_at_entry() {
-    let (root, handles, failed) = component_control_root(&[
-        ("sealed-a", tilo_actions::ConfirmationPolicy::None),
-        ("sealed-b", tilo_actions::ConfirmationPolicy::None),
-    ]);
-    for (i, id) in ["sealed-a", "sealed-b"].iter().enumerate() {
-        handles[i]
-            .binding
-            .queued_controls
-            .borrow_mut()
-            .push_back(nested_control(id, "original", i64::try_from(i).unwrap()));
-    }
-    failed.set(true);
-    let mut app = app();
-    app.root_widget = root;
-    layout(&mut app);
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    assert_eq!(app.pending_history_controls().len(), 1);
-    for (i, id) in ["sealed-a", "sealed-b"].iter().enumerate() {
-        handles[i]
-            .binding
-            .queued_controls
-            .borrow_mut()
-            .push_back(nested_control(
-                id,
-                "post-entry",
-                10 + i64::try_from(i).unwrap(),
-            ));
-    }
-    failed.set(false);
-    layout(&mut app);
-    assert_eq!(
-        app.pending_history_controls().len(),
-        2,
-        "only the sealed pre-entry requests can recover"
-    );
-    assert!(
-        app.pending_history_controls()
-            .iter()
-            .all(|item| item.invocation.arguments["alias"] == "original")
-    );
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    layout(&mut app);
-    for i in 0..2 {
-        let named_action_target = named(&mut app, "Continue");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        assert_eq!(handles[i].starts.get(), 1);
-        assert_eq!(handles[i].payloads.borrow()[0]["alias"], "original");
+    phase palette_reentry_cannot_replace_exact_component_owner;
+    {
+        let confirmation = tilo_actions::ConfirmationPolicy::Phrase {
+            phrase: PALETTE_CONFIRMATION.into(),
+        };
+        let (root, old, _) = component_control_root(&[("same-address", confirmation.clone())]);
+        let mut app = app();
+        app.root_widget = root;
         layout(&mut app);
+        let input = r#"{"alias":"original","nested":{"leaf":1}}"#;
+        activate_component_palette(&mut app, &old[0], "same-address", input);
+        palette_enter(&mut app);
+        palette_history_round_trip(&mut app);
+        let original =
+            crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
+        let (replacement, new, _) = component_control_root(&[("same-address", confirmation)]);
+        app.layout.node_map.clear();
+        app.bindings.clear();
+        app.focused_node = None;
+        app.root_widget = replacement;
+        layout(&mut app);
+        palette_history_round_trip(&mut app);
+        app.actions
+            .action_palette
+            .as_deref_mut()
+            .unwrap()
+            .set_query(PALETTE_CONFIRMATION);
+        palette_confirm(&mut app);
+        assert_eq!(old[0].starts.get(), 0);
+        assert_eq!(new[0].starts.get(), 0);
+        let retained =
+            crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
+        assert_eq!(retained.wire_argument(), original.wire_argument());
+        assert!(retained.history_witness == original.history_witness);
+        let Some(crate::bound_dispatch::local_target::LocalResourceTarget::Component(target)) =
+            retained.history_target
+        else {
+            panic!("original component custody remains inspectable")
+        };
+        assert!(target.binding.same_component(&old[0].binding));
     }
-    app.dispatch_control_invocations();
-    assert_eq!(handles[0].starts.get(), 1);
-    assert_eq!(handles[1].starts.get(), 1);
-    assert!(app.pending_history_controls().is_empty());
+
+    phase component_empty_duplicate_resource_refuses_saved_continuation;
+    {
+        for depth in [1, 2] {
+            let (root, handles, _) =
+                component_control_root(&[("duplicate", tilo_actions::ConfirmationPolicy::None)]);
+            handles[0]
+                .binding
+                .queued_controls
+                .borrow_mut()
+                .push_back(nested_control("duplicate", "original", 1));
+            let mut app = app();
+            app.root_widget = root;
+            layout(&mut app);
+            let named_action_target = named(&mut app, "History");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            handles[0].duplicate_depth.set(depth);
+            let named_action_target = named(&mut app, "History");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            let named_action_target = named(&mut app, "Continue");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            assert_eq!(handles[0].starts.get(), 0, "duplicate depth {depth}");
+            assert!(
+                matches!(&app.pending_history_controls()[0].status, crate::history_mode::pending_controls::PendingControlStatus::Refused(reason) if reason.contains("declaration"))
+            );
+            assert_eq!(
+                app.pending_history_controls()[0].invocation,
+                nested_control("duplicate", "original", 1)
+            );
+        }
+    }
 }
 
 /// The held controls without their names. A control whose declaration did
@@ -4164,172 +4052,324 @@ fn unlabelled(
     controls
 }
 
-#[test]
-fn partial_capture_failed_through_return_never_automatically_dispatches_old_queues() {
-    let (root, handles, failed) = component_control_root(&[
-        ("sealed-a", tilo_actions::ConfirmationPolicy::None),
-        ("sealed-b", tilo_actions::ConfirmationPolicy::None),
-    ]);
-    for (i, id) in ["sealed-a", "sealed-b"].iter().enumerate() {
-        handles[i]
+tilo_test_env::scenario! {
+    fn partial_capture_seals_and_discards_what_was_queued;
+
+    phase managed_history_partial_component_capture_preserves_json_batches_without_double_capture;
+    {
+        let (root, handles, fail_after_first) = component_control_root(&[
+            ("component-a", tilo_actions::ConfirmationPolicy::None),
+            ("component-b", tilo_actions::ConfirmationPolicy::None),
+        ]);
+        handles[0]
             .binding
             .queued_controls
             .borrow_mut()
-            .push_back(nested_control(id, "original", i64::try_from(i).unwrap()));
-    }
-    failed.set(true);
-    let mut app = app();
-    app.root_widget = root;
-    layout(&mut app);
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    assert_eq!(app.pending_history_controls().len(), 1);
-    layout(&mut app);
-    for (i, id) in ["sealed-a", "sealed-b"].iter().enumerate() {
-        handles[i]
+            .push_back(nested_control("component-a", "first", 1));
+        handles[1]
             .binding
             .queued_controls
             .borrow_mut()
-            .push_back(nested_control(
-                id,
-                "suspended",
-                10 + i64::try_from(i).unwrap(),
-            ));
-    }
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    layout(&mut app);
-    assert!(
-        failed.get(),
-        "custody remains unreachable throughout public return"
-    );
-    assert!(
-        !app.framework_input.get(),
-        "the framework input frame has ended"
-    );
-    assert!(!app.history.as_ref().unwrap().captures_input());
-    let saved = app.pending_history_controls();
-    assert_eq!(saved.len(), 2);
-    for (i, id) in ["sealed-a", "sealed-b"].iter().enumerate() {
+            .push_back(nested_control("component-b", "second", 2));
+        fail_after_first.set(true);
+        let mut app = app();
+        app.root_widget = root;
+        layout(&mut app);
+        let resolved = crate::bound_dispatch::resolve_component_resource(
+            app.root_widget.as_mut(),
+            &app.state.doc,
+            &handles[0].binding,
+            "component-a",
+            COMPONENT_CONTROL_ACTION,
+        )
+        .unwrap();
+        assert!(
+            resolved.is_some(),
+            "controlled component resource must resolve"
+        );
+
+        let named_action_target = named(&mut app, "History");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        assert_eq!(app.pending_history_controls().len(), 1);
+        assert!(
+            format!("{:?}", app.build_a11y_tree_update(1.0).nodes)
+                .contains("component capture refused")
+        );
+        assert!(handles[0].binding.queued_controls.borrow().is_empty());
+        assert!(
+            handles[1].binding.queued_controls.borrow().is_empty(),
+            "the unvisited owner's original is sealed, with no live queued copy"
+        );
+
+        fail_after_first.set(false);
+        layout(&mut app);
         assert_eq!(
-            saved[i].invocation,
-            nested_control(id, "original", i64::try_from(i).unwrap())
+            app.pending_history_controls().len(),
+            2,
+            "the next framework refresh resumes the interrupted capture"
+        );
+        let named_action_target = named(&mut app, "History");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        layout(&mut app);
+        assert_eq!(
+            handles[0].starts.get(),
+            0,
+            "retained first batch stays inert"
+        );
+        assert_eq!(handles[1].starts.get(), 0, "retained sibling stays inert");
+
+        let named_action_target = named(&mut app, "History");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        layout(&mut app);
+        assert_eq!(app.pending_history_controls().len(), 2, "no double capture");
+        let named_action_target = named(&mut app, "History");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        layout(&mut app);
+        let named_action_target = named(&mut app, "Continue");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        assert_eq!(
+            handles[0].starts.get(),
+            1,
+            "first retained batch status: {:?}",
+            app.pending_history_controls()
+        );
+        assert_eq!(handles[0].payloads.borrow()[0]["alias"], "first");
+        assert_eq!(handles[1].starts.get(), 0);
+        assert_eq!(app.pending_history_controls().len(), 1);
+        layout(&mut app);
+        let named_action_target = named(&mut app, "Continue");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        assert_eq!(handles[1].starts.get(), 1);
+        assert_eq!(handles[1].payloads.borrow()[0]["alias"], "second");
+        assert!(app.pending_history_controls().is_empty());
+    }
+
+    phase partial_capture_seals_reachable_and_unvisited_queues_at_entry;
+    {
+        let (root, handles, failed) = component_control_root(&[
+            ("sealed-a", tilo_actions::ConfirmationPolicy::None),
+            ("sealed-b", tilo_actions::ConfirmationPolicy::None),
+        ]);
+        for (i, id) in ["sealed-a", "sealed-b"].iter().enumerate() {
+            handles[i]
+                .binding
+                .queued_controls
+                .borrow_mut()
+                .push_back(nested_control(id, "original", i64::try_from(i).unwrap()));
+        }
+        failed.set(true);
+        let mut app = app();
+        app.root_widget = root;
+        layout(&mut app);
+        let named_action_target = named(&mut app, "History");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        assert_eq!(app.pending_history_controls().len(), 1);
+        for (i, id) in ["sealed-a", "sealed-b"].iter().enumerate() {
+            handles[i]
+                .binding
+                .queued_controls
+                .borrow_mut()
+                .push_back(nested_control(
+                    id,
+                    "post-entry",
+                    10 + i64::try_from(i).unwrap(),
+                ));
+        }
+        failed.set(false);
+        layout(&mut app);
+        assert_eq!(
+            app.pending_history_controls().len(),
+            2,
+            "only the sealed pre-entry requests can recover"
+        );
+        assert!(
+            app.pending_history_controls()
+                .iter()
+                .all(|item| item.invocation.arguments["alias"] == "original")
+        );
+        let named_action_target = named(&mut app, "History");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        layout(&mut app);
+        for i in 0..2 {
+            let named_action_target = named(&mut app, "Continue");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            assert_eq!(handles[i].starts.get(), 1);
+            assert_eq!(handles[i].payloads.borrow()[0]["alias"], "original");
+            layout(&mut app);
+        }
+        app.dispatch_control_invocations();
+        assert_eq!(handles[0].starts.get(), 1);
+        assert_eq!(handles[1].starts.get(), 1);
+        assert!(app.pending_history_controls().is_empty());
+    }
+
+    phase partial_capture_failed_through_return_never_automatically_dispatches_old_queues;
+    {
+        let (root, handles, failed) = component_control_root(&[
+            ("sealed-a", tilo_actions::ConfirmationPolicy::None),
+            ("sealed-b", tilo_actions::ConfirmationPolicy::None),
+        ]);
+        for (i, id) in ["sealed-a", "sealed-b"].iter().enumerate() {
+            handles[i]
+                .binding
+                .queued_controls
+                .borrow_mut()
+                .push_back(nested_control(id, "original", i64::try_from(i).unwrap()));
+        }
+        failed.set(true);
+        let mut app = app();
+        app.root_widget = root;
+        layout(&mut app);
+        let named_action_target = named(&mut app, "History");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        assert_eq!(app.pending_history_controls().len(), 1);
+        layout(&mut app);
+        for (i, id) in ["sealed-a", "sealed-b"].iter().enumerate() {
+            handles[i]
+                .binding
+                .queued_controls
+                .borrow_mut()
+                .push_back(nested_control(
+                    id,
+                    "suspended",
+                    10 + i64::try_from(i).unwrap(),
+                ));
+        }
+        let named_action_target = named(&mut app, "History");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        layout(&mut app);
+        assert!(
+            failed.get(),
+            "custody remains unreachable throughout public return"
+        );
+        assert!(
+            !app.framework_input.get(),
+            "the framework input frame has ended"
+        );
+        assert!(!app.history.as_ref().unwrap().captures_input());
+        let saved = app.pending_history_controls();
+        assert_eq!(saved.len(), 2);
+        for (i, id) in ["sealed-a", "sealed-b"].iter().enumerate() {
+            assert_eq!(
+                saved[i].invocation,
+                nested_control(id, "original", i64::try_from(i).unwrap())
+            );
+        }
+        assert!(
+            saved[1]
+                .confirmation
+                .as_ref()
+                .unwrap_err()
+                .contains("bring back")
+        );
+
+        failed.set(false);
+        app.dispatch_control_invocations();
+        assert_eq!(handles[0].starts.get(), 0);
+        assert_eq!(
+            handles[1].starts.get(),
+            0,
+            "old copies and suspended output must never start without Continue"
+        );
+        assert_eq!(app.pending_history_controls(), saved);
+
+        // A later History visit must not rebaseline the failed original or capture
+        // an old queue copy. Both independent owners still accept genuinely fresh work.
+        palette_history_round_trip(&mut app);
+        assert_eq!(
+            unlabelled(app.pending_history_controls()),
+            unlabelled(saved.clone())
+        );
+        for (i, id) in ["sealed-a", "sealed-b"].iter().enumerate() {
+            handles[i]
+                .binding
+                .queued_controls
+                .borrow_mut()
+                .push_back(nested_control(id, "fresh", 20 + i64::try_from(i).unwrap()));
+        }
+        app.dispatch_control_invocations();
+        for handle in &handles {
+            assert_eq!(handle.starts.get(), 1);
+            assert_eq!(handle.payloads.borrow()[0]["alias"], "fresh");
+        }
+        assert_eq!(
+            unlabelled(app.pending_history_controls()),
+            unlabelled(saved.clone())
         );
     }
-    assert!(
-        saved[1]
-            .confirmation
-            .as_ref()
-            .unwrap_err()
-            .contains("bring back")
-    );
 
-    failed.set(false);
-    app.dispatch_control_invocations();
-    assert_eq!(handles[0].starts.get(), 0);
-    assert_eq!(
-        handles[1].starts.get(),
-        0,
-        "old copies and suspended output must never start without Continue"
-    );
-    assert_eq!(app.pending_history_controls(), saved);
-
-    // A later History visit must not rebaseline the failed original or capture
-    // an old queue copy. Both independent owners still accept genuinely fresh work.
-    palette_history_round_trip(&mut app);
-    assert_eq!(
-        unlabelled(app.pending_history_controls()),
-        unlabelled(saved.clone())
-    );
-    for (i, id) in ["sealed-a", "sealed-b"].iter().enumerate() {
-        handles[i]
+    phase driver_partial_capture_failed_through_return_discards_initially_empty_owner_queue;
+    {
+        let (root, handles, failed) = component_control_root(&[
+            ("sealed-a", tilo_actions::ConfirmationPolicy::None),
+            ("sealed-b", tilo_actions::ConfirmationPolicy::None),
+        ]);
+        handles[0]
             .binding
             .queued_controls
             .borrow_mut()
-            .push_back(nested_control(id, "fresh", 20 + i64::try_from(i).unwrap()));
+            .push_back(nested_control("sealed-a", "original", 1));
+        failed.set(true);
+        let registration = HistoryRegistration::new(
+            &HISTORY,
+            vec![HistorySourceRegistration::HostDocument {
+                scope: "document",
+                resource: HistoryResource::new(
+                    "native-fixture",
+                    "lifetime-904",
+                    HISTORY.app_id,
+                    crate::RecordId::for_tab(904),
+                ),
+            }],
+        )
+        .unwrap();
+        let mut state = State::new();
+        state.doc.put(ROOT, "body", "live").unwrap();
+        state.commit_action(None, None);
+        let mut driver = crate::headless::FrameHarness::from_managed_root(
+            state,
+            ManagedRoot::new(root, registration),
+            (900, 650),
+        )
+        .unwrap();
+        driver.click_named("history-open").unwrap();
+        assert_eq!(driver.pending_history_controls().len(), 1);
+        handles[1]
+            .binding
+            .queued_controls
+            .borrow_mut()
+            .push_back(nested_control("sealed-b", "suspended", 2));
+        driver.click_named("history-open").unwrap();
+        assert!(failed.get());
+        let saved = driver.pending_history_controls();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(
+            saved[0].invocation,
+            nested_control("sealed-a", "original", 1)
+        );
+        assert_eq!(
+            saved[0].status,
+            crate::history_mode::pending_controls::PendingControlStatus::Ready
+        );
+        failed.set(false);
+        driver.send(&winit::event::WindowEvent::Focused(true));
+        assert_eq!(handles[0].starts.get(), 0);
+        assert_eq!(
+            handles[1].starts.get(),
+            0,
+            "a queue empty at entry is still owned by suspension"
+        );
+        assert_eq!(driver.pending_history_controls(), saved);
+        handles[1]
+            .binding
+            .queued_controls
+            .borrow_mut()
+            .push_back(nested_control("sealed-b", "fresh", 3));
+        driver.send(&winit::event::WindowEvent::Focused(true));
+        assert_eq!(handles[1].starts.get(), 1);
+        assert_eq!(handles[1].payloads.borrow()[0]["alias"], "fresh");
+        assert_eq!(driver.pending_history_controls(), saved);
     }
-    app.dispatch_control_invocations();
-    for handle in &handles {
-        assert_eq!(handle.starts.get(), 1);
-        assert_eq!(handle.payloads.borrow()[0]["alias"], "fresh");
-    }
-    assert_eq!(
-        unlabelled(app.pending_history_controls()),
-        unlabelled(saved.clone())
-    );
-}
-
-#[test]
-fn driver_partial_capture_failed_through_return_discards_initially_empty_owner_queue() {
-    let (root, handles, failed) = component_control_root(&[
-        ("sealed-a", tilo_actions::ConfirmationPolicy::None),
-        ("sealed-b", tilo_actions::ConfirmationPolicy::None),
-    ]);
-    handles[0]
-        .binding
-        .queued_controls
-        .borrow_mut()
-        .push_back(nested_control("sealed-a", "original", 1));
-    failed.set(true);
-    let registration = HistoryRegistration::new(
-        &HISTORY,
-        vec![HistorySourceRegistration::HostDocument {
-            scope: "document",
-            resource: HistoryResource::new(
-                "native-fixture",
-                "lifetime-904",
-                HISTORY.app_id,
-                crate::RecordId::for_tab(904),
-            ),
-        }],
-    )
-    .unwrap();
-    let mut state = State::new();
-    state.doc.put(ROOT, "body", "live").unwrap();
-    state.commit_action(None, None);
-    let mut driver = crate::headless::FrameHarness::from_managed_root(
-        state,
-        ManagedRoot::new(root, registration),
-        (900, 650),
-    )
-    .unwrap();
-    driver.click_named("history-open").unwrap();
-    assert_eq!(driver.pending_history_controls().len(), 1);
-    handles[1]
-        .binding
-        .queued_controls
-        .borrow_mut()
-        .push_back(nested_control("sealed-b", "suspended", 2));
-    driver.click_named("history-open").unwrap();
-    assert!(failed.get());
-    let saved = driver.pending_history_controls();
-    assert_eq!(saved.len(), 1);
-    assert_eq!(
-        saved[0].invocation,
-        nested_control("sealed-a", "original", 1)
-    );
-    assert_eq!(
-        saved[0].status,
-        crate::history_mode::pending_controls::PendingControlStatus::Ready
-    );
-    failed.set(false);
-    driver.send(&winit::event::WindowEvent::Focused(true));
-    assert_eq!(handles[0].starts.get(), 0);
-    assert_eq!(
-        handles[1].starts.get(),
-        0,
-        "a queue empty at entry is still owned by suspension"
-    );
-    assert_eq!(driver.pending_history_controls(), saved);
-    handles[1]
-        .binding
-        .queued_controls
-        .borrow_mut()
-        .push_back(nested_control("sealed-b", "fresh", 3));
-    driver.send(&winit::event::WindowEvent::Focused(true));
-    assert_eq!(handles[1].starts.get(), 1);
-    assert_eq!(handles[1].payloads.borrow()[0]["alias"], "fresh");
-    assert_eq!(driver.pending_history_controls(), saved);
 }
 
 #[test]
@@ -4424,64 +4464,68 @@ fn mounted_component_bridge_first_emits_after_return_and_discards_suspended_outp
     assert!(app.pending_history_controls().is_empty());
 }
 
-#[test]
-fn managed_constructor_rejects_invalid_owner_before_constructing_inputs() {
-    let (_root, handles, _) =
-        component_control_root(&[("invalid-owner", tilo_actions::ConfirmationPolicy::None)]);
-    let registration = HistoryRegistration::new(
-        &HISTORY,
-        vec![
-            HistorySourceRegistration::owned(
-                "document",
-                HISTORY.app_id,
-                HistoryOwner::component(handles[0].binding.clone()),
-            )
-            .unwrap(),
-        ],
-    )
-    .unwrap();
-    let called = Cell::new(false);
-    let result = App::from_managed_root_with_constructor(
-        State::new(),
-        ManagedRoot::new(
-            Box::new(crate::widget::Text::new("No registered owner here")),
-            registration,
-        ),
-        |state, widget| {
-            called.set(true);
-            App::new_with_controlled_inputs(state, widget)
-        },
-    );
-    assert!(matches!(
-        result,
-        Err(HistoryRegistrationError::UnsupportedOwner)
-    ));
-    assert!(
-        !called.get(),
-        "invalid custody must refuse before input construction"
-    );
-}
+tilo_test_env::scenario! {
+    fn managed_constructors_validate_their_owner_and_install_history;
 
-#[test]
-fn controlled_managed_constructor_installs_real_history_composition() {
-    let mut app = app();
-    assert!(app.validate_history_registration().is_ok());
-    layout(&mut app);
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    layout(&mut app);
-    assert!(app.history.as_ref().unwrap().captures_input());
-    assert!(
-        app.build_a11y_tree_update(1.0)
-            .nodes
-            .iter()
-            .any(|(_, node)| node.role() == accesskit::Role::List)
-    );
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    layout(&mut app);
-    assert!(!app.history.as_ref().unwrap().captures_input());
-    assert!(app.validate_history_registration().is_ok());
+    phase managed_constructor_rejects_invalid_owner_before_constructing_inputs;
+    {
+        let (_root, handles, _) =
+            component_control_root(&[("invalid-owner", tilo_actions::ConfirmationPolicy::None)]);
+        let registration = HistoryRegistration::new(
+            &HISTORY,
+            vec![
+                HistorySourceRegistration::owned(
+                    "document",
+                    HISTORY.app_id,
+                    HistoryOwner::component(handles[0].binding.clone()),
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        let called = Cell::new(false);
+        let result = App::from_managed_root_with_constructor(
+            State::new(),
+            ManagedRoot::new(
+                Box::new(crate::widget::Text::new("No registered owner here")),
+                registration,
+            ),
+            |state, widget| {
+                called.set(true);
+                App::new_with_controlled_inputs(state, widget)
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(HistoryRegistrationError::UnsupportedOwner)
+        ));
+        assert!(
+            !called.get(),
+            "invalid custody must refuse before input construction"
+        );
+    }
+
+    phase controlled_managed_constructor_installs_real_history_composition;
+    {
+        let mut app = app();
+        assert!(app.validate_history_registration().is_ok());
+        layout(&mut app);
+        let named_action_target = named(&mut app, "History");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        layout(&mut app);
+        assert!(app.history.as_ref().unwrap().captures_input());
+        assert!(
+            app.build_a11y_tree_update(1.0)
+                .nodes
+                .iter()
+                .any(|(_, node)| node.role() == accesskit::Role::List)
+        );
+        let named_action_target = named(&mut app, "History");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        layout(&mut app);
+        assert!(!app.history.as_ref().unwrap().captures_input());
+        assert!(app.validate_history_registration().is_ok());
+    }
 }
 
 struct CustodyDeniedRoot {
@@ -4632,140 +4676,6 @@ fn denied_bridge_with_exit_emission() -> DeniedBridge {
         starts,
         payloads,
         host,
-    }
-}
-
-#[test]
-fn control_custody_core_seals_and_discards_through_unreachable_private_routes() {
-    // Native App: output queued before entry is sealed, hidden and exit
-    // output is discarded, and only the sealed entry continues.
-    {
-        let DeniedBridge {
-            root,
-            registration,
-            emitter,
-            denied,
-            exit_armed,
-            exit_calls,
-            starts,
-            payloads,
-            host: _host,
-        } = denied_bridge_with_exit_emission();
-        let mut app = App::from_managed_root_with_controlled_inputs(
-            State::new(),
-            ManagedRoot::new(root, registration),
-        )
-        .unwrap();
-        assert!(app.validate_history_registration().is_ok());
-        layout(&mut app);
-        // The callback retains only the ordinary live emitter across History.
-        let emit_later = |alias: &str| {
-            emitter
-                .borrow_mut()
-                .emit(nested_control("actual-bridge", alias, 7).arguments)
-                .unwrap()
-        };
-        emit_later("entry");
-        denied.set(true);
-        let named_action_target = named(&mut app, "History");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        emit_later("hidden");
-        exit_armed.set(true);
-        let named_action_target = named(&mut app, "History");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        assert!(!app.history.as_ref().unwrap().captures_input());
-        assert_eq!(
-            exit_calls.get(),
-            1,
-            "real live layout callback runs during return"
-        );
-        denied.set(false);
-        let named_action_target = named(&mut app, "Live pulse");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        assert_eq!(
-            starts.get(),
-            0,
-            "hidden private output must never enter an ordinary action door after return"
-        );
-        assert_eq!(app.pending_history_controls().len(), 1);
-        assert_eq!(
-            app.pending_history_controls()[0].invocation,
-            nested_control("actual-bridge", "entry", 7)
-        );
-        let named_action_target = named(&mut app, "Continue");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        assert_eq!(starts.get(), 1);
-        assert_eq!(payloads.borrow()[0]["alias"], "entry");
-    }
-    // Headless FrameHarness: the same routes with an empty and a multi-entry queue.
-    for entries in [0, 3] {
-        let DeniedBridge {
-            root,
-            registration,
-            emitter,
-            denied,
-            exit_armed,
-            exit_calls,
-            starts,
-            payloads,
-            host: _host,
-        } = denied_bridge_with_exit_emission();
-        let mut driver = crate::headless::FrameHarness::from_managed_root_with_controlled_inputs(
-            State::new(),
-            ManagedRoot::new(root, registration),
-            (900, 650),
-            crate::Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::application_test_support::author(),
-        )
-        .unwrap();
-        for i in 0..entries {
-            emitter
-                .borrow_mut()
-                .emit(nested_control("actual-bridge", "entry", i).arguments)
-                .unwrap();
-        }
-        denied.set(true);
-        driver
-            .perform_a11y_action(
-                driver.a11y_node_named("History").unwrap(),
-                &crate::a11y::Action::Activate,
-            )
-            .unwrap();
-        emitter
-            .borrow_mut()
-            .emit(nested_control("actual-bridge", "hidden", 11).arguments)
-            .unwrap();
-        exit_armed.set(true);
-        driver
-            .perform_a11y_action(
-                driver.a11y_node_named("History").unwrap(),
-                &crate::a11y::Action::Activate,
-            )
-            .unwrap();
-        assert!(denied.get());
-        assert_eq!(exit_calls.get(), 1, "FrameHarness exit layout callback");
-        let saved = driver.pending_history_controls();
-        assert_eq!(saved.len(), entries as usize);
-        denied.set(false);
-        driver.send(&winit::event::WindowEvent::Focused(true));
-        assert_eq!(starts.get(), 0);
-        for (i, item) in saved.iter().enumerate() {
-            assert_eq!(
-                item.invocation,
-                nested_control("actual-bridge", "entry", i64::try_from(i).unwrap())
-            );
-        }
-        emitter
-            .borrow_mut()
-            .emit(nested_control("actual-bridge", "fresh", 12).arguments)
-            .unwrap();
-        driver.send(&winit::event::WindowEvent::Focused(true));
-        assert_eq!(starts.get(), 1);
-        assert_eq!(payloads.borrow()[0]["alias"], "fresh");
-        assert_eq!(driver.pending_history_controls(), saved);
     }
 }
 
@@ -5175,167 +5085,6 @@ const CUSTODY_MATRIX: &[&str] = &[
     "EmptyState",
 ];
 
-#[test]
-fn control_custody_core_all_shared_controls_keep_ordinary_live_behavior() {
-    for kind in CUSTODY_MATRIX {
-        let (mut app, ledger) = custody_matrix_app(kind);
-        let first = custody_matrix_activate(&mut app, kind, false);
-        let named_action_target = named(&mut app, "Live pulse");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        assert_eq!(&*ledger.borrow(), &[first], "before History: {kind}");
-        palette_history_round_trip(&mut app);
-        let second = custody_matrix_activate(&mut app, kind, true);
-        let named_action_target = named(&mut app, "Live pulse");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        assert_eq!(ledger.borrow().len(), 2, "after return: {kind}");
-        assert_eq!(ledger.borrow()[1], second, "fresh typed value: {kind}");
-        assert!(app.pending_history_controls().is_empty());
-    }
-}
-
-#[test]
-fn control_custody_core_shared_controls_seal_exact_pending_values() {
-    for kind in CUSTODY_MATRIX {
-        let (mut app, ledger) = custody_matrix_app(kind);
-        let expected = custody_matrix_activate(&mut app, kind, false);
-        let named_action_target = named(&mut app, "History");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        let saved = app.pending_history_controls();
-        assert_eq!(saved.len(), 1, "{kind}");
-        if *kind == "ToggleGroupView" {
-            assert_eq!(saved[0].invocation.arguments["index"], 1);
-        } else {
-            assert_eq!(
-                serde_json::Value::Object(saved[0].invocation.arguments.clone()),
-                expected,
-                "{kind}"
-            );
-        }
-        assert!(saved[0].owner.starts_with("outer root "));
-        let named_action_target = named(&mut app, "History");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        layout(&mut app);
-        let named_action_target = named(&mut app, "Live pulse");
-        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-        assert!(ledger.borrow().is_empty(), "return cannot admit {kind}");
-        assert_eq!(
-            app.pending_history_controls()[0].invocation,
-            saved[0].invocation
-        );
-    }
-}
-
-#[test]
-fn control_custody_core_first_emission_after_return_keeps_live_semantics() {
-    let (complete_tx, complete_rx) = std::sync::mpsc::channel();
-    let completions = Rc::new(Cell::new(0));
-    let BridgeComponent {
-        component,
-        binding,
-        registration,
-        emitter,
-        starts,
-        payloads,
-        host: _host,
-    } = bridge_component(
-        Some(CustodyEnteredOperation {
-            receiver: complete_rx,
-            active: None,
-            completions: completions.clone(),
-        }),
-        true,
-    );
-    let denied = Rc::new(Cell::new(false));
-    let root = Box::new(CustodyDeniedRoot {
-        child: Box::new(
-            crate::widget::Column::new()
-                .push(Box::new(crate::widget::BoundAppWidget::new(component)))
-                .push(Box::new(
-                    crate::widget::Button::new("live-pulse", "Live pulse").on_effect(|| {}),
-                )),
-        ),
-        denied: denied.clone(),
-        exit_callback: None,
-    });
-    let mut app = App::from_managed_root_with_controlled_inputs(
-        State::new(),
-        ManagedRoot::new(root, registration),
-    )
-    .unwrap();
-    assert!(app.validate_history_registration().is_ok());
-    layout(&mut app);
-    // The callback retains only the ordinary live emitter across History.
-    let emit_later = |alias: &str| {
-        emitter
-            .borrow_mut()
-            .emit(nested_control("actual-bridge", alias, 7).arguments)
-            .unwrap()
-    };
-    emit_later("entered-before-history");
-    let named_action_target = named(&mut app, "Live pulse");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    assert_eq!(starts.get(), 1);
-    emit_later("saved-E");
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    layout(&mut app);
-    complete_tx.send(()).unwrap();
-    app.dispatch_framework_history_event(&winit::event::WindowEvent::Focused(true), 1.0);
-    app.dispatch_framework_history_event(&winit::event::WindowEvent::Focused(true), 1.0);
-    assert_eq!(
-        completions.get(),
-        1,
-        "entered operation settles exactly once while hidden"
-    );
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    layout(&mut app);
-    let saved = app.pending_history_controls();
-    denied.set(true);
-    emit_later("first-emission-F");
-    let named_action_target = named(&mut app, "Live pulse");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    assert_eq!(
-        starts.get(),
-        2,
-        "registered dispatch does not need mutable queue traversal"
-    );
-    assert_eq!(
-        payloads.borrow()[1],
-        serde_json::json!({"alias":"first-emission-F","nested":{"route":{"leaf":7}}})
-    );
-    assert_eq!(app.pending_history_controls(), saved);
-    binding.closing.set(true);
-    emit_later("revoked-owner");
-    let named_action_target = named(&mut app, "Live pulse");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    assert_eq!(
-        starts.get(),
-        2,
-        "current owner revocation remains canonical"
-    );
-    let (mut confirming, confirmed_ledger) =
-        custody_matrix_app_with_confirmation("Button", tilo_actions::ConfirmationPolicy::Confirm);
-    palette_history_round_trip(&mut confirming);
-    custody_matrix_activate(&mut confirming, "Button", false);
-    let named_action_target = named(&mut confirming, "Live pulse");
-    confirming.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    assert!(
-        confirmed_ledger.borrow().is_empty(),
-        "fresh F still requires current confirmation"
-    );
-    assert_eq!(editor_snapshot(&confirming).2, "confirmation");
-    confirming
-        .actions
-        .action_palette
-        .as_deref_mut()
-        .unwrap()
-        .set_query("CONFIRM");
-    palette_enter(&mut confirming);
-    assert_eq!(&*confirmed_ledger.borrow(), &[serde_json::json!({})]);
-}
-
 impl crate::widget::AppWidget for CustodyControlsRoot {
     fn app_kind(&self) -> crate::widget::AppKind {
         crate::widget::AppKind::Editor
@@ -5367,195 +5116,494 @@ fn custody_owned_button(
     }
 }
 
-#[test]
-fn control_custody_core_mounted_modelview_hidden_builder_and_fresh_button() {
-    let scope = crate::WakeScope::new();
-    let _entry = scope.enter();
-    let domain = crate::control_custody::ControlDomain::outer();
-    let key = Rc::new(Cell::new(false));
-    let projection = key.clone();
-    let retained = Rc::new(RefCell::new(None));
-    let output = retained.clone();
-    let resource = custody_matrix_spec("Button");
-    let binding = tilo_actions::ActionBinding::unit_for(&resource, "run").unwrap();
-    let view = crate::widget::ModelView::from_document_in(
-        &domain,
-        move |_, _| projection.get(),
-        move |mounted, domain| {
-            if !*mounted {
-                return Box::new(crate::widget::Text::new("Waiting"));
-            }
-            let outbox = domain.producer(crate::ControlProducerDiscipline::ReplaceOne);
-            assert_eq!(
-                outbox.emit(binding.invoke(()).unwrap()),
-                Ok(crate::control_custody::LocalEmission::Suppressed),
-                "builder sees covering lease before emitting"
-            );
-            *output.borrow_mut() = Some(outbox);
-            Box::new(crate::widget::Button::new("dynamic", "Dynamic").on_action(binding.clone()))
-        },
-    );
-    let ledger = Rc::new(RefCell::new(Vec::new()));
-    let root = CustodyControlsRoot {
-        draw_callback: None,
-        overlay_callback: None,
-        mark_drawn_callback: None,
-        unsettled_layout: None,
-        installed_output: None,
-        record: None,
-        child: Box::new(view),
-        resources: vec![resource],
-        ledger: ledger.clone(),
-    };
-    let mut app =
-        App::from_scoped_parts_with_controlled_custody(scope, State::new(), Box::new(root), domain);
-    app.install_history(
-        HistoryRegistration::new(
-            &HISTORY,
-            vec![HistorySourceRegistration::HostDocument {
-                scope: "document",
-                resource: HistoryResource::new(
-                    "fixture",
-                    "dynamic",
-                    HISTORY.app_id,
-                    crate::RecordId::for_tab(998),
-                ),
-            }],
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    layout(&mut app);
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    layout(&mut app);
-    key.set(true);
-    // Public host synchronization used for model-derived structure changes.
-    app.layout.node_map.clear();
-    app.bindings.clear();
-    app.refresh_focus_order();
-    layout(&mut app);
-    assert!(retained.borrow().is_some());
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    layout(&mut app);
-    assert!(ledger.borrow().is_empty());
-    assert!(app.pending_history_controls().is_empty());
-    let named_action_target = named(&mut app, "Dynamic");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    assert_eq!(
-        &*ledger.borrow(),
-        &[serde_json::json!({})],
-        "new passive shared control uses ordinary canonical door"
-    );
-}
+tilo_test_env::scenario! {
+    fn control_custody_core_seals_pending_values_and_keeps_live_semantics;
 
-#[test]
-fn control_custody_core_unbound_tile_foreign_attachment_preserves_owner() {
-    use crate::control_custody::{ControlDomain, CustodyAttachment, LocalEmission};
-    use crate::widget::Widget;
-    for suspended in [false, true] {
-        let a = ControlDomain::outer();
-        let b = ControlDomain::outer();
-        let request = tilo_actions::ControlInvocation {
-            address: tilo_actions::ActionAddress::new("fixture:control", "run"),
-            arguments: serde_json::Map::new(),
-        };
-        let origin_key = |item: &crate::control_custody::OwnedControl| {
-            let crate::history_mode::pending_controls::PendingControlOrigin::Outer {
-                root_lifetime,
-            } = &item.origin
-            else {
-                panic!("original outer owner");
-            };
-            *root_lifetime
-        };
-        let probe = a.producer(crate::ControlProducerDiscipline::ReplaceOne);
-        probe.emit(request.clone()).unwrap();
-        let expected_owner = origin_key(&a.drain_live()[0]);
-        let left = a.child();
-        let right = a.child();
-        let output = Rc::new(RefCell::new(None::<crate::ControlOutbox>));
-        let mut live = custody_owned_button("A", Default::default());
-        live.installed_output = Some(output.clone());
-        let mut tile =
-            crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(live)));
-        assert!(tile.history_owner().is_none(), "actual unbound TileHost");
-        crate::widget::controls::install_control_custody(
-            &mut tile,
-            &left,
-            CustodyAttachment::Initial,
-        );
-        a.finish_initial_installation();
-        b.finish_initial_installation();
-        let activate = |tile: &mut crate::widget::TileHost| {
-            assert!(tile.children_mut()[0].children_mut()[0].perform_action(
-                &crate::a11y::Action::Activate,
-                &[],
-                &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
-                &ROOT
-            ));
-        };
-        activate(&mut tile);
-        let (lease, saved) = if suspended {
-            let (lease, saved) = a.suspend();
-            (Some(lease), saved)
-        } else {
-            (None, vec![])
-        };
-        crate::widget::controls::install_control_custody(&mut tile, &b, CustodyAttachment::Dynamic);
-        assert!(
-            b.drain_live().is_empty(),
-            "foreign B must not adopt queued shared-control E"
-        );
-        assert!(
-            b.coverage().unsafe_late_attachments > 0,
-            "foreign attachment must be visibly refused"
-        );
-
-        let emitted = output
-            .borrow()
-            .as_ref()
-            .unwrap()
-            .emit(request.clone())
+    phase control_custody_core_seals_and_discards_through_unreachable_private_routes;
+    {
+        // Native App: output queued before entry is sealed, hidden and exit
+        // output is discarded, and only the sealed entry continues.
+        {
+            let DeniedBridge {
+                root,
+                registration,
+                emitter,
+                denied,
+                exit_armed,
+                exit_calls,
+                starts,
+                payloads,
+                host: _host,
+            } = denied_bridge_with_exit_emission();
+            let mut app = App::from_managed_root_with_controlled_inputs(
+                State::new(),
+                ManagedRoot::new(root, registration),
+            )
             .unwrap();
-        if suspended {
+            assert!(app.validate_history_registration().is_ok());
+            layout(&mut app);
+            // The callback retains only the ordinary live emitter across History.
+            let emit_later = |alias: &str| {
+                emitter
+                    .borrow_mut()
+                    .emit(nested_control("actual-bridge", alias, 7).arguments)
+                    .unwrap()
+            };
+            emit_later("entry");
+            denied.set(true);
+            let named_action_target = named(&mut app, "History");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            emit_later("hidden");
+            exit_armed.set(true);
+            let named_action_target = named(&mut app, "History");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            assert!(!app.history.as_ref().unwrap().captures_input());
             assert_eq!(
-                emitted,
-                LocalEmission::Suppressed,
-                "A lease remains covering"
+                exit_calls.get(),
+                1,
+                "real live layout callback runs during return"
             );
-            assert_eq!(saved.len(), 1);
-            assert_eq!(origin_key(&saved[0]), expected_owner);
-            assert_eq!(saved[0].invocation, request);
-        } else {
-            assert!(matches!(emitted, LocalEmission::Queued(_)));
-            let original = a.drain_live();
-            assert_eq!(original.len(), 2);
-            assert!(
-                original
-                    .iter()
-                    .all(|item| item.invocation == request && origin_key(item) == expected_owner)
+            denied.set(false);
+            let named_action_target = named(&mut app, "Live pulse");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            assert_eq!(
+                starts.get(),
+                0,
+                "hidden private output must never enter an ordinary action door after return"
+            );
+            assert_eq!(app.pending_history_controls().len(), 1);
+            assert_eq!(
+                app.pending_history_controls()[0].invocation,
+                nested_control("actual-bridge", "entry", 7)
+            );
+            let named_action_target = named(&mut app, "Continue");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            assert_eq!(starts.get(), 1);
+            assert_eq!(payloads.borrow()[0]["alias"], "entry");
+        }
+        // Headless FrameHarness: the same routes with an empty and a multi-entry queue.
+        for entries in [0, 3] {
+            let DeniedBridge {
+                root,
+                registration,
+                emitter,
+                denied,
+                exit_armed,
+                exit_calls,
+                starts,
+                payloads,
+                host: _host,
+            } = denied_bridge_with_exit_emission();
+            let mut driver = crate::headless::FrameHarness::from_managed_root_with_controlled_inputs(
+                State::new(),
+                ManagedRoot::new(root, registration),
+                (900, 650),
+                crate::Theme::dark(),
+                crate::font_catalog::fixture_renderer(),
+                crate::application_test_support::author(),
+            )
+            .unwrap();
+            for i in 0..entries {
+                emitter
+                    .borrow_mut()
+                    .emit(nested_control("actual-bridge", "entry", i).arguments)
+                    .unwrap();
+            }
+            denied.set(true);
+            driver
+                .perform_a11y_action(
+                    driver.a11y_node_named("History").unwrap(),
+                    &crate::a11y::Action::Activate,
+                )
+                .unwrap();
+            emitter
+                .borrow_mut()
+                .emit(nested_control("actual-bridge", "hidden", 11).arguments)
+                .unwrap();
+            exit_armed.set(true);
+            driver
+                .perform_a11y_action(
+                    driver.a11y_node_named("History").unwrap(),
+                    &crate::a11y::Action::Activate,
+                )
+                .unwrap();
+            assert!(denied.get());
+            assert_eq!(exit_calls.get(), 1, "FrameHarness exit layout callback");
+            let saved = driver.pending_history_controls();
+            assert_eq!(saved.len(), entries as usize);
+            denied.set(false);
+            driver.send(&winit::event::WindowEvent::Focused(true));
+            assert_eq!(starts.get(), 0);
+            for (i, item) in saved.iter().enumerate() {
+                assert_eq!(
+                    item.invocation,
+                    nested_control("actual-bridge", "entry", i64::try_from(i).unwrap())
+                );
+            }
+            emitter
+                .borrow_mut()
+                .emit(nested_control("actual-bridge", "fresh", 12).arguments)
+                .unwrap();
+            driver.send(&winit::event::WindowEvent::Focused(true));
+            assert_eq!(starts.get(), 1);
+            assert_eq!(payloads.borrow()[0]["alias"], "fresh");
+            assert_eq!(driver.pending_history_controls(), saved);
+        }
+    }
+
+    phase control_custody_core_all_shared_controls_keep_ordinary_live_behavior;
+    {
+        for kind in CUSTODY_MATRIX {
+            let (mut app, ledger) = custody_matrix_app(kind);
+            let first = custody_matrix_activate(&mut app, kind, false);
+            let named_action_target = named(&mut app, "Live pulse");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            assert_eq!(&*ledger.borrow(), &[first], "before History: {kind}");
+            palette_history_round_trip(&mut app);
+            let second = custody_matrix_activate(&mut app, kind, true);
+            let named_action_target = named(&mut app, "Live pulse");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            assert_eq!(ledger.borrow().len(), 2, "after return: {kind}");
+            assert_eq!(ledger.borrow()[1], second, "fresh typed value: {kind}");
+            assert!(app.pending_history_controls().is_empty());
+        }
+    }
+
+    phase control_custody_core_shared_controls_seal_exact_pending_values;
+    {
+        for kind in CUSTODY_MATRIX {
+            let (mut app, ledger) = custody_matrix_app(kind);
+            let expected = custody_matrix_activate(&mut app, kind, false);
+            let named_action_target = named(&mut app, "History");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            let saved = app.pending_history_controls();
+            assert_eq!(saved.len(), 1, "{kind}");
+            if *kind == "ToggleGroupView" {
+                assert_eq!(saved[0].invocation.arguments["index"], 1);
+            } else {
+                assert_eq!(
+                    serde_json::Value::Object(saved[0].invocation.arguments.clone()),
+                    expected,
+                    "{kind}"
+                );
+            }
+            assert!(saved[0].owner.starts_with("outer root "));
+            let named_action_target = named(&mut app, "History");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            layout(&mut app);
+            let named_action_target = named(&mut app, "Live pulse");
+            app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+            assert!(ledger.borrow().is_empty(), "return cannot admit {kind}");
+            assert_eq!(
+                app.pending_history_controls()[0].invocation,
+                saved[0].invocation
             );
         }
-        assert!(
-            b.drain_live().is_empty(),
-            "old retained raw handle cannot route to B"
+    }
+
+    phase control_custody_core_first_emission_after_return_keeps_live_semantics;
+    {
+        let (complete_tx, complete_rx) = std::sync::mpsc::channel();
+        let completions = Rc::new(Cell::new(0));
+        let BridgeComponent {
+            component,
+            binding,
+            registration,
+            emitter,
+            starts,
+            payloads,
+            host: _host,
+        } = bridge_component(
+            Some(CustodyEnteredOperation {
+                receiver: complete_rx,
+                active: None,
+                completions: completions.clone(),
+            }),
+            true,
         );
-        drop(lease);
-        crate::widget::controls::install_control_custody(
-            &mut tile,
-            &right,
-            CustodyAttachment::Dynamic,
-        );
-        activate(&mut tile);
+        let denied = Rc::new(Cell::new(false));
+        let root = Box::new(CustodyDeniedRoot {
+            child: Box::new(
+                crate::widget::Column::new()
+                    .push(Box::new(crate::widget::BoundAppWidget::new(component)))
+                    .push(Box::new(
+                        crate::widget::Button::new("live-pulse", "Live pulse").on_effect(|| {}),
+                    )),
+            ),
+            denied: denied.clone(),
+            exit_callback: None,
+        });
+        let mut app = App::from_managed_root_with_controlled_inputs(
+            State::new(),
+            ManagedRoot::new(root, registration),
+        )
+        .unwrap();
+        assert!(app.validate_history_registration().is_ok());
+        layout(&mut app);
+        // The callback retains only the ordinary live emitter across History.
+        let emit_later = |alias: &str| {
+            emitter
+                .borrow_mut()
+                .emit(nested_control("actual-bridge", alias, 7).arguments)
+                .unwrap()
+        };
+        emit_later("entered-before-history");
+        let named_action_target = named(&mut app, "Live pulse");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        assert_eq!(starts.get(), 1);
+        emit_later("saved-E");
+        let named_action_target = named(&mut app, "History");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        layout(&mut app);
+        complete_tx.send(()).unwrap();
+        app.dispatch_framework_history_event(&winit::event::WindowEvent::Focused(true), 1.0);
+        app.dispatch_framework_history_event(&winit::event::WindowEvent::Focused(true), 1.0);
         assert_eq!(
-            a.drain_live().len(),
+            completions.get(),
             1,
-            "same-owner shared control remains live exactly once"
+            "entered operation settles exactly once while hidden"
         );
-        assert!(b.drain_live().is_empty());
-        assert_eq!(a.coverage().unsafe_late_attachments, 0);
+        let named_action_target = named(&mut app, "History");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        layout(&mut app);
+        let saved = app.pending_history_controls();
+        denied.set(true);
+        emit_later("first-emission-F");
+        let named_action_target = named(&mut app, "Live pulse");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        assert_eq!(
+            starts.get(),
+            2,
+            "registered dispatch does not need mutable queue traversal"
+        );
+        assert_eq!(
+            payloads.borrow()[1],
+            serde_json::json!({"alias":"first-emission-F","nested":{"route":{"leaf":7}}})
+        );
+        assert_eq!(app.pending_history_controls(), saved);
+        binding.closing.set(true);
+        emit_later("revoked-owner");
+        let named_action_target = named(&mut app, "Live pulse");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        assert_eq!(
+            starts.get(),
+            2,
+            "current owner revocation remains canonical"
+        );
+        let (mut confirming, confirmed_ledger) =
+            custody_matrix_app_with_confirmation("Button", tilo_actions::ConfirmationPolicy::Confirm);
+        palette_history_round_trip(&mut confirming);
+        custody_matrix_activate(&mut confirming, "Button", false);
+        let named_action_target = named(&mut confirming, "Live pulse");
+        confirming.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        assert!(
+            confirmed_ledger.borrow().is_empty(),
+            "fresh F still requires current confirmation"
+        );
+        assert_eq!(editor_snapshot(&confirming).2, "confirmation");
+        confirming
+            .actions
+            .action_palette
+            .as_deref_mut()
+            .unwrap()
+            .set_query("CONFIRM");
+        palette_enter(&mut confirming);
+        assert_eq!(&*confirmed_ledger.borrow(), &[serde_json::json!({})]);
+    }
+
+    phase control_custody_core_mounted_modelview_hidden_builder_and_fresh_button;
+    {
+        let scope = crate::WakeScope::new();
+        let _entry = scope.enter();
+        let domain = crate::control_custody::ControlDomain::outer();
+        let key = Rc::new(Cell::new(false));
+        let projection = key.clone();
+        let retained = Rc::new(RefCell::new(None));
+        let output = retained.clone();
+        let resource = custody_matrix_spec("Button");
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "run").unwrap();
+        let view = crate::widget::ModelView::from_document_in(
+            &domain,
+            move |_, _| projection.get(),
+            move |mounted, domain| {
+                if !*mounted {
+                    return Box::new(crate::widget::Text::new("Waiting"));
+                }
+                let outbox = domain.producer(crate::ControlProducerDiscipline::ReplaceOne);
+                assert_eq!(
+                    outbox.emit(binding.invoke(()).unwrap()),
+                    Ok(crate::control_custody::LocalEmission::Suppressed),
+                    "builder sees covering lease before emitting"
+                );
+                *output.borrow_mut() = Some(outbox);
+                Box::new(crate::widget::Button::new("dynamic", "Dynamic").on_action(binding.clone()))
+            },
+        );
+        let ledger = Rc::new(RefCell::new(Vec::new()));
+        let root = CustodyControlsRoot {
+            draw_callback: None,
+            overlay_callback: None,
+            mark_drawn_callback: None,
+            unsettled_layout: None,
+            installed_output: None,
+            record: None,
+            child: Box::new(view),
+            resources: vec![resource],
+            ledger: ledger.clone(),
+        };
+        let mut app =
+            App::from_scoped_parts_with_controlled_custody(scope, State::new(), Box::new(root), domain);
+        app.install_history(
+            HistoryRegistration::new(
+                &HISTORY,
+                vec![HistorySourceRegistration::HostDocument {
+                    scope: "document",
+                    resource: HistoryResource::new(
+                        "fixture",
+                        "dynamic",
+                        HISTORY.app_id,
+                        crate::RecordId::for_tab(998),
+                    ),
+                }],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        layout(&mut app);
+        let named_action_target = named(&mut app, "History");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        layout(&mut app);
+        key.set(true);
+        // Public host synchronization used for model-derived structure changes.
+        app.layout.node_map.clear();
+        app.bindings.clear();
+        app.refresh_focus_order();
+        layout(&mut app);
+        assert!(retained.borrow().is_some());
+        let named_action_target = named(&mut app, "History");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        layout(&mut app);
+        assert!(ledger.borrow().is_empty());
+        assert!(app.pending_history_controls().is_empty());
+        let named_action_target = named(&mut app, "Dynamic");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        assert_eq!(
+            &*ledger.borrow(),
+            &[serde_json::json!({})],
+            "new passive shared control uses ordinary canonical door"
+        );
+    }
+
+    phase control_custody_core_unbound_tile_foreign_attachment_preserves_owner;
+    {
+        use crate::control_custody::{ControlDomain, CustodyAttachment, LocalEmission};
+        use crate::widget::Widget;
+        for suspended in [false, true] {
+            let a = ControlDomain::outer();
+            let b = ControlDomain::outer();
+            let request = tilo_actions::ControlInvocation {
+                address: tilo_actions::ActionAddress::new("fixture:control", "run"),
+                arguments: serde_json::Map::new(),
+            };
+            let origin_key = |item: &crate::control_custody::OwnedControl| {
+                let crate::history_mode::pending_controls::PendingControlOrigin::Outer {
+                    root_lifetime,
+                } = &item.origin
+                else {
+                    panic!("original outer owner");
+                };
+                *root_lifetime
+            };
+            let probe = a.producer(crate::ControlProducerDiscipline::ReplaceOne);
+            probe.emit(request.clone()).unwrap();
+            let expected_owner = origin_key(&a.drain_live()[0]);
+            let left = a.child();
+            let right = a.child();
+            let output = Rc::new(RefCell::new(None::<crate::ControlOutbox>));
+            let mut live = custody_owned_button("A", Default::default());
+            live.installed_output = Some(output.clone());
+            let mut tile =
+                crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(live)));
+            assert!(tile.history_owner().is_none(), "actual unbound TileHost");
+            crate::widget::controls::install_control_custody(
+                &mut tile,
+                &left,
+                CustodyAttachment::Initial,
+            );
+            a.finish_initial_installation();
+            b.finish_initial_installation();
+            let activate = |tile: &mut crate::widget::TileHost| {
+                assert!(tile.children_mut()[0].children_mut()[0].perform_action(
+                    &crate::a11y::Action::Activate,
+                    &[],
+                    &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+                    &ROOT
+                ));
+            };
+            activate(&mut tile);
+            let (lease, saved) = if suspended {
+                let (lease, saved) = a.suspend();
+                (Some(lease), saved)
+            } else {
+                (None, vec![])
+            };
+            crate::widget::controls::install_control_custody(&mut tile, &b, CustodyAttachment::Dynamic);
+            assert!(
+                b.drain_live().is_empty(),
+                "foreign B must not adopt queued shared-control E"
+            );
+            assert!(
+                b.coverage().unsafe_late_attachments > 0,
+                "foreign attachment must be visibly refused"
+            );
+
+            let emitted = output
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .emit(request.clone())
+                .unwrap();
+            if suspended {
+                assert_eq!(
+                    emitted,
+                    LocalEmission::Suppressed,
+                    "A lease remains covering"
+                );
+                assert_eq!(saved.len(), 1);
+                assert_eq!(origin_key(&saved[0]), expected_owner);
+                assert_eq!(saved[0].invocation, request);
+            } else {
+                assert!(matches!(emitted, LocalEmission::Queued(_)));
+                let original = a.drain_live();
+                assert_eq!(original.len(), 2);
+                assert!(
+                    original
+                        .iter()
+                        .all(|item| item.invocation == request && origin_key(item) == expected_owner)
+                );
+            }
+            assert!(
+                b.drain_live().is_empty(),
+                "old retained raw handle cannot route to B"
+            );
+            drop(lease);
+            crate::widget::controls::install_control_custody(
+                &mut tile,
+                &right,
+                CustodyAttachment::Dynamic,
+            );
+            activate(&mut tile);
+            assert_eq!(
+                a.drain_live().len(),
+                1,
+                "same-owner shared control remains live exactly once"
+            );
+            assert!(b.drain_live().is_empty());
+            assert_eq!(a.coverage().unsafe_late_attachments, 0);
+        }
     }
 }
 

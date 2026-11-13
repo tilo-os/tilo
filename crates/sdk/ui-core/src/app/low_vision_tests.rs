@@ -16,148 +16,6 @@ fn own_settings() -> settings_store::SourceScope {
     )))
 }
 
-#[test]
-fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
-    let _settings = own_settings();
-    {
-        let a = app();
-        assert!(!a.high_contrast());
-        assert!(!a.reduce_motion());
-        assert_eq!(a.text_scale(), 1.0);
-        assert!(!a.theme.reduce_motion);
-        assert_eq!(a.theme.text_scale, 1.0);
-    }
-
-    {
-        let mut a = app();
-        let plain_ratio =
-            contrast_ratio(a.theme.text_primary, a.theme.tokens.colors.surfaces.content);
-
-        let now_on = a.toggle_high_contrast();
-        assert!(now_on);
-        assert!(a.high_contrast());
-        let hc_ratio = contrast_ratio(a.theme.text_primary, a.theme.tokens.colors.surfaces.content);
-        assert!(
-            hc_ratio > plain_ratio,
-            "high contrast must raise fg/bg contrast ({hc_ratio:.1} vs {plain_ratio:.1})",
-        );
-        assert_eq!(a.theme.name, "High contrast");
-
-        let now_off = a.toggle_high_contrast();
-        assert!(!now_off);
-        assert!(!a.high_contrast());
-        let restored = contrast_ratio(a.theme.text_primary, a.theme.tokens.colors.surfaces.content);
-        assert!(
-            (restored - plain_ratio).abs() < 1e-6,
-            "off restores base colours"
-        );
-    }
-
-    {
-        let mut a = app();
-        let base = a.theme.tokens.typography.size(TextRole::Body);
-        a.set_text_scale(2.0);
-        assert_eq!(a.text_scale(), 2.0);
-        assert!((a.theme.tokens.typography.size(TextRole::Body) - base * 2.0).abs() < 1e-3);
-        // A scale change must re-run layout so the larger text doesn't clip.
-        assert!(a.layout.layout_dirty);
-    }
-
-    {
-        let mut a = app();
-        a.set_text_scale(1.5);
-        let hc_base = Theme::high_contrast()
-            .tokens
-            .typography
-            .size(TextRole::Body);
-        a.set_high_contrast(true);
-        assert_eq!(
-            a.text_scale(),
-            1.5,
-            "scale preference is preserved across the swap"
-        );
-        assert!((a.theme.tokens.typography.size(TextRole::Body) - hc_base * 1.5).abs() < 1e-3);
-        assert_eq!(a.theme.name, "High contrast");
-    }
-
-    {
-        let mut a = app();
-        assert!(!a.theme.reduce_motion);
-        a.set_reduce_motion(true);
-        assert!(a.reduce_motion());
-        assert!(
-            a.theme.reduce_motion,
-            "the flag reaches the theme widgets draw against"
-        );
-        a.set_reduce_motion(false);
-        assert!(!a.theme.reduce_motion);
-    }
-
-    {
-        let mut a = app();
-        a.set_text_scale(1.25);
-        a.set_reduce_motion(true);
-        a.set_high_contrast(true);
-        // Swap the *base* theme — the a11y layer must re-apply on top.
-        a.set_theme(Theme::light());
-        assert!(a.theme.reduce_motion);
-        assert_eq!(a.text_scale(), 1.25);
-        assert_eq!(a.theme.name, "High contrast light");
-    }
-
-    {
-        let mut a = app();
-        let base_gap = a.theme.tokens.spacing.s3;
-        let base_radius = a.theme.tokens.radii.control;
-        let base_type = a.theme.tokens.typography.size(TextRole::Body);
-        a.set_ui_scale(1.5);
-        assert_eq!(a.ui_scale(), 1.5);
-        assert!(
-            (a.theme.tokens.spacing.s3 - base_gap * 1.5).abs() < 1e-3,
-            "spacing grows"
-        );
-        assert!(
-            (a.theme.tokens.radii.control - base_radius * 1.5).abs() < 1e-3,
-            "radii grow"
-        );
-        assert!(
-            (a.theme.tokens.typography.size(TextRole::Body) - base_type * 1.5).abs() < 1e-3,
-            "type grows"
-        );
-        // A UI-scale change must re-run layout so the whole interface re-flows.
-        assert!(a.layout.layout_dirty);
-    }
-
-    {
-        let mut a = app();
-        let base_type = a.theme.tokens.typography.size(TextRole::Body);
-        let base_gap = a.theme.tokens.spacing.s3;
-        a.set_ui_scale(1.25);
-        a.set_text_scale(1.2);
-        assert_eq!(a.ui_scale(), 1.25);
-        assert_eq!(a.text_scale(), 1.2);
-        // Type picks up BOTH factors; spacing only the UI factor.
-        assert!(
-            (a.theme.tokens.typography.size(TextRole::Body) - base_type * 1.25 * 1.2).abs() < 1e-2
-        );
-        assert!((a.theme.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-2);
-    }
-
-    {
-        let mut a = app();
-        a.set_ui_scale(1.5);
-        let hc_gap = Theme::high_contrast().tokens.spacing.s3;
-        a.set_high_contrast(true);
-        assert_eq!(
-            a.ui_scale(),
-            1.5,
-            "UI-scale preference is preserved across the swap"
-        );
-        assert!((a.theme.tokens.spacing.s3 - hc_gap * 1.5).abs() < 1e-2);
-        assert_eq!(a.theme.name, "High contrast");
-    }
-}
-
 struct AppearanceRoot {
     intent: crate::theme::AppearanceIntent,
 }
@@ -191,58 +49,6 @@ fn intent(
         reduce_motion: false,
         text_scale,
         ui_scale,
-    }
-}
-
-#[test]
-fn appearance_reconcile_is_a_noop_when_off_and_applies_live_otherwise() {
-    let _settings = own_settings();
-    {
-        let root = AppearanceRoot {
-            intent: intent(Theme::light(), 1.5, 1.3, true),
-        };
-        let mut a = App::new(State::new(), Box::new(root));
-        assert!(!a.reconcile_appearance());
-        assert_eq!(a.theme.name, "Dark");
-        assert_eq!(a.ui_scale(), 1.0);
-    }
-
-    {
-        let base_gap = Theme::high_contrast().tokens.spacing.s3;
-        let base_type = Theme::high_contrast()
-            .tokens
-            .typography
-            .size(TextRole::Body);
-        // Light base + high_contrast=true → high-contrast track wins; ui 1.5, text 1.2.
-        let root = AppearanceRoot {
-            intent: intent(Theme::light(), 1.5, 1.2, true),
-        };
-        let mut a = App::new(State::new(), Box::new(root));
-        a.appearance_reconcile = true;
-        assert!(
-            a.reconcile_appearance(),
-            "first reconcile applies the intent"
-        );
-        assert_eq!(a.ui_scale(), 1.5);
-        assert_eq!(a.text_scale(), 1.2);
-        assert!(a.high_contrast());
-        assert_eq!(
-            a.theme.name, "High contrast light",
-            "high_contrast overrides the Light base with its own polarity"
-        );
-        // Spacing grew by the UI factor; type by UI × text.
-        assert!((a.theme.tokens.spacing.s3 - base_gap * 1.5).abs() < 1e-1);
-        assert!(
-            (a.theme.tokens.typography.size(TextRole::Body) - base_type * 1.5 * 1.2).abs() < 1e-1
-        );
-        assert!(
-            a.layout.layout_dirty,
-            "a live appearance change re-runs layout"
-        );
-        assert!(
-            !a.reconcile_appearance(),
-            "unchanged intent does not re-theme"
-        );
     }
 }
 
@@ -295,104 +101,302 @@ fn host_appearance_rethemes_through_the_appearance_intent() {
     assert_eq!(a.theme.name, "High contrast light");
 }
 
-#[test]
-fn the_shell_s_window_appearance_dresses_the_theme_and_survives_rebuilds() {
-    use crate::theme::WindowAppearance;
-    use crate::tokens::PresenceHue;
-    let _settings = own_settings();
+tilo_test_env::scenario! {
+    fn low_vision_and_window_appearance_reach_the_theme_and_stay;
 
-    let mut a = app();
-    a.set_theme(Theme::light());
-    let neutral = a.theme.tokens.colors.surfaces.content;
-    assert_eq!(
-        neutral,
-        Theme::light().tokens.colors.surfaces.content,
-        "a window nobody told keeps the stock temperature"
-    );
+    phase low_vision_setters_thread_onto_the_theme_and_survive_toggles;
+    {
+        let _settings = own_settings();
+        {
+            let a = app();
+            assert!(!a.high_contrast());
+            assert!(!a.reduce_motion());
+            assert_eq!(a.text_scale(), 1.0);
+            assert!(!a.theme.reduce_motion);
+            assert_eq!(a.theme.text_scale, 1.0);
+        }
 
-    let told = WindowAppearance {
-        workspace_hue: Some(40.0),
-        your_colour: Some(PresenceHue::Violet),
-        corner_radius: None,
-    };
-    let message = crate::floating_surface::FloatingSurfaceHostMessage::appearance(&told);
-    assert!(a.set_window_appearance(message.window_appearance().unwrap()));
-    assert!(!a.set_window_appearance(told), "the same appearance again");
-    assert_eq!(a.window_appearance(), told);
-    assert_eq!(a.theme.document.palette.hue, Some(40.0));
-    assert_eq!(a.theme.tokens.colors.you, PresenceHue::Violet);
-    // The focus ring is the accent's ink: the colour's hue at the
-    // lightness its contrast floor needs.
-    assert_eq!(
-        a.theme.border_focus,
-        a.theme.tokens.colors.intent.accent_ink
-    );
-    let ring = crate::color::Oklch::from_color(a.theme.border_focus).h;
-    let violet =
-        crate::color::Oklch::from_color(a.theme.tokens.colors.presence.hue(PresenceHue::Violet)).h;
-    let d = (ring - violet).rem_euclid(360.0);
-    assert!(
-        d.min(360.0 - d) <= 15.0,
-        "focus ring, caret and selection follow"
-    );
-    assert_ne!(a.theme.tokens.colors.surfaces.content, neutral);
+        {
+            let mut a = app();
+            let plain_ratio =
+                contrast_ratio(a.theme.text_primary, a.theme.tokens.colors.surfaces.content);
 
-    // A settings change rebuilds from the base theme and keeps the window's.
-    a.set_theme(Theme::light());
-    assert_eq!(a.theme.document.palette.hue, Some(40.0));
-    a.toggle_high_contrast();
-    assert_eq!(a.theme.tokens.colors.you, PresenceHue::Violet);
-    a.toggle_high_contrast();
+            let now_on = a.toggle_high_contrast();
+            assert!(now_on);
+            assert!(a.high_contrast());
+            let hc_ratio = contrast_ratio(a.theme.text_primary, a.theme.tokens.colors.surfaces.content);
+            assert!(
+                hc_ratio > plain_ratio,
+                "high contrast must raise fg/bg contrast ({hc_ratio:.1} vs {plain_ratio:.1})",
+            );
+            assert_eq!(a.theme.name, "High contrast");
 
-    // Moving to a neutral workspace takes the temperature away again.
-    a.set_window_appearance(WindowAppearance {
-        workspace_hue: None,
-        your_colour: Some(PresenceHue::Violet),
-        corner_radius: None,
-    });
-    assert_eq!(a.theme.tokens.colors.surfaces.content, neutral);
-}
+            let now_off = a.toggle_high_contrast();
+            assert!(!now_off);
+            assert!(!a.high_contrast());
+            let restored = contrast_ratio(a.theme.text_primary, a.theme.tokens.colors.surfaces.content);
+            assert!(
+                (restored - plain_ratio).abs() < 1e-6,
+                "off restores base colours"
+            );
+        }
 
-#[test]
-fn shell_palette_message_rethemes_the_open_app_without_settings_file_access() {
-    use crate::floating_surface::FloatingSurfaceHostMessage;
-    let _settings = own_settings();
+        {
+            let mut a = app();
+            let base = a.theme.tokens.typography.size(TextRole::Body);
+            a.set_text_scale(2.0);
+            assert_eq!(a.text_scale(), 2.0);
+            assert!((a.theme.tokens.typography.size(TextRole::Body) - base * 2.0).abs() < 1e-3);
+            // A scale change must re-run layout so the larger text doesn't clip.
+            assert!(a.layout.layout_dirty);
+        }
 
-    let mut app = app();
-    app.set_theme(Theme::dark());
-    app.set_text_scale(1.5);
-    let appearance = crate::theme::WindowAppearance::default();
-    for theme in [Theme::light(), Theme::high_contrast(), Theme::dark()] {
-        let message = FloatingSurfaceHostMessage::appearance_with_theme(&appearance, &theme);
-        let wire = serde_json::to_vec(&message).unwrap();
-        let received = serde_json::from_slice(&wire).unwrap();
-        assert!(app.apply_floating_host_messages(vec![received]));
-        assert_eq!(app.theme.document, theme.document);
+        {
+            let mut a = app();
+            a.set_text_scale(1.5);
+            let hc_base = Theme::high_contrast()
+                .tokens
+                .typography
+                .size(TextRole::Body);
+            a.set_high_contrast(true);
+            assert_eq!(
+                a.text_scale(),
+                1.5,
+                "scale preference is preserved across the swap"
+            );
+            assert!((a.theme.tokens.typography.size(TextRole::Body) - hc_base * 1.5).abs() < 1e-3);
+            assert_eq!(a.theme.name, "High contrast");
+        }
+
+        {
+            let mut a = app();
+            assert!(!a.theme.reduce_motion);
+            a.set_reduce_motion(true);
+            assert!(a.reduce_motion());
+            assert!(
+                a.theme.reduce_motion,
+                "the flag reaches the theme widgets draw against"
+            );
+            a.set_reduce_motion(false);
+            assert!(!a.theme.reduce_motion);
+        }
+
+        {
+            let mut a = app();
+            a.set_text_scale(1.25);
+            a.set_reduce_motion(true);
+            a.set_high_contrast(true);
+            // Swap the *base* theme — the a11y layer must re-apply on top.
+            a.set_theme(Theme::light());
+            assert!(a.theme.reduce_motion);
+            assert_eq!(a.text_scale(), 1.25);
+            assert_eq!(a.theme.name, "High contrast light");
+        }
+
+        {
+            let mut a = app();
+            let base_gap = a.theme.tokens.spacing.s3;
+            let base_radius = a.theme.tokens.radii.control;
+            let base_type = a.theme.tokens.typography.size(TextRole::Body);
+            a.set_ui_scale(1.5);
+            assert_eq!(a.ui_scale(), 1.5);
+            assert!(
+                (a.theme.tokens.spacing.s3 - base_gap * 1.5).abs() < 1e-3,
+                "spacing grows"
+            );
+            assert!(
+                (a.theme.tokens.radii.control - base_radius * 1.5).abs() < 1e-3,
+                "radii grow"
+            );
+            assert!(
+                (a.theme.tokens.typography.size(TextRole::Body) - base_type * 1.5).abs() < 1e-3,
+                "type grows"
+            );
+            // A UI-scale change must re-run layout so the whole interface re-flows.
+            assert!(a.layout.layout_dirty);
+        }
+
+        {
+            let mut a = app();
+            let base_type = a.theme.tokens.typography.size(TextRole::Body);
+            let base_gap = a.theme.tokens.spacing.s3;
+            a.set_ui_scale(1.25);
+            a.set_text_scale(1.2);
+            assert_eq!(a.ui_scale(), 1.25);
+            assert_eq!(a.text_scale(), 1.2);
+            // Type picks up BOTH factors; spacing only the UI factor.
+            assert!(
+                (a.theme.tokens.typography.size(TextRole::Body) - base_type * 1.25 * 1.2).abs() < 1e-2
+            );
+            assert!((a.theme.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-2);
+        }
+
+        {
+            let mut a = app();
+            a.set_ui_scale(1.5);
+            let hc_gap = Theme::high_contrast().tokens.spacing.s3;
+            a.set_high_contrast(true);
+            assert_eq!(
+                a.ui_scale(),
+                1.5,
+                "UI-scale preference is preserved across the swap"
+            );
+            assert!((a.theme.tokens.spacing.s3 - hc_gap * 1.5).abs() < 1e-2);
+            assert_eq!(a.theme.name, "High contrast");
+        }
+    }
+
+    phase appearance_reconcile_is_a_noop_when_off_and_applies_live_otherwise;
+    {
+        let _settings = own_settings();
+        {
+            let root = AppearanceRoot {
+                intent: intent(Theme::light(), 1.5, 1.3, true),
+            };
+            let mut a = App::new(State::new(), Box::new(root));
+            assert!(!a.reconcile_appearance());
+            assert_eq!(a.theme.name, "Dark");
+            assert_eq!(a.ui_scale(), 1.0);
+        }
+
+        {
+            let base_gap = Theme::high_contrast().tokens.spacing.s3;
+            let base_type = Theme::high_contrast()
+                .tokens
+                .typography
+                .size(TextRole::Body);
+            // Light base + high_contrast=true → high-contrast track wins; ui 1.5, text 1.2.
+            let root = AppearanceRoot {
+                intent: intent(Theme::light(), 1.5, 1.2, true),
+            };
+            let mut a = App::new(State::new(), Box::new(root));
+            a.appearance_reconcile = true;
+            assert!(
+                a.reconcile_appearance(),
+                "first reconcile applies the intent"
+            );
+            assert_eq!(a.ui_scale(), 1.5);
+            assert_eq!(a.text_scale(), 1.2);
+            assert!(a.high_contrast());
+            assert_eq!(
+                a.theme.name, "High contrast light",
+                "high_contrast overrides the Light base with its own polarity"
+            );
+            // Spacing grew by the UI factor; type by UI × text.
+            assert!((a.theme.tokens.spacing.s3 - base_gap * 1.5).abs() < 1e-1);
+            assert!(
+                (a.theme.tokens.typography.size(TextRole::Body) - base_type * 1.5 * 1.2).abs() < 1e-1
+            );
+            assert!(
+                a.layout.layout_dirty,
+                "a live appearance change re-runs layout"
+            );
+            assert!(
+                !a.reconcile_appearance(),
+                "unchanged intent does not re-theme"
+            );
+        }
+    }
+
+    phase the_shell_s_window_appearance_dresses_the_theme_and_survives_rebuilds;
+    {
+        use crate::theme::WindowAppearance;
+        use crate::tokens::PresenceHue;
+        let _settings = own_settings();
+
+        let mut a = app();
+        a.set_theme(Theme::light());
+        let neutral = a.theme.tokens.colors.surfaces.content;
         assert_eq!(
-            app.text_scale(),
-            1.5,
-            "palette changes preserve text scaling"
+            neutral,
+            Theme::light().tokens.colors.surfaces.content,
+            "a window nobody told keeps the stock temperature"
         );
-        app.apply_configured_theme();
-        app.rebuild_theme();
+
+        let told = WindowAppearance {
+            workspace_hue: Some(40.0),
+            your_colour: Some(PresenceHue::Violet),
+            corner_radius: None,
+        };
+        let message = crate::floating_surface::FloatingSurfaceHostMessage::appearance(&told);
+        assert!(a.set_window_appearance(message.window_appearance().unwrap()));
+        assert!(!a.set_window_appearance(told), "the same appearance again");
+        assert_eq!(a.window_appearance(), told);
+        assert_eq!(a.theme.document.palette.hue, Some(40.0));
+        assert_eq!(a.theme.tokens.colors.you, PresenceHue::Violet);
+        // The focus ring is the accent's ink: the colour's hue at the
+        // lightness its contrast floor needs.
         assert_eq!(
-            app.theme.document, theme.document,
-            "private settings reloads preserve the host palette"
+            a.theme.border_focus,
+            a.theme.tokens.colors.intent.accent_ink
+        );
+        let ring = crate::color::Oklch::from_color(a.theme.border_focus).h;
+        let violet =
+            crate::color::Oklch::from_color(a.theme.tokens.colors.presence.hue(PresenceHue::Violet)).h;
+        let d = (ring - violet).rem_euclid(360.0);
+        assert!(
+            d.min(360.0 - d) <= 15.0,
+            "focus ring, caret and selection follow"
+        );
+        assert_ne!(a.theme.tokens.colors.surfaces.content, neutral);
+
+        // A settings change rebuilds from the base theme and keeps the window's.
+        a.set_theme(Theme::light());
+        assert_eq!(a.theme.document.palette.hue, Some(40.0));
+        a.toggle_high_contrast();
+        assert_eq!(a.theme.tokens.colors.you, PresenceHue::Violet);
+        a.toggle_high_contrast();
+
+        // Moving to a neutral workspace takes the temperature away again.
+        a.set_window_appearance(WindowAppearance {
+            workspace_hue: None,
+            your_colour: Some(PresenceHue::Violet),
+            corner_radius: None,
+        });
+        assert_eq!(a.theme.tokens.colors.surfaces.content, neutral);
+    }
+
+    phase shell_palette_message_rethemes_the_open_app_without_settings_file_access;
+    {
+        use crate::floating_surface::FloatingSurfaceHostMessage;
+        let _settings = own_settings();
+
+        let mut app = app();
+        app.set_theme(Theme::dark());
+        app.set_text_scale(1.5);
+        let appearance = crate::theme::WindowAppearance::default();
+        for theme in [Theme::light(), Theme::high_contrast(), Theme::dark()] {
+            let message = FloatingSurfaceHostMessage::appearance_with_theme(&appearance, &theme);
+            let wire = serde_json::to_vec(&message).unwrap();
+            let received = serde_json::from_slice(&wire).unwrap();
+            assert!(app.apply_floating_host_messages(vec![received]));
+            assert_eq!(app.theme.document, theme.document);
+            assert_eq!(
+                app.text_scale(),
+                1.5,
+                "palette changes preserve text scaling"
+            );
+            app.apply_configured_theme();
+            app.rebuild_theme();
+            assert_eq!(
+                app.theme.document, theme.document,
+                "private settings reloads preserve the host palette"
+            );
+        }
+        let mut wire = serde_json::to_value(FloatingSurfaceHostMessage::appearance_with_theme(
+            &appearance,
+            &Theme::light(),
+        ))
+        .unwrap();
+        wire["theme"]["schema_version"] = serde_json::json!(0);
+        let before = app.theme.clone();
+        let received = serde_json::from_value(wire).unwrap();
+        app.apply_floating_host_messages(vec![received]);
+        assert_eq!(
+            app.theme, before,
+            "an invalid host palette must not replace the live theme"
         );
     }
-    let mut wire = serde_json::to_value(FloatingSurfaceHostMessage::appearance_with_theme(
-        &appearance,
-        &Theme::light(),
-    ))
-    .unwrap();
-    wire["theme"]["schema_version"] = serde_json::json!(0);
-    let before = app.theme.clone();
-    let received = serde_json::from_value(wire).unwrap();
-    app.apply_floating_host_messages(vec![received]);
-    assert_eq!(
-        app.theme, before,
-        "an invalid host palette must not replace the live theme"
-    );
 }
 
 /// A window the desk floats as a card draws on the card's ground, the one its header and every

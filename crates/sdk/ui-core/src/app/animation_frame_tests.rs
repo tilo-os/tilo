@@ -194,157 +194,161 @@ fn report(name: &str, frames: &[FrameCost]) {
     );
 }
 
-/// A spinner among a window of controls: its frames repaint the spinner and
-/// lay nothing out, so neither the layout nor the action surface runs again.
-#[test]
-fn animation_frame_that_only_repaints_skips_layout_and_publication() {
-    let root = rows(Column::new().push(Box::new(Spinner::new())));
-    let mut app = shown(Box::new(root));
-    assert!(app.root_widget.needs_animation_frame());
-    let start = crate::time::now();
-    let mut frames = Vec::new();
-    let mut repainted = 0;
-    for tick in 1..=60 {
-        let at = start + std::time::Duration::from_nanos(tick * FRAME_NS);
-        frames.push(with_monotonic_time(at, || {
-            repainted += usize::from(app.root_widget.needs_redraw());
-            native_frame(&mut app)
-        }));
-    }
-    report("spinner", &frames);
-    assert!(repainted >= 25, "the spinner steps 30 times a second");
-    assert_eq!(frames.iter().filter(|f| f.laid_out).count(), 0);
-    assert_eq!(frames.iter().map(|f| f.publications).sum::<usize>(), 0);
-    let walked: Vec<_> = frames.iter().flat_map(|f| f.walks.clone()).collect();
-    assert!(
-        walked.is_empty(),
-        "spinner frames walked the tree: {walked:?}"
-    );
-}
+tilo_test_env::scenario! {
+    fn animation_frames_do_only_the_work_their_change_asks_for;
 
-/// A scroll glide moves what its view lays out: each of its frames places
-/// the content again, and the glide still publishes nothing.
-#[test]
-fn animation_frame_that_moves_layout_lays_out_again() {
-    let offset = std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0)));
-    let root = Scrollable::new_vertical()
-        .with_persisted_offset(std::rc::Rc::clone(&offset))
-        .with_child(Box::new(rows(Column::new().with_intrinsic_height())));
-    let mut app = shown(Box::new(root));
-    let start = crate::time::now();
-    let at = |tick: u64| start + std::time::Duration::from_nanos(tick * FRAME_NS);
-    app.surface_input(
-        &Window,
-        crate::synthetic_input::cursor_moved(400.0, 400.0),
-        false,
-    );
-    // Flick: fingers move, then lift, and the glide carries on.
-    for tick in 1..=4 {
-        with_monotonic_time(at(tick), || {
-            app.surface_input(
-                &Window,
-                wheel(-60.0, winit::event::TouchPhase::Moved),
-                false,
-            );
-            native_frame(&mut app);
-        });
-    }
-    with_monotonic_time(at(5), || {
-        app.surface_input(&Window, wheel(0.0, winit::event::TouchPhase::Ended), false);
-        native_frame(&mut app);
-    });
-    assert!(app.root_widget.needs_animation_frame(), "the glide runs");
-    let mut frames = Vec::new();
-    let mut moved = 0;
-    for tick in 6..=20 {
-        let before = offset.get();
-        frames.push(with_monotonic_time(at(tick), || native_frame(&mut app)));
-        moved += usize::from(offset.get() != before);
-    }
-    report("glide", &frames);
-    assert!(moved >= 10, "the glide moves the content");
-    assert!(
-        frames.iter().filter(|f| f.laid_out).count() >= moved,
-        "every frame the glide moves is laid out"
-    );
-    assert_eq!(frames.iter().map(|f| f.publications).sum::<usize>(), 0);
-}
-
-/// What an animation frame leaves out is only what the animation did not
-/// change: a model change landing while a spinner turns (a worker's wake
-/// asking for a sync) is published in the frame that syncs it.
-#[test]
-fn model_change_during_an_animation_is_published() {
-    let root = rows(Column::new().push(Box::new(Spinner::new())));
-    let mut app = shown(Box::new(root));
-    let start = crate::time::now();
-    let at = |tick: u64| start + std::time::Duration::from_nanos(tick * FRAME_NS);
-    let quiet = with_monotonic_time(at(1), || native_frame(&mut app));
-    assert_eq!(quiet.publications, 0);
-    assert!(quiet.walks.is_empty(), "{:?}", quiet.walks);
-    app.needs_sync = true;
-    let synced = with_monotonic_time(at(2), || native_frame(&mut app));
-    assert_eq!(synced.publications, 1, "the sync's frame publishes");
-    for walk in ["walk.availability", "walk.routes", "walk.history"] {
+    phase animation_frame_that_only_repaints_skips_layout_and_publication;
+    // A spinner among a window of controls: its frames repaint the spinner and
+    // lay nothing out, so neither the layout nor the action surface runs again.
+    {
+        let root = rows(Column::new().push(Box::new(Spinner::new())));
+        let mut app = shown(Box::new(root));
+        assert!(app.root_widget.needs_animation_frame());
+        let start = crate::time::now();
+        let mut frames = Vec::new();
+        let mut repainted = 0;
+        for tick in 1..=60 {
+            let at = start + std::time::Duration::from_nanos(tick * FRAME_NS);
+            frames.push(with_monotonic_time(at, || {
+                repainted += usize::from(app.root_widget.needs_redraw());
+                native_frame(&mut app)
+            }));
+        }
+        report("spinner", &frames);
+        assert!(repainted >= 25, "the spinner steps 30 times a second");
+        assert_eq!(frames.iter().filter(|f| f.laid_out).count(), 0);
+        assert_eq!(frames.iter().map(|f| f.publications).sum::<usize>(), 0);
+        let walked: Vec<_> = frames.iter().flat_map(|f| f.walks.clone()).collect();
         assert!(
-            synced.walks.contains(&walk),
-            "the sync's frame runs {walk}: {:?}",
-            synced.walks
+            walked.is_empty(),
+            "spinner frames walked the tree: {walked:?}"
         );
     }
-    let after = with_monotonic_time(at(3), || native_frame(&mut app));
-    assert_eq!(after.publications, 0, "and only that frame");
-    assert!(after.walks.is_empty(), "{:?}", after.walks);
-}
 
-/// A row opening its body grows on the disclose motion: each frame of it
-/// lays the window out again, at the row's height for that frame, without
-/// rebuilding the tree.
-#[test]
-fn disclosure_row_opening_is_laid_out_on_every_frame() {
-    use crate::widget::{DisclosureRow, DisclosureState, Spacer};
-    let state = DisclosureState::new();
-    let root = Column::new()
-        .push(Box::new(
-            DisclosureRow::new("Details", Box::new(Spacer::fixed(40.0))).with_state(&state),
-        ))
-        .push(Box::new(Text::new("Below the row")));
-    let mut app = shown(Box::new(root));
-    let height = |app: &App| {
-        let mut height = 0.0;
-        let mut first = true;
-        app.root_widget.for_each_child(&mut |child| {
-            if std::mem::take(&mut first) {
-                height = child.get_rect().height();
-            }
+    phase animation_frame_that_moves_layout_lays_out_again;
+    // A scroll glide moves what its view lays out: each of its frames places
+    // the content again, and the glide still publishes nothing.
+    {
+        let offset = std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0)));
+        let root = Scrollable::new_vertical()
+            .with_persisted_offset(std::rc::Rc::clone(&offset))
+            .with_child(Box::new(rows(Column::new().with_intrinsic_height())));
+        let mut app = shown(Box::new(root));
+        let start = crate::time::now();
+        let at = |tick: u64| start + std::time::Duration::from_nanos(tick * FRAME_NS);
+        app.surface_input(
+            &Window,
+            crate::synthetic_input::cursor_moved(400.0, 400.0),
+            false,
+        );
+        // Flick: fingers move, then lift, and the glide carries on.
+        for tick in 1..=4 {
+            with_monotonic_time(at(tick), || {
+                app.surface_input(
+                    &Window,
+                    wheel(-60.0, winit::event::TouchPhase::Moved),
+                    false,
+                );
+                native_frame(&mut app);
+            });
+        }
+        with_monotonic_time(at(5), || {
+            app.surface_input(&Window, wheel(0.0, winit::event::TouchPhase::Ended), false);
+            native_frame(&mut app);
         });
-        height
-    };
-    let closed = height(&app);
-    let start = crate::time::now();
-    let at = |tick: u64| start + std::time::Duration::from_nanos(tick * FRAME_NS);
-    with_monotonic_time(at(0), || {
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
-        state.set_open(true);
-    });
-    let rebuilds = app.layout.rebuilds;
-    let mut heights = Vec::new();
-    let mut frames = Vec::new();
-    for tick in 1..=40 {
-        frames.push(with_monotonic_time(at(tick), || native_frame(&mut app)));
-        heights.push(height(&app));
+        assert!(app.root_widget.needs_animation_frame(), "the glide runs");
+        let mut frames = Vec::new();
+        let mut moved = 0;
+        for tick in 6..=20 {
+            let before = offset.get();
+            frames.push(with_monotonic_time(at(tick), || native_frame(&mut app)));
+            moved += usize::from(offset.get() != before);
+        }
+        report("glide", &frames);
+        assert!(moved >= 10, "the glide moves the content");
+        assert!(
+            frames.iter().filter(|f| f.laid_out).count() >= moved,
+            "every frame the glide moves is laid out"
+        );
+        assert_eq!(frames.iter().map(|f| f.publications).sum::<usize>(), 0);
     }
-    report("disclosure", &frames);
-    eprintln!("disclosure heights: closed={closed} {heights:?}");
-    let open = *heights.last().unwrap();
-    assert!(
-        open >= closed + 40.0,
-        "the body is shown: {closed} -> {open}"
-    );
-    assert!(
-        heights.iter().any(|h| *h > closed && *h < open),
-        "it grows through heights in between: {heights:?}"
-    );
-    assert_eq!(app.layout.rebuilds, rebuilds, "the tree is not rebuilt");
-    assert_eq!(frames.iter().map(|f| f.publications).sum::<usize>(), 0);
+
+    phase model_change_during_an_animation_is_published;
+    // What an animation frame leaves out is only what the animation did not
+    // change: a model change landing while a spinner turns (a worker's wake
+    // asking for a sync) is published in the frame that syncs it.
+    {
+        let root = rows(Column::new().push(Box::new(Spinner::new())));
+        let mut app = shown(Box::new(root));
+        let start = crate::time::now();
+        let at = |tick: u64| start + std::time::Duration::from_nanos(tick * FRAME_NS);
+        let quiet = with_monotonic_time(at(1), || native_frame(&mut app));
+        assert_eq!(quiet.publications, 0);
+        assert!(quiet.walks.is_empty(), "{:?}", quiet.walks);
+        app.needs_sync = true;
+        let synced = with_monotonic_time(at(2), || native_frame(&mut app));
+        assert_eq!(synced.publications, 1, "the sync's frame publishes");
+        for walk in ["walk.availability", "walk.routes", "walk.history"] {
+            assert!(
+                synced.walks.contains(&walk),
+                "the sync's frame runs {walk}: {:?}",
+                synced.walks
+            );
+        }
+        let after = with_monotonic_time(at(3), || native_frame(&mut app));
+        assert_eq!(after.publications, 0, "and only that frame");
+        assert!(after.walks.is_empty(), "{:?}", after.walks);
+    }
+
+    phase disclosure_row_opening_is_laid_out_on_every_frame;
+    // A row opening its body grows on the disclose motion: each frame of it
+    // lays the window out again, at the row's height for that frame, without
+    // rebuilding the tree.
+    {
+        use crate::widget::{DisclosureRow, DisclosureState, Spacer};
+        let state = DisclosureState::new();
+        let root = Column::new()
+            .push(Box::new(
+                DisclosureRow::new("Details", Box::new(Spacer::fixed(40.0))).with_state(&state),
+            ))
+            .push(Box::new(Text::new("Below the row")));
+        let mut app = shown(Box::new(root));
+        let height = |app: &App| {
+            let mut height = 0.0;
+            let mut first = true;
+            app.root_widget.for_each_child(&mut |child| {
+                if std::mem::take(&mut first) {
+                    height = child.get_rect().height();
+                }
+            });
+            height
+        };
+        let closed = height(&app);
+        let start = crate::time::now();
+        let at = |tick: u64| start + std::time::Duration::from_nanos(tick * FRAME_NS);
+        with_monotonic_time(at(0), || {
+            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            state.set_open(true);
+        });
+        let rebuilds = app.layout.rebuilds;
+        let mut heights = Vec::new();
+        let mut frames = Vec::new();
+        for tick in 1..=40 {
+            frames.push(with_monotonic_time(at(tick), || native_frame(&mut app)));
+            heights.push(height(&app));
+        }
+        report("disclosure", &frames);
+        eprintln!("disclosure heights: closed={closed} {heights:?}");
+        let open = *heights.last().unwrap();
+        assert!(
+            open >= closed + 40.0,
+            "the body is shown: {closed} -> {open}"
+        );
+        assert!(
+            heights.iter().any(|h| *h > closed && *h < open),
+            "it grows through heights in between: {heights:?}"
+        );
+        assert_eq!(app.layout.rebuilds, rebuilds, "the tree is not rebuilt");
+        assert_eq!(frames.iter().map(|f| f.publications).sum::<usize>(), 0);
+    }
 }

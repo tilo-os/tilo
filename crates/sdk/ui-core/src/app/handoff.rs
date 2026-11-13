@@ -492,118 +492,6 @@ mod owner_view_tests {
             request: HandoffRequest::OwnerView { view },
         });
     }
-    #[test]
-    fn owner_context_defers_then_cancels_without_focus_or_document_changes() {
-        let (mut app, ready, applied) = receiver();
-        let heads = app.state.doc.get_heads();
-        let focus = app.focused_node;
-        ready.set(false);
-        let first = view(&app, 1, 5);
-        deliver(&mut app, first.clone());
-        assert!(app.continuation.owner_view.pending.is_some());
-        let mut cancel = first.clone();
-        cancel.generation = 2;
-        cancel.projection = None;
-        deliver(&mut app, cancel);
-        ready.set(true);
-        app.publish_continuation_metadata();
-        assert!(applied.borrow().is_empty());
-        assert!(app.continuation.owner_view.pending.is_none());
-        deliver(&mut app, first); // old queued incarnation is inert
-        assert!(applied.borrow().is_empty());
-        let reconnect = view(&app, 3, 5);
-        deliver(&mut app, reconnect);
-        assert_eq!(applied.borrow().len(), 1);
-        assert_eq!(app.focused_node, focus);
-        assert_eq!(app.state.doc.get_heads(), heads);
-    }
-    #[test]
-    fn native_input_takes_over_and_old_remote_views_wait_for_the_newer_ack() {
-        let (mut app, _, applied) = receiver();
-        let first = view(&app, 1, 5);
-        deliver(&mut app, first);
-        app.init_layout();
-        app.surface_input(&Surface, crate::synthetic_input::mouse_press(), false);
-        assert!(app.continuation.owner_view.awaiting_claim);
-        assert!(!app.continuation.owner_view.following);
-        let old = view(&app, 2, 5);
-        deliver(&mut app, old);
-        assert_eq!(applied.borrow().len(), 1);
-        let mut ack = view(&app, 3, 6);
-        ack.local_claim = true;
-        ack.source = "localB".into();
-        ack.projection = None;
-        deliver(&mut app, ack);
-        assert!(!app.continuation.owner_view.awaiting_claim);
-        let stale = view(&app, 4, 5);
-        deliver(&mut app, stale);
-        assert_eq!(applied.borrow().len(), 1);
-        let mut new_owner = view(&app, 5, 6);
-        new_owner.source = "peerC".into();
-        deliver(&mut app, new_owner);
-        assert_eq!(applied.borrow().len(), 2);
-    }
-    #[test]
-    fn owner_context_refuses_foreign_routes_modal_and_secret_focus() {
-        let (mut app, _, applied) = receiver();
-        let mut foreign = view(&app, 1, 5);
-        foreign.instance = 32;
-        deliver(&mut app, foreign);
-        assert!(applied.borrow().is_empty());
-        app.accessibility.focus_trap_active = true;
-        let modal = view(&app, 2, 5);
-        deliver(&mut app, modal);
-        assert!(applied.borrow().is_empty());
-        assert!(app.continuation.owner_view.pending.is_none());
-        app.accessibility.focus_trap_active = false;
-        app.floating.capture_protected = true;
-        let secret = view(&app, 3, 6);
-        deliver(&mut app, secret);
-        assert!(applied.borrow().is_empty());
-        assert!(app.continuation.owner_view.pending.is_none());
-    }
-    #[test]
-    fn reconnect_reannounces_the_same_resource_and_fences_old_owner_stamps() {
-        let (mut app, ready, applied) = receiver();
-        ready.set(false);
-        let remote = view(&app, 8, 12);
-        deliver(&mut app, remote.clone());
-        let route = app
-            .collaboration
-            .manager
-            .primary_route()
-            .unwrap()
-            .route
-            .clone();
-        let heads = app.state.doc.get_heads();
-        assert!(
-            app.collaboration
-                .manager
-                .send(crate::collaboration::CollabRequest::Hello {
-                    app_id: route.app_id.clone(),
-                    cluster_id: route.cluster_id,
-                    record: route.record.clone(),
-                    record_kind: None,
-                    handle: None,
-                })
-        );
-        app.collaboration.manager.poll();
-        assert_eq!(app.private_continuity_route(), Some(route));
-        assert!(app.continuation.owner_view.pending.is_none());
-        ready.set(true);
-        let mut replay = remote;
-        replay.generation = 1;
-        deliver(&mut app, replay);
-        assert_eq!(
-            applied.borrow().len(),
-            1,
-            "a fresh host generation may replay the same durable stamp"
-        );
-        let stale = view(&app, 2, 11);
-        deliver(&mut app, stale);
-        assert_eq!(applied.borrow().len(), 1);
-        assert_eq!(app.state.doc.get_heads(), heads);
-    }
     fn reannounce(app: &mut App, record: &str) {
         let route = app
             .collaboration
@@ -625,89 +513,6 @@ mod owner_view_tests {
         );
     }
 
-    #[test]
-    fn deferred_owner_view_is_fenced_before_a_reconnected_body_becomes_ready() {
-        let (mut app, ready, applied) = receiver();
-        let heads = app.state.doc.get_heads();
-        ready.set(false);
-        let remote = view(&app, 8, 12);
-        deliver(&mut app, remote);
-        assert!(app.continuation.owner_view.pending.is_some());
-        reannounce(&mut app, "continuation:31");
-        app.collaboration.manager.poll();
-        ready.set(true);
-        // Drive the production publication turn, without separately invoking
-        // the route helper that would otherwise hide this ordering defect.
-        app.publish_continuation_metadata();
-        assert!(applied.borrow().is_empty());
-        assert!(app.continuation.owner_view.pending.is_none());
-        assert!(app.continuation.owner_view.following);
-        assert_eq!(app.state.doc.get_heads(), heads);
-    }
-
-    #[test]
-    fn deferred_owner_view_cannot_cross_pending_or_acknowledged_document_routes() {
-        for acknowledged in [false, true] {
-            let (mut app, ready, applied) = receiver();
-            let heads = app.state.doc.get_heads();
-            let focus = app.focused_node;
-            ready.set(false);
-            let remote = view(&app, 1, 5);
-            deliver(&mut app, remote);
-            assert!(app.continuation.owner_view.pending.is_some());
-            reannounce(&mut app, "tab:000000000000002a");
-            if acknowledged {
-                app.collaboration.manager.poll();
-            }
-            ready.set(true);
-            app.publish_continuation_metadata();
-            assert!(
-                applied.borrow().is_empty(),
-                "document acknowledgement={acknowledged}"
-            );
-            assert!(app.continuation.owner_view.pending.is_none());
-            assert_eq!(app.focused_node, focus);
-            assert_eq!(app.state.doc.get_heads(), heads);
-        }
-    }
-
-    #[test]
-    fn protected_focus_clears_published_positions_and_defers_explicit_takeover() {
-        for modal in [false, true] {
-            let (mut app, _, _, requests) = receiver_with_requests();
-            let heads = app.state.doc.get_heads();
-            app.publish_continuation_metadata();
-            assert!(app.continuation.last_published.is_some());
-            requests.borrow_mut().clear();
-            let remote = view(&app, 1, 5);
-            deliver(&mut app, remote);
-            app.take_over_owner_view();
-            if modal {
-                app.accessibility.focus_trap_active = true;
-            } else {
-                app.floating.capture_protected = true;
-            }
-            app.publish_continuation_metadata();
-            assert!(app.continuation.last_published.is_none());
-            assert!(app.continuation.owner_view.last_claim_at.is_none());
-            assert!(app.continuation.owner_view.awaiting_claim);
-            assert!(requests.borrow().iter().any(|request| matches!(
-                request,
-                crate::collaboration::CollabRequest::ClearContinuation
-            )));
-            assert!(requests.borrow().iter().all(|request| !matches!(
-                request,
-                crate::collaboration::CollabRequest::ReportContinuation { .. }
-                    | crate::collaboration::CollabRequest::ReportHandoff { .. }
-            )));
-            app.accessibility.focus_trap_active = false;
-            app.floating.capture_protected = false;
-            app.publish_continuation_metadata();
-            assert!(app.continuation.last_published.is_some());
-            assert!(app.continuation.owner_view.last_claim_at.is_some());
-            assert_eq!(app.state.doc.get_heads(), heads);
-        }
-    }
     struct RefusingPublication {
         acknowledged: Option<crate::collaboration::RouteSpec>,
     }
@@ -743,15 +548,88 @@ mod owner_view_tests {
         }
     }
 
-    #[test]
-    fn rejected_publication_cannot_cache_a_position_or_delay_a_takeover_retry() {
-        for takeover in [false, true] {
-            let (mut app, _, _) = receiver();
-            if takeover {
-                let remote = view(&app, 1, 5);
-                deliver(&mut app, remote);
-                app.take_over_owner_view();
-            }
+    tilo_test_env::scenario! {
+        fn owner_view_handoff_defers_fences_and_protects;
+
+        phase owner_context_defers_then_cancels_without_focus_or_document_changes;
+        {
+            let (mut app, ready, applied) = receiver();
+            let heads = app.state.doc.get_heads();
+            let focus = app.focused_node;
+            ready.set(false);
+            let first = view(&app, 1, 5);
+            deliver(&mut app, first.clone());
+            assert!(app.continuation.owner_view.pending.is_some());
+            let mut cancel = first.clone();
+            cancel.generation = 2;
+            cancel.projection = None;
+            deliver(&mut app, cancel);
+            ready.set(true);
+            app.publish_continuation_metadata();
+            assert!(applied.borrow().is_empty());
+            assert!(app.continuation.owner_view.pending.is_none());
+            deliver(&mut app, first); // old queued incarnation is inert
+            assert!(applied.borrow().is_empty());
+            let reconnect = view(&app, 3, 5);
+            deliver(&mut app, reconnect);
+            assert_eq!(applied.borrow().len(), 1);
+            assert_eq!(app.focused_node, focus);
+            assert_eq!(app.state.doc.get_heads(), heads);
+        }
+
+        phase native_input_takes_over_and_old_remote_views_wait_for_the_newer_ack;
+        {
+            let (mut app, _, applied) = receiver();
+            let first = view(&app, 1, 5);
+            deliver(&mut app, first);
+            app.init_layout();
+            app.surface_input(&Surface, crate::synthetic_input::mouse_press(), false);
+            assert!(app.continuation.owner_view.awaiting_claim);
+            assert!(!app.continuation.owner_view.following);
+            let old = view(&app, 2, 5);
+            deliver(&mut app, old);
+            assert_eq!(applied.borrow().len(), 1);
+            let mut ack = view(&app, 3, 6);
+            ack.local_claim = true;
+            ack.source = "localB".into();
+            ack.projection = None;
+            deliver(&mut app, ack);
+            assert!(!app.continuation.owner_view.awaiting_claim);
+            let stale = view(&app, 4, 5);
+            deliver(&mut app, stale);
+            assert_eq!(applied.borrow().len(), 1);
+            let mut new_owner = view(&app, 5, 6);
+            new_owner.source = "peerC".into();
+            deliver(&mut app, new_owner);
+            assert_eq!(applied.borrow().len(), 2);
+        }
+
+        phase owner_context_refuses_foreign_routes_modal_and_secret_focus;
+        {
+            let (mut app, _, applied) = receiver();
+            let mut foreign = view(&app, 1, 5);
+            foreign.instance = 32;
+            deliver(&mut app, foreign);
+            assert!(applied.borrow().is_empty());
+            app.accessibility.focus_trap_active = true;
+            let modal = view(&app, 2, 5);
+            deliver(&mut app, modal);
+            assert!(applied.borrow().is_empty());
+            assert!(app.continuation.owner_view.pending.is_none());
+            app.accessibility.focus_trap_active = false;
+            app.floating.capture_protected = true;
+            let secret = view(&app, 3, 6);
+            deliver(&mut app, secret);
+            assert!(applied.borrow().is_empty());
+            assert!(app.continuation.owner_view.pending.is_none());
+        }
+
+        phase reconnect_reannounces_the_same_resource_and_fences_old_owner_stamps;
+        {
+            let (mut app, ready, applied) = receiver();
+            ready.set(false);
+            let remote = view(&app, 8, 12);
+            deliver(&mut app, remote.clone());
             let route = app
                 .collaboration
                 .manager
@@ -759,63 +637,195 @@ mod owner_view_tests {
                 .unwrap()
                 .route
                 .clone();
-            app.collaboration.manager =
-                crate::collaboration::CollaborationManager::with_peer_transport(
-                    RefusingPublication { acknowledged: None },
-                );
+            let heads = app.state.doc.get_heads();
             assert!(
                 app.collaboration
                     .manager
                     .send(crate::collaboration::CollabRequest::Hello {
-                        app_id: route.app_id,
+                        app_id: route.app_id.clone(),
                         cluster_id: route.cluster_id,
-                        record: route.record,
+                        record: route.record.clone(),
                         record_kind: None,
-                        handle: None
+                        handle: None,
                     })
             );
             app.collaboration.manager.poll();
-            app.publish_continuation_metadata();
-            assert!(app.continuation.last_published.is_none());
-            assert!(app.continuation.owner_view.last_claim_at.is_none());
-            assert!(matches!(
-                app.collaboration.manager.state(),
-                crate::collaboration::CollaborationState::Offline(_)
-            ));
-        }
-    }
-    #[test]
-    fn protected_reconnect_clears_unknown_prior_projection_once_per_acknowledged_epoch() {
-        let (mut app, _, _, requests) = receiver_with_requests();
-        let heads = app.state.doc.get_heads();
-        app.floating.capture_protected = true;
-        requests.borrow_mut().clear();
-        for epoch in 1..=2 {
-            if epoch == 2 {
-                reannounce(&mut app, "continuation:31");
-                app.collaboration.manager.poll();
-            }
-            app.publish_continuation_metadata();
-            app.publish_continuation_metadata();
+            assert_eq!(app.private_continuity_route(), Some(route));
+            assert!(app.continuation.owner_view.pending.is_none());
+            ready.set(true);
+            let mut replay = remote;
+            replay.generation = 1;
+            deliver(&mut app, replay);
             assert_eq!(
-                requests
-                    .borrow()
-                    .iter()
-                    .filter(|request| matches!(
-                        request,
-                        crate::collaboration::CollabRequest::ClearContinuation
-                    ))
-                    .count(),
-                epoch
+                applied.borrow().len(),
+                1,
+                "a fresh host generation may replay the same durable stamp"
             );
-            assert!(requests.borrow().iter().all(|request| !matches!(
-                request,
-                crate::collaboration::CollabRequest::ReportContinuation { .. }
-                    | crate::collaboration::CollabRequest::ReportHandoff { .. }
-            )));
-            assert!(app.continuation.publication_initialized);
-            assert!(app.continuation.last_published.is_none());
+            let stale = view(&app, 2, 11);
+            deliver(&mut app, stale);
+            assert_eq!(applied.borrow().len(), 1);
+            assert_eq!(app.state.doc.get_heads(), heads);
         }
-        assert_eq!(app.state.doc.get_heads(), heads);
+
+        phase deferred_owner_view_is_fenced_before_a_reconnected_body_becomes_ready;
+        {
+            let (mut app, ready, applied) = receiver();
+            let heads = app.state.doc.get_heads();
+            ready.set(false);
+            let remote = view(&app, 8, 12);
+            deliver(&mut app, remote);
+            assert!(app.continuation.owner_view.pending.is_some());
+            reannounce(&mut app, "continuation:31");
+            app.collaboration.manager.poll();
+            ready.set(true);
+            // Drive the production publication turn, without separately invoking
+            // the route helper that would otherwise hide this ordering defect.
+            app.publish_continuation_metadata();
+            assert!(applied.borrow().is_empty());
+            assert!(app.continuation.owner_view.pending.is_none());
+            assert!(app.continuation.owner_view.following);
+            assert_eq!(app.state.doc.get_heads(), heads);
+        }
+
+        phase deferred_owner_view_cannot_cross_pending_or_acknowledged_document_routes;
+        {
+            for acknowledged in [false, true] {
+                let (mut app, ready, applied) = receiver();
+                let heads = app.state.doc.get_heads();
+                let focus = app.focused_node;
+                ready.set(false);
+                let remote = view(&app, 1, 5);
+                deliver(&mut app, remote);
+                assert!(app.continuation.owner_view.pending.is_some());
+                reannounce(&mut app, "tab:000000000000002a");
+                if acknowledged {
+                    app.collaboration.manager.poll();
+                }
+                ready.set(true);
+                app.publish_continuation_metadata();
+                assert!(
+                    applied.borrow().is_empty(),
+                    "document acknowledgement={acknowledged}"
+                );
+                assert!(app.continuation.owner_view.pending.is_none());
+                assert_eq!(app.focused_node, focus);
+                assert_eq!(app.state.doc.get_heads(), heads);
+            }
+        }
+
+        phase protected_focus_clears_published_positions_and_defers_explicit_takeover;
+        {
+            for modal in [false, true] {
+                let (mut app, _, _, requests) = receiver_with_requests();
+                let heads = app.state.doc.get_heads();
+                app.publish_continuation_metadata();
+                assert!(app.continuation.last_published.is_some());
+                requests.borrow_mut().clear();
+                let remote = view(&app, 1, 5);
+                deliver(&mut app, remote);
+                app.take_over_owner_view();
+                if modal {
+                    app.accessibility.focus_trap_active = true;
+                } else {
+                    app.floating.capture_protected = true;
+                }
+                app.publish_continuation_metadata();
+                assert!(app.continuation.last_published.is_none());
+                assert!(app.continuation.owner_view.last_claim_at.is_none());
+                assert!(app.continuation.owner_view.awaiting_claim);
+                assert!(requests.borrow().iter().any(|request| matches!(
+                    request,
+                    crate::collaboration::CollabRequest::ClearContinuation
+                )));
+                assert!(requests.borrow().iter().all(|request| !matches!(
+                    request,
+                    crate::collaboration::CollabRequest::ReportContinuation { .. }
+                        | crate::collaboration::CollabRequest::ReportHandoff { .. }
+                )));
+                app.accessibility.focus_trap_active = false;
+                app.floating.capture_protected = false;
+                app.publish_continuation_metadata();
+                assert!(app.continuation.last_published.is_some());
+                assert!(app.continuation.owner_view.last_claim_at.is_some());
+                assert_eq!(app.state.doc.get_heads(), heads);
+            }
+        }
+
+        phase rejected_publication_cannot_cache_a_position_or_delay_a_takeover_retry;
+        {
+            for takeover in [false, true] {
+                let (mut app, _, _) = receiver();
+                if takeover {
+                    let remote = view(&app, 1, 5);
+                    deliver(&mut app, remote);
+                    app.take_over_owner_view();
+                }
+                let route = app
+                    .collaboration
+                    .manager
+                    .primary_route()
+                    .unwrap()
+                    .route
+                    .clone();
+                app.collaboration.manager =
+                    crate::collaboration::CollaborationManager::with_peer_transport(
+                        RefusingPublication { acknowledged: None },
+                    );
+                assert!(
+                    app.collaboration
+                        .manager
+                        .send(crate::collaboration::CollabRequest::Hello {
+                            app_id: route.app_id,
+                            cluster_id: route.cluster_id,
+                            record: route.record,
+                            record_kind: None,
+                            handle: None
+                        })
+                );
+                app.collaboration.manager.poll();
+                app.publish_continuation_metadata();
+                assert!(app.continuation.last_published.is_none());
+                assert!(app.continuation.owner_view.last_claim_at.is_none());
+                assert!(matches!(
+                    app.collaboration.manager.state(),
+                    crate::collaboration::CollaborationState::Offline(_)
+                ));
+            }
+        }
+
+        phase protected_reconnect_clears_unknown_prior_projection_once_per_acknowledged_epoch;
+        {
+            let (mut app, _, _, requests) = receiver_with_requests();
+            let heads = app.state.doc.get_heads();
+            app.floating.capture_protected = true;
+            requests.borrow_mut().clear();
+            for epoch in 1..=2 {
+                if epoch == 2 {
+                    reannounce(&mut app, "continuation:31");
+                    app.collaboration.manager.poll();
+                }
+                app.publish_continuation_metadata();
+                app.publish_continuation_metadata();
+                assert_eq!(
+                    requests
+                        .borrow()
+                        .iter()
+                        .filter(|request| matches!(
+                            request,
+                            crate::collaboration::CollabRequest::ClearContinuation
+                        ))
+                        .count(),
+                    epoch
+                );
+                assert!(requests.borrow().iter().all(|request| !matches!(
+                    request,
+                    crate::collaboration::CollabRequest::ReportContinuation { .. }
+                        | crate::collaboration::CollabRequest::ReportHandoff { .. }
+                )));
+                assert!(app.continuation.publication_initialized);
+                assert!(app.continuation.last_published.is_none());
+            }
+            assert_eq!(app.state.doc.get_heads(), heads);
+        }
     }
 }

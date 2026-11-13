@@ -424,35 +424,39 @@ mod native_floating_paint_tests {
     use super::native_floating_window_clip;
     use vello::kurbo::Rect;
 
-    #[test]
-    fn content_ground_is_clipped_to_the_submitted_native_window() {
-        let window = Rect::new(-16.0, 120.0, 544.0, 480.0);
-        assert_eq!(
-            native_floating_window_clip(window, Rect::new(0.0, 120.0, 520.0, 480.0)),
-            Some(Rect::new(0.0, 120.0, 520.0, 480.0))
-        );
-        assert_eq!(
-            native_floating_window_clip(window, Rect::new(-32.0, 100.0, 560.0, 500.0)),
-            Some(window),
-            "a crossing presentation update cannot paint beyond this buffer"
-        );
-        assert_eq!(
-            native_floating_window_clip(window, Rect::new(600.0, 120.0, 700.0, 220.0)),
-            None
-        );
-    }
+    tilo_test_env::scenario! {
+        fn native_floating_content_stays_inside_its_window;
 
-    #[test]
-    fn malformed_content_never_becomes_an_opaque_desktop_spill() {
-        let window = Rect::new(0.0, 0.0, 560.0, 360.0);
-        assert_eq!(
-            native_floating_window_clip(window, Rect::new(0.0, 0.0, f64::NAN, 360.0)),
-            None
-        );
-        assert_eq!(
-            native_floating_window_clip(window, Rect::new(0.0, 0.0, 0.0, 360.0)),
-            None
-        );
+        phase content_ground_is_clipped_to_the_submitted_native_window;
+        {
+            let window = Rect::new(-16.0, 120.0, 544.0, 480.0);
+            assert_eq!(
+                native_floating_window_clip(window, Rect::new(0.0, 120.0, 520.0, 480.0)),
+                Some(Rect::new(0.0, 120.0, 520.0, 480.0))
+            );
+            assert_eq!(
+                native_floating_window_clip(window, Rect::new(-32.0, 100.0, 560.0, 500.0)),
+                Some(window),
+                "a crossing presentation update cannot paint beyond this buffer"
+            );
+            assert_eq!(
+                native_floating_window_clip(window, Rect::new(600.0, 120.0, 700.0, 220.0)),
+                None
+            );
+        }
+
+        phase malformed_content_never_becomes_an_opaque_desktop_spill;
+        {
+            let window = Rect::new(0.0, 0.0, 560.0, 360.0);
+            assert_eq!(
+                native_floating_window_clip(window, Rect::new(0.0, 0.0, f64::NAN, 360.0)),
+                None
+            );
+            assert_eq!(
+                native_floating_window_clip(window, Rect::new(0.0, 0.0, 0.0, 360.0)),
+                None
+            );
+        }
     }
 }
 
@@ -5407,26 +5411,30 @@ fn present_after_deadline_sync(
 mod deadline_present_tests {
     use super::present_after_deadline_sync;
 
-    #[test]
-    fn idle_scheduled_sync_does_not_request_frames() {
-        assert!(
-            !present_after_deadline_sync(false, false, false),
-            "an idle scheduled poll must not keep requesting frames"
-        );
-        // Sticky `needs_redraw` after mark_drawn is not an argument: the
-        // helper no longer takes that bit. Model/structure/layout OR into
-        // the first flag at the call site (keeps clippy's bool limit).
-        assert!(present_after_deadline_sync(false, true, false));
-        assert!(present_after_deadline_sync(true, false, false));
-    }
+    tilo_test_env::scenario! {
+        fn a_deadline_sync_presents_only_when_something_changed;
 
-    /// A call's card reads a clock, so the model, the tree and the layout all
-    /// stay as they were and the frame that shows the next second exists only
-    /// because the widget served its deadline: presenting nothing froze the
-    /// card at the second it first drew.
-    #[test]
-    fn a_served_widget_deadline_presents_the_reading_it_draws() {
-        assert!(present_after_deadline_sync(false, false, true));
+        phase idle_scheduled_sync_does_not_request_frames;
+        {
+            assert!(
+                !present_after_deadline_sync(false, false, false),
+                "an idle scheduled poll must not keep requesting frames"
+            );
+            // Sticky `needs_redraw` after mark_drawn is not an argument: the
+            // helper no longer takes that bit. Model/structure/layout OR into
+            // the first flag at the call site (keeps clippy's bool limit).
+            assert!(present_after_deadline_sync(false, true, false));
+            assert!(present_after_deadline_sync(true, false, false));
+        }
+
+        phase a_served_widget_deadline_presents_the_reading_it_draws;
+        // A call's card reads a clock, so the model, the tree and the layout all
+        // stay as they were and the frame that shows the next second exists only
+        // because the widget served its deadline: presenting nothing froze the
+        // card at the second it first drew.
+        {
+            assert!(present_after_deadline_sync(false, false, true));
+        }
     }
 }
 
@@ -5434,31 +5442,35 @@ mod deadline_present_tests {
 mod early_window_tests {
     use super::{Early, early_for};
 
-    #[test]
-    fn an_early_window_is_kept_only_for_the_app_id_it_announces() {
-        let made = Some(("so.tilo.notes".to_string(), "window"));
-        assert_eq!(
-            early_for(made.clone(), &"so.tilo.notes".to_string()),
-            Early::Kept("window")
-        );
-        // An input surface announces its own id, never the package's: the
-        // early window must not become its window.
-        assert_eq!(
-            early_for(made, &"so.tilo.keyboard".to_string()),
-            Early::Discarded
-        );
-        assert_eq!(
-            early_for(None::<(String, &str)>, &"so.tilo.notes".to_string()),
-            Early::Absent
-        );
-    }
+    tilo_test_env::scenario! {
+        fn an_early_window_or_surface_is_kept_only_for_its_owner;
 
-    #[test]
-    fn a_prepared_surface_is_used_only_by_the_window_it_was_made_for() {
-        assert_eq!(
-            early_for(Some((7_u64, "surface")), &7),
-            Early::Kept("surface")
-        );
-        assert_eq!(early_for(Some((7_u64, "surface")), &8), Early::Discarded);
+        phase an_early_window_is_kept_only_for_the_app_id_it_announces;
+        {
+            let made = Some(("so.tilo.notes".to_string(), "window"));
+            assert_eq!(
+                early_for(made.clone(), &"so.tilo.notes".to_string()),
+                Early::Kept("window")
+            );
+            // An input surface announces its own id, never the package's: the
+            // early window must not become its window.
+            assert_eq!(
+                early_for(made, &"so.tilo.keyboard".to_string()),
+                Early::Discarded
+            );
+            assert_eq!(
+                early_for(None::<(String, &str)>, &"so.tilo.notes".to_string()),
+                Early::Absent
+            );
+        }
+
+        phase a_prepared_surface_is_used_only_by_the_window_it_was_made_for;
+        {
+            assert_eq!(
+                early_for(Some((7_u64, "surface")), &7),
+                Early::Kept("surface")
+            );
+            assert_eq!(early_for(Some((7_u64, "surface")), &8), Early::Discarded);
+        }
     }
 }

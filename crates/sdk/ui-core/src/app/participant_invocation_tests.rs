@@ -224,134 +224,6 @@ fn host_context(actor: &str, participant: Option<ParticipantId>) -> tilo_actions
         .with_host_invoker(actor, participant)
 }
 
-#[test]
-fn delivered_invocation_resolves_against_the_invokers_own_view() {
-    let (mut app, probe) = app();
-    deliver(
-        &mut app,
-        1,
-        "mark",
-        "agent:scribe",
-        Some(host_context("agent:scribe", Some(task()))),
-    );
-    assert_eq!(
-        who(&app).as_deref(),
-        Some(task().as_str()),
-        "built from the agent's participant tree, rebuilt at invoke time"
-    );
-    assert_eq!(
-        probe.borrow().joined,
-        vec![task()],
-        "first use creates its view"
-    );
-
-    // Durable attribution carries the same host-set invoker.
-    let changes = app.state.doc.get_changes(&[]);
-    let change = changes.last().expect("committed change");
-    let context = change
-        .message()
-        .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
-        .expect("attributed change");
-    assert_eq!(
-        context.invoker,
-        Some(tilo_actions::ActionInvoker::actor("agent:scribe").with_participant(task()))
-    );
-
-    // Without a participant the same address resolves in this window's view.
-    deliver(&mut app, 2, "mark", "agent:scribe", None);
-    assert_eq!(who(&app).as_deref(), Some("own"));
-}
-
-#[test]
-fn a_context_naming_another_actor_never_routes_to_a_participant_view() {
-    let (mut app, probe) = app();
-    probe.borrow_mut().joined.push(task());
-    // The delivery's actor is authoritative; a context whose invoker names a
-    // different actor (forged or stale) is not a route to anybody's view.
-    deliver(
-        &mut app,
-        3,
-        "mark",
-        "person:guest",
-        Some(host_context("agent:scribe", Some(task()))),
-    );
-    assert_eq!(who(&app).as_deref(), Some("own"));
-    let changes = app.state.doc.get_changes(&[]);
-    let change = changes.last().expect("committed change");
-    let context = change
-        .message()
-        .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
-        .expect("attributed change");
-    assert_eq!(
-        context.invoker,
-        Some(tilo_actions::ActionInvoker::actor("person:guest")),
-        "history names the delivered actor, never the envelope's"
-    );
-}
-
-#[test]
-fn a_remote_participant_may_only_change_its_own_view() {
-    let (mut app, probe) = app();
-    deliver(
-        &mut app,
-        4,
-        "move-caret",
-        "agent:scribe",
-        Some(host_context("agent:scribe", Some(task()))),
-    );
-    assert_eq!(
-        probe.borrow().view_ops,
-        vec![(VIEW_TYPE.to_owned(), Some(task()))],
-        "a participant-view op runs inside the invoker's scope"
-    );
-    // An untagged View op would move this window's private view.
-    deliver(
-        &mut app,
-        5,
-        "zoom",
-        "agent:scribe",
-        Some(host_context("agent:scribe", Some(task()))),
-    );
-    // A remote actor without its own participant cannot move any view.
-    deliver(&mut app, 6, "move-caret", "agent:scribe", None);
-    assert_eq!(
-        probe.borrow().view_ops.len(),
-        1,
-        "both refused as private_view"
-    );
-}
-
-#[test]
-fn participant_lifecycle_and_host_mode_reach_the_widget_tree() {
-    let (mut app, probe) = app();
-    assert!(app.join_participant(&task()));
-    assert!(!app.join_participant(&task()), "idempotent");
-    app.leave_participant(&task());
-    assert_eq!(probe.borrow().left, vec![task()]);
-    assert!(probe.borrow().joined.is_empty());
-    app.set_participant_host(true);
-    assert!(probe.borrow().host);
-    assert!(
-        tilo_actions::door::survey(&app.collect_resources())
-            .iter()
-            .all(|descriptor| descriptor.address.resource == "test.doc"),
-    );
-}
-
-#[test]
-fn participant_presence_is_reported_with_its_label() {
-    let (mut app, _probe) = app();
-    assert!(app.participant_presence().is_empty());
-    app.join_participant(&task());
-    app.set_participant_label(&task(), "Scribe");
-    let presence = app.participant_presence();
-    assert_eq!(presence.len(), 1);
-    assert_eq!(presence[0].participant, task());
-    assert_eq!(presence[0].label.as_deref(), Some("Scribe"));
-    app.leave_participant(&task());
-    assert!(app.participant_presence().is_empty());
-}
-
 crate::testing::test_app_widget!(TwoViews, "Two views");
 
 thread_local! {
@@ -382,119 +254,251 @@ fn bound_factory(
     ))
 }
 
-#[test]
-fn a_bound_component_builds_participant_trees_against_its_own_record() {
-    let probe = Rc::new(RefCell::new(Probe {
-        require_marker: Some("bound-record"),
-        ..Probe::default()
-    }));
-    BOUND_PROBE.with_borrow_mut(|slot| *slot = Some(probe.clone()));
-    let temp = tempfile::tempdir().unwrap();
-    let mut owners = crate::record::RecordOwners::new(temp.path().into());
-    let records = owners
-        .open("dev.tilo.two-views", "00000000-0000-0000-0000-000000000009")
-        .unwrap();
-    let views = Rc::new(
-        crate::application_view::InstanceViewStore::new(
-            temp.path().into(),
-            "D",
-            "00000000-0000-0000-0000-000000000009",
-        )
-        .unwrap(),
-    );
-    let definition = crate::application::ApplicationDefinition {
-        app_id: "dev.tilo.two-views".into(),
-        title: "Two views".into(),
-        icon: crate::widget::IconDescriptor::Glyph("T"),
-        record_kind: crate::record::RecordKind::new("two-views"),
-        required: vec![],
-        optional: vec![],
-        opens: &[],
-        workspace_record: false,
-        member_record: false,
-        opens_before_record: false,
-        create: bound_factory,
-    };
-    let target = crate::application::LaunchTarget::New;
-    let context = crate::application::HostContext::prepare(
-        &definition,
-        crate::application::HostContextInputs {
-            records: records.clone(),
-            views,
-            device_id: "D".into(),
-            instance_id: 1,
-            permissions: crate::permissions::SharedPermissions::new(
-                crate::permissions::PermissionContext::permissive(),
-            ),
-            author: crate::permissions::UserId("fixture-user".into()),
-            action_context: tilo_actions::ActionContext::default(),
-        },
-        &target,
-    )
-    .unwrap();
-    let component = definition
-        .instantiate(context, target, crate::application::RestoreInput::None)
-        .unwrap();
-    let binding = component.callback_binding();
-    let column = crate::widget::Column::new()
-        .push(Box::new(crate::widget::TileHost::from_component(component)));
-    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(column));
-    app.init_layout();
-    assert!(app.join_participant(&task()), "join reaches the bound root");
+tilo_test_env::scenario! {
+    fn a_participants_invocations_reach_only_its_own_view;
 
-    // The boundary forwards a participant tree through its own record
-    // document; built on the outer App document (no marker) it would be empty,
-    // and the default would fall back to the boundary's own (schema) view.
-    fn bound_participant_tree(
-        widget: &dyn Widget,
-        doc: &automerge::AutoCommit,
-        participant: &ParticipantId,
-        found: &mut Option<Vec<ResourceSpec>>,
-    ) {
-        if found.is_none() && widget.name() == "BoundComponent" {
-            *found = Some(crate::resources::resources_for(
-                widget,
-                Some(participant),
-                doc,
-            ));
-        }
-        widget.for_each_child(&mut |child| bound_participant_tree(child, doc, participant, found));
-    }
-    let mut resources = None;
-    bound_participant_tree(
-        app.root_widget.as_ref(),
-        &app.state.doc,
-        &task(),
-        &mut resources,
-    );
-    assert!(resources.is_some(), "a bound component boundary");
-    // Resolution of a component target also rebuilds the invoker's tree.
-    let snapshots = {
-        let _scope = crate::invocation_scope::InvokerScope::enter(
-            tilo_actions::ActionInvoker::actor("agent:scribe").with_participant(task()),
+    phase delivered_invocation_resolves_against_the_invokers_own_view;
+    {
+        let (mut app, probe) = app();
+        deliver(
+            &mut app,
+            1,
+            "mark",
+            "agent:scribe",
+            Some(host_context("agent:scribe", Some(task()))),
         );
-        crate::bound_dispatch::discover_bound_resources(
+        assert_eq!(
+            who(&app).as_deref(),
+            Some(task().as_str()),
+            "built from the agent's participant tree, rebuilt at invoke time"
+        );
+        assert_eq!(
+            probe.borrow().joined,
+            vec![task()],
+            "first use creates its view"
+        );
+
+        // Durable attribution carries the same host-set invoker.
+        let changes = app.state.doc.get_changes(&[]);
+        let change = changes.last().expect("committed change");
+        let context = change
+            .message()
+            .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
+            .expect("attributed change");
+        assert_eq!(
+            context.invoker,
+            Some(tilo_actions::ActionInvoker::actor("agent:scribe").with_participant(task()))
+        );
+
+        // Without a participant the same address resolves in this window's view.
+        deliver(&mut app, 2, "mark", "agent:scribe", None);
+        assert_eq!(who(&app).as_deref(), Some("own"));
+    }
+
+    phase a_context_naming_another_actor_never_routes_to_a_participant_view;
+    {
+        let (mut app, probe) = app();
+        probe.borrow_mut().joined.push(task());
+        // The delivery's actor is authoritative; a context whose invoker names a
+        // different actor (forged or stale) is not a route to anybody's view.
+        deliver(
+            &mut app,
+            3,
+            "mark",
+            "person:guest",
+            Some(host_context("agent:scribe", Some(task()))),
+        );
+        assert_eq!(who(&app).as_deref(), Some("own"));
+        let changes = app.state.doc.get_changes(&[]);
+        let change = changes.last().expect("committed change");
+        let context = change
+            .message()
+            .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
+            .expect("attributed change");
+        assert_eq!(
+            context.invoker,
+            Some(tilo_actions::ActionInvoker::actor("person:guest")),
+            "history names the delivered actor, never the envelope's"
+        );
+    }
+
+    phase a_remote_participant_may_only_change_its_own_view;
+    {
+        let (mut app, probe) = app();
+        deliver(
+            &mut app,
+            4,
+            "move-caret",
+            "agent:scribe",
+            Some(host_context("agent:scribe", Some(task()))),
+        );
+        assert_eq!(
+            probe.borrow().view_ops,
+            vec![(VIEW_TYPE.to_owned(), Some(task()))],
+            "a participant-view op runs inside the invoker's scope"
+        );
+        // An untagged View op would move this window's private view.
+        deliver(
+            &mut app,
+            5,
+            "zoom",
+            "agent:scribe",
+            Some(host_context("agent:scribe", Some(task()))),
+        );
+        // A remote actor without its own participant cannot move any view.
+        deliver(&mut app, 6, "move-caret", "agent:scribe", None);
+        assert_eq!(
+            probe.borrow().view_ops.len(),
+            1,
+            "both refused as private_view"
+        );
+    }
+
+    phase participant_lifecycle_and_host_mode_reach_the_widget_tree;
+    {
+        let (mut app, probe) = app();
+        assert!(app.join_participant(&task()));
+        assert!(!app.join_participant(&task()), "idempotent");
+        app.leave_participant(&task());
+        assert_eq!(probe.borrow().left, vec![task()]);
+        assert!(probe.borrow().joined.is_empty());
+        app.set_participant_host(true);
+        assert!(probe.borrow().host);
+        assert!(
+            tilo_actions::door::survey(&app.collect_resources())
+                .iter()
+                .all(|descriptor| descriptor.address.resource == "test.doc"),
+        );
+    }
+
+    phase participant_presence_is_reported_with_its_label;
+    {
+        let (mut app, _probe) = app();
+        assert!(app.participant_presence().is_empty());
+        app.join_participant(&task());
+        app.set_participant_label(&task(), "Scribe");
+        let presence = app.participant_presence();
+        assert_eq!(presence.len(), 1);
+        assert_eq!(presence[0].participant, task());
+        assert_eq!(presence[0].label.as_deref(), Some("Scribe"));
+        app.leave_participant(&task());
+        assert!(app.participant_presence().is_empty());
+    }
+
+    phase a_bound_component_builds_participant_trees_against_its_own_record;
+    {
+        let probe = Rc::new(RefCell::new(Probe {
+            require_marker: Some("bound-record"),
+            ..Probe::default()
+        }));
+        BOUND_PROBE.with_borrow_mut(|slot| *slot = Some(probe.clone()));
+        let temp = tempfile::tempdir().unwrap();
+        let mut owners = crate::record::RecordOwners::new(temp.path().into());
+        let records = owners
+            .open("dev.tilo.two-views", "00000000-0000-0000-0000-000000000009")
+            .unwrap();
+        let views = Rc::new(
+            crate::application_view::InstanceViewStore::new(
+                temp.path().into(),
+                "D",
+                "00000000-0000-0000-0000-000000000009",
+            )
+            .unwrap(),
+        );
+        let definition = crate::application::ApplicationDefinition {
+            app_id: "dev.tilo.two-views".into(),
+            title: "Two views".into(),
+            icon: crate::widget::IconDescriptor::Glyph("T"),
+            record_kind: crate::record::RecordKind::new("two-views"),
+            required: vec![],
+            optional: vec![],
+            opens: &[],
+            workspace_record: false,
+            member_record: false,
+            opens_before_record: false,
+            create: bound_factory,
+        };
+        let target = crate::application::LaunchTarget::New;
+        let context = crate::application::HostContext::prepare(
+            &definition,
+            crate::application::HostContextInputs {
+                records: records.clone(),
+                views,
+                device_id: "D".into(),
+                instance_id: 1,
+                permissions: crate::permissions::SharedPermissions::new(
+                    crate::permissions::PermissionContext::permissive(),
+                ),
+                author: crate::permissions::UserId("fixture-user".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
+            &target,
+        )
+        .unwrap();
+        let component = definition
+            .instantiate(context, target, crate::application::RestoreInput::None)
+            .unwrap();
+        let binding = component.callback_binding();
+        let column = crate::widget::Column::new()
+            .push(Box::new(crate::widget::TileHost::from_component(component)));
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(column));
+        app.init_layout();
+        assert!(app.join_participant(&task()), "join reaches the bound root");
+
+        // The boundary forwards a participant tree through its own record
+        // document; built on the outer App document (no marker) it would be empty,
+        // and the default would fall back to the boundary's own (schema) view.
+        fn bound_participant_tree(
+            widget: &dyn Widget,
+            doc: &automerge::AutoCommit,
+            participant: &ParticipantId,
+            found: &mut Option<Vec<ResourceSpec>>,
+        ) {
+            if found.is_none() && widget.name() == "BoundComponent" {
+                *found = Some(crate::resources::resources_for(
+                    widget,
+                    Some(participant),
+                    doc,
+                ));
+            }
+            widget.for_each_child(&mut |child| bound_participant_tree(child, doc, participant, found));
+        }
+        let mut resources = None;
+        bound_participant_tree(
             app.root_widget.as_ref(),
             &app.state.doc,
-            Some(&tilo_actions::ActionAddress::new("test.doc", "mark")),
-        )
-        .unwrap()
-    };
-    let snapshot = snapshots
-        .iter()
-        .find(|snapshot| snapshot.binding.same_component(&binding))
-        .expect("component snapshot");
-    let spec = tilo_actions::door::resolve(
-        snapshot.resources(),
-        &tilo_actions::ActionAddress::new("test.doc", "mark"),
-    )
-    .expect("participant resolves mark");
-    assert_eq!(
-        spec.fixed_invocation_encoding().unwrap().payload,
-        tilo_actions::EncodedAction::encode(MARK_TYPE, &Mark(task().as_str().into()))
+            &task(),
+            &mut resources,
+        );
+        assert!(resources.is_some(), "a bound component boundary");
+        // Resolution of a component target also rebuilds the invoker's tree.
+        let snapshots = {
+            let _scope = crate::invocation_scope::InvokerScope::enter(
+                tilo_actions::ActionInvoker::actor("agent:scribe").with_participant(task()),
+            );
+            crate::bound_dispatch::discover_bound_resources(
+                app.root_widget.as_ref(),
+                &app.state.doc,
+                Some(&tilo_actions::ActionAddress::new("test.doc", "mark")),
+            )
             .unwrap()
-            .payload,
-        "not this window's own view"
-    );
-    BOUND_PROBE.with_borrow_mut(|slot| *slot = None);
+        };
+        let snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.binding.same_component(&binding))
+            .expect("component snapshot");
+        let spec = tilo_actions::door::resolve(
+            snapshot.resources(),
+            &tilo_actions::ActionAddress::new("test.doc", "mark"),
+        )
+        .expect("participant resolves mark");
+        assert_eq!(
+            spec.fixed_invocation_encoding().unwrap().payload,
+            tilo_actions::EncodedAction::encode(MARK_TYPE, &Mark(task().as_str().into()))
+                .unwrap()
+                .payload,
+            "not this window's own view"
+        );
+        BOUND_PROBE.with_borrow_mut(|slot| *slot = None);
+    }
 }

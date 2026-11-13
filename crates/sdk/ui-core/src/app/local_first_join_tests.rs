@@ -102,152 +102,156 @@ impl Joining {
     }
 }
 
-#[test]
-fn an_app_opens_on_its_local_replica_and_its_edits_sync_once_the_broker_answers() {
-    let mut probe = joining(runtime_collab::WorkspaceStatus::Ready);
-    assert_eq!(
-        probe.app.collaboration_state(),
-        CollaborationState::Connecting
-    );
-    assert!(probe.app.collaboration.manager.is_joining());
-    // The person edits while the app joins.
-    probe
-        .app
-        .invoke_local_resource_action(
-            &tilo_actions::ActionAddress::new("probe:shared", "edit"),
-            &serde_json::Map::new(),
-        )
-        .unwrap();
-    probe.app.pump_collab_presence();
-    assert_eq!(probe.body("body").as_deref(), Some("edited"));
-    assert_eq!(
-        probe.app.document_sync_status(),
-        None,
-        "a join under way that nothing holds up says nothing"
-    );
-    assert_eq!(
-        probe.broker.changes_sent(),
-        0,
-        "nothing goes out before the route is joined"
-    );
+tilo_test_env::scenario! {
+    fn an_app_opens_on_its_local_replica_whatever_the_broker_answers;
 
-    probe.broker.answer();
-    probe.pump_until("the route's committed history merged", |app| {
-        app.collaboration_state().is_ready() && app.published_action_history_ready()
-    });
-    assert_eq!(probe.body("from_room").as_deref(), Some("another device"));
-    assert_eq!(probe.body("body").as_deref(), Some("edited"));
-    let deadline = tilo_test_env::hang_deadline();
-    while probe.broker.changes_sent() == 0 {
-        probe.app.pump_collab_presence();
-        assert!(
-            crate::time::now() < deadline,
-            "never saw the edit made while joining sent"
+    phase an_app_opens_on_its_local_replica_and_its_edits_sync_once_the_broker_answers;
+    {
+        let mut probe = joining(runtime_collab::WorkspaceStatus::Ready);
+        assert_eq!(
+            probe.app.collaboration_state(),
+            CollaborationState::Connecting
         );
-        std::thread::yield_now();
-    }
-    // The broker refuses a change that names no action of this device, and
-    // the workspace's committed history is not this device's to send: every
-    // incremental that reached it names its action here.
-    let route = probe.owner.broker_route().unwrap();
-    for (sent_route, request) in &probe.app.document_routes.sent {
-        if *sent_route != route {
-            continue;
+        assert!(probe.app.collaboration.manager.is_joining());
+        // The person edits while the app joins.
+        probe
+            .app
+            .invoke_local_resource_action(
+                &tilo_actions::ActionAddress::new("probe:shared", "edit"),
+                &serde_json::Map::new(),
+            )
+            .unwrap();
+        probe.app.pump_collab_presence();
+        assert_eq!(probe.body("body").as_deref(), Some("edited"));
+        assert_eq!(
+            probe.app.document_sync_status(),
+            None,
+            "a join under way that nothing holds up says nothing"
+        );
+        assert_eq!(
+            probe.broker.changes_sent(),
+            0,
+            "nothing goes out before the route is joined"
+        );
+
+        probe.broker.answer();
+        probe.pump_until("the route's committed history merged", |app| {
+            app.collaboration_state().is_ready() && app.published_action_history_ready()
+        });
+        assert_eq!(probe.body("from_room").as_deref(), Some("another device"));
+        assert_eq!(probe.body("body").as_deref(), Some("edited"));
+        let deadline = tilo_test_env::hang_deadline();
+        while probe.broker.changes_sent() == 0 {
+            probe.app.pump_collab_presence();
+            assert!(
+                crate::time::now() < deadline,
+                "never saw the edit made while joining sent"
+            );
+            std::thread::yield_now();
         }
-        if let crate::collaboration::CollabRequest::Document {
-            mutation: collab_types::DocumentMutation::Incremental(bytes),
-            ..
-        } = request
-        {
-            collab_types::claim::named_changes(bytes).unwrap();
+        // The broker refuses a change that names no action of this device, and
+        // the workspace's committed history is not this device's to send: every
+        // incremental that reached it names its action here.
+        let route = probe.owner.broker_route().unwrap();
+        for (sent_route, request) in &probe.app.document_routes.sent {
+            if *sent_route != route {
+                continue;
+            }
+            if let crate::collaboration::CollabRequest::Document {
+                mutation: collab_types::DocumentMutation::Incremental(bytes),
+                ..
+            } = request
+            {
+                collab_types::claim::named_changes(bytes).unwrap();
+            }
         }
     }
-}
 
-#[test]
-fn the_connecting_line_follows_the_brokers_waiting_and_unreachable_events() {
-    let reconnecting = crate::i18n::I18nManager::lookup_plain("history-sync-reconnecting");
-    let mut probe = joining(runtime_collab::WorkspaceStatus::Waiting {
-        reason: "Placing the workspace on its host".into(),
-        detail: None,
-    });
-    probe.pump_until("the workspace's wait", |app| {
-        app.document_sync_status().as_deref() == Some(reconnecting.as_str())
-    });
-    assert!(matches!(
-        probe.app.collaboration.manager.join_hold(),
-        Some(crate::collaboration::JoinHold::WorkspaceWaiting { .. })
-    ));
+    phase the_connecting_line_follows_the_brokers_waiting_and_unreachable_events;
+    {
+        let reconnecting = crate::i18n::I18nManager::lookup_plain("history-sync-reconnecting");
+        let mut probe = joining(runtime_collab::WorkspaceStatus::Waiting {
+            reason: "Placing the workspace on its host".into(),
+            detail: None,
+        });
+        probe.pump_until("the workspace's wait", |app| {
+            app.document_sync_status().as_deref() == Some(reconnecting.as_str())
+        });
+        assert!(matches!(
+            probe.app.collaboration.manager.join_hold(),
+            Some(crate::collaboration::JoinHold::WorkspaceWaiting { .. })
+        ));
 
-    // The workspace is ready: the join goes on, and the line says nothing.
-    probe
-        .broker
-        .set_workspace_status(runtime_collab::WorkspaceStatus::Ready);
-    probe.pump_until("the wait to end", |app| {
-        app.document_sync_status().is_none()
-    });
-    assert!(probe.app.collaboration.manager.is_joining());
-}
+        // The workspace is ready: the join goes on, and the line says nothing.
+        probe
+            .broker
+            .set_workspace_status(runtime_collab::WorkspaceStatus::Ready);
+        probe.pump_until("the wait to end", |app| {
+            app.document_sync_status().is_none()
+        });
+        assert!(probe.app.collaboration.manager.is_joining());
+    }
 
-#[test]
-fn the_connecting_line_shows_while_the_broker_cannot_be_reached() {
-    let reconnecting = crate::i18n::I18nManager::lookup_plain("history-sync-reconnecting");
-    let mut probe = joining(runtime_collab::WorkspaceStatus::Waiting {
-        reason: "Placing the workspace on its host".into(),
-        detail: None,
-    });
-    probe.pump_until("the workspace's wait", |app| {
-        app.collaboration.manager.join_hold().is_some()
-    });
-    probe.broker.workspace_unreachable("the broker went away");
-    probe.pump_until("the broker unreachable", |app| {
-        matches!(
-            app.collaboration.manager.join_hold(),
-            Some(crate::collaboration::JoinHold::Unreachable(_))
-        )
-    });
-    assert_eq!(
-        probe.app.document_sync_status().as_deref(),
-        Some(reconnecting.as_str())
-    );
-    // The join's answer clears it.
-    probe.broker.answer();
-    probe.pump_until("the route joined", |app| {
-        app.collaboration_state().is_ready()
-    });
-    assert_eq!(probe.app.collaboration.manager.join_hold(), None);
-    assert_ne!(
-        probe.app.document_sync_status().as_deref(),
-        Some(reconnecting.as_str())
-    );
-}
+    phase the_connecting_line_shows_while_the_broker_cannot_be_reached;
+    {
+        let reconnecting = crate::i18n::I18nManager::lookup_plain("history-sync-reconnecting");
+        let mut probe = joining(runtime_collab::WorkspaceStatus::Waiting {
+            reason: "Placing the workspace on its host".into(),
+            detail: None,
+        });
+        probe.pump_until("the workspace's wait", |app| {
+            app.collaboration.manager.join_hold().is_some()
+        });
+        probe.broker.workspace_unreachable("the broker went away");
+        probe.pump_until("the broker unreachable", |app| {
+            matches!(
+                app.collaboration.manager.join_hold(),
+                Some(crate::collaboration::JoinHold::Unreachable(_))
+            )
+        });
+        assert_eq!(
+            probe.app.document_sync_status().as_deref(),
+            Some(reconnecting.as_str())
+        );
+        // The join's answer clears it.
+        probe.broker.answer();
+        probe.pump_until("the route joined", |app| {
+            app.collaboration_state().is_ready()
+        });
+        assert_eq!(probe.app.collaboration.manager.join_hold(), None);
+        assert_ne!(
+            probe.app.document_sync_status().as_deref(),
+            Some(reconnecting.as_str())
+        );
+    }
 
-#[test]
-fn a_refused_join_leaves_the_app_up_with_its_data_and_the_reason_shown() {
-    let mut probe = joining(runtime_collab::WorkspaceStatus::Ready);
-    probe.broker.refuse();
-    probe.pump_until("the refusal", |app| {
-        matches!(app.collaboration_state(), CollaborationState::Offline(_))
-    });
-    let reason = probe
-        .app
-        .collaboration
-        .manager
-        .join_refusal()
-        .map(str::to_owned)
-        .expect("the broker's reason");
-    assert!(reason.contains(JoiningProbe::REFUSAL), "{reason}");
-    let status = probe.app.document_sync_status().expect("the line says why");
-    assert!(status.contains(JoiningProbe::REFUSAL), "{status}");
-    // The app keeps working on what this device holds.
-    assert_eq!(probe.body("from_room"), None);
-    probe
-        .app
-        .invoke_local_resource_action(
-            &tilo_actions::ActionAddress::new("probe:shared", "edit"),
-            &serde_json::Map::new(),
-        )
-        .unwrap();
-    probe.app.pump_collab_presence();
-    assert_eq!(probe.body("body").as_deref(), Some("edited"));
+    phase a_refused_join_leaves_the_app_up_with_its_data_and_the_reason_shown;
+    {
+        let mut probe = joining(runtime_collab::WorkspaceStatus::Ready);
+        probe.broker.refuse();
+        probe.pump_until("the refusal", |app| {
+            matches!(app.collaboration_state(), CollaborationState::Offline(_))
+        });
+        let reason = probe
+            .app
+            .collaboration
+            .manager
+            .join_refusal()
+            .map(str::to_owned)
+            .expect("the broker's reason");
+        assert!(reason.contains(JoiningProbe::REFUSAL), "{reason}");
+        let status = probe.app.document_sync_status().expect("the line says why");
+        assert!(status.contains(JoiningProbe::REFUSAL), "{status}");
+        // The app keeps working on what this device holds.
+        assert_eq!(probe.body("from_room"), None);
+        probe
+            .app
+            .invoke_local_resource_action(
+                &tilo_actions::ActionAddress::new("probe:shared", "edit"),
+                &serde_json::Map::new(),
+            )
+            .unwrap();
+        probe.app.pump_collab_presence();
+        assert_eq!(probe.body("body").as_deref(), Some("edited"));
+    }
 }

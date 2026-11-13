@@ -1063,131 +1063,135 @@ mod tests {
         }
     }
 
-    /// One action that changed resources two apps keep: a task's field in the
-    /// tasks app, and a thread in the discussion app. A peer that gets one of
-    /// them has neither change, and gets both together.
-    #[test]
-    fn one_actions_units_publish_under_one_commit() {
-        let workspace = uuid::Uuid::new_v4();
-        let invocation = uuid::Uuid::new_v4();
-        let other = uuid::Uuid::new_v4();
-        let mut parts = vec![
-            part(
-                crate::collaboration::RouteSpec::app("so.tilo.test-tasks", workspace),
-                action_mutation("title", "a", invocation),
-            ),
-            part(
-                crate::collaboration::RouteSpec::record(
-                    "so.tilo.test-discussion",
-                    workspace,
-                    "thread",
+    tilo_test_env::scenario! {
+        fn document_routes_publish_under_the_action_that_made_them;
+
+        phase one_actions_units_publish_under_one_commit;
+        // One action that changed resources two apps keep: a task's field in the
+        // tasks app, and a thread in the discussion app. A peer that gets one of
+        // them has neither change, and gets both together.
+        {
+            let workspace = uuid::Uuid::new_v4();
+            let invocation = uuid::Uuid::new_v4();
+            let other = uuid::Uuid::new_v4();
+            let mut parts = vec![
+                part(
+                    crate::collaboration::RouteSpec::app("so.tilo.test-tasks", workspace),
+                    action_mutation("title", "a", invocation),
                 ),
-                action_mutation("body", "b", invocation),
-            ),
-            part(
-                crate::collaboration::RouteSpec::app("so.tilo.test-notes", workspace),
-                action_mutation("title", "c", other),
-            ),
-            part(
-                crate::collaboration::RouteSpec::app("so.tilo.test-books", workspace),
-                collab_types::DocumentMutation::Snapshot(Vec::new()),
-            ),
-        ];
-        let commits = publication_commits(&mut parts);
-
-        let action = commits[0]
-            .as_ref()
-            .expect("a unit that changed travels under its action's commit");
-        assert_eq!(
-            commits[1].as_ref(),
-            Some(action),
-            "both units of the action carry the one commit"
-        );
-        assert_eq!(action.parts.len(), 2, "the commit names both of its units");
-        assert!(action.covers("so.tilo.test-tasks", ""));
-        assert!(action.covers("so.tilo.test-discussion", "thread"));
-        assert_eq!(action.invocation, Some(invocation));
-        assert_eq!(action.author.principal.as_deref(), Some("alice"));
-        assert_eq!(action.at_ms, 1_700_000_000_000, "the action's own time");
-        assert_eq!(
-            action.author.device, [0; 32],
-            "the transport stamps the device"
-        );
-
-        let single = commits[2]
-            .as_ref()
-            .expect("another action travels under a commit of its own");
-        assert_ne!(single.id(), action.id());
-        assert_eq!(single.parts.len(), 1);
-        assert_eq!(commits[3], None, "a whole document is part of no action");
-
-        // Every unit the action wrote goes out as a part of it.
-        for (part, commit) in parts.into_iter().zip(commits) {
-            let request = part_request(part.mutation, part.authorization, commit.clone());
-            match commit {
-                Some(commit) => assert!(
-                    matches!(
-                        request,
-                        CollabRequest::Document {
-                            commit: Some(carried),
-                            ..
-                        } if carried == commit
+                part(
+                    crate::collaboration::RouteSpec::record(
+                        "so.tilo.test-discussion",
+                        workspace,
+                        "thread",
                     ),
-                    "a unit of an action travels as a part of it"
+                    action_mutation("body", "b", invocation),
                 ),
-                None => assert!(matches!(
-                    request,
-                    CollabRequest::Document { commit: None, .. }
-                )),
+                part(
+                    crate::collaboration::RouteSpec::app("so.tilo.test-notes", workspace),
+                    action_mutation("title", "c", other),
+                ),
+                part(
+                    crate::collaboration::RouteSpec::app("so.tilo.test-books", workspace),
+                    collab_types::DocumentMutation::Snapshot(Vec::new()),
+                ),
+            ];
+            let commits = publication_commits(&mut parts);
+
+            let action = commits[0]
+                .as_ref()
+                .expect("a unit that changed travels under its action's commit");
+            assert_eq!(
+                commits[1].as_ref(),
+                Some(action),
+                "both units of the action carry the one commit"
+            );
+            assert_eq!(action.parts.len(), 2, "the commit names both of its units");
+            assert!(action.covers("so.tilo.test-tasks", ""));
+            assert!(action.covers("so.tilo.test-discussion", "thread"));
+            assert_eq!(action.invocation, Some(invocation));
+            assert_eq!(action.author.principal.as_deref(), Some("alice"));
+            assert_eq!(action.at_ms, 1_700_000_000_000, "the action's own time");
+            assert_eq!(
+                action.author.device, [0; 32],
+                "the transport stamps the device"
+            );
+
+            let single = commits[2]
+                .as_ref()
+                .expect("another action travels under a commit of its own");
+            assert_ne!(single.id(), action.id());
+            assert_eq!(single.parts.len(), 1);
+            assert_eq!(commits[3], None, "a whole document is part of no action");
+
+            // Every unit the action wrote goes out as a part of it.
+            for (part, commit) in parts.into_iter().zip(commits) {
+                let request = part_request(part.mutation, part.authorization, commit.clone());
+                match commit {
+                    Some(commit) => assert!(
+                        matches!(
+                            request,
+                            CollabRequest::Document {
+                                commit: Some(carried),
+                                ..
+                            } if carried == commit
+                        ),
+                        "a unit of an action travels as a part of it"
+                    ),
+                    None => assert!(matches!(
+                        request,
+                        CollabRequest::Document { commit: None, .. }
+                    )),
+                }
             }
         }
-    }
 
-    /// Typing a word writes its first letter as the action and every next letter
-    /// as a continuation of it. Each letter goes out in its own pass, and each
-    /// travels under the action of the person who typed it.
-    #[test]
-    fn every_letter_typed_publishes_under_the_typists_action() {
-        let mut fixture = super::super::framework_history_tests::RoutedOwners::new();
-        fixture.app.publish_owned_documents();
-        fixture.app.document_routes.sent.clear();
-        let gesture = tilo_actions::ActionId(uuid::Uuid::new_v4());
-        let typed = |text: &str| tilo_actions::ActionContext {
-            action: Some(tilo_actions::EncodedAction {
-                type_id: "notes.type".into(),
-                payload: format!("{text:?}").into_bytes(),
-            }),
-            invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
-            ..tilo_actions::ActionContext::default().in_gesture(Some(gesture))
-        };
-        let id = fixture.bindings[0].checkout.id.clone();
-        let records = fixture.records.clone();
-        let write = |text: &str, message: String| {
-            records
-                .with_history(&id, |doc, _| {
-                    automerge::transaction::Transactable::put(doc, automerge::ROOT, "body", text)
-                        .unwrap();
-                    doc.commit_with(
-                        automerge::transaction::CommitOptions::default().with_message(message),
-                    );
-                })
-                .unwrap();
-        };
-        write("a", typed("a").change_message().unwrap());
-        fixture.app.publish_owned_documents();
-        write("ab", typed("ab").continuation_of(&typed("a")).unwrap());
-        fixture.app.publish_owned_documents();
-
-        let sent = &fixture.app.document_routes.sent;
-        assert_eq!(sent.len(), 2, "each letter goes out in its own pass");
-        for (_, request) in sent {
-            let CollabRequest::Document { commit, .. } = request else {
-                panic!("a letter is a document change");
+        phase every_letter_typed_publishes_under_the_typists_action;
+        // Typing a word writes its first letter as the action and every next letter
+        // as a continuation of it. Each letter goes out in its own pass, and each
+        // travels under the action of the person who typed it.
+        {
+            let mut fixture = super::super::framework_history_tests::RoutedOwners::new();
+            fixture.app.publish_owned_documents();
+            fixture.app.document_routes.sent.clear();
+            let gesture = tilo_actions::ActionId(uuid::Uuid::new_v4());
+            let typed = |text: &str| tilo_actions::ActionContext {
+                action: Some(tilo_actions::EncodedAction {
+                    type_id: "notes.type".into(),
+                    payload: format!("{text:?}").into_bytes(),
+                }),
+                invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+                ..tilo_actions::ActionContext::default().in_gesture(Some(gesture))
             };
-            let commit = commit
-                .as_ref()
-                .expect("every letter travels under its action");
-            assert_eq!(commit.author.principal.as_deref(), Some("alice"));
+            let id = fixture.bindings[0].checkout.id.clone();
+            let records = fixture.records.clone();
+            let write = |text: &str, message: String| {
+                records
+                    .with_history(&id, |doc, _| {
+                        automerge::transaction::Transactable::put(doc, automerge::ROOT, "body", text)
+                            .unwrap();
+                        doc.commit_with(
+                            automerge::transaction::CommitOptions::default().with_message(message),
+                        );
+                    })
+                    .unwrap();
+            };
+            write("a", typed("a").change_message().unwrap());
+            fixture.app.publish_owned_documents();
+            write("ab", typed("ab").continuation_of(&typed("a")).unwrap());
+            fixture.app.publish_owned_documents();
+
+            let sent = &fixture.app.document_routes.sent;
+            assert_eq!(sent.len(), 2, "each letter goes out in its own pass");
+            for (_, request) in sent {
+                let CollabRequest::Document { commit, .. } = request else {
+                    panic!("a letter is a document change");
+                };
+                let commit = commit
+                    .as_ref()
+                    .expect("every letter travels under its action");
+                assert_eq!(commit.author.principal.as_deref(), Some("alice"));
+            }
         }
     }
 }

@@ -159,110 +159,114 @@ impl Probe {
     }
 }
 
-#[test]
-fn an_own_invocation_made_before_its_route_is_ready_follows_the_surface_that_offers_it() {
-    let mut probe = probe();
-    assert!(probe.app.collaboration.manager.is_connected());
-    assert!(
-        !probe.app.published_action_history_ready(),
-        "the route's original history must not be applied yet"
-    );
-    let first = probe.invoke_effect();
-    let second = probe.invoke_effect();
-    assert!(
-        (probe.invocations)().is_empty(),
-        "nothing reaches the host before the surface that offers it"
-    );
-    probe.pump_until_answered();
-    assert!(probe.app.published_action_history_ready());
-    assert_eq!(
-        (probe.invocations)(),
-        vec![(first, true), (second, true)],
-        "each invocation arrives once, in order, offered by the surface before it"
-    );
-    // Once the route is ready an invocation goes out as it is made: it waits
-    // on nothing.
-    let third = probe.invoke_effect();
-    assert!(probe.app.actions.held_own_invocations.is_empty());
-    probe.pump_until_answered();
-    assert_eq!((probe.invocations)().last(), Some(&(third, true)));
-}
+tilo_test_env::scenario! {
+    fn an_own_invocation_waits_for_the_route_that_offers_it;
 
-#[test]
-fn an_own_invocation_waiting_on_a_route_that_closes_fails_with_the_route_error() {
-    let mut probe = probe();
-    assert!(!probe.app.published_action_history_ready());
-    probe.invoke_effect();
-    probe.app.collaboration.manager.fail_publication_for_test();
-    assert!(!probe.app.collaboration.manager.is_connected());
-    let closed = probe.app.collaboration.manager.state();
-    let route_error = closed.reason();
-    probe.app.pump_collab_presence();
-    let reason = probe
-        .app
-        .controlled_refused_action_for_test()
-        .expect("a held invocation must be answered when its route closes");
-    assert!(
-        reason.contains(route_error),
-        "the refusal must carry the route's own error: {reason}"
-    );
-    assert!(
-        !reason.contains("no such action is offered"),
-        "a closed route is not an unknown action: {reason}"
-    );
-    assert!(probe.app.actions.broker_requests.is_empty());
-    assert!(probe.app.actions.held_own_invocations.is_empty());
-    assert!((probe.invocations)().is_empty());
-}
+    phase an_own_invocation_made_before_its_route_is_ready_follows_the_surface_that_offers_it;
+    {
+        let mut probe = probe();
+        assert!(probe.app.collaboration.manager.is_connected());
+        assert!(
+            !probe.app.published_action_history_ready(),
+            "the route's original history must not be applied yet"
+        );
+        let first = probe.invoke_effect();
+        let second = probe.invoke_effect();
+        assert!(
+            (probe.invocations)().is_empty(),
+            "nothing reaches the host before the surface that offers it"
+        );
+        probe.pump_until_answered();
+        assert!(probe.app.published_action_history_ready());
+        assert_eq!(
+            (probe.invocations)(),
+            vec![(first, true), (second, true)],
+            "each invocation arrives once, in order, offered by the surface before it"
+        );
+        // Once the route is ready an invocation goes out as it is made: it waits
+        // on nothing.
+        let third = probe.invoke_effect();
+        assert!(probe.app.actions.held_own_invocations.is_empty());
+        probe.pump_until_answered();
+        assert_eq!((probe.invocations)().last(), Some(&(third, true)));
+    }
 
-/// A record kept beside the shown one is read context: the window's
-/// actions never act through it, so its route holds back neither the
-/// surface that offers them nor an accepted invocation, even while it
-/// never opens.
-#[test]
-fn a_window_whose_beside_record_never_opens_still_offers_its_actions() {
-    let mut probe = probe_keeping_beside(true);
-    let beside = probe
-        .beside
-        .as_ref()
-        .and_then(crate::record::StoredRecord::route)
-        .expect("the record kept beside syncs on its own route");
-    let first = probe.invoke_effect();
-    probe.pump_until_answered();
-    assert_eq!(
-        (probe.invocations)(),
-        vec![(first, true)],
-        "the surface went out and offered the invoked action"
-    );
-    assert!(
-        probe
+    phase an_own_invocation_waiting_on_a_route_that_closes_fails_with_the_route_error;
+    {
+        let mut probe = probe();
+        assert!(!probe.app.published_action_history_ready());
+        probe.invoke_effect();
+        probe.app.collaboration.manager.fail_publication_for_test();
+        assert!(!probe.app.collaboration.manager.is_connected());
+        let closed = probe.app.collaboration.manager.state();
+        let route_error = closed.reason();
+        probe.app.pump_collab_presence();
+        let reason = probe
             .app
-            .document_routes
-            .owners
-            .iter()
-            .any(|entry| entry.route == beside),
-        "the window joined the beside record's route"
-    );
-    assert!(
-        !probe
+            .controlled_refused_action_for_test()
+            .expect("a held invocation must be answered when its route closes");
+        assert!(
+            reason.contains(route_error),
+            "the refusal must carry the route's own error: {reason}"
+        );
+        assert!(
+            !reason.contains("no such action is offered"),
+            "a closed route is not an unknown action: {reason}"
+        );
+        assert!(probe.app.actions.broker_requests.is_empty());
+        assert!(probe.app.actions.held_own_invocations.is_empty());
+        assert!((probe.invocations)().is_empty());
+    }
+
+    phase a_window_whose_beside_record_never_opens_still_offers_its_actions;
+    // A record kept beside the shown one is read context: the window's
+    // actions never act through it, so its route holds back neither the
+    // surface that offers them nor an accepted invocation, even while it
+    // never opens.
+    {
+        let mut probe = probe_keeping_beside(true);
+        let beside = probe
+            .beside
+            .as_ref()
+            .and_then(crate::record::StoredRecord::route)
+            .expect("the record kept beside syncs on its own route");
+        let first = probe.invoke_effect();
+        probe.pump_until_answered();
+        assert_eq!(
+            (probe.invocations)(),
+            vec![(first, true)],
+            "the surface went out and offered the invoked action"
+        );
+        assert!(
+            probe
+                .app
+                .document_routes
+                .owners
+                .iter()
+                .any(|entry| entry.route == beside),
+            "the window joined the beside record's route"
+        );
+        assert!(
+            !probe
+                .app
+                .collaboration
+                .manager
+                .document_route_publishable(&beside),
+            "the beside record's route never opened"
+        );
+        assert!(probe.app.published_action_history_ready());
+        let waited_on = probe
             .app
             .collaboration
             .manager
-            .document_route_publishable(&beside),
-        "the beside record's route never opened"
-    );
-    assert!(probe.app.published_action_history_ready());
-    let waited_on = probe
-        .app
-        .collaboration
-        .manager
-        .invocation_document_routes_for_test();
-    assert!(
-        waited_on.contains(&probe.owner.broker_route().unwrap().channel_id()),
-        "an accepted invocation waits for the record it acts through"
-    );
-    assert!(
-        !waited_on.contains(&beside.channel_id()),
-        "an accepted invocation never waits for a record only kept beside"
-    );
+            .invocation_document_routes_for_test();
+        assert!(
+            waited_on.contains(&probe.owner.broker_route().unwrap().channel_id()),
+            "an accepted invocation waits for the record it acts through"
+        );
+        assert!(
+            !waited_on.contains(&beside.channel_id()),
+            "an accepted invocation never waits for a record only kept beside"
+        );
+    }
 }

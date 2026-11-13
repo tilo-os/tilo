@@ -1400,90 +1400,38 @@ mod theme_repaint_tests {
         (scene, parts)
     }
 
-    /// Focus a host gives an app it just mounted lands on the app's control
-    /// before anything is painted: the key typed right after the shortcut
-    /// that showed it reaches that control.
-    #[test]
-    fn focus_given_before_the_first_paint_lands_on_the_apps_control() {
-        for laid_out in [false, true] {
-            let app = App::new_with_controlled_inputs(
-                crate::state::State::new(),
-                Box::new(crate::widget::Button::new("probe", "Probe")),
-            );
-            let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
-            if laid_out {
-                layout(&mut tile, &Theme::light());
+    tilo_test_env::scenario! {
+        fn an_embedded_app_repaints_and_keeps_focus_through_its_host;
+
+        phase focus_given_before_the_first_paint_lands_on_the_apps_control;
+        // Focus a host gives an app it just mounted lands on the app's control
+        // before anything is painted: the key typed right after the shortcut
+        // that showed it reaches that control.
+        {
+            for laid_out in [false, true] {
+                let app = App::new_with_controlled_inputs(
+                    crate::state::State::new(),
+                    Box::new(crate::widget::Button::new("probe", "Probe")),
+                );
+                let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+                if laid_out {
+                    layout(&mut tile, &Theme::light());
+                }
+                tile.set_focus(true);
+                assert!(
+                    tile.app.focused_control().is_some(),
+                    "the button has focus (laid out: {laid_out})"
+                );
+                assert!(tile.needs_redraw(), "the tree built asks for its frame");
+                let _ = paint(&mut tile, &Theme::light());
+                assert!(tile.app.focused_control().is_some(), "and keeps it painted");
             }
-            tile.set_focus(true);
-            assert!(
-                tile.app.focused_control().is_some(),
-                "the button has focus (laid out: {laid_out})"
-            );
-            assert!(tile.needs_redraw(), "the tree built asks for its frame");
-            let _ = paint(&mut tile, &Theme::light());
-            assert!(tile.app.focused_control().is_some(), "and keeps it painted");
         }
-    }
 
-    #[test]
-    fn a_tooltip_in_an_embedded_app_damages_its_chip_not_the_app() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
-        let app = App::new_with_controlled_inputs(
-            crate::state::State::new(),
-            Box::new(crate::widget::Button::new("probe", "Probe").tooltip("Probe the tile")),
-        );
-        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
-        let theme = Theme::light();
-        layout(&mut tile, &theme);
-        for _ in 0..4 {
-            let _ = paint_tracked(&mut tile, &theme);
-        }
-        let region = KurboRect::new(40.0, 20.0, 340.0, 120.0);
-        let button = tile.app.root_widget.get_rect();
-        let at = button.center();
-        let moved = crate::synthetic_input::cursor_moved(at.x, at.y);
-        tile.app.surface_input(&tile.region, moved, false);
-        tile.wants_frame.set(true);
-        let hovered = paint_tracked(&mut tile, &theme);
-        assert!(
-            tile.app.input.tooltips.needs_frame(),
-            "the button's tooltip is pending over {button:?}"
-        );
-        // It rests: the tooltip shows, and only it changes.
-        let rested = crate::time::now()
-            + crate::widget::tooltip::HOVER_DWELL
-            + crate::time::Duration::from_millis(50);
-        tile.wants_frame.set(true);
-        let shown =
-            crate::time::testing::with_monotonic_time(rested, || paint_tracked(&mut tile, &theme));
-        assert!(
-            tile.app.input.tooltips.visible().is_some(),
-            "the tooltip shows"
-        );
-        let damage = crate::scene_parts::damage(&hovered.0, &hovered.1, &shown.0, &shown.1)
-            .expect("the tooltip is proven");
-        let chip = tile.damage_report_for_test();
-        assert!(!damage.is_empty(), "the tooltip is repainted");
-        let repainted: f64 = damage.iter().map(|rect| rect.area()).sum();
-        assert!(
-            repainted < region.area(),
-            "{damage:?} repaints the tooltip ({chip:?}), not the app's {region:?}"
-        );
-    }
-
-    /// A tooltip is about where the pointer rests in a window the person
-    /// is using: it goes when the pointer leaves, and when the window loses
-    /// focus.
-    #[test]
-    fn a_tooltip_goes_when_the_pointer_leaves_or_the_window_loses_focus() {
-        let _settled = crate::motion::testing::settled();
-        for ending in [
-            WindowEvent::CursorLeft {
-                device_id: winit::event::DeviceId::dummy(),
-            },
-            WindowEvent::Focused(false),
-        ] {
+        phase a_tooltip_in_an_embedded_app_damages_its_chip_not_the_app;
+        {
+            // Motion reads at its end: this test checks the resting frame.
+            let _settled = crate::motion::testing::settled();
             let app = App::new_with_controlled_inputs(
                 crate::state::State::new(),
                 Box::new(crate::widget::Button::new("probe", "Probe").tooltip("Probe the tile")),
@@ -1491,170 +1439,226 @@ mod theme_repaint_tests {
             let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
             let theme = Theme::light();
             layout(&mut tile, &theme);
-            let _ = paint_tracked(&mut tile, &theme);
-            let at = tile.app.root_widget.get_rect().center();
+            for _ in 0..4 {
+                let _ = paint_tracked(&mut tile, &theme);
+            }
+            let region = KurboRect::new(40.0, 20.0, 340.0, 120.0);
+            let button = tile.app.root_widget.get_rect();
+            let at = button.center();
             let moved = crate::synthetic_input::cursor_moved(at.x, at.y);
             tile.app.surface_input(&tile.region, moved, false);
+            tile.wants_frame.set(true);
+            let hovered = paint_tracked(&mut tile, &theme);
+            assert!(
+                tile.app.input.tooltips.needs_frame(),
+                "the button's tooltip is pending over {button:?}"
+            );
+            // It rests: the tooltip shows, and only it changes.
             let rested = crate::time::now()
                 + crate::widget::tooltip::HOVER_DWELL
                 + crate::time::Duration::from_millis(50);
             tile.wants_frame.set(true);
-            crate::time::testing::with_monotonic_time(rested, || {
-                let _ = paint_tracked(&mut tile, &theme);
-                assert!(
-                    tile.app.input.tooltips.visible().is_some(),
-                    "the tooltip shows"
+            let shown =
+                crate::time::testing::with_monotonic_time(rested, || paint_tracked(&mut tile, &theme));
+            assert!(
+                tile.app.input.tooltips.visible().is_some(),
+                "the tooltip shows"
+            );
+            let damage = crate::scene_parts::damage(&hovered.0, &hovered.1, &shown.0, &shown.1)
+                .expect("the tooltip is proven");
+            let chip = tile.damage_report_for_test();
+            assert!(!damage.is_empty(), "the tooltip is repainted");
+            let repainted: f64 = damage.iter().map(|rect| rect.area()).sum();
+            assert!(
+                repainted < region.area(),
+                "{damage:?} repaints the tooltip ({chip:?}), not the app's {region:?}"
+            );
+        }
+
+        phase a_tooltip_goes_when_the_pointer_leaves_or_the_window_loses_focus;
+        // A tooltip is about where the pointer rests in a window the person
+        // is using: it goes when the pointer leaves, and when the window loses
+        // focus.
+        {
+            let _settled = crate::motion::testing::settled();
+            for ending in [
+                WindowEvent::CursorLeft {
+                    device_id: winit::event::DeviceId::dummy(),
+                },
+                WindowEvent::Focused(false),
+            ] {
+                let app = App::new_with_controlled_inputs(
+                    crate::state::State::new(),
+                    Box::new(crate::widget::Button::new("probe", "Probe").tooltip("Probe the tile")),
                 );
-                tile.app.surface_input(&tile.region, ending.clone(), false);
-            });
-            assert!(
-                tile.app.input.tooltips.visible().is_none(),
-                "{ending:?} takes the tooltip away"
+                let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+                let theme = Theme::light();
+                layout(&mut tile, &theme);
+                let _ = paint_tracked(&mut tile, &theme);
+                let at = tile.app.root_widget.get_rect().center();
+                let moved = crate::synthetic_input::cursor_moved(at.x, at.y);
+                tile.app.surface_input(&tile.region, moved, false);
+                let rested = crate::time::now()
+                    + crate::widget::tooltip::HOVER_DWELL
+                    + crate::time::Duration::from_millis(50);
+                tile.wants_frame.set(true);
+                crate::time::testing::with_monotonic_time(rested, || {
+                    let _ = paint_tracked(&mut tile, &theme);
+                    assert!(
+                        tile.app.input.tooltips.visible().is_some(),
+                        "the tooltip shows"
+                    );
+                    tile.app.surface_input(&tile.region, ending.clone(), false);
+                });
+                assert!(
+                    tile.app.input.tooltips.visible().is_none(),
+                    "{ending:?} takes the tooltip away"
+                );
+            }
+        }
+
+        phase an_embedded_frame_hands_its_widget_damage_to_the_host;
+        {
+            let label = std::rc::Rc::new(std::cell::RefCell::new("before".to_owned()));
+            let source = std::rc::Rc::clone(&label);
+            let app = App::new_with_controlled_inputs(
+                crate::state::State::new(),
+                Box::new(crate::widget::Text::dynamic(move || {
+                    source.borrow().clone()
+                })),
             );
-        }
-    }
-
-    #[test]
-    fn an_embedded_frame_hands_its_widget_damage_to_the_host() {
-        let label = std::rc::Rc::new(std::cell::RefCell::new("before".to_owned()));
-        let source = std::rc::Rc::clone(&label);
-        let app = App::new_with_controlled_inputs(
-            crate::state::State::new(),
-            Box::new(crate::widget::Text::dynamic(move || {
-                source.borrow().clone()
-            })),
-        );
-        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
-        let theme = Theme::light();
-        layout(&mut tile, &theme);
-        let mut previous = paint_tracked(&mut tile, &theme);
-        for _ in 0..4 {
-            previous = paint_tracked(&mut tile, &theme);
-            if !(tile.needs_redraw() || tile.needs_animation_frame()) {
-                break;
-            }
-        }
-        let region = KurboRect::new(40.0, 20.0, 340.0, 120.0);
-        // A frame that changed nothing hands over no damage, and the host
-        // finds none.
-        tile.wants_frame.set(true);
-        let idle = paint_tracked(&mut tile, &theme);
-        assert_eq!(tile.painted_damage.rects, Some(Vec::new()));
-        assert_eq!(
-            crate::scene_parts::damage(&previous.0, &previous.1, &idle.0, &idle.1),
-            Ok(Vec::new())
-        );
-        // A changed label is the widget's damage, not more than the region.
-        *label.borrow_mut() = "after".to_owned();
-        tile.app.needs_sync = true;
-        tile.wants_frame.set(true);
-        let changed = paint_tracked(&mut tile, &theme);
-        let damage = crate::scene_parts::damage(&idle.0, &idle.1, &changed.0, &changed.1)
-            .expect("the change is proven");
-        assert!(!damage.is_empty(), "the new label is repainted");
-        assert!(
-            damage
-                .iter()
-                .all(|rect| region.inflate(1.0, 1.0).union(*rect) == region.inflate(1.0, 1.0)),
-            "{damage:?} stays in the app's region {region:?}"
-        );
-        assert_eq!(
-            tile.painted_damage.from + 1,
-            tile.painted_damage.to,
-            "the painted generation follows the one before"
-        );
-    }
-
-    #[test]
-    fn embedded_host_theme_change_repaints_an_idle_scene() {
-        let app = App::new_with_controlled_inputs(
-            crate::state::State::new(),
-            Box::new(crate::widget::Text::new("Theme probe")),
-        );
-        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
-        let light = Theme::light();
-        layout(&mut tile, &light);
-        let mut previous = Vec::new();
-        for _ in 0..4 {
-            previous = paint(&mut tile, &light);
-            if !(tile.needs_redraw() || tile.needs_animation_frame()) {
-                break;
-            }
-        }
-        assert!(
-            !(tile.needs_redraw() || tile.needs_animation_frame()),
-            "the actual tile must settle before a theme change"
-        );
-        assert!(!previous.is_empty(), "the actual label must be painted");
-        layout(&mut tile, &light);
-        assert!(
-            !(tile.needs_redraw() || tile.needs_animation_frame()),
-            "an unchanged theme keeps the idle tile cached"
-        );
-        assert_eq!(paint(&mut tile, &light), previous);
-        for theme in [Theme::dark(), Theme::high_contrast()] {
+            let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+            let theme = Theme::light();
             layout(&mut tile, &theme);
+            let mut previous = paint_tracked(&mut tile, &theme);
+            for _ in 0..4 {
+                previous = paint_tracked(&mut tile, &theme);
+                if !(tile.needs_redraw() || tile.needs_animation_frame()) {
+                    break;
+                }
+            }
+            let region = KurboRect::new(40.0, 20.0, 340.0, 120.0);
+            // A frame that changed nothing hands over no damage, and the host
+            // finds none.
+            tile.wants_frame.set(true);
+            let idle = paint_tracked(&mut tile, &theme);
+            assert_eq!(tile.painted_damage.rects, Some(Vec::new()));
+            assert_eq!(
+                crate::scene_parts::damage(&previous.0, &previous.1, &idle.0, &idle.1),
+                Ok(Vec::new())
+            );
+            // A changed label is the widget's damage, not more than the region.
+            *label.borrow_mut() = "after".to_owned();
+            tile.app.needs_sync = true;
+            tile.wants_frame.set(true);
+            let changed = paint_tracked(&mut tile, &theme);
+            let damage = crate::scene_parts::damage(&idle.0, &idle.1, &changed.0, &changed.1)
+                .expect("the change is proven");
+            assert!(!damage.is_empty(), "the new label is repainted");
             assert!(
-                tile.needs_redraw() || tile.needs_animation_frame(),
-                "a host theme change must repaint the retained scene"
+                damage
+                    .iter()
+                    .all(|rect| region.inflate(1.0, 1.0).union(*rect) == region.inflate(1.0, 1.0)),
+                "{damage:?} stays in the app's region {region:?}"
             );
-            let current = paint(&mut tile, &theme);
-            assert_ne!(
-                current, previous,
-                "the actual scene must contain the new theme's ink"
+            assert_eq!(
+                tile.painted_damage.from + 1,
+                tile.painted_damage.to,
+                "the painted generation follows the one before"
             );
-            previous = current;
         }
-    }
 
-    #[test]
-    fn focus_restored_before_a_hidden_app_is_drawn_reuses_its_painted_scene() {
-        let app = App::new_with_controlled_inputs(
-            crate::state::State::new(),
-            Box::new(crate::widget::Text::new("Focus probe")),
-        );
-        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
-        let theme = Theme::light();
-        layout(&mut tile, &theme);
-        for _ in 0..8 {
-            paint(&mut tile, &theme);
-            if !(tile.needs_redraw() || tile.needs_animation_frame()) {
-                break;
+        phase embedded_host_theme_change_repaints_an_idle_scene;
+        {
+            let app = App::new_with_controlled_inputs(
+                crate::state::State::new(),
+                Box::new(crate::widget::Text::new("Theme probe")),
+            );
+            let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+            let light = Theme::light();
+            layout(&mut tile, &light);
+            let mut previous = Vec::new();
+            for _ in 0..4 {
+                previous = paint(&mut tile, &light);
+                if !(tile.needs_redraw() || tile.needs_animation_frame()) {
+                    break;
+                }
+            }
+            assert!(
+                !(tile.needs_redraw() || tile.needs_animation_frame()),
+                "the actual tile must settle before a theme change"
+            );
+            assert!(!previous.is_empty(), "the actual label must be painted");
+            layout(&mut tile, &light);
+            assert!(
+                !(tile.needs_redraw() || tile.needs_animation_frame()),
+                "an unchanged theme keeps the idle tile cached"
+            );
+            assert_eq!(paint(&mut tile, &light), previous);
+            for theme in [Theme::dark(), Theme::high_contrast()] {
+                layout(&mut tile, &theme);
+                assert!(
+                    tile.needs_redraw() || tile.needs_animation_frame(),
+                    "a host theme change must repaint the retained scene"
+                );
+                let current = paint(&mut tile, &theme);
+                assert_ne!(
+                    current, previous,
+                    "the actual scene must contain the new theme's ink"
+                );
+                previous = current;
             }
         }
-        assert!(
-            !(tile.needs_redraw() || tile.needs_animation_frame()),
-            "the app must settle before focus moves"
-        );
 
-        tile.set_focus(true);
-        assert!(tile.needs_redraw(), "visible focus entering needs a frame");
-        paint(&mut tile, &theme);
-        assert!(!tile.needs_redraw());
-        let shown = tile.painted_damage.to;
+        phase focus_restored_before_a_hidden_app_is_drawn_reuses_its_painted_scene;
+        {
+            let app = App::new_with_controlled_inputs(
+                crate::state::State::new(),
+                Box::new(crate::widget::Text::new("Focus probe")),
+            );
+            let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+            let theme = Theme::light();
+            layout(&mut tile, &theme);
+            for _ in 0..8 {
+                paint(&mut tile, &theme);
+                if !(tile.needs_redraw() || tile.needs_animation_frame()) {
+                    break;
+                }
+            }
+            assert!(
+                !(tile.needs_redraw() || tile.needs_animation_frame()),
+                "the app must settle before focus moves"
+            );
 
-        tile.set_focus(false);
-        assert!(tile.needs_redraw(), "visible focus leaving needs a frame");
-        // A workspace switch parks this app without drawing it, then gives it
-        // focus back before its next scene is composed.
-        tile.set_focus(true);
-        assert!(!tile.needs_redraw());
-        paint(&mut tile, &theme);
-        assert_eq!(tile.painted_damage.to, shown, "the app did not repaint");
+            tile.set_focus(true);
+            assert!(tile.needs_redraw(), "visible focus entering needs a frame");
+            paint(&mut tile, &theme);
+            assert!(!tile.needs_redraw());
+            let shown = tile.painted_damage.to;
 
-        tile.set_focus(false);
-        paint(&mut tile, &theme);
-        assert!(
-            tile.painted_damage.to > shown,
-            "a lasting focus change repaints"
-        );
-        let unfocused = tile.painted_damage.to;
-        tile.wants_frame.set(true);
-        paint(&mut tile, &theme);
-        assert!(
-            tile.painted_damage.to > unfocused,
-            "other app work still repaints"
-        );
+            tile.set_focus(false);
+            assert!(tile.needs_redraw(), "visible focus leaving needs a frame");
+            // A workspace switch parks this app without drawing it, then gives it
+            // focus back before its next scene is composed.
+            tile.set_focus(true);
+            assert!(!tile.needs_redraw());
+            paint(&mut tile, &theme);
+            assert_eq!(tile.painted_damage.to, shown, "the app did not repaint");
+
+            tile.set_focus(false);
+            paint(&mut tile, &theme);
+            assert!(
+                tile.painted_damage.to > shown,
+                "a lasting focus change repaints"
+            );
+            let unfocused = tile.painted_damage.to;
+            tile.wants_frame.set(true);
+            paint(&mut tile, &theme);
+            assert!(
+                tile.painted_damage.to > unfocused,
+                "other app work still repaints"
+            );
+        }
     }
 }
 
@@ -1843,50 +1847,6 @@ mod wake_deadline_tests {
         }
     }
 
-    /// An app hosted in a tile is asked for its next deadline once after it
-    /// ran, not on every pump and paint of its host: nothing but the app
-    /// running moves it.
-    #[test]
-    fn an_idle_embedded_app_is_asked_its_deadline_once_after_it_ran() {
-        let asks = Rc::new(Cell::new(0));
-        let deadline = crate::time::now() + crate::time::Duration::from_secs(3600);
-        let app = App::new_with_controlled_inputs(
-            crate::state::State::new(),
-            Box::new(Asked {
-                asks: Rc::clone(&asks),
-                deadline,
-                rect: KurboRect::ZERO,
-            }),
-        );
-        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
-        let theme = Theme::light();
-        layout(&mut tile, &theme);
-        let _ = paint(&mut tile, &theme);
-        let doc = automerge::AutoCommit::new();
-        // The app ran in its first frame and pump.
-        let _ = Widget::update(&mut tile, &doc, &automerge::ROOT);
-        let _ = paint(&mut tile, &theme);
-        assert_eq!(Widget::next_wake_deadline(&tile), Some(deadline));
-        let settled = asks.get();
-        for _ in 0..10 {
-            assert!(!Widget::update(&mut tile, &doc, &automerge::ROOT));
-            let _ = paint(&mut tile, &theme);
-            assert_eq!(Widget::next_wake_deadline(&tile), Some(deadline));
-        }
-        assert_eq!(asks.get(), settled, "idle pumps and paints asked again");
-        // Its host asks for its intents on every pump: an app that did not
-        // run since it had none is not reached, so nothing it holds moved.
-        for _ in 0..10 {
-            assert!(AppWidget::take_host_intent(&mut tile).is_none());
-            assert_eq!(Widget::next_wake_deadline(&tile), Some(deadline));
-        }
-        assert_eq!(asks.get(), settled, "asking for intents ran the app");
-        // Whatever reaches into the app may move it: asked again.
-        let _ = tile.app_mut();
-        let _ = Widget::next_wake_deadline(&tile);
-        assert!(asks.get() > settled);
-    }
-
     /// A leaf that moves for its next `frames` draws, asking for nothing
     /// else: a menu fading out.
     struct Fading {
@@ -1925,36 +1885,84 @@ mod wake_deadline_tests {
         }
     }
 
-    /// An app whose widgets still move after a frame is drawn again until
-    /// they rest, and says it moves only while they do.
-    #[test]
-    fn an_embedded_app_is_drawn_until_its_widgets_rest() {
-        let frames = Rc::new(Cell::new(0));
-        let app = App::new_with_controlled_inputs(
-            crate::state::State::new(),
-            Box::new(Fading {
-                frames: Rc::clone(&frames),
-                rect: KurboRect::ZERO,
-            }),
-        );
-        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
-        let theme = Theme::light();
-        layout(&mut tile, &theme);
-        let mut opening = 0;
-        while opening < 10 && (opening == 0 || Widget::needs_animation_frame(&tile)) {
+    tilo_test_env::scenario! {
+        fn an_embedded_apps_deadline_is_asked_once_and_served_until_rest;
+
+        phase an_idle_embedded_app_is_asked_its_deadline_once_after_it_ran;
+        // An app hosted in a tile is asked for its next deadline once after it
+        // ran, not on every pump and paint of its host: nothing but the app
+        // running moves it.
+        {
+            let asks = Rc::new(Cell::new(0));
+            let deadline = crate::time::now() + crate::time::Duration::from_secs(3600);
+            let app = App::new_with_controlled_inputs(
+                crate::state::State::new(),
+                Box::new(Asked {
+                    asks: Rc::clone(&asks),
+                    deadline,
+                    rect: KurboRect::ZERO,
+                }),
+            );
+            let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+            let theme = Theme::light();
+            layout(&mut tile, &theme);
             let _ = paint(&mut tile, &theme);
-            opening += 1;
-        }
-        assert!(!Widget::needs_animation_frame(&tile), "it opens at rest");
-        frames.set(3);
-        tile.wants_frame.set(true);
-        let mut drawn = 0;
-        while drawn < 10 && (drawn == 0 || Widget::needs_animation_frame(&tile)) {
+            let doc = automerge::AutoCommit::new();
+            // The app ran in its first frame and pump.
+            let _ = Widget::update(&mut tile, &doc, &automerge::ROOT);
             let _ = paint(&mut tile, &theme);
-            drawn += 1;
+            assert_eq!(Widget::next_wake_deadline(&tile), Some(deadline));
+            let settled = asks.get();
+            for _ in 0..10 {
+                assert!(!Widget::update(&mut tile, &doc, &automerge::ROOT));
+                let _ = paint(&mut tile, &theme);
+                assert_eq!(Widget::next_wake_deadline(&tile), Some(deadline));
+            }
+            assert_eq!(asks.get(), settled, "idle pumps and paints asked again");
+            // Its host asks for its intents on every pump: an app that did not
+            // run since it had none is not reached, so nothing it holds moved.
+            for _ in 0..10 {
+                assert!(AppWidget::take_host_intent(&mut tile).is_none());
+                assert_eq!(Widget::next_wake_deadline(&tile), Some(deadline));
+            }
+            assert_eq!(asks.get(), settled, "asking for intents ran the app");
+            // Whatever reaches into the app may move it: asked again.
+            let _ = tile.app_mut();
+            let _ = Widget::next_wake_deadline(&tile);
+            assert!(asks.get() > settled);
         }
-        assert_eq!(frames.get(), 0, "the motion ran to its end");
-        assert!(!Widget::needs_animation_frame(&tile), "and the app rests");
+
+        phase an_embedded_app_is_drawn_until_its_widgets_rest;
+        // An app whose widgets still move after a frame is drawn again until
+        // they rest, and says it moves only while they do.
+        {
+            let frames = Rc::new(Cell::new(0));
+            let app = App::new_with_controlled_inputs(
+                crate::state::State::new(),
+                Box::new(Fading {
+                    frames: Rc::clone(&frames),
+                    rect: KurboRect::ZERO,
+                }),
+            );
+            let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+            let theme = Theme::light();
+            layout(&mut tile, &theme);
+            let mut opening = 0;
+            while opening < 10 && (opening == 0 || Widget::needs_animation_frame(&tile)) {
+                let _ = paint(&mut tile, &theme);
+                opening += 1;
+            }
+            assert!(!Widget::needs_animation_frame(&tile), "it opens at rest");
+            frames.set(3);
+            tile.wants_frame.set(true);
+            let mut drawn = 0;
+            while drawn < 10 && (drawn == 0 || Widget::needs_animation_frame(&tile)) {
+                let _ = paint(&mut tile, &theme);
+                drawn += 1;
+            }
+            assert_eq!(frames.get(), 0, "the motion ran to its end");
+            assert!(!Widget::needs_animation_frame(&tile), "and the app rests");
+        }
     }
 }
 

@@ -150,178 +150,6 @@ fn caret(app: &App) -> Option<String> {
     unsafe { crate::undo::get_state(&(*w)) }
 }
 
-#[test]
-fn structure_rebuild_preserves_the_caret_unless_focus_resets() {
-    {
-        let mut app =
-            App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
-        app.autofocus_first = true;
-        app.autofocus_on_structure_change = true;
-        app.init_layout();
-
-        let id = app.focused_node.expect("input focused at startup");
-        unsafe {
-            crate::undo::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "3");
-        }
-        assert_eq!(caret(&app).as_deref(), Some("3"));
-
-        // Triggers a structural rebuild that recreates the input as a fresh
-        // instance whose own caret default is 5.
-        let mut tmp = AutoCommit::new();
-        app.root_widget.on_external_event(
-            "show_status",
-            &mut crate::widget::Edits::lend(&mut tmp),
-            &automerge::ROOT,
-        );
-        app.rebuild_structure();
-
-        assert!(app.focused_node.is_some(), "focus preserved across rebuild");
-        assert_eq!(
-            caret(&app).as_deref(),
-            Some("3"),
-            "caret offset must be preserved across the rebuild"
-        );
-        assert_eq!(
-            app.root_widget.children().len(),
-            2,
-            "status sibling appeared"
-        );
-        assert_eq!(app.focusable_order.len(), 1, "status is non-focusable");
-    }
-
-    {
-        let mut app =
-            App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
-        app.autofocus_first = true;
-        app.autofocus_on_structure_change = true;
-        app.init_layout();
-
-        let id = app.focused_node.unwrap();
-        unsafe {
-            crate::undo::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "3");
-        }
-
-        let mut tmp = AutoCommit::new();
-        app.root_widget.on_external_event(
-            "reset",
-            &mut crate::widget::Edits::lend(&mut tmp),
-            &automerge::ROOT,
-        );
-        app.rebuild_structure();
-
-        assert_eq!(
-            caret(&app).as_deref(),
-            Some("5"),
-            "focus_reset must not paste the old caret onto the new field"
-        );
-    }
-}
-
-#[test]
-fn a_focus_reset_lands_on_the_default_control() {
-    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
-    app.autofocus_first = true;
-    app.autofocus_on_structure_change = true;
-    app.init_layout();
-
-    let mut tmp = AutoCommit::new();
-    app.root_widget.on_external_event(
-        "offer",
-        &mut crate::widget::Edits::lend(&mut tmp),
-        &automerge::ROOT,
-    );
-    app.rebuild_structure();
-
-    assert_eq!(app.focusable_order.len(), 3);
-    let focused = app.focused_node.expect("a reset focuses a control");
-    assert_ne!(
-        Some(focused),
-        app.focusable_order.first().copied(),
-        "the default control wins over the first one"
-    );
-    assert!(
-        app.inspect_node(focused, |widget| widget.is_default_keyboard_focus())
-            .unwrap_or(false)
-    );
-}
-
-#[test]
-fn a_rebuild_that_restores_focus_by_identity_leaves_one_focused_field() {
-    let mut app =
-        App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::two_fields()));
-    app.autofocus_first = true;
-    app.autofocus_on_structure_change = true;
-    app.init_layout();
-    let focused_id = |app: &App| {
-        let node = app.focused_node.expect("a field has the keyboard");
-        app.inspect_node(node, |widget| widget.test_id().map(str::to_owned))
-            .unwrap()
-    };
-    assert_eq!(focused_id(&app).as_deref(), Some("first"));
-
-    let mut tmp = AutoCommit::new();
-    app.root_widget.on_external_event(
-        "swap",
-        &mut crate::widget::Edits::lend(&mut tmp),
-        &automerge::ROOT,
-    );
-    app.rebuild_structure();
-
-    assert_eq!(
-        focused_id(&app).as_deref(),
-        Some("first"),
-        "the field that restored its own focus keeps it, not the one in the old slot"
-    );
-    let flagged: Vec<_> = app
-        .root_widget
-        .children()
-        .into_iter()
-        .filter(|child| child.is_focused())
-        .filter_map(|child| child.test_id().map(str::to_owned))
-        .collect();
-    assert_eq!(flagged, ["first"], "exactly one field is drawn as focused");
-}
-
-/// A rebuild replaces the focused control with a fresh instance of it. The
-/// keyboard stays on the answer the person was on: the field that answers to
-/// the same name and stands alone in the new tree holds it, without the app
-/// asking to be refocused on every change.
-#[test]
-fn a_rebuild_that_replaces_the_focused_control_keeps_the_keyboard_on_its_answer() {
-    let mut harness = RebuildHarness::new();
-    harness.named_field = true;
-    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(harness));
-    app.autofocus_first = true;
-    app.init_layout();
-    let focused = app.focused_node.expect("the field has the keyboard");
-    assert!(
-        app.inspect_node(focused, |widget| widget.test_id() == Some("only-field"))
-            .unwrap()
-    );
-
-    let mut tmp = AutoCommit::new();
-    app.root_widget.on_external_event(
-        "show_status",
-        &mut crate::widget::Edits::lend(&mut tmp),
-        &automerge::ROOT,
-    );
-    app.rebuild_structure();
-
-    let focused = app
-        .focused_node
-        .expect("the keyboard stays on the field's answer");
-    assert!(
-        app.inspect_node(focused, |widget| widget.test_id() == Some("only-field"))
-            .unwrap(),
-        "the rebuilt field is the one that had the keyboard"
-    );
-    assert!(
-        app.inspect_node(focused, |widget| widget.is_focused())
-            .unwrap(),
-        "the control drawn as focused is the one with the keyboard"
-    );
-}
-
 /// A window with nothing laid out yet, as a surface host shows it before its
 /// first frame.
 struct UnlaidWindow;
@@ -337,34 +165,210 @@ impl AppSurface for UnlaidWindow {
     fn set_cursor(&self, _cursor: winit::window::CursorIcon) {}
 }
 
-/// Input that arrives before the app's first frame is typed into the field
-/// the app puts the keyboard in, not dropped: a sheet can be opened and typed
-/// into before the host draws a frame of it.
-#[test]
-fn input_before_the_first_frame_reaches_the_focused_field() {
-    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
-    app.autofocus_first = true;
-    assert!(app.layout.root_node.is_none(), "the app has drawn no frame");
+tilo_test_env::scenario! {
+    fn a_rebuild_keeps_the_keyboard_where_it_belongs;
 
-    let handled = app.surface_input(&UnlaidWindow, crate::synthetic_input::char_key("s"), false);
+    phase structure_rebuild_preserves_the_caret_unless_focus_resets;
+    {
+        {
+            let mut app =
+                App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
+            app.autofocus_first = true;
+            app.autofocus_on_structure_change = true;
+            app.init_layout();
 
-    assert!(
-        app.layout.root_node.is_some(),
-        "the tree is laid out for the key"
-    );
-    assert!(
-        handled,
-        "the field took the key typed before the first frame"
-    );
-    let focused = app.focused_node.expect("the field has the keyboard");
-    assert!(
-        app.inspect_node(focused, |widget| widget.is_focused())
-            .unwrap_or(false),
-        "the field that took the key is the one drawn as focused"
-    );
-    assert_eq!(
-        caret(&app).as_deref(),
-        Some("6"),
-        "the letter followed the field's text"
-    );
+            let id = app.focused_node.expect("input focused at startup");
+            unsafe {
+                crate::undo::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "3");
+            }
+            assert_eq!(caret(&app).as_deref(), Some("3"));
+
+            // Triggers a structural rebuild that recreates the input as a fresh
+            // instance whose own caret default is 5.
+            let mut tmp = AutoCommit::new();
+            app.root_widget.on_external_event(
+                "show_status",
+                &mut crate::widget::Edits::lend(&mut tmp),
+                &automerge::ROOT,
+            );
+            app.rebuild_structure();
+
+            assert!(app.focused_node.is_some(), "focus preserved across rebuild");
+            assert_eq!(
+                caret(&app).as_deref(),
+                Some("3"),
+                "caret offset must be preserved across the rebuild"
+            );
+            assert_eq!(
+                app.root_widget.children().len(),
+                2,
+                "status sibling appeared"
+            );
+            assert_eq!(app.focusable_order.len(), 1, "status is non-focusable");
+        }
+
+        {
+            let mut app =
+                App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
+            app.autofocus_first = true;
+            app.autofocus_on_structure_change = true;
+            app.init_layout();
+
+            let id = app.focused_node.unwrap();
+            unsafe {
+                crate::undo::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "3");
+            }
+
+            let mut tmp = AutoCommit::new();
+            app.root_widget.on_external_event(
+                "reset",
+                &mut crate::widget::Edits::lend(&mut tmp),
+                &automerge::ROOT,
+            );
+            app.rebuild_structure();
+
+            assert_eq!(
+                caret(&app).as_deref(),
+                Some("5"),
+                "focus_reset must not paste the old caret onto the new field"
+            );
+        }
+    }
+
+    phase a_focus_reset_lands_on_the_default_control;
+    {
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
+        app.autofocus_first = true;
+        app.autofocus_on_structure_change = true;
+        app.init_layout();
+
+        let mut tmp = AutoCommit::new();
+        app.root_widget.on_external_event(
+            "offer",
+            &mut crate::widget::Edits::lend(&mut tmp),
+            &automerge::ROOT,
+        );
+        app.rebuild_structure();
+
+        assert_eq!(app.focusable_order.len(), 3);
+        let focused = app.focused_node.expect("a reset focuses a control");
+        assert_ne!(
+            Some(focused),
+            app.focusable_order.first().copied(),
+            "the default control wins over the first one"
+        );
+        assert!(
+            app.inspect_node(focused, |widget| widget.is_default_keyboard_focus())
+                .unwrap_or(false)
+        );
+    }
+
+    phase a_rebuild_that_restores_focus_by_identity_leaves_one_focused_field;
+    {
+        let mut app =
+            App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::two_fields()));
+        app.autofocus_first = true;
+        app.autofocus_on_structure_change = true;
+        app.init_layout();
+        let focused_id = |app: &App| {
+            let node = app.focused_node.expect("a field has the keyboard");
+            app.inspect_node(node, |widget| widget.test_id().map(str::to_owned))
+                .unwrap()
+        };
+        assert_eq!(focused_id(&app).as_deref(), Some("first"));
+
+        let mut tmp = AutoCommit::new();
+        app.root_widget.on_external_event(
+            "swap",
+            &mut crate::widget::Edits::lend(&mut tmp),
+            &automerge::ROOT,
+        );
+        app.rebuild_structure();
+
+        assert_eq!(
+            focused_id(&app).as_deref(),
+            Some("first"),
+            "the field that restored its own focus keeps it, not the one in the old slot"
+        );
+        let flagged: Vec<_> = app
+            .root_widget
+            .children()
+            .into_iter()
+            .filter(|child| child.is_focused())
+            .filter_map(|child| child.test_id().map(str::to_owned))
+            .collect();
+        assert_eq!(flagged, ["first"], "exactly one field is drawn as focused");
+    }
+
+    phase a_rebuild_that_replaces_the_focused_control_keeps_the_keyboard_on_its_answer;
+    // A rebuild replaces the focused control with a fresh instance of it. The
+    // keyboard stays on the answer the person was on: the field that answers to
+    // the same name and stands alone in the new tree holds it, without the app
+    // asking to be refocused on every change.
+    {
+        let mut harness = RebuildHarness::new();
+        harness.named_field = true;
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(harness));
+        app.autofocus_first = true;
+        app.init_layout();
+        let focused = app.focused_node.expect("the field has the keyboard");
+        assert!(
+            app.inspect_node(focused, |widget| widget.test_id() == Some("only-field"))
+                .unwrap()
+        );
+
+        let mut tmp = AutoCommit::new();
+        app.root_widget.on_external_event(
+            "show_status",
+            &mut crate::widget::Edits::lend(&mut tmp),
+            &automerge::ROOT,
+        );
+        app.rebuild_structure();
+
+        let focused = app
+            .focused_node
+            .expect("the keyboard stays on the field's answer");
+        assert!(
+            app.inspect_node(focused, |widget| widget.test_id() == Some("only-field"))
+                .unwrap(),
+            "the rebuilt field is the one that had the keyboard"
+        );
+        assert!(
+            app.inspect_node(focused, |widget| widget.is_focused())
+                .unwrap(),
+            "the control drawn as focused is the one with the keyboard"
+        );
+    }
+
+    phase input_before_the_first_frame_reaches_the_focused_field;
+    // Input that arrives before the app's first frame is typed into the field
+    // the app puts the keyboard in, not dropped: a sheet can be opened and typed
+    // into before the host draws a frame of it.
+    {
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
+        app.autofocus_first = true;
+        assert!(app.layout.root_node.is_none(), "the app has drawn no frame");
+
+        let handled = app.surface_input(&UnlaidWindow, crate::synthetic_input::char_key("s"), false);
+
+        assert!(
+            app.layout.root_node.is_some(),
+            "the tree is laid out for the key"
+        );
+        assert!(
+            handled,
+            "the field took the key typed before the first frame"
+        );
+        let focused = app.focused_node.expect("the field has the keyboard");
+        assert!(
+            app.inspect_node(focused, |widget| widget.is_focused())
+                .unwrap_or(false),
+            "the field that took the key is the one drawn as focused"
+        );
+        assert_eq!(
+            caret(&app).as_deref(),
+            Some("6"),
+            "the letter followed the field's text"
+        );
+    }
 }

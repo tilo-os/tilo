@@ -43,31 +43,6 @@ impl Widget for DrawUpdatedDamage {
     }
 }
 
-#[test]
-fn submitted_damage_uses_draw_updated_geometry_before_dirty_clear() {
-    let mut widget = DrawUpdatedDamage {
-        damage: KurboRect::new(0.0, 0.0, 20.0, 8.0),
-        dirty: true,
-    };
-    let mut scene = Scene::new();
-    let mut text = TextRenderer::new();
-    widget.draw(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text,
-        &Theme::dark(),
-        &PresenceCtx::default(),
-    );
-
-    let mut regions = Vec::new();
-    collect_submitted_widget_damage(&widget, &mut regions);
-    assert_eq!(regions, vec![KurboRect::new(80.0, 0.0, 100.0, 8.0)]);
-    assert!(widget.dirty, "collection must not consume the dirty flag");
-
-    widget.mark_drawn();
-    assert!(!widget.dirty);
-}
-
 /// A leaf whose box the test can shift without rebuilding the tree, the way
 /// scrolling or a reflowed sibling moves a retained widget.
 struct Shiftable {
@@ -110,43 +85,6 @@ impl Widget for Shiftable {
     }
 }
 
-/// A relayout repaints the whole window only when something moved: an
-/// in-place change (typing into a fixed-size field) keeps to its damage,
-/// while moved geometry or a new viewport cannot be described by it.
-#[test]
-fn relayout_redraws_everything_only_when_geometry_moves() {
-    let shift = std::rc::Rc::new(std::cell::Cell::new(0.0));
-    let mut app = App::new(
-        State::new(),
-        Box::new(Shiftable {
-            shift: shift.clone(),
-            rect: KurboRect::ZERO,
-        }),
-    );
-    app.init_layout();
-    let root = app.layout.root_node.unwrap();
-    let (rebuilt, ..) = run_layout_pass(&mut app, root, 400, 300, 1.0, true, None).unwrap();
-    assert!(rebuilt, "a rebuilt tree repaints everything");
-
-    app.layout.layout_dirty = true;
-    let (moved, ..) = run_layout_pass(&mut app, root, 400, 300, 1.0, false, None).unwrap();
-    assert!(
-        !moved,
-        "a relayout that moves nothing keeps to widget damage"
-    );
-
-    shift.set(24.0);
-    app.layout.layout_dirty = true;
-    let (moved, ..) = run_layout_pass(&mut app, root, 400, 300, 1.0, false, None).unwrap();
-    assert!(moved, "a widget that moved leaves its old pixels behind");
-
-    let (resized, ..) = run_layout_pass(&mut app, root, 500, 300, 1.0, false, None).unwrap();
-    assert!(resized, "a new viewport repaints everything");
-
-    let (idle, ..) = run_layout_pass(&mut app, root, 500, 300, 1.0, false, None).unwrap();
-    assert!(!idle, "no layout work, no full repaint");
-}
-
 /// A box its style alone sizes, which asks no measure of its own: a view
 /// whose size is its place in the window, as a menu over a desk is.
 struct Styled {
@@ -184,32 +122,98 @@ impl Widget for Styled {
     }
 }
 
-/// A tree rebuilt between frames, as a sync rebuilds it when what a widget
-/// shows changed (a menu whose rows arrived), is a fresh tree with no layout
-/// in it: the next frame solves it, though its window kept its size and the
-/// frame rebuilt nothing itself. Placing it unsolved put every widget at
-/// zero size, and a window menu opened that way drew nothing.
-#[test]
-fn a_tree_rebuilt_between_frames_is_solved_by_the_next() {
-    let mut app = App::new(
-        State::new(),
-        Box::new(Styled {
-            rect: KurboRect::ZERO,
-        }),
-    );
-    app.init_layout();
-    let root = app.layout.root_node.unwrap();
-    run_layout_pass(&mut app, root, 400, 300, 1.0, true, None).unwrap();
-    assert_eq!(app.root_widget.get_rect().size(), (120.0, 40.0).into());
+tilo_test_env::scenario! {
+    fn local_damage_follows_the_geometry_that_moved;
 
-    app.rebuild_structure();
-    let root = app.layout.root_node.unwrap();
-    run_layout_pass(&mut app, root, 400, 300, 1.0, false, None).unwrap();
-    assert_eq!(
-        app.root_widget.get_rect().size(),
-        (120.0, 40.0).into(),
-        "the rebuilt tree is laid out, not placed unsolved"
-    );
+    phase submitted_damage_uses_draw_updated_geometry_before_dirty_clear;
+    {
+        let mut widget = DrawUpdatedDamage {
+            damage: KurboRect::new(0.0, 0.0, 20.0, 8.0),
+            dirty: true,
+        };
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        widget.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+
+        let mut regions = Vec::new();
+        collect_submitted_widget_damage(&widget, &mut regions);
+        assert_eq!(regions, vec![KurboRect::new(80.0, 0.0, 100.0, 8.0)]);
+        assert!(widget.dirty, "collection must not consume the dirty flag");
+
+        widget.mark_drawn();
+        assert!(!widget.dirty);
+    }
+
+    phase relayout_redraws_everything_only_when_geometry_moves;
+    // A relayout repaints the whole window only when something moved: an
+    // in-place change (typing into a fixed-size field) keeps to its damage,
+    // while moved geometry or a new viewport cannot be described by it.
+    {
+        let shift = std::rc::Rc::new(std::cell::Cell::new(0.0));
+        let mut app = App::new(
+            State::new(),
+            Box::new(Shiftable {
+                shift: shift.clone(),
+                rect: KurboRect::ZERO,
+            }),
+        );
+        app.init_layout();
+        let root = app.layout.root_node.unwrap();
+        let (rebuilt, ..) = run_layout_pass(&mut app, root, 400, 300, 1.0, true, None).unwrap();
+        assert!(rebuilt, "a rebuilt tree repaints everything");
+
+        app.layout.layout_dirty = true;
+        let (moved, ..) = run_layout_pass(&mut app, root, 400, 300, 1.0, false, None).unwrap();
+        assert!(
+            !moved,
+            "a relayout that moves nothing keeps to widget damage"
+        );
+
+        shift.set(24.0);
+        app.layout.layout_dirty = true;
+        let (moved, ..) = run_layout_pass(&mut app, root, 400, 300, 1.0, false, None).unwrap();
+        assert!(moved, "a widget that moved leaves its old pixels behind");
+
+        let (resized, ..) = run_layout_pass(&mut app, root, 500, 300, 1.0, false, None).unwrap();
+        assert!(resized, "a new viewport repaints everything");
+
+        let (idle, ..) = run_layout_pass(&mut app, root, 500, 300, 1.0, false, None).unwrap();
+        assert!(!idle, "no layout work, no full repaint");
+    }
+
+    phase a_tree_rebuilt_between_frames_is_solved_by_the_next;
+    // A tree rebuilt between frames, as a sync rebuilds it when what a widget
+    // shows changed (a menu whose rows arrived), is a fresh tree with no layout
+    // in it: the next frame solves it, though its window kept its size and the
+    // frame rebuilt nothing itself. Placing it unsolved put every widget at
+    // zero size, and a window menu opened that way drew nothing.
+    {
+        let mut app = App::new(
+            State::new(),
+            Box::new(Styled {
+                rect: KurboRect::ZERO,
+            }),
+        );
+        app.init_layout();
+        let root = app.layout.root_node.unwrap();
+        run_layout_pass(&mut app, root, 400, 300, 1.0, true, None).unwrap();
+        assert_eq!(app.root_widget.get_rect().size(), (120.0, 40.0).into());
+
+        app.rebuild_structure();
+        let root = app.layout.root_node.unwrap();
+        run_layout_pass(&mut app, root, 400, 300, 1.0, false, None).unwrap();
+        assert_eq!(
+            app.root_widget.get_rect().size(),
+            (120.0, 40.0).into(),
+            "the rebuilt tree is laid out, not placed unsolved"
+        );
+    }
 }
 
 // ── Collaborators' presence ─────────────────────────────────────────────
@@ -366,64 +370,68 @@ fn remote_cursor_move_damages_only_old_and_new_cursor() {
     }
 }
 
-#[test]
-fn idle_peer_keeps_local_frames_to_widget_damage() {
-    let theme = Theme::dark();
-    let alone = {
+tilo_test_env::scenario! {
+    fn a_peers_marks_keep_local_frames_to_their_damage;
+
+    phase idle_peer_keeps_local_frames_to_widget_damage;
+    {
+        let theme = Theme::dark();
+        let alone = {
+            let mut app = presence_app(&theme);
+            let mut layer = crate::presence::PresenceLayer::new();
+            assert_eq!(presence_frame(&mut app, &mut layer, &[]), None);
+            layer.presented();
+            presence_frame(&mut app, &mut layer, &[LOCAL_FIELD]).expect("no peer, no repaint")
+        };
+
         let mut app = presence_app(&theme);
         let mut layer = crate::presence::PresenceLayer::new();
+        app.presence_ctx
+            .upsert_remote_cursor("alice".into(), [300.0, 200.0], Some("Alice"));
         assert_eq!(presence_frame(&mut app, &mut layer, &[]), None);
         layer.presented();
-        presence_frame(&mut app, &mut layer, &[LOCAL_FIELD]).expect("no peer, no repaint")
-    };
+        // A local keystroke dirties one field; the peer is where she was.
+        let typed = presence_frame(&mut app, &mut layer, &[LOCAL_FIELD])
+            .expect("an idle peer must not force a full repaint");
+        assert_eq!(
+            typed, alone,
+            "with an idle peer a keystroke shades what it shades alone"
+        );
+    }
 
-    let mut app = presence_app(&theme);
-    let mut layer = crate::presence::PresenceLayer::new();
-    app.presence_ctx
-        .upsert_remote_cursor("alice".into(), [300.0, 200.0], Some("Alice"));
-    assert_eq!(presence_frame(&mut app, &mut layer, &[]), None);
-    layer.presented();
-    // A local keystroke dirties one field; the peer is where she was.
-    let typed = presence_frame(&mut app, &mut layer, &[LOCAL_FIELD])
-        .expect("an idle peer must not force a full repaint");
-    assert_eq!(
-        typed, alone,
-        "with an idle peer a keystroke shades what it shades alone"
-    );
-}
+    phase remote_caret_keeps_pointer_frames_bounded_and_repaints_local_edits;
+    {
+        let theme = Theme::light();
+        let mut app = presence_app(&theme);
+        let mut layer = crate::presence::PresenceLayer::new();
+        let key = crate::presence::PresenceKey::widget(&[crate::presence::PathSegment::Field(
+            "title".into(),
+        )])
+        .expect("a widget key");
+        app.presence_ctx
+            .set_remote_caret("alice".into(), key.clone(), 3);
+        app.presence_ctx
+            .upsert_remote_cursor("alice".into(), [300.0, 200.0], Some("Alice"));
+        assert_eq!(presence_frame(&mut app, &mut layer, &[]), None);
+        layer.presented();
 
-#[test]
-fn remote_caret_keeps_pointer_frames_bounded_and_repaints_local_edits() {
-    let theme = Theme::light();
-    let mut app = presence_app(&theme);
-    let mut layer = crate::presence::PresenceLayer::new();
-    let key = crate::presence::PresenceKey::widget(&[crate::presence::PathSegment::Field(
-        "title".into(),
-    )])
-    .expect("a widget key");
-    app.presence_ctx
-        .set_remote_caret("alice".into(), key.clone(), 3);
-    app.presence_ctx
-        .upsert_remote_cursor("alice".into(), [300.0, 200.0], Some("Alice"));
-    assert_eq!(presence_frame(&mut app, &mut layer, &[]), None);
-    layer.presented();
+        // Her pointer moving changes no widget: only the pointer repaints.
+        app.presence_ctx
+            .upsert_remote_cursor("alice".into(), [310.0, 200.0], Some("Alice"));
+        let pointer = presence_frame(&mut app, &mut layer, &[])
+            .expect("a pointer move beside a remote caret keeps to its marks");
+        assert!(!pointer.is_empty());
+        layer.presented();
 
-    // Her pointer moving changes no widget: only the pointer repaints.
-    app.presence_ctx
-        .upsert_remote_cursor("alice".into(), [310.0, 200.0], Some("Alice"));
-    let pointer = presence_frame(&mut app, &mut layer, &[])
-        .expect("a pointer move beside a remote caret keeps to its marks");
-    assert!(!pointer.is_empty());
-    layer.presented();
+        // A local edit can move her caret and its name chip, which hangs
+        // outside the field and is in no widget's damage: repaint.
+        assert_eq!(presence_frame(&mut app, &mut layer, &[LOCAL_FIELD]), None);
+        layer.presented();
 
-    // A local edit can move her caret and its name chip, which hangs
-    // outside the field and is in no widget's damage: repaint.
-    assert_eq!(presence_frame(&mut app, &mut layer, &[LOCAL_FIELD]), None);
-    layer.presented();
-
-    // Her caret moving changes what the field paints: repaint, once.
-    app.presence_ctx.set_remote_caret("alice".into(), key, 4);
-    assert_eq!(presence_frame(&mut app, &mut layer, &[]), None);
-    layer.presented();
-    assert_eq!(presence_frame(&mut app, &mut layer, &[]), Some(Vec::new()));
+        // Her caret moving changes what the field paints: repaint, once.
+        app.presence_ctx.set_remote_caret("alice".into(), key, 4);
+        assert_eq!(presence_frame(&mut app, &mut layer, &[]), None);
+        layer.presented();
+        assert_eq!(presence_frame(&mut app, &mut layer, &[]), Some(Vec::new()));
+    }
 }

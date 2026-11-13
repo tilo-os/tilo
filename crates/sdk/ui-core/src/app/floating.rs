@@ -1630,55 +1630,6 @@ mod host_shell_allow_tests {
         assert_ne!(tilo_host::network_status::current().metered, Some(false));
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn device_shell_operation_is_acknowledged_by_the_real_service_pump() {
-        use crate::floating_surface::{DeviceShellOperation, FloatingSurfaceClientMessage};
-        use std::io::{Read, Write};
-        use std::os::unix::net::UnixStream;
-
-        let (app_side, mut shell_side) = UnixStream::pair().unwrap();
-        shell_side.set_nonblocking(true).unwrap();
-        let mut app = App::new_with_controlled_inputs(
-            crate::State::new(),
-            Box::new(crate::widget::Container::new()),
-        );
-        app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
-        for request in [71, 72] {
-            let mut wire = serde_json::to_vec(&FloatingSurfaceHostMessage::DeviceShellOperation {
-                request,
-                operation: DeviceShellOperation::Inspect,
-            })
-            .unwrap();
-            wire.push(b'\n');
-            shell_side.write_all(&wire).unwrap();
-            assert!(app.pump_floating_surface_service());
-            let mut received = Vec::new();
-            let error = shell_side.read_to_end(&mut received).unwrap_err();
-            assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
-            let outcomes = received
-                .split(|byte| *byte == b'\n')
-                .filter(|line| !line.is_empty())
-                .map(|line| serde_json::from_slice::<FloatingSurfaceClientMessage>(line).unwrap())
-                .filter_map(|message| match message {
-                    FloatingSurfaceClientMessage::DeviceShellOutcome { request, result } => {
-                        Some((request, result))
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(
-                outcomes,
-                vec![(request, Err("Terminal is not available".into()))],
-                "even refusal must acknowledge the exact operation through the live authenticated connection"
-            );
-            assert!(
-                app.floating.client.is_some(),
-                "the same connection remains available for the next request"
-            );
-        }
-    }
-
     struct DeviceShellProbe {
         calls: std::rc::Rc<std::cell::Cell<usize>>,
         container: crate::widget::Container,
@@ -1747,83 +1698,135 @@ mod host_shell_allow_tests {
         }
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn device_shell_success_and_refusal_are_sent_once_on_the_original_connection() {
-        use crate::floating_surface::{DeviceShellOperation, FloatingSurfaceClientMessage};
-        use std::io::{Read, Write};
-        use std::os::unix::net::UnixStream;
-        let (app_side, mut shell_side) = UnixStream::pair().unwrap();
-        shell_side.set_nonblocking(true).unwrap();
-        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
-        let mut app = App::new_with_controlled_inputs(
-            crate::State::new(),
-            Box::new(DeviceShellProbe {
-                calls: calls.clone(),
-                container: crate::widget::Container::new(),
-            }),
-        );
-        app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
-        for (request, operation, expected) in [
-            (
-                91,
-                DeviceShellOperation::Inspect,
-                Ok(serde_json::json!({"session":"exact-session"})),
-            ),
-            (
-                92,
-                DeviceShellOperation::Read {
-                    session: "stale-session".into(),
-                },
-                Err("Session no longer matches".into()),
-            ),
-        ] {
-            let mut wire = serde_json::to_vec(&FloatingSurfaceHostMessage::DeviceShellOperation {
-                request,
-                operation,
-            })
-            .unwrap();
-            wire.push(b'\n');
-            shell_side.write_all(&wire).unwrap();
-            assert!(app.pump_floating_surface_service());
-            let mut received = Vec::new();
-            assert_eq!(
-                shell_side.read_to_end(&mut received).unwrap_err().kind(),
-                std::io::ErrorKind::WouldBlock
+    tilo_test_env::scenario! {
+        #[cfg(unix)]
+        fn device_shell_operations_are_answered_over_the_real_service_pump;
+
+        phase device_shell_operation_is_acknowledged_by_the_real_service_pump;
+        {
+            use crate::floating_surface::{DeviceShellOperation, FloatingSurfaceClientMessage};
+            use std::io::{Read, Write};
+            use std::os::unix::net::UnixStream;
+
+            let (app_side, mut shell_side) = UnixStream::pair().unwrap();
+            shell_side.set_nonblocking(true).unwrap();
+            let mut app = App::new_with_controlled_inputs(
+                crate::State::new(),
+                Box::new(crate::widget::Container::new()),
             );
-            let outcomes = received
-                .split(|byte| *byte == b'\n')
-                .filter(|line| !line.is_empty())
-                .map(|line| serde_json::from_slice::<FloatingSurfaceClientMessage>(line).unwrap())
-                .filter_map(|message| match message {
-                    FloatingSurfaceClientMessage::DeviceShellOutcome { request, result } => {
-                        Some((request, result))
-                    }
-                    _ => None,
+            app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+            for request in [71, 72] {
+                let mut wire = serde_json::to_vec(&FloatingSurfaceHostMessage::DeviceShellOperation {
+                    request,
+                    operation: DeviceShellOperation::Inspect,
                 })
-                .collect::<Vec<_>>();
-            assert_eq!(outcomes, vec![(request, expected)]);
-            let executed = calls.get();
-            app.pump_floating_surface_service();
-            assert_eq!(
-                calls.get(),
-                executed,
-                "idle pumping must not replay a consumed operation"
-            );
-            let mut extra = [0; 1];
-            assert_eq!(
-                shell_side.read(&mut extra).unwrap_err().kind(),
-                std::io::ErrorKind::WouldBlock
-            );
+                .unwrap();
+                wire.push(b'\n');
+                shell_side.write_all(&wire).unwrap();
+                assert!(app.pump_floating_surface_service());
+                let mut received = Vec::new();
+                let error = shell_side.read_to_end(&mut received).unwrap_err();
+                assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+                let outcomes = received
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| !line.is_empty())
+                    .map(|line| serde_json::from_slice::<FloatingSurfaceClientMessage>(line).unwrap())
+                    .filter_map(|message| match message {
+                        FloatingSurfaceClientMessage::DeviceShellOutcome { request, result } => {
+                            Some((request, result))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    outcomes,
+                    vec![(request, Err("Terminal is not available".into()))],
+                    "even refusal must acknowledge the exact operation through the live authenticated connection"
+                );
+                assert!(
+                    app.floating.client.is_some(),
+                    "the same connection remains available for the next request"
+                );
+            }
         }
-        assert_eq!(calls.get(), 2);
-        drop(shell_side);
-        app.pump_floating_surface_service();
-        assert!(
-            app.floating.client.is_none(),
-            "a disconnected connection is never restored"
-        );
-        assert_eq!(calls.get(), 2);
+
+        phase device_shell_success_and_refusal_are_sent_once_on_the_original_connection;
+        {
+            use crate::floating_surface::{DeviceShellOperation, FloatingSurfaceClientMessage};
+            use std::io::{Read, Write};
+            use std::os::unix::net::UnixStream;
+            let (app_side, mut shell_side) = UnixStream::pair().unwrap();
+            shell_side.set_nonblocking(true).unwrap();
+            let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+            let mut app = App::new_with_controlled_inputs(
+                crate::State::new(),
+                Box::new(DeviceShellProbe {
+                    calls: calls.clone(),
+                    container: crate::widget::Container::new(),
+                }),
+            );
+            app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+            for (request, operation, expected) in [
+                (
+                    91,
+                    DeviceShellOperation::Inspect,
+                    Ok(serde_json::json!({"session":"exact-session"})),
+                ),
+                (
+                    92,
+                    DeviceShellOperation::Read {
+                        session: "stale-session".into(),
+                    },
+                    Err("Session no longer matches".into()),
+                ),
+            ] {
+                let mut wire = serde_json::to_vec(&FloatingSurfaceHostMessage::DeviceShellOperation {
+                    request,
+                    operation,
+                })
+                .unwrap();
+                wire.push(b'\n');
+                shell_side.write_all(&wire).unwrap();
+                assert!(app.pump_floating_surface_service());
+                let mut received = Vec::new();
+                assert_eq!(
+                    shell_side.read_to_end(&mut received).unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock
+                );
+                let outcomes = received
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| !line.is_empty())
+                    .map(|line| serde_json::from_slice::<FloatingSurfaceClientMessage>(line).unwrap())
+                    .filter_map(|message| match message {
+                        FloatingSurfaceClientMessage::DeviceShellOutcome { request, result } => {
+                            Some((request, result))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(outcomes, vec![(request, expected)]);
+                let executed = calls.get();
+                app.pump_floating_surface_service();
+                assert_eq!(
+                    calls.get(),
+                    executed,
+                    "idle pumping must not replay a consumed operation"
+                );
+                let mut extra = [0; 1];
+                assert_eq!(
+                    shell_side.read(&mut extra).unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock
+                );
+            }
+            assert_eq!(calls.get(), 2);
+            drop(shell_side);
+            app.pump_floating_surface_service();
+            assert!(
+                app.floating.client.is_none(),
+                "a disconnected connection is never restored"
+            );
+            assert_eq!(calls.get(), 2);
+        }
     }
 
     #[test]

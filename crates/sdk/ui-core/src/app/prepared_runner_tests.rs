@@ -428,76 +428,111 @@ fn edit_bound_record(app: &mut App, binding: &crate::bound_dispatch::CallbackBin
     );
 }
 
-#[test]
-fn native_idle_model_persists_a_bound_edit_before_any_close() {
-    let host = ProbeHost::new();
-    let component = editable_component(&host, 11);
-    let binding = component.callback_binding();
-    let mut app = App::from_component(component, runner_inputs()).unwrap();
-    assert_saved_body(&host, &binding, "initialized");
+tilo_test_env::scenario! {
+    fn prepared_close_and_autosave_keep_their_original_owners;
 
-    edit_bound_record(&mut app, &binding);
-    app.service_native_idle_model();
-
-    // Read the original writer's complete on-disk graph before close can flush it.
-    assert_saved_body(&host, &binding, "edited");
-    assert!(binding.lifetime.is_active());
-    assert!(app.component_close_reports().is_empty());
-    app.close_components();
-}
-
-#[test]
-fn prepared_autosave_and_close_retain_original_owners_for_retry() {
+    phase native_idle_model_persists_a_bound_edit_before_any_close;
     {
         let host = ProbeHost::new();
         let component = editable_component(&host, 11);
         let binding = component.callback_binding();
         let mut app = App::from_component(component, runner_inputs()).unwrap();
-        assert!(app.persistence.autosave.is_none() && app.persistence.records.is_none());
         assert_saved_body(&host, &binding, "initialized");
+
         edit_bound_record(&mut app, &binding);
-        app.autosave_tick().unwrap();
+        app.service_native_idle_model();
+
+        // Read the original writer's complete on-disk graph before close can flush it.
         assert_saved_body(&host, &binding, "edited");
         assert!(binding.lifetime.is_active());
         assert!(app.component_close_reports().is_empty());
         app.close_components();
     }
 
+    phase prepared_autosave_and_close_retain_original_owners_for_retry;
     {
-        let first_host = ProbeHost::new();
-        let first = editable_component(&first_host, 11);
-        let first_binding = first.callback_binding();
-        let mut app = App::from_component(first, runner_inputs()).unwrap();
-        let second_host = ProbeHost::new();
-        let mut second = editable_component(&second_host, 22);
-        let second_binding = second.callback_binding();
-        assert!(!first_binding.records.same_owner(&second_binding.records));
-        let handle = app.wake_scope.as_ref().unwrap().handle();
-        second.mount(move |_| handle.wake()).unwrap();
-        let first_root =
-            std::mem::replace(&mut app.root_widget, Box::new(crate::widget::Column::new()));
-        app.root_widget = Box::new(
-            crate::widget::Column::new()
-                .push(first_root)
-                .push(Box::new(TileHost::from_component(second))),
-        );
-        assert_saved_body(&first_host, &first_binding, "initialized");
-        assert_saved_body(&second_host, &second_binding, "initialized");
-        edit_bound_record(&mut app, &first_binding);
-        edit_bound_record(&mut app, &second_binding);
-        app.autosave_tick().unwrap();
-        assert_saved_body(&first_host, &first_binding, "edited");
-        assert_saved_body(&second_host, &second_binding, "edited");
-        assert!(first_binding.lifetime.is_active() && second_binding.lifetime.is_active());
-        assert!(app.component_close_reports().is_empty());
-        app.close_components();
-    }
-}
+        {
+            let host = ProbeHost::new();
+            let component = editable_component(&host, 11);
+            let binding = component.callback_binding();
+            let mut app = App::from_component(component, runner_inputs()).unwrap();
+            assert!(app.persistence.autosave.is_none() && app.persistence.records.is_none());
+            assert_saved_body(&host, &binding, "initialized");
+            edit_bound_record(&mut app, &binding);
+            app.autosave_tick().unwrap();
+            assert_saved_body(&host, &binding, "edited");
+            assert!(binding.lifetime.is_active());
+            assert!(app.component_close_reports().is_empty());
+            app.close_components();
+        }
 
-#[test]
-fn prepared_close_retains_the_original_store_and_rejects_stale_results() {
+        {
+            let first_host = ProbeHost::new();
+            let first = editable_component(&first_host, 11);
+            let first_binding = first.callback_binding();
+            let mut app = App::from_component(first, runner_inputs()).unwrap();
+            let second_host = ProbeHost::new();
+            let mut second = editable_component(&second_host, 22);
+            let second_binding = second.callback_binding();
+            assert!(!first_binding.records.same_owner(&second_binding.records));
+            let handle = app.wake_scope.as_ref().unwrap().handle();
+            second.mount(move |_| handle.wake()).unwrap();
+            let first_root =
+                std::mem::replace(&mut app.root_widget, Box::new(crate::widget::Column::new()));
+            app.root_widget = Box::new(
+                crate::widget::Column::new()
+                    .push(first_root)
+                    .push(Box::new(TileHost::from_component(second))),
+            );
+            assert_saved_body(&first_host, &first_binding, "initialized");
+            assert_saved_body(&second_host, &second_binding, "initialized");
+            edit_bound_record(&mut app, &first_binding);
+            edit_bound_record(&mut app, &second_binding);
+            app.autosave_tick().unwrap();
+            assert_saved_body(&first_host, &first_binding, "edited");
+            assert_saved_body(&second_host, &second_binding, "edited");
+            assert!(first_binding.lifetime.is_active() && second_binding.lifetime.is_active());
+            assert!(app.component_close_reports().is_empty());
+            app.close_components();
+        }
+    }
+
+    phase prepared_close_retains_the_original_store_and_rejects_stale_results;
     {
-        for mode in 0..3 {
+        {
+            for mode in 0..3 {
+                let host = ProbeHost::new();
+                let component = runner_probe_definition()
+                    .instantiate(
+                        host.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
+                            .unwrap(),
+                        LaunchTarget::New,
+                        RestoreInput::None,
+                    )
+                    .unwrap();
+                let path = host.view_path(11);
+                std::fs::create_dir_all(&path).unwrap();
+                let mut runner = Runner::new(mode, component);
+                drop(host.views);
+                let mut reports = runner.close();
+                assert_eq!(reports.len(), 1);
+                let report = &mut reports[0];
+                assert!(report.view_error.is_some());
+                assert!(report.view_retry.is_some());
+                assert_eq!(report.recovery.as_ref().unwrap().app_id, APP);
+                drop(runner);
+                std::fs::remove_dir(&path).unwrap();
+                report.retry_view().unwrap();
+                assert!(report.view_error.is_none());
+                assert!(report.view_retry.is_none());
+                let saved: crate::application_view::SavedInstanceView =
+                    postcard::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+                assert_eq!(saved.instance_id, 11);
+                assert_eq!(saved.device_id, DEVICE);
+                assert_eq!(saved.workspace_id, WORKSPACE);
+            }
+        }
+        {
             let host = ProbeHost::new();
             let component = runner_probe_definition()
                 .instantiate(
@@ -507,106 +542,75 @@ fn prepared_close_retains_the_original_store_and_rejects_stale_results() {
                     RestoreInput::None,
                 )
                 .unwrap();
+            let binding = component.callback_binding();
             let path = host.view_path(11);
             std::fs::create_dir_all(&path).unwrap();
-            let mut runner = Runner::new(mode, component);
+            let mut app = App::from_component(component, runner_inputs()).unwrap();
             drop(host.views);
-            let mut reports = runner.close();
+            app.close_wake_scope();
+            let _closed = app.enter_wake_scope();
+            app.close_native_content();
+            assert!(!binding.lifetime.is_active());
+            assert_eq!(app.component_close_reports().len(), 1);
+            assert!(app.component_close_reports()[0].view_error.is_some());
+            app.close_native_content();
+            let mut reports = app.take_component_close_reports();
             assert_eq!(reports.len(), 1);
-            let report = &mut reports[0];
-            assert!(report.view_error.is_some());
-            assert!(report.view_retry.is_some());
-            assert_eq!(report.recovery.as_ref().unwrap().app_id, APP);
-            drop(runner);
+            assert!(binding.records.read(&binding.checkout.id, |_| ()).is_some());
+            assert_eq!(reports[0].recovery.as_ref().unwrap().instance_id, 11);
             std::fs::remove_dir(&path).unwrap();
-            report.retry_view().unwrap();
-            assert!(report.view_error.is_none());
-            assert!(report.view_retry.is_none());
-            let saved: crate::application_view::SavedInstanceView =
-                postcard::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
-            assert_eq!(saved.instance_id, 11);
-            assert_eq!(saved.device_id, DEVICE);
-            assert_eq!(saved.workspace_id, WORKSPACE);
+            reports[0].retry_view().unwrap();
+            assert!(path.is_file());
+            assert!(app.take_component_close_reports().is_empty());
         }
-    }
-    {
-        let host = ProbeHost::new();
-        let component = runner_probe_definition()
-            .instantiate(
-                host.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
-                    .unwrap(),
-                LaunchTarget::New,
-                RestoreInput::None,
-            )
-            .unwrap();
-        let binding = component.callback_binding();
-        let path = host.view_path(11);
-        std::fs::create_dir_all(&path).unwrap();
-        let mut app = App::from_component(component, runner_inputs()).unwrap();
-        drop(host.views);
-        app.close_wake_scope();
-        let _closed = app.enter_wake_scope();
-        app.close_native_content();
-        assert!(!binding.lifetime.is_active());
-        assert_eq!(app.component_close_reports().len(), 1);
-        assert!(app.component_close_reports()[0].view_error.is_some());
-        app.close_native_content();
-        let mut reports = app.take_component_close_reports();
-        assert_eq!(reports.len(), 1);
-        assert!(binding.records.read(&binding.checkout.id, |_| ()).is_some());
-        assert_eq!(reports[0].recovery.as_ref().unwrap().instance_id, 11);
-        std::fs::remove_dir(&path).unwrap();
-        reports[0].retry_view().unwrap();
-        assert!(path.is_file());
-        assert!(app.take_component_close_reports().is_empty());
-    }
-    {
-        for mode in 0..3 {
-            let host = ProbeHost::new();
-            let component = runner_probe_definition()
-                .instantiate(
-                    host.prepare_with_permissions(
-                        runner_probe_definition(),
-                        11,
-                        &LaunchTarget::New,
-                        runner_permissions(),
+        {
+            for mode in 0..3 {
+                let host = ProbeHost::new();
+                let component = runner_probe_definition()
+                    .instantiate(
+                        host.prepare_with_permissions(
+                            runner_probe_definition(),
+                            11,
+                            &LaunchTarget::New,
+                            runner_permissions(),
+                        )
+                        .unwrap(),
+                        LaunchTarget::New,
+                        RestoreInput::None,
                     )
-                    .unwrap(),
-                    LaunchTarget::New,
-                    RestoreInput::None,
-                )
-                .unwrap();
-            let checkout = component.record().clone();
-            let writer = local_state().writer();
-            let observed = operation_observations()[0].clone();
-            let mut runner = Runner::new(mode, component);
-            runner.invoke("pending").unwrap();
-            assert_eq!(*observed.borrow(), vec!["pending"]);
-            let reports = runner.close();
-            assert_eq!(*observed.borrow(), vec!["pending", "cancelled"]);
-            assert!(!writer.try_set("stale after close".into()));
-            let target = existing(&checkout);
-            let successor = runner_probe_definition()
-                .instantiate(
-                    host.prepare_with_permissions(
-                        runner_probe_definition(),
-                        11,
-                        &target,
-                        runner_permissions(),
+                    .unwrap();
+                let checkout = component.record().clone();
+                let writer = local_state().writer();
+                let observed = operation_observations()[0].clone();
+                let mut runner = Runner::new(mode, component);
+                runner.invoke("pending").unwrap();
+                assert_eq!(*observed.borrow(), vec!["pending"]);
+                let reports = runner.close();
+                assert_eq!(*observed.borrow(), vec!["pending", "cancelled"]);
+                assert!(!writer.try_set("stale after close".into()));
+                let target = existing(&checkout);
+                let successor = runner_probe_definition()
+                    .instantiate(
+                        host.prepare_with_permissions(
+                            runner_probe_definition(),
+                            11,
+                            &target,
+                            runner_permissions(),
+                        )
+                        .unwrap(),
+                        target,
+                        RestoreInput::Local(reports[0].recovery.clone().unwrap()),
                     )
-                    .unwrap(),
-                    target,
-                    RestoreInput::Local(reports[0].recovery.clone().unwrap()),
-                )
-                .unwrap();
-            let successor_local = local_state();
-            let mut successor = Runner::new(mode, successor);
-            assert!(!writer.try_set("stale after reopen".into()));
-            assert_eq!(successor_local.with(Clone::clone), "construction wake");
-            successor.invoke("view").unwrap();
-            successor.close();
-            assert_eq!(body(&host.records, &checkout), "initialized");
-            assert_eq!(*observed.borrow(), vec!["pending", "cancelled"]);
+                    .unwrap();
+                let successor_local = local_state();
+                let mut successor = Runner::new(mode, successor);
+                assert!(!writer.try_set("stale after reopen".into()));
+                assert_eq!(successor_local.with(Clone::clone), "construction wake");
+                successor.invoke("view").unwrap();
+                successor.close();
+                assert_eq!(body(&host.records, &checkout), "initialized");
+                assert_eq!(*observed.borrow(), vec!["pending", "cancelled"]);
+            }
         }
     }
 }

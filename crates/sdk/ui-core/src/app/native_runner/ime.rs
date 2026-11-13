@@ -193,58 +193,62 @@ pub(super) fn preedit_after_event(event: &WindowEvent) -> Option<PrimaryPreeditU
 mod floating_ime_continuation_tests {
     use super::*;
 
-    #[test]
-    fn returned_caret_keeps_signed_child_coordinates_and_content_type() {
-        let primary = ImeWindowState {
-            content: crate::ime::InputContent {
-                purpose: crate::ime::InputPurpose::Email,
-                hints: crate::ime::InputHints {
-                    multiline: true,
-                    ..crate::ime::InputHints::default()
-                },
-            },
-            x: 20,
-            y: 30,
-            width: 2,
-            height: 24,
-        };
-        let projected = primary_ime_state_for_held_child(
-            Some(primary),
-            Vec2::new(100.0, 80.0),
-            Vec2::new(300.0, 200.0),
-        )
-        .unwrap();
-        assert_eq!((projected.x, projected.y), (-180, -90));
-        assert_eq!((projected.width, projected.height), (2, 24));
-        assert_eq!(projected.content, primary.content);
-        assert_eq!(
-            retained_return_ime_state(None, Some(projected), true),
-            Some(projected)
-        );
-        assert_eq!(
-            retained_return_ime_state(None, Some(projected), false),
-            None
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_floating_ime_keeps_its_caret_and_custody;
 
-    #[test]
-    fn empty_preedit_does_not_retire_custody_before_the_commit_in_the_same_batch() {
-        assert_eq!(
-            preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Preedit(
-                String::new(),
+        phase returned_caret_keeps_signed_child_coordinates_and_content_type;
+        {
+            let primary = ImeWindowState {
+                content: crate::ime::InputContent {
+                    purpose: crate::ime::InputPurpose::Email,
+                    hints: crate::ime::InputHints {
+                        multiline: true,
+                        ..crate::ime::InputHints::default()
+                    },
+                },
+                x: 20,
+                y: 30,
+                width: 2,
+                height: 24,
+            };
+            let projected = primary_ime_state_for_held_child(
+                Some(primary),
+                Vec2::new(100.0, 80.0),
+                Vec2::new(300.0, 200.0),
+            )
+            .unwrap();
+            assert_eq!((projected.x, projected.y), (-180, -90));
+            assert_eq!((projected.width, projected.height), (2, 24));
+            assert_eq!(projected.content, primary.content);
+            assert_eq!(
+                retained_return_ime_state(None, Some(projected), true),
+                Some(projected)
+            );
+            assert_eq!(
+                retained_return_ime_state(None, Some(projected), false),
                 None
-            ))),
-            Some(PrimaryPreeditUpdate::PendingClear)
-        );
-        assert_eq!(
-            preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Commit("文字".into()))),
-            Some(PrimaryPreeditUpdate::Finished)
-        );
-        assert_eq!(
-            preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Disabled)),
-            Some(PrimaryPreeditUpdate::Finished)
-        );
-        assert!(!routes_to_floating_ime(&WindowEvent::Focused(false)));
+            );
+        }
+
+        phase empty_preedit_does_not_retire_custody_before_the_commit_in_the_same_batch;
+        {
+            assert_eq!(
+                preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Preedit(
+                    String::new(),
+                    None
+                ))),
+                Some(PrimaryPreeditUpdate::PendingClear)
+            );
+            assert_eq!(
+                preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Commit("文字".into()))),
+                Some(PrimaryPreeditUpdate::Finished)
+            );
+            assert_eq!(
+                preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Disabled)),
+                Some(PrimaryPreeditUpdate::Finished)
+            );
+            assert!(!routes_to_floating_ime(&WindowEvent::Focused(false)));
+        }
     }
 }
 

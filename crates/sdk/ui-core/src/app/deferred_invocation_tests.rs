@@ -49,159 +49,166 @@ fn deferred_fixture() -> (
     (widget, calls, domain)
 }
 
-#[test]
-fn deferred_native_and_driver_confirmation_mint_once_only_at_handler() {
-    use std::sync::atomic::Ordering;
-    for native in [true, false] {
-        let (widget, calls, _) = deferred_fixture();
-        let ledger = widget.ledger.clone();
-        let mut host = Host::new(native, managed(Box::new(widget)));
-        for _ in 0..3 {
-            host.frame();
-        }
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            0,
-            "construction/model/a11y must be inert"
-        );
-        for expected in 0..2 {
-            host.activate("Emit request");
+tilo_test_env::scenario! {
+    fn deferred_actions_mint_only_at_their_handler;
+
+    phase deferred_native_and_driver_confirmation_mint_once_only_at_handler;
+    {
+        use std::sync::atomic::Ordering;
+        for native in [true, false] {
+            let (widget, calls, _) = deferred_fixture();
+            let ledger = widget.ledger.clone();
+            let mut host = Host::new(native, managed(Box::new(widget)));
             for _ in 0..3 {
                 host.frame();
             }
             assert_eq!(
                 calls.load(Ordering::SeqCst),
-                expected,
-                "control and repeated confirmation preparation must be inert"
+                0,
+                "construction/model/a11y must be inert"
             );
-            host.activate("Run fixture");
-            assert_eq!(
-                calls.load(Ordering::SeqCst),
-                expected + 1,
-                "one admitted handler builds once"
-            );
-            assert_eq!(ledger.borrow()[expected], serde_json::json!(expected));
+            for expected in 0..2 {
+                host.activate("Emit request");
+                for _ in 0..3 {
+                    host.frame();
+                }
+                assert_eq!(
+                    calls.load(Ordering::SeqCst),
+                    expected,
+                    "control and repeated confirmation preparation must be inert"
+                );
+                host.activate("Run fixture");
+                assert_eq!(
+                    calls.load(Ordering::SeqCst),
+                    expected + 1,
+                    "one admitted handler builds once"
+                );
+                assert_eq!(ledger.borrow()[expected], serde_json::json!(expected));
+            }
         }
     }
-}
-#[test]
-fn deferred_changed_draft_and_current_permission_refuse_without_building() {
-    use std::sync::atomic::Ordering;
-    for native in [true, false] {
-        for change in ["draft", "permission"] {
-            let (widget, calls, domain) = deferred_fixture();
-            let ledger = widget.ledger.clone();
-            let mut host = Host::new(native, managed(Box::new(widget)));
-            host.activate("Emit request");
-            if change == "draft" {
-                domain.store(1, Ordering::SeqCst);
-            } else {
-                host.revoke();
+
+    phase deferred_changed_draft_and_current_permission_refuse_without_building;
+    {
+        use std::sync::atomic::Ordering;
+        for native in [true, false] {
+            for change in ["draft", "permission"] {
+                let (widget, calls, domain) = deferred_fixture();
+                let ledger = widget.ledger.clone();
+                let mut host = Host::new(native, managed(Box::new(widget)));
+                host.activate("Emit request");
+                if change == "draft" {
+                    domain.store(1, Ordering::SeqCst);
+                } else {
+                    host.revoke();
+                }
+                host.activate("Run fixture");
+                assert_eq!(calls.load(Ordering::SeqCst), 0, "{native}:{change}");
+                assert!(ledger.borrow().is_empty());
             }
+        }
+    }
+
+    phase deferred_history_retains_draft_without_mint_and_checks_on_resume;
+    {
+        use std::sync::atomic::Ordering;
+        for native in [true, false] {
+            for changed in [false, true] {
+                let (widget, calls, domain) = deferred_fixture();
+                let ledger = widget.ledger.clone();
+                let mut host = Host::new(native, managed(Box::new(widget)));
+                host.activate("Emit request");
+                host.activate("History");
+                if changed {
+                    domain.store(1, Ordering::SeqCst);
+                }
+                host.activate("History");
+                assert_eq!(calls.load(Ordering::SeqCst), 0);
+                host.activate("Run fixture");
+                assert_eq!(
+                    calls.load(Ordering::SeqCst),
+                    usize::from(!changed),
+                    "{native}:{changed}"
+                );
+                assert_eq!(ledger.borrow().len(), usize::from(!changed));
+            }
+        }
+    }
+
+    phase deferred_actual_component_close_refuses_before_mint;
+    {
+        use std::sync::atomic::Ordering;
+        for native in [true, false] {
+            let (widget, calls, _) = deferred_fixture();
+            let ledger = widget.ledger.clone();
+            let (root, guard) = owned(widget);
+            let mut host = Host::new(native, guard.managed(root));
+            host.activate("Emit request");
+            guard.close();
             host.activate("Run fixture");
-            assert_eq!(calls.load(Ordering::SeqCst), 0, "{native}:{change}");
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
             assert!(ledger.borrow().is_empty());
         }
     }
-}
-#[test]
-fn deferred_history_retains_draft_without_mint_and_checks_on_resume() {
-    use std::sync::atomic::Ordering;
-    for native in [true, false] {
-        for changed in [false, true] {
-            let (widget, calls, domain) = deferred_fixture();
-            let ledger = widget.ledger.clone();
-            let mut host = Host::new(native, managed(Box::new(widget)));
-            host.activate("Emit request");
-            host.activate("History");
-            if changed {
-                domain.store(1, Ordering::SeqCst);
-            }
-            host.activate("History");
-            assert_eq!(calls.load(Ordering::SeqCst), 0);
-            host.activate("Run fixture");
-            assert_eq!(
-                calls.load(Ordering::SeqCst),
-                usize::from(!changed),
-                "{native}:{changed}"
-            );
-            assert_eq!(ledger.borrow().len(), usize::from(!changed));
-        }
-    }
-}
-#[test]
-fn deferred_actual_component_close_refuses_before_mint() {
-    use std::sync::atomic::Ordering;
-    for native in [true, false] {
+
+    phase deferred_semantic_tree_publishes_inert_address_and_uses_confirmation_door;
+    {
+        use std::sync::atomic::Ordering;
         let (widget, calls, _) = deferred_fixture();
         let ledger = widget.ledger.clone();
-        let (root, guard) = owned(widget);
-        let mut host = Host::new(native, guard.managed(root));
-        host.activate("Emit request");
-        guard.close();
-        host.activate("Run fixture");
+        let mut host = Host::new(true, managed(Box::new(widget)));
+        let Host::Native(app) = &mut host else {
+            unreachable!()
+        };
+        let id = crate::a11y_tree::SemanticId("r:ordinary:fixture".into());
+        for _ in 0..3 {
+            app.refresh_semantic_tree();
+            assert!(
+                matches!(&app.semantic_tree().action(&id, "run").unwrap().kind,
+                crate::a11y_tree::SemanticActionKind::AppDeferred { address }
+                    if address == &tilo_actions::ActionAddress::new("ordinary:fixture", "run"))
+            );
+        }
         assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert!(ledger.borrow().is_empty());
+        assert!(app.invoke_semantic_action(&id, "run", None).unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        layout(app);
+        host.activate("Run fixture");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(&*ledger.borrow(), &[serde_json::json!(0)]);
     }
-}
 
-#[test]
-fn deferred_semantic_tree_publishes_inert_address_and_uses_confirmation_door() {
-    use std::sync::atomic::Ordering;
-    let (widget, calls, _) = deferred_fixture();
-    let ledger = widget.ledger.clone();
-    let mut host = Host::new(true, managed(Box::new(widget)));
-    let Host::Native(app) = &mut host else {
-        unreachable!()
-    };
-    let id = crate::a11y_tree::SemanticId("r:ordinary:fixture".into());
-    for _ in 0..3 {
+    phase deferred_semantic_no_confirmation_reaches_final_owner_once;
+    {
+        use std::sync::atomic::Ordering;
+        let (widget, calls, _) = deferred_fixture();
+        widget.resources.borrow_mut()[0].actions[0]
+            .type_mut()
+            .contract
+            .confirmation = tilo_actions::ConfirmationPolicy::None;
+        let ledger = widget.ledger.clone();
+        let mut app =
+            App::from_managed_root_with_controlled_inputs(State::new(), managed(Box::new(widget)))
+                .unwrap();
+        layout(&mut app);
         app.refresh_semantic_tree();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(
-            matches!(&app.semantic_tree().action(&id, "run").unwrap().kind,
-            crate::a11y_tree::SemanticActionKind::AppDeferred { address }
-                if address == &tilo_actions::ActionAddress::new("ordinary:fixture", "run"))
+            app.invoke_semantic_action(
+                &crate::a11y_tree::SemanticId("r:ordinary:fixture".into()),
+                "run",
+                None
+            )
+            .unwrap()
         );
+        app.controlled_local_idle_for_test();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "no-confirmation semantic activation must reach the ordinary owner door"
+        );
+        assert_eq!(&*ledger.borrow(), &[serde_json::json!(0)]);
     }
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
-    assert!(app.invoke_semantic_action(&id, "run", None).unwrap());
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
-    layout(app);
-    host.activate("Run fixture");
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(&*ledger.borrow(), &[serde_json::json!(0)]);
-}
-
-#[test]
-fn deferred_semantic_no_confirmation_reaches_final_owner_once() {
-    use std::sync::atomic::Ordering;
-    let (widget, calls, _) = deferred_fixture();
-    widget.resources.borrow_mut()[0].actions[0]
-        .type_mut()
-        .contract
-        .confirmation = tilo_actions::ConfirmationPolicy::None;
-    let ledger = widget.ledger.clone();
-    let mut app =
-        App::from_managed_root_with_controlled_inputs(State::new(), managed(Box::new(widget)))
-            .unwrap();
-    layout(&mut app);
-    app.refresh_semantic_tree();
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
-    assert!(
-        app.invoke_semantic_action(
-            &crate::a11y_tree::SemanticId("r:ordinary:fixture".into()),
-            "run",
-            None
-        )
-        .unwrap()
-    );
-    app.controlled_local_idle_for_test();
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        1,
-        "no-confirmation semantic activation must reach the ordinary owner door"
-    );
-    assert_eq!(&*ledger.borrow(), &[serde_json::json!(0)]);
 }
 fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
     use std::sync::atomic::Ordering;
@@ -272,19 +279,26 @@ fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
     }
 }
 
-#[test]
-fn deferred_bound_view_foreign_legacy_refuses_before_mint() {
-    check_deferred_bound_view_actor(true, false);
-}
-#[test]
-fn deferred_bound_view_foreign_typed_empty_refuses_before_mint() {
-    check_deferred_bound_view_actor(true, true);
-}
-#[test]
-fn deferred_bound_view_local_legacy_mints_once() {
-    check_deferred_bound_view_actor(false, false);
-}
-#[test]
-fn deferred_bound_view_local_typed_empty_mints_once() {
-    check_deferred_bound_view_actor(false, true);
+tilo_test_env::scenario! {
+    fn deferred_bound_view_refuses_foreign_actors_and_mints_once_for_its_owner;
+
+    phase deferred_bound_view_foreign_legacy_refuses_before_mint;
+    {
+        check_deferred_bound_view_actor(true, false);
+    }
+
+    phase deferred_bound_view_foreign_typed_empty_refuses_before_mint;
+    {
+        check_deferred_bound_view_actor(true, true);
+    }
+
+    phase deferred_bound_view_local_legacy_mints_once;
+    {
+        check_deferred_bound_view_actor(false, false);
+    }
+
+    phase deferred_bound_view_local_typed_empty_mints_once;
+    {
+        check_deferred_bound_view_actor(false, true);
+    }
 }

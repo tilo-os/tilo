@@ -229,178 +229,6 @@ impl crate::resources::PublishesResources for CountingPublisher {
 
 include!("../resource_projection_tests.rs");
 
-#[test]
-fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
-    {
-        use std::sync::atomic::Ordering;
-        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut app = App::new_with_controlled_inputs(
-            State::new(),
-            Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
-        );
-        for _ in 0..3 {
-            app.invalidate_widget_resource_cache();
-            app.refresh_control_action_availability();
-        }
-        assert_eq!(calls.load(Ordering::Relaxed), 0);
-        app.actions.last_control_availability = Some((
-            app.resource_cache_key(),
-            app.actions.permission_generation.get(),
-        ));
-        app.refresh_control_action_availability();
-        assert!(app.actions.last_control_availability.is_none());
-        assert!(
-            app.collect_resources()
-                .iter()
-                .any(|r| r.id.as_str() == "test.cache:1")
-        );
-        assert_eq!(calls.load(Ordering::Relaxed), 1);
-    }
-
-    {
-        use std::sync::atomic::Ordering;
-
-        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut app = App::new_with_controlled_inputs(
-            State::new(),
-            Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
-        );
-        let _ = app.collect_resources();
-        let _ = app.collect_resources();
-        app.refresh_control_action_availability();
-        app.refresh_control_action_availability();
-        assert_eq!(calls.load(Ordering::Relaxed), 1);
-
-        app.state_mut_for_test()
-            .doc
-            .put(&ROOT, "cache-version", 1_i64)
-            .expect("test document mutation");
-        let _ = app.collect_resources();
-        assert_eq!(calls.load(Ordering::Relaxed), 2);
-
-        app.invalidate_widget_resource_cache();
-        let _ = app.collect_resources();
-        assert_eq!(calls.load(Ordering::Relaxed), 3);
-    }
-
-    {
-        use std::sync::atomic::Ordering;
-
-        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut app = App::new_with_controlled_inputs(
-            State::new(),
-            Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
-        );
-        app.actions.resource_generation.set(u64::MAX);
-
-        let _ = app.collect_resources();
-        app.invalidate_widget_resource_cache();
-        let _ = app.collect_resources();
-
-        assert_eq!(app.actions.resource_generation.get(), u64::MAX);
-        assert_eq!(
-            calls.load(Ordering::Relaxed),
-            2,
-            "each invalidation at the terminal generation rematerializes"
-        );
-    }
-
-    {
-        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
-        app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-        assert_eq!(app.collect_local_resources().len(), 1);
-        app.actions.permission_generation.set(u64::MAX);
-
-        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
-            "restricted",
-        ));
-
-        assert_eq!(app.actions.permission_generation.get(), u64::MAX);
-        assert!(
-            app.collect_local_resources().is_empty(),
-            "the cached write action cannot survive a permission change"
-        );
-    }
-
-    {
-        let mut app = App::new(State::new(), Box::new(Publisher));
-        app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-
-        app.open_action_palette();
-        let first = app
-            .actions
-            .open_resource_search_cache
-            .borrow()
-            .as_ref()
-            .expect("first open builds the live-resource index")
-            .provider
-            .clone();
-        app.close_action_palette();
-        app.open_action_palette();
-        let second = app
-            .actions
-            .open_resource_search_cache
-            .borrow()
-            .as_ref()
-            .expect("second open retains the index")
-            .provider
-            .clone();
-        assert!(first.shares_storage_with(&second));
-
-        app.invalidate_widget_resource_cache();
-        assert!(app.actions.open_resource_search_cache.borrow().is_none());
-    }
-
-    {
-        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
-        app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
-            "restricted",
-        ));
-        app.open_action_palette();
-        app.actions
-            .action_palette
-            .as_deref_mut()
-            .unwrap()
-            .set_query("restricted");
-        // A query advances one provider page immediately; remaining providers
-        // (including the host's open resources) advance on later frames.
-        // Bound the drain so a pagination regression still fails this test.
-        let mut progress = app
-            .actions
-            .action_palette
-            .as_deref_mut()
-            .unwrap()
-            .advance_search_page();
-        for _ in 0..8 {
-            if !progress.pending {
-                break;
-            }
-            progress = app
-                .actions
-                .action_palette
-                .as_deref_mut()
-                .unwrap()
-                .advance_search_page();
-        }
-        assert!(!progress.pending, "the tiny provider set must be exhausted");
-        assert_eq!(
-            app.action_palette().unwrap().result_labels(),
-            vec!["Restricted lazy action"]
-        );
-
-        assert!(app.action_palette_handle_key(&synth_enter()));
-        assert!(
-            app.state.doc.get(&ROOT, "lazy-flipped").unwrap().is_none(),
-            "the provider hit cannot bypass the host's current permission context"
-        );
-        assert!(
-            app.action_palette().is_some(),
-            "a refused row leaves search open instead of pretending it ran"
-        );
-    }
-}
-
 pub(super) fn synth_enter() -> WindowEvent {
     let event = KeyEvent::synthetic(
         winit::event::RawKeyEvent {
@@ -590,277 +418,453 @@ fn native_directional_keys_reach_the_focused_control_before_host_navigation() {
     assert_eq!(app.focused_node, Some(done));
 }
 
-#[test]
-fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
+tilo_test_env::scenario! {
+    fn the_action_palette_materializes_dispatches_and_hosts_commands;
+
+    phase palette_catalog_materializes_once_per_generation_under_fresh_authority;
     {
+        {
+            use std::sync::atomic::Ordering;
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut app = App::new_with_controlled_inputs(
+                State::new(),
+                Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
+            );
+            for _ in 0..3 {
+                app.invalidate_widget_resource_cache();
+                app.refresh_control_action_availability();
+            }
+            assert_eq!(calls.load(Ordering::Relaxed), 0);
+            app.actions.last_control_availability = Some((
+                app.resource_cache_key(),
+                app.actions.permission_generation.get(),
+            ));
+            app.refresh_control_action_availability();
+            assert!(app.actions.last_control_availability.is_none());
+            assert!(
+                app.collect_resources()
+                    .iter()
+                    .any(|r| r.id.as_str() == "test.cache:1")
+            );
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+        }
+
+        {
+            use std::sync::atomic::Ordering;
+
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut app = App::new_with_controlled_inputs(
+                State::new(),
+                Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
+            );
+            let _ = app.collect_resources();
+            let _ = app.collect_resources();
+            app.refresh_control_action_availability();
+            app.refresh_control_action_availability();
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+            app.state_mut_for_test()
+                .doc
+                .put(&ROOT, "cache-version", 1_i64)
+                .expect("test document mutation");
+            let _ = app.collect_resources();
+            assert_eq!(calls.load(Ordering::Relaxed), 2);
+
+            app.invalidate_widget_resource_cache();
+            let _ = app.collect_resources();
+            assert_eq!(calls.load(Ordering::Relaxed), 3);
+        }
+
+        {
+            use std::sync::atomic::Ordering;
+
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut app = App::new_with_controlled_inputs(
+                State::new(),
+                Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
+            );
+            app.actions.resource_generation.set(u64::MAX);
+
+            let _ = app.collect_resources();
+            app.invalidate_widget_resource_cache();
+            let _ = app.collect_resources();
+
+            assert_eq!(app.actions.resource_generation.get(), u64::MAX);
+            assert_eq!(
+                calls.load(Ordering::Relaxed),
+                2,
+                "each invalidation at the terminal generation rematerializes"
+            );
+        }
+
+        {
+            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
+            app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+            assert_eq!(app.collect_local_resources().len(), 1);
+            app.actions.permission_generation.set(u64::MAX);
+
+            app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+                "restricted",
+            ));
+
+            assert_eq!(app.actions.permission_generation.get(), u64::MAX);
+            assert!(
+                app.collect_local_resources().is_empty(),
+                "the cached write action cannot survive a permission change"
+            );
+        }
+
+        {
+            let mut app = App::new(State::new(), Box::new(Publisher));
+            app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+
+            app.open_action_palette();
+            let first = app
+                .actions
+                .open_resource_search_cache
+                .borrow()
+                .as_ref()
+                .expect("first open builds the live-resource index")
+                .provider
+                .clone();
+            app.close_action_palette();
+            app.open_action_palette();
+            let second = app
+                .actions
+                .open_resource_search_cache
+                .borrow()
+                .as_ref()
+                .expect("second open retains the index")
+                .provider
+                .clone();
+            assert!(first.shares_storage_with(&second));
+
+            app.invalidate_widget_resource_cache();
+            assert!(app.actions.open_resource_search_cache.borrow().is_none());
+        }
+
+        {
+            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
+            app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+            app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+                "restricted",
+            ));
+            app.open_action_palette();
+            app.actions
+                .action_palette
+                .as_deref_mut()
+                .unwrap()
+                .set_query("restricted");
+            // A query advances one provider page immediately; remaining providers
+            // (including the host's open resources) advance on later frames.
+            // Bound the drain so a pagination regression still fails this test.
+            let mut progress = app
+                .actions
+                .action_palette
+                .as_deref_mut()
+                .unwrap()
+                .advance_search_page();
+            for _ in 0..8 {
+                if !progress.pending {
+                    break;
+                }
+                progress = app
+                    .actions
+                    .action_palette
+                    .as_deref_mut()
+                    .unwrap()
+                    .advance_search_page();
+            }
+            assert!(!progress.pending, "the tiny provider set must be exhausted");
+            assert_eq!(
+                app.action_palette().unwrap().result_labels(),
+                vec!["Restricted lazy action"]
+            );
+
+            assert!(app.action_palette_handle_key(&synth_enter()));
+            assert!(
+                app.state.doc.get(&ROOT, "lazy-flipped").unwrap().is_none(),
+                "the provider hit cannot bypass the host's current permission context"
+            );
+            assert!(
+                app.action_palette().is_some(),
+                "a refused row leaves search open instead of pretending it ran"
+            );
+        }
+    }
+
+    phase palette_dispatch_routes_through_the_app_and_its_visible_controls;
+    {
+        {
+            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
+            app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+
+            let res = app.collect_resources();
+            assert_eq!(res.len(), 1, "one open resource");
+            assert_eq!(res[0].kind, "test.obj");
+
+            // Scopes the palette to those resources AND folds in the widget's
+            // searchable content — one surface, both kinds.
+            app.open_action_palette();
+            let ap = app.action_palette().expect("palette is open");
+            assert!(ap.is_open());
+            let labels = ap.result_labels();
+            assert!(
+                labels.iter().any(|l| l.contains("Flip it")),
+                "palette lists the widget's action: {labels:?}"
+            );
+            assert!(
+                labels.iter().any(|l| l == "Ada Lovelace"),
+                "palette folds in the widget's searchable content: {labels:?}"
+            );
+
+            assert!(app.state.doc.get(&ROOT, "flipped").unwrap().is_none());
+            assert!(app.state.peek_last_undo().is_none());
+            // An app's actions rank after what it holds: narrowed to the
+            // action, its row is the top one.
+            app.actions
+                .action_palette
+                .as_deref_mut()
+                .unwrap()
+                .set_query("Flip it");
+            app.needs_sync = false;
+            app.layout.layout_dirty = false;
+
+            // Enter dispatches the selected action.
+            let consumed = app.action_palette_handle_key(&synth_enter());
+            assert!(consumed, "the open palette consumed the Enter key");
+
+            let flipped = app
+                .state
+                .doc
+                .get(&ROOT, "flipped")
+                .unwrap()
+                .and_then(|(v, _)| v.as_bool());
+            assert_eq!(
+                flipped,
+                Some(true),
+                "dispatched action set the flag in the CRDT"
+            );
+            assert!(
+                app.state.peek_last_undo().is_some(),
+                "the dispatched action is undoable"
+            );
+            assert!(app.needs_sync, "dispatch marks the app for re-sync");
+            assert!(
+                app.layout.layout_dirty,
+                "dispatch marks the app for relayout"
+            );
+            assert!(
+                app.action_palette().is_none(),
+                "palette closed after selection"
+            );
+        }
+
+        {
+            let mut app = App::new(
+                State::new(),
+                Box::new(Button::new("complete", "Complete").on_view(|| {})),
+            );
+            app.init_layout();
+            let resource = app
+                .collect_resources()
+                .into_iter()
+                .find(|resource| resource.label == "Complete" && !resource.actions.is_empty())
+                .expect("the button publishes its action");
+            let address =
+                tilo_actions::ActionAddress::new(resource.id.as_str(), resource.actions[0].id.as_str());
+            let route = app
+                .preferred_action_ui_route(&address)
+                .expect("semantic action resolves to visible UI");
+
+            assert_eq!(route.control_id, "complete");
+            assert!(route.bounds.is_some());
+            assert!(!route.disabled);
+        }
+
+        {
+            let mut app = App::new(State::new(), Box::new(Publisher));
+            app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+            assert!(
+                app.open_action_palette_at(&tilo_actions::ActionAddress::new("test.obj:1", "flip"))
+            );
+            assert!(
+                !app.open_action_palette_at(&tilo_actions::ActionAddress::new(
+                    "test.obj:1",
+                    "not-declared"
+                )),
+                "a stale or invented widget request is refused"
+            );
+            assert!(
+                app.action_palette().is_none(),
+                "a refused exact request does not leave an unrelated palette open"
+            );
+        }
+
+        // A content row does NOT dispatch — it hands its id back through
+        // [`Widget::activate_search_result`] instead.
+        {
+            let mut app = App::new(State::new(), Box::new(Publisher));
+            app.open_action_palette();
+            app.actions
+                .action_palette
+                .as_deref_mut()
+                .unwrap()
+                .set_query("ada");
+            let labels = app.action_palette().unwrap().result_labels();
+            assert!(
+                labels.iter().any(|l| l == "Ada Lovelace"),
+                "content hit present: {labels:?}"
+            );
+            assert!(
+                !labels.iter().any(|l| l.contains("Flip it")),
+                "the action row is filtered out by the query: {labels:?}"
+            );
+
+            assert!(app.state.doc.get(&ROOT, "navigated").unwrap().is_none());
+            app.needs_sync = false;
+            app.layout.layout_dirty = false;
+
+            let consumed = app.action_palette_handle_key(&synth_enter());
+            assert!(consumed, "the open palette consumed the Enter key");
+
+            let nav = app
+                .state
+                .doc
+                .get(&ROOT, "navigated")
+                .unwrap()
+                .and_then(|(v, _)| v.as_str().map(str::to_string));
+            assert_eq!(
+                nav,
+                Some("person:Ada Lovelace".to_string()),
+                "the content row's id reached the app to navigate"
+            );
+            assert!(
+                app.action_palette().is_none(),
+                "navigation closes the palette"
+            );
+            assert!(
+                app.needs_sync && app.layout.layout_dirty,
+                "navigation marks a redraw"
+            );
+        }
+
+        {
+            let peeked = std::rc::Rc::new(std::cell::Cell::new(0));
+            let mut app = App::new_with_controlled_inputs(
+                State::new(),
+                Box::new(Viewer(std::rc::Rc::clone(&peeked))),
+            );
+            app.init_layout();
+            let before = app.state.doc.get_heads();
+            app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
+            let pending = app.state.doc.pending_ops();
+            app.open_action_palette();
+            app.actions
+                .action_palette
+                .as_deref_mut()
+                .unwrap()
+                .set_query("Peek at it");
+            assert!(app.action_palette_handle_key(&synth_enter()));
+            assert_eq!(peeked.get(), 1, "the app's view action ran");
+            assert_eq!(app.state.doc.pending_ops(), pending);
+            assert_eq!(app.state.doc.base_heads(), before);
+            assert!(app.state.peek_last_undo().is_none());
+
+            app.state.doc.put(ROOT, "draft", "finished").unwrap();
+            let context = tilo_actions::ActionContext::for_resource("test.draft", "note", "Draft");
+            assert!(app.state.commit_action_authored_with_context(
+                None,
+                None,
+                Some(app.collaboration.local_author.clone()),
+                Some(context),
+            ));
+            let changes = app.state.doc.get_changes(&before);
+            assert_eq!(changes.len(), 1, "view must not split the pending edit");
+            let context = changes[0]
+                .message()
+                .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
+                .unwrap();
+            assert_eq!(
+                context
+                    .resource
+                    .as_ref()
+                    .map(|resource| resource.label.as_str()),
+                Some("Draft")
+            );
+        }
+
+        // A control's own verbs (focus it, press it) are how agents and scripts drive what
+        // a person presses directly, never a row of their own.
+        {
+            let button = Button::new("drive-me", "Drive me");
+            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(button));
+            app.init_layout();
+            app.set_focused_node(None);
+            assert!(!app.root_widget.is_focused());
+            app.open_action_palette();
+            app.actions
+                .action_palette
+                .as_deref_mut()
+                .unwrap()
+                .set_query("focus");
+            let labels = app.action_palette().unwrap().result_labels();
+            assert!(
+                labels.iter().all(|label| !label.contains("Focus")),
+                "no control verb is a person's row: {labels:?}"
+            );
+            assert!(!app.root_widget.is_focused());
+        }
+    }
+
+    phase host_commands_present_host_services_and_enter_the_palette_door;
+    {
+        use crate::host_chrome::model::{CommandGroup, HostCommand};
+        use crate::platform::HostShortcut;
+        let find = |commands: &[HostCommand], group: CommandGroup, action: &str| {
+            commands
+                .iter()
+                .find(|command| command.group == group && command.binding.address().action == action)
+                .cloned()
+                .unwrap_or_else(|| panic!("{group:?} {action} is presented"))
+        };
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
         app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-
-        let res = app.collect_resources();
-        assert_eq!(res.len(), 1, "one open resource");
-        assert_eq!(res[0].kind, "test.obj");
-
-        // Scopes the palette to those resources AND folds in the widget's
-        // searchable content — one surface, both kinds.
-        app.open_action_palette();
-        let ap = app.action_palette().expect("palette is open");
-        assert!(ap.is_open());
-        let labels = ap.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Flip it")),
-            "palette lists the widget's action: {labels:?}"
-        );
-        assert!(
-            labels.iter().any(|l| l == "Ada Lovelace"),
-            "palette folds in the widget's searchable content: {labels:?}"
-        );
-
-        assert!(app.state.doc.get(&ROOT, "flipped").unwrap().is_none());
-        assert!(app.state.peek_last_undo().is_none());
-        // An app's actions rank after what it holds: narrowed to the
-        // action, its row is the top one.
-        app.actions
-            .action_palette
-            .as_deref_mut()
-            .unwrap()
-            .set_query("Flip it");
-        app.needs_sync = false;
-        app.layout.layout_dirty = false;
-
-        // Enter dispatches the selected action.
-        let consumed = app.action_palette_handle_key(&synth_enter());
-        assert!(consumed, "the open palette consumed the Enter key");
-
-        let flipped = app
-            .state
-            .doc
-            .get(&ROOT, "flipped")
-            .unwrap()
-            .and_then(|(v, _)| v.as_bool());
-        assert_eq!(
-            flipped,
-            Some(true),
-            "dispatched action set the flag in the CRDT"
-        );
-        assert!(
-            app.state.peek_last_undo().is_some(),
-            "the dispatched action is undoable"
-        );
-        assert!(app.needs_sync, "dispatch marks the app for re-sync");
-        assert!(
-            app.layout.layout_dirty,
-            "dispatch marks the app for relayout"
-        );
-        assert!(
-            app.action_palette().is_none(),
-            "palette closed after selection"
-        );
-    }
-
-    {
-        let mut app = App::new(
-            State::new(),
-            Box::new(Button::new("complete", "Complete").on_view(|| {})),
-        );
+        for title in ["first", "second"] {
+            app.state.doc.put(ROOT, "title", title).unwrap();
+            app.state.commit_action(None, None);
+        }
+        app.present_history_in_header();
         app.init_layout();
-        let resource = app
-            .collect_resources()
-            .into_iter()
-            .find(|resource| resource.label == "Complete" && !resource.actions.is_empty())
-            .expect("the button publishes its action");
-        let address =
-            tilo_actions::ActionAddress::new(resource.id.as_str(), resource.actions[0].id.as_str());
-        let route = app
-            .preferred_action_ui_route(&address)
-            .expect("semantic action resolves to visible UI");
+        let platform = app.input.platform;
 
-        assert_eq!(route.control_id, "complete");
-        assert!(route.bounds.is_some());
-        assert!(!route.disabled);
-    }
-
-    {
-        let mut app = App::new(State::new(), Box::new(Publisher));
-        app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-        assert!(
-            app.open_action_palette_at(&tilo_actions::ActionAddress::new("test.obj:1", "flip"))
-        );
-        assert!(
-            !app.open_action_palette_at(&tilo_actions::ActionAddress::new(
-                "test.obj:1",
-                "not-declared"
-            )),
-            "a stale or invented widget request is refused"
-        );
-        assert!(
-            app.action_palette().is_none(),
-            "a refused exact request does not leave an unrelated palette open"
-        );
-    }
-
-    // A content row does NOT dispatch — it hands its id back through
-    // [`Widget::activate_search_result`] instead.
-    {
-        let mut app = App::new(State::new(), Box::new(Publisher));
-        app.open_action_palette();
-        app.actions
-            .action_palette
-            .as_deref_mut()
-            .unwrap()
-            .set_query("ada");
-        let labels = app.action_palette().unwrap().result_labels();
-        assert!(
-            labels.iter().any(|l| l == "Ada Lovelace"),
-            "content hit present: {labels:?}"
-        );
-        assert!(
-            !labels.iter().any(|l| l.contains("Flip it")),
-            "the action row is filtered out by the query: {labels:?}"
-        );
-
-        assert!(app.state.doc.get(&ROOT, "navigated").unwrap().is_none());
-        app.needs_sync = false;
-        app.layout.layout_dirty = false;
-
-        let consumed = app.action_palette_handle_key(&synth_enter());
-        assert!(consumed, "the open palette consumed the Enter key");
-
-        let nav = app
-            .state
-            .doc
-            .get(&ROOT, "navigated")
-            .unwrap()
-            .and_then(|(v, _)| v.as_str().map(str::to_string));
+        let commands = app.host_commands(true);
+        assert!(find(&commands, CommandGroup::Undo, "undo").enabled);
+        assert!(!find(&commands, CommandGroup::Undo, "redo").enabled);
+        let search = find(&commands, CommandGroup::Search, "open");
+        assert!(search.enabled);
         assert_eq!(
-            nav,
-            Some("person:Ada Lovelace".to_string()),
-            "the content row's id reached the app to navigate"
+            search.shortcut,
+            Some(HostShortcut::Search.shortcut(platform))
         );
-        assert!(
-            app.action_palette().is_none(),
-            "navigation closes the palette"
-        );
-        assert!(
-            app.needs_sync && app.layout.layout_dirty,
-            "navigation marks a redraw"
-        );
-    }
+        let flip = find(&commands, CommandGroup::AppActions, "flip");
+        assert_eq!(flip.label, "Flip it");
 
-    {
-        let peeked = std::rc::Rc::new(std::cell::Cell::new(0));
-        let mut app = App::new_with_controlled_inputs(
-            State::new(),
-            Box::new(Viewer(std::rc::Rc::clone(&peeked))),
-        );
-        app.init_layout();
-        let before = app.state.doc.get_heads();
-        app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
-        let pending = app.state.doc.pending_ops();
+        // An app action enters the same door as the palette and is undoable
+        // from the Edit command.
+        assert!(app.invoke_host_command(&flip.invocation().unwrap()));
+        assert!(app.state.doc.get(ROOT, "flipped").unwrap().is_some());
+
+        // Undo through the Edit command reverts the flip.
+        let undo = find(&app.host_commands(false), CommandGroup::Undo, "undo");
+        assert!(app.invoke_host_command(&undo.invocation().unwrap()));
+        assert!(app.state.doc.get(ROOT, "flipped").unwrap().is_none());
+
+        // While the palette is open its own shortcut closes it, so the Search
+        // command steps aside.
         app.open_action_palette();
-        app.actions
-            .action_palette
-            .as_deref_mut()
-            .unwrap()
-            .set_query("Peek at it");
-        assert!(app.action_palette_handle_key(&synth_enter()));
-        assert_eq!(peeked.get(), 1, "the app's view action ran");
-        assert_eq!(app.state.doc.pending_ops(), pending);
-        assert_eq!(app.state.doc.base_heads(), before);
-        assert!(app.state.peek_last_undo().is_none());
-
-        app.state.doc.put(ROOT, "draft", "finished").unwrap();
-        let context = tilo_actions::ActionContext::for_resource("test.draft", "note", "Draft");
-        assert!(app.state.commit_action_authored_with_context(
-            None,
-            None,
-            Some(app.collaboration.local_author.clone()),
-            Some(context),
-        ));
-        let changes = app.state.doc.get_changes(&before);
-        assert_eq!(changes.len(), 1, "view must not split the pending edit");
-        let context = changes[0]
-            .message()
-            .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
-            .unwrap();
-        assert_eq!(
-            context
-                .resource
-                .as_ref()
-                .map(|resource| resource.label.as_str()),
-            Some("Draft")
-        );
+        assert!(!find(&app.host_commands(false), CommandGroup::Search, "open").enabled);
     }
-
-    // A control's own verbs (focus it, press it) are how agents and scripts drive what
-    // a person presses directly, never a row of their own.
-    {
-        let button = Button::new("drive-me", "Drive me");
-        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(button));
-        app.init_layout();
-        app.set_focused_node(None);
-        assert!(!app.root_widget.is_focused());
-        app.open_action_palette();
-        app.actions
-            .action_palette
-            .as_deref_mut()
-            .unwrap()
-            .set_query("focus");
-        let labels = app.action_palette().unwrap().result_labels();
-        assert!(
-            labels.iter().all(|label| !label.contains("Focus")),
-            "no control verb is a person's row: {labels:?}"
-        );
-        assert!(!app.root_widget.is_focused());
-    }
-}
-
-#[test]
-fn host_commands_present_host_services_and_enter_the_palette_door() {
-    use crate::host_chrome::model::{CommandGroup, HostCommand};
-    use crate::platform::HostShortcut;
-    let find = |commands: &[HostCommand], group: CommandGroup, action: &str| {
-        commands
-            .iter()
-            .find(|command| command.group == group && command.binding.address().action == action)
-            .cloned()
-            .unwrap_or_else(|| panic!("{group:?} {action} is presented"))
-    };
-    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
-    app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-    for title in ["first", "second"] {
-        app.state.doc.put(ROOT, "title", title).unwrap();
-        app.state.commit_action(None, None);
-    }
-    app.present_history_in_header();
-    app.init_layout();
-    let platform = app.input.platform;
-
-    let commands = app.host_commands(true);
-    assert!(find(&commands, CommandGroup::Undo, "undo").enabled);
-    assert!(!find(&commands, CommandGroup::Undo, "redo").enabled);
-    let search = find(&commands, CommandGroup::Search, "open");
-    assert!(search.enabled);
-    assert_eq!(
-        search.shortcut,
-        Some(HostShortcut::Search.shortcut(platform))
-    );
-    let flip = find(&commands, CommandGroup::AppActions, "flip");
-    assert_eq!(flip.label, "Flip it");
-
-    // An app action enters the same door as the palette and is undoable
-    // from the Edit command.
-    assert!(app.invoke_host_command(&flip.invocation().unwrap()));
-    assert!(app.state.doc.get(ROOT, "flipped").unwrap().is_some());
-
-    // Undo through the Edit command reverts the flip.
-    let undo = find(&app.host_commands(false), CommandGroup::Undo, "undo");
-    assert!(app.invoke_host_command(&undo.invocation().unwrap()));
-    assert!(app.state.doc.get(ROOT, "flipped").unwrap().is_none());
-
-    // While the palette is open its own shortcut closes it, so the Search
-    // command steps aside.
-    app.open_action_palette();
-    assert!(!find(&app.host_commands(false), CommandGroup::Search, "open").enabled);
 }
 
 #[test]

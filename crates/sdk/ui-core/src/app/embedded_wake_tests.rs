@@ -105,116 +105,120 @@ fn painted_glyphs(tile: &EmbeddedApp) -> Vec<u32> {
         .collect()
 }
 
-#[test]
-fn an_event_only_wake_is_serviced_once_without_painting() {
-    let mut fixture = Fixture::new();
-    let before = fixture.calls();
-    let painted = fixture.tile.painted_damage.to;
-    fixture.wake.notify_events();
-    assert!(!fixture.pump(), "a queue-only wake changes no pixels");
-    assert_eq!(fixture.calls(), before + 1);
-    for _ in 0..128 {
-        assert!(!fixture.pump());
-    }
-    assert_eq!(fixture.calls(), before + 1, "the answered wake must retire");
-    assert!(!fixture.tile.needs_redraw());
-    assert_eq!(fixture.tile.painted_damage.to, painted);
+tilo_test_env::scenario! {
+    fn an_embedded_apps_wakes_are_serviced_once_and_never_lost;
 
-    // Consuming a model wake must not consume the later visual change.
-    let previous = painted_glyphs(&fixture.tile);
-    *fixture.label.borrow_mut() = "After".to_owned();
-    fixture.wake.wake();
-    assert!(fixture.pump(), "the model change still requests a frame");
-    assert!(fixture.tile.needs_redraw());
-    assert!(
-        !fixture.pump(),
-        "a deferred paint need not repeat model work"
-    );
-    assert!(
-        fixture.tile.needs_redraw(),
-        "the frame stays pending until drawn"
-    );
-    paint(&mut fixture.tile, &fixture.theme);
-    assert_ne!(
-        painted_glyphs(&fixture.tile),
-        previous,
-        "the new label is actually painted"
-    );
-    fixture.settle();
-    let settled = fixture.calls();
-    for _ in 0..128 {
-        assert!(!fixture.pump());
-    }
-    assert_eq!(fixture.calls(), settled);
-}
-
-#[test]
-fn queued_presence_arrival_and_departure_repaint_without_widget_dirtiness() {
-    let mut fixture = Fixture::new();
-    let initial = paint(&mut fixture.tile, &fixture.theme);
-    for present in [true, false] {
-        fixture.events.borrow_mut().push(CollabEvent::Context {
-            members: if present {
-                vec![collab_types::Member::of_person(
-                    &collab_types::Person::new("peer", "Peer"),
-                    None,
-                )]
-            } else {
-                Vec::new()
-            },
-            permissions: Vec::new(),
-            apps: Vec::new(),
-        });
-        if present {
-            fixture
-                .events
-                .borrow_mut()
-                .push(CollabEvent::RemotePresenceUpdate {
-                    user_id: "peer".into(),
-                    key: PresenceKey::Widget {
-                        path: vec![PathSegment::Field("probe".into())],
-                    },
-                    payload: PresencePayload::Arrived,
-                });
-        }
+    phase an_event_only_wake_is_serviced_once_without_painting;
+    {
+        let mut fixture = Fixture::new();
+        let before = fixture.calls();
+        let painted = fixture.tile.painted_damage.to;
         fixture.wake.notify_events();
-        assert!(fixture.pump(), "presence changes the embedded scene");
+        assert!(!fixture.pump(), "a queue-only wake changes no pixels");
+        assert_eq!(fixture.calls(), before + 1);
+        for _ in 0..128 {
+            assert!(!fixture.pump());
+        }
+        assert_eq!(fixture.calls(), before + 1, "the answered wake must retire");
+        assert!(!fixture.tile.needs_redraw());
+        assert_eq!(fixture.tile.painted_damage.to, painted);
+
+        // Consuming a model wake must not consume the later visual change.
+        let previous = painted_glyphs(&fixture.tile);
+        *fixture.label.borrow_mut() = "After".to_owned();
+        fixture.wake.wake();
+        assert!(fixture.pump(), "the model change still requests a frame");
         assert!(fixture.tile.needs_redraw());
-        assert!(!fixture.pump());
+        assert!(
+            !fixture.pump(),
+            "a deferred paint need not repeat model work"
+        );
         assert!(
             fixture.tile.needs_redraw(),
-            "presence survives a deferred paint"
+            "the frame stays pending until drawn"
         );
-        let current = paint(&mut fixture.tile, &fixture.theme);
-        if present {
-            assert_ne!(current, initial, "the peer focus ring is actually painted");
-        } else {
-            assert_eq!(current, initial, "the departed peer's ring is removed");
-        }
+        paint(&mut fixture.tile, &fixture.theme);
+        assert_ne!(
+            painted_glyphs(&fixture.tile),
+            previous,
+            "the new label is actually painted"
+        );
         fixture.settle();
+        let settled = fixture.calls();
+        for _ in 0..128 {
+            assert!(!fixture.pump());
+        }
+        assert_eq!(fixture.calls(), settled);
     }
-}
 
-#[test]
-fn a_wake_raised_during_the_model_pump_is_not_lost() {
-    let mut fixture = Fixture::new();
-    fixture.wake_during_sync.set(true);
-    fixture.wake.wake();
-    let before = fixture.calls();
-    fixture.pump();
-    assert_eq!(fixture.calls(), before + 1);
-    assert!(fixture.tile.woken.load(Ordering::Acquire));
-    assert!(
-        fixture.tile.app.wake_pending(),
-        "the wake raised during the pump stays pending: the pass it asks for only runs in a frame the host prepares"
-    );
-    fixture.pump();
-    assert!(!fixture.tile.app.wake_pending(), "that pass retired it");
-    assert_eq!(fixture.calls(), before + 2);
-    fixture.settle();
-    let settled = fixture.calls();
-    for _ in 0..128 {
-        assert!(!fixture.pump());
+    phase queued_presence_arrival_and_departure_repaint_without_widget_dirtiness;
+    {
+        let mut fixture = Fixture::new();
+        let initial = paint(&mut fixture.tile, &fixture.theme);
+        for present in [true, false] {
+            fixture.events.borrow_mut().push(CollabEvent::Context {
+                members: if present {
+                    vec![collab_types::Member::of_person(
+                        &collab_types::Person::new("peer", "Peer"),
+                        None,
+                    )]
+                } else {
+                    Vec::new()
+                },
+                permissions: Vec::new(),
+                apps: Vec::new(),
+            });
+            if present {
+                fixture
+                    .events
+                    .borrow_mut()
+                    .push(CollabEvent::RemotePresenceUpdate {
+                        user_id: "peer".into(),
+                        key: PresenceKey::Widget {
+                            path: vec![PathSegment::Field("probe".into())],
+                        },
+                        payload: PresencePayload::Arrived,
+                    });
+            }
+            fixture.wake.notify_events();
+            assert!(fixture.pump(), "presence changes the embedded scene");
+            assert!(fixture.tile.needs_redraw());
+            assert!(!fixture.pump());
+            assert!(
+                fixture.tile.needs_redraw(),
+                "presence survives a deferred paint"
+            );
+            let current = paint(&mut fixture.tile, &fixture.theme);
+            if present {
+                assert_ne!(current, initial, "the peer focus ring is actually painted");
+            } else {
+                assert_eq!(current, initial, "the departed peer's ring is removed");
+            }
+            fixture.settle();
+        }
     }
-    assert_eq!(fixture.calls(), settled);
+
+    phase a_wake_raised_during_the_model_pump_is_not_lost;
+    {
+        let mut fixture = Fixture::new();
+        fixture.wake_during_sync.set(true);
+        fixture.wake.wake();
+        let before = fixture.calls();
+        fixture.pump();
+        assert_eq!(fixture.calls(), before + 1);
+        assert!(fixture.tile.woken.load(Ordering::Acquire));
+        assert!(
+            fixture.tile.app.wake_pending(),
+            "the wake raised during the pump stays pending: the pass it asks for only runs in a frame the host prepares"
+        );
+        fixture.pump();
+        assert!(!fixture.tile.app.wake_pending(), "that pass retired it");
+        assert_eq!(fixture.calls(), before + 2);
+        fixture.settle();
+        let settled = fixture.calls();
+        for _ in 0..128 {
+            assert!(!fixture.pump());
+        }
+        assert_eq!(fixture.calls(), settled);
+    }
 }

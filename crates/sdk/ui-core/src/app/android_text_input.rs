@@ -164,98 +164,102 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn composition_then_commit_replaces_the_preedit() {
-        let mut session = TextInputSession::default();
-        let composing = session.events(TextInputOp::Preedit("hel".into()));
-        assert_eq!(describe(&composing), ["preedit \"hel\" Some((3, 3))"]);
-        let committed = session.events(TextInputOp::Commit("hello".into()));
-        assert_eq!(describe(&committed), ["preedit \"\" None", "commit hello"]);
-        let spaced = session.events(TextInputOp::Commit(" ".into()));
-        assert_eq!(describe(&spaced), ["commit  "]);
-    }
+    tilo_test_env::scenario! {
+        fn android_text_input_composes_commits_and_maps_keys;
 
-    #[test]
-    fn newline_in_a_commit_is_the_enter_key() {
-        let mut session = TextInputSession::default();
-        let events = session.events(TextInputOp::Commit("a\nb\r\n".into()));
-        assert_eq!(
-            describe(&events),
-            [
-                "commit a",
-                "Named(Enter) Pressed",
-                "Named(Enter) Released",
-                "commit b",
-                "Named(Enter) Pressed",
-                "Named(Enter) Released",
-            ]
-        );
-    }
+        phase composition_then_commit_replaces_the_preedit;
+        {
+            let mut session = TextInputSession::default();
+            let composing = session.events(TextInputOp::Preedit("hel".into()));
+            assert_eq!(describe(&composing), ["preedit \"hel\" Some((3, 3))"]);
+            let committed = session.events(TextInputOp::Commit("hello".into()));
+            assert_eq!(describe(&committed), ["preedit \"\" None", "commit hello"]);
+            let spaced = session.events(TextInputOp::Commit(" ".into()));
+            assert_eq!(describe(&spaced), ["commit  "]);
+        }
 
-    #[test]
-    fn deletion_outside_a_composition_keeps_the_composition() {
-        let mut session = TextInputSession::default();
-        session.events(TextInputOp::Preedit("wor".into()));
-        let events = session.events(TextInputOp::Delete {
-            before: 2,
-            after: 1,
-        });
-        assert_eq!(
-            describe(&events),
-            [
-                "preedit \"\" None",
-                "Named(Backspace) Pressed",
-                "Named(Backspace) Released",
-                "Named(Backspace) Pressed",
-                "Named(Backspace) Released",
-                "Named(Delete) Pressed",
-                "Named(Delete) Released",
-                "preedit \"wor\" Some((3, 3))",
-            ]
-        );
-    }
+        phase newline_in_a_commit_is_the_enter_key;
+        {
+            let mut session = TextInputSession::default();
+            let events = session.events(TextInputOp::Commit("a\nb\r\n".into()));
+            assert_eq!(
+                describe(&events),
+                [
+                    "commit a",
+                    "Named(Enter) Pressed",
+                    "Named(Enter) Released",
+                    "commit b",
+                    "Named(Enter) Pressed",
+                    "Named(Enter) Released",
+                ]
+            );
+        }
 
-    #[test]
-    fn editor_keys_and_touches_commit_the_composition_first() {
-        let mut session = TextInputSession::default();
-        session.events(TextInputOp::Preedit("ok".into()));
-        let events = session.events(TextInputOp::Key(NamedKey::Enter));
-        assert_eq!(
-            describe(&events),
-            [
-                "preedit \"\" None",
-                "commit ok",
-                "Named(Enter) Pressed",
-                "Named(Enter) Released",
-            ]
-        );
-        session.events(TextInputOp::Preedit("tap".into()));
-        assert_eq!(
-            describe(&session.settle()),
-            ["preedit \"\" None", "commit tap"]
-        );
-        assert!(session.settle().is_empty());
-    }
+        phase deletion_outside_a_composition_keeps_the_composition;
+        {
+            let mut session = TextInputSession::default();
+            session.events(TextInputOp::Preedit("wor".into()));
+            let events = session.events(TextInputOp::Delete {
+                before: 2,
+                after: 1,
+            });
+            assert_eq!(
+                describe(&events),
+                [
+                    "preedit \"\" None",
+                    "Named(Backspace) Pressed",
+                    "Named(Backspace) Released",
+                    "Named(Backspace) Pressed",
+                    "Named(Backspace) Released",
+                    "Named(Delete) Pressed",
+                    "Named(Delete) Released",
+                    "preedit \"wor\" Some((3, 3))",
+                ]
+            );
+        }
 
-    #[test]
-    fn a_new_field_drops_the_old_composition() {
-        let mut session = TextInputSession::default();
-        let mut taffy = taffy::TaffyTree::<()>::new();
-        let first = taffy.new_leaf(taffy::Style::default()).ok();
-        let second = taffy.new_leaf(taffy::Style::default()).ok();
-        assert!(session.refocus(first));
-        session.events(TextInputOp::Preedit("half".into()));
-        assert!(!session.refocus(first));
-        assert!(session.refocus(second));
-        assert!(session.settle().is_empty());
-    }
+        phase editor_keys_and_touches_commit_the_composition_first;
+        {
+            let mut session = TextInputSession::default();
+            session.events(TextInputOp::Preedit("ok".into()));
+            let events = session.events(TextInputOp::Key(NamedKey::Enter));
+            assert_eq!(
+                describe(&events),
+                [
+                    "preedit \"\" None",
+                    "commit ok",
+                    "Named(Enter) Pressed",
+                    "Named(Enter) Released",
+                ]
+            );
+            session.events(TextInputOp::Preedit("tap".into()));
+            assert_eq!(
+                describe(&session.settle()),
+                ["preedit \"\" None", "commit tap"]
+            );
+            assert!(session.settle().is_empty());
+        }
 
-    #[test]
-    fn android_editor_key_codes() {
-        assert_eq!(named_key(67), Some(NamedKey::Backspace));
-        assert_eq!(named_key(112), Some(NamedKey::Delete));
-        assert_eq!(named_key(66), Some(NamedKey::Enter));
-        assert_eq!(named_key(21), Some(NamedKey::ArrowLeft));
-        assert_eq!(named_key(29), None);
+        phase a_new_field_drops_the_old_composition;
+        {
+            let mut session = TextInputSession::default();
+            let mut taffy = taffy::TaffyTree::<()>::new();
+            let first = taffy.new_leaf(taffy::Style::default()).ok();
+            let second = taffy.new_leaf(taffy::Style::default()).ok();
+            assert!(session.refocus(first));
+            session.events(TextInputOp::Preedit("half".into()));
+            assert!(!session.refocus(first));
+            assert!(session.refocus(second));
+            assert!(session.settle().is_empty());
+        }
+
+        phase android_editor_key_codes;
+        {
+            assert_eq!(named_key(67), Some(NamedKey::Backspace));
+            assert_eq!(named_key(112), Some(NamedKey::Delete));
+            assert_eq!(named_key(66), Some(NamedKey::Enter));
+            assert_eq!(named_key(21), Some(NamedKey::ArrowLeft));
+            assert_eq!(named_key(29), None);
+        }
     }
 }

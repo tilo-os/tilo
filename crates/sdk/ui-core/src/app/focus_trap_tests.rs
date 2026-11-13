@@ -117,262 +117,6 @@ fn host_app() -> (App, Rc<Cell<bool>>) {
     (app, cell)
 }
 
-#[test]
-fn framework_history_preserves_the_native_apps_own_modal_focus_trap() {
-    use crate::history_mode::{
-        HistoryDefinition, HistoryPresentation, HistoryRegistration, HistoryScopeDefinition,
-        HistorySourceRegistration, ManagedRoot,
-    };
-    static HISTORY: HistoryDefinition = HistoryDefinition {
-        app_id: "so.tilo.modal-history-fixture",
-        scopes: &[HistoryScopeDefinition {
-            key: "document",
-            title: "Document",
-            presentation: HistoryPresentation::External { reason: "fixture" },
-            content_schema: None,
-        }],
-    };
-    let registration = HistoryRegistration::new(
-        &HISTORY,
-        vec![HistorySourceRegistration::Unversioned {
-            scope: "document",
-            reason: "fixture",
-        }],
-    )
-    .unwrap();
-    let open = Rc::new(Cell::new(false));
-    let mut app = App::from_managed_root_with_controlled_inputs(
-        State::new(),
-        ManagedRoot::new(Box::new(ModalHost::new(open.clone())), registration),
-    )
-    .unwrap();
-    app.init_layout();
-    let opener = app
-        .focusable_order
-        .iter()
-        .copied()
-        .find(|&node| {
-            app.inspect_node(node, |widget| widget.test_id() == Some("a"))
-                .unwrap_or(false)
-        })
-        .expect("actual opener");
-    app.set_focused_node(Some(opener));
-    open.set(true);
-    app.refresh_focus_order();
-    assert!(app.accessibility.focus_trap_active);
-    assert_eq!(app.focusable_order.len(), 2);
-    for _ in 0..6 {
-        assert!(app.focus_tab(false));
-        let id = app
-            .inspect_node(app.focused_node.unwrap(), |widget| {
-                widget.test_id().map(str::to_owned)
-            })
-            .unwrap();
-        assert!(matches!(id.as_deref(), Some("ok" | "cancel")));
-    }
-    open.set(false);
-    app.refresh_focus_order();
-    assert!(!app.accessibility.focus_trap_active);
-    assert_eq!(
-        app.inspect_node(app.focused_node.expect("restored opener"), |widget| {
-            widget.test_id().map(str::to_owned)
-        })
-        .unwrap()
-        .as_deref(),
-        Some("a")
-    );
-}
-
-#[test]
-fn modal_focus_trap_confines_cycles_restores_and_names_the_dialog() {
-    {
-        use crate::widget::{Column, Container};
-        let root = Column::new()
-            .push(Box::new(Button::new("background", "Background")))
-            .push(Box::new(
-                Container::new()
-                    .with_focus_trap()
-                    .with_child(Box::new(TwoKids::new())),
-            ));
-        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
-        app.init_layout();
-        assert!(app.accessibility.focus_trap_active);
-        assert_eq!(app.focusable_order.len(), 2);
-        assert!(app.keyboard_nav_allowed(Some(KurboRect::new(0.0, 0.0, 100.0, 100.0))));
-        let first = app.focusable_order[0];
-        let second = app.focusable_order[1];
-        app.set_focused_node(Some(first));
-        assert!(app.focus_tab(false));
-        assert_eq!(app.focused_node, Some(second));
-        assert!(app.focus_tab(false));
-        assert_eq!(app.focused_node, Some(first));
-        assert!(app.focus_tab(true));
-        assert_eq!(app.focused_node, Some(second));
-    }
-
-    {
-        let (mut app, _open) = host_app();
-        app.init_layout();
-        assert!(
-            !app.accessibility.focus_trap_active,
-            "no trap while the modal is closed"
-        );
-        assert_eq!(
-            app.focusable_order.len(),
-            2,
-            "closed modal controls stay out of the background focus order"
-        );
-    }
-
-    {
-        let (mut app, open) = host_app();
-        app.init_layout();
-        let full = app.focusable_order.len();
-
-        open.set(true);
-        app.refresh_focus_order();
-
-        assert!(
-            app.accessibility.focus_trap_active,
-            "an open modal traps focus"
-        );
-        assert_eq!(
-            app.focusable_order.len(),
-            2,
-            "focus is confined to the modal's two buttons (was {full})"
-        );
-        assert!(
-            app.focused_node
-                .is_some_and(|id| app.focusable_order.contains(&id)),
-            "focus moves into the modal when it opens"
-        );
-    }
-
-    {
-        let (mut app, open) = host_app();
-        app.init_layout();
-        open.set(true);
-        app.refresh_focus_order();
-        assert!(app.accessibility.focus_trap_active);
-        assert_eq!(app.focusable_order.len(), 2);
-        let modal_set: std::collections::HashSet<_> = app.focusable_order.iter().copied().collect();
-        let first = app.focusable_order[0];
-        let second = app.focusable_order[1];
-
-        // Must be allowed EVEN while a modal captures the pointer, or the
-        // dialog's buttons would be unreachable by keyboard.
-        assert!(
-            app.keyboard_nav_allowed(Some(KurboRect::new(0.0, 0.0, 10.0, 10.0))),
-            "an active focus trap allows Tab to run (scoped to the modal)"
-        );
-
-        app.set_focused_node(Some(first));
-        assert!(app.focus_tab(false), "Tab moves focus");
-        assert_eq!(
-            app.focused_node,
-            Some(second),
-            "Tab advances within the modal"
-        );
-        assert!(modal_set.contains(&second));
-        assert!(app.focus_tab(false));
-        assert_eq!(
-            app.focused_node,
-            Some(first),
-            "Tab from the last wraps to the first"
-        );
-        assert!(app.focus_tab(true));
-        assert_eq!(
-            app.focused_node,
-            Some(second),
-            "Shift+Tab from the first wraps to the last"
-        );
-        assert!(
-            modal_set.contains(&app.focused_node.unwrap()),
-            "Shift+Tab stays inside the modal subtree"
-        );
-    }
-
-    {
-        // A pointer-capturing, non-trapping surface (a context menu) must
-        // switch off the App's own Tab/arrow navigation.
-        let (mut app, _open) = host_app();
-        app.init_layout();
-        assert!(!app.accessibility.focus_trap_active);
-        assert!(
-            app.keyboard_nav_allowed(None),
-            "with no modal, Tab runs normally"
-        );
-        assert!(
-            !app.keyboard_nav_allowed(Some(KurboRect::new(0.0, 0.0, 10.0, 10.0))),
-            "a pointer-capturing surface with no focus trap suppresses App-level Tab"
-        );
-    }
-
-    {
-        let (mut app, open) = host_app();
-        app.init_layout();
-        let outer = app.focusable_order[0];
-        app.set_focused_node(Some(outer));
-
-        open.set(true);
-        app.refresh_focus_order();
-        assert!(app.accessibility.focus_trap_active);
-        assert_ne!(app.focused_node, Some(outer), "focus moved into the modal");
-
-        open.set(false);
-        app.refresh_focus_order();
-        assert!(
-            !app.accessibility.focus_trap_active,
-            "trap released when the modal closes"
-        );
-        assert_eq!(
-            app.focused_node,
-            Some(outer),
-            "focus is restored to where it was before the modal opened"
-        );
-    }
-
-    {
-        use crate::a11y::Role;
-        let m = ModalDialog::new("Delete file?", TwoKids::new()).open(true);
-        let node = Widget::accessibility(&m).expect("an open dialog is in the tree");
-        assert_eq!(node.role, Role::Dialog);
-        assert_eq!(node.name.as_deref(), Some("Delete file?"));
-        assert!(node.state.modal, "an open modal traps focus → modal flag");
-        assert!(!node.state.hidden);
-    }
-}
-
-#[test]
-fn a_trapped_modal_keeps_the_keyboard_where_the_person_put_it_when_what_it_shows_changes() {
-    let (mut app, open) = host_app();
-    app.init_layout();
-    open.set(true);
-    app.refresh_focus_order();
-    assert!(app.accessibility.focus_trap_active);
-    let first = app.focusable_order[0];
-    let second = app.focusable_order[1];
-    let named = |app: &App, id| {
-        app.inspect_node(id, |widget| widget.test_id().map(str::to_owned))
-            .unwrap()
-    };
-    app.set_focused_node(Some(first));
-    assert!(app.focus_tab(false));
-    assert_eq!(app.focused_node, Some(second));
-    assert_eq!(named(&app, second).as_deref(), Some("cancel"));
-
-    // The dialog says a second less, or a line of what it is doing changes:
-    // its tree is built again under the person's hands. The answer they
-    // tabbed to is still the one under the keyboard.
-    app.rebuild_structure();
-    assert!(app.accessibility.focus_trap_active);
-    assert_eq!(
-        app.focused_node.and_then(|id| named(&app, id)),
-        Some("cancel".to_owned()),
-        "the keyboard stays on the answer the person tabbed to"
-    );
-}
-
 /// A dialog that builds its answers afresh every time its tree is built, like
 /// a sheet that draws itself again from what it now says: none of the nodes
 /// the person was on survive, and nothing is left holding the focus flag.
@@ -425,37 +169,297 @@ impl Widget for FreshAnswers {
     }
 }
 
-#[test]
-fn a_dialog_that_draws_itself_again_keeps_the_keyboard_on_the_answer_chosen() {
-    let mut app = App::new_with_controlled_inputs(
-        State::new(),
-        Box::new(ModalDialog::new("Keep this change?", FreshAnswers::new()).open(true)),
-    );
-    app.init_layout();
-    assert!(app.accessibility.focus_trap_active);
-    let named = |app: &App, id| {
-        app.inspect_node(id, |widget| widget.test_id().map(str::to_owned))
-            .unwrap()
-    };
-    let cancel = app.focusable_order[1];
-    app.set_focused_node(Some(cancel));
-    assert_eq!(named(&app, cancel).as_deref(), Some("cancel"));
+tilo_test_env::scenario! {
+    fn a_modal_focus_trap_keeps_the_keyboard_inside_and_restores_it;
 
-    // What the dialog says changes between one frame and the next, so it draws
-    // its answers again where they stand: the widgets the person was on are
-    // gone, and with them the focus they held, before the tree is built again.
-    app.root_widget
-        .as_any_mut()
-        .and_then(|any| any.downcast_mut::<ModalDialog<FreshAnswers>>())
-        .expect("the dialog is the tree")
-        .content_mut()
-        .drawn_again();
-    app.layout.request_rebuild();
-    app.rebuild_structure();
-    assert!(app.accessibility.focus_trap_active);
-    assert_eq!(
-        app.focused_node.and_then(|id| named(&app, id)),
-        Some("cancel".to_owned()),
-        "the keyboard stays on the answer the person chose"
-    );
+    phase framework_history_preserves_the_native_apps_own_modal_focus_trap;
+    {
+        use crate::history_mode::{
+            HistoryDefinition, HistoryPresentation, HistoryRegistration, HistoryScopeDefinition,
+            HistorySourceRegistration, ManagedRoot,
+        };
+        static HISTORY: HistoryDefinition = HistoryDefinition {
+            app_id: "so.tilo.modal-history-fixture",
+            scopes: &[HistoryScopeDefinition {
+                key: "document",
+                title: "Document",
+                presentation: HistoryPresentation::External { reason: "fixture" },
+                content_schema: None,
+            }],
+        };
+        let registration = HistoryRegistration::new(
+            &HISTORY,
+            vec![HistorySourceRegistration::Unversioned {
+                scope: "document",
+                reason: "fixture",
+            }],
+        )
+        .unwrap();
+        let open = Rc::new(Cell::new(false));
+        let mut app = App::from_managed_root_with_controlled_inputs(
+            State::new(),
+            ManagedRoot::new(Box::new(ModalHost::new(open.clone())), registration),
+        )
+        .unwrap();
+        app.init_layout();
+        let opener = app
+            .focusable_order
+            .iter()
+            .copied()
+            .find(|&node| {
+                app.inspect_node(node, |widget| widget.test_id() == Some("a"))
+                    .unwrap_or(false)
+            })
+            .expect("actual opener");
+        app.set_focused_node(Some(opener));
+        open.set(true);
+        app.refresh_focus_order();
+        assert!(app.accessibility.focus_trap_active);
+        assert_eq!(app.focusable_order.len(), 2);
+        for _ in 0..6 {
+            assert!(app.focus_tab(false));
+            let id = app
+                .inspect_node(app.focused_node.unwrap(), |widget| {
+                    widget.test_id().map(str::to_owned)
+                })
+                .unwrap();
+            assert!(matches!(id.as_deref(), Some("ok" | "cancel")));
+        }
+        open.set(false);
+        app.refresh_focus_order();
+        assert!(!app.accessibility.focus_trap_active);
+        assert_eq!(
+            app.inspect_node(app.focused_node.expect("restored opener"), |widget| {
+                widget.test_id().map(str::to_owned)
+            })
+            .unwrap()
+            .as_deref(),
+            Some("a")
+        );
+    }
+
+    phase modal_focus_trap_confines_cycles_restores_and_names_the_dialog;
+    {
+        {
+            use crate::widget::{Column, Container};
+            let root = Column::new()
+                .push(Box::new(Button::new("background", "Background")))
+                .push(Box::new(
+                    Container::new()
+                        .with_focus_trap()
+                        .with_child(Box::new(TwoKids::new())),
+                ));
+            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+            app.init_layout();
+            assert!(app.accessibility.focus_trap_active);
+            assert_eq!(app.focusable_order.len(), 2);
+            assert!(app.keyboard_nav_allowed(Some(KurboRect::new(0.0, 0.0, 100.0, 100.0))));
+            let first = app.focusable_order[0];
+            let second = app.focusable_order[1];
+            app.set_focused_node(Some(first));
+            assert!(app.focus_tab(false));
+            assert_eq!(app.focused_node, Some(second));
+            assert!(app.focus_tab(false));
+            assert_eq!(app.focused_node, Some(first));
+            assert!(app.focus_tab(true));
+            assert_eq!(app.focused_node, Some(second));
+        }
+
+        {
+            let (mut app, _open) = host_app();
+            app.init_layout();
+            assert!(
+                !app.accessibility.focus_trap_active,
+                "no trap while the modal is closed"
+            );
+            assert_eq!(
+                app.focusable_order.len(),
+                2,
+                "closed modal controls stay out of the background focus order"
+            );
+        }
+
+        {
+            let (mut app, open) = host_app();
+            app.init_layout();
+            let full = app.focusable_order.len();
+
+            open.set(true);
+            app.refresh_focus_order();
+
+            assert!(
+                app.accessibility.focus_trap_active,
+                "an open modal traps focus"
+            );
+            assert_eq!(
+                app.focusable_order.len(),
+                2,
+                "focus is confined to the modal's two buttons (was {full})"
+            );
+            assert!(
+                app.focused_node
+                    .is_some_and(|id| app.focusable_order.contains(&id)),
+                "focus moves into the modal when it opens"
+            );
+        }
+
+        {
+            let (mut app, open) = host_app();
+            app.init_layout();
+            open.set(true);
+            app.refresh_focus_order();
+            assert!(app.accessibility.focus_trap_active);
+            assert_eq!(app.focusable_order.len(), 2);
+            let modal_set: std::collections::HashSet<_> = app.focusable_order.iter().copied().collect();
+            let first = app.focusable_order[0];
+            let second = app.focusable_order[1];
+
+            // Must be allowed EVEN while a modal captures the pointer, or the
+            // dialog's buttons would be unreachable by keyboard.
+            assert!(
+                app.keyboard_nav_allowed(Some(KurboRect::new(0.0, 0.0, 10.0, 10.0))),
+                "an active focus trap allows Tab to run (scoped to the modal)"
+            );
+
+            app.set_focused_node(Some(first));
+            assert!(app.focus_tab(false), "Tab moves focus");
+            assert_eq!(
+                app.focused_node,
+                Some(second),
+                "Tab advances within the modal"
+            );
+            assert!(modal_set.contains(&second));
+            assert!(app.focus_tab(false));
+            assert_eq!(
+                app.focused_node,
+                Some(first),
+                "Tab from the last wraps to the first"
+            );
+            assert!(app.focus_tab(true));
+            assert_eq!(
+                app.focused_node,
+                Some(second),
+                "Shift+Tab from the first wraps to the last"
+            );
+            assert!(
+                modal_set.contains(&app.focused_node.unwrap()),
+                "Shift+Tab stays inside the modal subtree"
+            );
+        }
+
+        {
+            // A pointer-capturing, non-trapping surface (a context menu) must
+            // switch off the App's own Tab/arrow navigation.
+            let (mut app, _open) = host_app();
+            app.init_layout();
+            assert!(!app.accessibility.focus_trap_active);
+            assert!(
+                app.keyboard_nav_allowed(None),
+                "with no modal, Tab runs normally"
+            );
+            assert!(
+                !app.keyboard_nav_allowed(Some(KurboRect::new(0.0, 0.0, 10.0, 10.0))),
+                "a pointer-capturing surface with no focus trap suppresses App-level Tab"
+            );
+        }
+
+        {
+            let (mut app, open) = host_app();
+            app.init_layout();
+            let outer = app.focusable_order[0];
+            app.set_focused_node(Some(outer));
+
+            open.set(true);
+            app.refresh_focus_order();
+            assert!(app.accessibility.focus_trap_active);
+            assert_ne!(app.focused_node, Some(outer), "focus moved into the modal");
+
+            open.set(false);
+            app.refresh_focus_order();
+            assert!(
+                !app.accessibility.focus_trap_active,
+                "trap released when the modal closes"
+            );
+            assert_eq!(
+                app.focused_node,
+                Some(outer),
+                "focus is restored to where it was before the modal opened"
+            );
+        }
+
+        {
+            use crate::a11y::Role;
+            let m = ModalDialog::new("Delete file?", TwoKids::new()).open(true);
+            let node = Widget::accessibility(&m).expect("an open dialog is in the tree");
+            assert_eq!(node.role, Role::Dialog);
+            assert_eq!(node.name.as_deref(), Some("Delete file?"));
+            assert!(node.state.modal, "an open modal traps focus → modal flag");
+            assert!(!node.state.hidden);
+        }
+    }
+
+    phase a_trapped_modal_keeps_the_keyboard_where_the_person_put_it_when_what_it_shows_changes;
+    {
+        let (mut app, open) = host_app();
+        app.init_layout();
+        open.set(true);
+        app.refresh_focus_order();
+        assert!(app.accessibility.focus_trap_active);
+        let first = app.focusable_order[0];
+        let second = app.focusable_order[1];
+        let named = |app: &App, id| {
+            app.inspect_node(id, |widget| widget.test_id().map(str::to_owned))
+                .unwrap()
+        };
+        app.set_focused_node(Some(first));
+        assert!(app.focus_tab(false));
+        assert_eq!(app.focused_node, Some(second));
+        assert_eq!(named(&app, second).as_deref(), Some("cancel"));
+
+        // The dialog says a second less, or a line of what it is doing changes:
+        // its tree is built again under the person's hands. The answer they
+        // tabbed to is still the one under the keyboard.
+        app.rebuild_structure();
+        assert!(app.accessibility.focus_trap_active);
+        assert_eq!(
+            app.focused_node.and_then(|id| named(&app, id)),
+            Some("cancel".to_owned()),
+            "the keyboard stays on the answer the person tabbed to"
+        );
+    }
+
+    phase a_dialog_that_draws_itself_again_keeps_the_keyboard_on_the_answer_chosen;
+    {
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(ModalDialog::new("Keep this change?", FreshAnswers::new()).open(true)),
+        );
+        app.init_layout();
+        assert!(app.accessibility.focus_trap_active);
+        let named = |app: &App, id| {
+            app.inspect_node(id, |widget| widget.test_id().map(str::to_owned))
+                .unwrap()
+        };
+        let cancel = app.focusable_order[1];
+        app.set_focused_node(Some(cancel));
+        assert_eq!(named(&app, cancel).as_deref(), Some("cancel"));
+
+        // What the dialog says changes between one frame and the next, so it draws
+        // its answers again where they stand: the widgets the person was on are
+        // gone, and with them the focus they held, before the tree is built again.
+        app.root_widget
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<ModalDialog<FreshAnswers>>())
+            .expect("the dialog is the tree")
+            .content_mut()
+            .drawn_again();
+        app.layout.request_rebuild();
+        app.rebuild_structure();
+        assert!(app.accessibility.focus_trap_active);
+        assert_eq!(
+            app.focused_node.and_then(|id| named(&app, id)),
+            Some("cancel".to_owned()),
+            "the keyboard stays on the answer the person chose"
+        );
+    }
 }

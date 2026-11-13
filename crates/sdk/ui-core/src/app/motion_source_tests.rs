@@ -27,39 +27,43 @@ fn app() -> App {
     )
 }
 
-/// A press is the pointer's: what it opens moves.
-#[test]
-fn a_press_on_a_surfaces_app_is_the_pointers_motion() {
-    note_source(MotionSource::Action);
-    let mut app = app();
-    app.surface_input(&Window, crate::synthetic_input::mouse_press(), false);
-    assert_eq!(
-        input_source(),
-        MotionSource::Pointer,
-        "a press on the surface asked for it"
-    );
-}
+tilo_test_env::scenario! {
+    fn a_surfaces_input_names_the_motion_its_change_follows;
 
-/// A key lands at once, as a shortcut's result does.
-#[test]
-fn a_key_on_a_surfaces_app_lands_at_once() {
-    note_source(MotionSource::Pointer);
-    let mut app = app();
-    let event = crate::synthetic_input::key_press(Key::Named(NamedKey::Enter), None);
-    app.surface_input(&Window, event, false);
-    assert_eq!(
-        input_source(),
-        MotionSource::Keyboard,
-        "the key asked for it"
-    );
-}
+    phase a_press_on_a_surfaces_app_is_the_pointers_motion;
+    // A press is the pointer's: what it opens moves.
+    {
+        note_source(MotionSource::Action);
+        let mut app = app();
+        app.surface_input(&Window, crate::synthetic_input::mouse_press(), false);
+        assert_eq!(
+            input_source(),
+            MotionSource::Pointer,
+            "a press on the surface asked for it"
+        );
+    }
 
-/// A wheel is the pointer's: a page it opens glides.
-#[test]
-fn a_wheel_on_a_surfaces_app_is_the_pointers_motion() {
-    note_source(MotionSource::Action);
-    let mut app = app();
-    let event = crate::synthetic_input::mouse_wheel(0.0, 40.0);
-    app.surface_input(&Window, event, false);
-    assert_eq!(input_source(), MotionSource::Pointer, "the wheel turned");
+    phase a_key_on_a_surfaces_app_lands_at_once;
+    // A key lands at once, as a shortcut's result does.
+    {
+        note_source(MotionSource::Pointer);
+        let mut app = app();
+        let event = crate::synthetic_input::key_press(Key::Named(NamedKey::Enter), None);
+        app.surface_input(&Window, event, false);
+        assert_eq!(
+            input_source(),
+            MotionSource::Keyboard,
+            "the key asked for it"
+        );
+    }
+
+    phase a_wheel_on_a_surfaces_app_is_the_pointers_motion;
+    // A wheel is the pointer's: a page it opens glides.
+    {
+        note_source(MotionSource::Action);
+        let mut app = app();
+        let event = crate::synthetic_input::mouse_wheel(0.0, 40.0);
+        app.surface_input(&Window, event, false);
+        assert_eq!(input_source(), MotionSource::Pointer, "the wheel turned");
+    }
 }
