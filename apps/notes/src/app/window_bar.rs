@@ -73,11 +73,14 @@ impl NotesApp {
             } else {
                 Self::content_header_actions(&self.header)
             };
-            // window-bar: list-new, New note heads the page tree it adds to
-            self.shell
-                .set_sidebar_header(CATALOG.t("notes-title"), tree_actions);
-            // window-bar: fallback, the bar holds the note's actions while it hosts the window
-            self.shell.set_content_header("", actions);
+            // New note is the page tree's own, so it heads the list it adds to.
+            ui::window_toolbar::exempt!(ListNew, {
+                self.shell
+                    .set_sidebar_header(CATALOG.t("notes-title"), tree_actions);
+            });
+            ui::window_toolbar::exempt!(Fallback, {
+                self.shell.set_content_header("", actions);
+            });
             if !hosted {
                 ui::window_toolbar::declare(None);
                 self.declared_bar = None;

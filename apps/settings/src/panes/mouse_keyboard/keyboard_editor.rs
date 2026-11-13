@@ -1010,19 +1010,19 @@ impl PageOf<'_> {
         } else {
             content.push(setting_row(
                 &t("input-source-add-title"),
-                Box::new(
-                    self.actions.bind_effect(
+                Box::new(self.actions.bind_effect(
+                    // Type-ahead over the layouts the dropdown offers.
+                    ui::window_toolbar::exempt!(Picker, {
                         id_dropdown(
                             choices,
                             "",
                             "input.source.add_picker",
                             &t("input-source-add-title"),
                         )
-                        // window-bar: picker, type-ahead over the layouts the dropdown offers
-                        .with_placeholder(&t("input-source-add-placeholder")),
-                        effect(InputEffect::ADD_SOURCE),
-                    ),
-                ),
+                        .with_placeholder(&t("input-source-add-placeholder"))
+                    }),
+                    effect(InputEffect::ADD_SOURCE),
+                )),
             ));
         }
         section(&t("input-layouts-title"), rows(content))

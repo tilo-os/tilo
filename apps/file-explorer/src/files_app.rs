@@ -743,12 +743,14 @@ impl FileExplorerWidget {
             crate::search_provider::RemoteAccountSearch::new(&remote_accounts);
         let cmds = new_sink();
         let (path_widget, actions_widget, toolbar) = crate::toolbar::FileToolbar::new(cmds.clone());
-        // window-bar: fallback, the header the bar takes over once it hosts the window
-        let nav = NavShell::new()
-            .content_kind(ui::widget::ContentKind::List)
-            .with_id("files.shell")
-            .content_header("", vec![Box::new(actions_widget)])
-            .content_header_leading(Box::new(path_widget));
+        // The header the bar takes over once it hosts the window.
+        let nav = ui::window_toolbar::exempt!(Fallback, {
+            NavShell::new()
+                .content_kind(ui::widget::ContentKind::List)
+                .with_id("files.shell")
+                .content_header("", vec![Box::new(actions_widget)])
+                .content_header_leading(Box::new(path_widget))
+        });
         let thumbs = match &services {
             FileServices::Legacy => build_thumb_service(config_dir).map(Arc::new),
             FileServices::Hosted(hosted) => hosted.thumbnails.clone(),
@@ -917,7 +919,6 @@ impl FileExplorerWidget {
             open_with_cache: RefCell::new(HashMap::new()),
             entry_ids: RefCell::default(),
             entry_rows: RefCell::default(),
-            // window-bar: picker, the Open with chooser
             app_chooser: ui::search::SearchOpener::new(),
             app_chooser_target: None,
             thumb_imgs: Rc::new(RefCell::new(HashMap::new())),

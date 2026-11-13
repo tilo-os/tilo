@@ -442,10 +442,12 @@ impl BrowserWidget {
         if let Some((_, label, scope)) = SECTIONS.get(current)
             && self.library_section != LibrarySection::Extensions
         {
-            // window-bar: fallback, the bar's search while it hosts the window
-            header = header.push(Box::new(search_button(SearchRequest::within(
-                ScopeDecl::new(*scope, CATALOG.t(label)),
-            ))));
+            header = header.push(Box::new(ui::window_toolbar::exempt!(Fallback, {
+                search_button(SearchRequest::within(ScopeDecl::new(
+                    *scope,
+                    CATALOG.t(label),
+                )))
+            })));
         }
         header = header.push(Box::new(self.bind_button(
             Button::new("browser.library.close", &CATALOG.t("browser-library-done")),
