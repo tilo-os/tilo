@@ -1496,6 +1496,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
         fn admissions_certify_only_the_browser_a_code_admitted;
 
         phase pairing_code_collision_does_not_certify_stranger;

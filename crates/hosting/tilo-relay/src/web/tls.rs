@@ -373,6 +373,10 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
         fn tls_identities_load_renew_and_are_replaced_when_names_change;
 
         phase a_pem_pair_loads_into_an_https_config_and_an_empty_chain_is_refused;
