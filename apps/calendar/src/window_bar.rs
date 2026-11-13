@@ -1,10 +1,5 @@
 //! The calendar's toolbar, as slots in the window's bar
 //! ([`ui::window_toolbar`]).
-//!
-//! The bar shows the sidebar's toggle, previous, next and Today, the period
-//! as the window's location, the views (Month, Week, Day, Agenda, Tasks) as
-//! its switcher and New event (New task on Tasks); exporting and importing
-//! the calendar file are in its menu. Search is the bar's own.
 
 use chrono::NaiveDate;
 use ui::format::Period;
@@ -13,7 +8,6 @@ use ui::window_toolbar::{ToolbarLocation, ToolbarView, ToolbarViews, WindowToolb
 
 use crate::{date, model::View};
 
-/// What the person asked of the calendar in the window's bar.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum BarAction {
     Previous,
@@ -27,8 +21,6 @@ pub(crate) enum BarAction {
     Import,
 }
 
-/// The period `view` shows around `anchor` (none: Tasks, which shows no
-/// span of days).
 pub(crate) fn period(view: View, anchor: NaiveDate) -> Option<Period> {
     match view {
         View::Tasks => None,
@@ -44,9 +36,6 @@ pub(crate) fn period(view: View, anchor: NaiveDate) -> Option<Period> {
     }
 }
 
-/// The window's location for `view` around `anchor`: its period, in the
-/// widest form the bar has room for, or on Tasks the list shown
-/// (`tasks_list`).
 fn location(view: View, anchor: NaiveDate, tasks_list: &str) -> ToolbarLocation {
     period(view, anchor).map_or_else(
         || ToolbarLocation {
@@ -57,8 +46,6 @@ fn location(view: View, anchor: NaiveDate, tasks_list: &str) -> ToolbarLocation 
     )
 }
 
-/// The window bar's slots for `view` around `anchor` (on Tasks the list
-/// `tasks_list`), the sidebar shown or not.
 pub(crate) fn window_toolbar(
     bar: &BarCommands<BarAction>,
     view: View,
@@ -70,7 +57,7 @@ pub(crate) fn window_toolbar(
         sidebar: Some(sidebar_open),
         location: Some(location(view, anchor, tasks_list)),
         views: Some(ToolbarViews {
-            name: "View".into(),
+            name: crate::resource::t("calendar-views"),
             choices: View::ALL
                 .iter()
                 .map(|choice| ToolbarView {
@@ -83,9 +70,18 @@ pub(crate) fn window_toolbar(
         ..WindowToolbar::default()
     };
     let period = match view {
-        View::Month => Some(("Previous month", "Next month")),
-        View::Week | View::Agenda => Some(("Previous week", "Next week")),
-        View::Day => Some(("Previous day", "Next day")),
+        View::Month => Some((
+            crate::resource::t("calendar-previous-month"),
+            crate::resource::t("calendar-next-month"),
+        )),
+        View::Week | View::Agenda => Some((
+            crate::resource::t("calendar-help-previous-week"),
+            crate::resource::t("calendar-help-next-week"),
+        )),
+        View::Day => Some((
+            crate::resource::t("calendar-help-previous-day"),
+            crate::resource::t("calendar-help-next-day"),
+        )),
         View::Tasks => None,
     };
     if let Some((previous, next)) = period {
@@ -94,17 +90,21 @@ pub(crate) fn window_toolbar(
                 .navigating(),
             bar.entry("chevron-right", next, BarAction::Next)
                 .navigating(),
-            bar.entry("calendar", "Today", BarAction::Today).labelled(),
+            bar.entry(
+                "calendar",
+                crate::resource::t("calendar-tasks-today"),
+                BarAction::Today,
+            )
+            .labelled(),
         ];
     }
     let new = if view == View::Tasks {
         crate::resource::t("calendar-tasks-new")
     } else {
-        "New event".to_owned()
+        crate::resource::t("calendar-a11y-new-event")
     };
     toolbar.actions = vec![
         bar.entry("plus", new, BarAction::New),
-        // The one-line add sits beside the full form it saves a person from.
         bar.entry(
             "zap",
             crate::resource::t("calendar-quick-title"),
@@ -117,10 +117,18 @@ pub(crate) fn window_toolbar(
             BarAction::Shortcuts,
         )
         .in_menu(),
-        bar.entry("upload", "Export calendar", BarAction::Export)
-            .in_menu(),
-        bar.entry("download", "Import calendar", BarAction::Import)
-            .in_menu(),
+        bar.entry(
+            "upload",
+            crate::resource::t("calendar-a11y-export"),
+            BarAction::Export,
+        )
+        .in_menu(),
+        bar.entry(
+            "download",
+            crate::resource::t("calendar-a11y-import"),
+            BarAction::Import,
+        )
+        .in_menu(),
     ];
     toolbar
 }

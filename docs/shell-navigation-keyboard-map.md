@@ -240,6 +240,11 @@ Alt+Shift, or Ctrl+Option on a Mac. Search stays on Ctrl+K (Cmd+K on a Mac).
 ## Acceptance rules
 
 - The active tab is the sole recipient of ordinary keyboard input.
+- Tab and Shift+Tab cycle the focused window, wrapping at the ends: its bar's
+  controls in the order they stand (the tab list, then the agent that opened
+  the window when one did, then the rest of the bar) and its app's controls.
+  They never reach another window or the desktop's chrome; Enter or Space on
+  a bar control does what a click does.
 - Opening modal shell chrome removes keyboard focus from hosted clients.
 - Every pointer-only global route has a keyboard route, except direct spatial
   manipulation such as dragging tabs or strips.

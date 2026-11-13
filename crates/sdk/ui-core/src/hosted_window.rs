@@ -30,9 +30,23 @@ const MAX_PENDING: usize = 32;
 
 /// One window a host shows an app in, shared by the host and the app.
 /// Clones are the same window.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct HostedWindow {
     inner: Arc<Mutex<State>>,
+    /// Which window this is ([`Self::identity`]).
+    id: u64,
+}
+
+impl Default for HostedWindow {
+    fn default() -> Self {
+        /// Windows made so far, so that no two of them ever share an identity:
+        /// a cache keyed by it never mistakes one window for another.
+        static MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            inner: Arc::new(Mutex::new(State::default())),
+            id: MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -62,6 +76,8 @@ struct State {
     /// The workspace the window is in, as its host knows it: an app that
     /// shares its process with other windows has no workspace of its own.
     workspace: Option<String>,
+    /// The window floats over the desk ([`crate::window_toolbar::floats`]).
+    floats: bool,
     /// The app asked to edit its location (its Ctrl+L).
     edit: bool,
     /// The app asked to open the window's search (its Ctrl+F, or Ctrl+H
@@ -93,10 +109,11 @@ impl HostedWindow {
         Self::default()
     }
 
-    /// Which window this is: equal for clones of one window, different
-    /// for windows alive at the same time.
-    pub(crate) fn identity(&self) -> usize {
-        Arc::as_ptr(&self.inner).addr()
+    /// Which window this is: equal for clones of one window, and for no other
+    /// window ever, so what a reader keeps of one window never answers for
+    /// another ([`crate::window_toolbar::current_window`]).
+    pub fn identity(&self) -> u64 {
+        self.id
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -393,9 +410,19 @@ impl HostedWindow {
         (seen != Some(revision)).then(|| (revision, self.shown()))
     }
 
+    /// Whether the window floats over the desk as a card ([`ToolbarEvent::Floating`]).
+    #[must_use]
+    pub fn floats(&self) -> bool {
+        self.state().floats
+    }
+
     /// Hand the app what the person did with its slots.
     pub fn deliver(&self, event: ToolbarEvent) {
         let mut state = self.state();
+        if let ToolbarEvent::Floating { floating } = event {
+            state.floats = floating;
+            return;
+        }
         if let Some(id) = crate::window_toolbar::notice_press(state.notice.as_ref(), &event) {
             if state.notice_presses.len() < MAX_PENDING {
                 state.notice_presses.push(id);

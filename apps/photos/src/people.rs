@@ -1,24 +1,10 @@
-//! Device-local People recognition and review.
-//!
-//! This module is deliberately *not* part of `crate::doc`. Face embeddings,
-//! geometry, crop pixels, and even the existence of an unconfirmed proposal
-//! are sensitive device-local state. The only bridge to collaboration is
-//! [`PeopleController::approve_membership`], which produces a compact,
-//! user-approved person and photographs for
-//! [`PhotoLibrary::SET_PERSON_MEMBERSHIP`].
-//!
-//! A generic image-description model is not a face-recognition model. Until a
-//! signed local face-clustering capability is installed, this controller stays
-//! honest: it can manage imported or manually created proposals, but it never
-//! claims to have recognized a person from a photograph.
+//! Device-local People recognition and review. This module is deliberately *not* part of
+//! `crate::doc`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::model::PhotoLibrary;
 
-/// One explicitly shared person as a presentation-ready collection. It is
-/// derived from durable labels only, so it is safe to use for a resource rail,
-/// global search, history, and collaboration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SharedPerson {
     pub label: String,
@@ -32,9 +18,6 @@ impl SharedPerson {
     }
 }
 
-/// Build the approved People directory from collaborative labels. This is
-/// intentionally distinct from `PeopleController::visible_clusters`: a local
-/// proposal does not appear here until somebody has reviewed and approved it.
 #[must_use]
 pub fn approved_people(library: &PhotoLibrary) -> Vec<SharedPerson> {
     let mut people = BTreeMap::<String, Vec<String>>::new();
@@ -52,34 +35,23 @@ pub fn approved_people(library: &PhotoLibrary) -> Vec<SharedPerson> {
         .collect()
 }
 
-/// Privacy state for the device-local face-cluster pipeline.
-///
-/// This is suitable for a local settings store, but must never be written to
-/// the Photos CRDT: one collaborator's opt-in is not another's consent.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct PeoplePrivacy {
-    /// Whether the owner has explicitly allowed local face clustering on this
-    /// device. It defaults to off, including after migration from older apps.
     pub recognition_enabled: bool,
 }
 
-/// What this device can honestly do with face clusters.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum FaceCapability {
-    /// The owner has not opted in; no local scan should begin.
     #[default]
     DisabledByOwner,
-    /// The owner opted in but no separately verified local face model exists.
-    /// Generic OCR/vision capabilities never satisfy this case.
     NoVerifiedFaceModel,
-    /// A signed, local-only model was explicitly discovered by a caller that
-    /// owns the runtime integration. The controller records no endpoint or
-    /// credential, only the auditable identity needed in the local UI.
-    Ready { model_id: String, revision: String },
+    Ready {
+        model_id: String,
+        revision: String,
+    },
 }
 
 impl FaceCapability {
-    /// Return a calm, non-technical explanation appropriate for an inline UI.
     #[must_use]
     pub fn summary(&self) -> String {
         crate::strings::tr(match self {
@@ -95,12 +67,6 @@ impl FaceCapability {
     }
 }
 
-/// Opaque output from a real, verified local face pipeline. The detection
-/// rectangles and embeddings remain inside the pipeline's private store; the
-/// Photos controller needs only stable photo ids to offer an on-device review.
-///
-/// This is intentionally not constructible from a generic vision response.
-/// Callers must validate the signed face-model identity before passing it in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedFaceClusterBatch {
     pub model_id: String,
@@ -108,31 +74,20 @@ pub struct VerifiedFaceClusterBatch {
     pub clusters: Vec<VerifiedFaceCluster>,
 }
 
-/// One opaque cluster from [`VerifiedFaceClusterBatch`]. No confidence, face
-/// geometry, crop, or embedding appears in this application-level handoff.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedFaceCluster {
     pub id: String,
     pub photo_ids: Vec<String>,
 }
 
-/// A non-biometric reference to one photograph in a private local cluster.
-///
-/// Deliberately absent: face rectangle, confidence, embedding, crop, image
-/// bytes, path, and any model output. A runtime that needs those keeps them in
-/// its own ephemeral/private cache keyed by this opaque reference.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize, serde::Serialize)]
 pub struct LocalClusterPhoto {
     pub photo_id: String,
 }
 
-/// How a proposal entered the local People controller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub enum ProposalOrigin {
-    /// A separately capability-gated local face pipeline supplied this opaque
-    /// grouping. The controller never receives its embedding or geometry.
     VerifiedLocalPipeline,
-    /// A person grouped the photographs manually or imported a proposal.
     ImportedOrManual,
 }
 
@@ -146,9 +101,6 @@ impl ProposalOrigin {
     }
 }
 
-/// A locally held candidate person. This is intentionally a management record
-/// rather than a remote identity: it is free to be renamed, split, hidden,
-/// rejected, or deleted without producing document history.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct LocalPersonCluster {
     pub id: String,
@@ -169,8 +121,6 @@ impl LocalPersonCluster {
     }
 }
 
-/// Result of an interaction with a local proposal. These values are intended
-/// for accessible status announcements and never name a remote person.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PeopleChange {
     Updated,
@@ -178,16 +128,12 @@ pub enum PeopleChange {
     Unchanged,
 }
 
-/// Local People state. Its owner is the running app/local settings store; it
-/// must never be written to the library or offered as a resource.
 #[derive(Clone, Debug, Default)]
 pub struct PeopleController {
     privacy: PeoplePrivacy,
     capability: FaceCapability,
     clusters: BTreeMap<String, LocalPersonCluster>,
     storage_path: Option<crate::files::StateFile>,
-    /// Why the last write of [`Self::storage_path`] failed, until the app
-    /// takes it to tell the person ([`Self::take_save_failure`]).
     save_failure: Option<String>,
 }
 
@@ -203,9 +149,6 @@ impl PeopleController {
         Self::default()
     }
 
-    /// Load the private review queue for this device. The file contains only
-    /// consent, opaque cluster ids, and photo resource ids. Model identity,
-    /// embeddings, face geometry, crops, and confidence are never persisted.
     #[must_use]
     pub fn persistent() -> Self {
         Self::load_from(crate::files::StateFile::in_state("people-review.json"))
@@ -244,8 +187,6 @@ impl PeopleController {
         }
     }
 
-    /// Why keeping this device's People state failed since the last call,
-    /// if it did: the change holds for this session but is not on disk.
     pub fn take_save_failure(&mut self) -> Option<String> {
         self.save_failure.take()
     }
@@ -260,9 +201,6 @@ impl PeopleController {
         &self.capability
     }
 
-    /// Update the explicit per-device consent switch. Turning it off does not
-    /// delete local clusters by surprise; callers should offer the separate,
-    /// clearly destructive `delete_all_local_biometric_data` control.
     pub fn set_recognition_enabled(&mut self, enabled: bool) {
         self.privacy.recognition_enabled = enabled;
         if !enabled {
@@ -273,9 +211,6 @@ impl PeopleController {
         self.save();
     }
 
-    /// Discover the dedicated signed loopback face capability. Generic vision
-    /// models are deliberately ignored; no model means a truthful unavailable
-    /// state rather than synthetic people suggestions.
     pub fn discover_face_capability(&mut self, config: &agent_provider_config::ProviderConfig) {
         if !self.privacy.recognition_enabled {
             self.capability = FaceCapability::DisabledByOwner;
@@ -290,9 +225,6 @@ impl PeopleController {
         );
     }
 
-    /// Admit a signed local face capability after the runtime independently
-    /// validates it. Empty identities are refused, avoiding an accidental
-    /// upgrade from generic local vision/OCR.
     #[cfg(test)]
     pub fn set_verified_local_face_model(
         &mut self,
@@ -313,9 +245,6 @@ impl PeopleController {
         true
     }
 
-    /// Register an opaque local cluster. Only a verified pipeline can label
-    /// its origin as recognition; manually supplied/imported collections are
-    /// useful and stay honestly marked as such.
     pub fn add_cluster(
         &mut self,
         id: impl Into<String>,
@@ -350,11 +279,6 @@ impl PeopleController {
         true
     }
 
-    /// Accept results from a separately verified, local-only face pipeline.
-    /// A generic vision/OCR result cannot call this route: the signed model id
-    /// and revision must exactly match the currently admitted face capability.
-    /// Invalid clusters are skipped individually, so an untrusted batch can
-    /// never erase or partially alter an existing local review collection.
     pub fn ingest_verified_face_clusters(&mut self, batch: VerifiedFaceClusterBatch) -> usize {
         let FaceCapability::Ready { model_id, revision } = &self.capability else {
             return 0;
@@ -374,10 +298,6 @@ impl PeopleController {
                 continue;
             }
 
-            // A face pipeline scopes its opaque cluster ids to each request.
-            // Reconcile only by a stable photo id that occurs in both bounded
-            // batches; no embedding, crop, geometry, or confidence crosses
-            // the private runtime/controller boundary.
             let mut matches: Vec<_> = self
                 .clusters
                 .values()
@@ -436,8 +356,6 @@ impl PeopleController {
         self.clusters.get(id)
     }
 
-    /// A bounded listing for the visible People rail. Hidden/rejected records
-    /// are intentionally omitted; the management dialog uses `all_clusters`.
     #[must_use]
     pub fn visible_clusters(&self) -> Vec<&LocalPersonCluster> {
         self.clusters
@@ -450,11 +368,6 @@ impl PeopleController {
         self.clusters.values()
     }
 
-    /// A tiny local-only representative set for the next bounded recognition
-    /// request. Sending one already-local photo beside a fresh disjoint slice
-    /// lets the signed local runtime connect batch-local cluster ids; only the
-    /// resulting photo-id grouping returns here. These anchors are never put
-    /// in a Photos action or resource.
     #[must_use]
     pub fn reconciliation_anchor_photo_ids(&self, limit: usize) -> Vec<String> {
         self.clusters
@@ -468,8 +381,6 @@ impl PeopleController {
             .collect()
     }
 
-    /// Name/confirm a local proposal. This does not share it: call
-    /// `approve_membership` only after the user has inspected the photos.
     pub fn confirm_suggestion(&mut self, id: &str, name: &str) -> PeopleChange {
         let Some(cluster) = self.clusters.get_mut(id) else {
             return PeopleChange::Unchanged;
@@ -484,8 +395,6 @@ impl PeopleController {
         PeopleChange::Updated
     }
 
-    /// Reject a suggestion locally. It keeps no collaborative history and can
-    /// later be deleted completely with the private-data control.
     pub fn reject_suggestion(&mut self, id: &str) -> PeopleChange {
         let Some(cluster) = self.clusters.get_mut(id) else {
             return PeopleChange::Unchanged;
@@ -497,8 +406,6 @@ impl PeopleController {
         PeopleChange::Updated
     }
 
-    /// Return a hidden or rejected local proposal to the review queue. This is
-    /// deliberately local and reversible; it never recreates a shared label.
     pub fn restore_suggestion(&mut self, id: &str) -> PeopleChange {
         let Some(cluster) = self.clusters.get_mut(id) else {
             return PeopleChange::Unchanged;
@@ -524,9 +431,6 @@ impl PeopleController {
         PeopleChange::Updated
     }
 
-    /// Remove a wrongly grouped photograph from a local proposal. It is not a
-    /// shared action; any already-approved membership must be edited through
-    /// the corresponding canonical resource action.
     pub fn remove_photo(&mut self, id: &str, photo_id: &str) -> PeopleChange {
         let Some(cluster) = self.clusters.get_mut(id) else {
             return PeopleChange::Unchanged;
@@ -547,8 +451,6 @@ impl PeopleController {
         }
     }
 
-    /// Merge two local clusters. Names remain local until the caller has
-    /// explicitly chosen a final shared membership action.
     pub fn merge_clusters(&mut self, destination: &str, source: &str) -> PeopleChange {
         if destination == source {
             return PeopleChange::Unchanged;
@@ -568,9 +470,6 @@ impl PeopleController {
         PeopleChange::Updated
     }
 
-    /// Build the one permissible bridge into collaborative metadata. This
-    /// refuses unnamed/rejected clusters and intentionally carries only photo
-    /// ids and the chosen label — never the local clustering evidence.
     #[must_use]
     pub fn approve_membership(
         &self,
@@ -582,10 +481,6 @@ impl PeopleController {
             .then(|| (person, cluster.visible_photo_ids()))
     }
 
-    /// Delete every device-local face cluster and capability identity. This
-    /// has no effect on already-approved shared person labels, making the
-    /// boundary reversible and understandable: remove private biometric data
-    /// here, manage shared labels through their canonical resources there.
     pub fn delete_all_local_biometric_data(&mut self) {
         self.clusters.clear();
         self.capability = if self.privacy.recognition_enabled {
@@ -685,8 +580,6 @@ mod tests {
                 }],
             };
             let c = "photos.photo:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-            // These are disjoint fresh slices, so their opaque model-local ids do
-            // not reconcile by themselves.
             assert_eq!(
                 people.ingest_verified_face_clusters(batch("first", vec![A.to_owned()])),
                 1
@@ -696,8 +589,6 @@ mod tests {
                 1
             );
             assert_eq!(people.all_clusters().count(), 2);
-            // The next fresh slice carries `A` only as a local representative
-            // anchor. Its returned grouping bridges the two private proposals.
             assert_eq!(
                 people.ingest_verified_face_clusters(batch(
                     "anchored-bridge",
@@ -709,7 +600,6 @@ mod tests {
             let cluster = people.cluster("first").unwrap();
             assert_eq!(cluster.visible_photo_ids().len(), 2);
             assert_eq!(cluster.origin, ProposalOrigin::VerifiedLocalPipeline);
-            // The persisted review record has stable ids only, never model output.
             assert!(
                 cluster
                     .photos
@@ -748,7 +638,6 @@ mod tests {
         }
 
         {
-            // A write that fails is reported once, not dropped.
             let dir = tempfile::tempdir().unwrap();
             let taken = dir.path().join("people-review.json");
             std::fs::create_dir(&taken).unwrap();

@@ -1,21 +1,6 @@
-//! Live backend — `YouTube` Music via the pure-Rust `rustypipe` `InnerTube`
-//! client. **Compiled only under `--features live`.**
-//!
-//! `rustypipe` is async (tokio); the [`MusicBackend`] trait is sync because it
-//! is driven from Music's blocking [`crate::stream`] worker. This backend
-//! therefore waits on each query with the shared app runtime's `block_on`
-//! (the query is polled on the worker while the runtime thread drives its
-//! sockets and timers), keeping the async dependency fully contained here —
-//! no other module learns about tokio.
-//!
-//! ## API surface used (rustypipe 0.11.x — verified against the crate source)
-//! * construct: `RustyPipe::builder()…build()?`, then `rp.query()`
-//! * `query.music_search_tracks(q).await` → `MusicSearchResult<TrackItem>`
-//!   (`YouTube` Music song search — titles, artists, album, duration, id)
-//! * [`tilo_innertube::player`] → `VideoPlayer`, whose whole-file stream
-//!   ([`tilo_innertube::whole_file_stream`]) is the URL Music plays. Its
-//!   player client needs no `PoToken`, so the client is built with
-//!   `no_botguard`.
+//! The live backend: `YouTube` Music through the pure-Rust `rustypipe` client, compiled
+//! under `live` only. `rustypipe` is async, so each query waits on the app runtime's
+//! `block_on` and tokio stays inside this module.
 
 #![cfg(feature = "live")]
 
@@ -32,28 +17,23 @@ use crate::backend::{
     ResolvedStream, SearchBundle, SearchOutcome, SearchTop, TrackHit,
 };
 
-/// No metadata or player request may monopolise Music's serial background
-/// worker indefinitely. Dropping the timed-out future cancels rustypipe's HTTP
-/// work; the UI receives an ordinary terminal failure and can retry.
+/// No request may hold the serial worker: a timed-out future is dropped and the UI gets
+/// a terminal failure it can retry.
 const LIVE_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
-/// External result collections are presentation pages, not an authority to
-/// allocate an unbounded response into the app model.
+/// A search answer is a page of rows, not an unbounded allocation.
 const SEARCH_RESULT_LIMIT: usize = 96;
 const DETAIL_TRACK_LIMIT: usize = 512;
 const DETAIL_RELEASE_LIMIT: usize = 96;
 const DETAIL_ARTIST_LIMIT: usize = 48;
 const DESCRIPTION_LIMIT: usize = 16 * 1024;
 
-/// The live rustypipe-backed data source.
 pub struct RustyPipeBackend {
     rp: RustyPipe,
     rt: &'static ui::rt::AppRuntime,
 }
 
 impl RustyPipeBackend {
-    /// Audio resolves through a player client that needs no `PoToken`
-    /// ([`tilo_innertube::PLAYER_CLIENT`]), so rustypipe's `BotGuard` path
-    /// stays disabled.
+    /// Audio resolves through the player client that needs no `PoToken`.
     pub fn new() -> Result<Self, BackendError> {
         let rt = ui::rt::try_app().map_err(|e| BackendError(format!("tokio runtime: {e}")))?;
         // rustypipe's reqwest client takes the process-default TLS provider.
@@ -114,12 +94,8 @@ fn bounded_text(mut value: String, limit: usize) -> String {
     value
 }
 
-/// Where rustypipe keeps its deobfuscation cache (player.js signature data).
-/// A real cache dir — never the working tree — so running the app / probe
-/// doesn't leave a `rustypipe_cache.json` in the source. Created if absent.
+/// Where rustypipe keeps its signature cache; never the working tree.
 fn cache_dir() -> std::path::PathBuf {
-    // An absolute XDG_CACHE_HOME wins on every platform (sandboxed launches
-    // set one); otherwise the platform's own cache directory.
     let base = tilo_paths::env_dir("XDG_CACHE_HOME")
         .or_else(tilo_paths::cache_dir)
         .or_else(tilo_paths::temp_dir)
@@ -129,8 +105,6 @@ fn cache_dir() -> std::path::PathBuf {
     dir
 }
 
-/// Map a rustypipe [`TrackItem`] (a `YouTube` Music search row) onto Music's
-/// toolkit-free [`TrackHit`].
 fn map_track_item(it: TrackItem) -> TrackHit {
     let (artist, artist_id) = if let Some(a) = it.artists.into_iter().next() {
         (a.name, a.id)
@@ -156,8 +130,7 @@ fn map_track_item(it: TrackItem) -> TrackHit {
     }
 }
 
-/// Map a rustypipe [`AlbumType`] onto the UI's coarse [`AlbumKind`] so a
-/// discography can be sectioned (Albums vs. Singles & EPs).
+/// A rustypipe album type as the UI's coarse kind.
 fn map_album_kind(t: AlbumType) -> AlbumKind {
     match t {
         AlbumType::Album => AlbumKind::Album,
@@ -167,7 +140,6 @@ fn map_album_kind(t: AlbumType) -> AlbumKind {
     }
 }
 
-/// Map a rustypipe [`AlbumItem`] (a search / discography row) onto [`AlbumHit`].
 fn map_album_hit(a: AlbumItem) -> AlbumHit {
     let artist = artists_name(&a.artists, a.by_va);
     AlbumHit {
@@ -181,7 +153,6 @@ fn map_album_hit(a: AlbumItem) -> AlbumHit {
     }
 }
 
-/// Map a rustypipe [`ArtistItem`] onto [`ArtistHit`].
 fn map_artist_hit(a: ArtistItem) -> ArtistHit {
     ArtistHit {
         id: a.id,
@@ -191,7 +162,6 @@ fn map_artist_hit(a: ArtistItem) -> ArtistHit {
     }
 }
 
-/// Map a rustypipe [`MusicPlaylistItem`] onto [`PlaylistHit`].
 fn map_playlist_hit(p: MusicPlaylistItem) -> PlaylistHit {
     let subtitle = match (&p.channel, p.from_ytm) {
         (Some(ch), _) => ch.name.clone(),
@@ -207,7 +177,7 @@ fn map_playlist_hit(p: MusicPlaylistItem) -> PlaylistHit {
     }
 }
 
-/// Display name for a list of artists (falls back to VA / Unknown).
+/// A display name for a list of artists.
 fn artists_name(artists: &[ArtistId], by_va: bool) -> String {
     if let Some(a) = artists.first() {
         a.name.clone()
@@ -218,8 +188,7 @@ fn artists_name(artists: &[ArtistId], by_va: bool) -> String {
     }
 }
 
-/// Pick the best cover thumbnail and normalise it to roughly `px` pixels.
-/// Empty when the item carries no artwork.
+/// The best thumbnail near `px`, empty when the item has no artwork.
 fn cover_url(thumbs: &[Thumbnail], px: u32) -> String {
     let Some(t) = thumbs.iter().max_by_key(|t| t.width * t.height) else {
         return String::new();
@@ -227,11 +196,8 @@ fn cover_url(thumbs: &[Thumbnail], px: u32) -> String {
     resize_google_thumb(&t.url, px)
 }
 
-/// `YouTube`'s image CDN encodes the requested size in a trailing `=w{W}-h{H}-…`
-/// segment (lh3/yt3/googleusercontent hosts). Rewriting it fetches a
-/// right-sized JPEG (`-rj`) instead of a 60px avatar or a 1200px original —
-/// smaller downloads, sharp tiles. URLs without that segment (e.g.
-/// `i.ytimg.com/vi/<id>/hqdefault.jpg`) are returned unchanged.
+/// The CDN takes the size in its trailing `=w{W}-h{H}` segment, so rewriting it fetches a
+/// right-sized JPEG; a URL without that segment is returned unchanged.
 fn resize_google_thumb(url: &str, px: u32) -> String {
     if let Some(eq) = url.rfind('=')
         && let Some(tail) = url.get(eq + 1..)
@@ -298,9 +264,7 @@ fn artist_home_item(a: ArtistItem) -> HomeItem {
     }
 }
 
-/// Music plays the sound of the smallest whole-file stream: only those serve
-/// the whole track (see [`tilo_innertube::whole_file_stream`]), and the
-/// picture it also carries is never decoded.
+/// The sound of the smallest whole-file stream, which alone serves the whole track.
 fn map_stream(video_id: &str, s: &VideoStream) -> ResolvedStream {
     ResolvedStream {
         video_id: video_id.to_string(),
@@ -313,12 +277,9 @@ fn map_stream(video_id: &str, s: &VideoStream) -> ResolvedStream {
     }
 }
 
-/// The catalogue's items as a bundle: the first item is the hero card, the
-/// rest bucketed by type in ranking order.
+/// The catalogue's items as a bundle: a hero card and one bucket per type.
 fn bundle_of(items: Vec<MusicItem>) -> SearchBundle {
     let mut bundle = SearchBundle::default();
-    // YouTube Music returns the top-result card first, so the first item is
-    // the hero. Bucket the rest by type, preserving ranking order.
     for (i, item) in items.into_iter().take(SEARCH_RESULT_LIMIT).enumerate() {
         match item {
             MusicItem::Track(t) => {
@@ -377,9 +338,7 @@ impl MusicBackend for RustyPipeBackend {
     }
 
     fn warm(&self) {
-        // The suggestion endpoint is the smallest request InnerTube answers:
-        // it opens the TLS connection and fetches the client's version
-        // before the first character is typed.
+        // The suggestion endpoint is the smallest request InnerTube answers.
         let q = self.rp.query();
         if let Err(error) = self.block("warm", innertube::music_search_suggestion(&q, "a")) {
             tracing::debug!(%error, "music: warming the catalogue connection failed");
@@ -425,9 +384,7 @@ impl MusicBackend for RustyPipeBackend {
 
     fn home(&self) -> Result<HomeContent, BackendError> {
         let q = self.rp.query();
-        // Charts drive the primary sections (top + trending songs, top artists,
-        // genre playlists); new albums come from a second endpoint. Both are
-        // real YouTube-Music browse responses.
+        // Charts drive the primary sections; new albums come from a second endpoint.
         let charts = self.block("music charts", innertube::music_charts(&q, None))?;
         let new_albums = self
             .block("new albums", innertube::music_new_albums(&q))
@@ -601,8 +558,6 @@ mod bounded_transport_tests {
             let runtime = rquickjs::Runtime::new().expect("native QuickJS runtime");
             let context = rquickjs::Context::full(&runtime).expect("JavaScript context");
             context.with(|ctx| {
-                // Stream resolvers pass strings into JavaScript and read strings
-                // back. Exercise that ABI, including allocation and Unicode.
                 let result: String = ctx
                     .eval("Array.from('a🎵bc').reverse().join('')")
                     .expect("evaluate signature-style string transform");
@@ -632,7 +587,6 @@ mod bounded_transport_tests {
             );
         }
 
-        // Phase `external_text_is_utf8_safe_and_bounded`.
         {
             let text = "🎵".repeat(DESCRIPTION_LIMIT);
             let bounded = bounded_text(text, DESCRIPTION_LIMIT);

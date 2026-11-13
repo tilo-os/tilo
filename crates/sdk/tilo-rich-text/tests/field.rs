@@ -17,7 +17,7 @@ use ui::framework::testing::TestApp;
 use ui::framework::{ResourceApp, ViewCx};
 use ui::permissions::Role;
 use ui::tilo_actions::{Action, ActionError, Doc};
-use ui::tilo_resource::{Invoke, ModelError, Resource, child_resource_id, publish_child};
+use ui::tilo_resource::{Invoke, ModelError, Resource, child_resource_id};
 use ui::widget::Element;
 
 const ACTION_TYPE: &str = "test.message";
@@ -56,16 +56,6 @@ impl Resource for Message {
             Ok(Some((Value::Scalar(value), _))) => value.as_str().unwrap_or_default().to_owned(),
             _ => String::new(),
         })
-    }
-
-    /// The body, edited as a rich-text resource of its own.
-    fn children(_state: &String) -> Vec<ui::tilo_actions::ResourceSpec> {
-        vec![publish_child::<RichText, Self>(
-            &body_id(),
-            "Body",
-            None,
-            EditBody,
-        )]
     }
 
     fn initialize(doc: &mut Doc) -> Result<(), ModelError> {

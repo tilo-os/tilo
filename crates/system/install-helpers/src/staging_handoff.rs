@@ -1,38 +1,22 @@
-//! `tilo-staging-handoff`: the live-installer side of USB-free installation
-//! (design spec §6).
+//! `tilo-staging-handoff`: the live-installer side of USB-free installation.
 //!
-//! Tilo Imager stages a live installer on the same disk as the retained OS
-//! and leaves `/EFI/tilo-staging/handoff.json` on the staging ESP. That file
-//! is a *hint, never authority*: every subcommand here re-derives the facts it
-//! acts on from firmware variables, the partition table and the mount table,
-//! and treats the handoff only as the list of identities those facts must
-//! equal.
+//! Tilo Imager stages a live installer on the same disk as the retained OS and
+//! leaves `/EFI/tilo-staging/handoff.json` on the staging ESP. That file is a
+//! hint, never authority: every subcommand re-derives the facts it acts on from
+//! firmware variables, the partition table and the mount table, and treats the
+//! handoff only as the list of identities those facts must equal.
 //!
-//! Subcommands (all run as root from the live medium):
-//!
-//! * `detect --out FILE --error FILE`: before greetd, if the firmware loader
-//!   ran from a staging ESP whose handoff names that same ESP, publish a
-//!   validated copy for the unprivileged UI.
-//! * `check-install --handoff FILE --disk DEV --mode guided|erase|prepared
-//!   [...]`: `tilo-install`'s replacement for the live-disk refusal. Prints
-//!   `KEY=VALUE` facts on success; any mismatch is a refusal (exit 1).
-//! * `check-mounts --handoff FILE --disk DEV`: only the two staging
-//!   partitions may be mounted from the target disk.
-//! * `write-reclaim-record --handoff FILE --target-var DIR [...]`: record the
-//!   identities `tilo-staging-reclaim` needs on the installed system.
-//! * `firmware-finalize --handoff FILE --target-esp-partuuid UUID [...]`:
-//!   after a successful install, delete the owned staging `Boot####` when its
-//!   bytes still point at the staging ESP, then set `BootNext` to the
-//!   installed target. `BootOrder` is never written except to undo
-//!   efibootmgr's own insertion when it had to create the target entry.
-//!
-//! It also carries the installer backend's small checks and writes
-//! ([`backend_commands`]), so its shell scripts need no interpreter.
+//! `detect` publishes a validated copy for the unprivileged UI; `check-install`
+//! prints the `KEY=VALUE` facts `tilo-install` needs; `check-mounts` refuses a
+//! target disk with anything but the staging partitions mounted;
+//! `write-reclaim-record` records what `tilo-staging-reclaim` needs;
+//! `firmware-finalize` deletes the owned staging `Boot####` and points
+//! `BootNext` at the installed target. It also carries the installer backend's
+//! small checks and writes ([`backend_commands`]).
 //!
 //! The firmware variables, the staging ESP, lsblk and efibootmgr are reached
-//! through [`Host`]; the shipped binary takes them from the system only. The
-//! `staging-handoff-fixture` example takes the old `TILO_STAGING_*` test
-//! seams for the loopback proofs.
+//! through [`Host`]; the shipped binary takes them from the system only, and
+//! the `staging-handoff-fixture` example supplies them for the loopback proofs.
 
 use std::ffi::OsString;
 use std::fmt::Write as _;
@@ -137,7 +121,6 @@ impl From<crate::Error> for Fail {
     }
 }
 
-/// A subcommand's result.
 pub type Result<T> = std::result::Result<T, Fail>;
 
 fn refuse<T>(message: impl Into<String>) -> Result<T> {
@@ -152,16 +135,14 @@ pub struct Ran {
     pub stderr: String,
 }
 
-/// The live installer's firmware, disks and tools. The provided methods are
-/// the production behaviour; the tests and the loopback proofs' fixture
-/// example replace them.
+/// The live installer's firmware, disks and tools. The provided methods are the
+/// production behaviour; the tests and the loopback proofs' fixture example
+/// replace them.
 pub trait Host {
-    /// The efivarfs directory.
     fn efivars(&self) -> PathBuf {
         PathBuf::from("/sys/firmware/efi/efivars")
     }
 
-    /// The efibootmgr program.
     fn efibootmgr(&self) -> String {
         "efibootmgr".into()
     }
@@ -177,10 +158,6 @@ pub trait Host {
     }
 
     /// The handoff bytes on the ESP the loader actually ran from.
-    ///
-    /// # Errors
-    /// [`Fail::NotFound`] when the ESP or its handoff is gone; a refusal when
-    /// the partition is not an ESP block device.
     fn esp_handoff(&self, esp_partuuid: &str) -> Result<Vec<u8>> {
         let device = format!("/dev/disk/by-partuuid/{esp_partuuid}");
         if !Path::new(&device).exists() {
@@ -257,7 +234,6 @@ pub trait Host {
     }
 }
 
-/// The live installer as it is.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct System;
 
@@ -500,10 +476,7 @@ impl Handoff {
     }
 }
 
-/// Validates a parsed handoff.
-///
-/// # Errors
-/// A refusal naming the first field that differs from schema 1.
+/// Validates a parsed handoff against schema 1.
 pub fn validate_handoff(raw: &Value) -> Result<Handoff> {
     let Some(raw) = raw.as_object().filter(|map| {
         (map.len() == HANDOFF_KEYS.len()
@@ -626,9 +599,6 @@ fn validate_migration(raw: &Value) -> Result<Value> {
 }
 
 /// Parses and validates handoff bytes.
-///
-/// # Errors
-/// Oversized, not UTF-8, not JSON, a repeated field, or invalid.
 pub fn parse_handoff(data: &[u8]) -> Result<Handoff> {
     if data.len() > HANDOFF_MAX_BYTES {
         return refuse(format!("handoff is larger than {HANDOFF_MAX_BYTES} bytes"));
@@ -657,9 +627,6 @@ pub fn parse_handoff(data: &[u8]) -> Result<Handoff> {
 }
 
 /// A regular file of at most 64 KiB, never through a link.
-///
-/// # Errors
-/// [`Fail::NotFound`] when absent; a refusal when not regular or too large.
 pub fn read_bounded(path: &Path) -> Result<Vec<u8>> {
     let descriptor = rustix::fs::open(
         path,
@@ -795,7 +762,7 @@ fn uuid_le(signature: &[u8]) -> Option<String> {
 }
 
 /// Decodes an `EFI_LOAD_OPTION` (without efivarfs attributes) into its single
-/// GPT hard-drive node. Anything else (MBR, several HD nodes, a truncated
+/// GPT hard-drive node; anything else (MBR, several HD nodes, a truncated
 /// path) is not a staging entry and decodes to `None`.
 #[must_use]
 pub fn decode_load_option(data: &[u8]) -> Option<BootEntry> {
@@ -963,12 +930,9 @@ fn children(node: &Map<String, Value>) -> Vec<Map<String, Value>> {
         .unwrap_or_default()
 }
 
-/// Fills GPT identities lsblk left empty (no udev database) from sfdisk.
-///
-/// lsblk takes PTTYPE/PTUUID/PARTUUID/PARTTYPE from udev; without a udev
-/// database (early boot, containers) they come back empty. sfdisk reads the
-/// same facts from the GPT itself. Only missing fields are filled; a field
-/// both tools report must agree, or the disk is refused.
+/// Fills GPT identities lsblk left empty (no udev database) from sfdisk. Only
+/// missing fields are filled; a field both tools report must agree, or the
+/// disk is refused.
 fn with_gpt_facts(
     host: &dyn Host,
     mut node: Map<String, Value>,
@@ -1275,7 +1239,6 @@ fn check_mounts(
     Ok(())
 }
 
-/// The guided plan `check-install` checks.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Plan {
     pub free_start_bytes: i128,
@@ -1407,10 +1370,8 @@ pub struct Printed {
     pub stderr: String,
 }
 
-/// `detect`: publishes a validated copy of the booted staging ESP's handoff.
-///
-/// # Errors
-/// Only an operating-system error; a mismatch is published to `error`.
+/// `detect`: publishes a validated copy of the booted staging ESP's handoff;
+/// only an operating-system error fails it, a mismatch is published to `error`.
 pub fn detect(host: &dyn Host, out: &Path, error: &Path) -> Result<Printed> {
     for stale in [out, error] {
         match fs::remove_file(stale) {
@@ -1480,8 +1441,8 @@ pub struct TargetRoot {
     pub sector_size: i128,
 }
 
-/// `write-reclaim-record`: what `tilo-staging-reclaim` needs, in the
-/// installed `/var`.
+/// `write-reclaim-record`: what `tilo-staging-reclaim` needs, in the installed
+/// `/var`.
 pub fn write_reclaim_record(
     handoff_path: &Path,
     target_var: &Path,
@@ -1530,8 +1491,9 @@ pub fn write_reclaim_record(
         &canonical(&record),
         0o600,
     )?;
-    // Preserve every migration policy, including legacy copy intent, for first boot.
-    // Use the same private, no-clobber publication as authenticated retained delivery.
+    // Preserve every migration policy, including legacy copy intent, for first
+    // boot; use the same private, no-clobber publication as authenticated retained
+    // delivery.
     retained_commands::deliver_retained(
         handoff.migration.as_ref(),
         target_var,
@@ -1606,7 +1568,6 @@ fn target_entries(host: &dyn Host, target_esp: &str) -> Result<Vec<String>> {
     Ok(ids)
 }
 
-/// The installed target `firmware-finalize` points the next restart at.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Finalize {
     pub target_esp_partuuid: String,
@@ -1615,10 +1576,9 @@ pub struct Finalize {
     pub loader: String,
 }
 
-/// `firmware-finalize`: removes the owned staging entry when it is still
-/// ours, and sets `BootNext` to the installed Tilo once. Returns the exit
-/// status (0, or 3 when the staging entry was left in place) and what it
-/// printed.
+/// `firmware-finalize`: removes the owned staging entry when it is still ours,
+/// and sets `BootNext` to the installed Tilo once. Returns the exit status (0,
+/// or 3 when the staging entry was left in place) and what it printed.
 pub fn firmware_finalize(
     host: &dyn Host,
     handoff_path: &Path,
@@ -1876,8 +1836,8 @@ fn parse_sub(command: &Command, rest: &[OsString]) -> std::result::Result<args::
     }
 }
 
-/// A parsed subcommand's run: its exit status and what it printed, or a
-/// usage outcome (help or error) already decided by the parser.
+/// A parsed subcommand's run: its exit status and what it printed, or a usage
+/// outcome (help or error) already decided by the parser.
 type SubOutcome = std::result::Result<Outcome, Outcome>;
 
 /// The outcome of a subcommand's `result`, with what it printed.
@@ -2073,7 +2033,6 @@ pub fn run(host: &dyn Host, args: &[OsString]) -> Outcome {
     }
 }
 
-/// Runs the command line and prints what it printed.
 pub fn main(host: &dyn Host, args: &[OsString]) -> ExitCode {
     let outcome = run(host, args);
     print!("{}", outcome.stdout);

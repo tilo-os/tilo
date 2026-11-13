@@ -29,7 +29,6 @@ use super::{DEV_STOP_REQUESTED, DevCandidate, newer_source_during_build, termina
 /// Set on the reload library's Cargo build: where the wrapper writes the
 /// library's rustc command.
 const CAPTURE_ENV: &str = "TILO_DEV_RUSTC_CAPTURE";
-/// The crate whose command is recorded. Every other rustc passes through.
 const CAPTURE_CRATE_ENV: &str = "TILO_DEV_RUSTC_CRATE";
 const CAPTURE_FILE: &str = "rustc-command.json";
 /// Appended to a staged library's path for the file the app writes once that
@@ -38,7 +37,6 @@ pub(crate) const APP_TIMINGS_SUFFIX: &str = ".timings.json";
 /// Set on a fast rebuild's rustc, which runs `tilo-app` as its linker: the
 /// linker to hand the link to.
 const LINKER_ENV: &str = "TILO_DEV_LINKER";
-/// Directories whose Rust dylibs the link leaves out, as a search path.
 const LINKER_SKIP_ENV: &str = "TILO_DEV_LINKER_SKIP";
 /// Variables that describe the Cargo process rather than the compilation.
 /// The jobserver descriptors in particular do not exist outside Cargo.
@@ -180,7 +178,6 @@ pub(crate) fn capture_env(session: &Path, crate_name: &str) -> Vec<(OsString, Os
     ]
 }
 
-/// One recorded rustc invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RustcCommand {
     program: PathBuf,
@@ -298,7 +295,6 @@ impl RustcCommand {
     }
 }
 
-/// A recorded library command and the files its last run read.
 #[derive(Debug)]
 pub(crate) struct FastRebuild {
     command: RustcCommand,
@@ -377,13 +373,9 @@ fn dep_info_sources(text: &str, cwd: &Path) -> HashSet<PathBuf> {
     sources
 }
 
-/// Result of a fast rebuild.
 pub(crate) enum FastOutcome {
-    /// The candidate, or a newer edit that cancelled it.
     Done(DevCandidate),
-    /// rustc reported errors in the app's own code; Cargo would report the same.
     Failed(anyhow::Error),
-    /// Something outside the app's code went wrong. Cargo decides.
     Fallback(String),
 }
 
@@ -481,7 +473,6 @@ pub(crate) fn rebuild_with_rustc(
     }
 }
 
-/// What a direct rustc run printed.
 #[derive(Default)]
 struct RustcReport {
     library: Option<PathBuf>,
@@ -554,7 +545,6 @@ fn unix_ms(at: SystemTime) -> f64 {
     ms_between(SystemTime::UNIX_EPOCH, at)
 }
 
-/// The phases a reload reports, in order.
 pub(crate) const PHASES: [&str; 11] = [
     "debounce",
     "cargo",
@@ -569,7 +559,6 @@ pub(crate) const PHASES: [&str; 11] = [
     "present",
 ];
 
-/// One reload, from the change the watcher saw to the first presented frame.
 #[derive(Debug, Clone)]
 pub(crate) struct ReloadTimings {
     /// `rustc` for the fast path, `cargo` otherwise.
@@ -702,7 +691,6 @@ pub(crate) struct DevLoop {
     pub baseline: HashMap<PathBuf, (SystemTime, u64)>,
     /// Set when the watcher saw a change; taken by the build it starts.
     pub changed_at: Option<SystemTime>,
-    /// Bumped for every source change, so a build can tell it went stale.
     pub source_revision: Arc<AtomicU64>,
     /// Cargo profile of every build; `None` is Cargo's `dev`.
     pub profile: Option<String>,
@@ -710,7 +698,6 @@ pub(crate) struct DevLoop {
     pub reports: Vec<serde_json::Value>,
 }
 
-/// How long a reload waits for the app to report its first frame.
 const APP_REPORT_DEADLINE: Duration = Duration::from_secs(30);
 
 impl DevLoop {
@@ -742,13 +729,11 @@ impl DevLoop {
         self.timings_enabled.then(|| ReloadTimings::new(changed))
     }
 
-    /// Wait for the app's side of a reload that was just signalled.
     pub(crate) fn signalled(&mut self, mut timings: ReloadTimings) {
         timings.signalled();
         self.waiting.push((timings, SystemTime::now()));
     }
 
-    /// Report every signalled reload the app has finished, or given up on.
     pub(crate) fn poll(&mut self) {
         let now = SystemTime::now();
         let waiting = std::mem::take(&mut self.waiting);

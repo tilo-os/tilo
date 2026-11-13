@@ -1,0 +1,58 @@
+# The relay's front in the Lounge, as tilo.sh runs it: the same Caddy,
+# routing the relay's paths as production's tls container does
+# (tilo/infra apps/tilo-sh-relay/Caddyfile), on this machine's loopback.
+#
+# Production's names become loopback ports (stack.sh sets them):
+#   eu1.tilo.sh       http://127.0.0.1:{$TILO_SH_RELAY_PORT}
+#   live-eu1.tilo.sh  http://127.0.0.1:{$TILO_SH_LIVE_PORT}
+#   tilo.sh           http://tilo.localhost:{$TILO_SH_SITE_PORT}
+# all plain HTTP. A browser treats localhost, its subdomains and loopback
+# addresses as secure contexts, so the page runs as it does on tilo.sh
+# (passkeys, WebCrypto, service workers) with no certificate for anyone to
+# trust or click through. The one thing that needs TLS is WebTransport, and
+# the relay serves that itself with a short-lived certificate whose hash the
+# page is handed (serverCertificateHashes).
+#
+# The API server is not behind it: production serves it as plain HTTP behind
+# Cloudflare, and here it is plain HTTP on http://localhost.
+{
+	admin off
+	auto_https off
+	http_port {$TILO_SH_CADDY_HTTP_PORT}
+}
+
+http://127.0.0.1:{$TILO_SH_RELAY_PORT} {
+	@host path /mode /avatars /avatars/* /discord/callback
+	handle @host {
+		reverse_proxy 127.0.0.1:{$TILO_SH_ROUTES_PORT}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:{$TILO_SH_PLAIN_PORT}
+	}
+}
+
+# The relay's live plane: its packet relay, which pages reach over
+# websockets (TILO_ROOMS_LIVE) and the relay's own endpoint uses as its home.
+http://127.0.0.1:{$TILO_SH_LIVE_PORT} {
+	reverse_proxy 127.0.0.1:{$TILO_SH_PACKET_PORT}
+}
+
+# The site: the web entry's image serves plain HTTP, as it does behind
+# Cloudflare, and this plays Cloudflare's edge in front of it.
+#
+# It is a name under localhost, which a browser resolves to loopback itself
+# and treats as a secure context: a passkey's relying party is the page's
+# host name, which an address cannot be.
+#
+# `/owner/` is `stack.sh owner`'s page, here rather than at an address of its
+# own because it reads the Lounge's key out of the site's localStorage, which
+# only this origin has. It listens while that command waits for its link.
+http://tilo.localhost:{$TILO_SH_SITE_PORT} {
+	@owner path /owner/*
+	handle @owner {
+		reverse_proxy 127.0.0.1:{$TILO_SH_OWNER_PORT}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:{$TILO_SH_WEB_PORT}
+	}
+}

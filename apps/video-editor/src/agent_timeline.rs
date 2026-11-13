@@ -1,20 +1,14 @@
-//! Building and reading a cut by name, for a caller with no screen and no
-//! files: an agent in a workspace.
+//! Building and reading a cut by name, for a caller with no screen and no files: an agent in
+//! a workspace.
 //!
-//! A person imports a file through a chooser, drags a source onto a lane and
-//! reads the timeline off the screen. An agent has none of those, so the
-//! project offers the same edits by what they name instead: workspace content
-//! brought into the bin ([`effect`] answering `import-content`), a bin
-//! source placed by its id or name (`add-clip`), a placed clip moved, set or
-//! removed, a title added and restyled, and the timeline read back as JSON
-//! (`read`, and `export-timeline-content` keeping it as content). The verbs
-//! live on [`Project`] in [`crate::resource`] and run the editing math here,
-//! so they replicate, undo and replay like a person's edits; [`answer`] tells
-//! the caller what each did.
+//! Where a person imports through a chooser and drags clips, an agent names what it means:
+//! workspace content brought into the bin, a source placed by id or name, a clip moved, set
+//! or removed, a title added, and the timeline read back as JSON. The verbs live on
+//! [`Project`] in [`crate::resource`] and run the editing math here, so they replicate, undo
+//! and replay like a person's edits; [`answer`] tells the caller what each did.
 //!
-//! A source imported from content stores its content address
-//! (`tilo.content:<hash>`) as its path: what a render on the workspace's host
-//! reads its bytes by, where a file path would mean nothing.
+//! A source imported from content stores the reference that opens it as its path, which is
+//! what a render on the workspace's host reads its bytes by.
 
 use std::io::Read as _;
 
@@ -71,24 +65,9 @@ pub fn content_media_id(hash: &str) -> Uuid {
     uuid::Builder::from_random_bytes(bytes).into_uuid()
 }
 
-/// The hash a content address names: `tilo.content:<hash>`, or the bare hash.
-pub fn content_hash_of(address: &str) -> Result<String, String> {
-    let address = address.trim();
-    let hash = tilo_actions::content_hash(address)
-        .unwrap_or(address)
-        .to_ascii_lowercase();
-    if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
-        Ok(hash)
-    } else {
-        Err(format!(
-            "`{address}` names no content: give `tilo.content:<hash>`"
-        ))
-    }
-}
-
-/// The content address of a source imported from content, `None` for a file.
+/// The content reference a source was imported from, `None` for a file.
 fn content_of(media: &MediaItem) -> Option<&str> {
-    tilo_actions::content_hash(&media.path).map(|_| media.path.as_str())
+    tilo_actions::named_reference(&media.path).map(|_| media.path.as_str())
 }
 
 /// The kind and number a lane's name reads as: `V2` a second video track,
@@ -205,11 +184,9 @@ impl Project {
         }
     }
 
-    /// The clip `named` names: its id, or its source (by id, by name, or a
-    /// title by its words; case and spacing aside) when that source is on
-    /// the timeline once, or once starting at the time written after it
-    /// (`shot-b.mp4@3`). A picture and the sound linked to it are one
-    /// placement, named by the picture: every linked edit takes both.
+    /// Its id, or its source (by id, by name, or a title by its words) when that source is on
+    /// the timeline once, or once starting at the time written after it (`shot-b.mp4@3`). A
+    /// picture and the sound linked to it are one placement, named by the picture.
     pub(crate) fn clip_named(&self, named: &str) -> Result<ClipId, Refusal> {
         let named = named.trim();
         if let Ok(id) = named.parse::<Uuid>()
@@ -338,11 +315,9 @@ impl Project {
         }
     }
 
-    /// The track `named`, by id or name, which must carry `kind`; with no
-    /// name, the lowest unlocked track of `kind` (V1: the cut, under the
-    /// titles and overlays on the tracks above it). A name no track has
-    /// that reads as a lane, V1 or A2, makes that track, as no name makes
-    /// the first: a new project has none, and its first clip names V1.
+    /// By id or name, which must carry `kind`; with no name, the lowest unlocked track of that
+    /// kind (V1: the cut, under the titles and overlays). A name no track has that reads as a
+    /// lane, V1 or A2, makes that track: a new project has none.
     fn lane_for(&mut self, named: Option<&str>, kind: TrackKind) -> Result<TrackId, Refusal> {
         let Some(named) = named.map(str::trim).filter(|named| !named.is_empty()) else {
             let lowest = self
@@ -1121,8 +1096,7 @@ pub fn facts(project: &Project) -> Result<Value, String> {
     Ok(facts_json(project))
 }
 
-/// `read`: the timeline, or one clip, source or track (by id, or a track or
-/// source by name) the caller names.
+/// `read`: the timeline, or one clip, source or track the caller names.
 ///
 /// # Errors
 /// Returns that `item` names nothing in the project.
@@ -1280,43 +1254,48 @@ pub fn effect<H: 'static>(
     }
 }
 
-/// The bin source the content at `address` makes in `project`: the one
-/// already imported from it, else a new one from its container's metadata.
+/// The content is read through the reference it carries, so a workspace that keeps content
+/// sealed is read as the media it holds, never as the ciphertext under its address; the
+/// source's path is that same reference, so a render on the host opens it too.
 pub fn imported(
     project: &Project,
     store: &ContentStore,
-    address: &str,
+    named: &str,
     name: Option<&str>,
     duration: Option<f64>,
 ) -> Result<MediaItem, String> {
-    let hash = content_hash_of(address)?;
-    let id = content_media_id(&hash);
+    let refusal = || format!("`{named}` names no content: give `tilo.content:<reference>`");
+    let reference = tilo_actions::named_reference(named).ok_or_else(refusal)?;
+    // The address is what names the content the same on every device, so the
+    // same media keeps its id wherever it is imported.
+    let address = ui::framework::content::content_address(reference).ok_or_else(refusal)?;
+    let id = content_media_id(&address);
     if let Some(existing) = project.media(id) {
         return Ok(existing.clone());
     }
     let mut head = Vec::new();
     store
-        .open(&hash)
-        .ok_or_else(|| format!("content `{hash}` is not held in this workspace"))?
+        .open(reference)
+        .ok_or_else(|| format!("content `{reference}` is not held in this workspace"))?
         .take(PROBE_BYTES)
         .read_to_end(&mut head)
-        .map_err(|error| format!("content `{hash}` could not be read: {error}"))?;
+        .map_err(|error| format!("content `{reference}` could not be read: {error}"))?;
     let name = name.map(str::trim).filter(|name| !name.is_empty());
     let hint = std::path::Path::new(name.unwrap_or("content"));
     let probed = crate::probe::probe_bytes(&head, hint)
-        .map_err(|error| format!("content `{hash}` {error}"))?;
+        .map_err(|error| format!("content `{reference}` {error}"))?;
     let duration = match (probed.duration, duration) {
         (known, _) if known > 0.0 => known,
         (_, Some(given)) if given.is_finite() && given > 0.0 => given,
         _ => {
             return Err(format!(
-                "content `{hash}`'s container does not say how long it lasts: give duration"
+                "content `{reference}`'s container does not say how long it lasts: give duration"
             ));
         }
     };
-    let short: String = hash.chars().take(8).collect();
+    let short: String = address.chars().take(8).collect();
     let name = name.map_or_else(
-        || format!("{}-{short}", probed.kind.label().to_ascii_lowercase()),
+        || format!("{}-{short}", probed.kind.as_str()),
         str::to_owned,
     );
     Ok(MediaItem {
@@ -1330,7 +1309,7 @@ pub fn imported(
         // import carries it.
         fps: probed.fps,
         palette: u8::try_from(project.media.len() % 7).unwrap_or(0),
-        path: tilo_actions::content_resource(&hash).unwrap_or_default(),
+        path: tilo_actions::content_resource(reference).unwrap_or_default(),
         text: None,
         has_audio: probed.has_audio,
     })

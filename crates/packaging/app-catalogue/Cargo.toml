@@ -21,6 +21,8 @@ app-fleet = { path = "../app-fleet" }
 # the signed manifest it was admitted with.
 package-store = { path = "../package-store" }
 tilo-app-package = { path = "../tilo-app-package" }
+# What an app is called in a language: the one lookup every surface naming it shares.
+collab-types = { path = "../../collab/collab-types" }
 # The ids an app's records were kept under before it was renamed.
 tilo-action-policy = { path = "../../collab/action-policy" }
 # File types, MIME types and URI schemes as the installed manifest claims

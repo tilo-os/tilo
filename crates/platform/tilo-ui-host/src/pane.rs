@@ -2,9 +2,9 @@
 
 use ui::widget::{Decorator, Element, StructureChange, Widget};
 
-/// The content of one column of the shell. The window reaches it by type through the shell
-/// (`NavShell::content_mut::<Pane>()`) and reconciles what it holds, so a view that runs again
-/// keeps its widgets, their focus and their scroll.
+/// A column's content. The window reaches it by type through the shell
+/// (`NavShell::content_mut::<Pane>()`) and reconciles it, so a view that runs again keeps its
+/// widgets, focus and scroll.
 pub struct Pane {
     inner: Element,
     /// How what the pane shows changed since the host last read it.
@@ -12,8 +12,7 @@ pub struct Pane {
 }
 
 impl Pane {
-    /// A pane showing `inner`. A new pane reports nothing: whoever shows it (a shell taking a
-    /// column, a container taking a child) reports that.
+    /// A new pane reports no structure change; whoever shows it reports that.
     #[must_use]
     pub fn new(inner: Element) -> Self {
         Self {
@@ -22,27 +21,21 @@ impl Pane {
         }
     }
 
-    /// Show `inner`, another content altogether, instead of what the pane shows: the window
-    /// rebuilds and repaints whole.
     pub fn set(&mut self, inner: Element) {
         self.inner = inner;
         self.structure = StructureChange::Rebuild;
     }
 
-    /// Show `inner` in place of what the pane shows, as a reconciler does when the widget it
-    /// had could not take the change: the new content draws itself whole, and the window
-    /// repaints where the boxes it moved were and are.
+    /// The new content draws whole; the window repaints where its boxes were and are.
     pub fn replace(&mut self, inner: Element) {
         self.inner = inner;
         self.structure = self.structure.join(StructureChange::Described);
     }
 
-    /// What the pane shows, to reconcile it in place.
     pub fn content_mut(&mut self) -> &mut Element {
         &mut self.inner
     }
 
-    /// What the pane shows.
     #[must_use]
     pub fn content(&self) -> &Element {
         &self.inner
@@ -69,7 +62,5 @@ impl Decorator for Pane {
         let own = std::mem::take(&mut self.structure);
         own.join(self.inner.take_structure_change())
     }
-    // No name of its own: a pane is where the window reaches a column's content, not a box
-    // of the layout, so it reads as what it shows (a view whose body is `layers` is Layers to
-    // whatever inspects the window, and its children may cover each other).
+    // A pane has no name of its own: it reads as what it shows.
 }

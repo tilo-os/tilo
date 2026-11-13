@@ -17,19 +17,17 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use serde_json::json;
 use tilo_sheets::portal::PortalEffect;
 
-use common::{Repl, on_screen, press_sheet, private_home, seeded_session, until};
+use crate::common::{Repl, on_screen, press_sheet, private_home, seeded_session, until};
 
 /// A task the tasks app's first scenario seeded, by its title: found through `find(tasks.Task)`,
 /// whichever of its fields a program reads.
 const SEEDED_TASK: &str = "Take the bins out";
 
 /// A note the notes app's record holds: an app's record a task reads like any other.
-const NOTE_TITLE: &str = common::NOTE_TITLE;
+const NOTE_TITLE: &str = crate::common::NOTE_TITLE;
 
 #[test]
 fn the_persons_repl_finds_the_workspaces_tasks() {

@@ -1,7 +1,3 @@
-//! Undo of edits made through the rich-text resource's own actions — the
-//! door a model, a script or the palette uses — restores the document as it
-//! was, formatting included.
-
 use tilo_document::action::{MarkVal, RegionKind, RichTextAction, Span};
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::Invoke;
@@ -22,7 +18,6 @@ fn texts(app: &TestApp<WordProcessorApp>) -> Vec<String> {
         .collect()
 }
 
-/// A record holding `markdown`, loaded through `apply`.
 fn open_with(markdown: &str) -> TestApp<WordProcessorApp> {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<WordProcessorApp>::new().unwrap();
@@ -34,7 +29,6 @@ fn open_with(markdown: &str) -> TestApp<WordProcessorApp> {
     app
 }
 
-/// The id of the first block whose text starts with `prefix`.
 fn block(app: &TestApp<WordProcessorApp>, prefix: &str) -> String {
     snapshot(app)
         .blocks
@@ -78,14 +72,12 @@ fn undo_takes_back_only_your_own_steps_around_a_collaborators_words() {
     app.harness().type_text("hello");
     app.harness().key("Enter");
     assert_eq!(texts(&app), ["hello", ""]);
-    // A collaborator types into the new paragraph.
     let new = snapshot(&app).blocks[1].id.clone();
     app.merge_peer_edit(|doc| {
         word_processor::model::apply(doc, &splice(&new, 0, 0, "their words")).unwrap();
     });
     assert_eq!(texts(&app), ["hello", "their words"]);
 
-    // Undo the Enter, then the word: the collaborator's words stay.
     assert!(app.undo());
     assert!(app.undo());
     assert_eq!(texts(&app), ["", "their words"]);
@@ -111,8 +103,6 @@ fn undoing_a_group_of_splices_around_a_bold_run_restores_its_text() {
     );
     let before = snapshot(&app);
 
-    // Rename "Falcon" to "Osprey": insert the new name inside the bold run
-    // (so it stays bold), then delete the old one on both sides of it.
     group(
         &mut app,
         &[

@@ -168,6 +168,17 @@ impl Placed {
         }
     }
 
+    /// The ground it stands on moved (a canvas panned or zoomed under it): it stands at `rect`
+    /// at once, its coming or going untouched, as the windows in it do. `false` for one never
+    /// placed, which [`Self::follow`] places.
+    pub fn carry(&mut self, rect: Rect) -> bool {
+        if self.settled {
+            self.target = rect;
+            self.rect.snap(rect);
+        }
+        self.settled
+    }
+
     /// Jump to `rect` and `open`, at rest: a capture or a test posing a surface where it stands.
     pub fn snap(&mut self, rect: Rect, open: bool) {
         self.settled = true;

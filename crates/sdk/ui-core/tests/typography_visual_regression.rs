@@ -131,12 +131,7 @@ fn lay_out(case: Case) -> Laid {
     let state = State::new();
     widget.sync(&state.doc, &state.root);
 
-    let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
-        tilo_ui::font_catalog::checkout_root(),
-        "en-US",
-    );
-    let mut text_renderer =
-        TextRenderer::with_font_catalog(&catalog).expect("checked-in typography font catalog");
+    let mut text_renderer = tilo_ui::font_catalog::fixture_renderer();
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let node = widget.build_layout(&mut taffy, &theme, &mut node_map);

@@ -31,38 +31,15 @@ struct Authority {
     input: Arc<InstalledRetainedLaunchInput>,
     cancel: Arc<AtomicBool>,
     context: [u8; 32],
-    replacement: Option<Arc<super::retained_selected_edit::RootSelectedReplacementSeed>>,
     native_owner: Mutex<Option<RetainedNativeOwner>>,
 }
 impl ServiceAuthority for Authority {
     fn check(&self) -> io::Result<()> {
         self.input.revalidate(&self.cancel)?;
-        if let Some(seed) = &self.replacement {
-            if !seed.uses_input(&self.input) {
-                return Err(refused());
-            }
-            seed.check()?;
-        }
         Ok(())
     }
 }
 impl RetainedIoAuthority for Authority {
-    fn native_history_verifier(&self) -> io::Result<Option<File>> {
-        self.check()?;
-        self.replacement
-            .as_ref()
-            .map(|seed| seed.verifier_file())
-            .transpose()
-    }
-
-    fn selected_replacement_permit(&self) -> io::Result<Option<File>> {
-        self.check()?;
-        self.replacement
-            .as_ref()
-            .map(|seed| seed.permit_file())
-            .transpose()
-    }
-
     fn source_credentials(&self) -> io::Result<RetainedIoCredentials> {
         self.check()?;
         let facts = self.input.original();
@@ -106,18 +83,7 @@ impl RetainedIoAuthority for Authority {
 }
 /// Must live on the root controller's existing background job, never UI paint.
 /// Dropping cancels and joins; a timeout cannot release the protected source.
-mod pending_handoff;
-pub(super) use pending_handoff::PendingHandoff;
-struct SourceLifetimeGuard(Arc<AtomicBool>);
-impl Drop for SourceLifetimeGuard {
-    fn drop(&mut self) {
-        self.0.store(false, std::sync::atomic::Ordering::Release);
-    }
-}
 pub(super) struct RetainedSourceWorker {
-    source_live: Arc<AtomicBool>,
-    read_input: Option<Arc<InstalledRetainedLaunchInput>>,
-    replacement_seed: Option<Arc<super::retained_selected_edit::RootSelectedReplacementSeed>>,
     cancellation: ServiceCancellation,
     job: Option<JoinHandle<SupervisedRun>>,
     key: ServiceLeaseKey,
@@ -141,7 +107,7 @@ impl RetainedSourceWorker {
         input.revalidate(&cancel)?;
         let projection =
             SourceProjection::selected(input.directory(), name, &input.binding().context_sha256)?;
-        Self::start_source(input, projection, false, cancel, None)
+        Self::start_source(input, projection, false, cancel)
     }
     /// Admit only the actor's actual protected Home projection, never a path
     /// or a directory inferred from a selected file.
@@ -152,30 +118,13 @@ impl RetainedSourceWorker {
         input.revalidate(&cancel)?;
         let projection =
             SourceProjection::home(input.directory(), &input.binding().context_sha256)?;
-        Self::start_source(input, projection, true, cancel, None)
-    }
-    /// Fresh editor-only source bootstrap, holding the genuine root seed for
-    /// the entire service lifetime. Ordinary Home has no replacement permit.
-    pub(super) fn start_home_for_editor(
-        input: Arc<InstalledRetainedLaunchInput>,
-        cancel: Arc<AtomicBool>,
-        seed: Arc<super::retained_selected_edit::RootSelectedReplacementSeed>,
-    ) -> io::Result<(Self, UnixStream)> {
-        input.revalidate(&cancel)?;
-        if !seed.uses_input(&input) {
-            return Err(refused());
-        }
-        seed.check()?;
-        let projection =
-            SourceProjection::home(input.directory(), &input.binding().context_sha256)?;
-        Self::start_source(input, projection, true, cancel, Some(seed))
+        Self::start_source(input, projection, true, cancel)
     }
     fn start_source(
         input: Arc<InstalledRetainedLaunchInput>,
         projection: SourceProjection,
         home: bool,
         cancel: Arc<AtomicBool>,
-        replacement: Option<Arc<super::retained_selected_edit::RootSelectedReplacementSeed>>,
     ) -> io::Result<(Self, UnixStream)> {
         if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(refused());
@@ -183,13 +132,10 @@ impl RetainedSourceWorker {
         input.revalidate(&cancel)?;
         let source_view = projection.context_sha256();
         let file = projection.duplicate_file()?;
-        let read_input = input.clone();
-        let replacement_seed = replacement.clone();
         let authority: Arc<dyn RetainedIoAuthority> = Arc::new(Authority {
             input,
             cancel,
             context: source_view,
-            replacement,
             native_owner: Mutex::new(None),
         });
         let selected_file = file.try_clone()?;
@@ -233,12 +179,9 @@ impl RetainedSourceWorker {
         };
         let child_cancel = cancellation.clone();
         let child_key = key.clone();
-        let source_live = Arc::new(AtomicBool::new(true));
-        let thread_live = source_live.clone();
         let job = std::thread::Builder::new()
             .name("retained-source-owner".into())
             .spawn(move || {
-                let _source_lifetime = SourceLifetimeGuard(thread_live);
                 owned_service::run_retained_io_connected(
                     launch,
                     admission,
@@ -248,9 +191,6 @@ impl RetainedSourceWorker {
                 )
             })?;
         let mut owner = Self {
-            source_live,
-            read_input: Some(read_input),
-            replacement_seed,
             cancellation,
             job: Some(job),
             key,
@@ -299,21 +239,6 @@ impl RetainedSourceWorker {
     pub(super) fn source_view_sha256(&self) -> [u8; 32] {
         self.source_view
     }
-    /// Actual live service observation; retaining a context digest or endpoint
-    /// Option alone is insufficient. The caller retains this owned worker.
-    pub(super) fn check_current_custody(&self) -> io::Result<owned_service::ServiceCustody> {
-        if self.stopped || self.job.as_ref().is_none_or(JoinHandle::is_finished) {
-            return Err(refused());
-        }
-        let endpoint = self.endpoint.as_ref().ok_or_else(refused)?;
-        let before = endpoint.custody()?;
-        self.authority.as_ref().ok_or_else(refused)?.check()?;
-        let after = endpoint.custody()?;
-        if before != after || self.job.as_ref().is_none_or(JoinHandle::is_finished) {
-            return Err(refused());
-        }
-        Ok(after)
-    }
     pub(super) fn retire(&mut self) -> io::Result<()> {
         self.cancellation.cancel();
         if !self.stopped {
@@ -360,8 +285,6 @@ impl RetainedSourceWorker {
         self.endpoint.take();
         self.selected_file.take();
         self.authority.take();
-        self.read_input.take();
-        self.replacement_seed.take();
         Ok(())
     }
 }
@@ -378,8 +301,6 @@ impl Drop for RetainedSourceWorker {
             std::mem::forget(self.endpoint.take());
             std::mem::forget(self.selected_file.take());
             std::mem::forget(self.authority.take());
-            std::mem::forget(self.read_input.take());
-            std::mem::forget(self.replacement_seed.take());
             std::mem::forget(self.parent.take());
             if let Some(working) = self.working.take() {
                 let _ = working.keep();
@@ -420,9 +341,6 @@ mod retirement_tests {
             }
         });
         RetainedSourceWorker {
-            source_live: Arc::new(AtomicBool::new(false)),
-            read_input: None,
-            replacement_seed: None,
             cancellation: ServiceCancellation::default(),
             job: Some(job),
             key: ServiceLeaseKey::default(),
@@ -435,13 +353,24 @@ mod retirement_tests {
             source_view: [0; 32],
         }
     }
+    /// Whether the worker can still vouch for a live source: an actual endpoint, a supervisor
+    /// still running, and its authority checking out. A context digest alone never counts.
+    fn live_custody(owner: &RetainedSourceWorker) -> bool {
+        !owner.stopped
+            && owner.endpoint.is_some()
+            && owner.job.as_ref().is_some_and(|job| !job.is_finished())
+            && owner
+                .authority
+                .as_ref()
+                .is_some_and(|authority| authority.check().is_ok())
+    }
     #[test]
     fn missing_or_panicked_stop_keeps_source_and_control_custody_on_retries() {
         for panic in [false, true] {
             let mut owner = unknown_worker(panic);
             owner.source_view = [9; 32];
             assert!(
-                owner.check_current_custody().is_err(),
+                !live_custody(&owner),
                 "source digest cannot replace actual endpoint custody"
             );
             let path = owner.working.as_ref().unwrap().path().to_owned();
@@ -453,7 +382,7 @@ mod retirement_tests {
             );
             assert!(!owner.stopped);
             assert!(
-                owner.check_current_custody().is_err(),
+                !live_custody(&owner),
                 "unknown stop never becomes a live source epoch"
             );
             let held = owner.selected_file.as_ref().unwrap().metadata().unwrap();
@@ -494,7 +423,3 @@ mod retirement_tests {
         std::fs::remove_dir_all(path).unwrap();
     }
 }
-
-#[path = "retained_source_worker/history_read_handoff.rs"]
-mod history_read_handoff;
-pub use history_read_handoff::{HistoryReadHandoff, HistoryReadPublisher};

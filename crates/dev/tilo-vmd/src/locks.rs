@@ -1,11 +1,9 @@
 //! Advisory locks between concurrent `tilo-vmd rpc` processes, one per SSH
-//! connection. VM-wide work (vm-scope swaps, gc, upgrades, shutdown) takes
-//! the VM lock exclusively; everything else takes it shared plus an
-//! exclusive lock on the slot it changes. Locks are never waited for: a
-//! busy lock is reported so the caller can retry.
-//!
-//! Host-side tooling takes the same lock around guest commands with
-//! `flock <root>/locks/vm.lock <command>`.
+//! connection. VM-wide work (vm-scope swaps, gc, upgrades, shutdown) takes the VM
+//! lock exclusively; everything else takes it shared plus an exclusive lock on the
+//! slot it changes. Locks are never waited for: a busy lock is reported so the
+//! caller can retry. Host-side tooling takes the same lock with `flock
+//! <root>/locks/vm.lock <command>`.
 
 use advisory_lock::{FileLock, LockMode, TryLockError};
 use std::fs::{self, File};

@@ -71,6 +71,11 @@ fn publish_notes(
                     Undoable,
                     &[tilo_actions::OWN_RECORD_SCOPE],
                 ),
+                {
+                    let mut clear = published(notebook, "clear-done", Undoable, &[]);
+                    clear.contract.risk = tilo_actions::RiskLevel::Destructive;
+                    clear
+                },
             ],
         ),
         surface(
@@ -128,7 +133,7 @@ fn unconfirmed(answer: &tilo_actions::remote::RemoteActionMessage) -> bool {
         tilo_actions::remote::RemoteActionMessage::Receipt(
             tilo_actions::remote::InvocationReceipt {
                 status: tilo_actions::remote::ReceiptStatus::Rejected {
-                    error: tilo_actions::remote::ActionHostError::ConfirmationRequired,
+                    error: tilo_actions::remote::ActionHostError::ConfirmationRequired { .. },
                 },
                 ..
             }
@@ -430,6 +435,70 @@ async fn native_person_rig(env: &Environment) -> Rig {
     .await
 }
 
+/// The seat of a host whose identity a login is still writing: reading it
+/// answers that the registry has not named the person yet, and the ask the
+/// seat's first action makes waits for it, after which the identity is there.
+struct Arriving {
+    host: Arc<CurrentHost>,
+    named: std::sync::atomic::AtomicBool,
+}
+
+impl crate::services::LocalPersonServices for Arriving {
+    fn certificate(
+        &self,
+        workspace: &str,
+        person: &str,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        if !self.named.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("this device's identity is not ready yet".into());
+        }
+        crate::services::LocalPersonServices::certificate(
+            &super::signed_worker::NativePerson(Arc::clone(&self.host)),
+            workspace,
+            person,
+        )
+    }
+
+    fn certificate_when_named(
+        &self,
+        workspace: &str,
+        person: &str,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        // What the wait ends on: the registry names the person, and the identity is there from
+        // then on — the effect's own re-check asks again.
+        self.named.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.certificate(workspace, person)
+    }
+}
+
+/// A person's first action of a login is answered by the identity, not
+/// refused before the registry names them.
+#[tokio::test(flavor = "current_thread")]
+async fn a_persons_first_action_is_answered_once_the_identity_names_them() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::with_services(
+                &env,
+                HostServices {
+                    local_person: Some(Arc::new(Arriving {
+                        host: env.authority.clone(),
+                        named: std::sync::atomic::AtomicBool::new(false),
+                    })),
+                    ..env.membership.services()
+                },
+            )
+            .await;
+            let _notes = publish_notes(&rig, &env);
+            let asked = id(0xc4c1);
+            // The receipt is accepted, as `person_asks` holds: an identity that is being written
+            // is waited for, never refused.
+            person_asks(&rig, &env, asked).await;
+            rig.stop().await;
+        })
+        .await;
+}
+
 /// The person asks the rig's application for its action as `asked`; the
 /// invocation it is handed.
 async fn person_asks(
@@ -453,4 +522,133 @@ async fn person_asks(
         "{receipt:?}"
     );
     rig.stream.as_ref().unwrap().read().await.unwrap()
+}
+
+/// Where the test's workspace records the grants a person gives an app.
+struct TreeGrants(crate::test_support::WorkspaceTreeHandle);
+impl crate::services::AppActionGrants for TreeGrants {
+    fn may_grant(&self, _workspace: &str, _person: &str) -> bool {
+        true
+    }
+    fn record(
+        &self,
+        _request: &crate::app_actions::AppActionConsentRequest,
+        grant: tilo_action_policy::Grant,
+        _answer: crate::app_actions::AppActionConsent,
+    ) -> crate::services::GrantRecording {
+        let id = self.0.write().workspaces.first_mut().unwrap().grant(grant);
+        Box::pin(std::future::ready(Ok(id.as_str().to_owned())))
+    }
+    fn revoke(&self, _workspace: &str, grant: &str) {
+        self.0
+            .write()
+            .workspaces
+            .first_mut()
+            .unwrap()
+            .revoke_grant(&tilo_action_policy::GrantId::new(grant));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let mut services = env.membership.services();
+            services.app_action_grants = Some(Arc::new(TreeGrants(env.membership.clone())));
+            // The app declares that it takes other apps' actions.
+            services.app_action_access =
+                Some(Arc::new(|_: &str| crate::app_actions::AppActionAccess {
+                    query: false,
+                    invoke: true,
+                }));
+            let rig = Rig::with_services(&env, services).await;
+            let mut notes = publish_notes(&rig, &env);
+            let app = rig.worker.handle.clone();
+            let (sheet, mut sheets) = tokio::sync::mpsc::unbounded_channel();
+            rig.state
+                .set_app_action_consent(Arc::new(PersonSheet(sheet)));
+
+            // The app holds no grant to Notes: the person is asked whether
+            // it may, and the call runs as they allow it.
+            // Asked of the app by its id, as one app asks another's door.
+            let mut clear = call(NOTES_PEER, "notes.notebook", "clear-done", None);
+            clear.target = tilo_actions::remote::application_action_target(
+                &env.route.cluster_id,
+                NOTES,
+                "notes.notebook",
+                "clear-done",
+            );
+            let asking = app_asks(&app, clear.clone());
+            tokio::pin!(asking);
+            let (question, answer) = tokio::select! {
+                answer = &mut asking => panic!("ran unasked: {answer:?}"),
+                sheet = sheets.recv() => sheet.unwrap(),
+            };
+            assert!(question.handle.starts_with("app-action:"), "{question:?}");
+            assert_eq!(
+                (question.target_app.as_str(), question.action.as_str()),
+                (NOTES, "clear-done")
+            );
+            assert!(
+                notes.try_recv().is_err(),
+                "nothing runs while the person decides"
+            );
+            answer
+                .send(crate::app_actions::AppActionConsent::Once.into())
+                .unwrap();
+            let answered = asking.await;
+            assert!(admitted(&answered), "{answered:?}");
+            let delivered = notes.try_recv().expect("Notes runs the call");
+            assert_eq!(delivered.invocation, clear.invocation);
+            assert!(sheets.try_recv().is_err(), "the person was asked once");
+
+            // Allowed once, it is asked again; allowed always, the grant
+            // stands in the workspace and nothing more is asked.
+            let again = call(NOTES_PEER, "notes.notebook", "create-page", None);
+            let asking = app_asks(&app, again.clone());
+            tokio::pin!(asking);
+            let (question, answer) = tokio::select! {
+                answer = &mut asking => panic!("ran unasked: {answer:?}"),
+                sheet = sheets.recv() => sheet.unwrap(),
+            };
+            assert!(question.handle.starts_with("app-action:"), "{question:?}");
+            answer
+                .send(crate::app_actions::AppActionConsent::Always.into())
+                .unwrap();
+            assert!(admitted(&asking.await));
+            notes.try_recv().expect("Notes makes the page");
+            let unasked = app_asks(
+                &app,
+                call(NOTES_PEER, "notes.notebook", "create-page", None),
+            )
+            .await;
+            assert!(admitted(&unasked), "{unasked:?}");
+            notes.try_recv().expect("Notes makes another page");
+            assert!(sheets.try_recv().is_err(), "a standing grant asks nothing");
+
+            // One action of the app asking two things at once: each is put
+            // to the person in turn, neither refused for the other.
+            let clear = app_asks(&app, call(NOTES_PEER, "notes.notebook", "clear-done", None));
+            let read = app_asks(&app, call(NOTES_PEER, "notes.notebook", "read-page", None));
+            tokio::pin!(clear);
+            tokio::pin!(read);
+            let mut asked = Vec::new();
+            while asked.len() < 2 {
+                tokio::select! {
+                    sheet = sheets.recv() => asked.push(sheet.unwrap()),
+                    answer = &mut clear => panic!("answered unasked: {answer:?}"),
+                    answer = &mut read => panic!("answered unasked: {answer:?}"),
+                }
+            }
+            for (_, answer) in asked {
+                answer
+                    .send(crate::app_actions::AppActionConsent::Once.into())
+                    .unwrap();
+            }
+            assert!(admitted(&clear.await));
+            assert!(admitted(&read.await));
+            rig.stop().await;
+        })
+        .await;
 }

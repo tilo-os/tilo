@@ -16,9 +16,6 @@ use super::*;
     reason = "cases merged from separate tests; each case stays self-contained"
 )]
 fn annotation_cards_keep_rows_and_targets_clear() {
-    // Case `annotation_card_rows_clear_each_other_at_every_scale`.
-    // The card rhythm keeps every line box clear of its neighbours at both
-    // scales, and the card grows with its text.
     {
         let mut heights = Vec::new();
         for scale in [1.0_f32, 2.0] {
@@ -187,10 +184,6 @@ fn annotation_cards_keep_rows_and_targets_clear() {
         );
     }
 
-    // Case `annotations_never_cover_the_sheet`.
-    // At the narrow shot size every chart card still stands under the grid,
-    // and in a window too short to give the height up there is no dock at
-    // all: the charts wait rather than cover cells.
     {
         let (mut app, mut tr, theme) = measured_app(800.0, 600.0, 1.0);
         seed_annotations(&mut app);
@@ -257,7 +250,6 @@ fn annotation_cards_keep_rows_and_targets_clear() {
     }
 }
 
-/// Another chart on the sheet, to fill the dock.
 fn second_chart() -> crate::workbook::ChartSnapshot {
     crate::workbook::ChartSnapshot {
         id: "c2".into(),
@@ -268,8 +260,6 @@ fn second_chart() -> crate::workbook::ChartSnapshot {
     }
 }
 
-/// A comment thread and a chart on the sheet, as the document would supply,
-/// with a cell outside the thread selected.
 fn seed_annotations(app: &mut SheetsApp) {
     app.sheet_charts = vec![crate::workbook::ChartSnapshot {
         id: "c1".into(),
@@ -287,7 +277,6 @@ fn seed_annotations(app: &mut SheetsApp) {
         resolved: true,
         replies: Vec::new(),
     }];
-    // A cell away from the comment: its thread starts closed.
     app.grid.select_only((0, 6));
     app.relayout();
 }

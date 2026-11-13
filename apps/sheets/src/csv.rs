@@ -9,8 +9,6 @@ use std::collections::HashMap;
 
 use crate::model::Addr;
 
-/// Parse CSV text into a `(col, row) -> raw string` map. Handles quoted
-/// fields, escaped quotes (`""`), and embedded newlines/commas.
 pub fn parse_csv(text: &str) -> HashMap<Addr, String> {
     let mut out = HashMap::new();
     let mut row = 0u32;
@@ -70,12 +68,10 @@ pub fn parse_csv(text: &str) -> HashMap<Addr, String> {
         }
         i += 1;
     }
-    // Trailing field (no newline at EOF).
     commit_field(&mut field, row, col, &mut out, field_started);
     out
 }
 
-/// Quote a field if it contains a comma, quote, or newline.
 fn quote_field(s: &str) -> String {
     if s.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", s.replace('"', "\"\""))
@@ -84,7 +80,6 @@ fn quote_field(s: &str) -> String {
     }
 }
 
-/// Serialise a grid of display strings (indexed `[row][col]`) to CSV.
 pub fn to_csv(rows: &[Vec<String>]) -> String {
     let mut out = String::new();
     for row in rows {

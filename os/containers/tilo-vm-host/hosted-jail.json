@@ -2,7 +2,7 @@
   "service_uid": 10001,
   "service_gid": 10001,
   "uid_base": 200000,
-  "slots": 16,
+  "slots": 1024,
   "jailer": "/usr/local/bin/jailer",
   "firecracker": "/usr/local/bin/firecracker",
   "chroot_base": "/var/lib/tilo-hosted/jails",

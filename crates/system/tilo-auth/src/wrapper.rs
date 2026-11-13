@@ -27,11 +27,8 @@ pub const PASSPHRASE_PARAMS: PasswordParams = PasswordParams {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Wrapper {
-    /// A TPM sealed data object; `public` and `private` are its base64 blobs.
     Tpm { public: String, private: String },
-    /// A tilo-seal Argon2id envelope, which carries its own parameters and salt.
     Passphrase { envelope: String },
-    /// A tilo-seal envelope under a key derived from the recovery key.
     Recovery { envelope: String },
 }
 
@@ -60,14 +57,12 @@ pub enum Kind {
     Recovery,
 }
 
-/// The result of offering a secret to one wrapper.
 pub enum Outcome {
     Key(UserKey),
     Wrong(Option<Tries>),
     LockedOut(Option<Tries>),
 }
 
-/// Access to the machine's TPM.
 #[derive(Clone, Copy)]
 pub struct Tpm<'a> {
     pub runner: &'a dyn Runner,
@@ -177,7 +172,6 @@ impl Wrapper {
         }
     }
 
-    /// `Ok(None)` when this is not a recovery wrapper or the key is another.
     pub fn open_with_recovery(&self, uid: u32, recovery: &RecoveryKey) -> Result<Option<UserKey>> {
         let Self::Recovery { envelope: sealed } = self else {
             return Ok(None);

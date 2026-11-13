@@ -13,22 +13,17 @@ use std::sync::mpsc::{Receiver, RecvError, TryRecvError};
 
 use super::{PortalChannel, PortalOutcome, SaveChannel, SaveOutcome};
 
-/// Where a save goes. Dropping it unwritten saves nothing; kept, it takes
-/// every later save of the same document without asking again.
 #[derive(Clone)]
 pub struct SaveDestination {
     name: String,
     target: Target,
 }
 
-/// Writes a kept destination's bytes.
 type Writer = Arc<dyn Fn(Vec<u8>) -> SaveChannel + Send + Sync>;
 
 #[derive(Clone)]
 enum Target {
     Path(PathBuf),
-    /// A destination the host keeps (a browser page's Save dialog file or a
-    /// download), written by the host's writer.
     Kept(Writer),
 }
 
@@ -46,7 +41,6 @@ impl std::fmt::Debug for SaveDestination {
 }
 
 impl SaveDestination {
-    /// The destination at `path` on this device.
     pub fn at(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         Self {
@@ -68,7 +62,6 @@ impl SaveDestination {
         }
     }
 
-    /// The file name the person sees.
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -82,9 +75,6 @@ impl SaveDestination {
         }
     }
 
-    /// Write `bytes` there. A local destination is replaced atomically
-    /// ([`super::replace_saved`]) on background work; a browser page writes
-    /// through its Save dialog's file (again on every save) or downloads.
     pub fn write(&self, bytes: Vec<u8>) -> SaveChannel {
         match &self.target {
             Target::Path(path) => write_path(path.clone(), bytes),
@@ -117,7 +107,6 @@ fn write_path(path: PathBuf, bytes: Vec<u8>) -> SaveChannel {
     rx
 }
 
-/// The result of [`PickRequest::send_save_destination`](super::PickRequest::send_save_destination).
 #[derive(Debug)]
 pub enum DestinationOutcome {
     Chosen(SaveDestination),
@@ -125,25 +114,20 @@ pub enum DestinationOutcome {
     Failed(String),
 }
 
-/// A pending [`DestinationOutcome`], drained by the UI thread like the other
-/// chooser channels.
 #[derive(Debug)]
 pub struct DestinationChannel(Pending);
 
 #[derive(Debug)]
 enum Pending {
-    /// A host chooser that answers Save with a path.
     Path(PortalChannel),
     Direct(Receiver<DestinationOutcome>),
 }
 
 impl DestinationChannel {
-    /// Answered by a path chooser's channel.
     pub fn from_path(channel: PortalChannel) -> Self {
         Self(Pending::Path(channel))
     }
 
-    /// Answered directly by `channel`.
     pub fn from_outcomes(channel: Receiver<DestinationOutcome>) -> Self {
         Self(Pending::Direct(channel))
     }
@@ -152,11 +136,6 @@ impl DestinationChannel {
         Self::from_outcomes(answered(outcome))
     }
 
-    /// The outcome, if the chooser has answered.
-    ///
-    /// # Errors
-    ///
-    /// Not answered yet, or the chooser went away without answering.
     pub fn try_recv(&self) -> Result<DestinationOutcome, TryRecvError> {
         match &self.0 {
             Pending::Path(channel) => channel.try_recv().map(from_path),

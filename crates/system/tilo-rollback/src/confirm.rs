@@ -1,7 +1,5 @@
 //! Confirming a generation, and only then advancing the floor.
 //!
-//! # The sequence, and why it is in this order
-//!
 //! ```text
 //! bootc upgrade            stage generation N
 //! reboot                   boot into N (generation N-1 still fully able to unseal)
@@ -9,24 +7,15 @@
 //! tilo-rollback confirm     enroll N's keyslot, prove it unseals, THEN raise the floor
 //! ```
 //!
-//! Every ordering constraint exists because of a way it can go wrong:
+//! Raising the floor at install time destroys the fallback if `N` turns out not to boot; raising
+//! it before the new keyslot is proven leaves nothing able to unseal when that token cannot.
+//! Pruning comes first, since pruning is reversible by re-enrolling and an NV increment is not.
 //!
-//! * **Floor raised at install time** → if `N` turns out not to boot, the fallback is already
-//!   destroyed and the machine is inert, needing the recovery key — the failure the whole
-//!   design is arranged around.
-//! * **Floor raised before the new keyslot is proven** → a token that can't unseal (wrong PCR
-//!   prediction, TPM lockout, a bug) would remove the older tokens' ability too, leaving
-//!   nothing.
-//! * **Old keyslots pruned before the floor is raised** → harmless, and the order used, since
-//!   the floor can't be undone while pruning is reversible by re-enrolling.
-//!
-//! # Interaction with bootc's staged updates
-//!
-//! `bootc` stages a deployment and makes it the default next boot, keeping the previous one as
-//! a rollback target; it knows nothing about generations, so confirmation runs on the *booted*
-//! system, reads the generation from its sealed command line, and confirms that — a deployment
-//! that fails to boot never reaches its own confirmation. A staged deployment (`bootc status
-//! --json`) is a *future* generation and doesn't affect whether the running one is confirmed.
+//! `bootc` keeps the previous deployment as a rollback target but knows nothing about
+//! generations, so confirmation runs on the *booted* system, reads the generation from its sealed
+//! command line, and confirms that: a deployment that fails to boot never reaches its own
+//! confirmation. A staged deployment is a *future* generation and does not affect whether the
+//! running one is confirmed.
 
 use crate::counter::{self, FloorState};
 use crate::exec::Runner;
@@ -38,14 +27,12 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Persisted, non-secret bookkeeping. The authoritative copies also live in the LUKS2 tokens;
-/// this file exists so `status` is cheap and a machine with no enrolled generation yet still
-/// knows its counter base.
+/// Persisted, non-secret bookkeeping. The authoritative copies are in the LUKS2 tokens; this file
+/// makes `status` cheap and lets a machine with no enrolled generation know its counter base.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct State {
     pub nv_index: u32,
-    /// Counter value corresponding to floor generation 0. Signed — see
-    /// [`crate::counter`].
+    /// Counter value of floor generation 0. Signed — see [`crate::counter`].
     pub nv_base: i64,
     /// Last generation whose keyslot was enrolled and proven.
     pub last_confirmed: Option<u64>,
@@ -61,8 +48,7 @@ pub fn state_path() -> PathBuf {
 
 /// # Errors
 ///
-/// Returns an error if `path` exists but cannot be read or parsed; a missing file is not an
-/// error and yields `None`.
+/// `path` exists but cannot be read or parsed; a missing file yields `None`.
 pub fn load_state(path: &Path) -> Result<Option<State>> {
     match std::fs::read_to_string(path) {
         Ok(s) => Ok(Some(
@@ -75,7 +61,7 @@ pub fn load_state(path: &Path) -> Result<Option<State>> {
 
 /// # Errors
 ///
-/// Returns an error if the parent directory cannot be created, or the file cannot be written.
+/// The parent directory cannot be created, or the file cannot be written.
 pub fn save_state(path: &Path, state: &State) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -85,10 +71,9 @@ pub fn save_state(path: &Path, state: &State) -> Result<()> {
         .with_context(|| format!("atomically writing {}", path.display()))
 }
 
-/// Establish the counter base, cross-checking every source that claims to know. The LUKS2
-/// tokens and the state file must agree — disagreement means tampering or an interrupted
-/// prior run, and since a wrong base turns into "increment the counter a huge number of
-/// times", it's refused rather than resolved by preference.
+/// Establish the counter base from every source that knows it. The LUKS2 tokens and the state file
+/// must agree: a wrong base turns into "increment the counter a huge number of times", so
+/// disagreement is refused rather than resolved by preference.
 pub fn load_base(state: Option<&State>, tokens: &[(u32, RollbackToken)]) -> Result<Option<i64>> {
     let mut bases: Vec<(String, i64)> = Vec::new();
     if let Some(s) = state {
@@ -113,7 +98,6 @@ pub fn load_base(state: Option<&State>, tokens: &[(u32, RollbackToken)]) -> Resu
     Ok(Some(first))
 }
 
-/// A confirmation that has been checked but not applied.
 #[derive(Debug, Clone)]
 pub struct Plan {
     pub generation: u64,
@@ -126,9 +110,8 @@ pub struct Plan {
 ///
 /// # Errors
 ///
-/// Returns an error if `retained_generations` is `0`, if `declared_floor` exceeds
-/// `generation`, or if `floor` is already above `generation` — see
-/// [`retention::plan_floor`].
+/// `retained_generations` is `0`, `declared_floor` exceeds `generation`, or `floor` is already
+/// above `generation` — see [`retention::plan_floor`].
 pub fn plan(
     generation: u64,
     floor: FloorState,
@@ -296,8 +279,8 @@ mod tests {
             };
             let p = plan(10, floor, &[8, 9, 10], 3, Some(10)).unwrap();
             assert_eq!(p.floor.target_floor, 10);
-            // The keyslots are still retained even though the floor closed the window — the floor
-            // enforces, and keeping slots means a later re-enrollment doesn't rebuild from nothing.
+            // The keyslots stay even when the floor closed the window: the floor enforces, and
+            // keeping slots means a later re-enrollment does not rebuild from nothing.
             assert_eq!(p.keep, vec![10, 9, 8]);
         }
         {
@@ -322,25 +305,22 @@ mod tests {
     }
 }
 
-// The whole confirmation, in one place
-
-/// Inputs to [`run`].
 pub struct Request<'a> {
     pub cfg: &'a crate::Config,
     pub device: &'a Path,
-    /// Generation being confirmed — the one that booted.
+    /// The generation that booted.
     pub generation: u64,
     /// Directory holding the signed predictions the image shipped.
     pub prediction_dir: &'a Path,
-    /// How the independent unlock path is checked, before anything is touched and again after
-    /// everything is done.
+    /// How the independent unlock path is checked, before anything is touched and again at the
+    /// end.
     pub recovery: keyslots::RecoveryCheck<'a>,
     /// PIN, when the tokens carry one and a person is supplying it.
     pub pin: Option<&'a [u8]>,
-    /// A secret already known to open the device — normally the one `unlock` used at boot, left
-    /// in `/run`. Supplying it is what makes unattended confirmation possible at all (the sealed
-    /// token may need a PIN nothing on the machine knows after boot), and it's a *better* proof
-    /// than a fresh unseal, since the machine demonstrably booted with it.
+    /// A secret already known to open the device — normally the one `unlock` used at boot, left in
+    /// `/run`. It is what makes unattended confirmation possible (the sealed token may need a PIN
+    /// nothing knows after boot), and it is a better proof than a fresh unseal, since the machine
+    /// demonstrably booted with it.
     pub proof: Option<&'a [u8]>,
     /// Raise the floor to at least this generation.
     pub floor_at_least: Option<u64>,
@@ -350,7 +330,6 @@ pub struct Request<'a> {
     pub dry_run: bool,
 }
 
-/// What a confirmation did.
 #[derive(Debug, Clone)]
 pub struct Outcome {
     pub plan: Plan,
@@ -358,9 +337,8 @@ pub struct Outcome {
     pub enrolled: Option<(u32, u32)>,
     pub dropped: Vec<u64>,
     pub floor: FloorState,
-    /// Counter values the floor could not reach for want of a signed approval. Non-empty means
-    /// protection is running on keyslot retention alone until the authority issues more — the
-    /// disk still unlocks.
+    /// Counter values the floor could not reach for want of a signed approval: protection runs
+    /// on keyslot retention alone until the authority issues more, and the disk still unlocks.
     pub unapproved_steps: Vec<u64>,
 }
 
@@ -368,13 +346,9 @@ pub struct Outcome {
 /// [`ensure_generation_enrolled`] performed an enrollment.
 type EnrolledTokens = (Vec<(u32, RollbackToken)>, Option<(u32, u32)>);
 
-/// Ensure `req.generation` has an enrolled keyslot, enrolling one if it does not. Mirrors the
-/// original inline step exactly: the "no signed prediction" check runs even under
-/// `req.dry_run` (a dry run still reports whether confirmation would be possible at all), and
-/// only the actual enrollment is skipped when dry.
-///
-/// Returns the token list (refreshed if enrollment happened) and, if enrollment happened,
-/// its `(keyslot, token id)`.
+/// Ensure `req.generation` has an enrolled keyslot, enrolling one if it does not. The "no signed
+/// prediction" check runs even under `req.dry_run` — a dry run still reports whether confirmation
+/// would be possible at all — and only the enrollment itself is skipped.
 fn ensure_generation_enrolled(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -418,10 +392,9 @@ fn ensure_generation_enrolled(
     Ok((tokens, enrolled))
 }
 
-/// Acquire the secret that proves `req.generation` can unlock this device right now — either
-/// the caller-supplied `req.proof` (checked against that generation's own keyslot) or a fresh
-/// unseal of it. This value then authorises every destructive step that follows, so no step
-/// proceeds on a belief.
+/// The secret that proves `req.generation` can unlock this device right now: the caller's
+/// `req.proof` (checked against that generation's own keyslot) or a fresh unseal. It authorises
+/// every destructive step that follows.
 fn acquire_proof(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -467,20 +440,18 @@ fn acquire_proof(
     Ok(s.to_vec())
 }
 
-/// Confirm a generation: enroll it if needed, prove it, prune the window, and only then raise
-/// the floor. This is the ordering the whole design rests on, so it lives in the library
-/// rather than the CLI front end — a test that re-implements the order proves nothing about
-/// the order the machine actually uses.
+/// Confirm a generation: enroll it if needed, prove it, prune the window, and only then raise the
+/// floor. The order lives here rather than in the CLI front end, so tests exercise the order the
+/// machine actually uses.
 ///
 /// SAFETY-CRITICAL, in the order the steps appear:
 ///
 /// 1. the recovery key must open the device before anything is touched;
-/// 2. the generation being confirmed must have a keyslot, enrolled here if not, and
-///    enrollment verifies its own slot;
-/// 3. its secret must unseal *and* open the device — that value then authorises everything
-///    destructive that follows, so no step proceeds on an assumption;
-/// 4. pruning comes before the floor: pruning is reversible by re-enrolling, an NV increment
-///    is reversible by nothing;
+/// 2. the generation being confirmed must have a keyslot, enrolled here if not, and enrollment
+///    verifies its own slot;
+/// 3. its secret must unseal *and* open the device;
+/// 4. pruning comes before the floor: pruning is reversible by re-enrolling, an NV increment is
+///    reversible by nothing;
 /// 5. the recovery key must still open the device at the end.
 pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Outcome> {
     let device = req.device;
@@ -530,13 +501,10 @@ pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Out
         });
     }
 
-    // The proof that the generation being confirmed can actually unlock this machine — either
-    // handed to us (the secret this boot unlocked with) or unsealed now — authorises everything
-    // destructive below, so no step proceeds on a belief.
     let proof = acquire_proof(runner, ws, device, cfg, req, &tokens)?;
 
-    // The `true` is the independent-unlock-path check at the top of this function: it bails
-    // rather than returning, so reaching here means it passed.
+    // The `true` is the independent-unlock-path check above: it bails rather than returning, so
+    // reaching here means it passed.
     retention::prune_is_safe(&plan.drop, &[req.generation], true)?;
     let mut dropped = Vec::new();
     for g in &plan.drop {

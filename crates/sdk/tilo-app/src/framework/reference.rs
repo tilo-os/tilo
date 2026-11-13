@@ -235,6 +235,20 @@ impl Opener {
             )
     }
 
+    /// Read a record of the window's workspace through the host's record
+    /// door, continuing `parent` as [`Self::call`] does.
+    pub(crate) fn read_record(
+        &self,
+        parent: Option<tilo_actions::InvocationId>,
+        read: tilo_actions::remote::RecordReadRequest,
+    ) -> ui_core::remote_actions::RecordReadCall {
+        self.0
+            .borrow_mut()
+            .door
+            .get_or_insert_with(RemoteActions::current)
+            .read_record(parent, read)
+    }
+
     /// Follow the result of the action at `target` on this view's door,
     /// telling `then` each update ([`RemoteActions::follow_with`]).
     pub(crate) fn follow(

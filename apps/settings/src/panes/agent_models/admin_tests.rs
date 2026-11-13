@@ -29,7 +29,6 @@ fn mount(backend: Arc<FakeAdminBackend>) -> TestApp<SettingsShell> {
 }
 
 fn row_for(effect: &AgentModelsEffect) -> String {
-    /// The provider an effect acts on, when it names one.
     #[derive(serde::Deserialize)]
     struct OnProvider {
         provider: Option<String>,
@@ -300,7 +299,6 @@ mod shared_contract {
     use provider_settings_ui::widgets;
     use std::sync::Arc;
     use ui::lock::MutexRecover as _;
-    // The native public effect adapter retains all existing ids and parameter shapes.
     type ProviderEffect = AgentModelsEffect;
     fn host_effect(effect: ProviderEffect) -> SettingsEffect {
         effect.into()

@@ -230,6 +230,7 @@ fn a_window_is_named_by_what_it_shows_and_by_the_person_above_that() {
         .map(|(group, _, _)| group.to_string())
         .unwrap();
     let rename = |name: &str| ChromeEffect::Rename {
+        tab: None,
         group: Some(group.clone()),
         strip: None,
         workspace: None,
@@ -288,7 +289,7 @@ fn the_desk_names_the_tabs_it_has_for_apps_with_their_apps() {
     // asked for, and that tab is the app's window on its way: the next
     // launch of the app goes there instead of starting a second process.
     assert!(
-        policy.hold_beside("so.tilo.notes", None, false),
+        policy.hold("so.tilo.notes", None, false, false),
         "a place beside the window the app has"
     );
     // The place shows a window that has not come, which never stops moving.
@@ -654,31 +655,29 @@ fn a_conversation_opens_beside_its_sender() {
     map(&mut driver, &mut policy, 1, "so.tilo.chat");
     let sender = window_tab(&policy, 1);
     assert!(
-        policy.hold_window("so.tilo.chat", false),
+        policy.hold("so.tilo.chat", None, false, true),
         "the desk takes the place beside the sender"
     );
     settle(&mut driver);
 
-    assert!(
-        policy.take_launches().is_empty(),
-        "the session starts the window the send landed in; the desk only holds its place"
-    );
     let tab = tabs(&policy)
         .into_iter()
         .find(|(_, tile)| matches!(tile, TileContent::AppPlaceholder { .. }))
         .map(|(tab, _)| tab)
         .expect("the desk holds the tab the conversation's window takes");
-    let made = policy.take_held_launches();
+    let asked = policy.take_launches();
     assert_eq!(
-        made.len(),
+        asked.len(),
         1,
         "the session starts the window the place waits for"
     );
-    assert_eq!(made[0].app, "so.tilo.chat");
+    assert_eq!(asked[0].app, "held:so.tilo.chat");
     assert_eq!(
-        made[0].tab, tab,
+        asked[0].tab,
+        Some(tab),
         "the tab the window takes is the instance it is known by"
     );
+    assert!(asked[0].beside, "a window of the app's own");
     let groups = groups(&policy);
     let (sender_group, _, _) = groups
         .iter()
@@ -780,8 +779,11 @@ fn a_floated_windows_cover_is_where_the_desk_draws_it() {
     assert_eq!(covers.len(), 1, "one window floats: {covers:?}");
     let (window, cover) = covers[0];
     assert_eq!(window, 2, "the cover is of the window that floats");
+    // A window an app opens floating stands as a card beside the window it
+    // opened next to: the cover is that card and what the desk draws round it.
+    let (card_width, card_height) = ui::widget::FLOAT_CARD_SIZE;
     assert_eq!(
-        (cover.width() > 640.0, cover.height() > 480.0),
+        (cover.width() > card_width, cover.height() > card_height),
         (true, true),
         "the whole of its bar and body and the lift it stands on, as the desk draws it: {cover:?}"
     );
@@ -964,5 +966,86 @@ fn a_stopped_app_leaves_a_notice_that_asks_for_it_again() {
     assert!(
         reopened[0].tab.is_some(),
         "the window that comes takes the tab the answer stands in"
+    );
+}
+
+/// A window whose process was launched into a workspace that is not in front (an agent's open of
+/// an app in its own workspace) opens there: the workspace in front shows only its own windows,
+/// and a second launch of the same app in front finds no window of it there to raise.
+#[test]
+fn a_window_launched_into_another_workspace_opens_there() {
+    use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceSlot};
+    let (seeded, _) = DesktopPolicy::new(7);
+    let mut tree = seeded.handle().read(Clone::clone);
+    tree.workspaces
+        .push(Workspace::new(WorkspaceSlot(2), "Garden"));
+    let garden = tree.workspaces[1].id().to_string();
+    let front = tree.active;
+    let (mut policy, surface) = DesktopPolicy::with_tree(tree, 7);
+    policy.set_viewport_width(WIDTH);
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (1200, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    driver.relayout();
+    policy.reads_launch_workspaces(std::rc::Rc::new(move |pid, app| {
+        (pid == 50 && app == "so.tilo.calculator").then(|| garden.clone())
+    }));
+    policy
+        .map(Window {
+            pid: Some(50),
+            ..window(5, "so.tilo.calculator")
+        })
+        .unwrap();
+    settle(&mut driver);
+    policy.carry_launched();
+    settle(&mut driver);
+    policy
+        .map(Window {
+            pid: Some(60),
+            ..window(6, "so.tilo.notes")
+        })
+        .unwrap();
+    settle(&mut driver);
+    let placed = |id: u64| {
+        policy.handle().read(|tree| {
+            tree.workspaces
+                .iter()
+                .find(|workspace| {
+                    workspace
+                        .strips
+                        .iter()
+                        .flat_map(|strip| &strip.window_groups)
+                        .flat_map(|group| &group.tabs)
+                        .any(|tab| matches!(tab.tile, TileContent::Foreign { surface_id, .. } if surface_id == id))
+                })
+                .map(|workspace| workspace.slot)
+        })
+    };
+    assert_eq!(
+        placed(5),
+        Some(WorkspaceSlot(2)),
+        "launched into Garden: opens there"
+    );
+    assert_eq!(
+        placed(6),
+        Some(front),
+        "launched into the one in front: opens in front"
+    );
+    assert_eq!(
+        policy.handle().read(|tree: &DesktopTree| tree.active),
+        front,
+        "the person stays"
+    );
+    assert!(
+        policy
+            .app_tabs_in_front()
+            .iter()
+            .all(|(_, app)| app != "so.tilo.calculator"),
+        "the workspace in front shows no calculator of Garden's"
     );
 }

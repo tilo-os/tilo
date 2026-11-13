@@ -155,3 +155,20 @@ fn a_type_the_platform_cannot_read_is_named_with_where_it_is() {
     assert_eq!(unreadable.len(), 1, "{unreadable:?}");
     assert!(unreadable[0].contains("List<"), "{unreadable:?}");
 }
+
+/// A payload that ships no module is a package of another kind — a Rust app's, which keeps its
+/// code in `bin/` — and reads as no tilolang package rather than as a broken one.
+#[test]
+fn a_payload_without_a_module_is_no_tilolang_package() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("bin")).unwrap();
+    std::fs::write(
+        dir.path().join("manifest.toml"),
+        "[package]\nid = \"so.tilo.example\"\n",
+    )
+    .unwrap();
+    assert!(matches!(
+        Bundle::read(dir.path()),
+        Err(tilolang_tilo::bundle::BundleError::NotAModule(_))
+    ));
+}

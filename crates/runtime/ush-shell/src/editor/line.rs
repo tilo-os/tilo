@@ -1,7 +1,6 @@
 //! The line being edited: its characters, the cursor, the kill ring and
 //! undo, with readline's emacs meanings for each edit.
 
-/// A line and where the cursor is in it, in characters.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Line {
     chars: Vec<char>,
@@ -35,7 +34,6 @@ impl Line {
         }
     }
 
-    /// `text` with the cursor after its first `cursor` characters.
     pub fn with_cursor(text: &str, cursor: usize) -> Self {
         let chars: Vec<char> = text.chars().collect();
         Self {
@@ -56,7 +54,6 @@ impl Line {
         self.cursor
     }
 
-    /// The text before the cursor.
     pub fn before(&self) -> String {
         self.chars
             .get(..self.cursor)
@@ -72,7 +69,6 @@ impl Line {
         }
     }
 
-    /// Replace the characters from `start` to the cursor with `text`.
     pub fn replace_back_to(&mut self, start: usize, text: &str) {
         let start = start.min(self.cursor);
         self.chars.drain(start..self.cursor);
@@ -96,7 +92,6 @@ impl Line {
         self.cursor = self.chars.len();
     }
 
-    /// Where the word before the cursor starts.
     fn word_start(&self, word: Word) -> usize {
         let mut at = self.cursor;
         while at > 0
@@ -118,7 +113,6 @@ impl Line {
         at
     }
 
-    /// Where the word after the cursor ends.
     fn word_end(&self, word: Word) -> usize {
         let mut at = self.cursor;
         let len = self.chars.len();
@@ -139,7 +133,6 @@ impl Line {
         self.cursor = self.word_end(Word::Alnum);
     }
 
-    /// Take out the characters between `from` and `to`, answering them.
     fn cut(&mut self, from: usize, to: usize) -> String {
         let (from, to) = (from.min(to), to.max(from).min(self.chars.len()));
         let taken: String = self.chars.drain(from..to).collect();
@@ -151,7 +144,6 @@ impl Line {
         taken
     }
 
-    /// `Backspace`.
     pub fn delete_back(&mut self) -> bool {
         if self.cursor == 0 {
             return false;
@@ -160,7 +152,6 @@ impl Line {
         true
     }
 
-    /// `Delete`, `Ctrl+D` on a line with something in it.
     pub fn delete_forward(&mut self) -> bool {
         if self.cursor >= self.chars.len() {
             return false;
@@ -169,23 +160,19 @@ impl Line {
         true
     }
 
-    /// `Ctrl+K`.
     pub fn kill_to_end(&mut self) -> String {
         self.cut(self.cursor, self.chars.len())
     }
 
-    /// `Ctrl+U`.
     pub fn kill_to_start(&mut self) -> String {
         self.cut(0, self.cursor)
     }
 
-    /// `Ctrl+W` (whitespace) and `Alt+Backspace` (letters and digits).
     pub fn kill_word_back(&mut self, word: Word) -> String {
         let start = self.word_start(word);
         self.cut(start, self.cursor)
     }
 
-    /// `Alt+D`.
     pub fn kill_word_forward(&mut self) -> String {
         let end = self.word_end(Word::Alnum);
         self.cut(self.cursor, end)
@@ -207,7 +194,6 @@ impl Line {
         self.cursor = at.saturating_add(1).min(len);
     }
 
-    /// `Alt+U`, `Alt+L`, `Alt+C`: change the case of the next word.
     pub fn case_word(&mut self, change: fn(&str) -> String) {
         let end = self.word_end(Word::Alnum);
         let start = self.cursor;
@@ -228,7 +214,6 @@ impl Line {
 #[derive(Debug, Default)]
 pub struct KillRing {
     ring: Vec<String>,
-    /// The entry the last yank put back, for `Alt+Y`.
     yanked: Option<usize>,
 }
 
@@ -260,21 +245,18 @@ impl KillRing {
         self.yanked = None;
     }
 
-    /// The newest kill, for `Ctrl+Y`.
     pub fn yank(&mut self) -> Option<&str> {
         let at = self.ring.len().checked_sub(1)?;
         self.yanked = Some(at);
         self.ring.get(at).map(String::as_str)
     }
 
-    /// How many characters the last yank put in.
     pub fn yank_len(&self) -> usize {
         self.yanked
             .and_then(|at| self.ring.get(at))
             .map_or(0, |text| text.chars().count())
     }
 
-    /// The kill before the one just yanked, for `Alt+Y`.
     pub fn rotate(&mut self) -> Option<&str> {
         let at = self.yanked?;
         let next = if at == 0 {

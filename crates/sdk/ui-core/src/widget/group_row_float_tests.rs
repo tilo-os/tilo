@@ -221,7 +221,11 @@ fn a_float_let_go_off_the_strip_stays_over_the_desk_where_it_was_dropped() {
         panic!("a float let go off the strip stays floating: {ask:?}");
     };
     assert_eq!(group, 200);
-    assert_eq!(moved, row.float_rect_at(away));
+    assert_eq!(
+        moved,
+        row.keep_float_inside(at + (away - grab)),
+        "it stands where the hand carried it, at the size it floats at"
+    );
     assert_eq!(
         row.floats().get(&200),
         Some(&moved),
@@ -293,5 +297,87 @@ fn a_float_covers_the_windows_under_it_once_it_has_arrived() {
         cover.width() > card.width() && cover.height() > card.height(),
         "and the lift it stands on, so the windows under it are drawn around that too: \
          {cover:?} against {card:?}"
+    );
+}
+
+#[test]
+fn a_floating_window_s_maximize_control_snaps_it_back_where_it_stood() {
+    let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+    let at = Rect::new(120.0, 60.0, 760.0, 540.0);
+    row.set_floats(floats(&[(200, at)]));
+    let (mut row, taffy, root) = relayout_row_owned(row, FIXTURE_USABLE_PX);
+    assert_eq!(
+        row.groups[1].resize(),
+        crate::widget::window_controls::Resize::Snap,
+        "a floating window's maximize control offers to snap it back"
+    );
+    assert_eq!(
+        row.groups[0].resize(),
+        crate::widget::window_controls::Resize::Maximize,
+        "a window in its strip keeps maximize"
+    );
+    let control = row.groups[1]
+        .presentation_bounds()
+        .maximize
+        .expect("the float's bar shows its controls");
+    press_at(&mut row, &taffy, root, control.center());
+    release(&mut row, &taffy, root);
+
+    assert_eq!(
+        row.take_pending_float(),
+        Some(FloatAsk::Snap { group: 200 }),
+        "one press snaps the float back"
+    );
+    assert!(
+        !row.groups[1].maximized && row.groups[1].take_pending_maximize_change().is_none(),
+        "the press never maximizes a float"
+    );
+    assert_eq!(
+        row.groups.iter().map(|group| group.id).collect::<Vec<_>>(),
+        [100, 200, 300],
+        "it goes back to the place in its strip it floated from"
+    );
+    assert_eq!(row.take_pending_float(), None, "the snap is asked once");
+}
+
+/// The collapse control of a card follows the card: folded to its header it offers to open it
+/// again, pointing up, and the card opens with the same press.
+#[test]
+fn a_folded_card_s_collapse_control_points_up_and_opens_it_again() {
+    let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+    let at = Rect::new(120.0, 60.0, 760.0, 540.0);
+    row.set_floats(floats(&[(200, at)]));
+    let (mut row, _taffy, _root) = relayout_row_owned(row, FIXTURE_USABLE_PX);
+    assert_eq!(
+        row.groups[1].resize(),
+        crate::widget::window_controls::Resize::Snap,
+        "an open card's collapse control folds it"
+    );
+    row.set_collapsed(&std::collections::BTreeSet::from([200]));
+    let (row, _taffy, _root) = relayout_row_owned(row, FIXTURE_USABLE_PX);
+    assert_eq!(
+        row.groups[1].resize(),
+        crate::widget::window_controls::Resize::Expand,
+        "folded, the same control opens the card again"
+    );
+    assert_eq!(
+        row.groups[0].resize(),
+        crate::widget::window_controls::Resize::Maximize,
+        "a window in its strip stands as it did"
+    );
+}
+
+/// A float keeps the size its place says: a conversation card stands at the card's size, not at
+/// the size a window lifted whole takes.
+#[test]
+fn a_float_takes_the_size_its_place_keeps() {
+    let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+    let at = Rect::from_origin_size(Point::new(400.0, 80.0), super::FLOAT_CARD_SIZE);
+    row.set_floats(floats(&[(200, at)]));
+    let (row, _taffy, _root) = relayout_row_owned(row, FIXTURE_USABLE_PX);
+    let rect = row.groups[1].get_rect();
+    assert!(
+        (rect.width() - at.width()).abs() < 0.5 && (rect.height() - at.height()).abs() < 0.5,
+        "the card stands at its own size: {rect:?}"
     );
 }

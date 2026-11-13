@@ -15,8 +15,6 @@ pub(crate) enum GuestEnd {
     SetupFailed(String),
 }
 
-/// What an app that asked (`end_report`) reads on its lease just before it
-/// closes: one JSON line.
 #[derive(Debug, serde::Serialize)]
 #[serde(tag = "ended", rename_all = "kebab-case")]
 pub(super) enum EndReport<'a> {
@@ -36,8 +34,6 @@ impl<'a> From<&'a GuestEnd> for EndReport<'a> {
     }
 }
 
-/// A session's end, watched — a guest's setup report — and whether the app
-/// asked to be told.
 pub(crate) struct EndWatch {
     pub(super) ended: std::thread::JoinHandle<GuestEnd>,
     pub(super) report: bool,

@@ -78,20 +78,20 @@ class Context:
         return wait_until(still, timeout, interval=0.2) or last["s"]
 
     def wait_presented(self, app_id: str, timeout: float = 30.0, after_seq: int = 0):
-        """`app_id`'s foreign frame once it has presented a frame past `after_seq`, else None."""
+        """`app_id`'s window once its client drew a frame past `after_seq`, else None."""
         def presented():
-            for f in self.vm.foreign_frames():
-                if f.get("app_id") == app_id and f.get("presented") and f.get("frame_seq", 0) > after_seq:
+            for f in self.vm.windows():
+                if f.get("app_id") == app_id and f.get("rect") and f.get("frames", 0) > after_seq:
                     return f
             return None
 
         return wait_until(presented, timeout, interval=0.3)
 
     def frame_seq(self, app_id: str) -> int | None:
-        """The newest frame `app_id` presented, or None while it shows none."""
-        seqs = [f.get("frame_seq", 0) for f in self.vm.foreign_frames()
-                if f.get("app_id") == app_id and f.get("presented")]
-        return max(seqs) if seqs else None
+        """The newest frame `app_id`'s window drew, or None while it shows none."""
+        frames = [f.get("frames", 0) for f in self.vm.windows()
+                  if f.get("app_id") == app_id and f.get("rect")]
+        return max(frames) if frames else None
 
     # -- a known desktop between checks ---------------------------------------
 

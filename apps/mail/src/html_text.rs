@@ -11,22 +11,16 @@ use html5ever::tendril::TendrilSink as _;
 use html5ever::{Attribute, LocalName, ns};
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
 
-/// A cap on the markup read; the rest of a larger message is not shown.
 const MAX_INPUT: usize = 2 * 1024 * 1024;
-/// How deep nested block quotes are marked.
 const MAX_QUOTE: usize = 4;
 
-/// One stretch of text in one style.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Run {
     pub text: String,
     pub bold: bool,
     pub italic: bool,
-    /// 1 for the largest heading to 3 for the smallest; 0 for body text.
     pub heading: u8,
-    /// Part of a quotation.
     pub quote: bool,
-    /// Where the text links, if it does.
     pub link: Option<String>,
 }
 
@@ -40,12 +34,10 @@ impl Run {
     }
 }
 
-/// Elements whose content is never shown.
 const SKIPPED: &[&str] = &[
     "head", "script", "style", "textarea", "title", "template", "noscript", "object", "iframe",
     "svg", "math", "select",
 ];
-/// Elements that end the line they sit in, and begin a new one.
 const LINE: &[&str] = &[
     "br",
     "div",
@@ -74,7 +66,6 @@ const LINE: &[&str] = &[
     "thead",
     "tfoot",
 ];
-/// Elements set apart by a blank line.
 const PARAGRAPH: &[&str] = &[
     "p",
     "h1",
@@ -89,9 +80,7 @@ const PARAGRAPH: &[&str] = &[
 ];
 struct Writer {
     runs: Vec<Run>,
-    /// Newlines owed before the next text: 1 for a line, 2 for a paragraph.
     owed: usize,
-    /// Whether the last thing written ended a word's space.
     at_space: bool,
     bold: usize,
     italic: usize,
@@ -99,7 +88,6 @@ struct Writer {
     quote: usize,
     link: Vec<Option<String>>,
     pre: usize,
-    /// Open lists: `Some(n)` numbers its items, `None` bullets them.
     lists: Vec<Option<usize>>,
 }
 
@@ -148,7 +136,6 @@ impl Writer {
         self.runs.push(run);
     }
 
-    /// The line breaks owed, and the quote marks a new line begins with.
     fn begin_text(&mut self) {
         let started = !self.runs.is_empty();
         let newlines = if started { self.owed } else { 0 };
@@ -172,7 +159,6 @@ impl Writer {
         self.owed = 0;
     }
 
-    /// Plain style for the breaks between lines, so they never underline.
     fn style_plain(&self) -> Run {
         Run {
             quote: self.quote > 0,
@@ -208,7 +194,6 @@ impl Writer {
             }
         }
         if out.trim().is_empty() {
-            // Whitespace between elements: a space, never a line.
             if !self.runs.is_empty() && self.owed == 0 && !self.at_space {
                 self.push(Run {
                     text: " ".into(),
@@ -219,7 +204,6 @@ impl Writer {
             return;
         }
         self.begin_text();
-        // `begin_text` may have started a line, so a leading space is not wanted.
         let text = if self.at_space {
             out.trim_start().to_owned()
         } else {
@@ -254,13 +238,11 @@ impl Writer {
     }
 }
 
-/// One step of the walk over the parsed document.
 enum Step {
     Enter(Handle),
     Close(LocalName),
 }
 
-/// The value of the attribute `name`, as the parser decoded it.
 fn attribute<'a>(attributes: &'a [Attribute], name: &str) -> Option<&'a str> {
     attributes
         .iter()
@@ -268,8 +250,6 @@ fn attribute<'a>(attributes: &'a [Attribute], name: &str) -> Option<&'a str> {
         .map(|attribute| &*attribute.value)
 }
 
-/// Whether the element is hidden: the `hidden` attribute, or a style that
-/// says `display: none` or `visibility: hidden`.
 fn hidden(attributes: &[Attribute]) -> bool {
     attribute(attributes, "hidden").is_some()
         || attribute(attributes, "style").is_some_and(|style| {
@@ -282,9 +262,6 @@ fn hidden(attributes: &[Attribute]) -> bool {
         })
 }
 
-/// `html` as styled text. The markup is parsed as an engine parses it
-/// (html5ever, the WHATWG algorithm), and the walk keeps its own stack, so
-/// no nesting depth can exhaust ours.
 #[must_use]
 pub fn render(html: &str) -> Vec<Run> {
     let mut end = html.len().min(MAX_INPUT);
@@ -321,7 +298,6 @@ pub fn render(html: &str) -> Vec<Run> {
             }
             NodeData::Element { name, attrs, .. } => {
                 let attrs = attrs.borrow();
-                // SVG and MathML are never shown, and go with their roots.
                 if name.ns != ns!(html) || SKIPPED.contains(&&*name.local) || hidden(&attrs) {
                     continue;
                 }
@@ -341,7 +317,6 @@ pub fn render(html: &str) -> Vec<Run> {
                 .map(Step::Enter),
         );
     }
-    // No trailing space or lines.
     while let Some(last) = w.runs.last_mut() {
         let trimmed = last.text.trim_end().len();
         last.text.truncate(trimmed);
@@ -427,8 +402,6 @@ fn close_tag(w: &mut Writer, name: &str) {
     }
 }
 
-/// A link target worth opening: the web and mail addresses only. A
-/// `javascript:`, `file:` or `data:` link is plain text.
 fn safe_link(href: &str) -> Option<String> {
     let href = href.trim();
     let lower = href.to_ascii_lowercase();
@@ -525,7 +498,6 @@ mod tests {
     fn hostile_markup_ends() {
         let nested = "<div>".repeat(50_000) + "x";
         assert_eq!(text(&nested), "x");
-        // A tag the input ends inside is dropped, as an engine drops it.
         assert_eq!(text("before<a href=\"x"), "before");
         assert_eq!(text("<div style=\"display:none\">never closed"), "");
         assert_eq!(text("a<!-- never closed <b>b</b>"), "a");
@@ -542,19 +514,15 @@ mod tests {
         );
         assert_eq!(text("a<![CDATA[<b>x</b>]]>b"), "ax]]>b");
         assert_eq!(text("a<?php echo 1 ?>b"), "ab");
-        // Script content ends at its end tag only, never inside a string.
         assert_eq!(
             text("<script>var s = \"<p>no</p>\";</script><p>yes</p>"),
             "yes"
         );
-        // A tag name with a `<` in it is an unknown element, its text kept.
         assert_eq!(
             text("<scr<script>ipt>alert(1)</script>ok"),
             "ipt>alert(1)ok"
         );
-        // Handlers and other attributes never show.
         assert_eq!(text("<p onclick=\"alert(1)\" title=\"t\">x</p>"), "x");
-        // Misnested styles end where the engine ends them.
         let runs = render("<b>bold <i>both</b> slanted</i> plain");
         assert!(runs.iter().any(|r| r.text == "both" && r.bold && r.italic));
         assert!(
@@ -565,12 +533,10 @@ mod tests {
             runs.iter()
                 .any(|r| r.text == " plain" && !r.bold && !r.italic)
         );
-        // SVG and MathML show nothing, whatever they hold.
         assert_eq!(
             text("<svg><text>s</text></svg><math><mi>m</mi></math>x"),
             "x"
         );
-        // Character references are the engine's whole table.
         assert_eq!(
             text("&hearts;&notin;&#x1F600;"),
             "\u{2665}\u{2209}\u{1F600}"

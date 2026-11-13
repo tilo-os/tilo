@@ -18,6 +18,7 @@ chat: runner
 chip-design: runner
 clocks: runner
 code-editor: runner
+console: runner
 contacts: runner
 containers: runner
 db-client: runner
@@ -57,10 +58,12 @@ slides: runner
 snippets: runner
 speed-test: runner
 store: runner
+tasks: runner
 terminal: runner
 themes: runner
 tilolang: broker
 totp: runner
+tube: runner
 typst-editor: runner
 video-editor: runner
 video-player: runner

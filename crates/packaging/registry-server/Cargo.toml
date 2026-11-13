@@ -71,6 +71,7 @@ tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-test-env = { path = "../../dev/test-env" }
 getrandom.workspace = true
 tempfile.workspace = true
+test-http = { path = "../../dev/test-http" }
 
 [[test]]
 name = "it"

@@ -28,8 +28,8 @@ use crate::app::{AppSurface, SurfaceDamage};
 use crate::time::testing::with_monotonic_time;
 use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use crate::widget::{
-    CodeEditor, Column, ListRow, ScrollRegion, Scrollable, Text, TreeMarks, VecListModel,
-    VirtualList,
+    Block, BlockEditor, CodeEditor, Column, ListRow, ScrollRegion, Scrollable, Text, TreeMarks,
+    VecListModel, VirtualList,
 };
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -560,9 +560,23 @@ fn code(lines: usize) -> Box<dyn Widget> {
     Box::new(editor)
 }
 
+/// A long note: `blocks` paragraphs of prose in the rich text editor every
+/// document surface of the toolkit edits, scrolled in the window.
+fn note(blocks: usize) -> Box<dyn Widget> {
+    let mut editor = BlockEditor::new()
+        .with_wrap_lines(true)
+        .with_compact_paragraph_spacing(true);
+    editor.set_blocks(
+        (0..blocks)
+            .map(|index| Block::paragraph(&sentence(index)))
+            .collect(),
+    );
+    Box::new(Scrollable::new_vertical().with_child(Box::new(editor)))
+}
+
 type Fixture = (&'static str, fn() -> Box<dyn Widget>);
 
-fn fixtures() -> [Fixture; 6] {
+fn fixtures() -> [Fixture; 7] {
     [
         ("scrollable column 2k", || column(2_000)),
         ("virtual list 100k", || virtual_list(100_000)),
@@ -570,6 +584,7 @@ fn fixtures() -> [Fixture; 6] {
         ("tree view 10k", || tree_view(500, 20)),
         ("scroll region 10k", || transcript(10_000)),
         ("code editor 3k lines", || code(3_000)),
+        ("rich text note 600", || note(600)),
     ]
 }
 
@@ -624,6 +639,92 @@ fn scroll_cost_of_every_scroller() {
     }
     eprintln!("{}\n\n{}", report.join("\n"), glides.join("\n"));
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// A scroll of a long note draws the lines it kept again by moving what they
+/// drew: no line already on screen is shaped or painted again, and a line
+/// that changes is. This is the work a note pays for per frame that a plain
+/// page does not.
+#[test]
+fn a_scroll_keeps_the_lines_it_already_drew() {
+    use crate::widget::rich_text_line;
+    let (mut app, mut scene, mut damage) = shown(note(200));
+    let mut painted_ever: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut kept = 0usize;
+    for frame in 0..FRAMES {
+        let _ = app.text_renderer.take_shape_stats();
+        let _ = rich_text_line::take_face_work();
+        let _ = rich_text_line::take_painted_lines();
+        app.surface_input(&Window, wheel(-STEP, TouchPhase::Moved), false);
+        scene.reset();
+        app.surface_frame_with_damage(&Window, &mut scene, &mut damage);
+        damage.take_copying();
+        let (_, shaped, _) = app.text_renderer.take_shape_stats();
+        let (painted, moved) = rich_text_line::take_face_work();
+        let drawn = rich_text_line::take_painted_lines();
+        assert_eq!(shaped, 0, "frame {frame} of the scroll shaped text again");
+        assert_eq!(
+            painted,
+            drawn.len(),
+            "frame {frame} counted {painted} lines painted and {drawn:?}"
+        );
+        // A line that comes into view paints once. A line already on screen
+        // that is painted again was drawn from scratch for a scroll.
+        for text in drawn {
+            assert!(
+                painted_ever.insert(text.clone()),
+                "frame {frame} of the scroll painted a line it had already drawn: {text}"
+            );
+        }
+        assert!(
+            moved > 0,
+            "frame {frame} of the scroll kept no line on screen"
+        );
+        kept += moved;
+    }
+    assert!(
+        kept > 20 * FRAMES,
+        "the scroll kept only {kept} lines in view over {FRAMES} frames"
+    );
+
+    // The line a change reaches is drawn again, and no other.
+    for _ in 0..FRAMES {
+        app.surface_input(&Window, wheel(STEP, TouchPhase::Moved), false);
+        scene.reset();
+        app.surface_frame_with_damage(&Window, &mut scene, &mut damage);
+        damage.take_copying();
+    }
+    edit_first_line(app.root_widget.as_mut()).expect("the note's editor is shown");
+    let _ = rich_text_line::take_face_work();
+    scene.reset();
+    app.surface_frame_with_damage(&Window, &mut scene, &mut damage);
+    let (painted, moved) = rich_text_line::take_face_work();
+    assert_eq!(
+        painted, 1,
+        "an edited line painted {painted} lines, keeping {moved}"
+    );
+}
+
+/// Change the first line the editor shows, as an edit to the document does.
+fn edit_first_line(widget: &mut dyn Widget) -> Option<()> {
+    if widget
+        .as_any_mut()
+        .is_some_and(|any| any.is::<BlockEditor>())
+    {
+        let editor = widget.as_any_mut()?.downcast_mut::<BlockEditor>()?;
+        editor
+            .blocks_mut()
+            .first_mut()?
+            .line
+            .set_text("Edited by the note");
+        return Some(());
+    }
+    for child in widget.children_mut() {
+        if edit_first_line(child).is_some() {
+            return Some(());
+        }
+    }
+    None
 }
 
 /// A glide moves the content in frames no input asked for: each frame that

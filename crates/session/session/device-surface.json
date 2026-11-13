@@ -125,7 +125,9 @@
             {
               "name": "device",
               "required": false,
-              "type": "int"
+              "type": {
+                "option": "int"
+              }
             }
           ]
         },
@@ -500,14 +502,14 @@
         },
         {
           "id": "scan-wifi",
-          "label": "Look again for Wi-Fi networks in reach",
+          "label": "Look again for Wi-Fi networks",
           "description": "Look again for Wi-Fi networks in reach.",
           "kind": "outside",
           "params": []
         },
         {
           "id": "join-wifi",
-          "label": "Join a Wi-Fi network: one this device knows, or an open one",
+          "label": "Join a Wi-Fi network",
           "description": "Join a Wi-Fi network: one this device knows, or an open one.",
           "kind": "outside",
           "params": [
@@ -520,7 +522,7 @@
         },
         {
           "id": "connect-wifi",
-          "label": "Join a protected Wi-Fi network with its password",
+          "label": "Join with its password",
           "description": "Join a protected Wi-Fi network with its password.",
           "kind": "outside",
           "params": [
@@ -531,14 +533,13 @@
             },
             {
               "name": "password",
-              "required": true,
-              "type": "text"
+              "required": true
             }
           ]
         },
         {
           "id": "connect-hidden-wifi",
-          "label": "Join a Wi-Fi network that does not broadcast its name",
+          "label": "Join a hidden network",
           "description": "Join a Wi-Fi network that does not broadcast its name.",
           "kind": "outside",
           "params": [
@@ -549,72 +550,88 @@
             },
             {
               "name": "password",
-              "required": false,
-              "type": "text"
+              "required": false
             }
           ]
         },
         {
           "id": "connect-enterprise-wifi",
-          "label": "Join an enterprise (802.1X) Wi-Fi network with the identity and the",
+          "label": "Join an 802.1X network",
           "description": "Join an enterprise (802.1X) Wi-Fi network with the identity and the organization's certificates, and connect.",
           "kind": "outside",
           "params": [
             {
               "name": "profile",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "ssid",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "identity",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "anonymous_identity",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "ca_certificate",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "method",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "inner_auth",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "client_certificate",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "private_key",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "password",
-              "required": false,
-              "type": "text"
+              "required": false
             }
           ]
         },
         {
           "id": "disconnect-wifi",
-          "label": "Leave the Wi-Fi network this device is connected to",
+          "label": "Leave the Wi-Fi network",
           "description": "Leave the Wi-Fi network this device is connected to.",
           "kind": "outside",
           "params": [
@@ -627,7 +644,7 @@
         },
         {
           "id": "forget-network",
-          "label": "Forget a saved network: this device no longer joins it by itself",
+          "label": "Forget the network",
           "description": "Forget a saved network: this device no longer joins it by itself.",
           "kind": "outside",
           "destructive": true,
@@ -641,7 +658,7 @@
         },
         {
           "id": "set-network-autoconnect",
-          "label": "Join a saved network by itself when it is in reach, or stop",
+          "label": "Join by itself in reach",
           "description": "Join a saved network by itself when it is in reach, or stop.",
           "kind": "outside",
           "params": [
@@ -659,7 +676,7 @@
         },
         {
           "id": "set-network-proxy",
-          "label": "Send a saved network's traffic through a proxy, or straight out",
+          "label": "Set a proxy",
           "description": "Send a saved network's traffic through a proxy, or straight out.",
           "kind": "outside",
           "params": [
@@ -671,7 +688,9 @@
             {
               "name": "server",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             }
           ]
         },
@@ -703,20 +722,22 @@
         },
         {
           "id": "set-mobile-apn",
-          "label": "Type the access point name mobile data connects through",
+          "label": "Set the access point name",
           "description": "Type the access point name mobile data connects through.",
           "kind": "outside",
           "params": [
             {
               "name": "apn",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             }
           ]
         },
         {
           "id": "set-mobile-roaming",
-          "label": "Let mobile data connect on another operator's network, or keep it to",
+          "label": "Use another operator's network",
           "description": "Let mobile data connect on another operator's network, or keep it to this one.",
           "kind": "outside",
           "params": [
@@ -729,7 +750,7 @@
         },
         {
           "id": "set-airplane-mode",
-          "label": "Turn airplane mode on or off: every wireless radio goes off with it",
+          "label": "Turn airplane mode on or off",
           "description": "Turn airplane mode on or off: every wireless radio goes off with it.",
           "kind": "outside",
           "params": [
@@ -1148,7 +1169,7 @@
         },
         {
           "id": "connect",
-          "label": "Connect a paired accessory",
+          "label": "Connect the accessory",
           "description": "Connect a paired accessory.",
           "kind": "outside",
           "params": [
@@ -1161,7 +1182,7 @@
         },
         {
           "id": "disconnect",
-          "label": "Disconnect an accessory",
+          "label": "Disconnect the accessory",
           "description": "Disconnect an accessory.",
           "kind": "outside",
           "params": [
@@ -1174,7 +1195,7 @@
         },
         {
           "id": "scan",
-          "label": "Look for accessories in reach, or stop looking",
+          "label": "Look for accessories",
           "description": "Look for accessories in reach, or stop looking.",
           "kind": "outside",
           "params": [
@@ -1187,7 +1208,7 @@
         },
         {
           "id": "pair",
-          "label": "Pair a device in reach: `BlueZ` bonds with it, trusting it and",
+          "label": "Pair a device",
           "description": "Pair a device in reach: `BlueZ` bonds with it, trusting it and connecting it. What the device asks to compare is a question the person answers.",
           "kind": "outside",
           "params": [
@@ -1200,7 +1221,7 @@
         },
         {
           "id": "forget",
-          "label": "Forget a device: its bond, its keys and its trust go, so it must be",
+          "label": "Forget the device",
           "description": "Forget a device: its bond, its keys and its trust go, so it must be paired again from scratch.",
           "kind": "outside",
           "destructive": true,
@@ -1390,14 +1411,14 @@
         },
         {
           "id": "lock",
-          "label": "Lock the screen: unlocking asks for the password",
+          "label": "Lock the screen",
           "description": "Lock the screen: unlocking asks for the password.",
           "kind": "outside",
           "params": []
         },
         {
           "id": "switch-user",
-          "label": "Leave this session running and let someone else sign in",
+          "label": "Switch user",
           "description": "Leave this session running and let someone else sign in.",
           "kind": "outside",
           "params": []
@@ -1427,7 +1448,7 @@
         },
         {
           "id": "log-out",
-          "label": "Log out of this session",
+          "label": "Log out",
           "description": "Log out of this session.",
           "kind": "outside",
           "destructive": true,
@@ -1506,14 +1527,14 @@
       "verbs": [
         {
           "id": "next-mode",
-          "label": "Use the displays together in the next arrangement",
+          "label": "Next arrangement",
           "description": "Use the displays together in the next arrangement",
           "kind": "outside",
           "params": []
         },
         {
           "id": "set-mode",
-          "label": "Use the displays together this way",
+          "label": "Use this arrangement",
           "description": "Use the displays together this way",
           "kind": "outside",
           "params": [
@@ -1526,41 +1547,45 @@
         },
         {
           "id": "open-sheet",
-          "label": "Bring up the display sheet",
+          "label": "Open the display sheet",
           "description": "Bring up the display sheet Where the layouts and the wireless displays are chosen.",
           "kind": "outside",
           "params": []
         },
         {
           "id": "close-sheet",
-          "label": "Take the display sheet down",
+          "label": "Close the display sheet",
           "description": "Take the display sheet down",
           "kind": "outside",
           "params": []
         },
         {
           "id": "brightness-up",
-          "label": "Make the display brighter",
+          "label": "Brighter",
           "description": "Make the display brighter The display the person works on, or with `all` every display that can be dimmed, each keeping its share of the brightest one.",
           "kind": "outside",
           "params": [
             {
               "name": "all",
               "required": false,
-              "type": "bool"
+              "type": {
+                "option": "bool"
+              }
             }
           ]
         },
         {
           "id": "brightness-down",
-          "label": "Make the display dimmer",
+          "label": "Dimmer",
           "description": "Make the display dimmer The display the person works on, or with `all` every display that can be dimmed, each keeping its share of the brightest one.",
           "kind": "outside",
           "params": [
             {
               "name": "all",
               "required": false,
-              "type": "bool"
+              "type": {
+                "option": "bool"
+              }
             }
           ]
         },
@@ -1686,7 +1711,7 @@
       "verbs": [
         {
           "id": "switch-workspace",
-          "label": "Bring a workspace of this device to the front",
+          "label": "Switch to workspace",
           "description": "Bring a workspace of this device to the front",
           "kind": "outside",
           "params": [
@@ -1726,66 +1751,87 @@
         },
         {
           "id": "invitations",
-          "label": "The invitations this device's person made into a workspace that can still be",
+          "label": "List invitations",
           "description": "The invitations this device's person made into a workspace that can still be redeemed, in the words the workspace's host lists them by",
           "kind": "outside",
           "params": [
             {
               "name": "workspace",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             }
           ]
         },
         {
           "id": "issue-invitation",
-          "label": "Make an invitation into a workspace from this device: the link to hand to whoever is",
+          "label": "Make an invitation link",
           "description": "Make an invitation into a workspace from this device: the link to hand to whoever is being invited, which their device joins with",
           "kind": "outside",
           "params": [
             {
               "name": "role",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "invitee_name",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "recipient",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "expires_in_seconds",
               "required": false,
-              "type": "int"
+              "type": {
+                "option": "int"
+              }
             },
             {
               "name": "workspace",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             }
           ]
         },
         {
           "id": "show-invite",
-          "label": "Open the invite sheet on a workspace: where a link into it is made, the part it brings",
+          "label": "Invite people",
           "description": "Open the invite sheet on a workspace: where a link into it is made, the part it brings someone in at picked and the links that still work taken back. An app shares what it shows by asking this, so it offers the one sheet the bar's invite button opens.",
           "kind": "outside",
           "params": [
             {
               "name": "workspace",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             }
           ]
         },
         {
+          "id": "show-connect",
+          "label": "Show how an agent or another computer connects as the person: the setup their own card's",
+          "description": "Show how an agent or another computer connects as the person: the setup their own card's \"Connect an agent or computer\" opens. An app that lists what acts as them offers adding to it this way.",
+          "kind": "outside",
+          "params": []
+        },
+        {
           "id": "cancel-invitation",
-          "label": "Cancel the invitation `invite` of a workspace: its link admits nobody from now on",
+          "label": "Cancel invitation",
           "description": "Cancel the invitation `invite` of a workspace: its link admits nobody from now on",
           "kind": "outside",
           "params": [
@@ -1797,13 +1843,15 @@
             {
               "name": "workspace",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             }
           ]
         },
         {
           "id": "show-surface",
-          "label": "Show the surface `surface` over the desk's windows, or close it when it is up",
+          "label": "Show or hide a panel",
           "description": "Show the surface `surface` over the desk's windows, or close it when it is up.",
           "kind": "outside",
           "params": [
@@ -1829,7 +1877,7 @@
         },
         {
           "id": "close-surface",
-          "label": "Close the surface `surface`, when it is the one up",
+          "label": "Close panel",
           "description": "Close the surface `surface`, when it is the one up.",
           "kind": "outside",
           "params": [
@@ -1854,30 +1902,36 @@
             {
               "name": "body",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "from",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             },
             {
               "name": "kind",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             }
           ]
         },
         {
           "id": "clear-notices",
-          "label": "Clear the notification centre, which Undo puts back",
+          "label": "Clear notifications",
           "description": "Clear the notification centre, which Undo puts back.",
           "kind": "outside",
           "params": []
         },
         {
           "id": "dismiss-notice",
-          "label": "Dismiss the notice `notice` of the centre, by its id",
+          "label": "Dismiss notification",
           "description": "Dismiss the notice `notice` of the centre, by its id.",
           "kind": "outside",
           "params": [
@@ -1890,7 +1944,7 @@
         },
         {
           "id": "act-on-notice",
-          "label": "Run one of the choices the notice `notice` offers, by the key its sender gave it",
+          "label": "Answer notification",
           "description": "Run one of the choices the notice `notice` offers, by the key its sender gave it.",
           "kind": "outside",
           "params": [
@@ -1908,25 +1962,29 @@
         },
         {
           "id": "walk-switcher",
-          "label": "Open the window switcher, or walk it `steps` windows on",
+          "label": "Switch windows",
           "description": "Open the window switcher, or walk it `steps` windows on. Alt+Tab walks the workspace's windows; Alt and the grave key the ones the app in front shows.",
           "kind": "outside",
           "params": [
             {
               "name": "steps",
               "required": false,
-              "type": "int"
+              "type": {
+                "option": "int"
+              }
             },
             {
               "name": "scope",
               "required": false,
-              "type": "text"
+              "type": {
+                "option": "text"
+              }
             }
           ]
         },
         {
           "id": "select-switcher",
-          "label": "Choose the window the walk reached, without crossing the ones between: `at` is its place",
+          "label": "Choose window in switcher",
           "description": "Choose the window the walk reached, without crossing the ones between: `at` is its place among the windows the walk crosses, `0` the first of them and `-1` the last. Home, End and a card under the pointer choose by place.",
           "kind": "outside",
           "params": [
@@ -1939,7 +1997,7 @@
         },
         {
           "id": "commit-switcher",
-          "label": "Go to the window the switcher's walk reached, and close the switcher",
+          "label": "Go to chosen window",
           "description": "Go to the window the switcher's walk reached, and close the switcher.",
           "kind": "outside",
           "params": []

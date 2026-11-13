@@ -113,7 +113,7 @@ refuse() {
 rm -f "$conf"
 refuse "no config file at all"
 
-echo 'target/debug/shell' >"$conf"
+echo 'target/debug/tilo-session' >"$conf"
 refuse "relative path"
 
 echo '/does/not/exist/shell' >"$conf"

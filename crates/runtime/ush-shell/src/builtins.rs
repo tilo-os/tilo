@@ -32,7 +32,6 @@ pub(crate) fn special(name: &str) -> Option<Builtin> {
     })
 }
 
-/// Built-ins that are not special.
 pub(crate) fn regular(name: &str) -> Option<Builtin> {
     Some(match name {
         "true" => |_, _| Ok(0),
@@ -70,7 +69,6 @@ pub(crate) fn regular(name: &str) -> Option<Builtin> {
     })
 }
 
-/// Every built-in's name, for Tab completion.
 pub(crate) const NAMES: &[&str] = &[
     ":",
     ".",
@@ -119,12 +117,10 @@ pub(crate) const NAMES: &[&str] = &[
     "readonly",
 ];
 
-/// The shell's reserved words that start a command, for Tab completion.
 pub(crate) const KEYWORDS: &[&str] = &[
     "if", "case", "for", "while", "until", "function", "select", "[[",
 ];
 
-/// The built-ins whose `name=value` arguments are assignments.
 pub(crate) fn is_declaration(name: &str) -> bool {
     matches!(
         name,
@@ -132,7 +128,6 @@ pub(crate) fn is_declaration(name: &str) -> bool {
     )
 }
 
-/// The shell's reserved words, for `type`.
 pub(crate) fn is_keyword(name: &str) -> bool {
     matches!(
         name,
@@ -494,8 +489,6 @@ fn unset(sh: &mut Shell, args: &[String]) -> Exec {
     Ok(status)
 }
 
-/// An argument of a declaration built-in: a word, or an assignment it
-/// carries out itself.
 pub(crate) enum DeclArg {
     Word(String),
     Assign(ast::Assignment),
@@ -533,7 +526,6 @@ fn assignment_name(a: &ast::Assignment) -> &str {
     }
 }
 
-/// `declare`, `typeset`, `local`, `export` and `readonly`.
 pub(crate) fn declaration(sh: &mut Shell, name: &str, args: Vec<DeclArg>) -> Exec {
     let mut export = name == "export";
     let mut readonly = name == "readonly";
@@ -635,7 +627,6 @@ pub(crate) fn declaration(sh: &mut Shell, name: &str, args: Vec<DeclArg>) -> Exe
     Ok(status)
 }
 
-/// `declare -f`: the name of every function.
 fn print_functions(sh: &Shell) {
     let mut out = String::new();
     let mut names: Vec<&String> = sh.functions.keys().collect();

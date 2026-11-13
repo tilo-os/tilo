@@ -25,8 +25,9 @@ use automerge::{
 };
 use tilo_automerge::ApplyIncoming;
 
-mod upstream;
-use upstream::{History, Replica, Rng, agrees_with_upstream, refuses_only_what_upstream_corrupts};
+use crate::upstream::{
+    History, Replica, Rng, agrees_with_upstream, refuses_only_what_upstream_corrupts,
+};
 
 const KEYS: &[&str] = &["a", "b", "desktop", "k1", "k2", "k3", "zz"];
 
@@ -91,8 +92,6 @@ fn history(seed: u64, steps: usize) -> History {
     }
 }
 
-/// One local edit; edits the document cannot take (a counter that is not
-/// one, an object another actor made) are simply not made.
 fn edit(doc: &mut AutoCommit, rng: &mut Rng, step: usize) {
     let mut maps = vec![ROOT];
     for key in ["m1", "m2", "nested"] {
@@ -124,9 +123,6 @@ fn edit(doc: &mut AutoCommit, rng: &mut Rng, step: usize) {
     };
 }
 
-/// A change by a new actor, on top of `doc`, that puts a value at one
-/// root key with the op at another root key as its predecessor: not a
-/// change Automerge makes, but one a peer can send.
 fn forge(doc: &mut AutoCommit, forgers: &mut u8) -> Option<Change> {
     let (key, target) = KEYS.iter().find_map(|&target| {
         let key = KEYS.iter().find(|&&key| key != target)?;

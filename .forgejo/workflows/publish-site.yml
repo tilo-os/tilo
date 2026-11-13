@@ -122,7 +122,8 @@ jobs:
         run: |
           set -euo pipefail
           dir=$OUT/lounge
-          bash tools/ci/publish/lounge-context.sh "$dir/context" "$dir/binaries"
+          bash tools/ci/publish/lounge-fonts.sh "$dir/fonts"
+          bash tools/ci/publish/lounge-context.sh "$dir/context" "$dir/binaries" "$dir/fonts"
           revision=$(cat "$dir/context/source-revision")
           bash tools/ci/publish/oci-build.sh "$dir/context" "$dir/context/Containerfile" "$dir" --build-arg "SOURCE_REVISION=$revision"
           bash os/containers/tilo-lounge/test-image.sh "$dir/image.oci.tar"

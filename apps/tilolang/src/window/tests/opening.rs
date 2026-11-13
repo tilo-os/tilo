@@ -15,9 +15,6 @@ const KEPT_WORKSPACE: &str = "kept-workspace";
 /// The package the workspace's record is stored under in the profile.
 const PACKAGE: &str = "so.tilo.lang";
 const NOTES: &str = "so.tilo.lang.notes";
-/// The rows a window shows of a list: its first screenful.
-const SHOWN: usize = 20;
-
 /// A directory of its own, removed when the test ends.
 struct Scratch(PathBuf);
 
@@ -173,17 +170,14 @@ fn notebook(n: usize) -> AutoCommit {
 fn first_frame_over(n: usize) -> (tilolang_tilo::index::IndexReads, u64, u64, bool) {
     let scratch = Scratch::new("first-frame");
     let records = kept("notes", notebook(n), &scratch);
-    let workspace = opened("notes", &records, &scratch);
-    // The rows a window shows: its first screenful.
-    let rows = workspace.root_rows();
-    rows.borrow_mut().request_range(0..SHOWN);
-    for index in 0..SHOWN {
-        let key = rows.borrow().key_at(index).expect("a row");
-        rows.borrow_mut().read(&key, &mut |_| Ok(())).unwrap();
-    }
+    let mut workspace = opened("notes", &records, &scratch);
     let host = workspace.window.host().expect("the host started");
     let reads = host.store().read_stats();
-    assert_eq!(rows.borrow().len(), n, "the list is the notebook's");
+    assert_eq!(
+        workspace.tree_labels().len(),
+        n,
+        "the tree is the notebook's"
+    );
     assert!(
         records.is_opening(&primary().id),
         "the record is still read off the frame"
@@ -198,13 +192,194 @@ fn first_frame_over(n: usize) -> (tilolang_tilo::index::IndexReads, u64, u64, bo
 
 #[test]
 fn the_first_frame_of_a_kept_workspace_reads_its_index_and_not_its_record_whatever_its_size() {
-    let small = first_frame_over(1000);
-    let large = first_frame_over(10_000);
-    assert!(!small.3 && !large.3, "neither window had the record");
-    assert_eq!((small.1, small.2), (0, 0), "nothing of the record was read");
+    for size in [100, 500] {
+        let (index, entries, located, had_record) = first_frame_over(size);
+        assert!(!had_record, "the window opens over the index: {size} notes");
+        assert_eq!(
+            (entries, located),
+            (0, 0),
+            "nothing of the record was read: {size} notes"
+        );
+        assert!(
+            index.dirs > 0,
+            "the index answered the frame: {size} notes, {index:?}"
+        );
+    }
+}
+
+/// The notes of the workspace's notebook, as the window's store reads them now.
+fn notes_of(host: &Host) -> Vec<ResourceRef> {
+    let notebook = host.root_of(NOTES).expect("the notebook");
+    let RtValue::List(notes) = host.runtime().read(&notebook, "notes").expect("its notes") else {
+        panic!("the notebook lists its notes");
+    };
+    notes
+        .into_iter()
+        .filter_map(|note| match note {
+            RtValue::Ref(note) => Some((*note.target).clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// What the note `note` is titled, as a window reads it.
+fn title_of(host: &Host, note: &ResourceRef) -> String {
+    match host.runtime().read(note, "title").expect("its title") {
+        RtValue::Text(title) => title,
+        other => panic!("a title is text: {other:?}"),
+    }
+}
+
+/// The note `note` stands under, if it stands under one.
+fn parent_of(host: &Host, note: &ResourceRef) -> Option<ResourceRef> {
+    match host.runtime().read(note, "parent").expect("its parent") {
+        RtValue::Opt(Some(held)) => match *held {
+            RtValue::Ref(parent) => Some((*parent.target).clone()),
+            other => panic!("a parent is a note: {other:?}"),
+        },
+        RtValue::Opt(None) => None,
+        other => panic!("a parent is a note: {other:?}"),
+    }
+}
+
+/// The id the notes package's action `name` has.
+fn note_action(host: &Host, name: &str) -> String {
+    host.package(NOTES)
+        .expect("the notes package")
+        .meta
+        .actions
+        .iter()
+        .find(|action| action.name == name)
+        .unwrap_or_else(|| panic!("the notes package declares `{name}`"))
+        .id
+        .clone()
+}
+
+#[test]
+fn a_window_on_a_note_that_left_with_the_note_it_stood_under_says_it_is_gone() {
+    let scratch = Scratch::new("note-gone");
+    // A notebook whose top note is deleted: the notes under it leave with it. The record still
+    // holds what they held — a deleted note's map stays in the record — so a copy of it answers
+    // their fields, and only the index they left says they are gone.
+    let (doc, gone, gone_title) = {
+        let mut workspace = Workspace::seeded("notes");
+        let host = workspace.window.current_host().expect("the host started");
+        let (parent, under) = notes_of(&host)
+            .into_iter()
+            .find_map(|note| parent_of(&host, &note).map(|parent| (parent, note)))
+            .expect("a note of the scenario stands under another");
+        let title = title_of(&host, &under);
+        let notebook = host.root_of(NOTES).expect("the notebook");
+        let delete = note_action(&host, "delete");
+        host.runtime()
+            .invoke_action(
+                &Principal::new("ada"),
+                (
+                    delete,
+                    vec![RtValue::resource(&notebook), RtValue::resource(&parent)],
+                ),
+            )
+            .expect("the person deletes the note");
+        workspace.window.commit_planned();
+        workspace.settle();
+        assert!(
+            !notes_of(&host).contains(&under),
+            "the note went with the one it stood under"
+        );
+        (workspace.doc.clone(), under, title)
+    };
+    // The indexes a window kept over that record: they name the note nowhere. The window opens
+    // over them, before its record.
+    let records = kept("notes", doc, &scratch);
+    let mut opened = opened("notes", &records, &scratch);
+    let host = opened.window.host().expect("the host started");
+    assert!(
+        !host.store().has_record(),
+        "the window opens over the index"
+    );
+
+    // The note is gone: nothing of it reads, and the record is not read for it.
+    let read = host.runtime().read(&gone, "title");
+    assert!(
+        read.is_err(),
+        "the note went with the one it stood under: {read:?}"
+    );
+    assert!(
+        !host.store().has_record(),
+        "the record is not read for a note the workspace no longer holds"
+    );
+    assert!(
+        tilolang_tilo::runtime::store::Store::type_of(host.store(), &gone).is_err(),
+        "and its window says it is gone"
+    );
+    // Its page does not show its title either.
+    opened
+        .window
+        .open_requests()
+        .borrow_mut()
+        .push(tilolang_tilo::OpenEffect::Open {
+            anchor: gone.id_string(),
+        });
+    opened.frame();
+    opened.frame();
+    let page = format!("{:?}", opened.window.detail_tree());
+    assert!(
+        !page.contains(&gone_title),
+        "the page of a note that is gone shows no title: {page}"
+    );
+}
+
+#[test]
+fn a_note_a_write_just_made_opens_and_shows_its_fields_before_the_index_names_it() {
+    let scratch = Scratch::new("note-made");
+    let records = kept("notes", notebook(3), &scratch);
+    let mut workspace = opened("notes", &records, &scratch);
+    let before = notes_of(&workspace.window.host().expect("the host started"));
+    assert_eq!(before.len(), 3, "the notebook the index kept");
+
+    // A note made in the window shown before the record: the write is the store's own, and the
+    // index — which derives the record — names the note nowhere while the record does not hold
+    // it. It opens and reads anyway, from the write.
+    let new_note = workspace.key_of("ui.Button", "label", "New note");
+    workspace
+        .window
+        .act(UiEvent::Fire(new_note, "press".to_owned(), None));
+    workspace.frame();
+    workspace.frame();
+    let host = workspace.window.host().expect("the host started");
+    assert!(host.store().has_record(), "the write waited for the record");
+    let made = notes_of(&host)
+        .into_iter()
+        .find(|note| !before.contains(note))
+        .expect("the press made a note");
+    let open: usize = host
+        .store()
+        .held_chunks()
+        .iter()
+        .map(|(_, _, open)| *open)
+        .sum();
+    assert!(
+        open > 0,
+        "the made note is the store's own write, which the record does not hold yet"
+    );
+    // It opens, and shows the fields the write did not write.
+    assert!(
+        tilolang_tilo::runtime::store::Store::type_of(host.store(), &made).is_ok(),
+        "a note a write just made opens before the index names it"
+    );
     assert_eq!(
-        small, large,
-        "the first frame reads the same of 10k notes as of 1k"
+        title_of(&host, &made),
+        "",
+        "and shows the title the write did not write"
+    );
+    assert_eq!(
+        workspace.opened_note(),
+        made,
+        "the window shows the note it just made"
+    );
+    assert!(
+        first_input(&workspace.composed()).is_some(),
+        "with its title, as the page it opens in"
     );
 }
 
@@ -215,7 +390,7 @@ fn what_is_done_before_the_record_arrives_waits_for_it_and_lands_on_it_in_order(
     let mut workspace = opened("notes", &records, &scratch);
     let host = workspace.window.host().expect("the host started");
     assert!(!host.store().has_record());
-    assert_eq!(workspace.rows().len(), 3);
+    assert_eq!(workspace.tree_labels().len(), 3);
 
     // A note made and named before the record is had: the write waits for it.
     let new_note = workspace.key_of("ui.Button", "label", "New note");
@@ -248,11 +423,7 @@ fn what_is_done_before_the_record_arrives_waits_for_it_and_lands_on_it_in_order(
     workspace.window = shown.taken_over();
     workspace.settle();
     assert_eq!(workspace.items_of(NOTES, "notes"), 4, "the note was made");
-    let titles: Vec<String> = workspace
-        .rows()
-        .into_iter()
-        .map(|(_, title)| title)
-        .collect();
+    let titles: Vec<String> = workspace.tree_labels();
     assert!(
         titles.iter().any(|title| title == "Plans"),
         "named after it was made, as it was typed: {titles:?}"

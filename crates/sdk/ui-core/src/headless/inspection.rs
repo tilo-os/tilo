@@ -273,6 +273,7 @@ pub(super) fn collect_inspection(
     widget: &dyn Widget,
     parent_path: &str,
     sibling_counts: &mut HashMap<String, usize>,
+    slot: Option<(&dyn Widget, usize)>,
 ) -> InspectionNode {
     let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
         return InspectionNode {
@@ -291,10 +292,28 @@ pub(super) fn collect_inspection(
     };
     let (name, path, _) = next_widget_path(widget, parent_path, sibling_counts);
     let rect = widget.get_rect();
+    let mut semantics = widget.accessibility();
+    if let Some(node) = &mut semantics {
+        crate::a11y_tree::walk::with_slot_words(node, slot.as_ref());
+    }
+    // A widget with no node of its own that holds one child stands for that
+    // child, as it does in the accessibility walk.
+    let children_of = widget.children().len();
+    let inherited = (semantics.is_none() && children_of == 1)
+        .then_some(slot)
+        .flatten();
     let mut child_counts = HashMap::new();
     let mut children = Vec::new();
-    for_each_retained_child(widget, &mut |child| {
-        children.push(collect_inspection(child, &path, &mut child_counts));
+    for (index, child) in widget.children().into_iter().enumerate() {
+        let slot = if semantics.is_none() {
+            inherited
+        } else {
+            Some((widget, index))
+        };
+        children.push(collect_inspection(child, &path, &mut child_counts, slot));
+    }
+    widget.for_each_hosted_child(&mut |child| {
+        children.push(collect_inspection(child, &path, &mut child_counts, None));
     });
     InspectionNode {
         path,
@@ -308,9 +327,7 @@ pub(super) fn collect_inspection(
         page_title: widget.own_page_title(),
         layout: widget.layout_info(),
         paint_key: crate::scene_parts::painted_key(widget),
-        semantics: widget
-            .accessibility()
-            .map(|access| crate::a11y::with_synthetic_bounds(access, widget)),
+        semantics: semantics.map(|access| crate::a11y::with_synthetic_bounds(access, widget)),
         children,
     }
 }
@@ -512,10 +529,13 @@ fn audit_access_node_contract(node: &AccessNode, path: &str, issues: &mut Vec<Ac
 }
 
 fn audit_access_children(node: &AccessNode, path: &str, issues: &mut Vec<AccessibilityIssue>) {
+    // A child is keyed when its id stays the same across a rebuild: by the key
+    // it hashed, or by the semantic key it named — the same test the semantic
+    // tree gives a synthetic node's durability.
     let keyed = node
         .children
         .iter()
-        .filter(|child| child.key.is_some())
+        .filter(|child| child.is_keyed())
         .count();
     if keyed > 0 && keyed < node.children.len() {
         push_audit_issue(

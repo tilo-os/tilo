@@ -5,8 +5,9 @@
 //! inviter's device seals those bytes under a key it puts in the link's
 //! fragment, and leaves the ciphertext here under a random handle; whoever
 //! holds the link fetches it back and opens it. The site keeps ciphertext it
-//! has no key for, for as long as the invitation it holds was issued, and
-//! takes it away before that when the inviter asks.
+//! has no key for — written on its own state disk, so a link pasted into a
+//! message and read days later still opens — for as long as the invitation it
+//! holds was issued, and takes it away before that when the inviter asks.
 //!
 //! Nothing reads the shelf: a handle is unguessable, and a fetch names the
 //! one handle it wants.

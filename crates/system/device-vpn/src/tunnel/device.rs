@@ -3,16 +3,12 @@
 use std::future::Future;
 use std::io;
 
-/// A source and sink of IP packets: a TUN, or an in-memory stand-in.
 pub trait PacketDevice: Send + Sync + 'static {
-    /// The next packet the network stack sends into the tunnel.
     fn recv<'a>(&'a self, buf: &'a mut [u8])
     -> impl Future<Output = io::Result<usize>> + Send + 'a;
-    /// Hand `packet` to the network stack.
     fn send<'a>(&'a self, packet: &'a [u8]) -> impl Future<Output = io::Result<()>> + Send + 'a;
 }
 
-/// A TUN, by the descriptor the helper handed over.
 #[cfg(target_os = "linux")]
 pub struct TunDevice {
     fd: tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>,
@@ -73,7 +69,6 @@ impl PacketDevice for TunDevice {
     }
 }
 
-/// In-memory packet devices for tests of code that runs a tunnel.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing {
     use std::io;
@@ -90,7 +85,6 @@ pub mod testing {
         outbound: mpsc::Sender<Vec<u8>>,
     }
 
-    /// The test's side of a [`ChannelDevice`].
     pub struct Stack {
         inject: mpsc::Sender<Vec<u8>>,
         delivered: mpsc::Receiver<Vec<u8>>,
@@ -102,7 +96,6 @@ pub mod testing {
             let _ = self.inject.send(packet).await;
         }
 
-        /// The next packet the tunnel handed to the network stack.
         pub async fn delivered(&mut self) -> Option<Vec<u8>> {
             self.delivered.recv().await
         }

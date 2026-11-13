@@ -18,7 +18,6 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::SystemTime,
 };
 use tilo_peer_state::owner_commit::{
     CommitFuture, CommitOperation, OwnerCommitReceipt, OwnerCommitRequest, OwnerCommitService,
@@ -118,7 +117,7 @@ impl SessionOwner {
         };
         sign_device_cert(&mut authority, &person).map_err(|e| e.to_string())?;
         let workspace = workspace.to_owned();
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut peer = StatePeer::new(
             &workspace,
             authority.clone(),
@@ -185,7 +184,7 @@ impl SessionOwner {
     /// governing device, and commit the workspace that admits it.
     pub fn admit_second_device(&mut self) -> Result<(), String> {
         let certificate = self.second_device();
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut candidate = self.peer.clone();
         candidate.admit_certificate(certificate, &self.key, now)?;
         self.commit(candidate)
@@ -201,7 +200,7 @@ impl SessionOwner {
             stored.authority.clone(),
             vec![stored.authority],
             RevocationList::new(),
-            SystemTime::now(),
+            tilo_clock::wall(),
         )?;
         let mut owner = Self {
             root: root.to_path_buf(),
@@ -252,7 +251,7 @@ impl SessionOwner {
 
     fn publications(&self, mut peer: StatePeer) -> Result<Vec<Vec<u8>>, String> {
         peer.publication_mut()
-            .durable_bootstrap_messages(&self.key, SystemTime::now(), self.generation.max(1))?
+            .durable_bootstrap_messages(&self.key, tilo_clock::wall(), self.generation.max(1))?
             .iter()
             .map(|message| postcard::to_stdvec(message).map_err(|e| e.to_string()))
             .collect()
@@ -287,7 +286,7 @@ impl SessionOwner {
         if request.workspace != self.peer.workspace_id() {
             return Err("owner namespace unavailable".into());
         }
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut candidate = self.peer.clone();
         match &request.operation {
             CommitOperation::Document {

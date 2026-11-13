@@ -1,27 +1,9 @@
-//! The App Store's window: [`StoreState`] holds what it shows and the view
-//! shares it with its effect handler; [`StoreApp`] composes it into the
-//! window's shell.
-//!
-//! The Store's screens are composed in `view` from the toolkit's content
-//! widgets, one column on the window ground each:
-//!
-//! ```text
-//! header row      <place>      [filter field]   [review package] [remotes] [trust] [History]
-//! catalogue       [Discover | Updates | On this device | Bots]
-//!                 Discover: Updates, Featured, Recently updated, Categories
-//! an app's page   (the window's Back returns to the catalogue)
-//! flatpak remotes the add form and the configured remotes
-//! trust           report drafts and how decisions are made
-//! ```
-//!
-//! The window's filter field searches the catalogue on this device as the
-//! person types ([`crate::catalogue::search`]); Enter in it hands the query to
-//! the platform search. A live window paints the catalogue the last window
-//! kept ([`crate::catalogue::cache`]) in its first frame; the worker
-//! ([`crate::worker`]) refreshes it in the background and the screens keep
-//! what they show in place as it lands. Every change (a package job, a view,
-//! a block, a report edit) goes through the Store's published actions.
+//! The App Store's window: [`StoreState`] holds what it shows and the view shares
+//! it with its effect handler; [`StoreApp`] composes it into the shell's screens
+//! from the toolkit's content widgets. The worker refreshes the catalogue in the
+//! background and every change goes through the Store's published actions.
 
+use crate::resource::CATALOG;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -59,21 +41,17 @@ fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> 
 /// is open. Browsing is this window's own: it never moves a collaborator's.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum View {
-    /// Discover: updates, featured, recently updated, categories.
     #[default]
     Home,
     Category(String),
     /// The installed apps a newer version is offered for.
     Updates,
-    /// The apps on this device.
     Installed,
     Bots,
-    /// The apps of one configured Flatpak repository, by its resource id.
     Repository(String),
 }
 
 impl View {
-    /// The name the `show-view` action takes and agents read.
     #[must_use]
     pub fn name(&self) -> &str {
         match self {
@@ -120,7 +98,6 @@ const MAX_RESOURCE_DETAIL_BYTES: usize = 140;
 const RESOURCE_SNAPSHOT_LIMIT: usize = 200;
 /// How many remote and moderation jobs may wait on the worker at once.
 const MAX_PENDING_EXTERNAL_OPERATIONS: usize = 16;
-/// The status a submitted report shows until a verified case status arrives.
 const SUBMITTED_STATUS: &str = "Submitted, awaiting verified status";
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -184,13 +161,6 @@ fn format_size(bytes: u64) -> String {
     ui::format::size(bytes)
 }
 
-/// A compact, printable status detail for the visible progress/error surface.
-///
-/// The worker's raw status is intentionally still retained for the operation
-/// history and assistive live region. This display copy collapses unusual
-/// whitespace and has a finite reading measure, while preserving enough of a
-/// useful error (for example, a failed signature verification) to make the
-/// next action clear without sending people to a separate task surface.
 fn visible_operation_status(status: &str) -> String {
     let compact = status.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.is_empty() {
@@ -313,7 +283,6 @@ fn flatpak_unavailable_reason(error: Option<&str>) -> &str {
     )
 }
 
-/// Mark `spec` unavailable when it needs the host's Flatpak and there is none.
 fn needing_flatpak(
     spec: ActionSpec,
     action: ActionKind,
@@ -330,8 +299,6 @@ fn needing_flatpak(
     }
 }
 
-/// One catalogue app as a live row: its details, what can be done with it
-/// on this device, its versions and what its review is.
 fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> LiveRow {
     let source = match &item.source {
         StoreSource::Tilo { .. } => "Tilo verified",
@@ -365,11 +332,9 @@ fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> Li
         };
         let spec = effect.bound();
         let spec = if action == ActionKind::AddBot {
-            // A bot is added by the workspace it runs in: the workspace's
-            // Add a bot is the door, which the Store's button prepares.
             spec.unavailable(
                 "added_by_the_workspace",
-                ui::i18n!("store-bot-add-elsewhere"),
+                CATALOG.t("store-bot-add-elsewhere"),
             )
         } else if let Some((code, reason)) = item.unavailable_action(action) {
             spec.unavailable(code, reason)
@@ -399,16 +364,15 @@ fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> Li
 
 fn review_label(item: &StoreItem) -> String {
     match item.trust {
-        crate::StoreTrust::TrustedAttestor => ui::i18n!("store-package-local-trust"),
+        crate::StoreTrust::TrustedAttestor => CATALOG.t("store-package-local-trust"),
         crate::StoreTrust::PublisherSigned => {
             "Signature verified, no independent review".to_string()
         }
-        crate::StoreTrust::ConfiguredRemote => ui::i18n!("store-remote-trust"),
+        crate::StoreTrust::ConfiguredRemote => CATALOG.t("store-remote-trust"),
         crate::StoreTrust::Flathub => "Flathub distribution, no Tilo review".to_string(),
     }
 }
 
-/// The publisher an app's row is grouped under: its key, or Flathub.
 fn publisher_of(item: &StoreItem) -> (String, String) {
     item.publisher_pubkey_hex.as_ref().map_or_else(
         || {
@@ -438,11 +402,8 @@ pub(crate) struct OperationJob {
     job: ui::jobs::Running,
 }
 
-/// The verb a failure's row carries: open the app's page, where its own
-/// control asks again.
 pub(crate) const SHOW_OPERATION: &str = "store.show-operation";
 
-/// The Store, as the ledger and the waiting stack name it.
 fn store_owner() -> ui::attention::Owner {
     ui::attention::Owner::new("so.tilo.store", "Store").with_icon(ui::icons::Icon::Download)
 }
@@ -456,26 +417,19 @@ fn store_owner() -> ui::attention::Owner {
               between them and would touch sync/draw/handle_event call sites \
               across this file"
 )]
-/// What the window shows and the view's effect handler answers with: the
-/// catalogue, where the person is, the reports, the worker and the jobs it
-/// runs.
 pub struct StoreState {
-    /// Where report edits go; `None` until the view attaches the window.
     dispatcher: Option<Dispatcher<Store>>,
-    /// The serialized package and catalogue worker of a live window.
     worker: Option<StoreWorker>,
     pub(crate) package_content: Option<ui::framework::content::ContentStore>,
     pub(crate) imported_review: Option<(String, String, String)>,
     launch_requests: Vec<ui::collaboration::CollabRequest>,
     pending_launches: HashMap<u64, std::sync::mpsc::Sender<LaunchCompletion>>,
     next_launch_request: Option<u64>,
-    /// Merged item feed.
     items: Vec<StoreItem>,
     /// The complete catalogue directory: every app by id and its search
     /// entries. The worker rebuilds it only after a changed snapshot, and a
     /// search hit's address resolves against it.
     directory: crate::search::StoreDirectory,
-    /// Where each item is in `items`, by id.
     positions: HashMap<String, usize>,
     /// The local search index over `items`, built off the UI thread when the
     /// catalogue changes so a keystroke only searches.
@@ -483,50 +437,29 @@ pub struct StoreState {
     /// The part of the catalogue that shows. Kept locally: browsing one
     /// catalogue must not navigate collaborators.
     view: View,
-    /// What Discover lists, kept in place while refreshes land; computed
-    /// afresh when the person goes back to it.
     home: Option<Home>,
-    /// How many cards or rows a long list shows; Show more adds a page.
     shown: usize,
-    /// Current search query: the window's filter field. Search is
-    /// window-local; resources stay globally searchable via `directory`.
     query: String,
-    /// What the query found in the catalogue on this device.
     results: SearchResults,
-    /// Flathub's apps for `remote_query` that the kept catalogue lacks,
-    /// shown after the local results.
     remote_results: Vec<StoreItem>,
     remote_query: String,
-    /// The fetch thread for app pages' details and Flathub searches.
     fetcher: Option<crate::catalogue::fetcher::Fetcher>,
-    /// App pages' details, kept or fetched, by app id.
     details: HashMap<String, AppDetails>,
-    /// Who blocked which app: the person's own list and the device's and
-    /// workspace's policies, the list desktop search hides apps by too.
     blocks: BlockList,
     /// An unsubmitted remote form is device-local. Only the canonical Add
     /// remote effect crosses into machine-scoped package configuration.
     remote_name_state: ui::LocalState<String>,
     remote_url_state: ui::LocalState<String>,
-    /// Rolling status line the worker overwrites while an action runs. It
-    /// reads in the operation notice while busy, and once, in the status
-    /// bubble, when the operation settles.
     status_line: String,
     worker_busy: bool,
-    /// The catalogue's read while the worker brings it and nothing shows
-    /// yet: what its placeholder is timed from.
     catalogue_read: ui::Arriving<()>,
     /// The one app mutation currently accepted by the serialized worker.
     /// Keeping its stable app id and offered action locally lets the matching
     /// card communicate progress and reject a second activation; it is a
     /// backend observation, not shared document state.
     active_operation: Option<(String, ActionKind)>,
-    /// The jobs the operations run as, by app: the whole system sees them,
-    /// and they outlive this page and this operation.
     operation_jobs: HashMap<String, OperationJob>,
-    /// What Needs you reports back.
     needs: ui::attention::Presses,
-    /// What the jobs band reports back.
     jobs: ui::jobs::Presses,
     operation_error: Option<String>,
     /// A refusal the window gave itself, without the worker (a handed
@@ -534,9 +467,6 @@ pub struct StoreState {
     /// snapshots, which carry their own background errors, must not replace
     /// it; the next effect clears it.
     local_refusal: Option<String>,
-    /// Whether `flatpak` is available on the host — drives whether
-    /// Flatpak items show "Install" or the "install flatpak first"
-    /// helper.
     flatpak_available: bool,
     flatpak_error: Option<String>,
     flatpak_checking: bool,
@@ -544,7 +474,6 @@ pub struct StoreState {
     /// refresh. An installed app none of the others lists says so once, on
     /// its details page.
     unanswered_repositories: Vec<String>,
-    /// See [`crate::worker::Snapshot::expired_repositories`].
     expired_repositories: Vec<String>,
     /// Which item the user has expanded in the responsive detail sheet.
     /// Keyed by [`StoreItem::id`] and retained across window rebuilds so the
@@ -556,16 +485,11 @@ pub struct StoreState {
     structure_dirty: bool,
     /// Survives the host consuming `structure_dirty` before its layout pass.
     composition_dirty: bool,
-    /// Composition captures page measures and eager localized labels.
     composition_context: Option<(Theme, String, ui::i18n::PseudoLocale)>,
-    /// Whether the open page has somewhere to go back to; the window's Back reads it.
     can_go_back: Rc<Cell<bool>>,
     /// The window's Back was pressed; the next event or sync returns to the catalogue.
     back_requested: Rc<Cell<bool>>,
-    /// The view the person chose in the window's bar, as the invocation of
-    /// the view action it stands for ([`window_bar`]).
     bar_controls: std::collections::VecDeque<ui::tilo_actions::ControlInvocation>,
-    /// The window bar's entries, which run the Store's effects.
     bar: Option<ui::framework::BarActions<Store>>,
     /// Remote and moderation jobs waiting on the worker.
     pending_jobs: usize,
@@ -573,7 +497,6 @@ pub struct StoreState {
     remotes: Vec<crate::flathub_client::Remote>,
     remotes_open: bool,
     safety_open: bool,
-    /// The document's reports, as last presented.
     reports: Vec<ReportProjection>,
     /// List position survives the composed widget tree being rebuilt after a
     /// filter, search result, or catalogue update.
@@ -588,7 +511,7 @@ pub struct StoreState {
 
 impl StoreState {
     pub fn new() -> Self {
-        crate::resource::STORE_CATALOG.ensure();
+        crate::resource::CATALOG.ensure();
         Self {
             dispatcher: None,
             worker: None,
@@ -623,7 +546,7 @@ impl StoreState {
             operation_error: None,
             local_refusal: None,
             flatpak_available: false,
-            flatpak_error: Some(ui::i18n!("store-flatpak-checking")),
+            flatpak_error: Some(CATALOG.t("store-flatpak-checking")),
             flatpak_checking: true,
             unanswered_repositories: Vec::new(),
             expired_repositories: Vec::new(),
@@ -663,10 +586,7 @@ impl StoreState {
         self
     }
 
-    /// Every app of the complete catalogue as a search entry, the ones the
-    /// current filter hides too.
     pub(crate) fn catalogue_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        // A blocked app is in no search, the platform's included.
         self.directory
             .entries()
             .into_iter()
@@ -680,17 +600,12 @@ impl StoreState {
             .collect()
     }
 
-    /// Start the worker of a live window: the catalogue loads, and package
-    /// jobs can run. `wake` is woken when it has something to show.
     pub(crate) fn start_worker(&mut self, wake: ui::WakeHandle) {
         if self.worker.is_some() {
             return;
         }
         // Host capabilities arrive with the worker snapshot, never a sandbox subprocess.
         self.images = Some(crate::images::image_store());
-        // The first frame shows the catalogue the last window kept: real
-        // apps, at once, without the blocked ones. The worker's refresh
-        // updates them in place.
         self.blocks = BlockList::load();
         if self.items.is_empty()
             && let Some(cached) = crate::catalogue::cache::load()
@@ -719,23 +634,18 @@ impl StoreState {
         Ok(())
     }
 
-    /// Edit reports through `dispatcher`.
     pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Store>) {
         self.bar = Some(ui::framework::BarActions::new(dispatcher.clone()));
         self.dispatcher = Some(dispatcher);
         self.structure_dirty = true;
     }
 
-    /// Show a capture's made-up catalogue, with the bundled artwork its
-    /// icons and previews name.
     pub(crate) fn show_capture_catalogue(&mut self, items: Vec<StoreItem>) {
         self.set_flatpak_available(true);
         self.set_image_store(Some(crate::fixture::artwork_store()));
         self.set_items(items);
     }
 
-    /// Replace the artwork cache: `None` shows every app with its generated
-    /// icon and no previews.
     pub fn set_image_store(&mut self, images: Option<ui::ImageStore>) {
         self.images = images;
         self.structure_dirty = true;
@@ -745,8 +655,6 @@ impl StoreState {
         &self.reports
     }
 
-    /// Apply the block list as the worker or a block read it: who blocked
-    /// which app.
     pub(crate) fn set_blocks(&mut self, blocks: BlockList) {
         if self.blocks == blocks {
             return;
@@ -759,14 +667,12 @@ impl StoreState {
         self.structure_dirty = true;
     }
 
-    /// Change the person's own block list: `block` or lift their block of
-    /// `app`, written where desktop search reads it too.
     fn change_person_block(&mut self, app: &str, block: bool) -> Result<(), String> {
         if !crate::reports::valid_app_id(app) {
             return Err("invalid app identity".into());
         }
         let path = ui::registry::block::person_list_path()
-            .ok_or_else(|| ui::i18n!("store-block-unavailable"))?;
+            .ok_or_else(|| CATALOG.t("store-block-unavailable"))?;
         let mut list = BlockList::load();
         if block {
             if list.blockers(app).contains(&&ui::registry::Blocker::Person) {
@@ -777,22 +683,21 @@ impl StoreState {
             list.unblock(app, &ui::registry::Blocker::Person)
                 .map_err(|error| match error {
                     ui::registry::UnblockError::NotTheBlocker(_) => {
-                        ui::i18n!("store-unblock-not-yours")
+                        CATALOG.t("store-unblock-not-yours")
                     }
                     ui::registry::UnblockError::NotBlocked => {
-                        ui::i18n!("store-unblock-not-blocked")
+                        CATALOG.t("store-unblock-not-blocked")
                     }
                 })?;
         }
         list.save_person(&path).map_err(|error| {
             tracing::warn!(%error, "could not write the block list");
-            ui::i18n!("store-block-unavailable")
+            CATALOG.t("store-block-unavailable")
         })?;
         self.set_blocks(list);
         Ok(())
     }
 
-    /// The catalogue item `id`, if it is listed.
     pub(crate) fn item(&self, id: &str) -> Option<&StoreItem> {
         self.positions
             .get(id)
@@ -801,7 +706,6 @@ impl StoreState {
             .or_else(|| self.items.iter().find(|item| item.id == id))
     }
 
-    /// Show the document's reports.
     pub(crate) fn present_reports(&mut self, reports: &[ReportProjection]) {
         // A note edit changes the report but not what is laid out around
         // its field, which shows the note itself.
@@ -822,8 +726,6 @@ impl StoreState {
         self.structure_dirty |= relayout;
     }
 
-    /// Stage view state for a screenshot scenario, once its report actions
-    /// applied.
     pub fn stage_scene(&mut self, scenario: Option<&str>) {
         match scenario {
             Some("search") => self.set_query("te".into()),
@@ -908,31 +810,30 @@ impl StoreState {
         self.structure_dirty = true;
     }
 
-    /// The page's title in the window bar: where the person is.
     fn page_title(&self) -> String {
         if self.safety_open {
-            ui::i18n!("store-trust-title")
+            CATALOG.t("store-trust-title")
         } else if self.remotes_open {
-            ui::i18n!("store-remotes-title")
+            CATALOG.t("store-remotes-title")
         } else if let Some(id) = &self.focused_detail {
             self.item(id)
                 .or_else(|| self.remote_results.iter().find(|item| &item.id == id))
-                .map_or_else(|| ui::i18n!("store-view-home"), |item| item.name.clone())
+                .map_or_else(|| CATALOG.t("store-view-home"), |item| item.name.clone())
         } else if !self.query.trim().is_empty() {
-            ui::i18n!("store-search-title")
+            CATALOG.t("store-search-title")
         } else {
             match &self.view {
-                View::Home => ui::i18n!("store-view-home"),
+                View::Home => CATALOG.t("store-view-home"),
                 View::Category(category) => crate::catalogue::category_label(category),
-                View::Updates => ui::i18n!("store-updates-title"),
-                View::Installed => ui::i18n!("store-view-installed"),
-                View::Bots => ui::i18n!("store-view-bots"),
+                View::Updates => CATALOG.t("store-updates-title"),
+                View::Installed => CATALOG.t("store-view-installed"),
+                View::Bots => CATALOG.t("store-view-bots"),
                 View::Repository(remote) => self
                     .remotes
                     .iter()
                     .find(|source| source.resource_id() == *remote)
                     .map_or_else(
-                        || ui::i18n!("store-remotes-title"),
+                        || CATALOG.t("store-remotes-title"),
                         |source| source.title.clone(),
                     ),
             }
@@ -963,7 +864,6 @@ impl StoreState {
         found.into_iter().map(|item| item.id.clone()).collect()
     }
 
-    /// Return to the catalogue from whichever page is open.
     fn show_catalogue(&mut self) {
         self.focused_detail = None;
         self.pending_detail = None;
@@ -990,9 +890,6 @@ impl StoreState {
         self.set_operation_error(Some(message.into()));
     }
 
-    /// Open the page of the app `id`: its kept details show at once, and a
-    /// Flathub app's are fetched in the background when they are missing or
-    /// old.
     pub fn focus_detail(&mut self, id: &str) {
         self.focused_detail = Some(id.to_string());
         self.technical_details_open = false;
@@ -1107,8 +1004,6 @@ impl StoreState {
         self.structure_dirty = true;
     }
 
-    /// Replace the catalogue. Idempotent; the screens re-derive what they
-    /// list on the next layout.
     pub fn set_items(&mut self, items: Vec<StoreItem>) {
         self.items = items;
         self.catalogue_changed();
@@ -1161,7 +1056,6 @@ impl StoreState {
         }
     }
 
-    /// Search again for the current query, from the local index.
     fn refresh_results(&mut self) {
         self.results =
             crate::catalogue::search(&self.search_index, &self.query, &self.items, &self.blocks);
@@ -1171,9 +1065,6 @@ impl StoreState {
         &self.items
     }
 
-    /// Override the flatpak-availability probe result. Tests use
-    /// this so they don't have to depend on the host's `flatpak`
-    /// binary.
     pub fn set_flatpak_available(&mut self, available: bool) {
         self.flatpak_available = available;
         self.flatpak_error = None;
@@ -1181,7 +1072,6 @@ impl StoreState {
         self.structure_dirty = true;
     }
 
-    /// The part of the catalogue that shows.
     pub fn view(&self) -> &View {
         &self.view
     }
@@ -1190,9 +1080,6 @@ impl StoreState {
         &self.query
     }
 
-    /// Search the catalogue for `q` as typed: the results come from the
-    /// local index at once. When the kept catalogue has nothing for it,
-    /// Flathub is asked in the background and its apps join after them.
     pub fn set_query(&mut self, q: String) {
         if self.query == q {
             return;
@@ -1220,8 +1107,6 @@ impl StoreState {
         self.structure_dirty = true;
     }
 
-    /// Carry out what the person pressed on the jobs band or on a row of
-    /// what wants them: Show me opens the app's page.
     fn answer_presses(&mut self) {
         for press in self.jobs.take() {
             if let Some(subject) = ui::jobs::apply(press)
@@ -1246,15 +1131,12 @@ impl StoreState {
         }
     }
 
-    /// End the job the operation ran as: what came of it.
     fn finish_operation_job(&mut self, app: &str, outcome: Result<String, String>) {
         let Some(OperationJob { job }) = self.operation_jobs.remove(app) else {
             return;
         };
         match outcome {
             Ok(status) => {
-                // The ledger records it: `publish_status` writes the same
-                // line once the worker is idle again.
                 job.done(status);
             }
             Err(error) => {
@@ -1262,10 +1144,10 @@ impl StoreState {
                 ui::attention::publish(
                     ui::attention::Notice::needs(
                         store_owner(),
-                        ui::i18n!("store-operation-failed"),
+                        CATALOG.t("store-operation-failed"),
                         ui::attention::Action::new(
                             SHOW_OPERATION,
-                            ui::i18n!("store-error-refresh"),
+                            CATALOG.t("store-error-refresh"),
                         ),
                     )
                     .because(error),
@@ -1286,8 +1168,6 @@ impl StoreState {
             }
             self.structure_dirty = true;
         }
-        // An empty catalogue the worker is bringing is a read on its way
-        // from the configured sources; it lands when the worker is done.
         let waiting = busy && self.items.is_empty();
         let pending = self.catalogue_read.with(ui::Arrival::is_pending);
         if waiting && !pending {
@@ -1370,9 +1250,6 @@ impl StoreState {
             .collect()
     }
 
-    /// Write a new outcome to the ledger; work under way says itself in the
-    /// jobs band, and a failure waits in Needs you. Nothing here is said in
-    /// a notice that expires.
     fn publish_status(&mut self) {
         if !self.worker_busy
             && self.operation_error.is_none()
@@ -1405,7 +1282,7 @@ impl ui::widget::Collaborative for StoreState {
         };
         let result = match result {
             Ok((_, ui::tilo_actions::InvocationUpdate::Succeeded { output, .. })) => Ok((
-                ui::i18n!("store-launch-opened").as_str().to_owned(),
+                CATALOG.t("store-launch-opened").as_str().to_owned(),
                 output.value.clone(),
             )),
             Ok((_, ui::tilo_actions::InvocationUpdate::Failed { error, .. })) => {
@@ -1421,8 +1298,6 @@ impl ui::widget::Collaborative for StoreState {
     }
 }
 
-/// The window bar's search is the Store's: what is typed searches the
-/// catalogue in place, and closing the search clears it.
 impl ui::widget::Queryable for StoreState {
     fn set_query_text(&mut self, text: &str) {
         self.set_query(text.to_owned());
@@ -1438,7 +1313,6 @@ impl ui::widget::Queryable for StoreState {
     }
 }
 
-/// The state as the window and the view's effect handler share it.
 type Shared = Rc<RefCell<StoreState>>;
 
 impl Default for StoreState {
@@ -1447,34 +1321,23 @@ impl Default for StoreState {
     }
 }
 
-/// What an effect asks of the Store, once it is admitted.
 pub enum Admitted {
-    /// Done already: the window moved, or the worker was asked.
     Done,
-    /// A job for the worker, and what its end changes.
     Job(Job),
-    /// Save a report's evidence envelope where the person picks.
     Export(ReportEnvelope),
 }
 
-/// A request a job waits on, and what finishing it changes.
 pub struct Job {
     pub request: Request,
     pub finish: Finish,
 }
 
-/// What finishing a job changes beside its status line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Finish {
-    /// The app's card is no longer busy.
     Package,
-    /// The registry took the app's report: record its case.
     Submitted { app_id: String },
-    /// The registry confirmed the app's case: record its status.
     Case { app_id: String },
-    /// The reviewed local file was installed.
     ImportedPackage,
-    /// Nothing beside the status line.
     Status,
 }
 
@@ -1485,8 +1348,6 @@ impl Job {
 }
 
 impl StoreState {
-    /// Take what the worker finished: the catalogue, a detail page, the
-    /// remotes, the status line.
     fn drain_worker(&mut self) {
         self.drain_fetcher();
         let Some(worker) = self.worker.as_ref() else {
@@ -1500,8 +1361,6 @@ impl StoreState {
         self.set_worker_busy(busy);
     }
 
-    /// Take what the fetch thread answered: an app page's details, or
-    /// Flathub's apps for a search.
     fn drain_fetcher(&mut self) {
         let Some(fetcher) = self.fetcher.as_ref() else {
             return;
@@ -1559,8 +1418,6 @@ impl StoreState {
         if let Some(app) = snap.updating
             && let Some((_, action)) = self.active_operation.as_ref()
         {
-            // Update all moves through the apps one at a time; the row of
-            // the one being updated shows its progress.
             let action = self
                 .item(&app)
                 .map_or(*action, |item| item.action_kind(self.flatpak_available));
@@ -1708,9 +1565,6 @@ impl StoreState {
         }))
     }
 
-    /// Answer `effect`: move around the window, or start the job it asks
-    /// for. `shared` is this state as the view shares it, for the jobs that
-    /// finish after the answer.
     pub(crate) fn answer(
         &mut self,
         effect: StoreEffect,
@@ -1736,11 +1590,11 @@ impl StoreState {
         ) {
             return Ok(cx.choose_file(
                 ui::portal::PickRequest::open(
-                    &ui::i18n!("store-package-choose"),
-                    &ui::i18n!("store-package-review"),
+                    &CATALOG.t("store-package-choose"),
+                    &CATALOG.t("store-package-review"),
                 )
                 .filter(
-                    ui::portal::FileFilter::new(&ui::i18n!("store-package-file-type"))
+                    ui::portal::FileFilter::new(&CATALOG.t("store-package-file-type"))
                         .glob("*.tapp"),
                 ),
                 {
@@ -1772,8 +1626,6 @@ impl StoreState {
         }
     }
 
-    /// Check `effect` against what the Store shows now and carry out what
-    /// needs no job.
     #[allow(
         clippy::too_many_lines,
         reason = "one exhaustive match over the Store's effects keeps every capability check beside the effect it guards"
@@ -1790,7 +1642,7 @@ impl StoreState {
                     .and_then(|version| version.root_hash_hex.as_deref())
                     != Some(root.as_str())
             {
-                return Err(ui::i18n!("store-runtime-changed"));
+                return Err(CATALOG.t("store-runtime-changed"));
             }
             self.active_operation = Some((item.id.clone(), action));
             self.operation_error = None;
@@ -1809,7 +1661,7 @@ impl StoreState {
                             .opens(item.id.clone()),
                     )
                     .unit(ui::jobs::Unit::Steps)
-                    .phase(ui::i18n!("store-job-continues")),
+                    .phase(CATALOG.t("store-job-continues")),
             );
             self.operation_jobs
                 .insert(item.id.clone(), OperationJob { job });
@@ -1856,7 +1708,7 @@ impl StoreState {
                     .ok_or_else(|| "Unknown or disabled Flatpak repository.".to_string())?;
                 let title = source.title.clone();
                 self.reserve_job()?;
-                self.status_line = ui::i18n::I18nManager::format(
+                self.status_line = crate::resource::CATALOG.t_args(
                     "store-remote-loading",
                     &[("name", ui::i18n::ArgValue::Text(title))],
                 );
@@ -1912,7 +1764,7 @@ impl StoreState {
                 if reported_size
                     .is_some_and(|size| size > crate::package_import::MAX_IMPORT_BYTES as u64)
                 {
-                    let error = ui::i18n!("store-package-size-refused");
+                    let error = CATALOG.t("store-package-size-refused");
                     self.local_refusal = Some(error.clone());
                     self.set_operation_error(Some(error.clone()));
                     return Err(error);
@@ -1926,14 +1778,14 @@ impl StoreState {
                         crate::package_import::Input::Content(
                             self.package_content
                                 .clone()
-                                .ok_or_else(|| ui::i18n!("store-package-unavailable"))?,
+                                .ok_or_else(|| CATALOG.t("store-package-unavailable"))?,
                             hash,
                         )
                     }
-                    _ => return Err(ui::i18n!("store-package-source-required")),
+                    _ => return Err(CATALOG.t("store-package-source-required")),
                 };
                 self.imported_review = None;
-                self.status_line = ui::i18n!("store-package-reviewing");
+                self.status_line = CATALOG.t("store-package-reviewing");
                 self.structure_dirty = true;
                 return Ok(Job::admitted(Request::ImportPackage(input), Finish::Status));
             }
@@ -1944,9 +1796,9 @@ impl StoreState {
                     .as_ref()
                     .is_none_or(|(id, expected, _)| id != &app || expected != &root)
                 {
-                    return Err(ui::i18n!("store-package-review-required"));
+                    return Err(CATALOG.t("store-package-review-required"));
                 }
-                self.status_line = ui::i18n!("store-package-installing");
+                self.status_line = CATALOG.t("store-package-installing");
                 self.structure_dirty = true;
                 return Ok(Job::admitted(
                     Request::InstallImported { app, root },
@@ -2083,8 +1935,6 @@ impl StoreState {
         Ok(Admitted::Done)
     }
 
-    /// The app `action` is asked of, if the action is the one the app
-    /// offers now and nothing else is running.
     pub fn package_operation(&self, app: &str, action: ActionKind) -> Result<StoreItem, String> {
         let item = self
             .items
@@ -2092,9 +1942,8 @@ impl StoreState {
             .chain(&self.remote_results)
             .find(|item| item.id == app)
             .ok_or_else(|| "app is no longer present in the catalog".to_string())?;
-        // A blocked app is opened, installed or updated from nowhere.
         if self.blocks.is_blocked(app) {
-            return Err(ui::i18n!("store-blocked-refused"));
+            return Err(CATALOG.t("store-blocked-refused"));
         }
         if action.requires_flatpak_host() && !self.flatpak_available {
             return Err(flatpak_unavailable_reason(self.flatpak_error.as_deref()).into());
@@ -2112,7 +1961,6 @@ impl StoreState {
         Ok(())
     }
 
-    /// Freeze destination, evidence, nonce and validity before action admission.
     pub(crate) fn prepare_moderation(
         &self,
         app: &str,
@@ -2221,7 +2069,6 @@ impl StoreState {
         Ok(operation)
     }
 
-    /// The report about `app`.
     fn report(&self, app: &str) -> Result<ReportProjection, String> {
         self.reports
             .iter()
@@ -2230,7 +2077,6 @@ impl StoreState {
             .ok_or_else(|| format!("there is no report about `{app}`"))
     }
 
-    /// The report about `app`, once the registry has a case for it.
     fn case(&self, app: &str) -> Result<ReportProjection, String> {
         let report = self.report(app)?;
         if !report.is_case() || !crate::reports::valid_case_id(&report.id) {
@@ -2239,7 +2085,6 @@ impl StoreState {
         Ok(report)
     }
 
-    /// The reported app and the Tilo registry its report goes to.
     fn reported_app(&self, report: &ReportProjection) -> Result<(StoreItem, String), String> {
         let item = self
             .items
@@ -2255,8 +2100,6 @@ impl StoreState {
     fn start_job(&mut self, job: Job, cx: &mut EffectCx<Store>, shared: &Shared) -> EffectAnswer {
         let parent = ui::invocation_scope::current_invoker().and_then(|_| cx.invocation());
         let Job { request, finish } = job;
-        // The app the operation is about, so its own job ends with it even
-        // when another operation was admitted meanwhile.
         let operating = match &request {
             Request::Act(item, _) => Some(item.id.clone()),
             _ => None,
@@ -2444,7 +2287,6 @@ impl StoreState {
         ))
     }
 
-    /// Record the registry's case for `app_id`'s report.
     fn record_case(
         &mut self,
         app_id: &str,
@@ -2466,7 +2308,6 @@ impl StoreState {
         }
     }
 
-    /// Save `envelope` where the person picks, off the UI thread.
     fn export(
         &mut self,
         envelope: &ReportEnvelope,
@@ -2528,7 +2369,7 @@ impl StoreState {
             statuses.push(EffectStatus::unavailable(
                 StoreEffect::INSTALL_IMPORTED_PACKAGE,
                 "package_review_required",
-                ui::i18n!("store-package-review-required"),
+                CATALOG.t("store-package-review-required"),
             ));
         }
         if !self.flatpak_available {
@@ -2591,7 +2432,6 @@ impl StoreState {
         rows
     }
 
-    /// The live row `id`, including any app beyond the published page.
     pub(crate) fn live_row(&self, id: &str) -> Option<LiveRow> {
         if let Some(rest) = id.strip_prefix("app:") {
             if let Some((app_id, version)) = rest.split_once(":version:") {
@@ -2611,8 +2451,6 @@ impl StoreState {
                 let item = self.items.iter().find(|item| item.id == app_id)?;
                 return Some(LiveRow::new(id, "store.review", review_label(item)));
             }
-            // An app the current filter hides is still in the directory, so
-            // a search hit for it resolves.
             return self
                 .items
                 .iter()
@@ -2670,7 +2508,7 @@ impl StoreState {
             .remotes
             .iter()
             .find(|remote| remote.resource_id() == id && remote.user_managed)
-            .ok_or_else(|| ui::i18n!("store-remote-managed-change"))?;
+            .ok_or_else(|| CATALOG.t("store-remote-managed-change"))?;
         let name = remote.name.clone();
         validate_remote_name(&name)?;
         self.reserve_job()?;
@@ -2712,8 +2550,6 @@ impl StoreState {
             )
     }
 
-    /// What can be done with a report from here: export its evidence, and
-    /// submit it, or follow and appeal its case, at the app's registry.
     fn report_row(&self, report: &ReportProjection) -> LiveRow {
         let app = report.app_id.clone();
         let mut row = LiveRow::new(
@@ -2741,8 +2577,6 @@ impl StoreState {
     }
 }
 
-/// The record of the registry's case `case_id` for `app_id`'s report, when
-/// the registry answered about that app with a well-formed case.
 fn case_record(
     app_id: &str,
     package_id: &str,
@@ -2779,8 +2613,8 @@ fn remote_enabled_effect(remote: &crate::flathub_client::Remote) -> StoreEffect 
 }
 
 fn remote_scope_label(remote: &crate::flathub_client::Remote) -> String {
-    crate::resource::STORE_CATALOG.ensure();
-    ui::i18n!(if remote.user_managed {
+    crate::resource::CATALOG.ensure();
+    CATALOG.t(if remote.user_managed {
         "store-remote-user"
     } else {
         "store-remote-system"
@@ -2795,7 +2629,7 @@ impl StoreState {
         };
         let first = first.id.clone();
         let items: Vec<StoreItem> = updatable.iter().map(|(item, _)| (*item).clone()).collect();
-        self.status_line = ui::i18n::I18nManager::format(
+        self.status_line = crate::resource::CATALOG.t_args(
             "store-update-all-starting",
             &[(
                 "count",
@@ -2824,7 +2658,7 @@ impl StoreState {
 }
 
 fn remote_state_label(remote: &crate::flathub_client::Remote) -> String {
-    ui::i18n::I18nManager::format(
+    crate::resource::CATALOG.t_args(
         "store-remote-state",
         &[
             (
@@ -2833,7 +2667,7 @@ fn remote_state_label(remote: &crate::flathub_client::Remote) -> String {
             ),
             (
                 "state",
-                ui::i18n::ArgValue::Text(ui::i18n!(if remote.disabled {
+                ui::i18n::ArgValue::Text(CATALOG.t(if remote.disabled {
                     "store-remote-disabled"
                 } else {
                     "store-remote-enabled"
@@ -2845,7 +2679,7 @@ fn remote_state_label(remote: &crate::flathub_client::Remote) -> String {
 
 fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
     let scope = remote_scope_label(remote);
-    let title = ui::i18n::I18nManager::format(
+    let title = crate::resource::CATALOG.t_args(
         "store-remote-title",
         &[
             ("name", ui::i18n::ArgValue::Text(remote.title.clone())),
@@ -2868,7 +2702,7 @@ fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
 }
 
 fn package_action_label(action: ActionKind, error: Option<&str>) -> String {
-    ui::i18n!(match action {
+    CATALOG.t(match action {
         ActionKind::Open | ActionKind::FlatpakOpen => "store-action-open",
         ActionKind::FlatpakInstall => "store-action-install",
         ActionKind::RuntimeInstall => "store-runtime-install",
@@ -3107,7 +2941,7 @@ mod tests {
             ),
             "{relative}"
         );
-        let size_refused = ui::i18n!("store-package-size-refused");
+        let size_refused = CATALOG.t("store-package-size-refused");
         app.apply_worker_snapshot(crate::worker::Snapshot {
             items: Vec::new(),
             status_line: String::new(),
@@ -3509,8 +3343,6 @@ mod tests {
             );
             previous = current;
         }
-        // Use the same resolved typography as the live accessibility setting;
-        // assigning text_scale alone leaves the type tokens at their old sizes.
         app.harness().set_theme(Theme::light().with_text_scale(1.5));
         assert!(
             app.harness().targets()["store.remote.name"].height() > input_height,
@@ -3578,7 +3410,10 @@ mod tests {
                 app.harness().resize((width, 900)).unwrap();
                 app.harness().set_theme(theme.clone());
                 let retry = app.harness().targets()["store.error.refresh"];
-                assert!(retry.x0 >= 0.0 && retry.x1 <= f64::from(width));
+                assert!(
+                    retry.x0 >= 0.0 && retry.x1 <= f64::from(width),
+                    "the refresh control stands inside {width}: {retry:?}"
+                );
                 assert!(retry.y0 >= 0.0 && retry.y1 <= 900.0);
                 let inspection = app.harness().inspection_json().unwrap();
                 assert!(
@@ -3647,7 +3482,10 @@ mod tests {
                 let retry = targets
                     .get("store.error.refresh")
                     .expect("the real source retry control must be observable");
-                assert!(retry.x0 >= 0.0 && retry.x1 <= f64::from(width));
+                assert!(
+                    retry.x0 >= 0.0 && retry.x1 <= f64::from(width),
+                    "the refresh control stands inside {width}: {retry:?}"
+                );
                 assert!(retry.y0 >= 0.0 && retry.y1 <= 900.0);
                 assert!(
                     app.harness()
@@ -3684,9 +3522,6 @@ mod tests {
         ("offline", "Refresh apps"),
     ];
 
-    /// The cases are walked in this many shares, each its own test: one
-    /// after another, three themes and two widths of fourteen scenarios took
-    /// over a minute.
     const OWNER_SHARES: usize = 4;
 
     #[test]
@@ -3709,8 +3544,6 @@ mod tests {
         ordinary_owner_store_controls_and_optional_offscreen_review(3);
     }
 
-    /// This share walks every `OWNER_SHARES`th case from the `share`th; the
-    /// four shares together walk every case.
     fn ordinary_owner_store_controls_and_optional_offscreen_review(share: usize) {
         let output = std::env::var_os("TILO_STORE_REVIEW_DIR").map(std::path::PathBuf::from);
         for &(scenario, action) in OWNER_CASES.iter().skip(share).step_by(OWNER_SHARES) {
@@ -3778,9 +3611,6 @@ mod tests {
         "Trust and moderation",
     ];
 
-    /// Whether the ordinary owner can use `name` where it lives: an enabled
-    /// slot in the window's bar for the catalogue's actions (and no control
-    /// of the window's own), else an enabled control on screen.
     fn owner_can_use(
         app: &mut ui::framework::testing::TestApp<crate::resource::StoreShell>,
         name: &str,
@@ -4095,7 +3925,7 @@ mod tests {
         .unwrap();
         assert!(
             app.harness().controls().iter().any(|control| {
-                control.name.as_deref() == Some(ui::i18n!("store-flatpak-unavailable").as_str())
+                control.name.as_deref() == Some(CATALOG.t("store-flatpak-unavailable").as_str())
                     && control.disabled
             }),
             "the actual catalogue button reports the observation failure and refuses installation"
@@ -4116,7 +3946,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             flatpak["primary_action"],
-            ui::i18n!("store-flatpak-unavailable")
+            CATALOG.t("store-flatpak-unavailable")
         );
     }
 
@@ -4324,7 +4154,7 @@ mod tests {
         app.flatpak_error = Some(error.into());
         assert_eq!(
             app.package_label(ActionKind::NeedsFlatpakHost),
-            ui::i18n!("store-flatpak-unavailable")
+            CATALOG.t("store-flatpak-unavailable")
         );
         let row = app.live_row("app:id.chess").unwrap().into_resource();
         let action = row
@@ -4437,7 +4267,7 @@ mod tests {
             .controls()
             .into_iter()
             .find(|control| {
-                control.name.as_deref() == Some(ui::i18n!("store-remote-enable").as_str())
+                control.name.as_deref() == Some(CATALOG.t("store-remote-enable").as_str())
             })
             .unwrap();
         assert!(!control.disabled);
@@ -4451,7 +4281,7 @@ mod tests {
             .controls()
             .into_iter()
             .find(|control| {
-                control.name.as_deref() == Some(ui::i18n!("store-remote-disable").as_str())
+                control.name.as_deref() == Some(CATALOG.t("store-remote-disable").as_str())
             })
             .unwrap();
         assert!(!control.disabled);
@@ -4795,8 +4625,6 @@ mod tests {
         }
     }
 
-    /// Discover, On this device and a category list what they promise;
-    /// search ranks on this device; the categories are the catalogue's.
     #[test]
     fn catalogue_views_and_search_rank_visible_items() {
         {
@@ -4911,7 +4739,6 @@ mod tests {
                 .map(|entry| entry.title)
                 .collect();
             assert_eq!(titles, ["Indexed catalogue row"]);
-            // The hit resolves to its app though the rendered rows leave it out.
             let row = app
                 .live_row(&format!("app:{}", indexed.id))
                 .expect("a directory app resolves")
@@ -5049,7 +4876,6 @@ mod tests {
         }
     }
 
-    /// Device, heading and source-summary copy tell the truth about what is loaded.
     #[test]
     fn catalogue_copy_is_honest_about_sources_and_queries() {
         ui::i18n::I18nManager::install(
@@ -5209,7 +5035,6 @@ mod tests {
         ui::widget::find_test_id(widget, id).is_some()
     }
 
-    /// Mount a composed tree and run one frame at `width` × 900.
     fn frame_composition(widget: Box<dyn Widget>, width: f32) -> ui::headless::FrameHarness {
         ui::headless::FrameHarness::new(
             ui::State::new(),
@@ -5334,7 +5159,6 @@ mod tests {
         None
     }
 
-    /// Card pointer and primary activation invoke the Store's effects.
     #[test]
     fn cards_and_detail_controls_keep_typed_local_bindings() {
         {
@@ -5404,7 +5228,6 @@ mod tests {
         }
     }
 
-    /// Stacked geometry, contained actions, the three-column measure and the large-text layout.
     #[test]
     fn catalogue_measures_stay_finite_contained_and_stacked_under_large_text() {
         {
@@ -5472,7 +5295,7 @@ mod tests {
         let frame = frame_composition(app.compose(&Theme::dark()), 900.0);
         let page = frame.inspection_json().unwrap();
         assert!(
-            page.contains(&ui::i18n!("store-progress-continues")),
+            page.contains(&CATALOG.t("store-progress-continues")),
             "the page says why there is no Stop: {page}"
         );
     }
@@ -5520,7 +5343,7 @@ mod tests {
                 .expect("failure has a semantic notice");
             assert_eq!(
                 error.name.as_deref(),
-                Some(ui::i18n!("store-operation-failed").as_str())
+                Some(CATALOG.t("store-operation-failed").as_str())
             );
             assert_eq!(error.live, Some(Politeness::Assertive));
             assert_eq!(error.description.as_deref(), Some("signature mismatch"));
@@ -5614,8 +5437,6 @@ mod tests {
         }]);
     }
 
-    /// The update shelf follows the visible catalogue; refresh and package
-    /// operations are worker jobs; a card's operation holds it until done.
     #[test]
     fn refresh_and_package_operations_are_worker_jobs() {
         {
@@ -5703,7 +5524,7 @@ mod tests {
                 .expect("the operation has a job row");
             assert!(!row.can_stop(), "no Stop the Store could not honour");
             // The row's second line says why, instead of repeating the title.
-            assert_eq!(row.phase(), ui::i18n!("store-job-continues"));
+            assert_eq!(row.phase(), CATALOG.t("store-job-continues"));
             assert_ne!(row.live_line(), row.title());
             app.set_worker_busy(true);
             app.set_worker_busy(false);

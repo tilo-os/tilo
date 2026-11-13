@@ -1,7 +1,6 @@
-//! The unattended installation's private input and output: the recipe on
-//! an inherited descriptor or in a private file, and the one-time recovery
-//! key's destination. Nothing here follows a link, reads more than its bound
-//! or leaves a credential readable by another account.
+//! The unattended installation's private input and output: the recipe and the one-time recovery
+//! key's destination. Nothing here follows a link, reads more than its bound, or leaves a credential
+//! readable by another account.
 
 use std::io::{self, Read};
 use std::os::fd::{FromRawFd, RawFd};
@@ -11,20 +10,14 @@ use std::path::Path;
 
 use zeroize::Zeroizing;
 
-/// The largest recipe accepted.
 pub const MAX_RECIPE_BYTES: u64 = 64 * 1024;
 
-/// Whether standard error is a terminal a person reads.
 pub fn stderr_is_terminal() -> bool {
-    // SAFETY: isatty only inspects the descriptor.
     unsafe { libc::isatty(libc::STDERR_FILENO) == 1 }
 }
 
-/// The private recipe on inherited descriptor `fd`, read through a
-/// duplicate of it, within [`MAX_RECIPE_BYTES`].
+/// Read through a duplicate of the inherited descriptor, within [`MAX_RECIPE_BYTES`].
 pub fn read_private_fd(fd: RawFd) -> Result<Zeroizing<Vec<u8>>, String> {
-    // SAFETY: the caller named an inherited descriptor; dup gives this process
-    // an independently owned one without closing theirs.
     let duplicated = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
     if duplicated < 0 {
         return Err(format!(
@@ -32,7 +25,6 @@ pub fn read_private_fd(fd: RawFd) -> Result<Zeroizing<Vec<u8>>, String> {
             io::Error::last_os_error()
         ));
     }
-    // SAFETY: fcntl returned a fresh descriptor, now owned by File.
     let mut file = unsafe { std::fs::File::from_raw_fd(duplicated) };
     let metadata = file.metadata().map_err(|error| {
         format!("The unattended recipe descriptor {fd} is not readable: {error}")
@@ -43,12 +35,11 @@ pub fn read_private_fd(fd: RawFd) -> Result<Zeroizing<Vec<u8>>, String> {
     read_bounded(&mut file, "recipe")
 }
 
-/// The private recipe at `path`: a single regular file of this installer
-/// or root, readable by no other account, opened without following a link.
+/// A single regular file of this installer or root, readable by no other account, opened without
+/// following a link.
 pub fn read_private_file(path: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
     let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
         .map_err(|_| "The unattended recipe path contains a NUL".to_string())?;
-    // SAFETY: c_path is NUL terminated and open returns a new descriptor.
     let fd = unsafe {
         libc::open(
             c_path.as_ptr(),
@@ -62,7 +53,6 @@ pub fn read_private_file(path: &Path) -> Result<Zeroizing<Vec<u8>>, String> {
             io::Error::last_os_error()
         ));
     }
-    // SAFETY: open returned a fresh descriptor, now owned by File.
     let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
     let metadata = file
         .metadata()
@@ -96,11 +86,8 @@ fn read_bounded(file: &mut std::fs::File, what: &str) -> Result<Zeroizing<Vec<u8
     Ok(bytes)
 }
 
-/// The recovery key's destination on inherited descriptor `fd`, through a
-/// duplicate of it.
+/// Through a duplicate of the inherited descriptor.
 pub fn writable_fd(fd: RawFd) -> Result<std::fs::File, String> {
-    // SAFETY: the caller named an inherited descriptor; dup gives this process
-    // an independently owned one without closing theirs.
     let duplicated = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
     if duplicated < 0 {
         return Err(format!(
@@ -108,18 +95,15 @@ pub fn writable_fd(fd: RawFd) -> Result<std::fs::File, String> {
             io::Error::last_os_error()
         ));
     }
-    // SAFETY: fcntl returned a fresh descriptor, now owned by File.
     Ok(unsafe { std::fs::File::from_raw_fd(duplicated) })
 }
 
-/// Make the directory at `path` reachable by its owner alone (0700).
 pub fn restrict_to_owner(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
-/// A new private (0600) file at `path` for the recovery key: never a
-/// path that exists already, never through a final symlink.
+/// Never a path that exists already, never through a final symlink.
 pub fn open_private_output(path: &Path) -> Result<std::fs::File, String> {
     let parent = path
         .parent()
@@ -139,8 +123,6 @@ pub fn open_private_output(path: &Path) -> Result<std::fs::File, String> {
     }
     let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
         .map_err(|_| "The recovery-key path contains a NUL".to_string())?;
-    // SAFETY: c_path is NUL terminated; O_EXCL and O_NOFOLLOW keep a
-    // pre-existing path or a final symlink from redirecting the key.
     let fd = unsafe {
         libc::open(
             c_path.as_ptr(),
@@ -155,12 +137,10 @@ pub fn open_private_output(path: &Path) -> Result<std::fs::File, String> {
             io::Error::last_os_error()
         ));
     }
-    // SAFETY: open returned a fresh descriptor, now owned by File.
     Ok(unsafe { std::fs::File::from_raw_fd(fd) })
 }
 
-/// This login session's private runtime directory, or the temporary
-/// directory where the session has none.
+/// Or the temporary directory where the session has none.
 pub fn session_runtime_dir() -> std::path::PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
@@ -168,7 +148,6 @@ pub fn session_runtime_dir() -> std::path::PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
-/// Whether `name` names a device node.
 pub fn is_device_path(name: &str) -> bool {
     name.starts_with("/dev/")
 }

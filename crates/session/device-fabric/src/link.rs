@@ -60,14 +60,6 @@ pub trait FabricLink {
         let _ = endpoint;
         None
     }
-    /// Send `action` to `target`, returning its request id.
-    /// # Errors
-    /// Why the transport refused the action.
-    fn send_personal_fabric_action(
-        &self,
-        target: &DeviceId,
-        action: PersonalFabricAction,
-    ) -> Result<[u8; 16], String>;
     /// Send `action` to `target`, telling a full queue apart from a refusal.
     /// # Errors
     /// [`PersonalFabricSendError::Backpressure`] while the queue is full, otherwise why
@@ -193,14 +185,6 @@ impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
 
     fn device_behind(&self, endpoint: iroh::EndpointId) -> Option<DeviceId> {
         (**self).device_behind(endpoint)
-    }
-
-    fn send_personal_fabric_action(
-        &self,
-        target: &DeviceId,
-        action: PersonalFabricAction,
-    ) -> Result<[u8; 16], String> {
-        (**self).send_personal_fabric_action(target, action)
     }
 
     fn try_send_personal_fabric_action(

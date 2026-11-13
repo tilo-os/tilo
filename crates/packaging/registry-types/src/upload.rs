@@ -8,13 +8,10 @@
 
 use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
 
-/// Domain separator of an upload signature.
 pub const UPLOAD_DOMAIN: &[u8] = b"tilo-registry-upload-v1\0";
 
-/// Header carrying the uploader's Ed25519 public key, hex.
 pub const UPLOAD_PUBLISHER_HEADER: &str = "tilo-publisher";
 
-/// Header carrying the upload signature, hex.
 pub const UPLOAD_SIGNATURE_HEADER: &str = "tilo-signature";
 
 /// The bytes an upload signature covers: the domain and the lowercase BLAKE3
@@ -26,14 +23,11 @@ pub fn upload_signing_message(blake3_hex: &str) -> Vec<u8> {
     message
 }
 
-/// Sign an upload of the file whose BLAKE3 is `blake3_hex`; hex signature.
 #[must_use]
 pub fn sign_upload(key: &SigningKey, blake3_hex: &str) -> String {
     hex::encode(key.sign(&upload_signing_message(blake3_hex)).to_bytes())
 }
 
-/// Whether `signature_hex` is `publisher`'s signature over an upload of
-/// `blake3_hex`.
 #[must_use]
 pub fn verify_upload(publisher: &[u8; 32], blake3_hex: &str, signature_hex: &str) -> bool {
     let Ok(key) = VerifyingKey::from_bytes(publisher) else {

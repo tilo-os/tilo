@@ -8,18 +8,77 @@
 //! what it keeps: a file a visitor posted from a page is only there until the
 //! workspace's host has asked for its own copy, and an app surface is one
 //! device's until the workspace has it too.
+//!
+//! A piece can be lost on the way — an answer that does not fit a session's
+//! outbound queue is dropped — so an answer carries at most
+//! [`PIECES_PER_ANSWER`] of the pieces the asker lacks, and an asker that
+//! stops receiving asks again within [`PIECE_PATIENCE_MS`], naming what it
+//! holds so the next answer carries the pieces still missing
+//! ([`ContentWants::reask`]). Large content therefore crosses the network in
+//! windows that never fill a queue, and one dropped piece costs a re-ask
+//! rather than the rest of the transfer.
 
 use std::collections::BTreeMap;
 
 /// Largest content one reference names, as the workspace's hosts keep it.
 const MAX_CONTENT_BYTES: u64 = 64 * 1024 * 1024;
 /// Most bytes one piece carries.
-const PIECE_BYTES: usize = 192 * 1024;
+pub const PIECE_BYTES: usize = 192 * 1024;
 /// How long an unanswered request keeps collecting pieces, and how long
 /// before the same content is asked of the workspace again.
 const WANT_TTL_MS: u64 = 60_000;
 /// Requests open at once; past it, the oldest goes.
 const MAX_OPEN_WANTS: usize = 256;
+/// How long a piece of content being gathered waits for the next one before
+/// the asker asks again: a piece a peer's outbound queue dropped leaves the
+/// content short, and asking again within this bound of the last piece that
+/// arrived is what completes it — and what brings the next window of a large
+/// file once the window before it is in. It bounds a transfer that stopped,
+/// so it is long enough for one piece still travelling to arrive, and far
+/// shorter than [`WANT_TTL_MS`], which only bounds asking for content that
+/// never started arriving.
+pub const PIECE_PATIENCE_MS: u64 = 1_000;
+/// The longest a re-ask waits between attempts, however long a transfer
+/// keeps failing.
+const REASK_CAP_MS: u64 = 5_000;
+/// Pieces one answer carries: 64 pieces is 12 MiB, a quarter of the 256 frames
+/// a session's outbound queue holds, so a burst of content leaves room for
+/// the presence, deltas and answers travelling beside it.
+pub const PIECES_PER_ANSWER: usize = 64;
+
+/// A run of content bytes: `len` bytes from `offset`. What an asker already
+/// holds of what it asks for, so an answer carries only what it lacks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Span {
+    pub offset: u64,
+    pub len: u64,
+}
+
+/// Whether `spans`, what an asker holds of content, carry the `len` bytes at
+/// `offset` in full: what an answer leaves out.
+#[must_use]
+pub fn holds(spans: &[Span], offset: u64, len: u64) -> bool {
+    Span::covering(spans, offset, len).is_some()
+}
+
+impl Span {
+    const fn end(self) -> u64 {
+        self.offset.saturating_add(self.len)
+    }
+
+    /// One piece's `len` bytes at `offset`, or `None` for a piece no span
+    /// carries in full.
+    fn covering(spans: &[Span], offset: u64, len: u64) -> Option<Self> {
+        let end = offset.checked_add(len)?;
+        spans
+            .iter()
+            .find(|span| span.offset <= offset && end <= span.end())
+            .map(|_| Self {
+                offset,
+                len: end.saturating_sub(offset),
+            })
+    }
+}
 
 /// Content this device asked a workspace for, and the pieces of it that came.
 struct Want<T> {
@@ -28,22 +87,68 @@ struct Want<T> {
     app_id: String,
     cluster_id: String,
     asked_ms: u64,
+    /// When the last piece arrived, and when the last ask went out: what says
+    /// whether a transfer stalled and how long to wait before asking again.
+    last_piece_ms: u64,
+    reasks: u32,
     total: Option<u64>,
     pieces: BTreeMap<u64, Vec<u8>>,
 }
 
 impl<T> Want<T> {
+    /// Whether the pieces cover the content end to end.
+    fn whole(&self) -> bool {
+        let Some(total) = self.total else {
+            return false;
+        };
+        let mut end = 0_u64;
+        for (offset, piece) in &self.pieces {
+            if *offset != end {
+                return false;
+            }
+            end = end.saturating_add(u64::try_from(piece.len()).unwrap_or(u64::MAX));
+        }
+        end == total
+    }
+
     /// The whole content once its pieces cover it, end to end.
     fn assembled(&self) -> Option<Vec<u8>> {
+        if !self.whole() {
+            return None;
+        }
         let total = self.total?;
         let mut bytes = Vec::with_capacity(usize::try_from(total).ok()?);
-        for (offset, piece) in &self.pieces {
-            if *offset != u64::try_from(bytes.len()).ok()? {
-                return None;
-            }
+        for piece in self.pieces.values() {
             bytes.extend_from_slice(piece);
         }
-        (u64::try_from(bytes.len()).ok()? == total).then_some(bytes)
+        Some(bytes)
+    }
+
+    /// What the asker holds of the content, as the runs of bytes that arrived:
+    /// the pieces it keeps, each with the offset it starts at.
+    fn have(&self) -> Vec<Span> {
+        let mut spans: Vec<Span> = Vec::with_capacity(self.pieces.len());
+        for (offset, piece) in &self.pieces {
+            let len = u64::try_from(piece.len()).unwrap_or(u64::MAX);
+            match spans.last_mut() {
+                Some(last) if last.end() == *offset => last.len = last.len.saturating_add(len),
+                _ => spans.push(Span {
+                    offset: *offset,
+                    len,
+                }),
+            }
+        }
+        spans
+    }
+
+    /// How long this want waits for its next piece before asking again: the
+    /// first wait is the patience of a transfer that started, and each failed
+    /// ask doubles it up to [`REASK_CAP_MS`].
+    fn patience_ms(&self) -> u64 {
+        let waits = self.reasks.min(4);
+        PIECE_PATIENCE_MS
+            .saturating_mul(1_u64 << waits)
+            .min(REASK_CAP_MS)
     }
 }
 
@@ -105,6 +210,7 @@ impl<T> ContentWants<T> {
             app_id: app_id.to_owned(),
             cluster_id: cluster_id.to_owned(),
             hash: hash.clone(),
+            have: Vec::new(),
         })
         .ok()?;
         self.wants.insert(
@@ -114,11 +220,51 @@ impl<T> ContentWants<T> {
                 app_id: app_id.to_owned(),
                 cluster_id: cluster_id.to_owned(),
                 asked_ms: now_ms,
+                last_piece_ms: now_ms,
+                reasks: 0,
                 total: None,
                 pieces: BTreeMap::new(),
             },
         );
         Some(request)
+    }
+
+    /// The requests device `device` sends the workspace again for the content
+    /// it asked for and is still missing pieces of, `now_ms` being the
+    /// current time: one per want whose transfer stalled, saying what arrived
+    /// so an answer carries only what is missing. A want is asked again once
+    /// its [`PIECE_PATIENCE_MS`] of silence has passed, doubling while the
+    /// answers do not bring pieces, so content a peer cannot serve costs the
+    /// workspace a handful of asks rather than one a second for ever.
+    ///
+    /// Nothing is asked again for a want past [`WANT_TTL_MS`]: whoever asked
+    /// asks afresh by then ([`Self::ask`]). Each ask comes with the tag the
+    /// want was named by, so the caller can send it where it belongs.
+    pub fn reask(&mut self, device: &[u8; 32], now_ms: u64) -> Vec<(T, Vec<u8>)>
+    where
+        T: Clone,
+    {
+        self.wants
+            .retain(|_, want| now_ms.saturating_sub(want.asked_ms) < WANT_TTL_MS && !want.whole());
+        let mut asks = Vec::new();
+        for (hash, want) in &mut self.wants {
+            let silent = now_ms.saturating_sub(want.last_piece_ms.max(want.asked_ms));
+            if silent < want.patience_ms() {
+                continue;
+            }
+            let Ok(request) = postcard::to_allocvec(&crate::NeighbourMsg::RecordContentWant {
+                requester: crate::peer_handle(device),
+                app_id: want.app_id.clone(),
+                cluster_id: want.cluster_id.clone(),
+                hash: hash.clone(),
+                have: want.have(),
+            }) else {
+                continue;
+            };
+            want.reasks = want.reasks.saturating_add(1);
+            asks.push((want.tag.clone(), request));
+        }
+        asks
     }
 
     /// Whether `frame` is a piece of content device `device` asked for and
@@ -148,7 +294,7 @@ impl<T> ContentWants<T> {
     /// One piece of content a member sent device `device`: kept when it
     /// belongs to content a device asked for; the content once whole and
     /// verified.
-    pub fn piece(&mut self, device: &[u8; 32], frame: &[u8]) -> Option<Arrived<T>> {
+    pub fn piece(&mut self, device: &[u8; 32], frame: &[u8], now_ms: u64) -> Option<Arrived<T>> {
         let Ok(crate::NeighbourMsg::RecordContentPiece {
             requester,
             app_id,
@@ -184,6 +330,15 @@ impl<T> ContentWants<T> {
             return None;
         }
         want.total = Some(total);
+        // A piece the asker did not hold yet means the transfer is moving: the
+        // next ask waits the patience of a fresh one rather than a failed
+        // ask's. A repeated piece says nothing (another answer was in flight)
+        // and leaves the backoff where it is.
+        let fresh = !want.pieces.contains_key(&offset);
+        want.last_piece_ms = now_ms;
+        if fresh {
+            want.reasks = 0;
+        }
         want.pieces.entry(offset).or_insert(bytes);
         let assembled = want.assembled()?;
         let want = self.wants.remove(&hash)?;
@@ -198,10 +353,16 @@ impl<T> ContentWants<T> {
 /// The frames that answer `request`, a member's `RecordContentWant` that
 /// device `asker` published, from device `device`, addressed to `asker`: the
 /// `NeighbourMsg::RecordContentPiece`s of what `read` (given the request's
-/// app, workspace and hash) keeps under it, or one `RecordContentLacks` when it
-/// keeps nothing, so the asker stops counting on this responder. Empty when the
-/// request is not one this responder answers. What `read` returns is sent only
-/// when it hashes to what was asked for.
+/// app, workspace and hash) keeps under it that the asker does not hold yet,
+/// or one `RecordContentLacks` when it keeps nothing, so the asker stops
+/// counting on this responder. Empty when the request is not one this
+/// responder answers. What `read` returns is sent only when it hashes to what
+/// was asked for.
+///
+/// At most [`PIECES_PER_ANSWER`] pieces go in one answer, the first of what
+/// the asker lacks: the asker asks again for what is still missing, so a large
+/// piece of content crosses a session's outbound queue in windows instead of
+/// filling it and losing what it cannot carry.
 pub fn answer(
     device: &[u8; 32],
     asker: &[u8; 32],
@@ -213,6 +374,7 @@ pub fn answer(
         app_id,
         cluster_id,
         hash,
+        have,
     }) = postcard::from_bytes(request)
     else {
         return Vec::new();
@@ -238,7 +400,7 @@ pub fn answer(
         .collect();
     };
     let total = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    let piece = |offset: usize, chunk: &[u8]| {
+    let piece = |offset: u64, chunk: &[u8]| {
         postcard::to_allocvec(&crate::NeighbourMsg::RecordContentPiece {
             responder,
             requester,
@@ -246,7 +408,7 @@ pub fn answer(
             cluster_id: cluster_id.clone(),
             hash: hash.clone(),
             total,
-            offset: u64::try_from(offset).unwrap_or(u64::MAX),
+            offset,
             bytes: chunk.to_vec(),
         })
         .ok()
@@ -254,11 +416,21 @@ pub fn answer(
     if bytes.is_empty() {
         return piece(0, &[]).into_iter().collect();
     }
-    bytes
-        .chunks(PIECE_BYTES)
-        .enumerate()
-        .filter_map(|(index, chunk)| piece(index.saturating_mul(PIECE_BYTES), chunk))
-        .collect()
+    let mut pieces = Vec::new();
+    for (index, chunk) in bytes.chunks(PIECE_BYTES).enumerate() {
+        if pieces.len() >= PIECES_PER_ANSWER {
+            break;
+        }
+        let offset = u64::try_from(index.saturating_mul(PIECE_BYTES)).unwrap_or(u64::MAX);
+        let len = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
+        if holds(&have, offset, len) {
+            continue;
+        }
+        if let Some(frame) = piece(offset, chunk) {
+            pieces.push(frame);
+        }
+    }
+    pieces
 }
 
 #[cfg(test)]
@@ -273,6 +445,8 @@ mod tests {
             app_id: "so.tilo.chat".into(),
             cluster_id: String::new(),
             asked_ms: 0,
+            last_piece_ms: 0,
+            reasks: 0,
             total: Some(total),
             pieces: pieces
                 .iter()
@@ -337,14 +511,14 @@ mod tests {
             !wants.expects(&[8; 32], &piece(0, &bytes[..10])),
             "not what another device asked for"
         );
-        assert!(wants.piece(&device, &piece(10, &bytes[10..])).is_none());
-        let arrived = wants.piece(&device, &piece(0, &bytes[..10])).unwrap();
+        assert!(wants.piece(&device, &piece(10, &bytes[10..]), 0).is_none());
+        let arrived = wants.piece(&device, &piece(0, &bytes[..10]), 0).unwrap();
         assert_eq!(
             (arrived.tag, arrived.hash.as_str(), arrived.bytes.as_slice()),
             ("general", hash.as_str(), bytes.as_slice())
         );
         assert!(
-            wants.piece(&device, &piece(0, &bytes[..10])).is_none(),
+            wants.piece(&device, &piece(0, &bytes[..10]), 0).is_none(),
             "content arrives once"
         );
         assert!(
@@ -369,7 +543,7 @@ mod tests {
         let arrived = pieces
             .iter()
             .rev()
-            .find_map(|piece| wants.piece(&host, piece))
+            .find_map(|piece| wants.piece(&host, piece, 0))
             .unwrap();
         assert_eq!(arrived.bytes, bytes, "the asker assembles and verifies it");
 
@@ -399,5 +573,85 @@ mod tests {
                 Ok(crate::NeighbourMsg::RecordContentLacks { .. })
             )
         )
+    }
+
+    #[test]
+    fn a_lost_piece_is_asked_again_for_and_only_that_piece_comes_back() {
+        let (host, page) = ([1; 32], [2; 32]);
+        let bytes: Vec<u8> = (0..=u8::MAX).cycle().take(PIECE_BYTES * 3 + 7).collect();
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        let mut wants = ContentWants::default();
+        let workspace = ("so.tilo.chat", "workspace");
+        let request = wants.ask(&host, (), workspace, &hash, 1_000).unwrap();
+        let kept = |app: &str, cluster: &str, asked: &str| {
+            ((app, cluster) == workspace && asked == hash).then(|| bytes.clone())
+        };
+        let pieces = answer(&page, &host, &request, kept);
+        assert_eq!(pieces.len(), 4);
+        // The second piece is lost on the way: the asker never sees it.
+        for (index, piece) in pieces.iter().enumerate() {
+            if index != 1 {
+                assert!(wants.piece(&host, piece, 1_000).is_none(), "not whole yet");
+            }
+        }
+        assert!(
+            wants.reask(&host, 1_000 + PIECE_PATIENCE_MS - 1).is_empty(),
+            "a transfer whose pieces just arrived waits its patience"
+        );
+        let again = wants.reask(&host, 1_000 + PIECE_PATIENCE_MS);
+        assert_eq!(again.len(), 1, "the content is asked for again");
+        let recovered = answer(&page, &host, &again[0].1, kept);
+        assert_eq!(
+            recovered.len(),
+            1,
+            "only the piece the asker lacks comes back"
+        );
+        let arrived = wants.piece(&host, &recovered[0], 1_000 + PIECE_PATIENCE_MS);
+        assert_eq!(
+            arrived.map(|arrived| arrived.bytes),
+            Some(bytes),
+            "the piece that was lost completes it"
+        );
+    }
+
+    #[test]
+    fn content_crosses_in_windows_rather_than_all_at_once() {
+        let (host, page) = ([1; 32], [2; 32]);
+        let windows = 3;
+        let bytes: Vec<u8> = (0..=u8::MAX)
+            .cycle()
+            .take(PIECE_BYTES * PIECES_PER_ANSWER * windows)
+            .collect();
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        let mut wants = ContentWants::default();
+        let workspace = ("so.tilo.chat", "workspace");
+        let kept = |app: &str, cluster: &str, asked: &str| {
+            ((app, cluster) == workspace && asked == hash).then(|| bytes.clone())
+        };
+        let mut now_ms = 1_000;
+        let mut request = wants.ask(&host, (), workspace, &hash, now_ms).unwrap();
+        let mut whole = None;
+        let mut answered = 0;
+        while whole.is_none() {
+            let pieces = answer(&page, &host, &request, kept);
+            assert!(
+                pieces.len() <= PIECES_PER_ANSWER,
+                "an answer never fills a session's outbound queue"
+            );
+            answered += pieces.len();
+            for piece in &pieces {
+                whole = wants.piece(&host, piece, now_ms).or(whole);
+            }
+            now_ms += PIECE_PATIENCE_MS;
+            let again = wants.reask(&host, now_ms);
+            if whole.is_some() {
+                assert!(again.is_empty(), "nothing is asked for once whole");
+                break;
+            }
+            assert_eq!(again.len(), 1, "the next window is asked for");
+            request = again[0].1.clone();
+        }
+        assert_eq!(answered, windows * PIECES_PER_ANSWER, "each piece once");
+        assert_eq!(whole.map(|whole| whole.bytes), Some(bytes));
     }
 }

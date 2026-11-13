@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use ui::i18n::{ArgValue, I18nManager, PseudoLocale};
 
-ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub static CATALOG, ["de-DE", "en-US"]);
 
 /// Look up `key`. Loads the catalogue on first use on a thread whose host
 /// has not, so text is real rather than a raw key.
@@ -38,16 +38,15 @@ pub fn tr(key: &str) -> String {
         if let Some(text) = cache.2.get(key) {
             return text.clone();
         }
-        let text = I18nManager::lookup(key, None);
+        let text = CATALOG.t(key);
         cache.2.insert(key.to_owned(), text.clone());
         text
     })
 }
 
-/// Look up `key`, interpolating `args` into its placeables.
 pub fn tr_args(key: &str, args: &[(&str, ArgValue)]) -> String {
     ensure();
-    I18nManager::format(key, args)
+    crate::strings::CATALOG.t_args(key, args)
 }
 
 /// Load the catalogue into this thread's manager, once per manager:
@@ -60,7 +59,6 @@ fn ensure() {
 mod tests {
     use super::*;
 
-    /// Every chrome key resolves and formatted keys interpolate their arguments.
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -171,9 +169,6 @@ mod tests {
             }
         }
 
-        // Case `formatted_keys_interpolate_their_arguments`.
-        // Placeables interpolate: the presenter position line carries the
-        // slide and the total, the custom colour its hex.
         {
             let pos = tr_args(
                 "slides-position",
@@ -189,5 +184,25 @@ mod tests {
             );
             assert_eq!(custom, "Custom colour #ff0000");
         }
+    }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source
+/// catalogue beside it.
+#[cfg(test)]
+mod german_window {
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalog = &super::CATALOG;
+        assert!(
+            catalog.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalog.languages()
+        );
+        catalog.set_locale("de-DE");
+        assert_eq!(catalog.t("slides-view"), "Ansicht");
+        catalog.set_locale("en-US");
+        assert_eq!(catalog.t("slides-view"), "View");
     }
 }

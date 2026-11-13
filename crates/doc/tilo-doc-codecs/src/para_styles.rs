@@ -9,8 +9,6 @@ use tilo_doc::schema::{
 };
 use tilo_doc::snapshot::AttrVal;
 
-/// How many parents a paragraph-style chain follows before it is taken to
-/// be a cycle.
 const MAX_CHAIN: usize = 8;
 
 #[derive(Default, Clone)]
@@ -21,14 +19,11 @@ pub(crate) struct ParaStyle {
     pub heading_name: bool,
     pub name_level: Option<i64>,
     pub text: Vec<(String, MarkValue)>,
-    /// Human display name, if the file gives one.
     pub display_name: Option<String>,
     /// A user-facing *named* style, as opposed to a resolution-only or
     /// automatic one; only named styles become container styles and explicit
     /// block `style` attrs.
     pub named: bool,
-    /// Typed `StyleProps`-shaped fields, distinct from the inline `text`
-    /// marks the same properties imply.
     pub size: Option<f64>,
     pub bold: Option<bool>,
     pub italic: Option<bool>,
@@ -43,15 +38,11 @@ pub(crate) struct ParaStyle {
 
 #[derive(Default)]
 pub(crate) struct StyleTable {
-    /// Character style name → inline marks.
     pub text: HashMap<String, Vec<(String, MarkValue)>>,
-    /// Paragraph style name → paragraph style.
     pub para: HashMap<String, ParaStyle>,
 }
 
 impl StyleTable {
-    /// The paragraph-style chain (self → parent → …), most-derived first,
-    /// and the name it stopped at if that name is not registered.
     fn walk(&self, name: &str) -> (Vec<&ParaStyle>, Option<String>) {
         let mut chain = Vec::new();
         let mut cur = Some(name.to_string());
@@ -66,13 +57,10 @@ impl StyleTable {
         (chain, None)
     }
 
-    /// The first value `field` gives along `name`'s chain.
     fn inherited<T>(&self, name: &str, field: impl Fn(&ParaStyle) -> Option<T>) -> Option<T> {
         self.walk(name).0.into_iter().find_map(field)
     }
 
-    /// Heading level for a paragraph style, following its parents and asking
-    /// `unregistered` about a chain that ends at a style the table lacks.
     pub(crate) fn heading_level(
         &self,
         name: &str,
@@ -96,8 +84,6 @@ impl StyleTable {
         self.inherited(name, |p| p.line_height)
     }
 
-    /// Inline marks a paragraph style applies to its whole text (parent-first,
-    /// most-derived wins).
     pub(crate) fn para_text_marks(&self, name: &str) -> Vec<(String, MarkValue)> {
         let mut out: Vec<(String, MarkValue)> = Vec::new();
         for p in self.walk(name).0.iter().rev() {

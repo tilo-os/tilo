@@ -8,22 +8,26 @@
 /// session's actions.
 view workspaces(d: Desk) {
     state name: Text = ""
-    stack(gap: .section) {
-        ui.Text("Workspaces", role: .title)
-        grid(min: 18rem) {
-            for r in d.rooms.sort_by(r -> r.name) {
-                room_card(r)
+    // The cards stand in the desk's page, as the overview's do: their corners round, and a card
+    // on the window's edge has them cut by it.
+    page(full) {
+        stack(gap: .section) {
+            ui.Text("Workspaces", role: .title)
+            grid(min: 18rem) {
+                for r in d.rooms.sort_by(r -> r.name) {
+                    room_card(r)
+                }
             }
-        }
-        row(gap: .related, align: .end, wrap: true) {
-            ui.TextInput(bind: name, placeholder: "Name a new workspace", fill) {
-                on submit: session.new_workspace(name: name).then(set(name, ""))
-            }
-            ui.Button("Create", icon: .plus, role: .primary) {
-                on press: session.new_workspace(name: name)
-            }
-            ui.Button("Join a workspace", icon: .users) {
-                on press: session.join_workspace()
+            row(gap: .related, align: .end, wrap: true) {
+                ui.TextInput(bind: name, placeholder: "Name a new workspace", fill) {
+                    on submit: session.new_workspace(name: name).then(set(name, ""))
+                }
+                ui.Button("Create", icon: .plus, role: .primary) {
+                    on press: session.new_workspace(name: name)
+                }
+                ui.Button("Join a workspace", icon: .users) {
+                    on press: session.join_workspace()
+                }
             }
         }
     }

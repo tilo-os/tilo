@@ -16,6 +16,9 @@ pub struct Work {
     pub searched_slabs: u64,
     /// Changes visited walking the change graph's ancestry.
     pub visited_changes: u64,
+    /// Objects whose id an actor sorting before others renumbered: what taking in a change by
+    /// a new actor rewrites of the document's object index besides the change.
+    pub renumbered_objects: u64,
 }
 
 thread_local! {
@@ -24,6 +27,7 @@ thread_local! {
             walked_ops: 0,
             searched_slabs: 0,
             visited_changes: 0,
+            renumbered_objects: 0,
         })
     };
 }
@@ -54,4 +58,11 @@ pub(crate) fn searched_slabs(slabs: usize) {
 #[inline]
 pub(crate) fn visited_change() {
     count(|work| work.visited_changes = work.visited_changes.saturating_add(1));
+}
+
+#[inline]
+pub(crate) fn renumbered_objects(objects: usize) {
+    count(|work| {
+        work.renumbered_objects = work.renumbered_objects.saturating_add(objects as u64);
+    });
 }

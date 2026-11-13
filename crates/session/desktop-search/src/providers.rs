@@ -3,6 +3,7 @@
 //! published (resources, actions, the desktop's model) or what a service
 //! answers; none reads a host's own chrome state.
 
+pub mod ask_agent;
 #[cfg(feature = "catalogue")]
 pub mod catalogue;
 pub mod downloaded;
@@ -282,20 +283,14 @@ fn index(resources: &[ResourceSpec]) -> BTreeMap<String, &ResourceSpec> {
     out
 }
 
-/// Whether a person may pick this action from a palette now.
-fn offered(spec: &tilo_actions::ActionSpec) -> bool {
-    spec.reaches_people() && matches!(spec.contract.availability, Availability::Available)
-}
-
-/// Whether `needle` asks for this action whatever its availability: an
-/// action with nothing to act on now (closing a sheet that is not open)
-/// takes no row from one that would do something, but naming it exactly
-/// still offers it, and running it says why not.
-fn offered_for(spec: &tilo_actions::ActionSpec, needle: &str) -> bool {
-    offered(spec)
-        || (spec.reaches_people()
-            && ui::search::fold_search_text(needle.trim())
-                == ui::search::fold_search_text(&spec.label))
+/// Whether a row may offer `contract`'s action: it reaches people and has something to act on now.
+///
+/// An action with nothing to act on (an event's `Invite` with no event selected, a sheet's `Close`
+/// with it shut) takes no row at all, not even for its own name: a row that can only say why it
+/// cannot run stands where a row that would do something should be, and the person who typed its
+/// name meant the thing that works.
+fn offered(contract: &tilo_actions::ActionContract) -> bool {
+    contract.reaches_people() && matches!(contract.availability, Availability::Available)
 }
 
 fn action_target(resource: &ResourceSpec, action: &str) -> Option<ActionTarget> {
@@ -303,7 +298,7 @@ fn action_target(resource: &ResourceSpec, action: &str) -> Option<ActionTarget> 
         .actions
         .iter()
         .find(|spec| spec.id == action)
-        .filter(|spec| offered(spec))?;
+        .filter(|spec| offered(&spec.contract))?;
     Some(ActionTarget {
         resource: resource.id.clone(),
         resource_kind: resource.kind.clone(),
@@ -335,7 +330,7 @@ impl Source for Actions {
             self.0.iter().map(|record| record.id.as_str()).collect();
         let flats: Vec<_> = tilo_actions::flatten(&self.0)
             .into_iter()
-            .filter(|flat| offered_for(flat.action, needle))
+            .filter(|flat| offered(&flat.action.contract))
             .collect();
         // An open record's actions answer to what they do. An item's (one
         // message of a chat, one card of a board) answer only to the item
@@ -463,16 +458,6 @@ fn capture_param(action: &tilo_actions::ActionDescriptor) -> Option<&str> {
 /// sentence a person wrote has somewhere to go.
 const CAPTURE_SCORE: i32 = 40;
 
-/// Whether a person may pick `action` for `needle`: it reaches people, and
-/// it has something to act on now or `needle` names it exactly (where
-/// running it says why not).
-fn descriptor_offered(action: &tilo_actions::ActionDescriptor, needle: &str) -> bool {
-    action.contract.reaches_people()
-        && (action.contract.availability.is_available()
-            || ui::search::fold_search_text(needle.trim())
-                == ui::search::fold_search_text(&action.action_label))
-}
-
 /// The actions providers publish through the session's action host, the
 /// same surface their own controls, agents and other devices invoke:
 /// ranked by label, other words and what they act on, run by address.
@@ -526,6 +511,7 @@ impl Published {
                 address: action.address.clone(),
                 arguments,
                 descriptor: Some(action.clone()),
+                place: crate::model::LaunchPlace::Focus,
             })),
         }
     }
@@ -576,7 +562,7 @@ impl Source for Published {
                 published
                     .actions
                     .iter()
-                    .filter(|action| descriptor_offered(action, needle))
+                    .filter(|action| offered(&action.contract))
                     .map(move |action| (published, action))
             })
             .collect();
@@ -1150,15 +1136,24 @@ impl Default for WebSearch {
 }
 
 impl WebSearch {
+    /// Whether `hit` is the web search offered for every query, which says
+    /// nothing about whether the query matched anything.
+    #[must_use]
+    pub fn is_every_query_row(hit: &Hit) -> bool {
+        hit.provider == "web" && hit.id.starts_with("search:")
+    }
+
     fn web_search_row(&self, query: &str) -> Hit {
         use crate::answers::web::{fallback_search_url, web_search_uri};
         Hit {
-            row: None,
+            // The row says the query back: nothing in it is a match.
+            row: Some(ui::search::SearchRow::echoing_query()),
             preview: None,
             faces: Vec::new(),
             outcome: None,
             kind: web_kind(),
             provider: self.id().into(),
+            // [`Self::is_every_query_row`] knows it by these.
             id: format!("search:{query}"),
             title: crate::i18n::t_args("search-web-for", &[("query", query.into())]),
             subtitle: Some(crate::i18n::t("search-web-subtitle")),
@@ -1223,7 +1218,8 @@ impl WebSearch {
             ),
         };
         Hit {
-            row: None,
+            // The row says `query` back: nothing in it is a match.
+            row: Some(ui::search::SearchRow::echoing_query()),
             preview: None,
             faces: Vec::new(),
             outcome: None,
@@ -1258,12 +1254,6 @@ impl WebSearch {
             _ => return None,
         };
         (found.id == id).then_some(found)
-    }
-
-    /// Whether `hit` is the row every query gets.
-    #[must_use]
-    pub fn is_fallback(hit: &Hit) -> bool {
-        hit.id.starts_with("search:")
     }
 }
 
@@ -1872,7 +1862,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unavailable_action_answers_only_its_name() {
+    fn an_unavailable_action_is_not_offered_even_by_its_name() {
         let mut resource = resource_with_action("r", "Doc", "print", "Print");
         resource.actions[0].type_mut().contract.availability = Availability::Unavailable {
             code: "offline".into(),
@@ -1880,10 +1870,59 @@ mod tests {
         };
         let actions = Actions(vec![resource]);
         assert!(actions.query("prin").is_empty());
+        assert!(actions.query("print").is_empty());
+    }
+
+    /// The same of a row an app publishes through the session's action host: an event's `Invite`
+    /// with no event selected takes no row, so what a person typed that names it finds the
+    /// workspace's own invite instead.
+    #[test]
+    fn an_action_the_host_publishes_is_offered_only_while_it_can_run() {
+        let mut event = typed(
+            "calendar.event:1",
+            "Standup",
+            ("event", "events"),
+            ("Calendar", "events"),
+            false,
+            &[("invite", "Invite")],
+        );
+        let invite = event
+            .actions
+            .iter_mut()
+            .find(|action| action.id == "invite")
+            .expect("the event offers its invite");
+        invite.type_mut().contract.availability = Availability::Unavailable {
+            code: "selection_empty".into(),
+            reason: "Select an event first".into(),
+        };
+        let mut available = event.clone();
+        let invite = available
+            .actions
+            .iter_mut()
+            .find(|action| action.id == "invite")
+            .expect("the event offers its invite");
+        invite.type_mut().contract.availability = Availability::Available;
+        let runs = Published(vec![PublishedActions::of(
+            "so.tilo.calendar",
+            "workspace",
+            &[available],
+        )]);
         assert_eq!(
-            actions.query("print").len(),
-            1,
-            "named exactly, it says why not"
+            runs.query("invite")
+                .iter()
+                .map(|hit| hit.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Invite"],
+            "the action that can run is a row"
+        );
+        let published = Published(vec![PublishedActions::of(
+            "so.tilo.calendar",
+            "workspace",
+            &[event],
+        )]);
+        assert!(
+            published.query("invite").is_empty(),
+            "an action with nothing to act on takes no row"
         );
     }
 
@@ -2318,6 +2357,25 @@ mod tests {
         assert!(Answers::default().query("   ").is_empty());
     }
 
+    /// The rows that say the query back — to the web, to a service — are found by nothing, and
+    /// say so, so the palette sets off no span of the person's own words in them. A service
+    /// named alone is a result and keeps its match.
+    #[test]
+    fn a_row_that_says_the_query_back_declares_it() {
+        let echoes = |hit: &Hit| matches!(&hit.row, Some(ui::search::SearchRow::Command(row)) if row.echoes_query);
+        let rows = WebSearch::default().query("youtube cats");
+        assert_eq!(rows.len(), 2, "the service search, then the web: {rows:?}");
+        for hit in &rows {
+            assert!(echoes(hit), "{} restates the query", hit.title);
+        }
+        let service = WebSearch::default().query("youtube");
+        let named = service
+            .iter()
+            .find(|hit| hit.title == "YouTube")
+            .expect("the service named alone");
+        assert!(!echoes(named), "a service found by name is a result");
+    }
+
     #[test]
     fn an_address_opens_and_answers_are_not_remembered() {
         let hits = Answers::default().query("example.com");
@@ -2410,7 +2468,9 @@ mod tests {
         );
         let search = web.query("youtube cats").remove(0);
         assert!(web.intent(&search) > 0.0);
-        assert!(WebSearch::is_fallback(&web.query("weather").remove(0)));
+        assert!(WebSearch::is_every_query_row(
+            &web.query("weather").remove(0)
+        ));
     }
 
     #[test]

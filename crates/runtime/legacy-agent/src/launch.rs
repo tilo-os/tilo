@@ -24,7 +24,6 @@ const AGENT_OWNED: &[&str] = &[
     PORT_ENV,
 ];
 
-/// One guest process, ready to spawn.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Spec {
     pub argv: Vec<String>,
@@ -35,16 +34,13 @@ pub struct Spec {
     pub note: Option<String>,
 }
 
-/// What the guest looks like right now, for [`spec`].
 pub struct GuestView<'a> {
     pub user: &'a GuestUser,
-    /// `Some` once the forwarded Xwayland is serving.
     pub x_display: Option<&'a str>,
     pub session_bus: Option<&'a Path>,
     pub is_dir: &'a dyn Fn(&Path) -> bool,
 }
 
-/// The port the guest's forwarder connects to for this launch.
 #[must_use]
 pub fn waypipe_port(launch: &Launch) -> u32 {
     launch
@@ -126,7 +122,6 @@ pub fn spec(launch: &Launch, guest: &GuestView<'_>) -> Spec {
     }
 }
 
-/// The forwarded Xwayland: one per guest, under its own `waypipe server`.
 #[must_use]
 pub fn xwayland_argv(port: u32) -> Vec<String> {
     waypipe::server_argv(

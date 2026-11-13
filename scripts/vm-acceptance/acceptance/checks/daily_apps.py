@@ -89,13 +89,12 @@ def _require_installed(ctx, res, app: DailyApp) -> None:
                       f"(queried {list(app.queries)})")
 
 
-def _frame(ctx, surface_id):
-    return next((f for f in ctx.vm.foreign_frames() if f["surface_id"] == surface_id), None)
+def _frame(ctx, window_id):
+    return next((f for f in ctx.vm.windows() if f["window"] == window_id), None)
 
 
 def _rect(frame) -> tuple:
-    r = frame["rect"]
-    return (r["x"], r["y"], r["w"], r["h"])
+    return tuple(frame["rect"])
 
 
 def output_scales(ctx, st) -> dict:
@@ -111,15 +110,22 @@ def output_scales(ctx, st) -> dict:
 
 
 def _scale_verdict(app: DailyApp, frame, scale: float):
-    """None while the frame has no size yet; else (ok, what the buffer says)."""
+    """None while the window has no rect yet; else (ok, what the buffer says).
+
+    The client's buffer size is what a scale is read from, and the session's `windows` rows report
+    the window's rect only: a run that needs the buffer scale has no source for it here.
+    """
     r, b = frame.get("rect"), frame.get("buffer")
-    if not r or not b or not r["w"] or not r["h"]:
-        return None
-    seen = {"output_scale": scale, "rect": [round(r["w"], 1), round(r["h"], 1)], "buffer": [b["w"], b["h"]],
-            "buffer_scale": round(b["w"] / r["w"], 3)}
+    if not r or not b:
+        return Unobservable(
+            "the session's window rows report no client buffer size, so a buffer scale is "
+            "unobservable from them"
+        )
+    seen = {"output_scale": scale, "rect": [round(r[2], 1), round(r[3], 1)], "buffer": [b["w"], b["h"]],
+            "buffer_scale": round(b["w"] / r[2], 3)}
 
     def at(k):
-        return abs(b["w"] - r["w"] * k) <= SCALE_SLACK_PX and abs(b["h"] - r["h"] * k) <= SCALE_SLACK_PX
+        return abs(b["w"] - r[2] * k) <= SCALE_SLACK_PX and abs(b["h"] - r[3] * k) <= SCALE_SLACK_PX
 
     if app.fractional:
         # Drawn at exactly the output's scale: a whole-number buffer scale on a fractional
@@ -144,6 +150,8 @@ def _check_scale(ctx, res, app: DailyApp, surface_id, display, scales, where: st
         verdict = _scale_verdict(app, f, scale)
         if verdict is None or drect is None:
             return None
+        if isinstance(verdict, Unobservable):
+            raise verdict
         last["verdict"] = verdict
         return (verdict[0] and core.rect_inside(_rect(f), drect, slack=2)) or None
 
@@ -166,7 +174,7 @@ def _open(ctx, res, app: DailyApp):
     st0 = ctx.state()
     toasts0 = len(_notifications(st0))
     focused_display = next(d["id"] for d in st0["chrome"]["displays"] if d.get("focused"))
-    surfaces0 = {f["surface_id"] for f in ctx.vm.foreign_frames()}
+    surfaces0 = {f["window"] for f in ctx.vm.windows()}
     before = _procs(ctx)
     ctx.facts[f"groups_before:{app.label}"] = {g["id"] for g in core.all_groups(st0)}
     try:
@@ -185,16 +193,16 @@ def _open(ctx, res, app: DailyApp):
     started = time.monotonic()
 
     def presented():
-        return next((f for f in ctx.vm.foreign_frames() if f["surface_id"] not in surfaces0
-                     and f.get("presented") and f.get("frame_seq", 0) > 0 and f.get("rect")), None)
+        return next((f for f in ctx.vm.windows() if f["window"] not in surfaces0
+                     and f.get("frames", 0) > 0 and f.get("rect")), None)
 
     frame = wait_until(presented, FIRST_FRAME_S, 0.5)
     if frame is None:
         ctx.shot(f"{app.label}-no-frame")
-        frames = [(f["app_id"], f.get("frame_seq"), f.get("last_error")) for f in ctx.vm.foreign_frames()]
-        raise CheckFailed(f"{app.name} never presented a first frame within {FIRST_FRAME_S} s "
-                          f"(foreign frames: {frames})")
-    sid = frame["surface_id"]
+        frames = [(f["app_id"], f.get("frames"), f.get("rect")) for f in ctx.vm.windows()]
+        raise CheckFailed(f"{app.name} never drew a first frame within {FIRST_FRAME_S} s "
+                          f"(windows: {frames})")
+    sid = frame["window"]
     res.metrics["app_id"] = frame.get("app_id")
     res.metrics["seconds_to_first_frame"] = round(t_group + time.monotonic() - started, 2)
 
@@ -457,6 +465,13 @@ def _fullscreen(ctx, res, app: DailyApp, sid, gid) -> None:
     """Super+F gives the X11 client its whole output and it redraws at that size; Super+F again
     gives it back its tile."""
     st = ctx.state()
+    if not (_frame(ctx, sid) or {}).get("buffer"):
+        # Full screen is judged by the client having redrawn its buffer at the new size, and the
+        # session's window rows report the window's rect only.
+        raise Unobservable(
+            "the session's window rows report no client buffer size, so whether the X11 client "
+            "redrew at the full-screen size is unobservable from them"
+        )
     disp = core.display_of_group(st, gid)
     drect = core.display_rects(st)[disp]
     tile = _rect(_frame(ctx, sid))
@@ -472,9 +487,9 @@ def _fullscreen(ctx, res, app: DailyApp, sid, gid) -> None:
         r, b = f["rect"], f["buffer"]
         # A lone tile already spans most of its output (1856 of 1920 px): full screen
         # is larger than the tile it left as well.
-        spans = (r["w"] >= drect[2] * 0.95 and r["h"] >= drect[3] * 0.9
-                 and (r["w"] > tile[2] + SCALE_SLACK_PX or r["h"] > tile[3] + SCALE_SLACK_PX))
-        redrawn = abs(b["w"] / r["w"] - b["h"] / r["h"]) < 0.05 and b["w"] >= r["w"] - SCALE_SLACK_PX
+        spans = (r[2] >= drect[2] * 0.95 and r[3] >= drect[3] * 0.9
+                 and (r[2] > tile[2] + SCALE_SLACK_PX or r[3] > tile[3] + SCALE_SLACK_PX))
+        redrawn = abs(b["w"] / r[2] - b["h"] / r[3]) < 0.05 and b["w"] >= r[2] - SCALE_SLACK_PX
         return (spans and redrawn) or None
 
     ok = wait_until(filled, SCALE_SETTLE_S, 0.5)
@@ -504,13 +519,13 @@ def _fullscreen(ctx, res, app: DailyApp, sid, gid) -> None:
     ctx.vm.key("super+f")
     ctx.wait_state(lambda s: not _fullscreen_state(s, gid), 5, f"{app.name} restored after Super+F")
 
-    full = f.get("rect") or {"w": drect[2], "h": drect[3]}
+    full = f.get("rect") or [0, 0, drect[2], drect[3]]
 
     def back_in_tile():
         # Smaller than full screen again, by more than rounding.
         f = _frame(ctx, sid)
         r = f and f.get("rect")
-        return f if r and (r["w"] < full["w"] - SCALE_SLACK_PX or r["h"] < full["h"] - SCALE_SLACK_PX) else None
+        return f if r and (r[2] < full[2] - SCALE_SLACK_PX or r[3] < full[3] - SCALE_SLACK_PX) else None
 
     restored = wait_until(back_in_tile, SCALE_SETTLE_S, 0.5)
     res.metrics["restored_rect"] = restored["rect"] if restored else None

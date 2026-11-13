@@ -176,6 +176,40 @@ fn apply_loaded_membership(
     runtime.loaded_generation = observed;
 }
 
+/// Enrol `cert`'s device as a member of `workspace`, where [`crate::workspace_access::decide`]
+/// answered [`crate::workspace_access::Decision::AdmitAndEnrol`], through whoever owns the
+/// workspace's membership: the governance of a workspace this relay governs records the device
+/// under its person, and its settle projects it here; any other workspace's membership file takes
+/// it ([`admit_member`]). The caller decides again afterwards: a device governance did not take
+/// is still no member.
+///
+/// # Errors
+///
+/// The store's error when the membership file cannot be read or written.
+pub(crate) async fn enrol(
+    workspace: &SharedWorkspace,
+    cert: &tilo_user_identity::DeviceCert,
+    expected_revision: u64,
+) -> Result<(), StoreError> {
+    let governed = {
+        let runtime = workspace.lock().await;
+        (runtime.admission == AdmissionMode::Governed).then(|| {
+            runtime.workspace_authority.as_ref().and_then(|authority| {
+                Some((authority.workspaces()?, authority.workspace().to_owned()))
+            })
+        })
+    };
+    match governed {
+        None => admit_member(workspace, cert.device_public_key, expected_revision).await,
+        Some(Some((workspaces, uuid))) => {
+            workspaces.enrol_member_device(cert, &uuid).await;
+            Ok(())
+        }
+        // Governed elsewhere: only that governance admits a device.
+        Some(None) => Ok(()),
+    }
+}
+
 /// Persist an explicitly authorized admission before granting it. The detached,
 /// bounded owner finishes a started update even if its caller disconnects.
 pub(crate) async fn admit_member(
@@ -271,7 +305,7 @@ pub(crate) async fn replace_membership(
 /// durable projection. Removals narrow the live workspace before filesystem work;
 /// additions appear only after the atomic record commits. A failed write
 /// therefore leaves a fail-closed in-process ceiling until a later successful
-/// replacement.
+/// replacement. Returns the devices the replacement no longer admits.
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the runtime guard publishes the narrowed ceiling as one step and ends with the task"
@@ -279,14 +313,19 @@ pub(crate) async fn replace_membership(
 pub(crate) async fn replace_governed_access(
     workspace: &SharedWorkspace,
     access: GovernedAccessRecord,
-) -> Result<(), StoreError> {
+) -> Result<Vec<[u8; 32]>, StoreError> {
     let slot = admit_work().await?;
     let workspace = workspace.clone();
     tokio::spawn(async move {
         let _slot = slot;
         let (store, lane) = authority_handles(&workspace).await;
         let _lane = lane.lock_owned().await;
-        let narrowed = {
+        // The governor's projection: from here on governance owns who joins.
+        let access = GovernedAccessRecord {
+            governed: true,
+            ..access
+        };
+        let (narrowed, removed) = {
             let mut runtime = workspace.lock().await;
             runtime.membership_revision = runtime
                 .membership_revision
@@ -323,7 +362,10 @@ pub(crate) async fn replace_governed_access(
             // Refuse while the authority lane is held so the writer can deliver
             // NotAuthorised before a waiting access audit closes the session.
             runtime.refuse_removed_live_members(&removed);
-            !removed.is_empty() || roots_removed || !governed_before
+            (
+                !removed.is_empty() || roots_removed || !governed_before,
+                removed,
+            )
         };
         // Sessions of removed devices and roots re-check now, before the
         // write. A replacement that only admits narrows nobody's access: a
@@ -332,23 +374,25 @@ pub(crate) async fn replace_governed_access(
             crate::authority_epoch::bump();
         }
         let saved = access.clone();
-        authorization_io(move || {
-            let bytes = store.save_governed_access(&saved)?;
+        let writing = crate::timing::start();
+        let written = authorization_io(move || {
+            let (digest, written) = store.save_governed_access(&saved)?;
             // Applied to the runtime below, its narrowing announced
             // above: the watch need not announce the file again.
             crate::membership_watch::wrote_own(
                 &store.root().join(crate::store::GOVERNED_ACCESS_FILE),
-                &bytes,
+                digest,
             );
-            Ok(())
+            Ok(written)
         })
         .await?;
+        crate::timing::event("room.settle.access_write", writing, written);
         let mut runtime = workspace.lock().await;
         runtime.membership.set(access.member_devices);
         runtime.governed_user_roots = access.member_user_roots.into_iter().collect();
         runtime.admission = AdmissionMode::Governed;
         runtime.membership_ceiling = None;
-        Ok(())
+        Ok(removed)
     })
     .await
     .map_err(|error| io_error(error.to_string()))?
@@ -505,7 +549,7 @@ pub async fn admit_for(
         Decision::Admit => Ok(Ok(())),
         Decision::Deny(reason) => Ok(Err(reason)),
         Decision::AdmitAndEnrol => {
-            admit_member(workspace, peer.device_public_key, revision).await?;
+            enrol(workspace, &peer.cert, revision).await?;
             let runtime = fresh_membership(workspace).await?;
             Ok(match decide(&runtime, trust, peer, operation) {
                 Decision::Admit => Ok(()),
@@ -526,6 +570,12 @@ mod tests {
     use crate::store::test_barrier;
 
     fn runtime(root: &std::path::Path) -> SharedWorkspace {
+        // A workspace whose membership is kept: its access record, the one
+        // projection of who is a member.
+        WorkspaceStore::open(root, 7, false)
+            .unwrap()
+            .save_governed_access(&crate::store::GovernedAccessRecord::default())
+            .unwrap();
         Arc::new(tokio::sync::Mutex::new(
             WorkspaceRuntime::open(root, 7, false, Membership::default()).unwrap(),
         ))
@@ -625,7 +675,10 @@ mod tests {
         replace_membership(&workspace, vec![[1; 32], [2; 32]])
             .await
             .unwrap();
-        let path = tmp.path().join("workspaces/7/membership.json");
+        let path = tmp
+            .path()
+            .join("workspaces/7")
+            .join(crate::store::GOVERNED_ACCESS_FILE);
         let saved = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
@@ -666,7 +719,7 @@ mod tests {
         store.save_membership(&[[1; 32], [2; 32]]).unwrap();
         // This external update has not yet reached the cached routing metadata.
         assert!(workspace.lock().await.membership.devices.is_empty());
-        let path = store.root().join("membership.json");
+        let path = store.root().join(crate::store::GOVERNED_ACCESS_FILE);
         let saved = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
@@ -808,7 +861,10 @@ mod tests {
         replace_membership(&workspace, vec![[1; 32], [2; 32]])
             .await
             .unwrap();
-        let path = tmp.path().join("workspaces/7/membership.json");
+        let path = tmp
+            .path()
+            .join("workspaces/7")
+            .join(crate::store::GOVERNED_ACCESS_FILE);
         let saved = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
@@ -829,6 +885,7 @@ mod tests {
             policy: &policy,
             own_user: &owner,
             agents: &agents,
+            environments: Box::leak(Box::default()),
         };
         let removed = crate::workspace_access::tests::unsigned_peer(owner, [1; 32]);
         for mode in [AdmissionMode::Explicit, AdmissionMode::SameOwner] {
@@ -866,6 +923,7 @@ mod tests {
             policy: &policy,
             own_user: &owner,
             agents: &agents,
+            environments: Box::leak(Box::default()),
         };
         let stranger = crate::workspace_access::tests::unsigned_peer([8; 32], [1; 32]);
         assert_eq!(

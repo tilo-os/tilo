@@ -54,7 +54,7 @@ fn lanes(cx: &ViewCx<Tracker>, tracker: &Tracker, filter: &Filter, me: Option<&s
             .filter(|(_, issue)| issue.status == status && filter.matches(issue, me))
             .map(|(id, issue)| (id.to_string(), card(cx, tracker, id, issue, &people)))
             .collect();
-        let header = Text::new(&ui::i18n::I18nManager::format(
+        let header = Text::new(&crate::locales::CATALOG.t_args(
             "tasks-lane-heading",
             &[
                 ("status", tr(status.label_key()).into()),
@@ -115,7 +115,7 @@ fn card(
     let (closed, total) = tracker.progress(id);
     if total > 0 {
         facts = facts.push(Box::new(
-            Text::new(&ui::i18n::I18nManager::format(
+            Text::new(&crate::locales::CATALOG.t_args(
                 "tasks-progress",
                 &[("closed", closed.into()), ("total", total.into())],
             ))

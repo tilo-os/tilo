@@ -39,6 +39,7 @@ url.workspace = true
 [dev-dependencies]
 ed25519-dalek.workspace = true
 test-http = { path = "../../dev/test-http" }
+tokio = { workspace = true, features = ["rt", "time"] }
 
 [lints]
 workspace = true

@@ -168,7 +168,9 @@ pub(crate) struct ActionTable {
 /// over the shared ones of the same id.
 struct Published {
     base: Rc<tilo_actions::ResourceSpec>,
-    overlay: Vec<tilo_actions::ActionSpec>,
+    /// The edits the views bound, shared with the cache that built them: a
+    /// frame refreshes them twice and must not copy them either time.
+    overlay: Rc<Vec<tilo_actions::ActionSpec>>,
 }
 
 impl Published {
@@ -201,7 +203,7 @@ impl ActionTable {
             kind,
             resource: Rc::new(RefCell::new(Published {
                 base: published,
-                overlay: Vec::new(),
+                overlay: Rc::default(),
             })),
             record: None,
             kept_by: None,
@@ -217,7 +219,7 @@ impl ActionTable {
 
     /// Follow the canonical publication of this same hosted resource.
     pub(crate) fn update(&self, published: tilo_actions::ResourceSpec) {
-        self.update_shared(Rc::new(published), Vec::new());
+        self.update_shared(Rc::new(published), Rc::default());
     }
 
     /// Follow `base`, a publication shared with whoever built it, with
@@ -226,7 +228,7 @@ impl ActionTable {
     pub(crate) fn update_shared(
         &self,
         base: Rc<tilo_actions::ResourceSpec>,
-        overlay: Vec<tilo_actions::ActionSpec>,
+        overlay: Rc<Vec<tilo_actions::ActionSpec>>,
     ) {
         let mut current = self.resource.borrow_mut();
         // A handle belongs to one root; a replacement gets its own handle.
@@ -540,7 +542,7 @@ impl<R: Resource> Actions<R> {
     #[must_use]
     pub fn published(&self) -> Vec<tilo_actions::ActionSpec> {
         let published = self.table.resource.borrow();
-        let mut specs = published.overlay.clone();
+        let mut specs = (*published.overlay).clone();
         specs.extend(
             published
                 .base
@@ -579,8 +581,11 @@ impl<R: Resource> Actions<R> {
             .ok()
     }
 
-    /// The id the resource is published at.
-    pub(crate) fn resource_id(&self) -> String {
+    /// The id the resource is published at: the resource an action address
+    /// on it names, as a surface binding a control of its own to one of its
+    /// actions says where that action lands
+    /// ([`ControlBindingMetadata`](ui_core::widget::ControlBindingMetadata)).
+    pub fn resource_id(&self) -> String {
         self.table.resource.borrow().base.id.0.clone()
     }
 

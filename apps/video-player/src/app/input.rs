@@ -1,5 +1,3 @@
-//! What the pointer, a shortcut and the volume controls do, and the preferences they persist.
-
 use super::{
     ContentsOutcome, ElementState, LibraryTab, PLAYBACK_RATES, Picked, PickerChannel,
     PlayerResource, PlayerSettingEvent, PlayerState, PortalOpenOutcome, PortalOutcome,
@@ -7,15 +5,13 @@ use super::{
 };
 
 impl PlayerState {
-    /// Show and keep the preferences just changed.
     pub(super) fn preferences_changed(&mut self) {
         configure_player_settings(&mut self.player, self.preferences);
         self.persist_preferences();
     }
 
-    /// Keep the playback preferences with this device's settings. A
-    /// device-local preference must never prevent playback, so a refused write
-    /// is logged and the next change retries it.
+    /// Keep the playback preferences with this device's settings. A refused write is
+    /// logged and retried by the next change: a preference must never prevent playback.
     pub(super) fn persist_preferences(&self) {
         let Some(setting) = &self.setting else {
             return;
@@ -31,8 +27,7 @@ impl PlayerState {
         }
     }
 
-    /// A volume change is kept once it settles, so a drag writes one value
-    /// instead of one per step.
+    /// Keep a volume change once it settles, so a drag writes one value.
     pub(super) fn volume_changed(&mut self, volume: f64) {
         #[allow(
             clippy::cast_possible_truncation,
@@ -40,17 +35,14 @@ impl PlayerState {
         )]
         let volume = volume.clamp(0.0, 1.0) as f32;
         self.player.set_volume(volume);
-        // `set_volume` clamps and unmutes, so the player answers the level
-        // that actually plays.
+        // `set_volume` clamps and unmutes, so read back the level that actually plays.
         if (self.preferences.volume - self.player.volume()).abs() > f32::EPSILON {
             self.preferences.volume = self.player.volume();
             self.volume_settling_since = Some(unix_now_ms());
         }
     }
 
-    /// Keep the volume once the person has stopped changing it. The last
-    /// value always lands, because a change that keeps arriving keeps the
-    /// timer running until it stops.
+    /// Keep the volume once the person stopped changing it; the last value always lands.
     pub(super) fn settle_volume(&mut self) {
         let Some(since) = self.volume_settling_since else {
             return;
@@ -62,7 +54,6 @@ impl PlayerState {
         self.persist_preferences();
     }
 
-    /// Drain a pending picker answer, opening the chosen file.
     pub(super) fn drain_portal(&mut self) {
         let pending = self.portal_open.take();
         let mut outcome: Option<PortalOpenOutcome> = None;
@@ -99,8 +90,8 @@ impl PlayerState {
             return;
         }
         let reply = pending.and_then(|pending| pending.reply);
-        // The receiver is dropped before opening the chosen file, so the
-        // open cannot cancel the request it completes.
+        // The receiver is dropped before opening the chosen file, so the open cannot
+        // cancel the request it completes.
         let Some((generation, outcome)) = outcome else {
             return;
         };
@@ -138,10 +129,8 @@ impl PlayerState {
         }
     }
 
-    /// Watch together: follow where playback of the open video stands for
-    /// everyone, and say where it stands here when this player moved it
-    /// (played, paused, sought, changed speed). Only a live window with the
-    /// right to edit says so; a viewer follows.
+    /// Watch together: follow where playback stands for everyone, and say where it stands
+    /// here when this player moved it. Only a live window with the right to edit says so.
     pub(super) fn tick_together(&mut self) {
         if !self.mode.is_live() {
             return;
@@ -182,7 +171,6 @@ impl PlayerState {
         }
     }
 
-    /// Do what the player's own settings menu chose.
     pub(super) fn drain_player_settings(&mut self) {
         for event in self.player.take_setting_events() {
             let source_id = self.current_source_id.clone().unwrap_or_default();
@@ -313,9 +301,8 @@ impl PlayerState {
         false
     }
 
-    /// Handle the keyboard values this app owns. Factoring this from winit's
-    /// event carrier keeps shortcut tests fully safe and avoids fabricating
-    /// invalid platform event structs just to exercise a key binding.
+    /// The keyboard values this app owns, from a logic key rather than a platform
+    /// `KeyEvent`, so shortcut tests need no fabricated event.
     pub(super) fn handle_app_shortcut_input(
         &self,
         logical_key: &winit::keyboard::Key,
@@ -325,11 +312,9 @@ impl PlayerState {
         if state != ElementState::Pressed {
             return false;
         }
-        // The library is an app-owned side panel rather than a modal supplied
-        // by the shared player surface. Give it the conventional close key so
-        // keyboard and switch-control users never have to hunt for the small
-        // header button. Do not consume Escape while the panel is absent: the
-        // shell and the embedded player may have a more relevant use for it.
+        // The library is an app-owned panel, not a modal the shared player surface
+        // supplies: give it the conventional close key. Escape is not consumed while the
+        // panel is absent, since the shell or the embedded player may want it.
         if matches!(
             logical_key,
             winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
@@ -353,9 +338,8 @@ impl PlayerState {
         true
     }
 
-    /// Route a logical key through the app-owned shortcuts, then the focused
-    /// reusable player surface. This mirrors the live event order while
-    /// remaining safe to exercise without fabricating a platform `KeyEvent`.
+    /// Route a logical key through the app's shortcuts, then the focused player surface,
+    /// as the live event order does.
     pub(super) fn route_key_input(
         &mut self,
         logical_key: &winit::keyboard::Key,

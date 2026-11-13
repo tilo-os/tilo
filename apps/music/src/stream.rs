@@ -1,18 +1,6 @@
-//! The non-blocking streaming worker.
-//!
-//! All network + extraction work — real `YouTube` Music search and audio-stream
-//! resolution — runs on a background thread so the UI thread never blocks (in
-//! a browser page, which has no threads, as app tasks one request at a time). The
-//! app talks to it with two plain channels: it *sends* [`StreamRequest`]s
-//! (fire-and-forget) and *drains* [`StreamUpdate`]s once per frame via
-//! [`StreamWorker::poll`] (a non-blocking `try_iter`). The worker owns a
-//! [`crate::backend::MusicBackend`] chosen at runtime — the live rustypipe
-//! client when `--features live` is on and it initialises, otherwise the
-//! offline sample (so this seam compiles and runs identically either way).
-//!
-//! The worker is spawned lazily on the first real interaction (a Play or a
-//! search) — never during `--shots` or layout — so the screenshot path stays
-//! hermetic and no thread or socket is created for a headless render.
+//! The streaming worker: search and audio resolution off the UI thread, or as app tasks
+//! where there are none, with a plain channel each way. It starts on the first real
+//! interaction, never during `--shots`, so a capture opens no socket.
 
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 
@@ -21,14 +9,11 @@ use crate::backend::{
     default_backend, preferred_backend,
 };
 
-/// Network work is deliberately back-pressured. A fast key-repeat or an agent
-/// cannot enqueue an unbounded number of expensive searches/resolves while the
-/// serial source is waiting on the network.
+/// Back-pressure: a key repeat or an agent cannot queue unbounded network work.
 const REQUEST_QUEUE_LIMIT: usize = 16;
 const MAX_QUERY_BYTES: usize = 512;
 const MAX_EXTERNAL_ID_BYTES: usize = 512;
 
-/// A unit of work for the background thread.
 #[derive(Clone, Debug)]
 pub enum StreamRequest {
     Spotify {
@@ -47,33 +32,24 @@ pub enum StreamRequest {
         spotify: bool,
         sign_in: bool,
     },
-    /// Run a real multi-type YouTube-Music search (songs, albums, artists,
-    /// playlists + a top result) in one call.
+    /// A whole search in one call.
     Search {
         query: String,
         request_id: u64,
     },
-    /// Resolve a directly-playable audio URL for `video_id`. `track_id` is the
-    /// app's library id, echoed back so the result can be correlated with the
-    /// track that is (still) current when it lands.
+    /// A playable URL for `video_id`; `track_id` is echoed so the result finds its track.
     Resolve {
         track_id: String,
         video_id: String,
-        /// Caller-owned monotonic identity. The app accepts a response only
-        /// when it still matches its newest request, preventing A→B→A from
-        /// adopting the first (stale) A response.
+        /// Monotonic identity: a response that is not the newest request's is ignored.
         request_id: u64,
     },
-    /// Fetch the real Home page (charts / new releases / top artists).
     Home,
-    /// Fetch a real artist page by `YouTube` channel id.
     Artist(String),
     Album(String),
-    /// Fetch a real playlist's track list by `YouTube` playlist id.
     Playlist(String),
 }
 
-/// A result folded back into the app on the UI thread.
 #[derive(Clone, Debug)]
 pub enum StreamUpdate {
     Spotify {
@@ -89,61 +65,60 @@ pub enum StreamUpdate {
     SourceSelected {
         result: Result<(String, bool), String>,
     },
-    /// One-time announcement of which backend the worker bound to.
-    Backend { name: String, live: bool },
-    /// Real multi-type search results for a query (the mixed "All" bundle).
+    Backend {
+        name: String,
+        live: bool,
+    },
     SearchResults {
         query: String,
         request_id: u64,
         bundle: Box<SearchBundle>,
     },
-    /// A search could not be completed. This is a terminal response with the
-    /// original request identity, not an unstructured log note, so the UI can
-    /// clear its busy state and offer a retry for the exact query.
+    /// A search that could not finish, with its request identity: the UI clears its busy
+    /// state and offers a retry for that query.
     SearchUnavailable {
         query: String,
         request_id: u64,
         error: String,
     },
-    /// A track's audio stream resolved to a playable URL.
     Resolved {
         track_id: String,
         request_id: u64,
         stream: Box<ResolvedStream>,
     },
-    /// A resolve attempt failed (offline, geo-blocked, PoToken-gated, …).
     ResolveFailed {
         track_id: String,
         request_id: u64,
         error: String,
     },
-    /// The real Home page landed.
-    Home { content: Box<HomeContent> },
-    /// The Home fetch could not complete (offline build, geo-block, network
-    /// error). The UI stops the loading skeleton and shows its honest empty
-    /// Home rather than shimmering forever.
-    HomeUnavailable { error: String },
-    /// A real artist page landed.
-    Artist { page: Box<ArtistPage> },
-    /// A real album page landed.
-    Album { page: Box<AlbumPage> },
-    /// A real playlist page landed.
-    Playlist { page: Box<PlaylistPage> },
-    /// A requested detail page (artist / album / playlist) could not be
-    /// fetched. Carries the id so the UI stops that page's skeleton and shows
-    /// an honest "couldn't load" state instead of an endless shimmer.
-    PageUnavailable { id: String },
-    /// A non-fatal note for the status log / a toast.
+    Home {
+        content: Box<HomeContent>,
+    },
+    /// The Home fetch failed: the skeleton stops and the empty Home shows.
+    HomeUnavailable {
+        error: String,
+    },
+    Artist {
+        page: Box<ArtistPage>,
+    },
+    Album {
+        page: Box<AlbumPage>,
+    },
+    Playlist {
+        page: Box<PlaylistPage>,
+    },
+    /// A detail page that could not be fetched; the id stops that page's skeleton.
+    PageUnavailable {
+        id: String,
+    },
     Note(String),
 }
 
-/// Handle to the background worker: a request sender + an update receiver.
 pub struct StreamWorker {
     tx: SyncSender<StreamRequest>,
     rx: Receiver<StreamUpdate>,
     startup_error: Option<String>,
-    /// Where there are no threads (a browser page): the backend and the
-    /// requests, answered one at a time as app tasks.
+    /// Where there are no threads: the backend and its requests, one at a time.
     tasks: Option<Tasks>,
 }
 
@@ -154,30 +129,20 @@ struct Tasks {
 }
 
 impl StreamWorker {
-    /// Spawn the worker thread. Constructing the backend (live network init)
-    /// happens *inside* the thread, so this call never blocks the caller.
+    /// Spawn the worker thread; the backend is built inside it, so this never blocks.
     pub fn spawn() -> Self {
         Self::spawn_inner(false)
     }
 
-    /// Spawn a worker pinned to the **bundled offline backend**, whatever this
-    /// build compiled in.
-    ///
-    /// [`spawn`](Self::spawn) asks [`preferred_backend`] for the best source
-    /// available, and since `live` is a *default* feature that is the real
-    /// YouTube-Music client on any ordinary build. A test about how the app
-    /// behaves when a page cannot be served therefore depends on the host's
-    /// network being down — it passes on a disconnected machine and fails on a
-    /// connected one, having proved nothing either way. This pins the source so
-    /// the outcome is the app's, not the network's.
+    /// A worker pinned to the bundled sample whatever the build compiled in, so a test
+    /// about an unservable page does not depend on the host's network.
     pub fn spawn_offline() -> Self {
         Self::spawn_inner(true)
     }
 
     fn spawn_inner(force_offline: bool) -> Self {
         let (req_tx, req_rx) = std::sync::mpsc::sync_channel::<StreamRequest>(REQUEST_QUEUE_LIMIT);
-        // Every update wakes the app, which drains them in its next sync:
-        // nothing pumps frames to poll the worker.
+        // Every update wakes the app, which drains them in its next sync.
         let (up_tx, up_rx) = ui::wake::waking_channel::<StreamUpdate>();
 
         if !ui::rt::available(ui::rt::Feature::Threads) {
@@ -212,8 +177,7 @@ impl StreamWorker {
         }
     }
 
-    /// Queue a request. A failed worker is explicit so callers can settle
-    /// loading UI rather than spinning forever behind an undeliverable job.
+    /// Queue a request; a failed worker says so rather than leave the UI spinning.
     pub fn request(&self, req: StreamRequest) -> Result<(), String> {
         if let Some(error) = &self.startup_error {
             return Err(error.clone());
@@ -231,7 +195,6 @@ impl StreamWorker {
                 std::sync::Arc::clone(&tasks.requests),
                 tasks.updates.clone(),
             );
-            // One queued request per task, answered in order.
             drop(ui::rt::app().spawn_blocking(move || {
                 let next = requests.lock().ok().and_then(|queue| queue.try_recv().ok());
                 if let Some(request) = next {
@@ -242,7 +205,6 @@ impl StreamWorker {
         Ok(())
     }
 
-    /// Non-blocking drain of any updates ready this frame.
     pub fn poll(&self) -> Vec<StreamUpdate> {
         self.rx.try_iter().collect()
     }
@@ -328,8 +290,6 @@ fn open_backend(
     up_tx: &ui::wake::WakingSender<StreamUpdate>,
     force_offline: bool,
 ) -> Box<dyn MusicBackend> {
-    // Build the data source once. `preferred_backend` picks live rustypipe if
-    // compiled + reachable, else the offline sample.
     let backend = if force_offline {
         let _ = up_tx.send(StreamUpdate::Note(
             "offline backend pinned; using bundled library".to_string(),
@@ -512,8 +472,6 @@ mod tests {
     fn stream_worker_is_bounded_honest_and_non_blocking() {
         {
             let w = StreamWorker::spawn_offline();
-            // Pin the hermetic backend: a unit test must never depend on the host's
-            // network or spend the live request deadline probing a synthetic id.
             w.request(StreamRequest::Resolve {
                 track_id: "tk_x".into(),
                 video_id: "synthetic".into(),
@@ -521,7 +479,6 @@ mod tests {
             })
             .expect("worker request is accepted");
 
-            // The worker replies on its own thread; wait for its terminal update.
             let mut announced = false;
             let mut failed_or_resolved = false;
             tilo_test_env::wait_until("the resolve produces a terminal update", || {

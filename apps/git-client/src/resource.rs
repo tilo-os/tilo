@@ -1,8 +1,7 @@
-//! Git client as a resource: the record is the repository it opens and
-//! what collaborators see of its history ([`GitClient`]); working-tree
-//! status, the history the window shows and an in-flight transfer are live
-//! rows the view publishes, and the diff preferences are the person's
-//! settings, switched by the view's effects.
+//! Git client as a resource: the record is the repository it opens and what
+//! collaborators see of its history ([`GitClient`]); working-tree status, the
+//! history the window shows and an in-flight transfer are live rows the view
+//! publishes.
 
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
@@ -37,13 +36,27 @@ pub struct GitClient {
 }
 
 impl GitClient {
-    /// The repository the record opens, if one was opened.
     pub fn opened(&self) -> Option<&str> {
         Some(self.repository.0.as_str()).filter(|path| !path.is_empty())
     }
 }
 
-#[resource(kind = "git_client.repo", label = "Repository")]
+impl GitClient {
+    /// What the record holds, answered through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads it as it reads any app's record, and a named item is read from the
+    /// record's table or by the read its own type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "git_client.repo",
+    read_content = GitClient::read_document
+)]
 impl GitClient {
     /// Record what the repository on disk holds now
     ///
@@ -66,8 +79,6 @@ pub struct SampleRepository {
     pub diffs: DiffMap,
 }
 
-ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
-
 /// Every `--scenario` the screenshot renderer stages.
 #[cfg(feature = "samples")]
 pub const SCENARIOS: &[&str] = &[
@@ -75,13 +86,13 @@ pub const SCENARIOS: &[&str] = &[
     "narrow",
 ];
 
-/// Framework app: the git client widget over [`GitClient`].
 pub struct GitClientShell;
 
 impl ResourceApp for GitClientShell {
     type Resource = GitClient;
     const ID: &'static str = "so.tilo.git-client";
     const TITLE: &'static str = "Git";
+    const TITLE_KEY: &'static str = "git-client-app-title";
     const ICON: Option<&'static str> = Some("git-client");
     /// The repository to open, by path.
     const ARGUMENTS: usize = 1;
@@ -95,7 +106,7 @@ impl ResourceApp for GitClientShell {
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
-        Some(&CATALOG)
+        Some(&crate::i18n::CATALOG)
     }
 
     fn commands() -> &'static [Command] {
@@ -1254,11 +1265,11 @@ mod tests {
     fn the_catalog_resolves_the_remote_messages() {
         GitClientShell::catalog().unwrap().ensure();
         for (key, value) in [
-            ("git-remote-running", ui::i18n!("git-remote-running")),
-            ("git-remote-busy", ui::i18n!("git-remote-busy")),
+            ("git-remote-running", crate::i18n::t("git-remote-running")),
+            ("git-remote-busy", crate::i18n::t("git-remote-busy")),
             (
                 "git-remote-worker-stopped",
-                ui::i18n!("git-remote-worker-stopped"),
+                crate::i18n::t("git-remote-worker-stopped"),
             ),
         ] {
             assert_ne!(key, value);

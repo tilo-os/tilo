@@ -144,13 +144,7 @@ impl CaptureAdmission {
             original_custody: None,
         })
     }
-    /// Root-service-only original-source reader admission. The trusted broker
-    /// supplies facts from its protected SAME-source record after setup/source
-    /// reattestation; serialized application `RunOptions` cannot select credentials.
-    /// Credentials remain root here and change only inside the completed namespace.
-    /// # Errors
-    /// Refuses non-root callers, writable/mismatched source, invalid credential
-    /// shape, or an untrusted runtime. This is not an offline export receipt.
+    /// Root-service-only original-source reader admission.
     pub fn verify_original_source(
         runtime: &Path,
         publisher: &str,
@@ -168,7 +162,6 @@ impl CaptureAdmission {
         Ok(admission)
     }
     /// Root-broker-only mounted roots from its protected readonly source context.
-    /// Does not alter original caller credentials or admit cross-volume roots.
     pub fn with_original_mounted_roots(
         mut self,
         inputs: Vec<OriginalMountedInput>,
@@ -182,11 +175,6 @@ impl CaptureAdmission {
         Ok(self)
     }
     /// Exact protected native root table from the retained original controller.
-    /// A metadata-only binding without that controller's independent record proof
-    /// cannot authorize a foreign descriptor. Caller credentials stay original.
-    /// # Errors
-    /// Refuses a missing protected controller, changed claim/table, writable
-    /// descriptors, substituted sources or an ordinary caller-made binding.
     pub fn with_original_mounted_roots_bound(
         mut self,
         inputs: Vec<OriginalMountedInput>,
@@ -297,9 +285,6 @@ impl CaptureAdmission {
         }
     }
     /// Grant one owner-private inventory directory on a supported local filesystem.
-    /// The broker must independently establish backing; filesystem magic alone
-    /// cannot distinguish a physical disk from a RAM-backed loop device.
-    /// This native held descriptor cannot be selected by serialized launch options.
     pub fn with_inventory_scratch(
         mut self,
         directory: File,
@@ -422,9 +407,8 @@ impl CaptureAdmission {
         self.check()?;
         Ok(self)
     }
-    /// Retain the root controller's original read context through namespace
-    /// supervision and authenticated endpoint use. This is native-only and
-    /// cannot be replaced or removed by the callback receiving this admission.
+    /// Retain the root controller's original read context through namespace supervision and
+    /// authenticated endpoint use.
     pub fn retain_original_source_custody(
         mut self,
         custody: Arc<dyn ServiceAuthority>,
@@ -444,8 +428,7 @@ impl CaptureAdmission {
     pub(super) fn original_custody(&self) -> Option<Arc<dyn ServiceAuthority>> {
         self.original_custody.clone()
     }
-    // Builder checks precede attachment. Execution has a stronger boundary:
-    // every original reader must carry its root controller's retained context.
+    // Builder checks precede attachment.
     pub(super) fn check_execution(&self) -> io::Result<()> {
         if self.inventory_scratch.is_some() && self.installation.is_none() {
             return Err(io::Error::new(
@@ -530,9 +513,7 @@ impl CaptureAdmission {
         options.sandbox_shim_bin = Some(format!("/proc/self/fd/{SHIM_FD}").into());
     }
 
-    /// This independently admitted native runtime is not an installed OS
-    /// runtime. Only this nonserializable token supplies its trust; ordinary
-    /// `RunOptions` continue to require the host's runtime publisher policy.
+    /// This independently admitted native runtime is not an installed OS runtime.
     pub(crate) fn resolve_runtime(
         &self,
         manifest: &crate::manifest::ManifestView,
@@ -693,8 +674,6 @@ pub fn run_capture(
     run_capture_connected(launch, admission, authority, cancellation, key, None)
 }
 /// Connect only to the authenticated peer of this exact capture namespace.
-/// # Errors
-/// As [`run_capture`], including refusal of substituted provider endpoints.
 pub fn run_capture_connected(
     launch: ServiceLaunch,
     admission: CaptureAdmission,
@@ -719,8 +698,8 @@ pub fn run_capture_connected(
     )
 }
 
-/// Observe canonical teardown even when cancellation/provider failure refuses
-/// the successful checkpoint. Cleanup receipt cannot authorize publication.
+/// Observe canonical teardown even when cancellation/provider failure refuses the successful
+/// checkpoint.
 pub fn run_capture_connected_observed(
     launch: ServiceLaunch,
     admission: CaptureAdmission,
@@ -778,8 +757,7 @@ pub(crate) fn splice_shim_data(argv: &mut Vec<String>) -> io::Result<()> {
                     .is_some_and(|arg| arg == crate::run::SHIM_MOUNT_PATH)
         })
         .ok_or_else(|| io::Error::other("Capture shim bind is missing"))?;
-    // bwrap consumes this held FD itself. A late /proc/self/fd source is invalid
-    // once bwrap has mounted the private PID namespace's proc filesystem.
+    // bwrap consumes this held FD itself.
     argv.splice(
         position..position.checked_add(3).ok_or(io::ErrorKind::InvalidInput)?,
         [
@@ -908,8 +886,7 @@ mod tests {
         .unwrap();
         assert_archive_custody(&admission, &runtime);
         let alien = runtime_bundle::Identity::generate();
-        // A portable native host authenticates its own runtime. It must not
-        // borrow or alter policy for ordinary installed GUI/CLI/services.
+        // A portable native host authenticates its own runtime.
         let mut env = tilo_test_env::ScopedEnv::new();
         let trust = root.path().join("host-publishers.txt");
         std::fs::write(&trust, format!("{}\n", alien.public_key_hex())).unwrap();

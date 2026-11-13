@@ -1,15 +1,10 @@
 //! Proof that the software path still works when hardware decode is off.
 //!
-//! Hardware decode is a preference, not a requirement: a machine with no GPU
-//! video engine, a driver that will not load, or a codec the hardware cannot
-//! take must all still play. `EngineConfig::software_only()` demotes every
-//! hardware decoder below the software ones, which is exactly the situation
-//! those machines are in — so exercising it here exercises them.
-//!
-//! The policy is a property of the engine's configuration rather than a
-//! process-wide environment read. Applying it still re-ranks the process-wide
-//! registry, so every test here holds `common::registry_policy_lock` while
-//! its engine autoplugs.
+//! `EngineConfig::software_only()` demotes every hardware decoder below the software
+//! ones, which is the situation a machine with no GPU video engine, a driver that will
+//! not load or an unsupported codec is in. The policy belongs to the engine's
+//! configuration, but applying it re-ranks the process-wide registry, so every test
+//! here holds `common::registry_policy_lock` while its engine autoplugs.
 
 mod common;
 
@@ -85,8 +80,6 @@ mod real {
     #[test]
     fn an_rgba_only_consumer_is_never_handed_a_gpu_buffer_it_cannot_paint() {
         let _registry = registry_policy_lock();
-        // The compatibility contract every existing consumer relies on: with
-        // the default acceptance, `latest_frame()` is always populated.
         let mut e = MediaEngine::new();
         assert_eq!(e.config().acceptance, tilo_media::FrameAcceptance::Rgba);
         e.open(fixture_source());
@@ -106,8 +99,6 @@ mod real {
     }
 }
 
-/// Without the decode feature the fallback *is* the whole engine. Assert it
-/// behaves, rather than compiling this file to nothing.
 #[cfg(not(feature = "decode"))]
 mod hermetic {
     use tilo_media::{EngineConfig, MediaEngine};

@@ -15,7 +15,9 @@ use smithay::backend::allocator::Fourcc;
 use smithay::backend::egl::EGLDevice;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::{Bind as _, ExportMem as _, ImportDma as _, Offscreen as _};
+use smithay::backend::renderer::{
+    Bind as _, ExportMem as _, ImportDma as _, ImportMemWl as _, Offscreen as _,
+};
 use smithay::backend::winit::{
     WinitEvent, WinitEventLoop, WinitGraphicsBackend, init_from_attributes,
 };
@@ -32,6 +34,7 @@ use crate::present::Shown;
 use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
 use crate::state::State;
 use crate::{Error, LoopData};
+use tilo_session_core::surface::{BackdropImage, BackdropRequest};
 
 /// The name of the window's output.
 pub const OUTPUT_NAME: &str = "NESTED-1";
@@ -77,14 +80,12 @@ impl NestedConfig {
     fn attributes(&self) -> WindowAttributes {
         let attributes = WinitWindow::default_attributes().with_title(&self.title);
         let (width, height) = (u32::from(self.size.0), u32::from(self.size.1));
-        // A logical request lets the host place the window in its own logical pixels, so the same
-        // `size` looks the same on a desktop at 1 or 2; a physical one is pixels as asked.
-        let sized = if self.logical {
+        if self.logical {
             attributes.with_inner_size(LogicalSize::new(width, height))
         } else {
             attributes.with_inner_size(PhysicalSize::new(width, height))
-        };
-        sized.with_visible(true)
+        }
+        .with_visible(true)
     }
 }
 
@@ -182,6 +183,7 @@ impl NestedBackend {
             .copied()
             .collect();
         state.enable_dmabuf(formats, node);
+        state.offer_shm_formats(window.renderer().shm_formats());
         if let Some(node) = node {
             state.enable_dmabuf_capture(node.dev_id(), render_formats);
         }
@@ -389,8 +391,8 @@ impl Backend for NestedBackend {
         &mut self,
         state: &mut State,
         region: (usize, usize),
-        request: &crate::BackdropRequest,
-    ) -> Result<Option<crate::BackdropImage>, BackendError> {
+        request: &BackdropRequest,
+    ) -> Result<Option<BackdropImage>, BackendError> {
         crate::backdrop::draw(
             self.inner.borrow_mut().window.renderer(),
             state,

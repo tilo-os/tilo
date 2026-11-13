@@ -1,6 +1,5 @@
-//! Owner-authenticated local transport gate used by the mandatory partition
-//! release harness. It is disabled unless the daemon is explicitly launched
-//! with `TILO_FS_TRANSPORT_GATE_SOCKET`.
+//! Owner-authenticated local transport gate for the partition release harness,
+//! enabled by `TILO_FS_TRANSPORT_GATE_SOCKET`.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -28,11 +27,6 @@ impl TransportGate {
     }
 }
 
-/// Start the optional owner-authenticated partition gate configured by the environment.
-///
-/// # Errors
-///
-/// Returns an error when the socket path is unsafe or cannot be bound securely.
 pub fn spawn_from_env() -> std::io::Result<(TransportGate, Option<tokio::task::JoinHandle<()>>)> {
     let gate = TransportGate::default();
     let Some(path) = std::env::var_os(TRANSPORT_GATE_SOCKET_ENV).map(PathBuf::from) else {

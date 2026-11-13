@@ -24,19 +24,13 @@ pub struct Observation {
 pub trait Output: Send {
     /// Submit at most 20 ms of stereo 48 kHz S16 PCM, with bounded backpressure.
     fn write(&mut self, samples: &[i16]) -> Result<Observation, String>;
-    /// Read actual host device progress.
     fn observation(&mut self) -> Result<Observation, String>;
-    /// Last host observation, without waiting for an RPC or decoder lock.
     fn cached_observation(&self) -> Observation;
-    /// Terminal host failure observed by the output worker, without waiting.
     fn cached_error(&self) -> Option<String>;
     /// Pause this output only.
     fn pause(&mut self, paused: bool) -> Result<(), String>;
-    /// Drop queued PCM before a seek or replacement.
     fn flush(&mut self) -> Result<(), String>;
-    /// Set this application's stream gain.
     fn volume(&mut self, percent: u8) -> Result<(), String>;
-    /// Fence this exact output generation; safe to repeat.
     fn close(&mut self);
 }
 
@@ -74,7 +68,6 @@ pub fn is_governed() -> bool {
     REQUIRED.load(Ordering::Acquire)
 }
 
-/// Install the host's admitted output route. Existing streams retain their original factory/route.
 pub fn install(factory: Arc<dyn Factory>) {
     require_governed();
     if let Ok(mut current) = FACTORY.get_or_init(|| Mutex::new(None)).lock() {

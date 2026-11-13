@@ -7,8 +7,6 @@ use std::path::Path;
 
 use super::{Request, Response, SocketAddress, WireFrame};
 
-/// Ask the broker one question, from inside a guest. A host command's output
-/// is discarded; use [`ask_streaming`] to see it.
 pub fn ask(socket: &Path, req: &Request) -> std::io::Result<Response> {
     ask_streaming(socket, req, &mut std::io::sink(), &mut std::io::sink())
 }
@@ -50,7 +48,6 @@ pub fn ask_streaming_with_progress(
                 "broker closed the connection before replying",
             ));
         }
-        // Non-command requests retain the original one-line wire format.
         if let Ok(response) = serde_json::from_str::<Response>(&line) {
             return Ok(response);
         }

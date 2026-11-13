@@ -7,7 +7,7 @@
 //! is kept.
 
 use tilo_desktop_model::{
-    DesktopTree, IdMinter, Strip, StripId, Workspace, WorkspaceSlot, shared_record,
+    DesktopTree, IdMinter, Strip, StripId, Workspace, WorkspaceId, WorkspaceSlot, shared_record,
 };
 
 /// The workspace record members' pages keep the shared desktop in.
@@ -42,7 +42,10 @@ pub(crate) fn settle_strips(
     let tree = &mut desktop.tree;
     let mut minter = Minter::new(workspace, tree);
     if tree.workspaces.is_empty() {
-        let workspace = Workspace::new(WorkspaceSlot(minter.mint()), shown);
+        // The desktop's workspace is the workspace itself, by its id, as every member's desk is.
+        let identity = WorkspaceId::parse(workspace)
+            .ok_or_else(|| format!("{workspace:?} is not a workspace id"))?;
+        let workspace = Workspace::in_workspace(WorkspaceSlot(minter.mint()), identity, shown);
         tree.active = workspace.slot;
         tree.workspaces.push(workspace);
     }
@@ -115,6 +118,9 @@ mod tests {
         list.iter().map(|name| (*name).to_owned()).collect()
     }
 
+    /// The workspace the desktop is the shared desktop of.
+    const ROOM: &str = "0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11";
+
     fn desktop(doc: &automerge::AutoCommit) -> SharedDesktop {
         shared_record::read(doc, None).unwrap()
     }
@@ -127,15 +133,16 @@ mod tests {
             .collect()
     }
 
-    /// A workspace without a desktop starts one: a workspace with the workspace's
+    /// A workspace without a desktop starts one: the workspace itself, by its id, with its
     /// name and the listed strips.
     #[test]
     fn a_room_without_a_desktop_starts_with_the_listed_strips() {
         let mut doc = automerge::AutoCommit::new();
-        assert!(settle_strips(&mut doc, "room", "Hangout", &names(&["Main", "Games"])).unwrap());
+        assert!(settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main", "Games"])).unwrap());
         assert_eq!(strips(&doc), ["Main", "Games"]);
         let tree: DesktopTree = desktop(&doc).tree;
         assert_eq!(tree.workspaces[0].name, "Hangout");
+        assert_eq!(tree.workspaces[0].id().to_string(), ROOM);
         assert_eq!(tree.active, tree.workspaces[0].slot);
     }
 
@@ -144,7 +151,7 @@ mod tests {
     #[test]
     fn settling_adds_only_what_is_missing() {
         let mut doc = automerge::AutoCommit::new();
-        settle_strips(&mut doc, "room", "Hangout", &names(&["Main"])).unwrap();
+        settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main"])).unwrap();
         let mut value = desktop(&doc);
         value.tree.workspaces[0]
             .strips
@@ -152,8 +159,8 @@ mod tests {
         value.authors.insert(77, "alice".into());
         shared_record::write(&mut doc, &value).unwrap();
 
-        assert!(!settle_strips(&mut doc, "room", "Hangout", &names(&["Main"])).unwrap());
-        assert!(settle_strips(&mut doc, "room", "Hangout", &names(&["Main", "Quiet"])).unwrap());
+        assert!(!settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main"])).unwrap());
+        assert!(settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main", "Quiet"])).unwrap());
         assert_eq!(strips(&doc), ["Main", "Someone's", "Quiet"]);
         let value = desktop(&doc);
         assert_eq!(value.authors.get(&77).map(String::as_str), Some("alice"));
@@ -169,7 +176,7 @@ mod tests {
     #[test]
     fn no_strips_writes_nothing() {
         let mut doc = automerge::AutoCommit::new();
-        assert!(!settle_strips(&mut doc, "room", "Hangout", &[]).unwrap());
+        assert!(!settle_strips(&mut doc, ROOM, "Hangout", &[]).unwrap());
         assert!(shared_record::read(&doc, None).is_none());
     }
 

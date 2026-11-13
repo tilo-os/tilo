@@ -41,7 +41,7 @@ fn drive() {
     use tilo_compositor::OutputConfig;
     use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE};
     use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
-    use tilo_session::{Lists, Options, SearchOptions, Session};
+    use tilo_session::{Lists, Options, Session};
 
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     // Who sits here, as the binary reads it before it builds anything.
@@ -67,12 +67,9 @@ fn drive() {
     let mut session = Session::headless(
         Options {
             desktop: Some(Rc::clone(&desktop)),
-            // What the binary reads of this device for search: the installed apps, the machine's
-            // own and the catalogue, followed by a worker.
-            search: SearchOptions {
-                apps: Some(std::sync::Arc::new(Lists::of_device())),
-                ..SearchOptions::default()
-            },
+            // What the binary reads of this device: the installed apps, the machine's own and the
+            // catalogue, followed by a worker.
+            lists: Lists::of_device(),
             wake,
             ..Options::default()
         },

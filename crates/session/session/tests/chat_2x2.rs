@@ -18,26 +18,21 @@
               until their sessions end"
 )]
 
-mod common;
-
-// A site admits its members' records through an Automerge worker: this binary is that worker, as
-// the session's own is.
-tilo_automerge_isolate::test_worker!();
-
-use common::people::{Device, Person, Site};
+use crate::common::people::{Device, Person, Site};
 use tilo_relay_protocol::workspaces::WorkspaceRole;
 
 /// A studio and the two people in it, each on a laptop and a phone: Ada's site hosts the workspace
 /// and lets Chat author its records, Ada and Bob join as editors, and Chat is installed and open on
 /// all four.
+/// Dropped in this order: the devices stop while the site still hosts them.
 struct Studio {
-    site: Site,
-    ada: Person,
-    bob: Person,
     ada_laptop: Device,
     ada_phone: Device,
     bob_laptop: Device,
     bob_phone: Device,
+    ada: Person,
+    bob: Person,
+    site: Site,
 }
 
 impl Studio {
@@ -88,58 +83,26 @@ impl Studio {
             device.chat().wait_for_contact(&bob_key);
         }
         Self {
-            site,
-            ada,
-            bob,
             ada_laptop,
             ada_phone,
             bob_laptop,
             bob_phone,
+            ada,
+            bob,
+            site,
         }
     }
 
-    fn ada_key(&self) -> String {
-        hex::encode(self.ada.public)
-    }
-
-    fn bob_key(&self) -> String {
-        hex::encode(self.bob.public)
-    }
-
-    /// Run one step that reads several devices, and say what every device did when they disagree.
-    fn together<T>(&self, step: impl FnOnce() -> T) -> T {
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(step)) {
-            Ok(value) => value,
-            Err(payload) => {
-                let said = payload
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| {
-                        payload
-                            .downcast_ref::<&str>()
-                            .map(|text| (*text).to_owned())
-                    })
-                    .unwrap_or_default();
-                let logs = [
-                    &self.ada_laptop,
-                    &self.ada_phone,
-                    &self.bob_laptop,
-                    &self.bob_phone,
-                ]
-                .into_iter()
-                .map(Device::every_log)
-                .collect::<Vec<_>>()
-                .join("\n");
-                panic!("{said}\nevery device's log:\n{logs}");
-            }
-        }
+    /// The two people's root keys, which the workspace names them by.
+    fn keys(&self) -> (String, String) {
+        (hex::encode(self.ada.public), hex::encode(self.bob.public))
     }
 }
 
 #[test]
 fn a_message_reaches_both_people_on_both_of_their_devices_live() {
     let studio = Studio::start();
-    let (ada_key, bob_key) = (studio.ada_key(), studio.bob_key());
+    let (ada_key, bob_key) = studio.keys();
     // Bob's laptop has the conversation open while Ada writes: what he sees is the message arriving
     // in the conversation, not a page reloaded.
     studio.bob_laptop.chat().open(&ada_key);
@@ -176,7 +139,7 @@ fn a_message_reaches_both_people_on_both_of_their_devices_live() {
 #[test]
 fn two_desktops_message_each_other() {
     let studio = Studio::start();
-    let (ada_key, bob_key) = (studio.ada_key(), studio.bob_key());
+    let (ada_key, bob_key) = studio.keys();
     studio.ada_laptop.chat().open(&bob_key);
     studio.bob_laptop.chat().open(&ada_key);
     studio.ada_laptop.chat().send(&bob_key, "hello Bob");
@@ -210,7 +173,7 @@ fn message_ids(device: &Device, peer: &str) -> Vec<String> {
 #[test]
 fn messages_the_host_kept_reach_a_device_that_was_away() {
     let mut studio = Studio::start();
-    let (ada_key, bob_key) = (studio.ada_key(), studio.bob_key());
+    let (ada_key, bob_key) = studio.keys();
     // Bob's devices are off while Ada writes: nothing of hers reaches them yet, and the site keeps
     // what she wrote.
     studio.bob_laptop.stop();
@@ -222,6 +185,7 @@ fn messages_the_host_kept_reach_a_device_that_was_away() {
     // and his phone the same when it comes back.
     studio.bob_laptop.start();
     studio.bob_laptop.wait_holding(&studio.site.workspace);
+    studio.bob_laptop.wait_showing(&studio.site.workspace);
     studio.bob_laptop.open("so.tilo.chat");
     studio.bob_laptop.wait_for_window("so.tilo.chat");
     studio
@@ -230,6 +194,7 @@ fn messages_the_host_kept_reach_a_device_that_was_away() {
         .wait_for_texts(&ada_key, &["one", "two", "three"]);
     studio.bob_phone.start();
     studio.bob_phone.wait_holding(&studio.site.workspace);
+    studio.bob_phone.wait_showing(&studio.site.workspace);
     studio.bob_phone.open("so.tilo.chat");
     studio.bob_phone.wait_for_window("so.tilo.chat");
     studio
@@ -238,30 +203,37 @@ fn messages_the_host_kept_reach_a_device_that_was_away() {
         .wait_for_texts(&ada_key, &["one", "two", "three"]);
     // Bob answers, and Ada's laptop—which stayed on—shows it with her own three.
     studio.bob_phone.chat().send(&ada_key, "answered");
-    studio.together(|| {
-        studio
-            .ada_laptop
-            .chat()
-            .wait_for_texts(&bob_key, &["one", "two", "three", "answered"]);
-    });
+    studio
+        .ada_laptop
+        .chat()
+        .wait_for_texts(&bob_key, &["one", "two", "three", "answered"]);
     // Ada's phone was away too: it reads the whole conversation at once, under the same ids.
-    studio.together(|| {
-        studio
-            .ada_phone
-            .chat()
-            .wait_for_texts(&bob_key, &["one", "two", "three", "answered"]);
-    });
-    assert_eq!(
-        message_ids(&studio.ada_phone, &bob_key),
-        message_ids(&studio.ada_laptop, &bob_key),
-        "both of Ada's devices read the conversation as one"
-    );
+    studio
+        .ada_phone
+        .chat()
+        .wait_for_texts(&bob_key, &["one", "two", "three", "answered"]);
+    // Every device reads that conversation off the copy of its record it keeps itself: the
+    // workspace's host gone, all of them still show it, under the same ids.
+    studio.site.stop();
+    let ids = message_ids(&studio.ada_laptop, &bob_key);
+    for (device, peer) in [
+        (&studio.ada_phone, &bob_key),
+        (&studio.bob_laptop, &ada_key),
+        (&studio.bob_phone, &ada_key),
+    ] {
+        assert_eq!(
+            message_ids(device, peer),
+            ids,
+            "{} reads its own copy of the conversation",
+            device.label
+        );
+    }
 }
 
 #[test]
 fn both_people_writing_offline_converge_without_duplicates() {
     let mut studio = Studio::start();
-    let (ada_key, bob_key) = (studio.ada_key(), studio.bob_key());
+    let (ada_key, bob_key) = studio.keys();
     studio.ada_laptop.chat().send(&bob_key, "Ada one");
     studio
         .bob_laptop
@@ -277,6 +249,7 @@ fn both_people_writing_offline_converge_without_duplicates() {
     for device in [&mut studio.ada_phone, &mut studio.bob_phone] {
         device.start();
         device.wait_holding(&studio.site.workspace);
+        device.wait_showing(&studio.site.workspace);
         device.open("so.tilo.chat");
         device.wait_for_window("so.tilo.chat");
     }
@@ -284,24 +257,14 @@ fn both_people_writing_offline_converge_without_duplicates() {
     // their own until the records give them one: each device waits for all of them, whichever order
     // it reads them in.
     let wanted = ["Ada one", "Ada two", "Bob one", "Bob two"];
-    studio.together(|| {
-        studio
-            .ada_phone
-            .chat()
-            .wait_for_texts_in_any_order(&bob_key, &wanted);
-        studio
-            .bob_phone
-            .chat()
-            .wait_for_texts_in_any_order(&ada_key, &wanted);
-        for (device, peer) in [
-            (&studio.ada_laptop, &bob_key),
-            (&studio.ada_phone, &bob_key),
-            (&studio.bob_laptop, &ada_key),
-            (&studio.bob_phone, &ada_key),
-        ] {
-            device.chat().wait_for_texts_in_any_order(peer, &wanted);
-        }
-    });
+    for (device, peer) in [
+        (&studio.ada_laptop, &bob_key),
+        (&studio.ada_phone, &bob_key),
+        (&studio.bob_laptop, &ada_key),
+        (&studio.bob_phone, &ada_key),
+    ] {
+        device.chat().wait_for_texts_in_any_order(peer, &wanted);
+    }
     // Each message once, under one id, on every device, in one order: the same one every device
     // reads.
     let ids = message_ids(&studio.ada_laptop, &bob_key);
@@ -325,7 +288,7 @@ fn both_people_writing_offline_converge_without_duplicates() {
 #[test]
 fn one_read_mark_advances_once_and_both_of_a_persons_devices_agree() {
     let studio = Studio::start();
-    let (ada_key, bob_key) = (studio.ada_key(), studio.bob_key());
+    let (ada_key, bob_key) = studio.keys();
     for text in ["one", "two", "three"] {
         studio.ada_laptop.chat().send(&bob_key, text);
     }
@@ -336,9 +299,7 @@ fn one_read_mark_advances_once_and_both_of_a_persons_devices_agree() {
     // Reading them on his laptop marks them read for his phone too.
     studio.bob_laptop.chat().open(&ada_key);
     studio.bob_laptop.chat().wait_for_unread(&ada_key, 0);
-    studio.together(|| {
-        studio.bob_phone.chat().wait_for_unread(&ada_key, 0);
-    });
+    studio.bob_phone.chat().wait_for_unread(&ada_key, 0);
     // Read is not gone: both of his devices still show what Ada wrote.
     for device in [&studio.bob_laptop, &studio.bob_phone] {
         device
@@ -347,14 +308,15 @@ fn one_read_mark_advances_once_and_both_of_a_persons_devices_agree() {
     }
     // Ada's own messages are hers: nothing of Bob's is unread for her, and nothing of hers is
     // unread for herself.
-    assert_eq!(studio.ada_laptop.chat().unread(&bob_key), 0);
-    assert_eq!(studio.ada_phone.chat().unread(&bob_key), 0);
+    for device in [&studio.ada_laptop, &studio.ada_phone] {
+        assert_eq!(device.chat().unread(&bob_key), 0);
+    }
 }
 
 #[test]
 fn another_pair_is_another_conversation() {
     let studio = Studio::start();
-    let (ada_key, bob_key) = (studio.ada_key(), studio.bob_key());
+    let (ada_key, bob_key) = studio.keys();
     studio.ada_laptop.chat().send(&bob_key, "just us");
     studio
         .bob_laptop

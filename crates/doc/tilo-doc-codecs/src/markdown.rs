@@ -1,15 +1,12 @@
-//! Built-in Markdown codec: maps the modeled rich-text subset (headings, paragraphs,
-//! lists, marks, tables, footnotes, code blocks) onto the canonical document. Export
-//! normalizes whitespace; unmodeled constructs are not preserved losslessly.
+//! The built-in Markdown codec: the modeled rich-text subset (headings, paragraphs, lists, marks,
+//! tables, footnotes, code blocks) mapped onto the canonical document, and back.
 //!
-//! Construct → model mapping: `[text](url)` → `link` mark; pipe tables → `cell`
-//! blocks tagged `table`/`row`/`col` (header = row 0); indented items → `list_item`
-//! `level` attr; `- [ ]`/`- [x]` → `checked` attr; `` `code` `` → `fontFamily`=mono;
-//! fences → `code`=true block (+ optional `lang`).
+//! Export normalizes whitespace, and unmodeled constructs are not preserved losslessly.
 
 use crate::format::{CodecError, FormatProvider};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use tilo_content::{ContentInputs, ContentSource};
 use tilo_doc::document::{MarkSpan, MarkValue};
 use tilo_doc::export::{CellGrid, ExportBlock, InlinePlan};
@@ -18,9 +15,6 @@ use tilo_doc::schema::{
     MARK_NOTE_REF, PROP_AUTHOR, PROP_KEYWORDS, PROP_MODIFIED, PROP_SUBJECT, PROP_TITLE,
 };
 use tilo_doc::snapshot::{BlockView, NoteView};
-// `write!` into a `String` cannot fail; the discarded `Result` is the
-// `fmt::Write` contract, not a swallowed error.
-use std::fmt::Write as _;
 
 pub struct MarkdownCodec;
 
@@ -31,7 +25,6 @@ impl FormatProvider for MarkdownCodec {
         doc: &mut DocMut,
         _inputs: &mut ContentInputs,
     ) -> Result<(), CodecError> {
-        // Markdown embeds no binary content; images are links.
         doc.bulk(|doc| {
             let src = std::str::from_utf8(bytes).map_err(|e| CodecError::Parse(e.to_string()))?;
             let body = apply_front_matter(src, doc);
@@ -50,8 +43,6 @@ impl FormatProvider for MarkdownCodec {
     }
 }
 
-/// Front-matter keys we round-trip, paired with the model property name each maps
-/// onto (`date`→`modified`, matching `.odt`/`.docx`'s `dc:date`/`dcterms:modified`; `lang`/`language`→`lang`).
 const FRONT_MATTER_MAP: [(&str, &str); 6] = [
     ("title", PROP_TITLE),
     ("author", PROP_AUTHOR),
@@ -61,7 +52,6 @@ const FRONT_MATTER_MAP: [(&str, &str); 6] = [
     ("lang", "lang"),
 ];
 
-/// Resolves a front-matter key (case-insensitive, with aliases) to its model property name, or `None` if unmodeled.
 fn front_matter_prop(key: &str) -> Option<&'static str> {
     let k = key.trim().to_ascii_lowercase();
     let k = match k.as_str() {
@@ -97,8 +87,6 @@ fn apply_front_matter<'a>(src: &'a str, doc: &mut DocMut) -> &'a str {
     let Some(body_start) = body_start else {
         return src;
     };
-    // `idx`/`body_start` are sums of `line.len()` from `split_inclusive('\n')`, always valid
-    // UTF-8 boundaries into `rest`; `.get()` still guards against a future change breaking that.
     let (Some(yaml), Some(body)) = (rest.get(..idx), rest.get(body_start..)) else {
         return src;
     };
@@ -122,7 +110,6 @@ fn apply_front_matter<'a>(src: &'a str, doc: &mut DocMut) -> &'a str {
     body
 }
 
-/// Strips a layer of matching quotes from a scalar value, unescaping `\"` (inverse of [`render_front_matter`]).
 fn strip_scalar_quotes(v: &str) -> String {
     if let Some(inner) = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
         return inner.replace("\\\"", "\"");
@@ -133,8 +120,6 @@ fn strip_scalar_quotes(v: &str) -> String {
     v.to_string()
 }
 
-/// Emits a `---` front-matter block from the document's well-known properties (empty
-/// if none set); inverse of [`apply_front_matter`]. Values containing `:` are quoted.
 fn render_front_matter(props: &std::collections::BTreeMap<String, String>) -> String {
     let mut lines: Vec<String> = Vec::new();
     for (fm_key, prop) in FRONT_MATTER_MAP {
@@ -156,7 +141,6 @@ fn render_front_matter(props: &std::collections::BTreeMap<String, String>) -> St
     format!("---\n{}\n---\n\n", lines.join("\n"))
 }
 
-/// Opens a fresh top-level block anchored after the previous one, and makes it current.
 fn start_block(
     doc: &mut DocMut,
     prev: &mut Option<String>,
@@ -171,7 +155,6 @@ fn start_block(
     id
 }
 
-/// A formatting mark gathered during parsing, applied after the parse so trailing text doesn't expand it (`value` is `None` for boolean toggles).
 struct PendingMark {
     block: String,
     start: usize,
@@ -222,7 +205,6 @@ fn marks_from_span_style(style: &str) -> Vec<(&'static str, String)> {
     out
 }
 
-/// Normalises a CSS colour to canonical `#rrggbb` (lower-case hex, common keywords, else trimmed passthrough).
 fn normalize_css_color(v: &str) -> String {
     let t = v.trim();
     if let Some(hex) = t.strip_prefix('#')
@@ -272,24 +254,49 @@ struct ImportState {
     mark_stack: Vec<(&'static str, usize)>,
     link_stack: Vec<(String, usize)>,
     span_stack: Vec<(Vec<(&'static str, String)>, usize)>,
-    // Open inline `<sup>`/`<sub>` wrappers — the super/subscript marks Markdown has no native syntax for.
     wrap_stack: Vec<(&'static str, usize)>,
     pending_marks: Vec<PendingMark>,
     table_id: Option<String>,
     trow: usize,
     tcol: usize,
     table_seq: usize,
-    // Footnote state: a `[^id]` reference lazily creates a note; defs may precede/follow
-    // refs, so notes are keyed by label and wired up after the parse.
     note_ids: BTreeMap<String, String>,
     ref_sites: Vec<(String, usize, String)>,
     footnote_bodies: BTreeMap<String, Vec<String>>,
     def_label: Option<String>,
     def_para: Option<String>,
+    image: Option<ImageIn>,
+    in_quote: bool,
+    quote_block: Option<String>,
+}
+
+const CALLOUTS: [&str; 5] = ["note", "tip", "important", "warning", "caution"];
+
+const CALLOUT_ATTR: &str = "alert";
+
+fn alert_of(text: &str) -> Option<(&'static str, &str)> {
+    let rest = text.strip_prefix("[!")?;
+    let (name, said) = rest.split_once(']')?;
+    let kind = CALLOUTS
+        .into_iter()
+        .find(|callout| callout.eq_ignore_ascii_case(name.trim()))?;
+    Some((kind, said))
+}
+
+struct ImageIn {
+    source: String,
+    start: usize,
+    alt: String,
+}
+
+impl ImageIn {
+    /// The Markdown the image is written as, as the image was read.
+    fn markdown(&self) -> String {
+        format!("![{}]({})", self.alt, self.source)
+    }
 }
 
 impl ImportState {
-    /// Id for the note a footnote label refers to, creating (and registering) it on first mention.
     fn note_id_for(&mut self, doc: &mut DocMut, label: &str) -> String {
         self.note_ids
             .entry(label.to_string())
@@ -328,13 +335,11 @@ impl ImportState {
                     p.push(' ');
                 }
             }
-            // Nested footnote refs inside a definition aren't modeled; everything else here is ignored.
             _ => {}
         }
         true
     }
 
-    /// Block-structure events: headings, paragraphs, lists, tables, code blocks.
     fn handle_block_event(&mut self, doc: &mut DocMut, ev: &Event) {
         match ev {
             Event::Start(Tag::Heading { level, .. }) => {
@@ -348,21 +353,41 @@ impl ImportState {
                 doc.set_attr(&id, "level", *level as i64);
             }
             Event::End(TagEnd::Heading(_) | TagEnd::CodeBlock) => self.cur = None,
+            // A quote: its paragraphs are the quote's, which a view draws set apart — and a
+            // GitHub alert is a quote whose text opens with its marker, `[!WARNING]`, which the
+            // document stores as the quote's `alert` attribute and never as words.
+            Event::Start(Tag::BlockQuote(_)) => self.in_quote = true,
+            Event::End(TagEnd::BlockQuote(_)) => {
+                self.cur = None;
+                self.in_quote = false;
+            }
+            Event::Rule => {
+                start_block(
+                    doc,
+                    &mut self.prev,
+                    &mut self.cur,
+                    &mut self.cur_len,
+                    "divider",
+                );
+                self.cur = None;
+            }
             Event::Start(Tag::Paragraph) => {
                 if !self.in_item && !self.in_cell {
-                    start_block(
+                    let id = start_block(
                         doc,
                         &mut self.prev,
                         &mut self.cur,
                         &mut self.cur_len,
-                        "paragraph",
+                        if self.in_quote { "quote" } else { "paragraph" },
                     );
+                    self.quote_block = self.in_quote.then_some(id);
                 }
             }
             Event::End(TagEnd::Paragraph) => {
                 if !self.in_item && !self.in_cell {
                     self.cur = None;
                 }
+                self.quote_block = None;
             }
             Event::Start(Tag::List(start)) => self.ordered_stack.push(start.is_some()),
             Event::End(TagEnd::List(_)) => {
@@ -370,7 +395,6 @@ impl ImportState {
             }
             Event::Start(Tag::Item) => {
                 let ordered = *self.ordered_stack.last().unwrap_or(&false);
-                // Nesting depth = list stack depth - 1 (top-level lists are level 0).
                 let level = self.ordered_stack.len().saturating_sub(1);
                 let id = start_block(
                     doc,
@@ -400,8 +424,6 @@ impl ImportState {
         }
     }
 
-    /// Table and fenced-code-block events (part of [`Self::handle_block_event`],
-    /// split out to keep each half under the line-count lint).
     fn handle_table_or_code_event(&mut self, doc: &mut DocMut, ev: &Event) {
         match ev {
             Event::Start(Tag::Table(_)) => {
@@ -474,15 +496,12 @@ impl ImportState {
                     });
                 }
             }
-            // A footnote definition: switches into definition-capture mode; wires its body to the note after the parse.
             Event::Start(Tag::FootnoteDefinition(label)) => {
                 let label = label.to_string();
-                // Ensure the note exists even without a reference, mirroring CommonMark's lenience.
                 let _ = self.note_id_for(doc, &label);
                 self.def_label = Some(label);
                 self.def_para = None;
             }
-            // A footnote reference: places a `note-ref` marker at the current position, deferred so trailing text doesn't expand it.
             Event::FootnoteReference(label) => {
                 if let Some(b) = self.cur.clone() {
                     let note_id = self.note_id_for(doc, label);
@@ -496,7 +515,6 @@ impl ImportState {
                     self.cur_len = self.cur_len.saturating_add(1);
                 }
             }
-            // A hyperlink: models the href as a `link` mark over the linked range (mirrors .odt, so links round-trip and merge).
             Event::Start(Tag::Link { dest_url, .. }) => {
                 self.link_stack.push((dest_url.to_string(), self.cur_len));
             }
@@ -511,10 +529,28 @@ impl ImportState {
                     });
                 }
             }
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                self.image = Some(ImageIn {
+                    source: dest_url.to_string(),
+                    start: self.cur_len,
+                    alt: String::new(),
+                });
+            }
+            Event::End(TagEnd::Image) => {
+                if let (Some(image), Some(b)) = (self.image.take(), self.cur.as_ref()) {
+                    let written = image.markdown();
+                    doc.splice_text(b, image.start, 0, &written);
+                    self.cur_len = image.start.saturating_add(written.chars().count());
+                }
+            }
             Event::Text(t) => {
-                if let Some(b) = self.cur.as_ref() {
-                    doc.splice_text(b, self.cur_len, 0, t);
+                if let Some(image) = self.image.as_mut() {
+                    image.alt.push_str(t);
+                } else if let Some(b) = self.cur.clone() {
+                    let start = self.cur_len;
+                    doc.splice_text(&b, self.cur_len, 0, t);
                     self.cur_len = self.cur_len.saturating_add(t.chars().count());
+                    self.take_alert(doc, &b, start, t);
                 }
             }
             Event::Code(t) => {
@@ -532,15 +568,31 @@ impl ImportState {
                 }
             }
             Event::SoftBreak | Event::HardBreak => {
-                if let Some(b) = self.cur.as_ref() {
+                if let Some(image) = self.image.as_mut() {
+                    image.alt.push(' ');
+                } else if let Some(b) = self.cur.as_ref() {
                     doc.splice_text(b, self.cur_len, 0, " ");
                     self.cur_len = self.cur_len.saturating_add(1);
                 }
             }
-            // Inline HTML carries colour/size/font marks via `<span style=…>` (emitted by `render_inline`); each tag is its own event, tracked on a stack.
             Event::InlineHtml(html) | Event::Html(html) => self.handle_inline_html(html),
             _ => {}
         }
+    }
+
+    /// A quote that opens with an alert's marker is that alert: the marker is not part of what
+    /// it says, and the block keeps which alert it is.
+    fn take_alert(&mut self, doc: &mut DocMut, block: &str, start: usize, text: &str) {
+        if start > 0 || self.quote_block.as_deref() != Some(block) {
+            return;
+        }
+        let Some((kind, said)) = alert_of(text) else {
+            return;
+        };
+        let marker = text.chars().count().saturating_sub(said.chars().count());
+        doc.splice_text(block, 0, isize::try_from(marker).unwrap_or(isize::MAX), "");
+        doc.set_attr(block, CALLOUT_ATTR, kind);
+        self.cur_len = self.cur_len.saturating_sub(marker);
     }
 
     fn handle_inline_html(&mut self, html: &str) {
@@ -589,7 +641,6 @@ impl ImportState {
     fn finish(self, doc: &mut DocMut) {
         for pm in self.pending_marks {
             match pm.value {
-                // `fontSize` is an integer mark (points); other valued marks are strings.
                 Some(v) if pm.name == "fontSize" => {
                     if let Ok(n) = v.parse::<i64>() {
                         doc.add_mark(&pm.block, pm.start, pm.end, pm.name, n);
@@ -600,13 +651,11 @@ impl ImportState {
             }
         }
 
-        // Cover each footnote-reference placeholder with a `note-ref` mark valued with its note id (indices already settled).
         for (block, idx, note_id) in self.ref_sites {
             let end = idx.saturating_add(1);
             doc.add_mark(&block, idx, end, MARK_NOTE_REF, note_id.as_str());
         }
 
-        // Fill each note's body from its definition's paragraphs; defs with no matching id are dropped.
         for (label, paras) in self.footnote_bodies {
             let Some(note_id) = self.note_ids.get(&label) else {
                 continue;
@@ -653,7 +702,6 @@ pub fn export_views(
     blocks: &[BlockView],
     notes: &[NoteView],
 ) -> Vec<u8> {
-    // Kept inline elements without visible text (drawings, formulas) have no Markdown.
     let blocks = tilo_doc::export::without_kept_placeholders_in(blocks);
     export_md(properties, &blocks, notes).into_bytes()
 }
@@ -695,6 +743,8 @@ fn export_md(
                     Some(&mut footnotes),
                 ));
             }
+            "quote" | "blockquote" => out.push_str(&render_quote(b, &mut footnotes)),
+            "divider" => out.push_str("---"),
             "list_item" => {
                 let item = ExportBlock::new(b);
                 out.push_str(&"  ".repeat(usize::try_from(item.list_level()).unwrap_or(0)));
@@ -710,8 +760,6 @@ fn export_md(
             }
             _ => {
                 if b.flag("code") {
-                    // Fenced code block: emit content verbatim (no inline escaping),
-                    // fenced longer than any fence the code itself shows.
                     let lang = b.str_attr("lang").unwrap_or("");
                     let fence = "`".repeat(fence_length(&b.text));
                     out.push_str(&fence);
@@ -735,7 +783,6 @@ fn export_md(
         i = i.saturating_add(1);
     }
     out.push('\n');
-    // Append `[^N]: …` footnote definitions for every referenced note, after a blank-line separator when there's body content.
     let defs = footnotes.render_definitions();
     if !defs.is_empty() {
         // Separate defs from body with a blank line; if body was empty (only front-matter), defs become the whole doc.
@@ -765,7 +812,32 @@ fn fence_length(code: &str) -> usize {
         .map_or(3, |longest| longest.saturating_add(1).max(3))
 }
 
-/// Escapes a cell so it survives one table row; re-import unescapes `\|` back to `|`.
+/// A quote as Markdown: each of its lines set apart (`> …`), and an alert of one opening with
+/// its marker, which reads back as the same alert.
+fn render_quote(block: &BlockView, footnotes: &mut Footnotes<'_>) -> String {
+    let mut out = String::new();
+    let alert = block
+        .str_attr(CALLOUT_ATTR)
+        .and_then(|name| {
+            CALLOUTS
+                .into_iter()
+                .find(|callout| callout.eq_ignore_ascii_case(name.trim()))
+        })
+        .map(str::to_ascii_uppercase);
+    if let Some(alert) = alert {
+        let _ = writeln!(out, "> [!{alert}]");
+    }
+    let said = render_inline_notes(&block.text, &block.marks, Some(footnotes));
+    for (index, line) in said.split('\n').enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        out.push_str("> ");
+        out.push_str(line);
+    }
+    out
+}
+
 fn escape_cell(s: &str) -> String {
     s.replace('|', "\\|").replace('\n', " ")
 }
@@ -794,14 +866,12 @@ fn render_table(grid: &CellGrid<'_>) -> String {
             out.push('\n');
         }
     }
-    // Drop the trailing newline; block separators handle inter-block spacing.
     if out.ends_with('\n') {
         out.pop();
     }
     out
 }
 
-/// Markdown delimiter for a toggle-style mark; `link` wraps rather than toggles, `fontFamily`=mono is the inline-code stand-in.
 fn mark_delim(m: &MarkSpan) -> Option<&'static str> {
     match m.name.as_str() {
         "strong" => Some("**"),
@@ -818,11 +888,9 @@ fn mark_delim(m: &MarkSpan) -> Option<&'static str> {
 fn span_decl(m: &MarkSpan) -> Option<String> {
     match m.name.as_str() {
         "color" => m.value.as_str().map(|c| format!("color: {c}")),
-        // Highlight has no `<mark>` colour control, so use a `background` declaration (parsed back via `marks_from_span_style`).
         "highlight" => m.value.as_str().map(|c| format!("background: {c}")),
         "fontSize" => m.value.as_int().map(|n| format!("font-size: {n}pt")),
         "fontFamily" => match m.value.as_str() {
-            // mono stays the backtick form; sans/serif map to a generic CSS family.
             Some("serif") => Some("font-family: serif".into()),
             Some("sans") => Some("font-family: sans-serif".into()),
             _ => None,
@@ -843,8 +911,6 @@ fn span_style(marks: &[&MarkSpan]) -> Option<String> {
     Some(decls.join("; "))
 }
 
-/// Vertical wrapper (`sup`/`sub`) for a run; `super` wins on overlap (which
-/// should not occur in modeled data).
 fn vert_wrap(marks: &[&MarkSpan]) -> Option<&'static str> {
     let mut sup = false;
     let mut sub = false;
@@ -916,7 +982,6 @@ impl<'a> Footnotes<'a> {
     }
 }
 
-/// Re-emits inline marks as Markdown, without footnote handling (used for table cells).
 fn render_inline(text: &str, marks: &[MarkSpan]) -> String {
     render_inline_notes(text, marks, None)
 }
@@ -960,7 +1025,6 @@ fn render_inline_notes(
         let wrap = point.run.as_ref().and_then(|run| vert_wrap(&run.marks));
         let link = point.run.as_ref().and_then(|run| run.link);
         let link_changing = link != cur_link;
-        // Close the vertical wrapper first (innermost) when it, the span, or the link changes.
         if (link_changing || span != cur_span || wrap != cur_wrap)
             && let Some(w) = cur_wrap.take()
         {
@@ -1041,8 +1105,6 @@ mod tests {
                     .export(document.as_ref(), &tilo_content::NoContent)
                     .unwrap();
                 let snapshot = document.materialize();
-                // Export stays usable after the CRDT is gone: these are the complete,
-                // already materialized inputs, not a handle that can re-read it.
                 drop(document);
                 let actual = export_views(&snapshot.properties, &snapshot.blocks, &snapshot.notes);
                 assert_eq!(actual, expected, "source: {source:?}");
@@ -1121,7 +1183,6 @@ mod tests {
             .unwrap();
             assert!(out.starts_with("## Sub"), "got {out:?}");
         }
-        // Phase `ordered_list_marker`.
         {
             let mut d = Document::new();
             MarkdownCodec
@@ -1270,8 +1331,6 @@ mod tests {
         .unwrap()
     }
 
-    /// Code that shows a fence (Markdown about Markdown) exports inside a
-    /// longer fence, so it reads back as the one code block it was.
     #[test]
     fn a_code_block_showing_a_fence_exports_as_one_block() {
         let src = "````md\n```rust\nlet a = 1;\n```\n````\n\nafter\n";
@@ -1288,8 +1347,6 @@ mod tests {
         assert_eq!(shape(&import(&out)), shape(&imported), "exported {out:?}");
         assert_eq!(export(&out), out);
         assert!(export("```sh\nls\n```\n").contains("```sh\nls\n```"));
-        // A fence the code shows indented, as under a list item, closes a
-        // three-backtick fence too.
         let src = "````md\n- step\n  ```sh\n  ls\n  ```\nmore\n````\n\nafter\n";
         let imported = import(src);
         assert!(imported.blocks[0].text.contains("  ```\nmore"), "{src:?}");
@@ -1339,7 +1396,6 @@ mod tests {
             assert_eq!(export(&out), out, "inline-code export idempotent");
         }
         {
-            // Markdown has no native colour/size/font syntax; these ride as an inline `<span style=…>` on export/import.
             let mut d = Document::new();
             let id = d.insert_block(None, "paragraph");
             d.splice_text(&id, 0, 0, "styled word");
@@ -1401,7 +1457,6 @@ mod tests {
             assert_eq!(export(&out), out, "span export idempotent");
         }
         {
-            // Markdown has no native highlight/super/subscript syntax; highlight rides as `<span style="background:…">`, super/sub as `<sup>`/`<sub>`.
             let mut d = Document::new();
             let id = d.insert_block(None, "paragraph");
             d.splice_text(&id, 0, 0, "x ab cd");
@@ -1560,13 +1615,11 @@ mod tests {
             assert_eq!(export(&out1), out1, "front-matter+body export idempotent");
         }
         {
-            // No properties → no front-matter block; a leading `---` in a property-less doc is just a thematic break.
             let src = "Just a paragraph.\n";
             let out = export(src);
             assert!(!out.starts_with("---"), "no spurious front-matter: {out:?}");
             assert_eq!(out, "Just a paragraph.\n");
 
-            // An unterminated `---` opening is treated as body (no properties set).
             let snap = import("---\ntitle: x\n\nno close fence\n");
             assert!(
                 snap.properties.is_empty(),
@@ -1720,7 +1773,6 @@ mod tests {
                 .expect("note-ref mark");
             assert_eq!(nref.value, MarkValue::Str(snap.notes[0].id.clone()));
             assert_eq!(nref.start, 8, "ref position preserved");
-            // `nid` is local to `d`; the re-imported note gets a fresh id — what matters is the ref/body survive.
             let _ = nid;
         }
         {

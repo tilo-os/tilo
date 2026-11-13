@@ -3,15 +3,29 @@
 
 use ui::framework::testing::HostedApp;
 
-use crate::change_marks::walk;
-
 /// What each moment of the window says, as `ui.Time` shows it (`2 min ago`), top to bottom.
 pub(crate) fn times(app: &mut HostedApp) -> Vec<String> {
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
+    let all = snapshot.root.nodes();
+    // The history's own steps, newest first: the page's facts stand over its heading and say
+    // when the note was made, and are no step of it.
+    let heading = all
+        .iter()
+        // The section's own heading, not the bar's button of the same name.
+        .filter(|node| {
+            node.widget == "Text"
+                && node
+                    .semantics
+                    .as_ref()
+                    .is_some_and(|semantics| semantics.name.as_deref() == Some("History"))
+        })
+        .map(|node| node.rect[1])
+        .fold(None, |least: Option<f64>, y| {
+            Some(least.map_or(y, |held| held.min(y)))
+        });
     all.into_iter()
         .filter(|node| node.widget == "RelativeTime")
+        .filter(|node| heading.is_none_or(|heading| node.rect[1] >= heading))
         .filter_map(|node| node.semantics.as_ref()?.name.clone())
         .collect()
 }

@@ -1,8 +1,7 @@
-//! `.ods` (`OpenDocument` Spreadsheet) codec. Parses the ODF package's `content.xml`
-//! spreadsheet body into the CRDT [`Workbook`] model — sheets, positional cells,
-//! cell types, and **formulas** (`table:formula`, preserved verbatim) — and
-//! serializes a complete valid package back. Untrusted bytes enter only through
-//! the bounded/hardened `ZipPackage` reader (zip-bomb + XXE defence).
+//! The `.ods` (`OpenDocument` Spreadsheet) codec: the ODF package's `content.xml` spreadsheet
+//! body read into the [`Workbook`] model (sheets, positional cells, cell types, formulas preserved
+//! verbatim), and a complete package written back. Untrusted bytes enter only through the bounded,
+//! hardened `ZipPackage` reader.
 
 use crate::format::CodecError;
 use crate::sheet_common::{
@@ -12,11 +11,9 @@ use crate::xml_escape::escape_attr_quotes;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use tilo_doc::sheet::snapshot::CellType;
 use tilo_doc::sheet::{CellInput, CellView, SheetView, Workbook, WorkbookSnapshot};
-// `write!` into a `String` cannot fail; the discarded `Result` is the
-// `fmt::Write` contract, not a swallowed error.
-use std::fmt::Write as _;
 
 const MIMETYPE: &str = "application/vnd.oasis.opendocument.spreadsheet";
 
@@ -28,7 +25,6 @@ const MAX_EXPANDED_REPEATS: usize = 1_000_000;
 /// (a cell holds at most 32767 characters in either office suite), so a few
 /// bytes of markup can't claim gigabytes of spaces.
 const MAX_SPACE_RUN: usize = 32_767;
-/// Excel's grid, which every codec here shares.
 const MAX_COL: u32 = 16_384;
 const MAX_ROW: u32 = 1_048_576;
 
@@ -68,7 +64,6 @@ impl OdsCodec {
                 crate::office_props::odf::prop_for_element,
             );
         }
-        // Preserve styles + other unmodeled parts so `table:style-name` refs resolve; content.xml is regenerated on export.
         for (name, bytes) in &pkg.parts {
             if is_preserved_part(name) {
                 parsed.preserved.insert(name.clone(), bytes.clone());
@@ -136,7 +131,6 @@ fn parse_content(xml: &[u8]) -> Result<Vec<ParsedSheet>, CodecError> {
     let mut row: u32 = 0; // last-used 1-based row index
     let mut row_repeat: u32 = 1;
     let mut col: u32 = 0; // column cursor within the current row
-    // The current row's populated cells: (column, repeat, cell).
     let mut row_cells: Vec<(u32, u32, CellInput)> = Vec::new();
     let mut budget = MAX_EXPANDED_REPEATS;
 
@@ -174,7 +168,6 @@ fn parse_content(xml: &[u8]) -> Result<Vec<ParsedSheet>, CodecError> {
                 row = row.saturating_add(row_repeat); // repeated (usually empty) rows advance the counter
                 row_repeat = 1;
             }
-            // A self-closing cell — no `<text:p>` child, flush immediately.
             Event::Empty(e)
                 if local_name(&e) == b"table-cell" || local_name(&e) == b"covered-table-cell" =>
             {
@@ -202,7 +195,6 @@ fn parse_content(xml: &[u8]) -> Result<Vec<ParsedSheet>, CodecError> {
                 cur = OdsCell::default();
             }
             Event::Start(e) if local_name(&e) == b"p" => {
-                // `<text:p>` — the cell's display text. Separate paragraphs join with '\n'.
                 if !cur.text.is_empty() {
                     cur.text.push('\n');
                 }
@@ -212,7 +204,6 @@ fn parse_content(xml: &[u8]) -> Result<Vec<ParsedSheet>, CodecError> {
                 let _ = &e;
                 in_text_p = false;
             }
-            // ODF spells runs of spaces, tabs and line breaks as elements.
             Event::Empty(e) if in_text_p => match local_name(&e) {
                 b"s" => {
                     let count = attr_local(&e, b"c")
@@ -285,7 +276,6 @@ fn place_row(
     Ok(())
 }
 
-/// The scratch of a parsed ODS cell before it is written into the model.
 #[derive(Default)]
 struct OdsCell {
     col: u32,
@@ -319,8 +309,6 @@ fn read_cell_attrs(e: &quick_xml::events::BytesStart, col: u32) -> OdsCell {
     }
 }
 
-/// Resolves a parsed ODS cell into a [`CellInput`], or `None` for a cell with no
-/// value, formula or style.
 fn resolve_cell(cell: &OdsCell) -> Option<CellInput> {
     let (cell_type, value) = match cell.value_type.as_str() {
         "float" | "percentage" | "currency" => (
@@ -348,7 +336,6 @@ fn resolve_cell(cell: &OdsCell) -> Option<CellInput> {
                 .unwrap_or_else(|| cell.text.clone()),
         ),
         _ => {
-            // No declared type: infer from what's present.
             if let Some(v) = &cell.office_value {
                 (CellType::Number, v.clone())
             } else if !cell.text.is_empty() {
@@ -388,7 +375,6 @@ fn content_xml(snap: &WorkbookSnapshot) -> String {
 }
 
 fn table_xml(sheet: &SheetView) -> String {
-    // Bucket cells by row; compute the extents so gaps collapse into repeats.
     let mut by_row: BTreeMap<u32, Vec<&CellView>> = BTreeMap::new();
     let mut max_col = 1u32;
     for c in &sheet.cells {
@@ -495,7 +481,6 @@ fn manifest_xml(has_styles: bool) -> String {
     )
 }
 
-/// Whether an ODS part is preserved verbatim; the regenerated parts (`mimetype`, `content.xml`, `meta.xml`, the manifest) are not.
 fn is_preserved_part(name: &str) -> bool {
     !(name == "mimetype"
         || name == "content.xml"

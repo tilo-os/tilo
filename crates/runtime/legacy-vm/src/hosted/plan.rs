@@ -1,16 +1,8 @@
-//! What an account's plan lets it run, and the refusal when it is more.
-//!
-//! The service reads the plans file on every admission, so operators change
-//! limits without a restart. A refusal is written for the agent that asked:
-//! it says what the limit is, what is in the way, and what to do, and in its
-//! typed form ([`Refusal::typed`], a [`host_account::Refusal`]) the steps
-//! that would let it through, with the provider's pages.
-//!
-//! A host that sells its VMs says so in the file ([`Plans::sells`]). An
-//! account the file then does not name has no card on file: its first VM is
-//! refused with [`Refusal::NoPaymentMethod`], and nothing asks for a card
-//! before that. The hosting provider adds the account once a card is on
-//! file, and the next admission lets it in.
+//! What an account's plan lets it run, and the refusal when it is more. The service
+//! reads the plans file on every admission, so operators change limits without a
+//! restart. A refusal is written for the agent that asked: it says what the limit
+//! is and, in its typed form ([`Refusal::typed`]), the steps and provider pages
+//! that would let it through.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -23,39 +15,31 @@ use tilo_actions::remote::host_account::{
 
 use super::size::VmSize;
 
-/// One plan's limits.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Plan {
-    /// VMs of the account running at once.
     pub max_running: u32,
     /// VMs (persistent disks) the account keeps, running or not.
     pub max_vms: u32,
-    /// The sizes the plan offers.
     pub sizes: Vec<VmSize>,
     /// On a host that sells VMs: the [`PlanOffer::id`] the account is on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
-    /// On a host that sells VMs: when the account's billing period began,
-    /// Unix milliseconds.
+    /// On a host that sells VMs: when the account's billing period began, Unix milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub period_start_ms: Option<u64>,
     /// On a host that sells VMs: the account's invoices, newest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub invoices: Vec<Invoice>,
-    /// On a host that sells VMs: the account's credit, in the provider's
-    /// words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credit: Option<String>,
-    /// On a host that sells VMs: the card on file, as the provider
-    /// describes it (brand, last four digits). An account the file names has
-    /// a card on file whether or not the provider describes it.
+    /// On a host that sells VMs: the card on file, as the provider describes it (brand, last four
+    /// digits). An account the file names has a card on file whether or not the provider describes
+    /// it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub card: Option<PaymentMethod>,
 }
 
 impl Default for Plan {
-    /// The plan of an account the plans file does not name: one small or
-    /// default VM at a time, three kept.
     fn default() -> Self {
         Self {
             max_running: 1,
@@ -70,25 +54,25 @@ impl Default for Plan {
     }
 }
 
-/// What a host that sells its VMs offers, and the provider's pages. In each
-/// page's address, `{account}` stands for the account's id.
+/// What a host that sells its VMs offers, and the provider's pages. In each page's address,
+/// `{account}` stands for the account's id.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Sells {
-    /// The host's name, as people know it ("Tilo Cloud").
     pub host: String,
     pub plans: Vec<PlanOffer>,
-    /// Where the person adds a card.
     pub add_payment_method: String,
-    /// Where the person manages billing: cards, plan, invoices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manage_billing: Option<String>,
-    /// Where the person raises the account's limits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raise_limit: Option<String>,
+    /// Browser page actions an account without a card on file may run per billing period; `None`
+    /// for none, so every Browser action waits for a card. An account the file names has a card and
+    /// is never stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_free_actions: Option<u32>,
 }
 
 impl Sells {
-    /// `page` for `account`.
     #[must_use]
     #[expect(
         clippy::literal_string_with_formatting_args,
@@ -99,24 +83,21 @@ impl Sells {
     }
 }
 
-/// The plans file: a default and per-account plans, and what the host
-/// sells, if anything.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Plans {
     #[serde(default)]
     pub default: Plan,
     #[serde(default)]
     pub accounts: BTreeMap<String, Plan>,
-    /// Present on a host that sells its VMs: then only the accounts named
-    /// in `accounts` (those with a card on file) run any, and `default`
-    /// is not anyone's.
+    /// Present on a host that sells its VMs: then only the accounts named in `accounts` (those with
+    /// a card on file) run any, and `default` is not anyone's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sells: Option<Sells>,
 }
 
 impl Plans {
-    /// The plans at `path`; the defaults when there is no file. A file that
-    /// does not parse is an error, never silently the defaults.
+    /// The plans at `path`; the defaults when there is no file. A file that does not parse is an
+    /// error, never silently the defaults.
     pub fn load(path: &Path) -> Result<Self, String> {
         match std::fs::read(path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
@@ -126,8 +107,8 @@ impl Plans {
         }
     }
 
-    /// The plan of `account`; `None` on a host that sells its VMs when the
-    /// account has no card on file.
+    /// The plan of `account`; `None` on a host that sells its VMs when the account has no card on
+    /// file.
     #[must_use]
     pub fn for_account(&self, account: &str) -> Option<&Plan> {
         match (self.accounts.get(account), &self.sells) {
@@ -138,7 +119,6 @@ impl Plans {
     }
 }
 
-/// A VM of the account that is awake.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AwakeVm {
     pub vm: String,
@@ -146,30 +126,37 @@ pub struct AwakeVm {
     pub size: VmSize,
 }
 
-/// Why a VM may not start.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Refusal {
-    SizeNotInPlan {
-        size: VmSize,
-        allowed: Vec<VmSize>,
-    },
-    TooManyRunning {
-        limit: u32,
-        awake: Vec<AwakeVm>,
-    },
-    TooManyVms {
-        limit: u32,
-        existing: u32,
-    },
-    /// The host sells its VMs and the account has no card on file.
-    NoPaymentMethod {
-        host: String,
-    },
+    SizeNotInPlan { size: VmSize, allowed: Vec<VmSize> },
+    TooManyRunning { limit: u32, awake: Vec<AwakeVm> },
+    TooManyVms { limit: u32, existing: u32 },
+    NoPaymentMethod { host: String },
+    BrowserActionsUsed { free: u32, host: String },
 }
 
-/// Whether `vm` (of `size`) may wake for `account` under `plans`. `awake`
-/// are the account's VMs that are awake now, `existing` how many VMs
-/// (disks) the account has, `vm_exists` whether this one is among them.
+/// Whether Browser may run a page action for `account` under `plans`, given the page actions it
+/// already ran this billing period.
+pub fn admit_browser(plans: &Plans, account: &str, used: u64) -> Result<(), Refusal> {
+    let Some(sells) = &plans.sells else {
+        return Ok(());
+    };
+    if plans.accounts.contains_key(account) {
+        return Ok(());
+    }
+    let free = sells.browser_free_actions.unwrap_or(0);
+    if used < u64::from(free) {
+        Ok(())
+    } else {
+        Err(Refusal::BrowserActionsUsed {
+            free,
+            host: sells.host.clone(),
+        })
+    }
+}
+
+/// Whether `vm` (of `size`) may wake for `account` under `plans`: `awake` are its VMs awake now,
+/// `existing` how many disks it has, `vm_exists` whether this one is among them.
 pub fn admit(
     plans: &Plans,
     account: &str,
@@ -221,9 +208,8 @@ fn plural(count: u32, one: &str, many: &str) -> String {
 }
 
 impl Refusal {
-    /// The refusal as the host's contract carries it: its reason, these
-    /// words, and the steps that would let it through, with the pages of
-    /// the provider `sells` names for `account`.
+    /// The refusal as the host's contract carries it: its reason, these words, and the steps that
+    /// would let it through, with the provider pages `sells` names for `account`.
     #[must_use]
     pub fn typed(&self, sells: Option<&Sells>, account: &str) -> host_account::Refusal {
         let page = |page: Option<&String>| page.map(|page| Sells::page(page, account));
@@ -233,7 +219,7 @@ impl Refusal {
         };
         let names = |sizes: &[VmSize]| sizes.iter().map(ToString::to_string).collect();
         let (reason, next) = match self {
-            Self::NoPaymentMethod { .. } => (
+            Self::NoPaymentMethod { .. } | Self::BrowserActionsUsed { .. } => (
                 Reason::NoPaymentMethod,
                 vec![NextStep {
                     kind: NextStepKind::AddPaymentMethod,
@@ -291,6 +277,15 @@ impl fmt::Display for Refusal {
                     f,
                     "This needs a Linux machine. {host} runs Linux machines for accounts with \
                      a card on file, and this account has none yet. Add a card to continue."
+                )
+            }
+            Self::BrowserActionsUsed { free, host } => {
+                let host = if host.is_empty() { "this host" } else { host };
+                write!(
+                    f,
+                    "Browser runs {} a month free on {host}, and this account used them. \
+                     Add a card to continue.",
+                    plural(*free, "page action", "page actions")
                 )
             }
             Self::SizeNotInPlan { size, allowed } => {
@@ -368,13 +363,11 @@ mod tests {
         let admit = |vm, size, awake: &[AwakeVm], existing, vm_exists| {
             super::admit(&plan, "acct-1", vm, size, awake, existing, vm_exists)
         };
-        // phase: within the plan, and a VM already awake is always let in
         {
             assert_eq!(admit("a/default", VmSize::Small, &[], 0, false), Ok(()));
             let both = [awake("a", VmSize::Small), awake("b", VmSize::Default)];
             assert_eq!(admit("a/default", VmSize::Small, &both, 2, true), Ok(()));
         }
-        // phase: a third running VM is refused in plain words
         {
             let both = [awake("a", VmSize::Small), awake("b", VmSize::Default)];
             let refusal = admit("c/default", VmSize::Small, &both, 2, false).unwrap_err();
@@ -385,7 +378,6 @@ mod tests {
                  ends; try again then, stop one of those, or upgrade the plan."
             );
         }
-        // phase: a size outside the plan names what the plan has
         {
             let refusal = admit("a/default", VmSize::Xlarge, &[], 0, true).unwrap_err();
             assert_eq!(
@@ -396,7 +388,6 @@ mod tests {
                  upgrade the plan."
             );
         }
-        // phase: a new disk beyond the plan's count is refused, an old one is not
         {
             let refusal = admit("d/default", VmSize::Small, &[], 3, false).unwrap_err();
             assert!(matches!(
@@ -434,6 +425,86 @@ mod tests {
     }
 
     #[test]
+    fn browser_runs_a_free_allowance_and_then_asks_for_a_card() {
+        {
+            assert_eq!(admit_browser(&Plans::default(), "acct-1", 1_000), Ok(()));
+        }
+        let plans: Plans = serde_json::from_str(
+            r#"{"sells":{"host":"tilo.sh",
+                "plans":[],
+                "add_payment_method":"https://tilo.sh/billing/card?account={account}",
+                "browser_free_actions":100}}"#,
+        )
+        .unwrap();
+        {
+            assert_eq!(admit_browser(&plans, "acct-1", 0), Ok(()));
+            assert_eq!(admit_browser(&plans, "acct-1", 99), Ok(()));
+            let refusal = admit_browser(&plans, "acct-1", 100).unwrap_err();
+            assert_eq!(
+                refusal.to_string(),
+                "Browser runs 100 page actions a month free on tilo.sh, and this account used \
+                 them. Add a card to continue."
+            );
+            assert!(matches!(
+                admit_browser(&plans, "acct-1", 101),
+                Err(Refusal::BrowserActionsUsed { free: 100, .. })
+            ));
+        }
+        {
+            let typed = admit_browser(&plans, "acct-1", 100)
+                .unwrap_err()
+                .typed(plans.sells.as_ref(), "acct-1");
+            assert_eq!(typed.reason, Reason::NoPaymentMethod);
+            assert_eq!(
+                typed.message,
+                "Browser runs 100 page actions a month free on tilo.sh, and this account used \
+                 them. Add a card to continue."
+            );
+            assert!(typed.awaits_the_account());
+            assert_eq!(typed.next.len(), 1);
+            assert_eq!(
+                typed
+                    .step(NextStepKind::AddPaymentMethod)
+                    .and_then(|step| step.url.as_deref()),
+                Some("https://tilo.sh/billing/card?account=acct-1")
+            );
+        }
+        {
+            let mut plans = plans;
+            plans.accounts.insert("acct-1".into(), Plan::default());
+            assert_eq!(admit_browser(&plans, "acct-1", 10_000), Ok(()));
+        }
+        {
+            let plans: Plans = serde_json::from_str(
+                r#"{"sells":{"host":"tilo.sh","plans":[],"add_payment_method":"https://tilo.sh/card"}}"#,
+            )
+            .unwrap();
+            let refusal = admit_browser(&plans, "acct-1", 0).unwrap_err();
+            assert_eq!(
+                refusal.to_string(),
+                "Browser runs 0 page actions a month free on tilo.sh, and this account used \
+                 them. Add a card to continue."
+            );
+        }
+        {
+            let plans = Plans {
+                sells: Some(Sells {
+                    host: "tilo.sh".into(),
+                    add_payment_method: "https://tilo.sh/card".into(),
+                    browser_free_actions: Some(1),
+                    ..Sells::default()
+                }),
+                ..Plans::default()
+            };
+            assert_eq!(
+                admit_browser(&plans, "acct-1", 1).unwrap_err().to_string(),
+                "Browser runs 1 page action a month free on tilo.sh, and this account used them. \
+                 Add a card to continue."
+            );
+        }
+    }
+
+    #[test]
     fn a_host_that_sells_vms_refuses_an_account_without_a_card_with_its_page() {
         let mut plans: Plans = serde_json::from_str(
             r#"{"sells":{"host":"Tilo Cloud",
@@ -442,7 +513,6 @@ mod tests {
                 "raise_limit":"https://billing.example/plan?account={account}"}}"#,
         )
         .unwrap();
-        // phase: no card on file, so no VM, and the refusal says where to add one
         {
             let refusal =
                 admit(&plans, "acct-1", "a/default", VmSize::Small, &[], 0, false).unwrap_err();
@@ -461,7 +531,6 @@ mod tests {
                 Some("https://billing.example/card?account=acct-1")
             );
         }
-        // phase: the provider names the account once its card is on file
         {
             plans.accounts.insert(
                 "acct-1".into(),

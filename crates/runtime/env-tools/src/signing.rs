@@ -9,8 +9,6 @@ use std::path::Path;
 use tilo_app_package::SigningIdentity;
 use tilo_user_identity::IdentityPaths;
 
-/// This device's signing identity, from the system identity root
-/// (`TILO_IDENTITY_ROOT` overrides it, as for every other identity reader).
 pub fn device_identity() -> anyhow::Result<SigningIdentity> {
     let paths = std::env::var_os("TILO_IDENTITY_ROOT")
         .filter(|v| !v.is_empty())
@@ -19,8 +17,6 @@ pub fn device_identity() -> anyhow::Result<SigningIdentity> {
     Ok(SigningIdentity::from_signing_key(key))
 }
 
-/// A publisher key file ([`registry_types::key_file`]), as
-/// `tilo-runtime-bundle key generate` writes it and CI keeps it in a secret.
 pub fn identity_file(path: &Path) -> anyhow::Result<SigningIdentity> {
     Ok(SigningIdentity::from_signing_key(
         registry_types::key_file::load(path)?,

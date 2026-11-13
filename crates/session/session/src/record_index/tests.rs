@@ -12,6 +12,10 @@ use super::*;
 struct Held {
     docs: Mutex<BTreeMap<(String, String), Vec<IndexEntry>>>,
     reads: Mutex<Vec<String>>,
+    /// The records whose keys are not here: they read as nothing.
+    sealed: Mutex<std::collections::BTreeSet<String>>,
+    /// The reader is stopped before it answers, as a session ending stops it.
+    stopped: Mutex<bool>,
 }
 
 impl Held {
@@ -58,6 +62,9 @@ impl RecordSource for Source {
         let Some(entries) = held else {
             return Ok(None);
         };
+        if self.held.sealed.lock_recover().contains(record) {
+            return Ok(None);
+        }
         self.held
             .reads
             .lock_recover()
@@ -68,12 +75,16 @@ impl RecordSource for Source {
     }
 }
 
-/// What the app's own reader answers: the entries the fake document holds.
-struct Reader;
+/// What the app's own reader answers: the entries the fake document holds, or that it was stopped
+/// before it answered.
+struct Reader(Arc<Held>);
 
 impl RecordReader for Reader {
-    fn entries(&self, _app: &str, doc: &[u8]) -> Result<Vec<IndexEntry>, String> {
-        serde_json::from_slice(doc).map_err(|error| error.to_string())
+    fn entries(&self, _app: &str, doc: &[u8]) -> Result<Vec<IndexEntry>, Unread> {
+        if *self.0.stopped.lock_recover() {
+            return Err(Unread::Stopped("the reader was stopped".into()));
+        }
+        serde_json::from_slice(doc).map_err(|error| Unread::Refused(error.to_string()))
     }
 }
 
@@ -103,10 +114,12 @@ fn index(held: &Arc<Held>, content: &Arc<AppContentIndex>) -> RecordIndex {
             workspace: "w".to_owned(),
             held: Arc::clone(held),
         }),
-        reader: Arc::new(Reader),
+        reader: Arc::new(Reader(Arc::clone(held))),
         content: Some(Arc::clone(content)),
         queued: Mutex::new(BTreeSet::new()),
+        sealed: Mutex::new(BTreeSet::new()),
         wake,
+        changes: crate::platform::records::Changes::default(),
     }
 }
 
@@ -144,6 +157,41 @@ fn what_a_record_holds_is_found_with_its_app_never_launched() {
         content.title("w", "agents/a1").as_deref(),
         Some("Ada"),
         "and an agent"
+    );
+}
+
+/// An agent whose record's keys reach this device after the sweep read it is found once the
+/// channels settled, without any change to the record.
+#[test]
+fn a_record_sealed_at_the_sweep_is_found_once_its_keys_arrive() {
+    let held = Arc::new(Held::default());
+    held.hold("so.tilo.chat", "agents", vec![entry("agents/a1", "Ada")]);
+    held.sealed.lock_recover().insert("agents".to_owned());
+    let content = Arc::new(AppContentIndex::in_memory());
+
+    let index = index(&held, &content);
+    index.sweep();
+    index.pass();
+    assert_eq!(content.title("w", "agents/a1"), None);
+
+    index.settled();
+    index.pass();
+    assert_eq!(
+        content.title("w", "agents/a1"),
+        None,
+        "still sealed: still waiting"
+    );
+    assert_eq!(index.waiting(), 0);
+
+    held.sealed.lock_recover().clear();
+    index.settled();
+    index.pass();
+    assert_eq!(content.title("w", "agents/a1").as_deref(), Some("Ada"));
+    index.settled();
+    assert_eq!(
+        index.waiting(),
+        0,
+        "read once its keys came, it waits for nothing"
     );
 }
 
@@ -254,4 +302,54 @@ fn a_change_that_is_batched_is_read_once() {
     index.pass();
     assert_eq!(index.waiting(), 0);
     assert_eq!(held.read("chat.messages", "part-1"), 1);
+}
+
+/// A reader stopped before it answered says nothing about what the record holds: the record waits
+/// for the next pass, and what search already held of it is not dropped for an answer nobody gave.
+#[test]
+fn a_stopped_reader_leaves_the_record_for_the_next_pass() {
+    let held = Arc::new(Held::default());
+    held.hold(
+        "chat.messages",
+        "part-1",
+        vec![entry("messages/m1", "hello")],
+    );
+    let content = Arc::new(AppContentIndex::in_memory());
+    let index = index(&held, &content);
+    index.sweep();
+    index.pass();
+    assert_eq!(content.title("w", "messages/m1").as_deref(), Some("hello"));
+
+    *held.stopped.lock_recover() = true;
+    held.hold(
+        "chat.messages",
+        "part-1",
+        vec![entry("messages/m2", "I will look at it")],
+    );
+    index.changed("w", "chat.messages", "part-1");
+    index.pass();
+    assert_eq!(
+        index.waiting(),
+        1,
+        "a reading nobody finished waits to be read"
+    );
+    assert_eq!(
+        content.title("w", "messages/m2"),
+        None,
+        "a stopped reader found nothing, and nothing is published as if it had"
+    );
+    assert_eq!(
+        content.title("w", "messages/m1").as_deref(),
+        Some("hello"),
+        "what search held of the record is not what a stopped reader said"
+    );
+
+    *held.stopped.lock_recover() = false;
+    index.pass();
+    assert_eq!(index.waiting(), 0);
+    assert_eq!(
+        content.title("w", "messages/m2").as_deref(),
+        Some("I will look at it"),
+        "read again, the record is found as it now stands"
+    );
 }

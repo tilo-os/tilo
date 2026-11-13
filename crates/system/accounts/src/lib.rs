@@ -1,15 +1,11 @@
 //! The shared **online-accounts** model + store, used by every Tilo app that consumes
 //! external accounts (Mail, Calendar, and the Settings hub).
 //!
-//! # Why one crate
-//!
 //! Before this crate, Mail, Calendar and Settings each re-declared their own
 //! `AccountStore`/`Account` structs and only agreed on a JSON path — and the shapes didn't
 //! even match (an account added in Settings' calendar store was invisible to Calendar's).
 //! This crate replaces those divergent copies with one canonical model, one persistence
 //! location, and one encrypted vault for credentials that never belong in the plaintext store.
-//!
-//! # The pieces
 //!
 //! - [`Account`] — the type-agnostic envelope. `config` is opaque type-specific JSON,
 //!   (de)serialised by the owning type. **No secret fields live here.**
@@ -29,7 +25,6 @@ use serde::{Deserialize, Serialize};
 pub mod cloud_types {
     use serde::{Deserialize, Serialize};
 
-    /// Whether Files keeps a remote account mounted or copies it once.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "kebab-case")]
     pub enum FilesMode {
@@ -37,9 +32,7 @@ pub mod cloud_types {
         Import,
     }
 
-    /// Non-secret Files mode metadata key.
     pub const FILES_MODE_KEY: &str = "files_mode";
-    /// Optional identity of the linked email account.
     pub const MAIL_ACCOUNT_ID_KEY: &str = "mail_account_id";
 
     /// Legacy accounts sync. Unknown explicit modes fail closed.
@@ -50,7 +43,6 @@ pub mod cloud_types {
         }
     }
 
-    /// Update Files mode without changing other connection metadata.
     pub fn set_files_mode(config: &mut serde_json::Value, mode: FilesMode) {
         if !config.is_object() {
             *config = serde_json::json!({});
@@ -61,13 +53,10 @@ pub mod cloud_types {
     }
 
     pub const GOOGLE_DRIVE: &str = "google-drive";
-    /// `OneDrive` (personal or work/school) and `SharePoint` libraries.
     pub const ONEDRIVE: &str = "onedrive";
     pub const DROPBOX: &str = "dropbox";
     pub const ICLOUD_DRIVE: &str = "icloud-drive";
-    /// Nextcloud (files, calendars, contacts).
     pub const NEXTCLOUD: &str = "nextcloud";
-    /// A plain `WebDAV` server.
     pub const WEBDAV: &str = "webdav";
 
     /// The key of an account's resolved mount configuration in its
@@ -181,10 +170,8 @@ pub struct Account {
     /// `config`, hoisted here so the store can list accounts without understanding the type.
     #[serde(default)]
     pub display_name: String,
-    /// Type-specific connection settings. Opaque JSON; no secret fields.
     #[serde(default)]
     pub config: serde_json::Value,
-    /// Whether the account is active (vs. temporarily disabled by the user).
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// A short accent hint used to tint the account's avatar so multiple accounts read as
@@ -237,7 +224,6 @@ fn default_true() -> bool {
 pub struct AccountStore {
     #[serde(default)]
     accounts: Vec<Account>,
-    /// The active account id per type. A type with no entry uses its first account.
     #[serde(default)]
     active: BTreeMap<AccountTypeId, AccountId>,
     /// Whether this file is the projection of the person's accounts record
@@ -248,7 +234,6 @@ pub struct AccountStore {
 }
 
 impl AccountStore {
-    /// An empty store.
     pub fn new() -> Self {
         Self::default()
     }
@@ -262,7 +247,6 @@ impl AccountStore {
         }
     }
 
-    /// Load the store under an explicit config root (`root/accounts/store.json`).
     pub fn load_in(config_root: &Path) -> Self {
         std::fs::read_to_string(store_path_in(config_root))
             .ok()
@@ -296,12 +280,10 @@ impl AccountStore {
         tilo_files::native::atomic::write(&path, json.as_bytes())
     }
 
-    /// Every account in the store, in insertion order.
     pub fn all(&self) -> &[Account] {
         &self.accounts
     }
 
-    /// Every account of `type_id`, in insertion order.
     pub fn list(&self, type_id: &AccountTypeId) -> Vec<&Account> {
         self.accounts
             .iter()
@@ -309,7 +291,6 @@ impl AccountStore {
             .collect()
     }
 
-    /// Look up an account by id, regardless of type.
     pub fn get(&self, id: &AccountId) -> Option<&Account> {
         self.accounts.iter().find(|a| &a.id == id)
     }
@@ -364,7 +345,6 @@ impl AccountStore {
         self.list(type_id).into_iter().next()
     }
 
-    /// Select the active account for a type. No-op if `id` is not an account of `type_id`.
     pub fn set_active(&mut self, type_id: &AccountTypeId, id: &AccountId) {
         if self
             .accounts
@@ -389,7 +369,6 @@ impl AccountStore {
         self.projected
     }
 
-    /// This store, marked as the projection of the person's accounts.
     #[must_use]
     pub fn as_projection(mut self) -> Self {
         self.projected = true;
@@ -407,22 +386,18 @@ pub fn config_root() -> Option<PathBuf> {
     Some(tilo_paths::xdg::config_home()?.join("tilo"))
 }
 
-/// The accounts directory under a config root (`root/accounts`).
 pub fn accounts_dir_in(config_root: &Path) -> PathBuf {
     config_root.join("accounts")
 }
 
-/// The canonical store file under a config root (`root/accounts/store.json`).
 pub fn store_path_in(config_root: &Path) -> PathBuf {
     accounts_dir_in(config_root).join("store.json")
 }
 
-/// The vault directory under a config root (`root/accounts/vault`).
 pub fn vault_dir_in(config_root: &Path) -> PathBuf {
     accounts_dir_in(config_root).join("vault")
 }
 
-/// The canonical store file at the default config root, if resolvable.
 pub fn store_path() -> Option<PathBuf> {
     config_root().map(|r| store_path_in(&r))
 }
@@ -488,7 +463,6 @@ mod tests {
             assert_eq!(store.list(&"email".into()).len(), 2);
             assert_eq!(store.list(&"caldav".into()).len(), 1);
 
-            // Upsert by id replaces in place, does not append.
             store.upsert(email("a@x.example", "imap.new"));
             assert_eq!(store.list(&"email".into()).len(), 2);
             assert_eq!(
@@ -508,7 +482,6 @@ mod tests {
             store.upsert(email("b@y.example", "imap.y"));
             let email_ty: AccountTypeId = "email".into();
 
-            // First account of a type is active by default.
             assert_eq!(store.active(&email_ty).unwrap().id, "a@x.example".into());
             store.set_active(&email_ty, &"b@y.example".into());
             assert_eq!(store.active(&email_ty).unwrap().id, "b@y.example".into());

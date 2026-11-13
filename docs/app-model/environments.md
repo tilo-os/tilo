@@ -352,13 +352,14 @@ that workspace environment's own, never in a guest sharing the host's kernel
   since the last one. The crate docs have the measurements behind the choice.
 - **More than one host:** a VM stays on the host that first woke it, where
   its disk is. A placer (`tilo-legacy hosted place`) says which host runs a
-  workspace's VM: the one holding it, else the first host with room for its
-  size, the always-up one first. Each host reports what its awake VMs take of
-  its memory budget and what waiting wakes ask for. The placer starts another
-  host once the awake VMs pass three quarters of the hosts' budget, or a VM
-  waits, and never takes one away itself. A wake with no room waits, a
-  person's and an agent's alike, after one line ("Starting another machine
-  for it, about 3 minutes."); it is never refused for room.
+  workspace's VM: the one holding it, else the first host with room for one
+  more VM, the always-up one first. Each host reports the memory its awake VMs
+  really take — what the kernel measures each Firecracker process at, not the
+  size the VM may grow into — and what waiting wakes ask for. The placer
+  starts another host once the awake VMs pass three quarters of the hosts'
+  memory, or a VM waits, and never takes one away itself. A wake with no room
+  waits, a person's and an agent's alike, after one line ("Starting another
+  machine for it, about 3 minutes."); it is never refused for room.
 - **Eviction:** a host the cloud takes back at short notice (an Azure Spot
   VM, about 30 seconds) is told by a file appearing (`--evict-notice`, written
   by whatever watches the cloud's notice). It then wakes no more VMs, saying
@@ -393,8 +394,13 @@ that workspace environment's own, never in a guest sharing the host's kernel
   every connection from a socket of the host's and forwards nothing inwards,
   so the host routes and translates nothing, and in Kubernetes the pod's
   network policy applies to VM traffic too. Every VM has the same address
-  (10.0.2.15, gateway .2, DNS .3), so a snapshot restores anywhere.
-  Firecracker's rate limiters bound each VM's bandwidth.
+  (10.0.2.15, gateway .2, DNS .3), so a snapshot restores anywhere. A VM
+  is allowed one destination besides the internet: the relay its Browser
+  session joins the workspace through
+  (`--relay-endpoint`/`TILO_VM_RELAY_ENDPOINT`, a public address or the
+  stack's cluster address), and a relay on a local host's loopback is
+  reached at 10.0.2.4, which `pasta` maps there. Firecracker's rate
+  limiters bound each VM's bandwidth.
 - **Metering:** each run of the VM's process and each held snapshot is a
   usage record (VM, workspace, account, size, start, end, seconds) in the
   account's ledger, billed per second with the sub-second rest carried to
@@ -431,9 +437,11 @@ that workspace environment's own, never in a guest sharing the host's kernel
   uncompressed x86-64 kernel built from a pinned kernel.org longterm release
   with everything a VM needs built in (virtio-mmio, blk, net, vsock, FUSE,
   ext4, cgroups, namespaces, overlayfs) and no modules, and `rootfs.ext4`, a
-  raw ext4 of Debian 13 with the tenant account (`tilo`, uid 1000, passwordless
-  sudo), git, a compiler, python, node and rust on `PATH` for every shell, and
-  the same guest agent the legacy VM runs. It has no systemd: PID 1 is
+  raw ext4 of Fedora 44 (the release every Tilo binary is built on; `dnf
+  install` adds packages) with the tenant account (`tilo`, uid 1000,
+  passwordless sudo), git, a compiler, python and uv, node and rust on `PATH`
+  for every shell, the headless session with Browser and Chromium, and the
+  same guest agent the legacy VM runs. It has no systemd: PID 1 is
   `hosted-init`, which mounts what a guest needs, grows the filesystem to the
   disk it was given, points DNS at the host's forwarder and hands over to the
   agent. Each VM's disk is a reflinked copy of `rootfs.ext4`. Hosts do not
@@ -441,6 +449,21 @@ that workspace environment's own, never in a guest sharing the host's kernel
   in `os/hosted-guest-snapshot.env`, and `tilo-legacy hosted fetch-guest`
   fetches only that digest under `/etc/containers/policy.json`'s
   `sigstoreSigned` scope for `registry.tilo.so/tilo/hosted-guest`.
+- **Browser:** a hosted workspace's Browser runs in the same VM: the first
+  browser action wakes it (no card needed) and starts a headless session in
+  it, as the unprivileged `tilo-browser` user, which joins the workspace as a
+  device. Linux actions in that VM still need the plan and the card. New VMs
+  start as copy-on-write clones of a warm template of their size. The exact
+  contract — argv, the `TILO_HOSTED_BROWSER` mark, one line of material on
+  its stdin, `ready`, `up` and `used` on its stdout — is documented in
+  [`crates/runtime/legacy-vm/src/hosted/browser.rs`](../../crates/runtime/legacy-vm/src/hosted/browser.rs),
+  and the whole of it in [`hosted-browser.md`](../hosted-browser.md).
+- **Linux apps with windows:** opening one (`app.so.tilo.linux#open`, naming
+  its desktop file) starts a second headless session in the same VM, as the
+  tenant, with Xwayland ([`hosted-browser.md`](../hosted-browser.md#linux-apps)).
+  It joins the workspace as a device like Browser's and shares every window
+  its apps open with the workspace's members, over the live plane. Opening one
+  is a Linux action: it needs the plan and the card.
 
 ## Members that take work
 
@@ -458,14 +481,18 @@ way a device serves its own:
   the requester as a window stream (`surface_stream`), with input routed back.
 
 A member holds a workspace as any device does, so its device plane admits the
-relay's runs. The first time the relay asks about a workspace it placed on the
-member, the member enters it: it asks the relay's own `room.enter`, which
-answers an invitation naming the member's person, and redeems it as a device
-joins any workspace. The relay decides which member may enter which
-workspace, never the request: a device of another person asking the member
-gets nothing from it, and a workspace the relay does not govern is refused
-there and remembered for a while, so nothing that names workspaces makes the
-member ask again and again.
+relay's runs. A member that runs the workspace's VMs also answers its browser
+environments' opens there (`tilo_actions::remote::browser`), which the host's
+hosted-VM service starts beside the Linux VM; the relay asks for them the way
+it asks for a shell command, placing `<workspace>/browser` first
+(`crates/hosting/tilo-relay/src/placed_browsers.rs`). The first time the relay
+asks about a workspace it placed on the member, the member enters it: it asks
+the relay's own `room.enter`, which answers an invitation naming the member's
+person, and redeems it as a device joins any workspace. The relay decides
+which member may enter which workspace, never the request: a device of another
+person asking the member gets nothing from it, and a workspace the relay does
+not govern is refused there and remembered for a while, so nothing that names
+workspaces makes the member ask again and again.
 
 ## Terminal
 

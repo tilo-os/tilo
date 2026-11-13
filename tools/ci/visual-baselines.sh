@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Render the visual goldens anew on the project's builder image and bundle the
-# candidates for review, with that image recorded in .config/visual-goldens-image.
+# candidates for review.
 #
 #   bash tools/ci/visual-baselines.sh   # in the builder image, in a Git checkout
 #   git apply "$CARGO_TARGET_DIR/visual-baseline-review/candidates.patch"
@@ -11,7 +11,6 @@ review=${CARGO_TARGET_DIR:?}/visual-baseline-review
 rm -rf "$review"
 mkdir -p "$review/files"
 
-image=$(python3 -c 'import sys; sys.path.insert(0, "tools/ci"); import resolve_builder; print(resolve_builder.resolve(""))')
 filter=$(python3 tools/ci/nextest_filters.py | sed -n 's/^GOLDEN_FILTER=//p')
 packages=()
 for name in $(grep -o 'package([A-Za-z0-9_-]*)' <<<"$filter" | sed 's/^package(\(.*\))$/\1/' | sort -u); do
@@ -25,8 +24,7 @@ read -r -a features <<<"$feature_flags"
 
 # Diff against the tree as given, uncommitted changes included, so the patch
 # holds only what the render changed.
-paths=(crates/sdk/ui-core/tests/fixtures/typography apps/ebook/tests/fixtures/typography
-       .config/visual-goldens-image)
+paths=(crates/sdk/ui-core/tests/fixtures/typography apps/ebook/tests/fixtures/typography)
 export GIT_INDEX_FILE=$TMPDIR/visual-baselines.index
 git read-tree HEAD
 for path in "${paths[@]}"; do
@@ -39,7 +37,6 @@ UPDATE_TYPOGRAPHY_BASELINES=1 TILO_REQUIRE_GPU=1 \
     bash tools/test-env.sh cargo nextest run --locked --profile ci --tests "${packages[@]}" \
     "${features[@]}" --no-tests=pass -E "$filter" || status=$?
 
-bash tools/ci/golden-image.sh record "$image"
 python3 tools/test-assets.py crates/sdk/ui-core/tests/fixtures/typography/artifacts.json \
     --prune-identical-candidates crates/sdk/ui-core/tests/fixtures/typography
 python3 tools/test-assets.py apps/ebook/tests/fixtures/typography/artifacts.json \

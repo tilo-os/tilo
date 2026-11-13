@@ -50,8 +50,42 @@ impl SessionResource {
     /// No session is connected, it does not answer in time, or no service
     /// publishes `resource`.
     pub fn open(resource: &str) -> Result<Self, String> {
+        let (watched, first) = Self::watch(resource, None)?;
+        match first.recv_timeout(PUBLISHED_OPEN_TIMEOUT) {
+            Ok(Ok(reading)) => {
+                *watched
+                    .newest
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok(reading));
+                Ok(watched)
+            }
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err("The session did not answer.".to_string()),
+        }
+    }
+
+    /// Watch `resource` and take every reading it publishes, waiting for
+    /// none: a service that starts after this call is followed when it
+    /// appears, and nothing is read until it does. `wake`'s owner is woken at
+    /// each reading, the first one included. Blocking only while the watch is
+    /// handed to the session's worker; call it off the frame thread, as
+    /// [`Self::open`].
+    ///
+    /// # Errors
+    ///
+    /// No session is connected to watch through.
+    pub fn follow(resource: &str, wake: tilo_rt::wake::WakeHandle) -> Result<Self, String> {
+        Self::watch(resource, Some(wake)).map(|(watched, _first)| watched)
+    }
+
+    /// Register the watch `resource`, answering the handle and the channel
+    /// its first reading arrives on.
+    fn watch(
+        resource: &str,
+        first_wake: Option<tilo_rt::wake::WakeHandle>,
+    ) -> Result<(Self, mpsc::Receiver<Result<String, String>>), String> {
         let newest = Arc::new(std::sync::Mutex::new(None));
-        let wake = Arc::new(std::sync::Mutex::new(None));
+        let wake = Arc::new(std::sync::Mutex::new(first_wake));
         let (first_tx, first_rx) = mpsc::sync_channel(1);
         let (cancel, cancel_rx) = tokio::sync::watch::channel(());
         let sender = PUBLISHED_COMMAND_BRIDGE
@@ -74,21 +108,15 @@ impl SessionResource {
         ) {
             return Err("The published resource queue is unavailable.".into());
         }
-        match first_rx.recv_timeout(PUBLISHED_OPEN_TIMEOUT) {
-            Ok(Ok(reading)) => {
-                *newest
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok(reading));
-                Ok(Self {
-                    resource: Arc::from(resource),
-                    newest,
-                    wake,
-                    _watch: Arc::new(cancel),
-                })
-            }
-            Ok(Err(error)) => Err(error),
-            Err(_) => Err("The session did not answer.".to_string()),
-        }
+        Ok((
+            Self {
+                resource: Arc::from(resource),
+                newest,
+                wake,
+                _watch: Arc::new(cancel),
+            },
+            first_rx,
+        ))
     }
 
     /// The newest reading since the last call; `None` when nothing changed.

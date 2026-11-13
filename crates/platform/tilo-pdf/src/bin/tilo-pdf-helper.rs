@@ -6,8 +6,6 @@ fn main() {
     std::process::exit(tilo_pdf::helper::run());
 }
 
-/// The helper confines pdfium through `tilo-sandbox` (Landlock and seccomp on
-/// Linux, Seatbelt on macOS); elsewhere the portable engine parses in process.
 #[cfg(not(unix))]
 fn main() {
     eprintln!("tilo-pdf-helper runs on Unix only");

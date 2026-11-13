@@ -3,7 +3,8 @@ name = "tilo-theme-sdk"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-license.workspace = true
+# The part painter interface every theme draws through, in the SDK a person builds an app with.
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "The theme SDK: the part painter interface every theme draws through, built in or loaded from wasm."

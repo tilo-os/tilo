@@ -11,6 +11,7 @@ use ui::headless::Framed;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::DrawChild;
 use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -27,7 +28,7 @@ fn relayout(app: &mut Framed<NotesApp>) -> Result<(), String> {
 fn draw(app: &mut NotesApp, theme: &Theme, tr: &mut TextRenderer) {
     let presence = PresenceCtx::empty();
     let mut scene = Scene::new();
-    app.draw(&mut scene, Affine::IDENTITY, tr, theme, &presence);
+    app.draw_child(&mut scene, Affine::IDENTITY, tr, theme, &presence);
 }
 
 #[test]

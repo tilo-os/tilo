@@ -24,7 +24,7 @@ use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use crate::deferred::Deferred;
+use tilo_lock::deferred::Deferred;
 
 /// A Unicode group of the catalogue: a picker tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

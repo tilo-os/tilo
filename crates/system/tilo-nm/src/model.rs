@@ -1,24 +1,16 @@
 //! `NetworkManager`'s answers as types, with no bus.
-//!
-//! The numbers are `NetworkManager`'s own enums (`NMState`,
-//! `NMConnectivityState`, `NMMetered`); a value this crate does not know reads
-//! as unknown rather than as a guess.
 
 /// `NMConnectivityState`: what `NetworkManager` last concluded about reaching
 /// the internet. Reading it never starts a check; see
 /// [`crate::NmClient::check_connectivity_now`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum NmConnectivity {
-    /// Not checked, checking disabled, or a value this crate does not know.
     #[default]
     Unknown,
-    /// No network path at all.
     None,
     /// A captive portal intercepts traffic until the person signs in.
     Portal,
-    /// Connected, but the internet is not reachable.
     Limited,
-    /// The internet is reachable.
     Full,
 }
 
@@ -36,7 +28,6 @@ impl NmConnectivity {
     }
 }
 
-/// `NMState`: the daemon's overall networking state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum NmState {
     /// `NetworkManager` is not answering, or reported a value this crate does
@@ -47,11 +38,8 @@ pub enum NmState {
     Disconnected,
     Disconnecting,
     Connecting,
-    /// Only a local network is reachable.
     ConnectedLocal,
-    /// A site-wide network is reachable, but not the internet.
     ConnectedSite,
-    /// The internet is reachable.
     ConnectedGlobal,
 }
 
@@ -71,7 +59,6 @@ impl NmState {
         }
     }
 
-    /// Whether any connection is up.
     #[must_use]
     pub const fn is_connected(self) -> bool {
         matches!(
@@ -94,16 +81,13 @@ pub const fn metered_from_raw(raw: u32) -> Option<bool> {
     }
 }
 
-/// What kind of link carries the primary connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LinkKind {
     /// Ethernet and the virtual devices built on it (bridge, bond, team,
     /// VLAN). A phone tethered over USB is Ethernet too.
     Wired,
     Wifi,
-    /// Mobile broadband, or a phone tethered over Bluetooth.
     Mobile,
-    /// Anything else `NetworkManager` can make primary.
     Other,
 }
 
@@ -128,13 +112,10 @@ impl LinkKind {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PrimaryLink {
     pub kind: LinkKind,
-    /// The connection profile's name; on Wi-Fi usually the SSID.
     pub name: Option<String>,
-    /// The kernel interface, e.g. `wlp2s0`.
     pub device: Option<String>,
 }
 
-/// One reading of `NetworkManager`'s root object.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct NetworkState {
     pub state: NmState,
@@ -142,7 +123,6 @@ pub struct NetworkState {
     /// `NetworkManager`'s global `Metered`: the primary connection's metering,
     /// not a scan of every device. `None` when it does not say.
     pub metered: Option<bool>,
-    /// `None` while nothing is connected.
     pub primary: Option<PrimaryLink>,
 }
 
@@ -163,10 +143,8 @@ impl NetworkState {
     }
 }
 
-/// `NMActiveConnectionState`: where an active connection is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ActiveState {
-    /// A value this crate does not know.
     #[default]
     Unknown,
     Activating,
@@ -206,10 +184,8 @@ pub fn is_vpn_type(kind: &str) -> bool {
     matches!(kind, "vpn" | "wireguard")
 }
 
-/// A VPN `NetworkManager` has active.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ActiveVpn {
-    /// The profile's id.
     pub uuid: String,
     pub state: ActiveState,
 }
@@ -228,14 +204,11 @@ pub struct VpnReading {
     pub ended_on_purpose: std::collections::BTreeMap<String, u64>,
 }
 
-/// `NMDeviceType`, as far as Tilo tells devices apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DeviceKind {
     Ethernet,
     Wifi,
-    /// A mobile broadband modem (`ModemManager`'s).
     Modem,
-    /// Anything else: loopback, bridges, tunnels, Wi-Fi P2P, …
     Other,
 }
 
@@ -252,60 +225,41 @@ impl DeviceKind {
     }
 }
 
-/// `NMDeviceState` `ACTIVATED`: the device's connection is up.
 pub const DEVICE_ACTIVATED: u32 = 100;
 
-/// A network device `NetworkManager` knows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {
-    /// Its object.
     pub path: String,
-    /// The kernel interface (`wlp2s0`).
     pub interface: String,
     pub kind: DeviceKind,
-    /// `NMDeviceState`.
     pub state: u32,
-    /// The hardware address in use.
     pub hw_address: String,
-    /// Its active connection's object; `None` while it has none.
     pub active: Option<String>,
 }
 
 impl Device {
-    /// Whether its connection is up.
     #[must_use]
     pub const fn is_activated(&self) -> bool {
         self.state == DEVICE_ACTIVATED
     }
 }
 
-/// A Wi-Fi access point a device sees.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccessPoint {
-    /// Its object.
     pub path: String,
-    /// The device that sees it.
     pub device: String,
-    /// The network's name; empty for a hidden network.
     pub ssid: String,
     /// Signal strength in percent.
     pub strength: u8,
-    /// `NM80211ApFlags`.
     pub flags: u32,
-    /// `NM80211ApSecurityFlags` of its WPA and RSN (WPA2/WPA3) elements.
     pub wpa_flags: u32,
     pub rsn_flags: u32,
-    /// In MHz.
     pub frequency: u32,
-    /// In kbit/s.
     pub max_bitrate: u32,
-    /// Whether its device is connected through it.
     pub active: bool,
 }
 
-/// `NM80211ApFlags` `PRIVACY`: the network encrypts.
 pub const AP_PRIVACY: u32 = 0x1;
-/// `NM80211ApSecurityFlags` key management suites.
 pub const AP_KEY_PSK: u32 = 0x100;
 pub const AP_KEY_8021X: u32 = 0x200;
 pub const AP_KEY_SAE: u32 = 0x400;
@@ -313,24 +267,17 @@ pub const AP_KEY_OWE: u32 = 0x800;
 pub const AP_KEY_OWE_TRANSITION: u32 = 0x1000;
 pub const AP_KEY_EAP_SUITE_B_192: u32 = 0x2000;
 
-/// An active connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActiveConnection {
-    /// Its object.
     pub path: String,
-    /// The profile's name and id.
     pub id: String,
     pub uuid: String,
-    /// The profile's type (`802-11-wireless`, `vpn`, …).
     pub kind: String,
     pub state: ActiveState,
-    /// The devices' objects.
     pub devices: Vec<String>,
-    /// The profile's object.
     pub profile: String,
 }
 
-/// What a device holds of one address family now.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IpDetails {
     /// Each with its prefix (`192.0.2.10/24`).
@@ -339,7 +286,6 @@ pub struct IpDetails {
     pub dns: Vec<String>,
 }
 
-/// `NetworkManager`'s radio switches.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -347,13 +293,11 @@ pub struct IpDetails {
 )]
 pub struct Radios {
     pub wifi_enabled: bool,
-    /// False while a hardware switch holds Wi-Fi off.
     pub wifi_hardware_enabled: bool,
     pub wwan_enabled: bool,
     pub wwan_hardware_enabled: bool,
 }
 
-/// Why an activation ended, for a person: `NMActiveConnectionStateReason`.
 #[must_use]
 pub const fn activation_failure(reason: u32) -> &'static str {
     match reason {

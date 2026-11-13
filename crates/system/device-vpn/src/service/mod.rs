@@ -1,10 +1,5 @@
 //! The helper itself: who may ask ([`peer`]), what it does ([`plan`]), the
 //! socket loop ([`server`]) and the machine it does it on (`linux`).
-//!
-//! The service keeps one client tunnel, one exit and one block of the
-//! person's VPN profiles per machine, each owned by the person whose shell
-//! asked for it, and remembers them in a record that outlives the process,
-//! so a restarted helper still undoes what an earlier one set up.
 
 pub mod peer;
 pub mod plan;
@@ -29,19 +24,14 @@ pub struct Caller {
     pub uid: u32,
 }
 
-/// What the service needs of the machine.
 pub trait Backend {
-    /// Create the TUN `name` and hand over its only descriptor.
     fn create_tun(&mut self, name: &str) -> Result<OwnedFd, String>;
     /// Run `command`; a failure of a required one is an error.
     fn run(&mut self, command: &Command) -> Result<(), String>;
     fn interface_exists(&self, name: &str) -> bool;
-    /// Whether the person `uid` still has a session.
     fn has_session(&self, uid: u32) -> bool;
-    /// Whether IPv4 forwarding is on.
     fn forwarding(&self) -> Result<bool, String>;
     fn set_forwarding(&mut self, on: bool) -> Result<(), String>;
-    /// Keep `record` where the next helper finds it.
     fn save(&mut self, record: &Record) -> Result<(), String>;
 }
 
@@ -154,7 +144,6 @@ impl<B: Backend> Service<B> {
         link.check()
             .map_err(|reason| Response::Refused { reason })?;
         let previous = self.record.client.clone();
-        // A replaced tunnel's TUN may still exist: the new one takes its name.
         if previous.is_some() {
             let _ = self.backend.run(&plan_delete_link(CLIENT_INTERFACE));
         }
@@ -205,7 +194,6 @@ impl<B: Backend> Service<B> {
         Response::Done
     }
 
-    /// Take the client tunnel down entirely, whatever state it is in.
     fn undo_client(&mut self) {
         let Some(client) = self.record.client.clone() else {
             return;

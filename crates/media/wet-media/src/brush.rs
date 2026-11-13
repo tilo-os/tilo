@@ -5,12 +5,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::grid::float;
 
-/// One point of a stroke as a painter places it.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StrokePoint {
     pub x: f32,
     pub y: f32,
-    /// `0..=1`; scales the brush width (and, for oil, how hard it presses).
     #[serde(default = "full")]
     pub pressure: f32,
 }
@@ -25,29 +23,18 @@ impl StrokePoint {
     }
 }
 
-/// A sample along a smoothed stroke.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sample {
     pub x: f32,
     pub y: f32,
     pub pressure: f32,
-    /// Unit tangent.
     pub tx: f32,
     pub ty: f32,
-    /// Arc length from the start.
     pub distance: f32,
 }
 
-/// How far, in radians, a stroke turns at a point for that point to be a
-/// corner the stroke keeps sharp rather than a bend it curves through
-/// (70 degrees: a square's and a pentagon's corners, not a hexagon's).
 pub const CORNER: f32 = 70.0 * std::f32::consts::PI / 180.0;
 
-/// The stroke through `points` as samples `spacing` apart along a
-/// centripetal Catmull-Rom spline, so a handful of points makes a smooth
-/// curve and a sharp turn does not overshoot. At a point where the stroke
-/// turns by more than [`CORNER`] the curve breaks: it comes into the point
-/// and leaves it straight, so a square drawn as five points stays square.
 pub fn smooth(points: &[StrokePoint], spacing: f32) -> Vec<Sample> {
     let spacing = spacing.max(0.05);
     let points: Vec<StrokePoint> = points
@@ -80,8 +67,6 @@ pub fn smooth(points: &[StrokePoint], spacing: f32) -> Vec<Sample> {
     resample(&dense, spacing)
 }
 
-/// Points along the spline, a fraction of a unit apart; the spline starts
-/// afresh at each corner, as at the stroke's ends.
 fn densify(points: &[StrokePoint]) -> Vec<StrokePoint> {
     let mut dense = Vec::new();
     let count = points.len();
@@ -135,8 +120,6 @@ fn reflect(through: StrokePoint, from: StrokePoint) -> StrokePoint {
     }
 }
 
-/// How far, in radians, the path `a`, `b`, `c` turns at `b`: none when a
-/// step has no length.
 fn turn(a: StrokePoint, b: StrokePoint, c: StrokePoint) -> f32 {
     let (ux, uy) = (b.x - a.x, b.y - a.y);
     let (vx, vy) = (c.x - b.x, c.y - b.y);
@@ -150,7 +133,6 @@ fn distance(a: StrokePoint, b: StrokePoint) -> f32 {
     (b.x - a.x).hypot(b.y - a.y)
 }
 
-/// One point on the centripetal (alpha = 0.5) Catmull-Rom segment p1..p2.
 fn catmull_rom(
     p0: StrokePoint,
     p1: StrokePoint,
@@ -182,7 +164,6 @@ fn catmull_rom(
     out
 }
 
-/// Evenly spaced samples along a dense polyline.
 fn resample(dense: &[StrokePoint], spacing: f32) -> Vec<Sample> {
     let mut samples = Vec::new();
     let Some(first) = dense.first().copied() else {
@@ -232,13 +213,10 @@ fn resample(dense: &[StrokePoint], spacing: f32) -> Vec<Sample> {
     samples
 }
 
-/// The total length of a sampled stroke.
 pub fn length(samples: &[Sample]) -> f32 {
     samples.last().map_or(0.0, |sample| sample.distance)
 }
 
-/// How a stroke's width eases in and out over its length: brushes land and
-/// lift rather than starting at full width.
 pub fn taper(distance: f32, total: f32, size: f32) -> f32 {
     let land = (size * 0.6).max(0.5);
     let lift = (size * 0.9).max(0.5);
@@ -247,8 +225,6 @@ pub fn taper(distance: f32, total: f32, size: f32) -> f32 {
     (0.35 + 0.65 * start.min(end)).clamp(0.0, 1.0)
 }
 
-/// The closed outline of an ink line of `size` along `samples`, width
-/// following pressure and taper, with round ends. Returns one polygon.
 pub fn ink_outline(samples: &[Sample], size: f32) -> Vec<(f32, f32)> {
     let total = length(samples);
     let half = |sample: &Sample| {
@@ -275,7 +251,6 @@ pub fn ink_outline(samples: &[Sample], size: f32) -> Vec<(f32, f32)> {
     outline
 }
 
-/// A half circle closing one end of an outline.
 fn cap(sample: &Sample, radius: f32, start: bool) -> Vec<(f32, f32)> {
     let base = sample.ty.atan2(sample.tx);
     let (from, sign) = if start {
@@ -347,7 +322,6 @@ mod tests {
             StrokePoint::new(0.0, 0.0, 1.0),
         ];
         let samples = smooth(&points, 0.5);
-        // Every sample lies on the square's sides: none bulges out or cuts in.
         for sample in &samples {
             let edge = sample
                 .x

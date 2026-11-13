@@ -60,23 +60,16 @@ use render::Drawn;
 /// buffer in one piece.
 pub const HISTORY_PAGE: usize = 64;
 
-/// What reading a line came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Read {
-    /// The person pressed Enter on this text.
     Line(String),
-    /// `Ctrl+D` on an empty line, or the input ended.
     Eof,
-    /// `Ctrl+C`: what was typed is dropped.
     Cancelled,
-    /// A command line `run` asked for, and whether an agent asked.
     Requested { line: String, agent: bool },
 }
 
-/// The editor's state across lines: what lives as long as the session.
 #[derive(Default)]
 pub(crate) struct State {
-    /// The key of Terminal's marks, when Terminal asked for them.
     pub(crate) runs_key: Option<String>,
     /// The session's terminal: where keys come from and the editor draws,
     /// whatever a command's own streams are.
@@ -87,22 +80,17 @@ pub(crate) struct State {
     decoder: Decoder,
     kills: KillRing,
     history: History,
-    /// The line as the app's field ([`crate::field`]).
     native: native::Native,
 }
 
 #[derive(Default)]
 struct History {
-    /// The lines this shell ran, newest first.
     local: Vec<String>,
-    /// The person's history as answered so far, newest first.
     remote: Vec<String>,
     remote_done: bool,
-    /// What the last search looked for, and what was answered for it.
     search: String,
     search_remote: Vec<String>,
     search_done: bool,
-    /// The question asked of Terminal and not answered yet.
     pending: Option<Query>,
 }
 
@@ -179,7 +167,6 @@ impl State {
     }
 }
 
-/// The parts of a mark of Terminal's: its kind and its fields.
 struct Mark<'a> {
     kind: &'a str,
     fields: Vec<(&'a str, &'a str)>,
@@ -213,7 +200,6 @@ fn unb64(text: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-/// What an incoming mark asked for.
 enum Incoming {
     History {
         query: Query,
@@ -251,17 +237,12 @@ fn incoming(body: &str, key: &str) -> Option<Incoming> {
     }
 }
 
-/// What reading the next key came to.
 enum Next {
     Key(Key, Vec<u8>),
-    /// The app's field has a request to serve.
     Woken,
-    /// The input ended.
     End,
 }
 
-/// What the last key did, for the edits that join their predecessor (kills
-/// in a row are one kill; typing in a row is one undo).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Last {
     Other,
@@ -271,7 +252,6 @@ enum Last {
     Tab,
 }
 
-/// What a recall waits for an answer to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Waiting {
     /// Up was pressed this many times past the lines answered so far.
@@ -279,7 +259,6 @@ enum Waiting {
     Search,
 }
 
-/// Reverse incremental search (`Ctrl+R`).
 struct Search {
     text: String,
     /// Which of the lines found is shown.
@@ -289,18 +268,14 @@ struct Search {
     original: Line,
 }
 
-/// One line being edited.
 struct Edit {
     prompt: String,
     line: Line,
     drawn: Drawn,
     undo: Vec<Line>,
     last: Last,
-    /// What the key before this one did.
     previous: Last,
-    /// Which history entry the line shows, if one.
     position: Option<usize>,
-    /// The line being typed before recall replaced it.
     saved: Option<Line>,
     search: Option<Search>,
     waiting: Option<Waiting>,
@@ -323,8 +298,6 @@ impl Edit {
         }
     }
 
-    /// Keep the line as it is before an edit, for `Ctrl+_`: characters
-    /// typed in a row are one step.
     fn checkpoint(&mut self, typing: bool) {
         if !(typing && self.previous == Last::Typed) {
             self.undo.push(self.line.clone());
@@ -333,13 +306,10 @@ impl Edit {
 }
 
 impl Shell {
-    /// The editor's state, shared with the shell's copies.
     pub(crate) fn editor(&self) -> Arc<Mutex<State>> {
         Arc::clone(&self.editor)
     }
 
-    /// Read one line at `prompt` with the editor, or `None` when the host
-    /// has no terminal to edit on (lines are then read as they come).
     pub(crate) fn edit_line(&self, prompt: &str, first: bool) -> Option<Read> {
         let input = self.input(0)?;
         let screen = self.output(2)?;
@@ -395,7 +365,6 @@ impl Shell {
         let _ = screen.write_str(&out);
     }
 
-    /// Move below what is drawn, leaving it on the screen.
     fn leave(&self, screen: &Output, edit: &Edit) {
         let out = render::finish(
             edit.drawn,
@@ -406,9 +375,6 @@ impl Shell {
         let _ = screen.write_str(&out);
     }
 
-    /// The next key, and the bytes it came as. With `woken`, a read the
-    /// app's field interrupted ([`crate::field::Field::listen`]) comes back
-    /// as [`Next::Woken`] before a key is under way.
     fn next_key(state: &mut State, input: &Input, woken: bool) -> Next {
         let mut bytes = Vec::new();
         loop {
@@ -692,8 +658,6 @@ impl Shell {
         }
     }
 
-    /// Up (`older`) or Down: the next line of the person's history, asking
-    /// for more of it when the lines answered so far run out.
     fn recall(&self, state: &mut State, edit: &mut Edit, older: bool) {
         let entries = state.history.entries();
         let next = match (edit.position, older) {
@@ -731,9 +695,6 @@ impl Shell {
         }
     }
 
-    /// Ask for the history `query` names. Whether it was answered now (by
-    /// the host, or because there is nobody to ask); otherwise Terminal's
-    /// answer arrives on the input.
     fn ask_history(&self, state: &mut State, query: Query) -> bool {
         let asked = HistoryQuery {
             skip: query.skip,
@@ -763,9 +724,6 @@ impl Shell {
         false
     }
 
-    /// Find the line the search shows: the `index`th line holding its text,
-    /// asking for more when the lines answered so far run out. `fresh` when
-    /// the text changed.
     fn search_step(&self, state: &mut State, edit: &mut Edit, fresh: bool) {
         let Some(search) = edit.search.as_mut() else {
             return;
@@ -868,8 +826,6 @@ impl Shell {
         }
     }
 
-    /// Tab: complete the word before the cursor; a second Tab lists what it
-    /// could become.
     fn tab(&self, screen: &Output, edit: &mut Edit, again: bool) {
         let before = edit.line.before();
         let found = self.complete(&before);
@@ -898,8 +854,6 @@ impl Shell {
 }
 
 impl Shell {
-    /// Every line of the person's history, newest first, this shell's own
-    /// lines first: what `history` lists.
     pub(crate) fn whole_history(&self) -> Vec<String> {
         let shared = self.editor();
         let mut state = lock_state(&shared);
@@ -927,9 +881,6 @@ impl Shell {
         merged(&state.history.local, &remote, "")
     }
 
-    /// Ask Terminal for one page of the history and wait for its answer,
-    /// keeping whatever else was typed meanwhile for the editor. `None`
-    /// where there is no Terminal to ask.
     fn ask_terminal_now(
         &self,
         state: &mut State,
@@ -984,8 +935,6 @@ impl Shell {
     }
 }
 
-/// What a key did to the search: took part in it, or ended it and is to
-/// do what it does on the line.
 enum SearchKey {
     Handled,
     Leave,

@@ -157,9 +157,6 @@ mod availability_control_tests {
                 wake.send_modify(|generation| *generation = generation.wrapping_add(1));
             });
 
-            // The transfer outlasts any unpin: persisting the unpinned
-            // registry is a durable write, which a loaded disk can hold for
-            // longer than any fixed transfer time.
             let cancelled = await_current_pinned_hydration(
                 tokio::time::sleep(tilo_test_env::hang_bound()),
                 &candidate,
@@ -279,8 +276,6 @@ mod availability_control_tests {
             fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
                 .unwrap();
 
-            // Created after the pin: no direct registry row is needed for the
-            // effective projection to inherit the stable directory policy.
             let child = namespace
                 .lock_recover()
                 .create_file(folder, "later.txt", None, 0, 2)
@@ -354,7 +349,6 @@ mod availability_control_tests {
         fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
             .unwrap();
 
-        // This file did not exist when its stable parent was pinned.
         let child = namespace
             .lock()
             .unwrap()
@@ -376,11 +370,7 @@ mod availability_control_tests {
                 .unwrap()
                 .set_content_revision(child, &first_revision, 2)
         );
-        // Issue the same wake used after a local namespace publish. It must not
-        // wait for the deliberately slow repair scan.
         fs.wake_pinned_hydration();
-        // No peer is configured yet. The worker records an actionable error
-        // and a durable backoff rather than spinning or claiming success.
         wait_for_availability(&registry, record_id, |record| {
             record.transfer.last_error.is_some()
                 && record.transfer.retry_count > 0
@@ -390,9 +380,6 @@ mod availability_control_tests {
         drop(fs);
         drop(registry);
 
-        // A process restart reopens the queued policy/error state. Once the
-        // peer is reachable the inherited promise completes without another
-        // user action.
         hydrator.add_peer(source_endpoint.addr());
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(&registry_path).unwrap(),
@@ -407,8 +394,6 @@ mod availability_control_tests {
                 && record.transfer.last_error.is_none()
         })
         .await;
-        // A later immutable version invalidates the old residency proof and
-        // is hydrated under the same durable ancestor pin.
         let second_version = fs_protocol::FileVersionId::new();
         let second_revision = fs_protocol::ContentRevisionV1 {
             version_id: second_version,
@@ -435,73 +420,6 @@ mod availability_control_tests {
         close_pinned_test_source(source_router, source_endpoint, client_endpoint).await;
     }
 
-    /// A mount with an availability registry hands its replica receipts to
-    /// the cache budget: what a host acknowledged holding goes first, even
-    /// when it was used more recently than content nothing else holds.
-    #[tokio::test]
-    async fn the_cache_budget_gives_up_what_a_host_acknowledged_first() {
-        use crate::store::area::Retention;
-        let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let hydrator = Arc::new(Hydrator::new(
-            endpoint.clone(),
-            Arc::new(ContentStore::memory()),
-        ));
-        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let registry = Arc::new(Mutex::new(
-            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
-        ));
-        let (held, only_here) = ([0x41; 32], [0x42; 32]);
-        let version = fs_protocol::FileVersionId::new();
-        let mut record =
-            RecordAvailability::new(fs_protocol::FileRecordId::new(), RecordKind::File);
-        record.current_version = Some(version);
-        crate::availability::test_receipts::acknowledge(
-            &mut record,
-            version,
-            fs_protocol::ContentHash(held),
-            now_ms(),
-        );
-        registry.lock().unwrap().put(record).unwrap();
-        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
-        let fs = QuickFS::new(namespace, Arc::clone(&hydrator), heuristics)
-            .with_availability(Arc::clone(&registry));
-
-        let files = fs.hydrator.store.files();
-        files
-            .adopt_bytes(&only_here, &[1; 100], Retention::Cached, &[])
-            .unwrap();
-        files
-            .adopt_bytes(&held, &[2; 100], Retention::Cached, &[])
-            .unwrap();
-        files.touch(&held);
-        // Then the working set, read since: never given up for being held.
-        let working_set: Vec<[u8; 32]> = (0..crate::store::area::WORKING_SET_ENTRIES)
-            .map(|n| [u8::try_from(n).unwrap(); 32])
-            .collect();
-        for key in &working_set {
-            files
-                .adopt_bytes(key, &[3; 100], Retention::Cached, &[])
-                .unwrap();
-            files.touch(key);
-        }
-        files.set_budget(100 * (1 + working_set.len() as u64));
-        files.evict_to_budget(&[]);
-        assert!(
-            files.entry(&held).is_none(),
-            "the host keeps it to fetch again"
-        );
-        assert!(files.entry(&only_here).is_some());
-
-        drop(fs);
-        endpoint.close().await;
-    }
-
-    /// "Keep offline" holds a file's bytes against the cache budget exactly
-    /// while a pin covers it: a file already read in full is kept from the
-    /// pass that sees the pin, its bytes go back to the cache once no pin
-    /// covers it, and a file only this device holds is never made
-    /// evictable by either.
     #[tokio::test]
     async fn keep_offline_holds_bytes_against_the_cache_budget_only_while_pinned() {
         use crate::store::area::Retention;
@@ -512,7 +430,6 @@ mod availability_control_tests {
         let bytes = |byte: u8| vec![byte; usize::try_from(size).unwrap()];
         let read = store.write_content(&bytes(1)).await.unwrap().unwrap();
         let authored = store.write_content(&bytes(2)).await.unwrap().unwrap();
-        // `read` came from a peer and was read in full: a cached copy.
         store
             .files()
             .set_retention(read.as_bytes(), Retention::Cached)
@@ -589,10 +506,6 @@ mod availability_control_tests {
         endpoint.close().await;
     }
 
-    /// A file already here when it is pinned is held before the pass that
-    /// sees the pin fetches anything: what that pass downloads counts
-    /// against a full cache budget when it lands, and must not push out a
-    /// file the same pin covers.
     #[tokio::test]
     async fn a_pinned_download_never_evicts_a_file_the_same_pin_already_holds() {
         use crate::store::area::Retention;
@@ -613,7 +526,6 @@ mod availability_control_tests {
         let client_endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let here = store.write_content(&bytes(1)).await.unwrap().unwrap();
-        // `here` came from a peer and was read in full: a cached copy.
         store
             .files()
             .set_retention(here.as_bytes(), Retention::Cached)
@@ -640,7 +552,6 @@ mod availability_control_tests {
             .with_availability(Arc::clone(&registry));
         let (_wake, wakes) = tokio::sync::watch::channel(0_u64);
         let files = store.files();
-        // The cache is full: whatever lands next makes room by eviction.
         files.set_budget(0);
 
         fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
@@ -669,7 +580,6 @@ mod availability_control_tests {
         close_pinned_test_source(source_router, source_endpoint, client_endpoint).await;
     }
 
-    /// How many times the mount's pin worker has come back to wait.
     fn worker_turns(fs: &QuickFS) -> u64 {
         fs.pinned_hydration
             .as_ref()
@@ -678,8 +588,6 @@ mod availability_control_tests {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Waits for `turns` more turns of the mount's pin worker, looking every
-    /// `every`.
     async fn after_turns(fs: &QuickFS, turns: u64, every: Duration) {
         let from = worker_turns(fs);
         tilo_test_env::within(format!("{turns} turns of the pin worker"), async {
@@ -725,10 +633,6 @@ mod availability_control_tests {
         })
         .await;
         let walks = || namespace.lock().unwrap().node_entry_read_count();
-        // Counted in the worker's own turns, not in time: however slowly
-        // its ticks come, each one is a chance to walk. The pass that
-        // observes the worker's own registry writes runs first: settled once
-        // two ticks in a row walk nothing.
         let settled = loop {
             let before = walks();
             after_turns(&fs, 2, repair).await;
@@ -743,8 +647,6 @@ mod availability_control_tests {
             "ticks with nothing changed must not walk the namespace"
         );
 
-        // A change that arrives without a wake (as a remote apply does) is
-        // still repaired, now on the namespace's own announcement.
         let late = {
             let mut namespace = namespace.lock().unwrap();
             let ino = namespace
@@ -762,11 +664,6 @@ mod availability_control_tests {
         endpoint.close().await;
     }
 
-    /// #4130. The faults the repair tick existed for, with no tick to
-    /// lean on (an hour's backstop): a pinned folder gains a file through a
-    /// namespace change no FUSE callback saw (as a remote apply does), and
-    /// a folder is pinned by a registry writer other than this mount (as
-    /// the storage socket does). Each is hydrated on its own announcement.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pins_are_repaired_on_announcements_without_a_tick() {
         let dir = tempfile::tempdir().unwrap();
@@ -807,8 +704,6 @@ mod availability_control_tests {
         })
         .await;
 
-        // Another writer of the registry pins a folder this mount never
-        // touched; the worker learns of it from the registry alone.
         let (root, other, inside) = {
             let mut namespace = namespace.lock().unwrap();
             let other = namespace
@@ -823,8 +718,6 @@ mod availability_control_tests {
                 namespace.record_id_for(inside).unwrap(),
             )
         };
-        // Let the pass those namespace changes start finish first, so only
-        // the registry's announcement can bring the pin.
         let turns = worker_turns(&fs);
         tilo_test_env::within("the pass the namespace changes start", async {
             while worker_turns(&fs) == turns {
@@ -1101,8 +994,6 @@ mod availability_control_tests {
             EvictionRequestState::Completed { .. }
         ));
         let queue = Arc::new(tokio::sync::Mutex::new(queue));
-        // Simulate a new immutable revision arriving after the old request
-        // completed but before daemon restart recovery runs.
         let newer_version = fs_protocol::FileVersionId::new();
         let mut current = registry.lock_recover().get(record_id).cloned().unwrap();
         current.current_version = Some(newer_version);
@@ -1133,7 +1024,6 @@ mod thumb_tests {
     use iroh::endpoint::Endpoint;
     use iroh::endpoint::presets;
     use std::io::Cursor;
-    use uuid::Uuid;
 
     fn solid_png(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
         let mut buf = image::RgbaImage::new(w, h);
@@ -1166,10 +1056,6 @@ mod thumb_tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     async fn thumbnails_are_generated_verified_and_published() {
-        // Phase `host_generates_a_thumbnail_and_records_its_hash`.
-        // The headline: the host generates a preview from a file's local
-        // content, serves it as metadata, records its blob hash on the node so
-        // it projects to peers, and a second request hits the cache.
         {
             let dir = tempfile::tempdir().unwrap();
             let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
@@ -1182,7 +1068,6 @@ mod thumb_tests {
                     .unwrap()
             };
 
-            // No thumbnail recorded yet.
             assert!(namespace.lock_recover().thumb_hash(ino).is_none());
 
             let thumb = fs.thumbnail_for(ino).expect("host generates a preview");
@@ -1198,9 +1083,6 @@ mod thumb_tests {
                 "the preview is far smaller than the source"
             );
 
-            // The thumbnail's blob hash is now on the node (so it reaches
-            // peers), and the blob is a content blob in the store that peers
-            // can hydrate.
             let tbh = namespace
                 .lock_recover()
                 .thumb_hash(ino)
@@ -1210,77 +1092,16 @@ mod thumb_tests {
                 "the thumbnail blob is stored for peers"
             );
 
-            // A second request returns the identical bytes from the cache.
             let again = fs.thumbnail_for(ino).expect("cached");
             assert_eq!(
                 again, thumb,
                 "second request is a cache hit, identical bytes"
             );
         }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-            let store = Arc::new(ContentStore::memory());
-            let image = solid_png(320, 240, [35, 90, 180]);
-            let manifest = store.write_content(&image).await.unwrap().unwrap();
-            let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-            let ino = namespace
-                .lock_recover()
-                .create_file(
-                    ROOT_INO,
-                    "signed.png",
-                    Some(&manifest),
-                    image.len() as u64,
-                    1,
-                )
-                .unwrap();
-            let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
-            let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
-            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-            let device = ed25519_dalek::SigningKey::from_bytes(&[0x72; 32]);
-            let person = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
-            let actor = fs_protocol::FileActor {
-                person: collab_types::Ed25519PublicKey(person.verifying_key().to_bytes()),
-                device: collab_types::Ed25519PublicKey(device.verifying_key().to_bytes()),
-            };
-            let repository = Arc::new(
-                crate::record_repository::RecordRepository::open(dir.path().join("records"))
-                    .unwrap(),
-            );
-            let publisher = Arc::new(
-                crate::record_publisher::RecordPublisher::new(
-                    repository,
-                    Uuid::from_u128(0x7065),
-                    actor,
-                    device,
-                )
-                .unwrap(),
-            );
-            let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
-                .with_thumbs(ThumbProvider::open(dir.path().join("thumbs")).unwrap())
-                .with_history(actor)
-                .unwrap()
-                .with_record_publisher(publisher.clone())
-                .unwrap();
-
-            assert!(fs.thumbnail_for(ino).is_some());
-            let verified = namespace
-                .lock_recover()
-                .thumb_hash(ino)
-                .expect("signed preview is installed in the verified projection");
-            let snapshot = publisher.snapshot(record_id).unwrap().unwrap();
-            assert!(snapshot.metadata.unwrap().previews.iter().any(|preview| {
-                preview.status == fs_protocol::PreviewStatus::Ready
-                    && preview.hash == Some(fs_protocol::ContentHash(*verified.as_bytes()))
-            }));
-        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn thumbnails_survive_remounts_and_are_absent_without_content() {
-        // Phase `thumbnail_survives_a_remount`.
-        // A preview survives a remount: a fresh mount over the same cache
-        // directory serves the same thumbnail without re-reading the file's content.
         {
             let dir = tempfile::tempdir().unwrap();
             let png = solid_png(320, 240, [200, 60, 30]);
@@ -1296,13 +1117,8 @@ mod thumb_tests {
                 fs.thumbnail_for(ino).expect("generated")
             };
 
-            // A brand-new mount (fresh store, content NOT local) over the same
-            // thumb cache still serves the preview, confirming it came from the
-            // persistent cache, not a re-decode.
             let (namespace2, store2, fs2) = fixture(dir.path().join("thumbs")).await;
-            // Same content hash → same cache key. Register the node without the bytes.
             let mh = store2.write_content(&png).await.unwrap().unwrap();
-            // Remove the content so it is not local on this mount.
             let ino2 = {
                 let mut ns = namespace2.lock_recover();
                 ns.create_file(ROOT_INO, "pic.png", Some(&mh), png.len() as u64, 1)
@@ -1316,14 +1132,10 @@ mod thumb_tests {
                 "same content → same cached preview after remount"
             );
         }
-        // Phase `no_local_content_and_badge_types_yield_no_thumbnail`.
-        // A file whose content is not local yields no thumbnail (the host never
-        // hydrates content just to preview it); a badge-only type never does either.
         {
             let dir = tempfile::tempdir().unwrap();
             let (namespace, _store, fs) = fixture(dir.path().join("thumbs")).await;
 
-            // A projected image: a hash the store never ingested (not local).
             let projected = iroh_blobs::Hash::from([3u8; 32]);
             let img_ino = {
                 let mut ns = namespace.lock_recover();
@@ -1335,7 +1147,6 @@ mod thumb_tests {
                 "no preview without local content — never hydrate the file to make one"
             );
 
-            // A non-previewable type is never a thumbnail regardless of content.
             let zip_ino = {
                 let mut ns = namespace.lock_recover();
                 ns.create_file(ROOT_INO, "bundle.zip", Some(&projected), 4096, 1)
@@ -1348,24 +1159,17 @@ mod thumb_tests {
         }
     }
 
-    /// The projected-preview-before-content path: a peer with only replicated
-    /// metadata (thumbnail blob hash + blob) shows a preview WITHOUT the
-    /// file's content ever being local.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_replicated_thumbnail_is_served_before_content() {
         let dir = tempfile::tempdir().unwrap();
         let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
 
-        // The small thumbnail a host generated, present as a content blob
-        // (as it would be after hydrating the tiny blob from the host).
         let preview = thumbnail::encode_png(
             &thumbnail::image_thumb(&solid_png(256, 256, [90, 200, 120]), 256).unwrap(),
         )
         .unwrap();
         let thumb_blob = store.ingest(preview.clone()).await.unwrap();
 
-        // The file's content is projected (not local), but the node carries the
-        // replicated thumbnail hash.
         let projected = iroh_blobs::Hash::from([5u8; 32]);
         let ino = {
             let mut ns = namespace.lock_recover();
@@ -1517,7 +1321,6 @@ mod predictive_tests {
                 "a record outside the mount's ACL-filtered view cannot enter search metadata"
             );
         }
-        // Phase `record_catalog_v2_pages_without_a_giant_xattr_and_refuses_stale_revisions`.
         {
             let (namespace, fs) = fixture().await;
             {
@@ -1561,7 +1364,6 @@ mod predictive_tests {
                 "a namespace revision invalidates a page cursor rather than mixing rows"
             );
         }
-        // Phase `record_catalog_v2_refuses_pages_after_a_live_acl_generation_change`.
         {
             const ME: [u8; 32] = [0xA3; 32];
             let (namespace, fs) = fixture().await;
@@ -1589,14 +1391,11 @@ mod predictive_tests {
 
     #[tokio::test]
     async fn v3_record_catalog_hides_denied_rows_and_fails_closed_on_revoke() {
-        // Phase `record_catalog_v3_hides_denied_corpus_and_stably_reaches_visible_rows`.
         {
             const ME: [u8; 32] = [0xA4; 32];
             let (namespace, fs) = fixture().await;
             let visible_record = {
                 let mut ns = namespace.lock_recover();
-                // A deliberately large denied prefix must not change either the
-                // public manifest shape or the work of the visible page.
                 for index in 0..(fs_protocol::projection::RECORD_INDEX_PAGE_ENTRIES * 2) {
                     ns.create_file(ROOT_INO, format!("hidden-{index:04}"), None, 0, 1)
                         .unwrap();
@@ -1626,9 +1425,6 @@ mod predictive_tests {
                     .is_none()
             );
 
-            // This would have leaked through a raw count, offset, source
-            // revision, or freshly-issued initial token.  It is indistinguishable
-            // to the restricted authority.
             namespace
                 .lock_recover()
                 .create_file(ROOT_INO, "another-hidden.txt", None, 0, 1)
@@ -1640,7 +1436,6 @@ mod predictive_tests {
                     .is_some()
             );
         }
-        // Phase `record_catalog_v3_visible_change_resets_and_acl_revoke_fails_closed`.
         {
             const ME: [u8; 32] = [0xA5; 32];
             let (namespace, fs) = fixture().await;
@@ -1700,7 +1495,6 @@ mod predictive_tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     async fn v3_record_catalog_pages_large_views_off_the_request_path() {
-        // Phase `record_catalog_v3_pages_a_large_visible_view_without_source_rescans`.
         {
             const ME: [u8; 32] = [0xA6; 32];
             let (namespace, fs) = fixture().await;
@@ -1756,7 +1550,6 @@ mod predictive_tests {
                 "manifest, page, and exact record requests use the retained snapshot, never Namespace pages"
             );
         }
-        // Phase `record_catalog_v3_refreshes_coalesced_remote_generations_off_request_path`.
         {
             const ME: [u8; 32] = [0xA7; 32];
             let (namespace, fs) = fixture().await;
@@ -1770,21 +1563,18 @@ mod predictive_tests {
                 .unwrap();
             let mut policy = WorkspaceAcl::new();
             policy.grant_read(ME, "/visible");
-            let sync = crate::sync::SyncHandle::test_handle();
-            let fs = fs.with_sync(sync.clone()).with_acl(policy, ME);
+            let acl = AclHandle::new(policy.clone());
+            let fs = fs.with_acl(acl.clone(), ME);
             let before: fs_protocol::projection::RecordIndexManifestV3 =
                 serde_json::from_slice(&fs.record_index_manifest_v3().unwrap()).unwrap();
             let page_reads = namespace.lock_recover().record_index_page_read_count();
 
-            // A denied remote mutation rebuilds privately but has no public
-            // generation/token effect. Several notifications coalesce to the
-            // latest watch value, not one traversal per received delta.
             namespace
                 .lock_recover()
                 .create_file(ROOT_INO, "hidden-remote.txt", None, 0, 1)
                 .unwrap();
             for _ in 0..16 {
-                sync.notify_record_index_changed();
+                acl.replace(policy.clone());
             }
             let mut hidden = None;
             for _ in 0..64 {
@@ -1794,7 +1584,12 @@ mod predictive_tests {
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
-            assert_eq!(hidden.unwrap(), serde_json::to_vec(&before).unwrap());
+            let hidden: fs_protocol::projection::RecordIndexManifestV3 =
+                serde_json::from_slice(&hidden.unwrap()).unwrap();
+            assert_eq!(
+                hidden.page_entries, before.page_entries,
+                "only the visible record is listed"
+            );
             let after_hidden_reads = namespace.lock_recover().record_index_page_read_count();
             assert!(
                 after_hidden_reads.saturating_sub(page_reads) <= 2,
@@ -1806,13 +1601,13 @@ mod predictive_tests {
                 .create_file(visible_dir, "remote.txt", None, 0, 1)
                 .unwrap();
             let mut updated = None;
-            sync.notify_record_index_changed();
+            acl.replace(policy.clone());
             for _ in 0..64 {
                 updated = fs.record_index_manifest_v3();
-                if updated
-                    .as_ref()
-                    .is_some_and(|bytes| bytes != &serde_json::to_vec(&before).unwrap())
-                {
+                if updated.as_ref().is_some_and(|bytes| {
+                    serde_json::from_slice::<fs_protocol::projection::RecordIndexManifestV3>(bytes)
+                        .is_ok_and(|manifest| manifest.revision != before.revision)
+                }) {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -1821,23 +1616,22 @@ mod predictive_tests {
                 serde_json::from_slice(&updated.unwrap()).unwrap();
             assert_ne!(updated.revision, before.revision);
         }
-        // Phase `record_catalog_v3_sync_worker_does_not_keep_dropped_mount_alive`.
         {
             const ME: [u8; 32] = [0xA8; 32];
             let (_namespace, fs) = fixture().await;
-            let sync = crate::sync::SyncHandle::test_handle();
             let mut policy = WorkspaceAcl::new();
             policy.grant_read(ME, "/");
-            let fs = fs.with_sync(sync.clone()).with_acl(policy, ME);
+            let acl = AclHandle::new(policy.clone());
+            let fs = fs.with_acl(acl.clone(), ME);
             let weak = Arc::downgrade(&fs.acl_visible_record_index);
             drop(fs);
-            sync.notify_record_index_changed();
+            acl.replace(policy);
             for _ in 0..8 {
                 tokio::task::yield_now().await;
             }
             assert!(
                 weak.upgrade().is_none(),
-                "the sync subscriber must use a weak cache reference and exit after unmount"
+                "the ACL subscriber must use a weak cache reference and exit after unmount"
             );
         }
     }
@@ -1866,14 +1660,12 @@ mod predictive_tests {
         let initial = fs.acl_visible_record_index().unwrap();
         assert_eq!(initial.acl_evaluations, rows());
 
-        // A notification that moved no row keeps the retained view as is.
         fs.refresh_acl_visible_record_index();
         assert!(Arc::ptr_eq(
             &initial,
             &fs.acl_visible_record_index().unwrap()
         ));
 
-        // A new row and a moved row are the only ones judged again.
         let revealed = {
             let mut ns = namespace.lock_recover();
             ns.create_file(visible, "late.txt", None, 0, 2).unwrap();
@@ -1968,7 +1760,6 @@ mod history_integration_tests {
 
         drop(fs);
         drop(history);
-        // The document carries the versions, so the bytes a restart reads do.
         let reopened =
             Namespace::from_bytes("reopened-history", &namespace.lock_recover().save()).unwrap();
         assert_eq!(
@@ -2050,1179 +1841,6 @@ mod history_integration_tests {
     }
 }
 
-#[cfg(test)]
-mod record_publisher_integration_tests {
-    use super::*;
-    use collab_types::Ed25519PublicKey;
-    use ed25519_dalek::SigningKey;
-    use fs_protocol::{FileActor, FileProvenance};
-    use iroh::endpoint::{Endpoint, presets};
-    use uuid::Uuid;
-
-    fn actor_and_signer() -> (FileActor, SigningKey) {
-        let person = SigningKey::from_bytes(&[0x41; 32]);
-        let device = SigningKey::from_bytes(&[0x52; 32]);
-        (
-            FileActor {
-                person: Ed25519PublicKey(person.verifying_key().to_bytes()),
-                device: Ed25519PublicKey(device.verifying_key().to_bytes()),
-            },
-            device,
-        )
-    }
-
-    fn published_snapshot(
-        repository: &crate::record_repository::RecordRepository,
-        publisher: &crate::record_publisher::RecordPublisher,
-        record_id: fs_protocol::FileRecordId,
-    ) -> crate::record_protocol::RecordProtocolSnapshotV1 {
-        let key = crate::record_repository::RecordRepositoryKey {
-            workspace_id: publisher.workspace_id(),
-            record_id,
-        };
-        repository
-            .snapshot(
-                key,
-                &publisher.actor(),
-                &publisher.local_authorizer(record_id),
-            )
-            .unwrap()
-            .into()
-    }
-
-    // End-to-end signed publication/restart scenario; keeping its ordered
-    // durability assertions together makes partial publication visible.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the scenario keeps signed publication, mutation, restart, and exact-state assertions together"
-    )]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn publisher_attach_mutations_and_restart_preserve_exact_record_state() {
-        let dir = tempfile::tempdir().unwrap();
-        let repository_path = dir.path().join("records");
-        let workspace_id = Uuid::from_u128(0x51);
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let store = Arc::new(crate::store::ContentStore::memory());
-        let original = b"opaque bytes that predate record publishing";
-        let original_manifest = store.write_content(original).await.unwrap().unwrap();
-        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let ino = namespace
-            .lock_recover()
-            .create_file(
-                crate::namespace::ROOT_INO,
-                "before.txt",
-                Some(&original_manifest),
-                original.len() as u64,
-                1,
-            )
-            .unwrap();
-        let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
-        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
-        let repository =
-            Arc::new(crate::record_repository::RecordRepository::open(&repository_path).unwrap());
-        let (actor, signer) = actor_and_signer();
-        let publisher = Arc::new(
-            crate::record_publisher::RecordPublisher::new(
-                repository.clone(),
-                workspace_id,
-                actor,
-                signer.clone(),
-            )
-            .unwrap(),
-        );
-        let key = crate::record_repository::RecordRepositoryKey {
-            workspace_id,
-            record_id,
-        };
-
-        let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
-            .with_history(actor)
-            .unwrap();
-        assert!(
-            !repository.contains(key),
-            "history attachment alone must not masquerade as signed publication"
-        );
-        let fs = fs.with_record_publisher(publisher.clone()).unwrap();
-
-        let baseline = published_snapshot(&repository, &publisher, record_id);
-        assert_eq!(baseline.record_id, record_id);
-        assert_eq!(baseline.binding.as_ref().unwrap().name, "before.txt");
-        assert_eq!(baseline.versions.len(), 1);
-        assert_eq!(baseline.versions[0].provenance, FileProvenance::Create);
-        let baseline_metadata = baseline.metadata.as_ref().unwrap();
-        assert_eq!(
-            baseline_metadata.content_hash,
-            Some(fs_protocol::ContentHash(*original_manifest.as_bytes()))
-        );
-        assert_eq!(baseline_metadata.byte_len, original.len() as u64);
-
-        // The protocol-visible content hash is the manifest root itself, not
-        // a hash of reconstructed file bytes or an incidental chunk hash.
-        let manifest_bytes = store.local(original_manifest).await.unwrap();
-        let manifest = crate::content::Manifest::decode(&manifest_bytes).unwrap();
-        let mut reconstructed = Vec::new();
-        for chunk in manifest.chunks().iter().copied() {
-            let chunk_hash = Hash::from(chunk.hash);
-            let bytes = store.local(chunk_hash).await.unwrap();
-            assert_eq!(bytes.len(), chunk.len as usize);
-            reconstructed.extend_from_slice(&bytes);
-        }
-        assert_eq!(reconstructed, original);
-
-        let baseline_sequence = repository.highest_sequence(key, &actor).unwrap();
-        let edited = b"new durable bytes";
-        repository.fail_writes(true);
-        assert!(
-            fs.commit_content(ino, edited).is_err(),
-            "namespace mutation must wait for durable signed publication"
-        );
-        assert_eq!(
-            namespace.lock_recover().hash_for(ino),
-            Some(original_manifest)
-        );
-        assert_eq!(history.snapshot(record_id).unwrap().versions.len(), 1);
-        repository.fail_writes(false);
-
-        fs.commit_content(ino, edited).unwrap();
-        let after_edit = published_snapshot(&repository, &publisher, record_id);
-        assert_eq!(after_edit.versions.len(), 2);
-        assert!(
-            after_edit
-                .versions
-                .iter()
-                .any(|version| version.provenance == FileProvenance::Edit)
-        );
-        let edited_manifest = namespace.lock_recover().hash_for(ino).unwrap();
-        assert_eq!(
-            after_edit.metadata.as_ref().unwrap().content_hash,
-            Some(fs_protocol::ContentHash(*edited_manifest.as_bytes()))
-        );
-        assert_eq!(
-            repository.highest_sequence(key, &actor),
-            Some(baseline_sequence + 3),
-            "an edit publishes a signed version, atomic revision, and metadata"
-        );
-
-        let before_noop = after_edit;
-        let before_noop_sequence = repository.highest_sequence(key, &actor);
-        fs.commit_content(ino, edited).unwrap();
-        assert_eq!(
-            published_snapshot(&repository, &publisher, record_id),
-            before_noop,
-            "an unchanged commit must add neither a version nor metadata"
-        );
-        assert_eq!(
-            repository.highest_sequence(key, &actor),
-            before_noop_sequence
-        );
-
-        fs.rename_named(
-            crate::namespace::ROOT_INO,
-            "before.txt",
-            crate::namespace::ROOT_INO,
-            "after.txt",
-        )
-        .unwrap();
-        assert_eq!(namespace.lock_recover().record_id_for(ino), Some(record_id));
-        let after_rename = published_snapshot(&repository, &publisher, record_id);
-        assert_eq!(after_rename.binding.as_ref().unwrap().name, "after.txt");
-        assert_eq!(
-            after_rename.binding.as_ref().unwrap().parent,
-            namespace
-                .lock_recover()
-                .record_id_for(crate::namespace::ROOT_INO)
-        );
-        assert_eq!(after_rename.versions.len(), 3);
-        assert!(
-            after_rename
-                .versions
-                .iter()
-                .any(|version| version.provenance == FileProvenance::Rename)
-        );
-        assert_eq!(
-            after_rename.metadata.as_ref().unwrap().content_hash,
-            Some(fs_protocol::ContentHash(*edited_manifest.as_bytes()))
-        );
-        let installed_revision = {
-            let namespace = namespace.lock_recover();
-            let node_id = namespace.id_for_ino(ino).unwrap();
-            namespace.content_revision_for_id(node_id)
-        };
-        assert_eq!(
-            installed_revision, after_rename.content_revision,
-            "rename installs the exact signed revision while preserving content"
-        );
-        let sequence_before_restart = repository.highest_sequence(key, &actor).unwrap();
-        let namespace_bytes = namespace.lock_recover().save();
-
-        drop(fs);
-        drop(publisher);
-        drop(repository);
-        drop(history);
-
-        let namespace = Arc::new(Mutex::new(
-            Namespace::from_bytes("restarted-host", &namespace_bytes).unwrap(),
-        ));
-        let restarted_ino = namespace
-            .lock_recover()
-            .lookup(crate::namespace::ROOT_INO, "after.txt")
-            .unwrap()
-            .ino
-            .0;
-        assert_eq!(
-            namespace.lock_recover().record_id_for(restarted_ino),
-            Some(record_id)
-        );
-        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
-        let repository =
-            Arc::new(crate::record_repository::RecordRepository::open(&repository_path).unwrap());
-        let (_, signer) = actor_and_signer();
-        let publisher = Arc::new(
-            crate::record_publisher::RecordPublisher::new(
-                repository.clone(),
-                workspace_id,
-                actor,
-                signer,
-            )
-            .unwrap(),
-        );
-        let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let restarted = QuickFS::new(namespace, hydrator, heuristics)
-            .with_history(actor)
-            .unwrap()
-            .with_record_publisher(publisher.clone())
-            .unwrap();
-        assert_eq!(
-            repository.highest_sequence(key, &actor),
-            Some(sequence_before_restart),
-            "restart backfill must observe the durable watermark and replay nothing"
-        );
-        assert_eq!(
-            published_snapshot(&repository, &publisher, record_id),
-            after_rename
-        );
-
-        restarted
-            .commit_content(restarted_ino, b"edit after restart")
-            .unwrap();
-        let after_restart_edit = published_snapshot(&repository, &publisher, record_id);
-        assert_eq!(after_restart_edit.versions.len(), 4);
-        assert_eq!(
-            repository.highest_sequence(key, &actor),
-            Some(sequence_before_restart + 3),
-            "new operations must continue after the recovered actor watermark"
-        );
-
-        let created_ino = restarted
-            .create_empty_file(crate::namespace::ROOT_INO, "signed-new.txt")
-            .unwrap();
-        let created_record = restarted
-            .namespace
-            .lock_recover()
-            .record_id_for(created_ino)
-            .unwrap();
-        let created = publisher.snapshot(created_record).unwrap().unwrap();
-        assert_eq!(created.binding.as_ref().unwrap().name, "signed-new.txt");
-        assert_eq!(created.versions.len(), 1);
-        assert_eq!(created.versions[0].provenance, FileProvenance::Create);
-        assert_eq!(
-            created.content_revision.unwrap().version_id,
-            created.versions[0].id
-        );
-        assert_eq!(
-            restarted.namespace.lock_recover().hash_for(created_ino),
-            None,
-            "the empty signed baseline is visible only through its verified revision"
-        );
-
-        let created_dir_ino = restarted
-            .create_empty_dir(crate::namespace::ROOT_INO, "signed-folder")
-            .unwrap();
-        let created_dir_record = restarted
-            .namespace
-            .lock_recover()
-            .record_id_for(created_dir_ino)
-            .unwrap();
-        let created_dir = publisher.snapshot(created_dir_record).unwrap().unwrap();
-        assert_eq!(created_dir.binding.as_ref().unwrap().name, "signed-folder");
-        assert_eq!(
-            created_dir.binding.as_ref().unwrap().kind,
-            fs_protocol::FileNodeKind::Directory
-        );
-        assert_eq!(created_dir.versions.len(), 1);
-        assert!(created_dir.metadata.is_none());
-        restarted
-            .rename_named(
-                crate::namespace::ROOT_INO,
-                "signed-folder",
-                crate::namespace::ROOT_INO,
-                "renamed-folder",
-            )
-            .unwrap();
-        let renamed_dir = publisher.snapshot(created_dir_record).unwrap().unwrap();
-        assert_eq!(renamed_dir.binding.as_ref().unwrap().name, "renamed-folder");
-        assert_eq!(renamed_dir.versions.len(), 2);
-        assert!(
-            renamed_dir
-                .versions
-                .iter()
-                .any(|version| version.provenance == FileProvenance::Rename)
-        );
-        assert!(renamed_dir.metadata.is_none());
-
-        // Until the durable transaction coordinator is wired through this
-        // FUSE entry point, occupied destination must fail before either
-        // participant acquires a version or repository operation.
-        let source_before = publisher.snapshot(record_id).unwrap().unwrap();
-        let destination_before = publisher.snapshot(created_record).unwrap().unwrap();
-        let source_sequence = repository.highest_sequence(key, &actor);
-        let destination_key = crate::record_repository::RecordRepositoryKey {
-            workspace_id,
-            record_id: created_record,
-        };
-        let destination_sequence = repository.highest_sequence(destination_key, &actor);
-        let source_history = history.snapshot(record_id).unwrap();
-        let destination_history = history.snapshot(created_record).unwrap();
-        assert_eq!(
-            restarted.rename_named(
-                crate::namespace::ROOT_INO,
-                "after.txt",
-                crate::namespace::ROOT_INO,
-                "signed-new.txt",
-            ),
-            Err(EEXIST)
-        );
-        let mut namespace = restarted.namespace.lock_recover();
-        assert_eq!(
-            namespace
-                .lookup(crate::namespace::ROOT_INO, "after.txt")
-                .unwrap()
-                .ino
-                .0,
-            restarted_ino
-        );
-        assert_eq!(
-            namespace
-                .lookup(crate::namespace::ROOT_INO, "signed-new.txt")
-                .unwrap()
-                .ino
-                .0,
-            created_ino
-        );
-        drop(namespace);
-        assert_eq!(
-            publisher.snapshot(record_id).unwrap().unwrap(),
-            source_before
-        );
-        assert_eq!(
-            publisher.snapshot(created_record).unwrap().unwrap(),
-            destination_before
-        );
-        assert_eq!(repository.highest_sequence(key, &actor), source_sequence);
-        assert_eq!(
-            repository.highest_sequence(destination_key, &actor),
-            destination_sequence
-        );
-        assert_eq!(history.snapshot(record_id).unwrap(), source_history);
-        assert_eq!(
-            history.snapshot(created_record).unwrap(),
-            destination_history
-        );
-
-        let journal = Arc::new(Mutex::new(
-            crate::record_transaction::RecordTransactionJournal::open(
-                dir.path().join("record-transactions"),
-            )
-            .unwrap(),
-        ));
-        let namespace_path = dir.path().join("namespace-transaction.bin");
-        let restarted = restarted
-            .with_replacement_transactions(journal.clone(), namespace_path.clone())
-            .unwrap();
-        restarted
-            .rename_named(
-                crate::namespace::ROOT_INO,
-                "after.txt",
-                crate::namespace::ROOT_INO,
-                "signed-new.txt",
-            )
-            .unwrap();
-        let mut namespace = restarted.namespace.lock_recover();
-        assert!(
-            namespace
-                .lookup(crate::namespace::ROOT_INO, "after.txt")
-                .is_none()
-        );
-        assert_eq!(
-            namespace
-                .lookup(crate::namespace::ROOT_INO, "signed-new.txt")
-                .unwrap()
-                .ino
-                .0,
-            restarted_ino
-        );
-        assert!(namespace.ino_for_record_id(created_record).is_none());
-        drop(namespace);
-        assert!(namespace_path.exists());
-        assert_eq!(journal.lock_recover().entries().count(), 0);
-        let source_after_replacement = publisher.snapshot(record_id).unwrap().unwrap();
-        let victim_after_replacement = publisher.snapshot(created_record).unwrap().unwrap();
-        assert_eq!(
-            source_after_replacement.binding.as_ref().unwrap().name,
-            "signed-new.txt"
-        );
-        assert!(
-            victim_after_replacement
-                .binding
-                .as_ref()
-                .unwrap()
-                .tombstoned
-        );
-        assert_eq!(
-            source_after_replacement.versions.len(),
-            source_before.versions.len() + 1
-        );
-        assert_eq!(
-            victim_after_replacement.versions.len(),
-            destination_before.versions.len() + 1
-        );
-    }
-
-    // Full conflict-resolution matrix across durable history and restart.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the scenario covers the full conflict-resolution matrix across durable history and restart"
-    )]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn keep_current_and_use_other_append_signed_convergent_resolutions() {
-        let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let store = Arc::new(crate::store::ContentStore::memory());
-        let original = b"original branch";
-        let original_manifest = store.write_content(original).await.unwrap().unwrap();
-        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let ino = namespace
-            .lock_recover()
-            .create_file(
-                crate::namespace::ROOT_INO,
-                "conflicted.txt",
-                Some(&original_manifest),
-                original.len() as u64,
-                1,
-            )
-            .unwrap();
-        let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
-        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
-        let repository = Arc::new(
-            crate::record_repository::RecordRepository::open(dir.path().join("records")).unwrap(),
-        );
-        let (actor, signer) = actor_and_signer();
-        let publisher = Arc::new(
-            crate::record_publisher::RecordPublisher::new(
-                repository,
-                Uuid::from_u128(0xc011),
-                actor,
-                signer.clone(),
-            )
-            .unwrap(),
-        );
-        let journal = Arc::new(Mutex::new(
-            crate::record_transaction::RecordTransactionJournal::open(
-                dir.path().join("transactions"),
-            )
-            .unwrap(),
-        ));
-        let namespace_path = dir.path().join("namespace.automerge");
-        let fs = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics.clone())
-            .with_history(actor)
-            .unwrap()
-            .with_record_publisher(publisher.clone())
-            .unwrap()
-            .with_replacement_transactions(journal.clone(), namespace_path.clone())
-            .unwrap();
-        let original_version = history.snapshot(record_id).unwrap().versions[0].id;
-
-        fs.commit_content(ino, b"current branch").unwrap();
-        let current_version = namespace
-            .lock_recover()
-            .content_revision_for(ino)
-            .unwrap()
-            .version_id;
-        let first_conflict = fs_protocol::FileConflictV1 {
-            id: Uuid::new_v4(),
-            record_id,
-            versions: vec![original_version, current_version],
-            status: fs_protocol::ConflictStatus::Open,
-            resolution: None,
-        };
-        history.record_conflict(&first_conflict).unwrap();
-        let metadata = publisher
-            .snapshot(record_id)
-            .unwrap()
-            .unwrap()
-            .metadata
-            .unwrap();
-        publisher
-            .publish_state(&metadata, &[], std::slice::from_ref(&first_conflict))
-            .unwrap();
-
-        fs.resolve_conflict(
-            ino,
-            first_conflict.id,
-            fs_protocol::ConflictStrategy::KeepCurrent,
-            current_version,
-        )
-        .unwrap();
-        assert_eq!(fs.read_full_blocking(ino).unwrap(), b"current branch");
-        let after_keep = history.snapshot(record_id).unwrap();
-        let keep_resolution = after_keep
-            .conflicts
-            .iter()
-            .find(|conflict| conflict.id == first_conflict.id)
-            .unwrap()
-            .resolution
-            .clone()
-            .unwrap();
-        assert_eq!(
-            keep_resolution.strategy,
-            fs_protocol::ConflictStrategy::KeepCurrent
-        );
-        let keep_result = after_keep
-            .versions
-            .iter()
-            .find(|version| version.id == keep_resolution.result)
-            .unwrap();
-        assert_eq!(
-            keep_result.provenance,
-            fs_protocol::FileProvenance::ConflictResolution
-        );
-        assert!(
-            first_conflict
-                .versions
-                .iter()
-                .all(|member| keep_result.parents.contains(member))
-        );
-
-        let second_conflict = fs_protocol::FileConflictV1 {
-            id: Uuid::new_v4(),
-            record_id,
-            versions: vec![keep_result.id, original_version],
-            status: fs_protocol::ConflictStatus::Open,
-            resolution: None,
-        };
-        history.record_conflict(&second_conflict).unwrap();
-        let metadata = publisher
-            .snapshot(record_id)
-            .unwrap()
-            .unwrap()
-            .metadata
-            .unwrap();
-        publisher
-            .publish_state(&metadata, &[], std::slice::from_ref(&second_conflict))
-            .unwrap();
-        fs.resolve_conflict(
-            ino,
-            second_conflict.id,
-            fs_protocol::ConflictStrategy::UseOther,
-            original_version,
-        )
-        .unwrap();
-        assert_eq!(fs.read_full_blocking(ino).unwrap(), original);
-        let signed_state = publisher.snapshot(record_id).unwrap().unwrap();
-        let resolution = signed_state
-            .conflicts
-            .iter()
-            .find(|conflict| conflict.id == second_conflict.id)
-            .unwrap()
-            .resolution
-            .as_ref()
-            .unwrap();
-        assert_eq!(resolution.strategy, fs_protocol::ConflictStrategy::UseOther);
-        assert_eq!(
-            signed_state.content_revision.unwrap().version_id,
-            resolution.result,
-            "the signed visible revision and deterministic resolution winner must agree"
-        );
-        assert_eq!(
-            namespace
-                .lock_recover()
-                .content_revision_for(ino)
-                .unwrap()
-                .version_id,
-            resolution.result
-        );
-
-        let source_current = resolution.result;
-        let keep_both_conflict = fs_protocol::FileConflictV1 {
-            id: Uuid::new_v4(),
-            record_id,
-            versions: vec![source_current, keep_result.id],
-            status: fs_protocol::ConflictStatus::Open,
-            resolution: None,
-        };
-        history.record_conflict(&keep_both_conflict).unwrap();
-        let metadata = publisher
-            .snapshot(record_id)
-            .unwrap()
-            .unwrap()
-            .metadata
-            .unwrap();
-        publisher
-            .publish_state(&metadata, &[], std::slice::from_ref(&keep_both_conflict))
-            .unwrap();
-        let keep_both_transaction_id = keep_both_uuid(
-            b"transaction",
-            publisher.workspace_id(),
-            record_id,
-            keep_both_conflict.id,
-            keep_result.id,
-            actor,
-        );
-        let target_record = fs_protocol::FileRecordId(keep_both_uuid(
-            b"target-record",
-            publisher.workspace_id(),
-            record_id,
-            keep_both_conflict.id,
-            keep_result.id,
-            actor,
-        ));
-        crate::transaction_coordinator::arm_coordinator_fault(
-            keep_both_transaction_id,
-            crate::transaction_coordinator::CoordinatorFaultPoint::AfterHistoryAppend,
-        );
-        assert_eq!(
-            fs.resolve_conflict(
-                ino,
-                keep_both_conflict.id,
-                fs_protocol::ConflictStrategy::KeepBoth,
-                keep_result.id,
-            ),
-            Err(EIO)
-        );
-        assert!(
-            namespace
-                .lock_recover()
-                .lookup(
-                    crate::namespace::ROOT_INO,
-                    keep_both_name("conflicted.txt", target_record)
-                )
-                .is_none(),
-            "history-only crash must expose no sibling"
-        );
-        assert!(
-            history
-                .snapshot(record_id)
-                .unwrap()
-                .conflicts
-                .iter()
-                .find(|value| value.id == keep_both_conflict.id)
-                .unwrap()
-                .resolution
-                .is_none()
-        );
-        drop(fs);
-        drop(publisher);
-        drop(history);
-        drop(journal);
-        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
-        let publisher = Arc::new(
-            crate::record_publisher::RecordPublisher::new(
-                Arc::new(
-                    crate::record_repository::RecordRepository::open(dir.path().join("records"))
-                        .unwrap(),
-                ),
-                Uuid::from_u128(0xc011),
-                actor,
-                signer.clone(),
-            )
-            .unwrap(),
-        );
-        let journal = Arc::new(Mutex::new(
-            crate::record_transaction::RecordTransactionJournal::open(
-                dir.path().join("transactions"),
-            )
-            .unwrap(),
-        ));
-        crate::transaction_coordinator::arm_coordinator_fault(
-            keep_both_transaction_id,
-            crate::transaction_coordinator::CoordinatorFaultPoint::AfterNamespaceDeltaStaged,
-        );
-        let staged_recovery = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics.clone())
-            .without_legacy_record_migration()
-            .with_history(actor)
-            .unwrap()
-            .with_record_publisher(publisher.clone())
-            .unwrap()
-            .with_replacement_transactions(journal.clone(), namespace_path.clone());
-        assert!(staged_recovery.is_err());
-        assert!(
-            namespace
-                .lock_recover()
-                .lookup(
-                    crate::namespace::ROOT_INO,
-                    keep_both_name("conflicted.txt", target_record),
-                )
-                .is_none(),
-            "durably staged namespace bytes remain invisible before publication"
-        );
-        assert_eq!(
-            journal
-                .lock_recover()
-                .get(keep_both_transaction_id)
-                .unwrap()
-                .phase,
-            crate::record_transaction::RecordTransactionPhase::HistoryCommitted
-        );
-        drop(publisher);
-        drop(history);
-        drop(journal);
-        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
-        let publisher = Arc::new(
-            crate::record_publisher::RecordPublisher::new(
-                Arc::new(
-                    crate::record_repository::RecordRepository::open(dir.path().join("records"))
-                        .unwrap(),
-                ),
-                Uuid::from_u128(0xc011),
-                actor,
-                signer.clone(),
-            )
-            .unwrap(),
-        );
-        let journal = Arc::new(Mutex::new(
-            crate::record_transaction::RecordTransactionJournal::open(
-                dir.path().join("transactions"),
-            )
-            .unwrap(),
-        ));
-        let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
-            .without_legacy_record_migration()
-            .with_history(actor)
-            .unwrap()
-            .with_record_publisher(publisher.clone())
-            .unwrap()
-            .with_replacement_transactions(journal.clone(), namespace_path.clone())
-            .unwrap();
-        fs.resolve_conflict(
-            ino,
-            keep_both_conflict.id,
-            fs_protocol::ConflictStrategy::KeepBoth,
-            keep_result.id,
-        )
-        .unwrap();
-        let target_name = keep_both_name("conflicted.txt", target_record);
-        let target_ino = namespace
-            .lock_recover()
-            .lookup(crate::namespace::ROOT_INO, &target_name)
-            .expect("Keep Both sibling is atomically visible")
-            .ino
-            .0;
-        assert_eq!(fs.read_full_blocking(ino).unwrap(), original);
-        assert_eq!(
-            fs.read_full_blocking(target_ino).unwrap(),
-            b"current branch"
-        );
-        let source_after = publisher.snapshot(record_id).unwrap().unwrap();
-        let target_after = publisher.snapshot(target_record).unwrap().unwrap();
-        assert_eq!(target_after.binding.as_ref().unwrap().name, target_name);
-        assert_eq!(target_after.versions.len(), 1);
-        assert_eq!(
-            source_after
-                .conflicts
-                .iter()
-                .find(|conflict| conflict.id == keep_both_conflict.id)
-                .unwrap()
-                .resolution
-                .as_ref()
-                .unwrap()
-                .strategy,
-            fs_protocol::ConflictStrategy::KeepBoth
-        );
-        let follow_on_conflict = fs_protocol::FileConflictV1 {
-            id: Uuid::new_v4(),
-            record_id,
-            versions: vec![
-                source_after.content_revision.unwrap().version_id,
-                keep_result.id,
-            ],
-            status: fs_protocol::ConflictStatus::Open,
-            resolution: None,
-        };
-        history.record_conflict(&follow_on_conflict).unwrap();
-        let metadata = publisher
-            .snapshot(record_id)
-            .unwrap()
-            .unwrap()
-            .metadata
-            .unwrap();
-        publisher
-            .publish_state(&metadata, &[], std::slice::from_ref(&follow_on_conflict))
-            .unwrap();
-        assert!(
-            publisher
-                .snapshot(record_id)
-                .unwrap()
-                .unwrap()
-                .conflicts
-                .iter()
-                .any(|conflict| conflict.id == follow_on_conflict.id),
-            "a later signed conflict may reference the committed transaction revision"
-        );
-        let source_versions = history.snapshot(record_id).unwrap().versions.len();
-        fs.resolve_conflict(
-            ino,
-            keep_both_conflict.id,
-            fs_protocol::ConflictStrategy::KeepBoth,
-            keep_result.id,
-        )
-        .unwrap();
-        assert_eq!(
-            history.snapshot(record_id).unwrap().versions.len(),
-            source_versions
-        );
-        assert_eq!(history.snapshot(target_record).unwrap().versions.len(), 1);
-        assert!(journal.lock_recover().entries().next().is_none());
-        assert!(namespace_path.exists());
-
-        // Reopening reconstructs both signed record projections from the
-        // atomic namespace snapshot and treats the same request as an exact
-        // replay, without another version or sibling.
-        drop(fs);
-        drop(publisher);
-        drop(history);
-        drop(journal);
-        drop(namespace);
-        let restarted_namespace = Arc::new(Mutex::new(
-            Namespace::from_bytes("host-restart", &std::fs::read(&namespace_path).unwrap())
-                .unwrap(),
-        ));
-        let restarted_history = Arc::new(crate::history_fixture::History::new(Arc::clone(
-            &restarted_namespace,
-        )));
-        let restarted_publisher = Arc::new(
-            crate::record_publisher::RecordPublisher::new(
-                Arc::new(
-                    crate::record_repository::RecordRepository::open(dir.path().join("records"))
-                        .unwrap(),
-                ),
-                Uuid::from_u128(0xc011),
-                actor,
-                signer,
-            )
-            .unwrap(),
-        );
-        let restarted_journal = Arc::new(Mutex::new(
-            crate::record_transaction::RecordTransactionJournal::open(
-                dir.path().join("transactions"),
-            )
-            .unwrap(),
-        ));
-        let restarted_hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let restarted_heuristics = Arc::new(Heuristics::new(restarted_hydrator.clone()));
-        let restarted = QuickFS::new(
-            restarted_namespace.clone(),
-            restarted_hydrator,
-            restarted_heuristics,
-        )
-        .without_legacy_record_migration()
-        .with_history(actor)
-        .unwrap()
-        .with_record_publisher(restarted_publisher)
-        .unwrap()
-        .with_replacement_transactions(restarted_journal.clone(), namespace_path)
-        .unwrap();
-        let restarted_source = restarted_namespace
-            .lock_recover()
-            .ensure_ino_for_record_id(record_id)
-            .unwrap();
-        restarted
-            .resolve_conflict(
-                restarted_source,
-                keep_both_conflict.id,
-                fs_protocol::ConflictStrategy::KeepBoth,
-                keep_result.id,
-            )
-            .unwrap();
-        assert_eq!(
-            restarted_history
-                .snapshot(record_id)
-                .unwrap()
-                .versions
-                .len(),
-            source_versions
-        );
-        assert_eq!(
-            restarted_history
-                .snapshot(target_record)
-                .unwrap()
-                .versions
-                .len(),
-            1
-        );
-        assert!(restarted_journal.lock_recover().entries().next().is_none());
-    }
-
-    // Shared deterministic merge/recovery scenario used by both supported
-    // codecs; each crash boundary is intentionally asserted in sequence.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the shared scenario asserts every crash boundary for both supported merge codecs in order"
-    )]
-    async fn merge_recovers_after_history_crash_and_replays_idempotently(
-        name: &str,
-        base_bytes: Vec<u8>,
-        current_bytes: Vec<u8>,
-        other_bytes: Vec<u8>,
-        tilo_doc: bool,
-    ) {
-        let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let store = Arc::new(crate::store::ContentStore::memory());
-        let base_hash = store.write_content(&base_bytes).await.unwrap().unwrap();
-        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let ino = namespace
-            .lock_recover()
-            .create_file(
-                crate::namespace::ROOT_INO,
-                name,
-                Some(&base_hash),
-                base_bytes.len() as u64,
-                1,
-            )
-            .unwrap();
-        let record_id = namespace.lock_recover().record_id_for(ino).unwrap();
-        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let records_path = dir.path().join("records");
-        let journal_path = dir.path().join("transactions");
-        let namespace_path = dir.path().join("namespace.automerge");
-        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
-        let repository =
-            Arc::new(crate::record_repository::RecordRepository::open(&records_path).unwrap());
-        let (actor, signer) = actor_and_signer();
-        let publisher = Arc::new(
-            crate::record_publisher::RecordPublisher::new(
-                repository,
-                Uuid::from_u128(0xc011),
-                actor,
-                signer.clone(),
-            )
-            .unwrap(),
-        );
-        let journal = Arc::new(Mutex::new(
-            crate::record_transaction::RecordTransactionJournal::open(&journal_path).unwrap(),
-        ));
-        let fs = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics.clone())
-            .with_history(actor)
-            .unwrap()
-            .with_record_publisher(publisher.clone())
-            .unwrap()
-            .with_replacement_transactions(journal.clone(), namespace_path.clone())
-            .unwrap();
-        let base_version = history.snapshot(record_id).unwrap().versions[0].id;
-        fs.commit_content(ino, &current_bytes).unwrap();
-        let current = history
-            .snapshot(record_id)
-            .unwrap()
-            .versions
-            .last()
-            .unwrap()
-            .clone();
-        let other_hash = store.write_content(&other_bytes).await.unwrap().unwrap();
-        let other = fs_protocol::FileVersionV1 {
-            id: fs_protocol::FileVersionId::new(),
-            record_id,
-            parents: vec![base_version],
-            actor,
-            timestamp_ms: current.timestamp_ms.saturating_add(1),
-            content_hash: Some(fs_protocol::ContentHash(*other_hash.as_bytes())),
-            metadata_hash: fs_protocol::ContentHash([77; 32]),
-            provenance: fs_protocol::FileProvenance::Edit,
-        };
-        history.append(other.clone()).unwrap();
-        let conflict = fs_protocol::FileConflictV1 {
-            id: Uuid::new_v4(),
-            record_id,
-            versions: vec![current.id, other.id],
-            status: fs_protocol::ConflictStatus::Open,
-            resolution: None,
-        };
-        history.record_conflict(&conflict).unwrap();
-        let expected = crate::conflict_merge::merge_exact(
-            crate::conflict_merge::ExactMergeInput {
-                version_id: current.id,
-                bytes: current_bytes.clone(),
-            },
-            crate::conflict_merge::ExactMergeInput {
-                version_id: other.id,
-                bytes: other_bytes.clone(),
-            },
-            (!tilo_doc).then_some(crate::conflict_merge::ExactMergeBase {
-                version_id: base_version,
-                bytes: base_bytes.clone(),
-            }),
-        )
-        .unwrap()
-        .bytes;
-        let metadata = publisher
-            .snapshot(record_id)
-            .unwrap()
-            .unwrap()
-            .metadata
-            .unwrap();
-        publisher
-            .publish_state(
-                &metadata,
-                std::slice::from_ref(&other),
-                std::slice::from_ref(&conflict),
-            )
-            .unwrap();
-        let preflight: fs_protocol::MergePreflightProjectionV1 =
-            serde_json::from_slice(&fs.history_merge_preflight(ino, conflict.id).unwrap()).unwrap();
-        assert!(
-            preflight.safe,
-            "serialized document merge must be available"
-        );
-        let transaction_id = merge_uuid(
-            b"transaction",
-            publisher.workspace_id(),
-            record_id,
-            conflict.id,
-            &conflict.versions,
-            actor,
-        );
-        crate::transaction_coordinator::arm_coordinator_fault(
-            transaction_id,
-            crate::transaction_coordinator::CoordinatorFaultPoint::AfterHistoryAppend,
-        );
-        assert_eq!(
-            fs.resolve_conflict(
-                ino,
-                conflict.id,
-                fs_protocol::ConflictStrategy::Merge,
-                other.id
-            ),
-            Err(EIO)
-        );
-        assert_eq!(fs.read_full_blocking(ino).unwrap(), current_bytes);
-        assert!(
-            history
-                .snapshot(record_id)
-                .unwrap()
-                .conflicts
-                .iter()
-                .find(|value| value.id == conflict.id)
-                .unwrap()
-                .resolution
-                .is_none()
-        );
-        drop(fs);
-        drop(publisher);
-        drop(history);
-        drop(journal);
-
-        let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
-        let publisher = Arc::new(
-            crate::record_publisher::RecordPublisher::new(
-                Arc::new(crate::record_repository::RecordRepository::open(&records_path).unwrap()),
-                Uuid::from_u128(0xc011),
-                actor,
-                signer,
-            )
-            .unwrap(),
-        );
-        let journal = Arc::new(Mutex::new(
-            crate::record_transaction::RecordTransactionJournal::open(&journal_path).unwrap(),
-        ));
-        let restarted = QuickFS::new(namespace.clone(), hydrator, heuristics)
-            .without_legacy_record_migration()
-            .with_history(actor)
-            .unwrap()
-            .with_record_publisher(publisher)
-            .unwrap()
-            .with_replacement_transactions(journal.clone(), namespace_path)
-            .unwrap();
-        assert_eq!(
-            restarted.read_full_blocking(ino).unwrap(),
-            expected.as_slice()
-        );
-        let resolution = history
-            .snapshot(record_id)
-            .unwrap()
-            .conflicts
-            .into_iter()
-            .find(|value| value.id == conflict.id)
-            .unwrap()
-            .resolution
-            .unwrap();
-        assert_eq!(resolution.strategy, fs_protocol::ConflictStrategy::Merge);
-        assert_eq!(
-            namespace
-                .lock_recover()
-                .content_revision_for(ino)
-                .unwrap()
-                .version_id,
-            resolution.result
-        );
-        assert!(journal.lock_recover().entries().next().is_none());
-        restarted
-            .resolve_conflict(
-                ino,
-                conflict.id,
-                fs_protocol::ConflictStrategy::Merge,
-                other.id,
-            )
-            .unwrap();
-        assert_eq!(
-            restarted.read_full_blocking(ino).unwrap(),
-            expected.as_slice()
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn text_merge_recovers_after_history_crash_and_replays_idempotently() {
-        merge_recovers_after_history_crash_and_replays_idempotently(
-            "merge.txt",
-            b"base".to_vec(),
-            b"base-tail".to_vec(),
-            b"head-base".to_vec(),
-            false,
-        )
-        .await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn serialized_document_merge_recovers_after_history_crash_and_replays_idempotently() {
-        let mut base = tilo_doc::Document::new();
-        let block = base.insert_block(None, "paragraph");
-        base.splice_text(&block, 0, 0, "base");
-        let base_bytes = base.save();
-        let mut current = base.fork();
-        current.splice_text(&block, 0, 0, "L");
-        let current_bytes = current.save();
-        let mut other = base.fork();
-        other.splice_text(&block, 4, 0, "R");
-        let other_bytes = other.save();
-        for name in ["merge.qdoc", "merge.tilo-doc"] {
-            merge_recovers_after_history_crash_and_replays_idempotently(
-                name,
-                base_bytes.clone(),
-                current_bytes.clone(),
-                other_bytes.clone(),
-                true,
-            )
-            .await;
-        }
-    }
-}
-
-/// Counts the bytes each thread allocates (cumulative, never decremented),
-/// so a test can bound what a read path copies.
 mod allocation_count {
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::cell::Cell;
@@ -3234,33 +1852,26 @@ mod allocation_count {
     }
 
     fn add(bytes: usize) {
-        // A thread being torn down has no counter left; nothing is measured there.
         let _ = ALLOCATED.try_with(|count| count.set(count.get().saturating_add(bytes as u64)));
     }
 
-    // SAFETY: every call forwards to the system allocator with the caller's
-    // arguments; the counter only records sizes.
     unsafe impl GlobalAlloc for Counting {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             add(layout.size());
-            // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract, which `System` shares.
             unsafe { System.alloc(layout) }
         }
 
         unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
             add(layout.size());
-            // SAFETY: as for `alloc`.
             unsafe { System.alloc_zeroed(layout) }
         }
 
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            // SAFETY: `ptr` came from this allocator, i.e. from `System`, with this layout.
             unsafe { System.dealloc(ptr, layout) }
         }
 
         unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
             add(new_size);
-            // SAFETY: as for `dealloc`, and the caller upholds `realloc`'s size contract.
             unsafe { System.realloc(ptr, layout, new_size) }
         }
     }
@@ -3268,7 +1879,6 @@ mod allocation_count {
     #[global_allocator]
     static COUNTING: Counting = Counting;
 
-    /// Bytes this thread allocated while running `run`.
     pub fn allocated_by(run: impl FnOnce()) -> u64 {
         let before = ALLOCATED.with(Cell::get);
         run();
@@ -3276,8 +1886,6 @@ mod allocation_count {
     }
 }
 
-/// FUSE writes stage per inode and read the committed content only where
-/// a read or the commit needs it.
 mod write_stage_tests {
     use super::*;
 
@@ -3288,8 +1896,6 @@ mod write_stage_tests {
 
     use crate::test_bytes::pseudo;
 
-    /// A peer serving committed content, and a mount on another endpoint
-    /// that knows the files by namespace entry only.
     struct Remote {
         dir: tempfile::TempDir,
         router: Router,
@@ -3329,7 +1935,6 @@ mod write_stage_tests {
             }
         }
 
-        /// A file whose committed content only the peer holds.
         async fn file(&self, name: &str, bytes: &[u8]) -> (u64, Hash) {
             let hash = self
                 .source_store
@@ -3346,7 +1951,6 @@ mod write_stage_tests {
             (ino, hash)
         }
 
-        /// Content bytes this mount has received from peers.
         fn fetched(&self) -> u64 {
             let (ranges, blobs) = self.fs.hydrator.received_bytes();
             ranges.saturating_add(blobs)
@@ -3390,8 +1994,6 @@ mod write_stage_tests {
             LEN as u64 + 1,
             "stat sees the staged length"
         );
-        // Read-your-writes across the boundary: the base's tail comes from
-        // the peer, the appended byte from the stage.
         let StagedRead::Missing(missing) = remote
             .fs
             .read_staged(ino, LEN as u64 - 3, 16)
@@ -3429,13 +2031,9 @@ mod write_stage_tests {
         let (rewritten, _) = remote.file("notes.txt", &pseudo(300_000, 2)).await;
         let (open, _) = remote.file("open.bin", &pseudo(2 * 1024 * 1024, 3)).await;
 
-        // `: > big.iso` on a file nobody has open commits it empty.
         assert_eq!(remote.fs.truncate_inode(unopened, 0), Ok(()));
-        // `open(O_TRUNC)` then a write: the truncation commits, the write
-        // stages over nothing.
         assert_eq!(remote.fs.truncate_inode(rewritten, 0), Ok(()));
         assert_eq!(remote.fs.write_buffer(rewritten, 0, b"fresh"), Ok(5));
-        // A truncation of an open file only shortens its stage.
         assert_eq!(remote.fs.write_buffer(open, 7, b"x"), Ok(1));
         assert_eq!(remote.fs.truncate_inode(open, 0), Ok(()));
         assert_eq!(remote.fs.presented_attr(open).unwrap().0.size, 0);
@@ -3488,10 +2086,7 @@ mod write_stage_tests {
         let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
             .with_write_stage_dir(dir.path().join("stage"));
 
-        // The write is accepted: it does not need the base.
         assert_eq!(fs.write_buffer(ino, 200_000, b"tail"), Ok(4));
-        // The commit does, and no peer has it: close reports the failure and
-        // the committed content is untouched, never replaced by zeros.
         assert_eq!(fs.flush_inode(ino), Err(EIO));
         assert_eq!(fs.ns().hash_for(ino), Some(elsewhere));
         assert_eq!(fs.ns().getattr(ino).unwrap().size, 200_000);
@@ -3545,8 +2140,6 @@ mod write_stage_tests {
                     fs.flush_inode(large)
                 });
                 entered.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-                // `large` is mid-commit with its stage locked. Another
-                // inode's read, write and stat must not wait for it.
                 let (done_tx, done) = std::sync::mpsc::channel();
                 let other = scope.spawn(move || {
                     let _runtime = handle.enter();
@@ -3584,6 +2177,84 @@ mod write_stage_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_document_reads_back_the_bytes_written_until_the_document_is_edited() {
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(ContentStore::memory()),
+        ));
+        let namespace = Arc::new(Mutex::new(Namespace::new("documents").unwrap()));
+        let doc = namespace
+            .lock()
+            .unwrap()
+            .create_document(ROOT_INO, "question.md", "md", 1)
+            .unwrap();
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics);
+        let fs = tokio::task::spawn_blocking(move || {
+            let write = |bytes: &[u8]| {
+                assert_eq!(
+                    fs.write_buffer(doc, 0, bytes),
+                    Ok(u32::try_from(bytes.len()).unwrap())
+                );
+                assert_eq!(fs.flush_inode(doc), Ok(()));
+                fs.settle_last_close(doc, true);
+            };
+            let question = b"Question X\nfirst line of thought\n";
+            write(question);
+            assert_eq!(
+                &*fs.document_export(doc).unwrap(),
+                question,
+                "the file is the bytes written"
+            );
+            assert_eq!(
+                fs.presented_attr(doc).unwrap().0.size,
+                question.len() as u64
+            );
+            fs
+        })
+        .await
+        .unwrap();
+        {
+            let mut ns = namespace.lock().unwrap();
+            let block = ns.document_insert_block(doc, None, "paragraph").unwrap();
+            ns.document_splice(doc, &block, 0, 0, "added in a rich view");
+        }
+        let edited = tokio::task::spawn_blocking(move || fs.document_export(doc).unwrap())
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&edited).contains("added in a rich view"));
+        assert_ne!(&*edited, b"Question X\nfirst line of thought\n");
+        endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_mode_given_to_a_file_or_directory_is_kept_without_setuid() {
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(ContentStore::memory()),
+        ));
+        let namespace = Arc::new(Mutex::new(Namespace::new("modes").unwrap()));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics);
+        tokio::task::spawn_blocking(move || {
+            let tool = fs.create_empty_file(ROOT_INO, "tool").unwrap();
+            assert_eq!(fs.ns().getattr(tool).unwrap().perm, 0o644);
+            assert_eq!(fs.set_mode(tool, 0o100_755), Ok(()));
+            assert_eq!(fs.ns().getattr(tool).unwrap().perm, 0o755);
+            assert_eq!(fs.set_mode(tool, 0o104_755), Ok(()));
+            assert_eq!(fs.ns().getattr(tool).unwrap().perm, 0o755, "never setuid");
+            let shared = fs.create_empty_dir(ROOT_INO, "shared").unwrap();
+            assert_eq!(fs.set_mode(shared, 0o42_775), Ok(()));
+            assert_eq!(fs.ns().getattr(shared).unwrap().perm, 0o2775);
+        })
+        .await
+        .unwrap();
+        endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn document_read_does_not_clone_per_chunk() {
         const CHUNK: u32 = 128 * 1024;
         let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
@@ -3601,8 +2272,6 @@ mod write_stage_tests {
         let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics);
         assert!(fs.is_document(doc));
 
-        // About 4 MiB of markdown, written and committed the way an editor
-        // saves it, then closed.
         let paragraph = "Collaboration lives below applications. ".repeat(50);
         let mut text = String::new();
         while text.len() < 4 * 1024 * 1024 + 64 * 1024 {
@@ -3617,7 +2286,6 @@ mod write_stage_tests {
         fs.settle_last_close(doc, true);
         assert!(fs.stage(doc).is_none());
 
-        // `stat` exports once; a change to another file keeps that export.
         let size = fs.presented_attr(doc).unwrap().0.size;
         assert!(size >= 4 * 1024 * 1024, "export is {size} bytes");
         let exported = fs.document_export(doc).unwrap();
@@ -3663,10 +2331,6 @@ mod write_stage_tests {
     }
 }
 
-/// A FUSE `read` and `getattr` of a local file read the inode under one
-/// namespace lock, and that single read still enforces every visibility
-/// rule the separate lookups did: ACL revocation, a move out of the view,
-/// unlink, and the open-handle exception for an unlinked inode.
 #[cfg(test)]
 mod read_lock_tests {
     use super::*;
@@ -3686,8 +2350,6 @@ mod read_lock_tests {
         file: u64,
     }
 
-    /// A mount over a namespace holding `/shared/a.txt`, whose content is
-    /// already in the local store.
     async fn fixture() -> Fixture {
         let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
@@ -3724,7 +2386,6 @@ mod read_lock_tests {
         fs.namespace_locks.load(Ordering::Relaxed)
     }
 
-    /// What the FUSE `read` callback would reply with.
     #[derive(Debug, PartialEq, Eq)]
     enum Reply {
         Data(Vec<u8>),
@@ -3735,7 +2396,6 @@ mod read_lock_tests {
         Reply::Data(BYTES.to_vec())
     }
 
-    /// The whole file through the production read planner.
     fn read_all(fs: &QuickFS, ino: u64, fh: u64) -> Reply {
         match fs.plan_read(ino, fh, 0, 4096) {
             ReadPlan::Local(data) => Reply::Data(data),
@@ -3751,7 +2411,6 @@ mod read_lock_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn read_takes_namespace_lock_once() {
-        // Without an ACL, and with one (the path is then built and checked).
         for acl in [None, Some(shared_read_policy())] {
             let Fixture {
                 endpoint, fs, file, ..

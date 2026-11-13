@@ -65,17 +65,29 @@ impl BooksApp {
                     .collect();
                 let hide_read = self.library_prefs.hide_read;
                 toolbar.actions = vec![
-                    actions.entry(Icon::Plus.name(), "Open book", Action::OpenViaPortal),
-                    ToolbarAction::new("books.sort", Icon::ArrowUpDown.name(), "Sort books")
-                        .with_items(sort),
+                    actions.entry(
+                        Icon::Plus.name(),
+                        crate::resource::CATALOG.t("ebook-action-open-book"),
+                        Action::OpenViaPortal,
+                    ),
+                    ToolbarAction::new(
+                        "books.sort",
+                        Icon::ArrowUpDown.name(),
+                        crate::resource::CATALOG.t("ebook-sort-books"),
+                    )
+                    .with_items(sort),
                     ToolbarAction {
-                        name: "Hide finished books".into(),
+                        name: crate::resource::CATALOG.t("ebook-hide-finished"),
                         icon: Icon::Eye.name().into(),
                         ..edits.action(prefs.hide_read.set(!hide_read))
                     }
                     .on(hide_read)
                     .in_menu(),
-                    actions.entry(Icon::Settings.name(), "Settings", Action::OpenSettings),
+                    actions.entry(
+                        Icon::Settings.name(),
+                        crate::resource::CATALOG.t("ebook-settings-title"),
+                        Action::OpenSettings,
+                    ),
                 ];
             }
             View::Reader => {
@@ -90,18 +102,22 @@ impl BooksApp {
                     Ebook::TOGGLE_BOOKMARK.with(self.bookmark_params(self.page_top_block));
                 toolbar.actions = vec![
                     ToolbarAction {
-                        name: "Bookmark this page".into(),
+                        name: crate::resource::CATALOG.t("ebook-action-bookmark-page"),
                         icon: Icon::Bookmark.name().into(),
                         ..edits.action(bookmark)
                     }
                     .on(self.page_bookmarked()),
                     actions
-                        .entry(Icon::PanelRight.name(), "Annotations", Action::ToggleNotes)
+                        .entry(
+                            Icon::PanelRight.name(),
+                            crate::resource::CATALOG.t("ebook-action-annotations"),
+                            Action::ToggleNotes,
+                        )
                         .on(self.notes_open()),
                     actions
                         .entry(
                             Icon::Type.name(),
-                            "Reading appearance",
+                            crate::resource::CATALOG.t("ebook-action-reading-appearance"),
                             Action::ToggleTypePopover,
                         )
                         .on(self.reading_settings.is_open()),
@@ -123,21 +139,21 @@ impl BooksApp {
     fn location(&self) -> ToolbarLocation {
         match self.view {
             View::Library => ToolbarLocation {
-                label: "Library".into(),
+                label: crate::resource::CATALOG.t("ebook-tab-library"),
                 ..ToolbarLocation::default()
             },
             View::Settings => ToolbarLocation {
-                label: "Settings".into(),
+                label: crate::resource::CATALOG.t("ebook-settings-title"),
                 ..ToolbarLocation::default()
             },
             View::Search => ToolbarLocation {
-                label: "Search".into(),
+                label: crate::resource::CATALOG.t("ebook-search-title"),
                 ..ToolbarLocation::default()
             },
             View::Reader => {
                 let Some(book) = self.library.get(self.book_idx) else {
                     return ToolbarLocation {
-                        label: "Library".into(),
+                        label: crate::resource::CATALOG.t("ebook-tab-library"),
                         ..ToolbarLocation::default()
                     };
                 };

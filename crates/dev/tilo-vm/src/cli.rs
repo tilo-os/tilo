@@ -861,7 +861,7 @@ pub enum VmCommand {
     Create(CreateArgs),
     /// Branch a stopped VM into new VMs that start as copies of it, then diverge: copy-on-write, in seconds.
     #[command(
-        after_help = "Examples:\n  tilo-vm vm branch dev a b c          # three new VMs, each a copy of dev as it is now\n  tilo-vm vm branch dev review --stop  # shut dev down cleanly first\n  tilo-vm vm branch a a2               # a branch of a branch\n\nThe source must be off. Its disk is frozen as a read-only base, and the\nsource and every new VM each get a copy-on-write child of it, so nothing is\ncopied and the VMs never see each other's writes. A base is deleted once no\nVM uses it: vm rm of the source or of any branch never breaks the others.\nEach new VM gets its own name, UUID (the guest's SMBIOS system UUID), MAC\nand SSH port; the guest sees the new UUID on first boot and gives itself a\nnew device identity, keeping everything else on the disk (home, keys,\nvaults, settings). Boot the source once on a current image first: only an\nimage with tilo-device-branch.service records the UUID it compares against.\nlibvirt, whpx and utm. Details: tilo-vm guide concepts."
+        after_help = "Examples:\n  tilo-vm vm branch dev a b c          # three new VMs, each a copy of dev as it is now\n  tilo-vm vm branch dev review --stop  # shut dev down cleanly first\n  tilo-vm vm branch a a2               # a branch of a branch\n  tilo-vm vm branch dev a --no-admit   # make a without booting it\n\nThe source must be off. Its disk is frozen as a read-only base, and the\nsource and every new VM each get a copy-on-write child of it, so nothing is\ncopied and the VMs never see each other's writes. A base is deleted once no\nVM uses it: vm rm of the source or of any branch never breaks the others.\nEach new VM gets its own name, UUID (the guest's SMBIOS system UUID), MAC\nand SSH port; the guest sees the new UUID on first boot and gives itself a\nnew device identity, keeping everything else on the disk (home, keys,\nvaults, settings). Boot the source once on a current image first: only an\nimage with tilo-device-branch.service records the UUID it compares against.\n\nA workspace takes a new device in only through its host, and the source hosts\nthe workspaces it made. So vm branch then boots the source and the branches\n(as many at once as the host's memory allows), waits until each branch has\nre-keyed and every workspace the source hosts has taken it in, and stops\nthem again: the source as it was, the branches off. --no-admit skips that.\nlibvirt, whpx and utm. Details: tilo-vm guide concepts."
     )]
     Branch(BranchArgs),
     /// Register a real machine that already runs a Tilo dev image (a board or a laptop), reached over SSH, after checking what tilo-vm needs there.
@@ -1062,6 +1062,13 @@ pub struct BranchArgs {
     /// Shut the source down cleanly first if it runs.
     #[arg(long)]
     pub stop: bool,
+    /// Only make the branches: do not boot them once beside the source to have the source's
+    /// workspaces take them in (each is then admitted at its first boot while the source runs).
+    #[arg(long)]
+    pub no_admit: bool,
+    /// How long the branches may take, from their boot, to re-key and be taken in.
+    #[arg(long, value_name = "SECONDS", default_value_t = 900)]
+    pub admit_timeout: u64,
 }
 
 #[derive(Debug, Args)]

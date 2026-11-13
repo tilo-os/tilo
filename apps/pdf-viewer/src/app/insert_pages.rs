@@ -11,19 +11,13 @@ use super::PdfApp;
 use crate::markup::{ImportedPage, MAX_IMPORTED_PAGES, PagePlanEntry};
 use crate::source::ImportRequest;
 
-/// An insert-pages effect waiting on its import.
 pub(super) struct AskedImport {
     request: ImportRequest,
-    /// The file's pages it asked for, 1-based, in order; every page when
-    /// `None`.
     pages: Option<Vec<usize>>,
     reply: EffectReply,
 }
 
 impl PdfApp {
-    /// Insert pages `pages` (1-based; every page when `None`) of the PDF or
-    /// picture at `path`, the first at position `at` (1-based; after the
-    /// last page when `None`), and answer once they are in the page plan.
     pub(crate) fn insert_pages(
         &mut self,
         path: &AbsolutePath,
@@ -64,9 +58,6 @@ impl PdfApp {
         Ok(Effected::Pending)
     }
 
-    /// Put the pages the PDF owner read for `request` (`sizes`, in points,
-    /// of the file `hash` holds as `kind`) into the page plan, and answer
-    /// the effect that asked for them with their ids.
     pub(super) fn imported(
         &mut self,
         state: &automerge::AutoCommit,
@@ -116,8 +107,6 @@ impl PdfApp {
         }
     }
 
-    /// The import for `request` failed with `error`: the effect waiting on
-    /// it is told why.
     pub(super) fn import_failed(&mut self, request: &ImportRequest, error: &str) {
         if let Some(asked) = self
             .asked_import
@@ -131,9 +120,6 @@ impl PdfApp {
     }
 }
 
-/// The page-plan entries for pages `chosen` (1-based, in order; every page
-/// when `None`) of a file whose pages measure `sizes`, each with an id of
-/// its own.
 fn imported_pages(
     hash: &str,
     kind: &str,
@@ -199,10 +185,6 @@ mod tests {
         Ok(answer)
     }
 
-    /// A caller with no rail combines PDFs by path alone: chosen pages of
-    /// another PDF go in first in the order named, every page of it goes
-    /// after the last, each with its size read from the file, and the
-    /// answer names the new pages.
     #[serial(pdfium)]
     #[test]
     fn an_agent_inserts_another_pdfs_pages_by_path_where_it_says() {
@@ -226,7 +208,6 @@ mod tests {
             let imported = entry.imported.as_ref().expect("an imported page");
             assert_eq!(imported.page, page);
             assert_eq!(imported.kind, "pdf");
-            // The annex's pages are 300 by 200 points.
             assert_eq!(
                 (imported.width_milli, imported.height_milli),
                 (300_000, 200_000)

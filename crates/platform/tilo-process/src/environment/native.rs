@@ -1,11 +1,10 @@
-//! The native fallback: what a launcher passes through the process
-//! environment. It is the one place host inputs are read from the process.
+//! The native fallback: what a launcher passes through the process environment, read here
+//! and nowhere else in the toolkit.
 
-/// The host inputs a native launcher passes through the process environment.
 pub fn process_environment() -> super::HostEnvironment {
-    /// Empty is unset — an explicit `""` is the shape an unset forwarded
-    /// shell variable produces, and taking it literally would put every such
-    /// app in the same (empty-id) room.
+    // Empty is unset: an explicit `""` is the shape an unset forwarded shell variable
+    // produces, and taking it literally would put every such app in the same empty-id
+    // room.
     fn text(name: &str) -> Option<String> {
         std::env::var(name).ok().filter(|value| !value.is_empty())
     }
@@ -23,8 +22,6 @@ pub fn process_environment() -> super::HostEnvironment {
             })
         })
     }
-    /// A finite, positive factor; a bad value is ignored rather than
-    /// crashing the app at startup.
     fn factor(names: &[&str]) -> Option<f32> {
         names.iter().find_map(|name| {
             std::env::var(name)
@@ -39,12 +36,11 @@ pub fn process_environment() -> super::HostEnvironment {
         .and_then(|hex| super::decode_continuation(&hex, &text("TILO_CONTINUITY_RESUME_SCHEMA")?));
     super::HostEnvironment {
         identity: super::HostIdentity {
-            package_id: text("TILO_PACKAGE_ID"),
+            app_id: text("TILO_PACKAGE_ID"),
             development_app_id: text("QUICK_APP_ID"),
             app_name: text("TILO_APP_NAME"),
             workspace_id: text("TILO_WORKSPACE_ID"),
             user_id: text("TILO_USER_ID"),
-            presence_handle: text("TILO_PRESENCE_HANDLE"),
             account_name: text("USER"),
             continuity_resume,
             continuity_instance: text("TILO_CONTINUITY_INSTANCE"),
@@ -100,24 +96,22 @@ pub fn process_environment() -> super::HostEnvironment {
                 .any(|name| std::env::var_os(name).is_some_and(|v| v == "1")),
             hosted_pump_timing: std::env::var_os("TILO_HOSTED_PUMP_TIMING")
                 .is_some_and(|v| v == "1"),
+            fonts_required: std::env::var_os(super::FONTS_REQUIRED_ENV).is_some_and(|v| v == "1"),
         },
         dev_session: path("TILO_DEV_SESSION"),
         ui_graph_dir: path("TILO_UI_GRAPH_DIR"),
         reveal: text(super::REVEAL_ENV),
+        windowless: std::env::var_os(super::WINDOWLESS_ENV).is_some_and(|value| value == "1"),
     }
 }
 
-/// Ordinary timing diagnostics require explicit opt-in without a synthetic scenario.
 fn presentation_timing_requested(profile: Option<&str>) -> bool {
     profile == Some("1")
 }
 
-/// Presentation profiling needs an explicit `profile == "1"` and a record to
-/// profile: a native scenario, or a local-input run that has no synthetic
-/// input at all and measures the person's own typing. The two are exclusive —
-/// a local-input run rejects a scenario — so a run that asks for both gets
-/// nothing rather than a measurement of the wrong thing. Whether this platform
-/// can profile presentation at all is the renderer's decision.
+// Presentation profiling needs an explicit `profile == "1"` and a record to profile: a
+// native scenario, or a local-input run that measures the person's own typing. The two
+// are exclusive, so a run that asks for both gets nothing.
 fn presentation_profile_requested(
     profile: Option<&str>,
     local_input: bool,
@@ -168,7 +162,6 @@ mod tests {
         // A launch that measures the person's own typing has no scenario to
         // name, and its feedback must still be enabled.
         assert!(presentation_profile_requested(Some("1"), true, None));
-        // Neither opt-in alone enables the profile.
         assert!(!presentation_profile_requested(Some("1"), false, None));
         assert!(!presentation_profile_requested(None, true, None));
         assert!(!presentation_profile_requested(Some("0"), true, None));

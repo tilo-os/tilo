@@ -14,12 +14,11 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
-use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tilo_actions::remote::session_actions;
 use tilo_actions::{
-    ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionMode, Noun,
-    OperationKind, ParamType, ResourceSpec, ResourceType, ResourceViewSpec, ResultSpec,
+    ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
+    OperationKind, ParamType, ResourceSpec, ResultSpec,
 };
 use tilo_desktop_model::{
     ArrangementKind, DesktopTree, FloatCorner, FloatPlace, GroupId, Strip, StripId, Tab, TabId,
@@ -39,6 +38,16 @@ use queries::{query_resource, query_state_from_outcome, query_target, settle};
 const DEFAULT_WIDTH: i64 = 720;
 /// See [`DEFAULT_WIDTH`].
 const DEFAULT_HEIGHT: i64 = 520;
+
+/// How long a text typed on the canvas waits for its search before answering with the hits that
+/// came: a source reading a disk, a mailbox or a service has its own time, and the pass that placed
+/// waits for none of them. The canvas is the person's own typing, so it is heard within a moment;
+/// a search that has not answered by then places what it found so far, or sends the text on as a
+/// question to their agent as it always did when nothing matched.
+#[must_use]
+pub const fn canvas_find_within() -> std::time::Duration {
+    std::time::Duration::from_secs(2)
+}
 
 /// Where a place floats when the action names nothing else: the work area's bottom-right corner, a
 /// window's inset from its edges, at a floating size smaller than a canvas window.
@@ -176,11 +185,12 @@ pub enum ArrangementAction {
         float: Option<FloatPlace>,
     },
     /// Text typed on the canvas: the top result of the system's `find` stands there as its primary
-    /// view (or `view` ). The session resolves it into a [`Place`] when the action is invoked, so
+    /// view (or `view` ). The session resolves it into a [`Place`] when the search answers, so
     /// the record only ever holds what was placed, never the words it was found by. A `strip` names
     /// the strip the found resource joins as a tab, in front, instead of a strip of its own: how a
     /// person opens a found thing beside what they are in (shell.md §2, §3), as pressing a
-    /// reference does.
+    /// reference does. The search is asked off the pass that invoked this — its sources may read a
+    /// disk, a mailbox or a service — so the place stands on a later pass, never a frame's cost.
     PlaceFound {
         text: String,
         #[serde(default)]
@@ -264,18 +274,43 @@ pub struct Surface {
 /// palette and an agent's `tilo` tool run. The session sets it, so text typed
 /// on the canvas finds a resource through the one index and the one ranking,
 /// never a search of its own (shell.md §8, "Finding what to place").
-pub type Find = Rc<dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>>;
+///
+/// A host whose search may wait for a source (its sources read a disk, a
+/// mailbox or a service off the thread that asked) hands the find to `done`
+/// later rather than answering it here: the host's own loop, which runs the
+/// action, must never wait on one.
+pub type Find = Rc<dyn Fn(&str, FindDone)>;
+
+/// Where a [`Find`] puts what its text found, when it answers later than the
+/// call: the hits, in the ranking's order.
+pub type FindDone = Box<dyn FnOnce(Vec<tilo_desktop_search::Hit>)>;
+
+/// What a text typed on the canvas names among `hits`, as the canvas places it:
+/// the resource a place can show ([`placed`]), or `None`. The one reading of a
+/// search's order the canvas and an agent's `find` share, so both lead with the
+/// same row.
+#[must_use]
+pub fn found_resource(
+    hits: &[tilo_desktop_search::Hit],
+    text: &str,
+    shows: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let at = placed(hits, text, shows)?;
+    let (resource, _) = placeable(hits.get(at)?)?;
+    Some(resource.to_owned())
+}
 
 /// What the canvas does with text that is a question, or that nothing matches (shell.md §8.1,
-/// "Asking from the canvas"; canvas.md §3): the session posts it as the person into their ask
-/// conversation with the workspace's agent, and answers what that made ([`Asked`]): the
-/// conversation, and the turn the message opened, whose view stands where the person typed.
-/// `None` when the session cannot ask — no agent to ask, no workspace to ask in — and the text
-/// then fails to place as it always did.
-pub type Ask = Rc<dyn Fn(&str) -> Option<Asked>>;
+/// "Asking from the canvas"; canvas.md §3): the session sends it as the person to the workspace's
+/// agent, as a send-to box sends, and Chat posts it in their conversation with the agent. The turn
+/// the message opens stands where the person typed once Chat's record holds it
+/// ([`Arrangement::stand_asked`]). `false` when the session cannot ask — no workspace to ask in,
+/// or the send was refused — and the text then fails to place as it always did.
+pub type Ask = Rc<dyn Fn(&str) -> bool>;
 
-/// What an ask made: the conversation the person's message was posted in, and the turn it opened
-/// (the message and the agent's reply to it), each by the resource the session publishes it as.
+/// What an ask made, as Chat's record holds it: the conversation the person's message was posted
+/// in, and the turn it opened (the message and the agent's reply to it), each by the resource it
+/// is published as.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Asked {
     /// The conversation, by its address (`chat.workspace/channels/<id>`): what an agent's step in
@@ -284,7 +319,6 @@ pub struct Asked {
     /// The turn, by its address: the resource whose `turn` view stands at the caret.
     pub turn: String,
 }
-
 
 /// The query the platform has indexed instead of an answer: the resources it found, with the
 /// name each goes by and the kind of resource it is, or why it could not find them.
@@ -343,10 +377,12 @@ pub struct Found<'a> {
     /// The size of the rectangle the person dragged, when they dragged one: what is found fills
     /// it, and an answer's views fill it (canvas.md §1). `None` for a click.
     pub size: Option<(i64, i64)>,
-    /// The system's search, [`Find`].
-    pub find: &'a dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>,
+    /// The hits the text found, in the ranking's order, from the system's [`Find`]: answered
+    /// before the place is made, so a host whose search waits for a source does so on its own
+    /// thread and never in the pass that places.
+    pub hits: &'a [tilo_desktop_search::Hit],
     /// The ask for text that asks, [`Ask`].
-    pub ask: &'a dyn Fn(&str) -> Option<Asked>,
+    pub ask: &'a dyn Fn(&str) -> bool,
     /// The ask of an app whose type the text names, when nothing it names is held, [`AskOrigin`]:
     /// `None` when the platform can ask no app for the text.
     pub ask_origin: &'a dyn Fn(
@@ -401,28 +437,12 @@ pub fn placed(
     most_specific(&named, text)
 }
 
-/// The first resource `text` finds that a place can show, as the arrangement places it: the
-/// resource of the hit [`placed`] chooses, else `None` for a query no result answers with something
-/// placeable.
-#[must_use]
-pub fn found(
-    text: &str,
-    find: &dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>,
-    shows: impl Fn(&str) -> bool,
-) -> Option<String> {
-    let hits = find(text);
-    let at = placed(&hits, text, shows)?;
-    let (resource, _) = placeable(hits.get(at)?)?;
-    Some(resource.to_owned())
-}
-
 /// The app a window shows, by its id, when its tab holds a window at all.
 pub fn tab_app(tile: &tilo_desktop_model::TileContent) -> Option<String> {
     use tilo_desktop_model::TileContent;
     match tile {
         TileContent::Foreign { app_id, .. }
         | TileContent::LocalApp { app_id, .. }
-        | TileContent::PeerWindow { app_id, .. }
         | TileContent::HostedWindow { app_id, .. } => Some(app_id.clone()),
         _ => None,
     }
@@ -558,6 +578,11 @@ pub struct Arrangement {
     /// the places an agent's step in it makes stand. A turn is the session's while it runs, never
     /// the record's: the record holds the places it made.
     turns: RefCell<BTreeMap<String, TurnAnchor>>,
+    /// The asks sent from the canvas whose turn Chat's record does not hold yet, oldest first.
+    awaiting: RefCell<Vec<AwaitedTurn>>,
+    /// The turns asked on the canvas that stood, by address: a later ask with the same words is a
+    /// turn of its own.
+    stood: RefCell<std::collections::BTreeSet<String>>,
     /// The queries the canvas stood while their app answers them, by the key each place shows it
     /// under (`session.arrangement_query`, shell.md §8): a query is no part of the desk's record
     /// — a place still shows one while it runs — so the session keeps it here, in step with the
@@ -583,6 +608,8 @@ impl Arrangement {
             catalog: Rc::new(RefCell::new(Catalog::default())),
             waiting: RefCell::new(VecDeque::new()),
             turns: RefCell::new(BTreeMap::new()),
+            awaiting: RefCell::new(Vec::new()),
+            stood: RefCell::new(std::collections::BTreeSet::new()),
             queries: RefCell::new(BTreeMap::new()),
             query_held: RefCell::new(BTreeMap::new()),
         }
@@ -696,29 +723,34 @@ impl Arrangement {
             // Another part of the desk made it first: its row stands.
             return Ok(row.id);
         }
-        held.strips.push(Strip::new(id, "Main"));
+        held.strips.push(Strip::new(id, ""));
         tree.active_strip.insert(workspace, id);
         self.handle.replace_tree(tree);
         Ok(id)
     }
 
     /// Place the resource a text typed at `at` finds on the canvas, as `asked`'s:
-    /// the top result of the system's `find` (`find`) that a place can show,
-    /// resolved against what the session publishes now ([`Catalog`]), standing at
-    /// `at` through the arranging action [`ArrangementAction::Place`] — one
-    /// attributed, undoable change of the person's record (shell.md §8). `view`
-    /// empty shows the resource's primary view. `strip` names the strip the
-    /// found resource joins as a tab (a strip id on the desk), else it takes a
-    /// strip of its own.
+    /// the top of the `hits` the system's search answered for it that a place can
+    /// show ([`found_resource`]), resolved against what the session publishes now
+    /// ([`Catalog`]), standing at `at` through the arranging action
+    /// [`ArrangementAction::Place`] — one attributed, undoable change of the
+    /// person's record (shell.md §8). `view` empty shows the resource's primary
+    /// view. `strip` names the strip the found resource joins as a tab (a strip
+    /// id on the desk), else it takes a strip of its own.
+    ///
+    /// The hits are the search's answer, which a host whose sources read a disk,
+    /// a mailbox or a service asks for off the loop and passes here when it
+    /// comes (`Find`, `FindDone`): this never searches.
     ///
     /// Returns the place's id, or `None` when nothing the text finds is a
     /// resource the arrangement can place.
     ///
     /// Text that *asks* — a question ([`tilo_desktop_search::answers::question::asks`]),
     /// or text nothing matches — goes to `ask` instead (shell.md §8.1,
-    /// "Asking from the canvas"): what it answers is the resource to place,
-    /// the person's ask conversation, so the text typed stands as a place of
-    /// that conversation, where they typed it, as one arranging step.
+    /// "Asking from the canvas"): it is sent to the workspace's agent, and the
+    /// turn it opens stands where the person asked once Chat holds the message
+    /// ([`Self::stand_asked`], canvas.md §3), so nothing is placed here yet and
+    /// this answers `None`.
     ///
     /// # Errors
     /// Why the place could not be made, or the text found nothing to place
@@ -731,7 +763,7 @@ impl Arrangement {
             strip,
             at,
             size,
-            find,
+            hits,
             ask,
             ask_origin,
             busy,
@@ -743,14 +775,14 @@ impl Arrangement {
         // A rectangle the person dragged is its size; a click names none, and what stands there
         // takes its own.
         let size = size.filter(|(width, height)| *width > 0 && *height > 0);
-        let found_resource = found(text, find, |resource| {
+        let named = found_resource(hits, text, |resource| {
             self.catalog.borrow().get(resource).is_some()
         });
         // A text naming an app's type (shell.md §8) that names nothing held asks that app, through
         // its own search action, for what it says: the query stands as a place of its own while
         // the app answers, and answers into it (`Self::answer_query`). A question goes to the
         // person's agent instead (shell.md §8.1), never both.
-        if found_resource.is_none()
+        if named.is_none()
             && !tilo_desktop_search::answers::question::asks(text)
             && let Some((app, kind, held, outcome)) = ask_origin(text)
         {
@@ -798,15 +830,16 @@ impl Arrangement {
         // A question is answered even when it happens to match something the search holds: the
         // person asked, so the text they typed is a message to their agent, not a thing to stand
         // (shell.md §8.1).
-        let asked_agent =
-            tilo_desktop_search::answers::question::asks(text) || found_resource.is_none();
-        if asked_agent {
-            let Some(turn) = ask(text) else {
+        let asks_agent = tilo_desktop_search::answers::question::asks(text) || named.is_none();
+        if asks_agent {
+            if !ask(text) {
                 return Err(format!("nothing matches {text:?}"));
-            };
-            return self.place_turn(asked, &turn, strip, at, size, busy);
+            }
+            // The turn stands where the person asked once Chat holds their message.
+            self.await_turn(asked, text, strip, at, size);
+            return Ok(None);
         }
-        let Some(resource) = found_resource else {
+        let Some(resource) = named else {
             return Err(format!("nothing matches {text:?}"));
         };
         // What the text finds stands where the person pointed: at the point at its own size, or
@@ -2304,228 +2337,6 @@ fn hash_resources(specs: &[ResourceSpec], hasher: &mut std::hash::DefaultHasher)
     hasher.write_u8(0);
 }
 
-/// The actions that put a resource on the canvas: by naming it and one of its views, or by what a
-/// text finds (shell.md §8).
-fn placing_actions() -> Vec<ActionSpec> {
-    vec![
-        place_action(),
-        place_found_action(),
-        open_action(),
-        show_action(),
-        retry_query_action(),
-    ]
-}
-
-/// `show`: a place shows another resource, keeping its id and its place on the canvas. What an
-/// answered canvas query's place becomes, and Undo puts the query back (shell.md §8).
-fn show_action() -> ActionSpec {
-    action(
-        "show",
-        "Show another resource in a place, keeping the place where it is",
-        vec![
-            required("place", ParamType::Resource, "The place, by its resource")
-                .of_resource_kind(PLACE_KIND),
-            required(
-                "resource",
-                ParamType::Resource,
-                "The resource it shows from now on",
-            ),
-            optional("view", ParamType::Text, "The view it shows it through"),
-        ],
-        |args| ArrangementAction::Show {
-            place: named(args, "place", Item::Place).unwrap_or_default(),
-            resource: text(args, "resource"),
-            view: args.text("view").unwrap_or_default().to_owned(),
-        },
-    )
-}
-
-/// `retry-query`: ask the app the query a place shows again for what the person typed.
-fn retry_query_action() -> ActionSpec {
-    action(
-        "retry-query",
-        "Look for what a place's search names again",
-        vec![
-            required("place", ParamType::Resource, "The place, by its resource")
-                .of_resource_kind(PLACE_KIND),
-        ],
-        |args| ArrangementAction::RetryQuery {
-            place: named(args, "place", Item::Place).unwrap_or_default(),
-        },
-    )
-}
-
-/// `place`: a resource on the canvas, as one of its views, at a point or a float's corner.
-fn place_action() -> ActionSpec {
-    action(
-        "place",
-        "Put a resource on the canvas as one of its views",
-        vec![
-            // A workspace's id is its own, across all of u64: text, as the arrangement record
-            // names it, where an integer stops at i64. Each left out is the surface in front's:
-            // its workspace and row, and a strip and place id of its own.
-            optional(
-                "workspace",
-                ParamType::Text,
-                "The workspace whose canvas it stands on, by its id; the one in front when left out",
-            ),
-            optional(
-                "row",
-                ParamType::Integer,
-                "The row it stands in; the row in front when left out",
-            ),
-            optional(
-                "strip",
-                ParamType::Integer,
-                "The strip it stands in; a new one when left out",
-            ),
-            optional(
-                "place",
-                ParamType::Integer,
-                "The id the new place takes; a new one when left out",
-            ),
-            required("resource", ParamType::Resource, "The resource it shows"),
-            optional("view", ParamType::Text, "The view it shows it through"),
-            optional("x", ParamType::Integer, "Its canvas x"),
-            optional("y", ParamType::Integer, "Its canvas y"),
-            optional("width", ParamType::Integer, "Its width in canvas pixels"),
-            optional("height", ParamType::Integer, "Its height in canvas pixels"),
-            // A place that floats stands above the windows rather than on the canvas: it has no
-            // canvas x and y, and the corner and insets are its own instead (`width` and
-            // `height` are its size). Left out, the place stands on the canvas.
-            optional(
-                "float",
-                ParamType::Text,
-                "Floats it above its workspace's windows at this corner of the work area: top-left, top-right, bottom-right (the default) or bottom-left",
-            ),
-            optional(
-                "dx",
-                ParamType::Integer,
-                "A float's distance from that corner's side edge, in canvas pixels",
-            ),
-            optional(
-                "dy",
-                ParamType::Integer,
-                "A float's distance from that corner's top or bottom edge, in canvas pixels",
-            ),
-            // Where it stands when it names no point: beside the place showing this resource, in
-            // the free space nearest it. An agent's step names the conversation it was asked in,
-            // so what it places stands next to that conversation (`shell.md` §8.1).
-            optional(
-                "beside",
-                ParamType::Text,
-                "Without x and y, it stands beside the place showing this resource, by its address; an agent's step stands it beside the conversation it was asked in",
-            ),
-        ],
-        |args| {
-            let float = args.text("float").map(|corner| {
-                FloatPlace::new(
-                    // ignored-failure: a corner's name that names none stands at the default corner
-                    FloatCorner::parse(corner).unwrap_or_default(),
-                    float_coord(args.integer("dx"), FLOAT_INSET),
-                    float_coord(args.integer("dy"), FLOAT_INSET),
-                    float_side(args.integer("width"), FLOAT_WIDTH),
-                    float_side(args.integer("height"), FLOAT_HEIGHT),
-                )
-            });
-            ArrangementAction::Place {
-                workspace: id_text(args, "workspace"),
-                row: count(args, "row"),
-                strip: count(args, "strip"),
-                place: count(args, "place"),
-                resource: text(args, "resource"),
-                view: args.text("view").unwrap_or_default().to_owned(),
-                x: args.integer("x").unwrap_or_default(),
-                y: args.integer("y").unwrap_or_default(),
-                width: args.integer("width").unwrap_or(DEFAULT_WIDTH),
-                height: args.integer("height").unwrap_or(DEFAULT_HEIGHT),
-                float,
-            }
-        },
-    )
-}
-
-/// The resource a `place` names to stand beside, when it names no point, strip, float or row of
-/// its own: where it stands is then next to that resource's place.
-fn place_beside(arguments: &serde_json::Map<String, Json>) -> Option<&str> {
-    let pointed = ["x", "y", "strip", "float", "workspace", "row"]
-        .iter()
-        .any(|name| arguments.get(*name).is_some_and(|value| !value.is_null()));
-    if pointed {
-        return None;
-    }
-    arguments
-        .get("beside")
-        .and_then(Json::as_str)
-        .map(str::trim)
-        .filter(|beside| !beside.is_empty())
-}
-
-/// `place-found`: what a text finds, put on the canvas at the caret, or into a strip as a tab.
-fn place_found_action() -> ActionSpec {
-    action(
-        "place-found",
-        "Put what a text finds on the canvas, or into a strip as a tab",
-        vec![
-            required("text", ParamType::Text, "What to find and place"),
-            optional("view", ParamType::Text, "The view it shows it through"),
-            optional(
-                "strip",
-                ParamType::Text,
-                "The strip it joins as a tab, by its id; a strip of its own when left out",
-            ),
-            optional("x", ParamType::Integer, "Its canvas x"),
-            optional("y", ParamType::Integer, "Its canvas y"),
-            // A rectangle the person dragged: what is found is laid out to it, and an answer's
-            // views fill it. Left out, it stands at its own size.
-            optional(
-                "width",
-                ParamType::Integer,
-                "The width of the rectangle it fills, in canvas pixels; its own when left out",
-            ),
-            optional(
-                "height",
-                ParamType::Integer,
-                "The height of the rectangle it fills, in canvas pixels; its own when left out",
-            ),
-        ],
-        |args| ArrangementAction::PlaceFound {
-            text: text(args, "text"),
-            view: args.text("view").unwrap_or_default().to_owned(),
-            strip: args
-                .text("strip")
-                .map(|_| id_text(args, "strip"))
-                .filter(|strip| *strip != 0),
-            x: args.integer("x").unwrap_or_default(),
-            y: args.integer("y").unwrap_or_default(),
-            width: args.integer("width").unwrap_or_default(),
-            height: args.integer("height").unwrap_or_default(),
-        },
-    )
-}
-
-/// `open`: a resource opened with its own view, beside what the ask is in.
-fn open_action() -> ActionSpec {
-    action(
-        "open",
-        "Open a resource with its own view, beside what the ask is in",
-        vec![
-            required("resource", ParamType::Resource, "The resource it shows"),
-            optional("view", ParamType::Text, "The view it shows it through"),
-            optional(
-                "beside",
-                ParamType::Text,
-                "The resource whose place it stands beside, by its address; the place in front when left out",
-            ),
-        ],
-        |args| ArrangementAction::Open {
-            resource: text(args, "resource"),
-            view: args.text("view").unwrap_or_default().to_owned(),
-            beside: text(args, "beside"),
-        },
-    )
-}
-
 /// An immediate effect action `id` the session answers itself: a step of the arrangement's history.
 #[expect(
     clippy::expect_used,
@@ -2613,6 +2424,7 @@ pub(super) fn text(args: &ActionArgs, name: &str) -> String {
 
 /// The arrangement's published side: the one door the palette, a script, an agent and the host's
 /// own calls reach its actions through, beside the desktop's own.
+#[derive(Clone)]
 pub struct Door {
     arrangement: Rc<RefCell<Arrangement>>,
     /// How the host says whether the person is mid-gesture or typing, as it last saw it.
@@ -2621,7 +2433,7 @@ pub struct Door {
     /// the canvas places (shell.md §8). Empty where the host has no index to search.
     find: Find,
     /// What the canvas asks of the host when the text it is given is a question, or names
-    /// nothing (shell.md §8.1). `None` where the host has no agent to ask.
+    /// nothing (shell.md §8.1).
     ask: Ask,
     /// What the canvas asks of an app when the text names a type of its and names nothing the
     /// session holds: that app's own search action, through its origin (shell.md §8, search.md
@@ -2744,8 +2556,11 @@ impl Door {
         } else {
             (self.busy)()
         };
-        // A place found by text is resolved here, where the search and what is published now are:
-        // the record only ever holds what was placed.
+        // A place found by text is resolved where the search and what is published now are: the
+        // record only ever holds what was placed. The search runs first, on whatever thread it
+        // needs (a host whose sources read a disk, a mailbox or a service answers later), and this
+        // returns before the place stands: the place appears on a later pass, the person's step as
+        // any other.
         if let ArrangementAction::PlaceFound {
             text,
             view,
@@ -2761,22 +2576,34 @@ impl Door {
             let find = Rc::clone(&self.find);
             let ask = Rc::clone(&self.ask);
             let ask_origin = Rc::clone(&self.ask_origin);
-            let placed = self.arrangement.borrow_mut().place_found(Found {
-                asked: &asked,
-                text,
-                view,
-                strip: *strip,
-                at: spot,
-                size,
-                find: &*find,
-                ask: &*ask,
-                ask_origin: &*ask_origin,
-                busy,
-            });
-            placed.map_err(|why| tilo_actions::DoorError::Unavailable {
-                code: "nothing_to_place".to_owned(),
-                reason: why,
-            })?;
+            let door = self.clone();
+            let needle = text.trim().to_owned();
+            let (text, view, strip) = (text.clone(), view.clone(), *strip);
+            find(
+                &needle,
+                Box::new(move |hits| {
+                    if let Err(why) = door.arrangement.borrow_mut().place_found(Found {
+                        asked: &asked,
+                        text: &text,
+                        view: &view,
+                        strip,
+                        at: spot,
+                        size,
+                        hits: &hits,
+                        ask: &*ask,
+                        ask_origin: &*ask_origin,
+                        busy,
+                    }) {
+                        // The text named nothing a place can show, and nothing answered it: the
+                        // person sees no place, so the log says why.
+                        tracing::warn!(%why, %text, "what the text found is not placed");
+                    }
+                }),
+            );
+            // The search is under way and the place stands on a later pass: the door answers as it
+            // always did for an arranging action, which is complete when the ask is taken. Nothing
+            // of the place is left for the caller to read back, so it is not a pending invocation
+            // (`Accepted` would be, and nothing completes it).
             return Ok(ui::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ));
@@ -2971,12 +2798,14 @@ impl Door {
     }
 }
 
+mod placing;
+use placing::{place_beside, placing_actions};
 mod specs;
 use specs::{float_actions, float_coord, float_side, strip_actions};
 
 mod turns;
-pub use turns::TURN_VIEW;
-use turns::TurnAnchor;
+use turns::{AwaitedTurn, TurnAnchor};
+pub use turns::{FindTurn, TURN_VIEW};
 
 #[cfg(test)]
 mod tests;

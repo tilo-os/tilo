@@ -1,67 +1,49 @@
-//! Path-level record operations for the native data plane.
+//! Path-level operations for the native data plane.
 //!
-//! On Tier 1 the workspace is a real tree on the store volume and nothing
-//! passes through FUSE. Changes are observed afterwards, as ordered
-//! changesets of paths, and applied here through the same signed
-//! operations a FUSE `create`, `write`+`release`, `mkdir`, `unlink` and
-//! `rmdir` use: record bindings and envelopes, versions, history and the
-//! namespace delta broadcast to peers. The FUSE callbacks and these entry
-//! points share one implementation, so a record written through either
-//! path is indistinguishable to a peer.
+//! On Tier 1 the workspace is a real tree on the store volume and nothing passes through FUSE.
+//! Changes are observed afterwards as ordered changesets of paths and applied here through the same
+//! namespace operations a FUSE `create`, `write` and `release`, `mkdir`, `unlink` and `rmdir` use,
+//! so a file written through either path looks the same.
 
 use std::path::{Component, Path};
 use std::sync::atomic::Ordering;
 
 use super::{EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, document_codec_for, now_ms};
-use crate::namespace::{
-    ContentAuthority, LeaseRequest, PosixAttrs, ROOT_INO, VersionFence, WriteLease,
-};
+use crate::namespace::{LeaseRequest, PosixAttrs, ROOT_INO, VersionFence, WriteLease};
 
-/// One file or directory of the workspace tree as the record plane sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TreeEntry {
-    /// Root-relative path components, raw bytes.
     pub path: Vec<Vec<u8>>,
     pub dir: bool,
-    /// Content id of a file's current version (`None` for empty files and
-    /// directories).
+    /// Content id of a file's current version (`None` for empty files and directories).
     pub hash: Option<Hash>,
     pub size: u64,
-    /// Time of the version that set the current content, Unix ms. The
-    /// author assigns it when the change is committed, so it orders one
-    /// author's changes the way that author made them.
+    /// Time of the version that set the current content, Unix ms, assigned by its author; it orders
+    /// one author's changes the way that author made them.
     pub mtime_ms: u64,
-    /// Whether this device holds the verified content revision. A signed
-    /// record whose revision has not been verified yet reads as empty; it is
-    /// not empty, just not known.
+    /// Whether this device holds the content the tree names. A file whose bytes have not arrived yet
+    /// reads as empty; it is not empty, just not known.
     pub known: bool,
-    /// The stable record this path is. A rename keeps it.
     pub record: Option<fs_protocol::FileRecordId>,
-    /// Replicated permission bits and whether the content is a symbolic
-    /// link's target.
     pub posix: PosixAttrs,
-    /// The record's write lease, when it is lease-class.
     pub lease: Option<WriteLease>,
-    /// The tenancy the current version was written in, and who held the
-    /// lease in that epoch.
+    /// The tenancy the current version was written in, and who held the lease in that epoch.
     pub fence: Option<VersionFence>,
     pub fence_holder: Option<[u8; 32]>,
 }
 
-/// How a write lease was obtained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LeaseSource {
-    /// Taken or renewed here: no other device arbitrates this workspace, or
-    /// device does.
+    /// Taken or renewed here: no other device arbitrates this workspace.
     Local,
     Granted,
-    /// Taken without an answer from the lease authority, which could not be
-    /// reached: versions written under it lose to a granted tenancy.
+    /// Taken without an answer from the lease authority, which could not be reached: versions written
+    /// under it lose to a granted tenancy.
     Optimistic,
 }
 
-/// Splits a root-relative path into its name components. Anything that is
-/// not a plain name (`..`, a root, a prefix) is refused.
+/// Splits a root-relative path into its name components. Anything that is not a plain name (`..`, a
+/// root, a prefix) is refused.
 pub fn path_components(rel: &Path) -> Result<Vec<Vec<u8>>, i32> {
     use std::os::unix::ffi::OsStrExt as _;
     rel.components()
@@ -74,8 +56,8 @@ pub fn path_components(rel: &Path) -> Result<Vec<Vec<u8>>, i32> {
         .collect()
 }
 
-/// The write lease of the record at `ino`, the tenancy its current version
-/// was written in, and who held that tenancy.
+/// The write lease of the record at `ino`, the tenancy its current version was written in, and who
+/// held that tenancy.
 fn lease_of(
     ns: &crate::namespace::Namespace,
     ino: u64,
@@ -93,7 +75,6 @@ fn lease_of(
     (Some(lease), fence, holder)
 }
 
-/// The published POSIX attributes of the record at `ino`, else the default.
 fn posix_of(ns: &crate::namespace::Namespace, ino: u64, dir: bool) -> PosixAttrs {
     ns.record_id_for(ino)
         .and_then(|r| ns.posix_attrs(r))
@@ -109,9 +90,9 @@ impl QuickFS {
         self.ns().lookup_kind(parent, name)
     }
 
-    /// The directory at `components`, creating missing directories. A file
-    /// standing where a directory must be is removed first: the changeset
-    /// that made the path a directory removed it on the author's side too.
+    /// The directory at `components`, creating missing directories. A file standing where a directory
+    /// must be is removed first: the changeset that made the path a directory removed it on the
+    /// author's side too.
     fn ensure_dir_components(&self, components: &[Vec<u8>]) -> Result<u64, i32> {
         let mut cur = ROOT_INO;
         for name in components {
@@ -134,19 +115,11 @@ impl QuickFS {
     }
 
     /// Applies a locally captured directory with its default mode.
-    ///
-    /// # Errors
-    ///
-    /// The errno of the directory creation that failed.
     pub fn apply_local_dir(&self, rel: &Path) -> Result<(), i32> {
         self.apply_local_dir_as(rel, PosixAttrs::default_for(true))
     }
 
     /// Applies a locally captured directory with mode bits `attrs`.
-    ///
-    /// # Errors
-    ///
-    /// The errno of the directory creation that failed.
     pub fn apply_local_dir_as(&self, rel: &Path, attrs: PosixAttrs) -> Result<(), i32> {
         let components = path_components(rel)?;
         if components.is_empty() {
@@ -156,8 +129,13 @@ impl QuickFS {
         self.set_posix(ino, attrs, true)
     }
 
-    /// Publishes `attrs` for the record at `ino` when they differ from what
-    /// it has.
+    /// Give `ino` the permission bits of `mode`, as `chmod` and a create's mode do: what replicates of
+    /// them ([`PosixAttrs::of_local`]: never setuid, setgid on directories only).
+    pub(crate) fn set_mode(&self, ino: u64, mode: u32) -> Result<(), i32> {
+        let dir = self.ns().getattr(ino).ok_or(ENOENT)?.kind == FileType::Directory;
+        self.set_posix(ino, PosixAttrs::of_local(mode, dir, false), dir)
+    }
+
     fn set_posix(&self, ino: u64, attrs: PosixAttrs, dir: bool) -> Result<(), i32> {
         {
             let mut ns = self.ns();
@@ -177,24 +155,17 @@ impl QuickFS {
         Ok(())
     }
 
-    /// Applies a locally captured file version with content `data`, written
-    /// at `mtime_ms` (the file's own modification time, which peers
-    /// materialise). Nothing
-    /// is published when the record already has exactly this content.
+    /// Applies a locally captured file version with content `data`, written at `mtime_ms` (the file's
+    /// own modification time, which peers materialise). Nothing is published when the record already
+    /// has exactly this content.
     pub fn apply_local_file(&self, rel: &Path, data: &[u8], mtime_ms: u64) -> Result<(), i32> {
         self.apply_local_file_as(rel, data, mtime_ms, PosixAttrs::default_for(false), None)
     }
 
-    /// [`Self::apply_local_file`] with the file's mode bits, or for a
-    /// symbolic link (`attrs.symlink`) whose target bytes are `data`. The
-    /// attributes are published before the content, so a peer never shows
-    /// the new content with the old type or mode. A version written under a
-    /// write lease carries its tenancy (`fence`), published in the same
-    /// change as the content.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::apply_local_file`].
+    /// [`Self::apply_local_file`] with the file's mode bits, or for a symbolic link (`attrs.symlink`)
+    /// whose target bytes are `data`. The attributes are published before the content, so a peer never
+    /// shows the new content with the old type or mode. A version written under a write lease carries
+    /// its tenancy (`fence`), published in the same change as the content.
     pub fn apply_local_file_as(
         &self,
         rel: &Path,
@@ -212,15 +183,9 @@ impl QuickFS {
         )
     }
 
-    /// Applies a locally captured file version whose content is the file at
-    /// `snapshot` (immutable while this runs), described by `manifest` when
-    /// the capture already computed it. Large content is cloned into the
-    /// content store rather than read into memory. `attrs` and `fence` as
-    /// for [`Self::apply_local_file_as`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::apply_local_file`].
+    /// Applies a locally captured file version whose content is the file at `snapshot` (immutable while
+    /// this runs), described by `manifest` when the capture already computed it. Large content is cloned
+    /// into the content store rather than read into memory.
     pub fn apply_local_snapshot(
         &self,
         rel: &Path,
@@ -269,9 +234,8 @@ impl QuickFS {
             .map_err(|e| to_errno(&e))
     }
 
-    /// A new file is published with its content as its first version and
-    /// its attributes in the same changeset. A version written under a
-    /// lease starts empty, so that its content carries the tenancy.
+    /// A new file is published with its content as its first version and its attributes in the same
+    /// changeset. A version written under a lease starts empty, so its content carries the tenancy.
     fn create_local_file(
         &self,
         parent: u64,
@@ -298,12 +262,8 @@ impl QuickFS {
         self.set_posix(ino, attrs, false)
     }
 
-    /// Applies a locally captured removal. Removing a path that is already
-    /// gone succeeds: the change it describes holds.
-    ///
-    /// # Errors
-    ///
-    /// The errno of the signed delete that failed.
+    /// Applies a locally captured removal. Removing a path that is already gone succeeds: the change it
+    /// describes holds.
     pub fn apply_local_remove(&self, rel: &Path) -> Result<(), i32> {
         let components = path_components(rel)?;
         let Some((name, parents)) = components.split_last() else {
@@ -326,16 +286,12 @@ impl QuickFS {
         }
     }
 
-    /// Applies a locally captured rename of `from` to `to`: the record keeps
-    /// its identity, so its history, access and every reference to it follow
-    /// it, and a directory brings its subtree. A record already at `to` is
-    /// replaced as `rename(2)` replaces it (one signed transaction).
+    /// Applies a locally captured rename of `from` to `to`: the record keeps its identity, so its
+    /// history, access and every reference to it follow, and a directory brings its subtree. A record
+    /// already at `to` is replaced as `rename(2)` replaces it, in one signed transaction.
     ///
-    /// # Errors
-    ///
-    /// `ENOENT` when `from` is not a record here, else the errno of the
-    /// signed rename that failed. The caller falls back to a removal and a
-    /// creation, which loses identity but never content.
+    /// `ENOENT` when `from` is not a record here. The caller falls back to a removal and a creation,
+    /// which loses identity but never content.
     pub fn apply_local_move(&self, from: &Path, to: &Path) -> Result<(), i32> {
         let source = path_components(from)?;
         let target = path_components(to)?;
@@ -357,8 +313,7 @@ impl QuickFS {
         Ok(())
     }
 
-    /// Removes a directory and everything below it, deepest first, each as
-    /// its own signed delete.
+    /// Removes a directory and everything below it, deepest first, each as its own signed delete.
     fn remove_subtree(&self, parent: u64, name: &[u8]) -> Result<(), i32> {
         let Some((ino, kind)) = self.lookup_kind(parent, name) else {
             return Ok(());
@@ -387,28 +342,28 @@ impl QuickFS {
         }
     }
 
-    /// Every file and directory this mount may read, parents before
-    /// children. Taken while no changeset is being applied, so it holds
-    /// each changeset entirely or not at all.
+    /// Every file and directory this mount may read, parents before children. Taken while no changeset
+    /// is being applied, so it holds each changeset entirely or not at all.
     pub fn tree_snapshot(&self) -> Vec<TreeEntry> {
-        let _gate = self
-            .record_publisher
-            .as_ref()
-            .map(|p| p.repository().publication_gate().blocking_read());
         let mut out = Vec::new();
         let mut stack: Vec<(u64, Vec<Vec<u8>>)> = vec![(ROOT_INO, Vec::new())];
         while let Some((dir, prefix)) = stack.pop() {
             let entries = self.visible_entries(dir).unwrap_or_default();
             for (ino, kind, name) in entries {
-                let name = name.as_bytes();
-                if !projectable_name(name) {
-                    tracing::warn!(
-                        target: "fs::native",
-                        ino,
-                        "not projecting an entry whose name is not one path component",
-                    );
-                    continue;
-                }
+                let name = match listed(name.as_bytes()) {
+                    Listed::Entry(name) => name,
+                    // The directory's own links (`.`, `..`) are how a listing
+                    // reaches it and its parent, not entries of it.
+                    Listed::Link => continue,
+                    Listed::Unprojectable => {
+                        tracing::warn!(
+                            target: "fs::native",
+                            ino,
+                            "not projecting an entry whose name is not one path component",
+                        );
+                        continue;
+                    }
+                };
                 let mut path = prefix.clone();
                 path.push(name.to_vec());
                 let (hash, size, mtime_ms, known, record, posix, lease) = {
@@ -418,12 +373,7 @@ impl QuickFS {
                         .as_ref()
                         .and_then(|a| a.mtime.duration_since(std::time::UNIX_EPOCH).ok())
                         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-                    let known = if kind == FileType::Directory {
-                        self.directory_known(&ns, ino)
-                    } else {
-                        ns.content_authority() == ContentAuthority::LegacyNamespace
-                            || ns.content_revision_for(ino).is_some()
-                    };
+                    let known = true;
                     (
                         hash.flatten(),
                         attr.map_or(0, |a| a.size),
@@ -456,8 +406,7 @@ impl QuickFS {
         out
     }
 
-    /// Publishes `device`'s changeset mark (see
-    /// [`crate::namespace::ChangesetMark`]).
+    /// Publishes `device`'s changeset mark ([`crate::namespace::ChangesetMark`]).
     pub fn put_changeset_mark(&self, device: [u8; 32], mark: &crate::namespace::ChangesetMark) {
         {
             let mut ns = self.ns();
@@ -469,54 +418,14 @@ impl QuickFS {
         self.publish();
     }
 
-    /// Every device's latest changeset mark.
     pub fn changeset_marks(&self) -> Vec<([u8; 32], crate::namespace::ChangesetMark)> {
         self.ns().changeset_marks()
     }
 
-    /// Whether this device holds the signed record of the directory at
-    /// `ino`. Its placement can arrive before the changeset that made it;
-    /// until the changeset is here, the directory is not shown either.
-    fn directory_known(&self, ns: &crate::namespace::Namespace, ino: u64) -> bool {
-        let Some(publisher) = &self.record_publisher else {
-            return true;
-        };
-        if ns.content_authority() == ContentAuthority::LegacyNamespace {
-            return true;
-        }
-        ns.record_id_for(ino).is_some_and(|record_id| {
-            publisher
-                .repository()
-                .contains(crate::record_repository::RecordRepositoryKey {
-                    workspace_id: publisher.workspace_id(),
-                    record_id,
-                })
-        })
-    }
-
-    /// Runs `apply` (a changeset's worth of the path-level operations
-    /// above) as one signed changeset, made durable at once:
-    ///
-    /// 1. the content of every file is synced once, not once per file;
-    /// 2. every record operation is signed once as a changeset and written
-    ///    with it in one log transaction: after a crash either all of the
-    ///    changeset is there or none of it;
-    /// 3. the durability hook persists the namespace that places the
-    ///    changeset's records and holds their history, so a crash cannot
-    ///    leave durable records without placements (which a restart would
-    ///    read as deletions).
-    ///
-    /// Until then peers see none of it: its records are served only once
-    /// durable, namespace exchanges wait on the publication gate, and the
-    /// change is announced after the last step.
+    /// Runs `apply` (a changeset's worth of the path-level operations above) as one changeset, made
+    /// durable at once: content is synced once rather than once per file, and the durability hook
+    /// persists the namespace that places its files. Nothing is announced until both are on disk.
     pub fn changeset<T>(&self, apply: impl FnOnce() -> T) -> T {
-        let publisher = self.record_publisher.as_ref();
-        let gate = publisher.map(|p| p.repository().publication_gate().blocking_write());
-        if let Some(publisher) = publisher
-            && let Err(error) = publisher.begin_changeset()
-        {
-            eprintln!("records are published one by one: {error}");
-        }
         self.changeset_open.store(true, Ordering::Release);
         let store = std::sync::Arc::clone(&self.hydrator.store);
         store.defer_sync();
@@ -524,29 +433,13 @@ impl QuickFS {
         if let Err(error) = self.hydrator.block_on(store.end_deferred_sync()) {
             eprintln!("content stays pending: {error:#}");
         }
-        let mut durable = true;
-        if durable && let Some(publisher) = publisher {
-            match publisher.commit_changeset() {
-                Ok(Some(changeset)) if std::env::var_os("TILO_FS_NATIVE_TRACE").is_some() => {
-                    eprintln!(
-                        "  changeset {} of {} record(s) is durable",
-                        changeset.header.sequence, changeset.header.leaf_count
-                    );
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    eprintln!("the changeset stays pending: {error}");
-                    durable = false;
-                }
-            }
-        }
+        let durable = true;
         if durable
             && let Some(hook) = self.durability_hook.get()
             && let Err(error) = hook()
         {
             eprintln!("the namespace placing the changeset stays pending: {error}");
         }
-        drop(gate);
         self.changeset_open.store(false, Ordering::Release);
         if durable {
             self.announce();
@@ -556,7 +449,6 @@ impl QuickFS {
         value
     }
 
-    /// The current time as the record plane stamps it.
     pub fn record_clock_ms() -> u64 {
         now_ms()
     }
@@ -579,12 +471,7 @@ impl QuickFS {
             .mtime
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-        let known = if attr.kind == FileType::Directory {
-            self.directory_known(&ns, ino)
-        } else {
-            ns.content_authority() == ContentAuthority::LegacyNamespace
-                || ns.content_revision_for(ino).is_some()
-        };
+        let known = true;
         Some(TreeEntry {
             path: components,
             dir: attr.kind == FileType::Directory,
@@ -600,8 +487,8 @@ impl QuickFS {
         })
     }
 
-    /// Whether the file at `rel` is a document: kept as a CRDT and read and
-    /// written in the legacy format its name declares.
+    /// Whether the file at `rel` is a document: kept as a CRDT and read and written in the legacy format
+    /// its name declares.
     pub fn document_at(&self, rel: &Path) -> bool {
         path_components(rel)
             .ok()
@@ -609,9 +496,8 @@ impl QuickFS {
             .is_some_and(|ino| self.is_document(ino))
     }
 
-    /// The whole file at `rel` as a reader of the mount sees it: a
-    /// document exported through its format's codec, other content hydrated
-    /// first when it is not local.
+    /// The whole file at `rel` as a reader of the mount sees it: a document exported through its
+    /// format's codec, other content hydrated first when it is not local.
     pub fn read_path(&self, rel: &Path) -> Result<Vec<u8>, i32> {
         let components = path_components(rel)?;
         let ino = self.ino_at(&components).ok_or(ENOENT)?;
@@ -622,12 +508,8 @@ impl QuickFS {
         self.read_full_blocking(ino).map_err(|e| to_errno(&e))
     }
 
-    /// Up to `len` bytes of the file at `rel` from `offset`, as
-    /// [`Self::read_path`] reads it; only that range is hydrated.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::read_path`].
+    /// Up to `len` bytes of the file at `rel` from `offset`, as [`Self::read_path`] reads it; only that
+    /// range is hydrated.
     pub fn read_path_range(&self, rel: &Path, offset: u64, len: u64) -> Result<Vec<u8>, i32> {
         let components = path_components(rel)?;
         let ino = self.ino_at(&components).ok_or(ENOENT)?;
@@ -683,18 +565,13 @@ impl QuickFS {
         self.ns().getattr(ino).map(|attr| attr.kind)
     }
 
-    /// Writes the file at `snapshot` (immutable while this runs) as the
-    /// whole file at `rel`, as a create or an open, write and close of the
-    /// mount would: a document is imported through its format's codec (an
-    /// invalid document is refused and the current one kept), a new file
-    /// named for a registered format becomes a document where the namespace
-    /// keeps documents, and anything else is content, applied as
-    /// [`Self::apply_local_snapshot`].
+    /// Writes the file at `snapshot` (immutable while this runs) as the whole file at `rel`, as a create
+    /// or an open, write and close of the mount would: a document is imported through its format's
+    /// codec (an invalid document is refused and the current one kept), a new file named for a
+    /// registered format becomes a document where the namespace keeps documents, and anything else is
+    /// content ([`Self::apply_local_snapshot`]).
     ///
-    /// # Errors
-    ///
-    /// `EINVAL` for a document its codec refuses, else as
-    /// [`Self::apply_local_file`].
+    /// `EINVAL` for a document its codec refuses.
     pub fn write_path(&self, rel: &Path, snapshot: &Path, mtime_ms: u64) -> Result<(), i32> {
         let components = path_components(rel)?;
         let Some((name, parents)) = components.split_last() else {
@@ -707,15 +584,11 @@ impl QuickFS {
                 self.commit_bytes(ino, &read()?)
             }
             None => {
-                if let Some(codec) = self.new_document_codec(name) {
+                if let Some(codec) = Self::new_document_codec(name) {
                     return self.create_local_document(parent, name, &codec, &read()?, mtime_ms);
                 }
                 self.write_snapshot(rel, snapshot, mtime_ms)?;
-                // A signed record's first version is its creation; an
-                // unsigned one is created as FUSE `create` creates it.
-                if !self.signed()
-                    && let Some((ino, _)) = self.lookup_kind(parent, name)
-                {
+                if let Some((ino, _)) = self.lookup_kind(parent, name) {
                     self.record_version(ino, fs_protocol::FileProvenance::Create, None);
                 }
                 Ok(())
@@ -729,21 +602,12 @@ impl QuickFS {
         self.apply_local_snapshot(rel, snapshot, None, mtime_ms, attrs, None)
     }
 
-    fn signed(&self) -> bool {
-        self.record_publisher.is_some() && self.history.is_some()
-    }
-
-    /// The codec a new file named `name` is kept in as a document. Signed
-    /// records carry opaque content only, so there it is always `None`.
-    fn new_document_codec(&self, name: &[u8]) -> Option<String> {
-        if self.signed() || self.ns().content_authority() != ContentAuthority::LegacyNamespace {
-            return None;
-        }
+    fn new_document_codec(name: &[u8]) -> Option<String> {
         std::str::from_utf8(name).ok().and_then(document_codec_for)
     }
 
-    /// Creates the document `name` in `parent` with `data` as its content,
-    /// as a FUSE create followed by a write and close.
+    /// Creates the document `name` in `parent` with `data` as its content, as a FUSE create followed by
+    /// a write and close.
     fn create_local_document(
         &self,
         parent: u64,
@@ -781,7 +645,6 @@ impl QuickFS {
         ns.write_lease(ns.record_id_for(ino)?)
     }
 
-    /// Who held `record`'s write lease in `epoch`.
     pub fn lease_holder_of(&self, record: [u8; 16], epoch: u64) -> Option<[u8; 32]> {
         self.ns().lease_holder(
             fs_protocol::FileRecordId(uuid::Uuid::from_bytes(record)),
@@ -789,7 +652,6 @@ impl QuickFS {
         )
     }
 
-    /// Makes `me` the workspace's lease authority, when it is not already.
     pub fn claim_lease_authority(&self, me: [u8; 32]) {
         {
             let mut ns = self.ns();
@@ -801,16 +663,14 @@ impl QuickFS {
         self.publish();
     }
 
-    /// The workspace's lease authority, if one claimed it.
     pub fn lease_authority(&self) -> Option<[u8; 32]> {
         self.ns().lease_authority()
     }
 
-    /// Acquires the write lease of `rel` for `me`. A live lease `me` holds
-    /// is renewed; another device's live lease is `Err(Some(lease))`. A
-    /// free lease comes from the workspace's lease authority when that is
-    /// another device: `me` asks and waits up to `wait` for its answer,
-    /// and takes the lease optimistically when none comes.
+    /// Acquires the write lease of `rel` for `me`. A live lease `me` holds is renewed; another device's
+    /// live lease is `Err(Some(lease))`. A free lease comes from the workspace's lease authority when
+    /// that is another device: `me` asks and waits up to `wait`, and takes the lease optimistically when
+    /// none comes.
     pub fn acquire_write_lease(
         &self,
         rel: &Path,
@@ -881,10 +741,9 @@ impl QuickFS {
         }
     }
 
-    /// Answers pending lease requests as the workspace's lease authority: each
-    /// request for a lease nobody holds is granted with a new epoch, one at
-    /// a time, so of two devices asking at once exactly one gets it.
-    /// `answered` remembers requests already decided. Returns the grants.
+    /// Answers pending lease requests as the workspace's lease authority: each request for a lease
+    /// nobody holds is granted with a new epoch, one at a time, so of two devices asking at once exactly
+    /// one gets it. `answered` remembers requests already decided. Returns the grants.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "requests are answered one at a time under one namespace lock, so two grants cannot interleave"
@@ -959,9 +818,8 @@ impl QuickFS {
         Ok(taken)
     }
 
-    /// Takes or renews the write lease of the file at `rel` for device `me`
-    /// and broadcasts the change. `Err(Some(lease))` is another device's
-    /// live lease; `Err(None)` means there is no such file.
+    /// Takes or renews the write lease of the file at `rel` for device `me` and broadcasts the change.
+    /// `Err(Some(lease))` is another device's live lease; `Err(None)` means there is no such file.
     pub fn take_write_lease(
         &self,
         rel: &Path,
@@ -989,8 +847,8 @@ impl QuickFS {
         Ok(taken)
     }
 
-    /// Releases `me`'s lease of `rel`: it keeps its holder and epoch and
-    /// lapses now, so the next writer takes it with a new epoch.
+    /// Releases `me`'s lease of `rel`: it keeps its holder and epoch and lapses now, so the next writer
+    /// takes it with a new epoch.
     pub fn release_write_lease(&self, rel: &Path, me: [u8; 32], now: u64) {
         let Ok(components) = path_components(rel) else {
             return;
@@ -1040,18 +898,45 @@ impl QuickFS {
 
 /// Whether a namespace entry's name is exactly one path component.
 ///
-/// The native data plane turns these names into real paths under the live
-/// tree, as root. Local creates validate names, but a name merged from a
-/// peer's document is whatever bytes the peer wrote, so a separator, a NUL
-/// or a dot-link in it must never reach `Path::join`: `../../etc/cron.d/x`
-/// would leave the tree, and `/etc/cron.d/x` would replace it.
+/// The native data plane turns these names into real paths under the live tree, as root, and a name
+/// merged from a peer's document is whatever bytes the peer wrote: a separator, a NUL or a dot-link
+/// must never reach `Path::join`, or `../../etc/cron.d/x` would leave the tree and `/etc/cron.d/x`
+/// would replace it.
+#[derive(Debug, PartialEq, Eq)]
+enum Listed<'a> {
+    /// An entry of the directory, named by one path component.
+    Entry(&'a [u8]),
+    Link,
+    /// An entry whose name is not one path component: it cannot be a file or folder anywhere else.
+    Unprojectable,
+}
+
+fn listed(name: &[u8]) -> Listed<'_> {
+    if name == b"." || name == b".." {
+        Listed::Link
+    } else if projectable_name(name) {
+        Listed::Entry(name)
+    } else {
+        Listed::Unprojectable
+    }
+}
+
 pub fn projectable_name(name: &[u8]) -> bool {
     !name.is_empty() && name != b"." && name != b".." && !name.contains(&b'/') && !name.contains(&0)
 }
 
 #[cfg(test)]
 mod projectable_name_tests {
-    use super::projectable_name;
+    use super::{Listed, listed, projectable_name};
+
+    #[test]
+    fn a_directorys_own_links_are_not_entries_nor_unprojectable_names() {
+        assert_eq!(listed(b"."), Listed::Link);
+        assert_eq!(listed(b".."), Listed::Link);
+        assert_eq!(listed(b"notes.md"), Listed::Entry(b"notes.md"));
+        assert_eq!(listed(b"a/b"), Listed::Unprojectable);
+        assert_eq!(listed(b""), Listed::Unprojectable);
+    }
 
     #[test]
     fn only_single_components_are_projected() {

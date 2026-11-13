@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the native data plane's privileged acceptance suites on loop-mounted
-# Btrfs store volumes: `fs --test native_tier1` (two daemons on two stores:
-# placeholders, leases, SQLite, git sync, crash recovery) and
+# Btrfs store volumes: `fs --test it native_tier1::` (two daemons on two
+# stores: placeholders, leases, SQLite, git sync, crash recovery) and
 # `fs-native --test it` (capture, journal, pre-content hydration).
 #
 #   tools/native-tier1.sh [TEST_ARGS...]
@@ -24,14 +24,14 @@
 #                       tests' own directories go to a short-lived directory
 #                       below /var/tmp: daemon socket paths are bounded
 #                       (SUN_LEN).
-#   TILO_NATIVE_TIER1_TARGETS  PACKAGE:TEST pairs to run
-#                       (default "fs:native_tier1 fs-native:it")
+#   TILO_NATIVE_TIER1_TARGETS  PACKAGE:TEST[=FILTER] triples to run
+#                       (default "fs:it=native_tier1:: fs-native:it=")
 set -euo pipefail
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cargo=${TILO_CARGO:-cargo}
 work=${TILO_NATIVE_TIER1_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tilo/native-tier1}
-targets=${TILO_NATIVE_TIER1_TARGETS:-fs:native_tier1 fs-native:it}
+targets=${TILO_NATIVE_TIER1_TARGETS:-"fs:it=native_tier1:: fs-native:it="}
 
 as_root=()
 [[ $EUID -eq 0 ]] || as_root=(sudo -n)
@@ -44,10 +44,16 @@ for tool in sqlite3 git; do
 done
 
 # Build first, as the invoking user: the binaries are all this machine runs.
-declare -a binaries=()
+declare -a binaries=() filters=()
 for target in $targets; do
     package=${target%%:*}
     test=${target#*:}
+    # A filter names the module a crate's single test binary carries the suite in.
+    filter=
+    if [[ $test == *=* ]]; then
+        filter=${test#*=}
+    fi
+    test=${test%%=*}
     executable=$(
         cd "$repo" && "$cargo" test --locked -p "$package" --test "$test" --no-run \
             --message-format=json |
@@ -70,6 +76,7 @@ for line in sys.stdin:
         exit 1
     }
     binaries+=("$executable")
+    filters+=("$filter")
 done
 
 stores=$work/stores
@@ -84,10 +91,13 @@ env_lines=$("${as_root[@]}" "$repo/tools/ci/native-stores.sh" up "$stores")
 tests=$(mktemp -d /var/tmp/tilo-t1.XXXXXX)
 
 status=0
-for executable in "${binaries[@]}"; do
-    echo "==> $(basename "$executable") $*"
+for index in "${!binaries[@]}"; do
+    executable=${binaries[$index]}
+    arguments=(--test-threads=1)
+    [[ -z ${filters[$index]} ]] || arguments+=("${filters[$index]}")
+    echo "==> $(basename "$executable") ${arguments[*]} $*"
     # shellcheck disable=SC2086 # env_lines is KEY=VALUE words without spaces
     "${as_root[@]}" env PATH="$PATH" TMPDIR="$tests" $env_lines \
-        "$executable" --test-threads=1 "$@" || status=$?
+        "$executable" "${arguments[@]}" "$@" || status=$?
 done
 exit "$status"

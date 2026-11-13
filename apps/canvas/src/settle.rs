@@ -4,15 +4,10 @@
 //! Simulating a stroke of a slow medium (oil over a big grid) takes longer
 //! than a frame. A live view never waits for it: the layer's
 //! [`LayerPainter`] is handed to a worker with the marks to paint, and the
-//! view keeps showing the last finished picture until the worker hands the
-//! painter back with the new one. A stroke still being painted is previewed
-//! the same way, the newest stroke asked for when the worker is free, and a
-//! stroke just laid keeps showing as its preview until its picture is
-//! ready, so it never blinks out.
-//!
-//! What is painted is the same wherever it runs: the same painter over the
-//! same marks. A `look`, an export or a comparison waits for the exact
-//! picture; a platform without threads paints in place.
+//! view keeps the last finished picture until the worker hands the painter
+//! back with the new one. A stroke still being painted is previewed the same
+//! way. A `look`, an export or a comparison waits for the exact picture; a
+//! platform without threads paints in place.
 
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
@@ -110,8 +105,8 @@ impl Settle {
         self.running.is_some()
     }
 
-    /// Start again with `painter`, keeping what is shown until it has
-    /// painted. A worker still painting finishes for nobody.
+    /// Start again with `painter`, keeping what is shown until it has painted.
+    /// A worker still painting finishes for nobody.
     pub fn replace(&mut self, painter: LayerPainter) {
         self.running = None;
         self.painter = Some(painter);
@@ -144,8 +139,8 @@ impl Settle {
             self.image = Some(image);
         }
         self.key = Some(done.key);
-        // A picture painted without a stroke wet over it ends the
-        // stroke's preview.
+        // A picture painted without a stroke wet over it ends the stroke's
+        // preview.
         self.preview = done.preview;
     }
 
@@ -159,9 +154,9 @@ impl Settle {
             })
     }
 
-    /// What `ask`'s layer shows now. With `wait`, the exact picture,
-    /// painted here if need be; otherwise the last finished one, while a
-    /// worker paints the one asked for.
+    /// What `ask`'s layer shows now. With `wait`, the exact picture, painted
+    /// here if need be; otherwise the last finished one, while a worker paints
+    /// the one asked for.
     pub fn show(&mut self, ask: &Ask, wait: bool) -> Option<ImageData> {
         let wait = wait || !threads();
         self.collect(wait);
@@ -185,9 +180,9 @@ impl Settle {
         self.shown(ask)
     }
 
-    /// The picture to show for `ask` from what is finished: the stroke
-    /// being painted while there is one, and the stroke just laid as it
-    /// was previewed until its picture is ready.
+    /// The picture to show for `ask` from what is finished: the stroke being
+    /// painted while there is one, and the stroke just laid as it was previewed
+    /// until its picture is ready.
     fn shown(&self, ask: &Ask) -> Option<ImageData> {
         let have = self.key;
         if let Some(preview) = &self.preview

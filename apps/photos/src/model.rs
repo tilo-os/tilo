@@ -1,61 +1,35 @@
-//! The library's model: what is stored, and the pure queries the window
-//! asks of it.
-//!
-//! [`PhotoLibrary`] is the record: one [`LibraryPhoto`] per item of a
-//! [`Collection`] and the [`Album`]s that file them. `#[derive(Model)]` is
-//! the whole storage contract; each field merges as its type says (people
-//! and tags per label, a crop and a turn independently). The pixels never
-//! enter the document: a photograph names its bytes by content hash, and
-//! they stay in the app's content store. The record's verbs are in
-//! [`crate::resource`].
+//! The library's model: what is stored, and the pure queries the window asks of it.
+//! [`PhotoLibrary`] is the library document: one [`LibraryPhoto`] per item of a [`Collection`] and
+//! the
+//! [`Album`]s that file them.
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Collection, Id, JsonSchema, Model, Refusal, Set};
+use ui::tilo_resource::{self, Bytes, Collection, Id, JsonSchema, Model, Refusal, Set};
 
-/// Bounded, explainable intelligence derived on a device from a photograph.
-///
-/// This record contains no pixels, embeddings, face geometry, machine-local
-/// file names, or opaque model output.  A local analysis is private until a
-/// user or trusted caller explicitly publishes it through `SetImageAnalysis`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ImageAnalysis {
-    /// The text read from the pixels. Line layout is intentionally flattened:
-    /// the shared search layer needs words, not page coordinates.
     #[serde(default)]
     pub ocr_text: String,
-    /// A concise, local description suitable for finding a photograph later.
     #[serde(default)]
     pub description: String,
-    /// Recognized non-person subjects, for example "bicycle" or "beach".
     #[serde(default)]
     pub objects: Vec<String>,
-    /// Pet labels are separate from generic objects because people browse
-    /// their animals differently from everything else in a scene.
     #[serde(default)]
     pub pets: Vec<String>,
-    /// How the result was made. It gives collaborators enough context to
-    /// decide whether to trust or refresh it without leaking local paths.
     #[serde(default)]
     pub provenance: AnalysisProvenance,
-    /// Provenance for the text currently stored in `ocr_text`. Kept separate
-    /// from visual analysis so a later OCR or vision job cannot erase the
-    /// other component's audit trail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ocr_provenance: Option<AnalysisProvenance>,
-    /// Provenance for `description`, `objects`, and `pets`, kept apart from
-    /// `ocr_provenance` for the same reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision_provenance: Option<AnalysisProvenance>,
 }
 
-/// Text read from a photograph's pixels, and how.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct OcrComponent {
     pub text: String,
     pub provenance: AnalysisProvenance,
 }
 
-/// What a photograph shows, as image analysis found it, and how.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VisionComponent {
     pub description: String,
@@ -64,29 +38,17 @@ pub struct VisionComponent {
     pub provenance: AnalysisProvenance,
 }
 
-/// The bounded provenance attached to an analysis result.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AnalysisProvenance {
-    /// `local-ocr`, `local-vision`, or `user`.
     #[serde(default = "default_analysis_source")]
     pub source: String,
-    /// Stable engine/model family identifier, never an error or command line.
     #[serde(default)]
     pub engine: String,
-    /// Signed local model identifier when a vision result was produced. Empty
-    /// for OCR and user-authored results.
     pub model_id: String,
-    /// Immutable signed model revision when a vision result was produced.
-    /// Empty for OCR and user-authored results.
     pub model_revision: String,
-    /// OCR language when text recognition was used.
     #[serde(default)]
     pub language: String,
-    /// The content hash this result describes. A result belongs to exactly
-    /// these bytes and is never transferred to a photograph's other pixels.
     pub content: String,
-    /// Explicit sharing semantics: `shared` records were accepted through the
-    /// document action; `local` records must never be written to the CRDT.
     #[serde(default = "default_analysis_scope")]
     pub scope: String,
 }
@@ -113,7 +75,6 @@ impl Default for AnalysisProvenance {
 }
 
 impl ImageAnalysis {
-    /// Join every human-searchable field without exposing provenance internals.
     #[must_use]
     pub fn searchable_text(&self) -> String {
         [
@@ -129,7 +90,6 @@ impl ImageAnalysis {
         .join(" ")
     }
 
-    /// Whether the record has any useful result to retain.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.ocr_text.is_empty()
@@ -138,9 +98,6 @@ impl ImageAnalysis {
             && self.pets.is_empty()
     }
 
-    /// The vision component that belongs to `content`, if one has been
-    /// completed. Empty model output still counts: completion provenance is
-    /// what prevents a whole-library scan from retrying a blank scene forever.
     #[must_use]
     pub fn vision_provenance_for_content(&self, content: &str) -> Option<&AnalysisProvenance> {
         self.vision_provenance
@@ -148,8 +105,6 @@ impl ImageAnalysis {
             .filter(|provenance| provenance.content == content)
     }
 
-    /// Whether the current bytes have already been processed by this exact
-    /// signed model revision.
     #[must_use]
     pub fn has_vision_component(&self, content: &str, model_revision: &str) -> bool {
         self.vision_provenance_for_content(content)
@@ -157,38 +112,20 @@ impl ImageAnalysis {
     }
 }
 
-/// A deliberately small, explicitly shared location attached to one photo.
-///
-/// Coordinates are useful for browsing a personal library, but are sensitive:
-/// this is never inferred from an IP address, uploaded for reverse geocoding,
-/// or copied from a machine-local file path.  A location reaches the shared
-/// document only through `SetPhotoLocation`; clearing it removes the complete
-/// shared record.  The label is a collaborator-visible convenience, not an
-/// authority over the coordinates.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PhotoLocation {
-    /// WGS-84 latitude in decimal degrees.
     pub latitude: f64,
-    /// WGS-84 longitude in decimal degrees.
     pub longitude: f64,
-    /// Optional user-facing place name, e.g. "Golden Gate Park".
     #[serde(default)]
     pub label: Option<String>,
-    /// Why this location exists and whether it was deliberately shared.
     #[serde(default)]
     pub provenance: LocationProvenance,
 }
 
-/// Compact, inspectable provenance for photo location metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct LocationProvenance {
-    /// `user`, `map`, `exif`, or `device`.  `map` records a deliberate
-    /// placement on Photos' bundled offline reference map. No network-derived source is silently
-    /// accepted: hosted geocoding would be a privacy boundary, not metadata.
     #[serde(default = "default_location_source")]
     pub source: String,
-    /// `shared` is required for durable locations. `local` is reserved for
-    /// an app-private draft and must never be persisted in the CRDT.
     #[serde(default = "default_location_scope")]
     pub scope: String,
 }
@@ -209,7 +146,6 @@ impl Default for LocationProvenance {
     }
 }
 
-/// Null Island, shared by the person: what a place is before it is set.
 impl Default for PhotoLocation {
     fn default() -> Self {
         Self {
@@ -222,8 +158,6 @@ impl Default for PhotoLocation {
 }
 
 impl PhotoLocation {
-    /// Coordinates must be finite WGS-84 degrees and the optional label must
-    /// be short enough to remain safe in collaboration/search projections.
     #[must_use]
     pub fn is_valid(&self) -> bool {
         self.latitude.is_finite()
@@ -242,9 +176,6 @@ impl PhotoLocation {
             && self.provenance.scope == "shared"
     }
 
-    /// Stable resource identity for a named place.  Coordinates are rounded
-    /// to ~11m so two metadata records in the same small place cluster rather
-    /// than producing an unhelpful resource for every camera jitter sample.
     #[must_use]
     pub fn place_key(&self) -> String {
         let lat = (self.latitude * 10_000.0).round() as i32;
@@ -252,8 +183,6 @@ impl PhotoLocation {
         format!("{lat}:{lon}:{}", self.label.as_deref().unwrap_or_default())
     }
 
-    /// Human-safe detail, deliberately excluding exact coordinates from card
-    /// summaries where accidental shoulder-surfing is more likely.
     #[must_use]
     pub fn display_name(&self) -> String {
         self.label
@@ -276,8 +205,6 @@ const MAX_ANALYSIS_LABEL_CHARS: usize = 128;
 /// A content hash is 64 lowercase hex digits.
 pub(crate) const CONTENT_HEX_LEN: usize = 64;
 
-/// A durable entry in Photos' shared library. Pixel bytes remain in the
-/// content store; this is intentionally only addressable metadata.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 #[model(check = LibraryPhoto::valid)]
 pub struct LibraryPhoto {
@@ -325,7 +252,7 @@ impl LibraryPhoto {
     #[must_use]
     pub fn from_image(image: OpenImage) -> Self {
         Self {
-            id: format!("photos.photo:{}", image.content),
+            id: format!("photos.photo:{}", image.hash()),
             name: image.name.clone(),
             image,
             ..Self::default()
@@ -459,7 +386,7 @@ impl LibraryPhoto {
             || self.image.width == 0
             || self.image.height == 0
             || dimensions > crate::pixels::MAX_DECODED_PIXELS
-            || !is_content_hash(&self.image.content)
+            || matches!(self.image.content, Bytes::Empty | Bytes::Inline(_))
         {
             return Err(Refusal::new(
                 "a photograph is content-addressed, portable and bounded",
@@ -649,8 +576,6 @@ impl Rect01 {
         h: 1.0,
     };
 
-    /// Whether this rect selects the entire image, within a tolerance that
-    /// absorbs the float error of composing several crops.
     pub fn is_full(&self) -> bool {
         self.x.abs() < 1e-6
             && self.y.abs() < 1e-6
@@ -658,11 +583,6 @@ impl Rect01 {
             && (self.h - 1.0).abs() < 1e-6
     }
 
-    /// Whether this is a real crop contained in the original image.
-    ///
-    /// Unlike [`Self::clamped`], this validates an external command instead
-    /// of silently changing its meaning. A durable action must either replay
-    /// exactly what its author requested or be refused everywhere.
     pub fn is_valid_selection(&self) -> bool {
         self.x.is_finite()
             && self.y.is_finite()
@@ -678,8 +598,6 @@ impl Rect01 {
             && self.y + self.h <= 1.0
     }
 
-    /// Clamp into the unit square, keeping a non-negative extent. A rect
-    /// arriving from a peer is untrusted input like any other.
     #[must_use]
     pub fn clamped(&self) -> Self {
         let x = self.x.clamp(0.0, 1.0);
@@ -689,12 +607,6 @@ impl Rect01 {
         Self { x, y, w, h }
     }
 
-    /// Compose `inner` — a rect expressed relative to the region *this* rect
-    /// already selects — into a single rect in the original's coordinates.
-    ///
-    /// This is what makes a second crop mean "crop what I can currently see"
-    /// rather than "crop the original again", which is the behaviour anyone
-    /// cropping twice expects.
     #[must_use]
     pub fn compose(&self, inner: Rect01) -> Self {
         let outer = self.clamped();
@@ -709,12 +621,6 @@ impl Rect01 {
     }
 }
 
-/// What the user has done to a photograph. Ordered `crop` then
-/// `rotate`; see [`crate::pixels`] for why that order is fixed.
-///
-/// The crop and the turn are separate fields: a crop is one coherent
-/// rectangle, while rotation is a separate decision, so the two merge
-/// independently.
 #[derive(Model, Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Edits {
     /// Crop: the region of the *original* kept, normalized.
@@ -766,11 +672,11 @@ impl Edits {
 
 /// The photograph currently open: its portable identity and dimensions.
 ///
-/// Deliberately carries no bytes. The document names the original by content
-/// hash; the bytes live in the app's content store (`tilo-content`) and the
-/// pixels are decoded beside the document, never written into the CRDT: an
-/// oversized change is dropped by the sync transport and freezes every peer's
-/// replica at the change before it.
+/// Deliberately carries no bytes. The document names the original by the
+/// reference its content store answered; the bytes live there
+/// (`tilo-content`) and the pixels are decoded beside the document, never
+/// written into the CRDT: an oversized change is dropped by the sync
+/// transport and freezes every peer's replica at the change before it.
 #[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct OpenImage {
     /// File name, as shown. Never an absolute origin path: the bytes resolve
@@ -779,19 +685,19 @@ pub struct OpenImage {
     /// Intrinsic pixel size of the *original*, before any edit.
     pub width: u32,
     pub height: u32,
-    /// blake3 of the picture's bytes — the one name for it that means the
-    /// same thing in every session.
-    pub content: String,
+    /// The picture's bytes, as the content store keeps them: their hash and
+    /// the reference that opens them.
+    pub content: Bytes,
 }
 
 impl OpenImage {
-    /// The picture whose bytes hash to `content`, opened from `origin`.
+    /// The picture whose bytes `content` names, opened from `origin`.
     ///
     /// Only the file name of `origin` is kept: a path is true on one machine,
-    /// and the hash is what every participant resolves. Create one wherever
-    /// the bytes are put into the content store, because a hash in a document
-    /// that no participant can resolve names no picture at all.
-    pub fn new(origin: &str, width: u32, height: u32, content: impl Into<String>) -> Self {
+    /// and the record's reference is what every participant resolves. Create
+    /// one wherever the bytes are put into the content store, because a
+    /// reference to content no participant can reach names no picture at all.
+    pub fn new(origin: &str, width: u32, height: u32, content: Bytes) -> Self {
         let name = std::path::Path::new(origin)
             .file_name()
             .map_or_else(|| origin.to_string(), |s| s.to_string_lossy().into_owned());
@@ -799,7 +705,7 @@ impl OpenImage {
             name,
             width,
             height,
-            content: content.into(),
+            content,
         }
     }
 
@@ -820,13 +726,38 @@ impl OpenImage {
     /// origin so distinct origins are distinct photographs.
     #[cfg(test)]
     pub(crate) fn fixture(origin: &str, width: u32, height: u32) -> Self {
-        Self::new(
+        Self::named(
             origin,
             width,
             height,
-            tilo_content::hash_bytes(origin.as_bytes()),
+            &tilo_content::hash_bytes(origin.as_bytes()),
         )
     }
+
+    /// The picture named by `hash`, 64 hex digits, whose bytes no store here
+    /// holds: a record naming content this device has yet to receive.
+    #[cfg(test)]
+    pub(crate) fn named(origin: &str, width: u32, height: u32, hash: &str) -> Self {
+        Self::new(origin, width, height, named_content(hash))
+    }
+
+    /// The picture's content hash, which names it the same on every device
+    /// (the reference it is kept under may differ).
+    #[must_use]
+    pub fn hash(&self) -> String {
+        content_hex(&self.content.hash())
+    }
+}
+
+/// A content hash as the 64 hex digits every record, address and failure
+/// report spells it in.
+#[must_use]
+pub fn content_hex(hash: &[u8; 32]) -> String {
+    hash.iter()
+        .fold(String::with_capacity(CONTENT_HEX_LEN), |mut hex, byte| {
+            let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{byte:02x}"));
+            hex
+        })
 }
 
 /// The bytes of the picture `open` names, from this machine's content store.
@@ -844,7 +775,11 @@ impl OpenImage {
 /// editor drawing it, a participant with no window rendering the crop it was
 /// asked for — needs the same bytes.
 pub fn bytes_of(open: &OpenImage, store: &tilo_content::ContentStore) -> Option<Vec<u8>> {
-    crate::pixels::read_bounded(store.open(&open.content)?, crate::pixels::MAX_ENCODED_BYTES)
+    if let Some(bytes) = open.content.inline() {
+        return Some(bytes.to_vec());
+    }
+    let reference = open.content.reference()?;
+    crate::pixels::read_bounded(store.open(&reference)?, crate::pixels::MAX_ENCODED_BYTES)
 }
 
 /// A stored capture time as people read it: the ISO separator between the
@@ -872,6 +807,23 @@ pub(crate) fn valid_resource_id(value: &str) -> bool {
     !value.trim().is_empty()
         && value.chars().count() <= MAX_RESOURCE_ID_CHARS
         && !value.chars().any(char::is_control)
+}
+
+/// Content named by `hash`, 64 hex digits, kept under it: what a record
+/// names when the bytes were kept before content was sealed.
+#[cfg(test)]
+pub(crate) fn named_content(hash: &str) -> Bytes {
+    let mut bytes = [0_u8; 32];
+    for (byte, pair) in bytes.iter_mut().zip(hash.as_bytes().chunks(2)) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).unwrap_or("0"), 16).unwrap_or(0);
+    }
+    // A length the record carries, so the name is of content and not of
+    // nothing: these bytes are nowhere on this device.
+    Bytes::Blob {
+        hash: bytes,
+        len: 1,
+        sealed: None,
+    }
 }
 
 /// Whether `value` is a content hash: 64 lowercase hex digits.
@@ -972,7 +924,7 @@ pub(crate) fn analysis_names_exact_content(photo: &LibraryPhoto, analysis: &Imag
     ]
     .into_iter()
     .flatten()
-    .all(|provenance| provenance.content == photo.image.content)
+    .all(|provenance| provenance.content == photo.image.hash())
 }
 
 pub(crate) fn merge_image_analysis(
@@ -1217,20 +1169,11 @@ pub(crate) fn valid_person_label(value: &str) -> bool {
 /// An explicit field-level decision in an atomic multi-photo metadata edit.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum MetadataPatch<T> {
-    /// Preserve the value already stored on each addressed photograph.
     Keep,
-    /// Remove the value (or empty the complete label list).
     Clear,
-    /// Replace the value with this explicit final value.
     Set(T),
 }
 
-/// A field-level list decision for people and tags.
-///
-/// `Add` and `Remove` are intentionally separate from `Set`: a batch editor
-/// can add one label to hundreds of photographs without replacing labels a
-/// collaborator added while the sheet was open.  The action still carries the
-/// complete bounded target selection, so a stale selection refuses atomically.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum MetadataLabelsPatch {
     Keep,
@@ -1240,9 +1183,6 @@ pub enum MetadataLabelsPatch {
     Remove(Vec<String>),
 }
 
-/// One save of the details editor over a selection of photographs: per
-/// field, keep what each has, clear it, or set it; people and tags may also
-/// be added to or removed from what each has.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MetadataBatch {
     pub folder: MetadataPatch<String>,
@@ -1252,26 +1192,17 @@ pub struct MetadataBatch {
     pub location: MetadataPatch<PhotoLocation>,
 }
 
-/// The paths of the photograph `id` in the library.
 #[must_use]
 pub fn photo_paths(id: &str) -> <LibraryPhoto as Model>::Paths<PhotoLibrary> {
     PhotoLibrary::paths().photos.item(&Id::from_raw(id))
 }
 
-/// The paths of the album `id` in the library.
 #[must_use]
 pub fn album_paths(id: &str) -> <Album as Model>::Paths<PhotoLibrary> {
     PhotoLibrary::paths().albums.item(&Id::from_raw(id))
 }
 
 impl PhotoLibrary {
-    /// The field edits that save `batch` on the photographs `ids`: each
-    /// label added or removed on its own, so a collaborator's label added
-    /// meanwhile stays.
-    ///
-    /// # Errors
-    /// Refuses a selection that is empty, too large or names a photograph
-    /// that is gone, and a capture time that is not ISO 8601.
     pub fn metadata_edits(
         &self,
         ids: &[String],
@@ -1333,7 +1264,6 @@ impl PhotoLibrary {
     }
 }
 
-/// The labels `now` becomes under `patch`.
 fn label_patch(now: &Set<String>, patch: &MetadataLabelsPatch) -> Vec<String> {
     match patch {
         MetadataLabelsPatch::Keep => now.iter().cloned().collect(),
@@ -1374,7 +1304,6 @@ mod tests {
         };
         assert_eq!(analysis.searchable_text(), "MARKET sign");
 
-        // Vision eligibility requires matching content and model revision.
         let provenance = |source: &str, model_revision: String| AnalysisProvenance {
             source: source.into(),
             model_revision,
@@ -1392,7 +1321,6 @@ mod tests {
             vision_provenance: Some(provenance("local-vision", "b".repeat(64))),
             ..analysis
         };
-        // (content, model revision, eligible)
         for (content, revision, eligible) in
             [('a', 'b', true), ('c', 'b', false), ('a', 'd', false)]
         {

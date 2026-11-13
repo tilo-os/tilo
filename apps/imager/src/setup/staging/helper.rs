@@ -1,10 +1,5 @@
-//! The elevated staging helper mode (`--tilo-staging-helper <request> <progress>`).
-//!
-//! The request is a claim, never authority: the release is resolved against
-//! the catalog compiled into this binary, the manifest and both component
-//! files are hashed here, the host is re-probed and compared with the
-//! reviewed plan's basis, and every mutation is recorded `intended` before
-//! it is attempted and `done` only after it is read back (spec §4).
+//! The elevated staging helper: it validates a reviewed request, then applies the
+//! steps that write it to the disk.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -24,8 +19,6 @@ use imager_backend::staging::fat::{self, Range};
 
 pub use imager_backend::staging::protocol::{REQUEST_SCHEMA, STAGING_HELPER_ARG};
 const MAX_MANIFEST_BYTES: u64 = crate::setup::internal_bundle::MAX_MANIFEST_BYTES as u64;
-/// Streaming chunk for component writes and readback; a multiple of every
-/// supported sector size.
 const CHUNK: usize = 4 << 20;
 const MIB: u64 = 1 << 20;
 
@@ -42,13 +35,10 @@ pub struct Request {
     pub component_paths: ComponentPaths,
     pub plan: Plan,
     pub plan_sha256: String,
-    /// Secret-free installer profile fields copied into the handoff.
     #[serde(default)]
     pub profile: serde_json::Map<String, serde_json::Value>,
-    /// Metadata-only consent tied to the retained Linux source volume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migration: Option<serde_json::Value>,
-    /// Exact caller-private encrypted setup; never plaintext credentials.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepared_setup: Option<super::prepared_setup::PreparedArtifact>,
 }
@@ -59,15 +49,10 @@ fn io_refusal(e: impl std::fmt::Display) -> Refusal {
     Refusal::new(codes::IO_FAILED, e.to_string())
 }
 
-/// Binds a request's release claim to something this binary trusts.
 pub trait ReleaseAuthority {
-    /// Resolve `release` and validate `manifest` (whose SHA-256 already
-    /// equals `release.manifest_sha256`) against it.
     fn verify(&self, release: &ReleaseRef, manifest: &[u8]) -> Result<BundleFacts, String>;
 }
 
-/// The internal releases compiled into this executable
-/// (`release::bundled_internal_releases`).
 pub struct CompiledCatalog;
 
 impl ReleaseAuthority for CompiledCatalog {
@@ -98,13 +83,9 @@ fn detail(pairs: &[(&str, serde_json::Value)]) -> Detail {
         .collect()
 }
 
-/// What a step's check found on the host.
 enum Actual {
-    /// The step's effect holds (with detail to record).
     Done(Detail),
-    /// The effect is absent; the step may be (re)applied.
     Absent,
-    /// The host holds something else; refuse.
     Conflict(Refusal),
 }
 
@@ -114,7 +95,6 @@ enum Which {
     Root,
 }
 
-/// The two placeholder files inside the staging ESP image.
 #[derive(Clone, Debug, Default)]
 struct Placeholders {
     handoff: Vec<Range>,
@@ -141,7 +121,6 @@ impl Placeholders {
     }
 }
 
-/// Validate what the request can prove about itself.
 pub fn validate_request(request: &Request) -> Result<(), Refusal> {
     let bad = |m: &str| Err(Refusal::new(codes::REQUEST_INVALID, m));
     if request.schema != REQUEST_SCHEMA {
@@ -272,11 +251,8 @@ fn overlaps(p: &Partition, first: u64, last: u64) -> bool {
 
 use imager_backend::staging::request_io::{open_input, read_input};
 
-/// Primary Btrfs superblock position in the filesystem.
 const BTRFS_SUPERBLOCK_OFFSET: u64 = 0x1_0000;
 
-/// The canonical fsid of a Btrfs superblock (`sb` starts at the superblock),
-/// or `None` when the magic is absent.
 fn btrfs_fsid(sb: &[u8]) -> Option<String> {
     if sb.get(0x40..0x48)? != b"_BHRfS_M" {
         return None;
@@ -289,8 +265,6 @@ fn sha_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-/// Run one request against `platform`. Sequencing, recording and every
-/// refusal live here; the platform only performs I/O.
 pub fn execute(
     platform: &mut dyn Platform,
     store: &RecordStore,
@@ -328,7 +302,6 @@ struct Engine<'a> {
     esp_file: Option<std::fs::File>,
     root_file: Option<std::fs::File>,
     placeholders: Option<Placeholders>,
-    /// Write steps applied in this run (verified by the `verify` readback).
     written: Vec<Step>,
 }
 
@@ -385,7 +358,6 @@ impl imager_backend::staging::btrfs_resize::Volume for JournaledBtrfsVolume<'_, 
             kernel_partition_bytes: facts.kernel_partition_bytes,
             filesystem_bytes: facts.filesystem_bytes,
             minimum_bytes,
-            // The canonical native accessor admits only this exact supported layout.
             single_direct_device: true,
             mounted_writable: true,
             exclusive_operation_clear: true,
@@ -424,8 +396,6 @@ impl imager_backend::staging::btrfs_resize::Volume for JournaledBtrfsVolume<'_, 
                     .resize_checkpoint(predecessor)?
                     .is_none()
             {
-                // Filesystem-only shrink needs no GPT growth, but its exact
-                // original geometry still gets a durable intent/readback pair.
                 if [Step::RemoveRoot, Step::RemoveEsp]
                     .iter()
                     .any(|step| !self.engine.record().is_done(*step))
@@ -567,11 +537,6 @@ impl Engine<'_> {
         Ok(())
     }
 
-    /// The request's plan must be exactly what the planner produces for its
-    /// (already revalidated) basis, the bundle's sizes and the reviewed Tilo
-    /// size. Nothing about placement or the shrink amount is taken from the
-    /// unprivileged caller; pre-generated partition GUIDs are the only
-    /// caller-chosen values.
     fn check_plan_geometry(&self) -> Result<(), Refusal> {
         let plan = self.plan();
         let target_bytes = plan.target_extent.lbas() * plan.basis.disk.sector_bytes;
@@ -615,10 +580,6 @@ impl Engine<'_> {
             .load(&self.request.operation_id)
             .map_err(|e| Refusal::new(codes::RECORD_FAILED, e))?;
         if let Some(r) = &record {
-            // The TPM sidecar is server-derived from the prepared artifact and
-            // retained in this record. A retried request that rebuilt its
-            // profile without replaying that sidecar still belongs to the same
-            // operation; the record's copy is what stamps the handoff.
             let mut requested = self.request.profile.clone();
             requested.remove("tpm_handoff");
             let mut recorded = r.profile.clone();
@@ -658,8 +619,6 @@ impl Engine<'_> {
         if let Some(other) = records.iter().find(|r| {
             r.operation_id != self.request.operation_id
                 && super::same_guid(&r.plan.basis.disk.guid, disk)
-                // A fully staged operation still owns partitions and a boot
-                // entry; a second one would orphan them. Only removal ends it.
                 && r.status() != RecordStatus::Removed
         }) {
             return Err(Refusal::new(
@@ -708,9 +667,6 @@ impl Engine<'_> {
         Ok(())
     }
 
-    /// The fresh probe, with this operation's own recorded effects undone,
-    /// must equal the plan's basis (volatile Windows usage figures excepted:
-    /// the shrink bounds are re-checked against fresh values instead).
     fn check_basis(&self) -> Result<(), Refusal> {
         let stale = |m: String| Err(Refusal::new(codes::PLAN_STALE, m));
         let mut current = read_basis(&*self.platform).map_err(io_refusal)?;
@@ -787,9 +743,6 @@ impl Engine<'_> {
             _ => return stale("the retained Btrfs volume changed since review".into()),
         }
         let (cf, ef) = (&current.firmware, &expected.firmware);
-        // The unprivileged Windows probe cannot read EFI variables, so its
-        // basis carries no boot fields; there the helper's own live reads
-        // (`firmware_preconditions`, `original_firmware`) are the authority.
         let boot_fields_probed = plan.basis.host_os() == super::plan::HostOs::Linux;
         if cf.uefi != ef.uefi
             || cf.secure_boot != ef.secure_boot
@@ -811,8 +764,6 @@ impl Engine<'_> {
         Ok(())
     }
 
-    /// Pure verification read of both components, and the placeholder
-    /// layout of the ESP image, before anything is mutated.
     fn verify_sources(&mut self) -> Result<(), Refusal> {
         for which in [Which::Esp, Which::Root] {
             let (size, sha) = self.component(which);
@@ -935,8 +886,6 @@ impl Engine<'_> {
         })
     }
 
-    /// Our staged partition on `disk`: matched by GUID when known, otherwise
-    /// (Windows, before creation was confirmed) by exact extent and type.
     fn find_staged(&self, disk: &Disk, which: Which) -> Result<Option<Partition>, Refusal> {
         let staged = self.staged(which);
         let (first, last, kind) = (staged.first_lba, staged.last_lba, Self::type_guid(which));
@@ -1001,7 +950,6 @@ impl Engine<'_> {
         Ok(())
     }
 
-    /// Write arbitrary bytes, read-modify-writing partial edge sectors.
     fn write_at(
         &mut self,
         disk: &Disk,
@@ -1025,8 +973,6 @@ impl Engine<'_> {
             .map_err(io_refusal)
     }
 
-    /// SHA-256 of partition bytes `[0, len)`, with `mask` ranges read as
-    /// spaces.
     fn readback_digest(
         &mut self,
         disk: &Disk,
@@ -1085,10 +1031,6 @@ impl Engine<'_> {
         Ok(self.readback_digest(&disk, &p.guid, size, &mask, step)? == sha)
     }
 
-    /// Run one step: re-verify a done step, adopt an effect that already
-    /// holds, otherwise record intent, apply, re-read and record done.
-    /// `reapply` lets an idempotent step run again when its effect vanished
-    /// (BootNext consumed by a restart; remove re-runs).
     fn run(&mut self, step: Step, reapply: bool) -> Result<(), Refusal> {
         let recorded = self.record().state(step);
         self.report(step, 0, 0);
@@ -1357,7 +1299,6 @@ impl Engine<'_> {
             .map_err(io_refusal)
     }
 
-    /// Normalize only exact journaled resize effects, never an arbitrary map.
     fn normalize_linux_btrfs_basis(&self, current: &mut Basis) -> Result<(), Refusal> {
         use imager_backend::staging::btrfs_resize::Phase;
         let Some(expected) = self.plan().basis.linux_btrfs_volume.as_ref() else {
@@ -1491,7 +1432,6 @@ impl Engine<'_> {
                 "Btrfs restore lacks journaled geometry",
             ));
         }
-        // Existing Remove ordering has already retired both owned staging entries.
         let disk = self.disk()?;
         let partition = disk
             .partitions
@@ -1539,8 +1479,6 @@ impl Engine<'_> {
     }
 
     fn apply_linux_btrfs_resize(&mut self, restoring: bool) -> Result<(), Refusal> {
-        // Re-admit stable reviewed identity, then pin the current invocation's
-        // actual mount ID throughout all mutation/readback steps.
         let current = self.linux_volume()?;
         let binding = linux_binding(&current);
         let shrink = self.plan().shrink.clone().expect("reviewed shrink");
@@ -1617,7 +1555,6 @@ impl Engine<'_> {
             Which::Root => Step::WriteRoot,
         };
         if self.written.contains(&step) {
-            // Just streamed with a matching source digest; `verify` reads back.
             return Ok(Actual::Done(Detail::new()));
         }
         if !self.record().is_done(step) {
@@ -1697,12 +1634,6 @@ impl Engine<'_> {
         Ok(Actual::Done(Detail::new()))
     }
 
-    /// Once BootNext has been armed the staged installer may have booted:
-    /// its first boot mounts the root read-write and grows the filesystem to
-    /// the partition, so the root no longer hashes to the download. Such a
-    /// root is still ours when the partition identity checks hold (done by
-    /// `require_staged`) and its Btrfs superblock carries the fsid the
-    /// manifest bound. The ESP never gets this allowance.
     fn booted_root_holds(&mut self, which: Which) -> Result<bool, Refusal> {
         if which != Which::Root || !self.record().is_done(Step::BootNext) {
             return Ok(false);
@@ -2013,7 +1944,6 @@ impl Engine<'_> {
         self.platform.sync_disk(&disk).map_err(io_refusal)
     }
 
-    /// Refresh `/EFI/tilo-staging/record.json` on the staging ESP.
     fn write_record_copy(&mut self) -> Result<(), Refusal> {
         let (disk, esp) = self.require_staged(Which::Esp)?;
         let ranges = self.placeholders(&disk, &esp.guid)?.record;
@@ -2127,8 +2057,6 @@ impl Engine<'_> {
             Which::Root => Step::RemoveRoot,
         };
         match self.guid_for(which, self.record()) {
-            // A known identity that is gone is removed, whatever now
-            // occupies the extent (e.g. C: grown back over it).
             Some(g)
                 if !disk
                     .partitions
@@ -2354,8 +2282,6 @@ impl Engine<'_> {
             Step::CreateEsp,
             Step::CreateRoot,
             Step::Verify,
-            // ESP component hashing masks declared setup reservations. Recheck
-            // their exact receipt/ciphertext and private custody before arming.
             Step::Handoff,
             Step::BootEntry,
         ] {
@@ -2418,7 +2344,6 @@ fn find_placeholders(
 
 pub use imager_backend::staging::process::{Poll, Running, helper_executable};
 
-/// Validate the reviewed request before launching the native helper transport.
 pub fn launch(request: &Request) -> Result<Running, String> {
     validate_request(request).map_err(|r| r.to_string())?;
     let bytes = serde_json::to_vec(request).map_err(|e| e.to_string())?;
@@ -2458,7 +2383,6 @@ fn open_platform() -> Result<Box<dyn Platform>, String> {
     }
 }
 
-/// Run helper mode when `args` requests it; `Ok(None)` otherwise.
 pub fn maybe_run_staging_helper(args: &[String]) -> Result<Option<i32>, String> {
     use std::io::Write;
     if args.get(1).map(String::as_str) != Some(STAGING_HELPER_ARG) {
@@ -2518,8 +2442,6 @@ pub fn maybe_run_staging_helper(args: &[String]) -> Result<Option<i32>, String> 
     Ok(Some(i32::from(result.is_err())))
 }
 
-/// Unfinished staging records visible to this user (for the resume card),
-/// read from the helper's world-readable status mirror.
 pub fn pending_records() -> Vec<super::record::Record> {
     let dir = if test_overrides_allowed() {
         std::env::var_os("TILO_STAGING_TEST_RECORD_DIR")
@@ -2552,7 +2474,6 @@ mod tests {
         let mut remounted = original.clone();
         remounted.mount_id = 117;
         assert!(super::same_linux_volume(&original, &remounted));
-        // Mutation still pins the newly held invocation, never the old mount.
         assert_ne!(
             super::linux_binding(&original),
             super::linux_binding(&remounted)

@@ -1,19 +1,12 @@
-//! Decoded pictures for the compositor from a host that may not wait: each
-//! layer's source gets a [`media::edit::FrameSeeker`], asked for the frame
-//! under the playhead and read once it holds that frame.
+//! Decoded pictures from a host that may not wait: each layer's source gets a
+//! [`media::edit::FrameSeeker`], asked for the frame under the playhead.
 //!
-//! This is the frame source of a build without the `GStreamer` sessions — a
-//! browser page, where the page's media element decodes. It never blocks: a
-//! composite that asks for a frame the seeker has not reached yet gets the
-//! last picture it showed (a preview) or nothing (an export, which asks again
-//! next time and writes no stand-in frame in between).
-//!
-//! A still picture is a seeker too, holding its one frame. A playhead
-//! running forward at any speed is played along with at that speed rather
-//! than sought frame by frame.
-//!
-//! On a host where seekers do not open, every layer draws its representative
-//! fill, exactly as with [`super::NoSources`].
+//! This is the frame source of a build without the `GStreamer` sessions — a browser
+//! page, where the page's media element decodes. It never blocks: a composite that
+//! asks for a frame the seeker has not reached gets the last picture it showed (a
+//! preview) or nothing (an export). A running playhead is played along with rather
+//! than sought frame by frame. Where seekers do not open, every layer draws its
+//! representative fill.
 
 use std::collections::{HashMap, HashSet};
 
@@ -24,66 +17,48 @@ use crate::model::{MediaId, MediaKind, Project};
 
 use super::{FrameSource, SourceTexture, compositor::upload_rgba};
 
-/// How a caller wants frames fetched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fetch {
-    /// Only the frame at the requested instant will do. What an export
-    /// wants: every frame must be the right one.
     Exact,
-    /// Show the last picture while the seeker moves, and let it play along
-    /// with a running playhead. What a preview wants.
     Responsive,
 }
 
-/// How long a playhead may go between two requests and still count as
-/// running, rather than as a jump that wants an exact seek.
+/// Past this a playhead is a jump, not running.
 const RUNNING_GAP: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// The furthest one request may lead the last and still count as the
-/// playhead running forward, at the least and as a multiple of the time
-/// between them (a shuttle at 16x moves more than a quarter second a frame).
+/// The furthest one request may lead the last and still count as the playhead
+/// running: a shuttle at 16× moves more than a quarter second a frame.
 const RUNNING_STEP_S: f64 = 0.25;
 // ratchet-allow(pixel_const): a playback speed multiple, not spacing
 const RUNNING_MAX_RATE: f64 = 17.0;
 
-/// A seeker left unused this long is closed.
 const IDLE: std::time::Duration = std::time::Duration::from_secs(30);
 
 struct Held {
     seeker: FrameSeeker,
-    /// The texture its last read picture is in, and which frame that was.
     texture: Option<SourceTexture>,
     frame_in_texture: Option<u64>,
-    /// The source time last asked for, and when.
     asked: Option<(f64, ui::time::Instant)>,
-    /// How fast the requests have been moving through the source, in source
-    /// seconds per second, smoothed over a few frames.
     rate: Option<f64>,
     used: ui::time::Instant,
 }
 
-/// What one decodable source is: where its bytes are, how fast it runs, and
-/// the time of its last frame.
 #[derive(Clone)]
 struct Indexed {
     path: String,
     fps: f64,
     last_frame: Option<f64>,
-    /// A still picture: one frame, whatever time is asked.
     still: bool,
 }
 
-/// A [`FrameSource`] over [`FrameSeeker`]s.
 pub struct SeekFrameSource {
     fetch: Fetch,
     strict: bool,
-    /// The largest picture side read back, in pixels.
     max_side: u32,
     sources: HashMap<MediaId, Indexed>,
-    /// One seeker per source per layer slot: two layers of one source at two
-    /// instants (a dissolve within one take) each hold their own frame.
+    /// One per source per layer slot: two layers of one source at two instants (a
+    /// dissolve within one take) each hold their own frame.
     seekers: HashMap<(MediaId, usize), Held>,
-    /// Requests per source in the composite being resolved.
     uses: HashMap<MediaId, usize>,
     failed: HashSet<MediaId>,
     served_real: bool,
@@ -107,14 +82,12 @@ impl SeekFrameSource {
         }
     }
 
-    /// For an export: no stand-in pictures, every frame the exact one.
     #[must_use]
     pub fn strict(mut self) -> Self {
         self.strict = true;
         self
     }
 
-    /// Read pictures back at up to `side` pixels on their longer side.
     #[must_use]
     pub fn with_max_side(mut self, side: u32) -> Self {
         self.max_side = side.max(1);
@@ -128,8 +101,8 @@ impl SeekFrameSource {
         project
             .media
             .iter()
-            // A title's picture is drawn. Seekers open copies kept by their
-            // bytes: a page has no paths to open.
+            // A title's picture is drawn. Seekers open copies kept by their bytes: a
+            // page has no paths to open.
             .filter(|item| matches!(item.kind, MediaKind::Video | MediaKind::Image))
             .filter(|item| crate::files::is_kept(&item.path))
             .map(|item| {
@@ -149,7 +122,6 @@ impl SeekFrameSource {
             .collect()
     }
 
-    /// Re-index against `project`, keeping the seekers of media still in it.
     pub fn set_project(&mut self, project: &Project) {
         self.sources = Self::index(project);
         self.seekers
@@ -157,51 +129,41 @@ impl SeekFrameSource {
         self.failed.retain(|media| self.sources.contains_key(media));
     }
 
-    /// A cheap signature of what [`Self::set_project`] would index.
     pub fn project_signature(project: &Project) -> u64 {
         super::media_signature(project)
     }
 
-    /// Close the seekers nothing asked for lately.
     pub fn prune(&mut self) {
         self.seekers.retain(|_, held| held.used.elapsed() < IDLE);
     }
 
-    /// Whether the last composite asked for a frame not shown yet, so the
-    /// caller should composite again shortly.
     pub fn has_pending_frames(&self) -> bool {
         self.pending
     }
 
-    /// Whether `media` may still get a decoded picture.
     pub fn may_serve(&self, media: MediaId) -> bool {
         self.sources.contains_key(&media) && !self.failed.contains(&media)
     }
 
-    /// Whether the last composite put a decoded picture on any layer.
     pub fn served_real_picture(&self) -> bool {
         self.served_real
     }
 
-    /// Media the last composite got no exact picture of, with the source
-    /// time asked for (an export composites that frame again).
+    /// With the source time asked for, so an export composites that frame again.
     pub fn missing_pictures(&self) -> &[(MediaId, f64)] {
         &self.missing
     }
 
-    /// Why a source cannot be decoded, when one could not.
     pub fn failure(&self) -> Option<MediaId> {
         self.failed.iter().next().copied()
     }
 
-    /// A seeker over `media`'s kept copy, or `None` while its bytes are
-    /// still being read back (asked again later) or when it cannot open.
+    /// `None` while its bytes are still being read back, or when it cannot open.
     fn open_seeker(&mut self, media: MediaId, indexed: &Indexed, source_time: f64) -> Option<Held> {
         let Some(source) = crate::files::kept_source(&indexed.path) else {
             if crate::files::kept_missing(&indexed.path) {
                 self.failed.insert(media);
             } else {
-                // Its bytes are still being read from where they were kept.
                 self.pending = true;
                 self.missing.push((media, source_time));
             }
@@ -226,9 +188,8 @@ impl SeekFrameSource {
         })
     }
 
-    /// How fast the playhead runs through `held`'s source when asked for
-    /// `at` now, while it runs forward (the element plays along at that
-    /// rate); `None` when it stands still, jumped or runs backwards.
+    /// How fast the playhead runs through `held`'s source when asked for `at` now,
+    /// while it runs forward (the element plays along at that speed).
     fn running_rate(&self, held: &Held, at: f64, now: ui::time::Instant) -> Option<f64> {
         let (before, when) = held.asked.filter(|_| self.fetch == Fetch::Responsive)?;
         let gap = now.saturating_duration_since(when);

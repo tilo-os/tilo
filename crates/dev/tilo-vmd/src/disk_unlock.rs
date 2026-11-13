@@ -62,11 +62,9 @@ fn root_mount(mounts: &str) -> Option<RootMount<'_>> {
     root
 }
 
-// Btrfs mountinfo dev_t identifies a subvolume, rather than its block device.
-// Corroborate the kernel-reported source against the mounted filesystem's
-// devices and devinfo, including missing devices; a degraded multi-device
-// filesystem must not be mistaken for a single-root volume.
-// https://btrfs.readthedocs.io/en/stable/ch-sysfs.html
+// Btrfs mountinfo dev_t identifies a subvolume rather than its block device, so the kernel-reported
+// source is corroborated against the mounted filesystem's devices and devinfo, including missing
+// ones: a degraded multi-device filesystem must not be mistaken for a single-root volume.
 fn single_btrfs_device(root: &Path, number: &str) -> std::io::Result<bool> {
     let mut matched = false;
     for filesystem in std::fs::read_dir(root)? {
@@ -270,8 +268,8 @@ pub(crate) fn enroll(
     inherit_private_key(&mut command, &key);
     let result = run_bounded(
         command,
-        // The existing registrar can wait 120s for each reply segment.
-        // Let its ordinary timeout return and roll back before our outer bound.
+        // The existing registrar can wait 120 s for each reply segment, so its ordinary timeout
+        // returns and rolls back before the outer bound.
         Duration::from_secs(360),
         65536,
         std::io::sink(),

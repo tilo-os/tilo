@@ -11,7 +11,7 @@ pub struct Inbox {
     pub messages: Vec<String>,
 }
 
-#[resource(kind = "test.inbox", label = "Inbox")]
+#[resource(kind = "test.inbox", catalogue = "tests/locales")]
 impl Inbox {
     /// Receive a message.
     #[action(incoming_message)]

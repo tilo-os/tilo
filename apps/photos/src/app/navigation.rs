@@ -1,6 +1,5 @@
-//! What the window shows and how to move through it: the library, its
-//! timeline and pages, albums, places, the viewer, and the multi-photo
-//! selection.
+//! What the window shows and how to move through it: the library, its timeline and pages, albums,
+//! places, the viewer, and the multi-photo selection.
 
 use crate::actions::PhotosEffect;
 use crate::strings::{tr, tr_args, tr_with};
@@ -15,17 +14,12 @@ use super::{
 };
 
 impl Photos {
-    /// Drop the open photograph's viewer. The layout tree points at it, so
-    /// dropping one that existed asks for a fresh tree.
     pub(super) fn close_viewer(&mut self) {
         if self.viewer.take().is_some() {
             self.structure_dirty = true;
         }
     }
 
-    /// Reveal the bounded library grid.  Kept public for the deterministic
-    /// offscreen gallery; ordinary interaction reaches it through the same
-    /// toolbar button and semantic action as a user.
     pub fn show_library(&mut self) {
         self.library_mode = true;
         self.people_mode = false;
@@ -42,10 +36,6 @@ impl Photos {
         self.finish_selection();
     }
 
-    /// Resolve a canonical timeline resource without treating a visual card as
-    /// the source of truth. The shared capture value is the only input: a
-    /// removed or changed boundary refuses instead of jumping to a nearby,
-    /// misleading date.
     pub(super) fn view_timeline(
         &mut self,
         library: &crate::model::PhotoLibrary,
@@ -90,10 +80,6 @@ impl Photos {
         let Some((target_day, _, _)) = target else {
             return Err(tr("photos-error-day-gone"));
         };
-        // The previous projection may describe a filtered collection or an
-        // older library snapshot. Rebuild against the timeline being opened
-        // before resolving its offset, even if that day was already present.
-        // This also handles actions arriving before the first painted frame.
         self.timeline_projection
             .replace(library.photos.values().map(|photo| {
                 TimelinePhoto {
@@ -121,26 +107,18 @@ impl Photos {
         Ok(())
     }
 
-    /// Reveal the People collection without enabling recognition or changing
-    /// any document metadata. This is used by the resource action and visual
-    /// acceptance scenarios.
     pub fn show_people(&mut self) {
         self.show_library();
         self.people_mode = true;
         self.library_destination = LibraryDestination::People;
     }
 
-    /// Reveal albums as a first-class collection. Opening the collection is
-    /// presentation-only; opening a specific album still resolves its stable
-    /// resource id and then enters the chronological photo view.
     pub fn show_albums(&mut self) {
         self.show_library();
         self.people_mode = false;
         self.library_destination = LibraryDestination::Albums;
     }
 
-    /// Reveal the whole-library local-analysis dashboard for deterministic
-    /// visual acceptance. No scan is started and no result is fabricated.
     pub fn show_library_analysis(&mut self) {
         self.show_library();
         self.library_destination = LibraryDestination::Analysis;
@@ -168,9 +146,6 @@ impl Photos {
         self.selection_all_favorite = false;
     }
 
-    /// Toggle one materialised card, or the inclusive visible range from the
-    /// previous anchor. A range is a view operation, so it is intentionally
-    /// bounded to the cards the person can currently inspect.
     pub(super) fn toggle_library_selection(&mut self, photo_id: &str, extend: bool) {
         if !self.selection_mode {
             return;
@@ -242,8 +217,6 @@ impl Photos {
             self.notice = Some(tr("photos-selection-empty"));
             return;
         }
-        // Each photograph filed on its own, so a collaborator filing others
-        // meanwhile keeps theirs.
         let paths = crate::model::album_paths(&album_id).photo_ids;
         let edits: Vec<_> = selected
             .iter()
@@ -307,7 +280,6 @@ impl Photos {
         }
     }
 
-    /// Pose the offline Places destination for deterministic visual coverage.
     pub fn show_places_for_shot(&mut self) {
         self.show_library();
         self.library_destination = LibraryDestination::Places;
@@ -315,9 +287,6 @@ impl Photos {
         self.places_fit_pending = true;
     }
 
-    /// Apply a local map-camera change and give the marker layer a restrained
-    /// settle cue. The viewport is presentation state, so the animation never
-    /// delays a semantic action or writes shared metadata.
     pub(super) fn set_places_viewport(&mut self, viewport: crate::places::MapViewport) {
         let viewport = viewport.clamped();
         if self.places_viewport == viewport {
@@ -325,7 +294,6 @@ impl Photos {
         }
         self.places_viewport = viewport;
         if !self.places_motion_reduced {
-            // A settle cue: on at once, gone over the feedback's fade.
             let motion = ui::tokens::EffectiveMotion::default();
             let now = ui::time::now();
             let mut feedback = ui::motion::Feedback::default();
@@ -355,9 +323,6 @@ impl Photos {
         }
     }
 
-    /// Open the exact durable collection behind a Places resource or marker.
-    /// This reads only shared metadata, so it remains usable offline and
-    /// deliberately fails if a collaborator removed the addressed place.
     pub(super) fn open_place_collection(
         &mut self,
         library: &crate::model::PhotoLibrary,
@@ -389,9 +354,6 @@ impl Photos {
         Ok(())
     }
 
-    /// Pose the ordinary selection shelf for deterministic visual coverage.
-    /// Two real photographs are selected so the capture exercises the active
-    /// controls and selected-card treatment, not merely their disabled state.
     pub fn show_selection_for_shot(&mut self) {
         self.show_library();
         self.begin_selection();
@@ -401,9 +363,6 @@ impl Photos {
         }
     }
 
-    /// Pose a deliberately long destination list. The selection is local;
-    /// this exists only to make the scrolling list visible in the
-    /// deterministic accessibility and responsive screenshots.
     pub fn show_selection_destination_chooser_for_shot(&mut self) {
         if let Some(photo) = self.presented().photos.values().next() {
             self.selected_photo_ids.insert(photo.id.clone());
@@ -413,14 +372,11 @@ impl Photos {
         self.selection_album_scroll.set_offset(Vec2::ZERO);
     }
 
-    /// Show photograph `photo_id` in this window.
     pub(super) fn show_photo(&mut self, photo_id: &str) {
         self.open_photo = Some(photo_id.to_owned());
         self.library_mode = false;
     }
 
-    /// The photographs this window steps through, in the chronology's order:
-    /// the same order the timeline shows them in.
     pub(super) fn photo_order(&self) -> Vec<String> {
         let ids = self.timeline_projection.ordered_ids();
         if !ids.is_empty() {
@@ -435,9 +391,6 @@ impl Photos {
         ids
     }
 
-    /// Move to the photograph `forward` of the open one, wrapping at either
-    /// end so a slide show never stops at the last picture. Returns whether
-    /// it moved.
     pub(super) fn step_photo(&mut self, forward: bool) -> bool {
         let order = self.photo_order();
         if order.is_empty() {
@@ -464,16 +417,11 @@ impl Photos {
         true
     }
 
-    /// Zoom the open photograph one step, as a window's Zoom in, Zoom out and
-    /// Actual size reach it: the picture's own size, never the window's text
-    /// scale, because the photograph is what is being looked at. Answers the
-    /// factor shown.
     pub(super) fn zoom_photo(&mut self, step: ui::content_zoom::ZoomStep) -> f32 {
         let factor = self.viewer_zoom.step(step);
         if let Some(viewer) = self.viewer.as_mut() {
             viewer.set_zoom(factor);
         }
-        // The window's bar says the level, as it does for any content zoom.
         self.notice = Some(tr_with(
             "photos-zoom-level",
             "percent",
@@ -482,7 +430,6 @@ impl Photos {
         factor
     }
 
-    /// Show the open photograph full screen, or stop.
     pub(super) fn toggle_presentation(&mut self) {
         if self.library_mode || self.viewer.is_none() {
             return;
@@ -493,8 +440,6 @@ impl Photos {
         }
     }
 
-    /// Run the slide show (advancing through the collection, full screen), or
-    /// stop it where it is.
     pub(super) fn toggle_slide_show(&mut self) {
         if self.library_mode || self.viewer.is_none() {
             return;
@@ -502,20 +447,15 @@ impl Photos {
         if self.slide_show.take().is_some() {
             return;
         }
-        // A slide show is a presentation: the chrome goes and the picture has
-        // the screen, which is what showing photographs to someone means.
         self.presenting = true;
         self.slide_show =
             Some(ui::time::now() + std::time::Duration::from_secs(SLIDE_SHOW_SECONDS));
     }
 
-    /// Whether the slide show is running.
     pub(super) fn slide_show_running(&self) -> bool {
         self.slide_show.is_some()
     }
 
-    /// Start the interval of the running slide show again: each photograph is
-    /// shown for the same while.
     pub(super) fn restart_slide_show(&mut self) {
         if self.slide_show.is_some() {
             self.slide_show =
@@ -523,8 +463,6 @@ impl Photos {
         }
     }
 
-    /// Advance the slide show if its interval is up. Returns whether the
-    /// window must repaint.
     pub(super) fn tick_slide_show(&mut self) -> bool {
         let Some(at) = self.slide_show else {
             return false;
@@ -534,8 +472,6 @@ impl Photos {
         }
         let order = self.photo_order();
         if order.len() <= 1 {
-            // Nothing to advance to: a one-photograph library is not a slide
-            // show.
             self.slide_show = None;
             return true;
         }
@@ -545,10 +481,6 @@ impl Photos {
         true
     }
 
-    /// Move through the bounded library shelf without changing any shared
-    /// state.  Album editing keeps its unsaved membership locally, so paging
-    /// must stay available while the sheet is open: otherwise a phone-sized
-    /// sheet can leave most of a large library impossible to include.
     pub(super) fn library_page_step(&self) -> usize {
         if self.layout_theme.text_scale > 1.25 && self.canvas_rect.width() < 620.0 {
             if self.album_editor { 2 } else { 1 }
@@ -647,9 +579,6 @@ impl Photos {
         )
     }
 
-    /// Change the local timeline density through any input source.  One step
-    /// is shared by the +/- affordances, Ctrl-wheel and pinch, which makes
-    /// their resulting layout testable for parity.
     pub(super) fn adjust_timeline_density(&mut self, increase: bool) -> bool {
         let before = self.timeline_density;
         if increase {
@@ -664,8 +593,6 @@ impl Photos {
     }
 
     pub(super) fn scroll_timeline_rows(&mut self, delta: f64) {
-        // Keyboard rows remain a useful semantic step, but the canonical
-        // offset is pixels so portrait and justified rows scroll smoothly.
         self.timeline_scroll_y = self.timeline_projection.clamp_scroll(
             self.timeline_scroll_y + delta * 168.0,
             self.timeline_viewport_height,
@@ -682,10 +609,6 @@ impl Photos {
         );
     }
 
-    /// Apply every chronological-index input through the same local scroll
-    /// and density helpers used by the ordinary timeline.  The index never
-    /// owns a second offset, which is what keeps a pinch anchor and a dragged
-    /// date thumb in agreement.
     pub(super) fn apply_timeline_index_intent(&mut self, intent: &DateIndexIntent) -> bool {
         match *intent {
             DateIndexIntent::ScrollTo { position } => {
@@ -698,10 +621,6 @@ impl Photos {
                 std::cmp::Ordering::Less => self.adjust_timeline_density(false),
                 std::cmp::Ordering::Equal => false,
             },
-            // A preview is presentation only. The widget has retained it for
-            // paint and AT's current value; it must not make collaboration
-            // history noisy by changing a collection just because it was
-            // hovered.
             DateIndexIntent::PreviewChanged(_) => true,
         }
     }
@@ -738,13 +657,6 @@ impl Photos {
         false
     }
 
-    /// Navigate to an extant stable album id without producing a CRDT action.
-    /// This is deliberately separate from `perform_effect`: callers need a
-    /// useful stale-address error instead of silently falling back to all
-    /// photographs if a collaborator removed the album after search indexed
-    /// it.
-    /// Open photograph `photo_id` in this window, from search, the palette
-    /// or an agent.
     pub(super) fn view_photo(
         &mut self,
         library: &crate::model::PhotoLibrary,
@@ -782,9 +694,6 @@ impl Photos {
         Ok(())
     }
 
-    /// Enter a metadata-derived library view after verifying the label still
-    /// exists. An old global-search result therefore fails honestly when a
-    /// collaborator removes the final matching photograph.
     pub(super) fn view_metadata_filter(
         &mut self,
         library: &crate::model::PhotoLibrary,
@@ -825,8 +734,6 @@ impl Photos {
         Ok(())
     }
 
-    /// Open one exact intelligence-derived collection. These labels are
-    /// still local navigation; only the accepted analysis record is shared.
     pub(super) fn view_analysis_filter(
         &mut self,
         library: &crate::model::PhotoLibrary,
@@ -859,9 +766,6 @@ impl Photos {
         Ok(())
     }
 
-    /// Navigate to the stable favorites resource after verifying that it is
-    /// still non-empty. A stale global-search result must fail rather than
-    /// silently changing the user's view to an unrelated all-photos shelf.
     pub(super) fn view_favorites(
         &mut self,
         library: &crate::model::PhotoLibrary,

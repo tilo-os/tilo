@@ -1,5 +1,6 @@
-//! Provider-backed browsing is deliberately not a synthetic filesystem mount.
-// Every cancel scenario runs a real import, whose staging only Linux provides.
+//! Browsing a cloud account's folders without mounting it: pages asked of the
+//! provider, and the entries they bring.
+// The cancel tests run a real import, whose staging only Linux provides.
 #[cfg(all(test, target_os = "linux"))]
 #[path = "cloud_cancel_tests.rs"]
 mod cancel_tests;
@@ -74,8 +75,6 @@ impl FilesState {
                     .find(|entry| &entry.id == id)
                     .map(|entry| entry.name.clone())
             });
-            // Dropping the old receiver detaches any in-flight page. Its worker
-            // cannot publish into the new folder or account when it finishes.
             self.leave_cloud_browse();
         }
         self.cloud.account.clone_from(&account);
@@ -104,9 +103,6 @@ impl FilesState {
         Ok(())
     }
 
-    /// A capture's cloud folder: a made-up Drive account browsed into one of
-    /// its folders, staged as a page of entries would leave it. No account
-    /// store, vault or cloud service is read.
     pub(super) fn debug_show_cloud_folder(&mut self) {
         let account = crate::remote_accounts::RemoteAccount {
             id: accounts::AccountId::from("shot-drive"),
@@ -162,10 +158,6 @@ impl FilesState {
                 .any(|(op, _)| matches!(op, crate::file_ops::FileOp::CloudImport { .. }))
     }
 
-    /// The cloud import's effects that cannot run now, as the cloud view
-    /// shows them: more entries only while there are more, importing only
-    /// what is selected in the view, cancelling only a running import,
-    /// retrying only a failed one, showing only where one went.
     pub(crate) fn cloud_statuses(&self) -> Vec<ui::framework::EffectStatus> {
         let mut statuses = Vec::new();
         if !self.cloud.active || self.cloud.next.is_none() {
@@ -435,8 +427,6 @@ impl FilesState {
         }
     }
 
-    /// What a cloud folder is called where the window names its place: the
-    /// account, and the folder in it. `None` outside cloud mode.
     pub(super) fn cloud_title(&self) -> Option<(String, Option<String>)> {
         if !self.cloud.active {
             return None;
@@ -447,10 +437,6 @@ impl FilesState {
         Some((account, self.cloud.folder_label.clone()))
     }
 
-    /// Name the cloud folder in the content header, and give the header its
-    /// path and actions back after cloud mode. While the window's bar hosts
-    /// the header, the bar names the folder ([`Self::window_toolbar`]) and
-    /// the window draws no header to change.
     pub(super) fn refresh_cloud_header(&mut self, chrome: &mut Chrome) {
         if self.header_in_bar {
             self.cloud.header_shown = false;
@@ -459,22 +445,25 @@ impl FilesState {
         if let Some((account, folder)) = self.cloud_title() {
             let title =
                 folder.map_or_else(|| account.clone(), |folder| format!("{account} / {folder}"));
-            // window-bar: fallback, the bar names the folder while it hosts the window
-            chrome
-                .nav
-                .set_content_header_leading(Some(ui::widget::Text::new(&title).into_widget()));
+            ui::window_toolbar::exempt!(Fallback, {
+                chrome
+                    .nav
+                    .set_content_header_leading(Some(ui::widget::Text::new(&title).into_widget()));
+            });
             chrome.nav.set_content_header("", vec![]);
             self.cloud.header_shown = true;
         } else if self.cloud.header_shown {
             let (leading, actions, toolbar) = crate::toolbar::FileToolbar::new(self.cmds.clone());
             self.toolbar = toolbar;
             self.update_toolbar();
-            // window-bar: fallback, the bar shows the path while it hosts the window
-            chrome
-                .nav
-                .set_content_header_leading(Some(Box::new(leading)));
-            // window-bar: fallback, the bar holds the folder's actions while it hosts the window
-            chrome.nav.set_content_header("", vec![Box::new(actions)]);
+            ui::window_toolbar::exempt!(Fallback, {
+                chrome
+                    .nav
+                    .set_content_header_leading(Some(Box::new(leading)));
+            });
+            ui::window_toolbar::exempt!(Fallback, {
+                chrome.nav.set_content_header("", vec![Box::new(actions)]);
+            });
             self.cloud.header_shown = false;
         }
     }
@@ -503,8 +492,6 @@ impl FilesState {
 
     fn cloud_entries(&self, mut body: Column) -> Column {
         use ui::widget::Text;
-        // The job's reason already summarizes entry failures; do not repeat
-        // the same provider response both as an aggregate and as per-entry text.
         let mut seen = HashSet::new();
         let errors: Vec<&str> = if self.cloud.progress.failed.is_empty() {
             self.cloud.error.as_deref().into_iter().collect()

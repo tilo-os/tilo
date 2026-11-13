@@ -1,19 +1,4 @@
 //! Deterministic IANA time-zone resolution for Calendar's wall-time model.
-//!
-//! Events retain their authored wall time plus TZID.  Whenever an absolute
-//! instant is needed (interop, reminders, ordering across zones), this module
-//! resolves it with one cross-device rule: choose the earlier instant in a DST
-//! fold, and advance through a DST gap to the first valid wall minute. An
-//! elapsed duration may explicitly select the later fold for its end, through
-//! [`endpoint_utc`], without changing the authored timezone or recurrence anchor.
-//! Neither rule consults host state. The fold/gap rule itself is
-//! [`tilo_recurrence::zone`]'s, so a recurring series and a single event
-//! resolve their wall times the same way.
-//!
-//! Files from elsewhere name zones in other ways: Outlook and Exchange by
-//! their Windows name, other publishers behind a path prefix, and some only
-//! by the rules of a `VTIMEZONE` they carry. [`zone_from_tzid`] and
-//! [`zone_following`] find the IANA zone each stands for.
 
 use chrono::{
     DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, Offset, TimeZone, Utc,
@@ -25,8 +10,6 @@ pub use tilo_recurrence::zone::{Resolution, canonical_zone, normalize_wall, wall
 
 mod windows_zones;
 
-/// Resolve an endpoint whose persisted fold choice may select the later instant.
-/// Ordinary authored times still use the earlier-fold/gap policy.
 pub fn endpoint_utc(zone: &str, wall: NaiveDateTime, later: bool) -> Option<DateTime<Utc>> {
     if later
         && let LocalResult::Ambiguous(a, b) = zone.parse::<Tz>().ok()?.from_local_datetime(&wall)
@@ -36,7 +19,6 @@ pub fn endpoint_utc(zone: &str, wall: NaiveDateTime, later: bool) -> Option<Date
     Some(wall_to_utc(zone, wall)?.0)
 }
 
-/// Compare endpoints in their authored zone, not by ambiguous wall ordering.
 pub fn valid_span(zone: &str, start: NaiveDateTime, end: NaiveDateTime, later: bool) -> bool {
     if zone == "floating" {
         return !later && end >= start;
@@ -46,10 +28,6 @@ pub fn valid_span(zone: &str, start: NaiveDateTime, end: NaiveDateTime, later: b
         .is_some_and(|((start, _), end)| end >= start)
 }
 
-/// The IANA zone an iCalendar TZID names: an IANA name, the Windows name
-/// Outlook and Exchange write (`W. Europe Standard Time`), or an IANA name
-/// behind a publisher's prefix (`/mozilla.org/20050126_1/Europe/Berlin`).
-/// `None` when it names none of these.
 pub fn zone_from_tzid(tzid: &str) -> Option<String> {
     let tzid = tzid.trim().trim_matches('"').trim();
     let named = |name: &str| canonical_zone(name).filter(|zone| zone != "floating");
@@ -67,7 +45,6 @@ pub fn zone_from_tzid(tzid: &str) -> Option<String> {
         })
 }
 
-/// The IANA zone of a Windows time-zone name, as CLDR maps it.
 pub fn windows_zone(name: &str) -> Option<&'static str> {
     fn folded(text: &str) -> impl Iterator<Item = u8> + '_ {
         text.bytes().map(|byte| byte.to_ascii_lowercase())
@@ -79,30 +56,21 @@ pub fn windows_zone(name: &str) -> Option<&'static str> {
     table.get(index).map(|(_, iana)| *iana)
 }
 
-/// Which day of its month a yearly zone transition falls on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OnsetDay {
-    /// The nth weekday of the month; negative counts from its end
-    /// (`BYDAY=-1SU`, the last Sunday).
     Nth(i8, Weekday),
-    /// The first such weekday on or after a day of the month
-    /// (`BYMONTHDAY=8,9,10,11,12,13,14;BYDAY=SU`).
     OnOrAfter(u32, Weekday),
-    /// A fixed day of the month.
     Fixed(u32),
 }
 
-/// A `FREQ=YEARLY` transition rule of a `VTIMEZONE` observance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct YearlyRule {
     pub month: u32,
     pub day: OnsetDay,
-    /// The rule's last onset, as written (UTC or wall time alike).
     pub until: Option<NaiveDateTime>,
 }
 
 impl YearlyRule {
-    /// The date this rule's transition falls on in `year`, if it has one.
     fn date_in(self, year: i32) -> Option<NaiveDate> {
         let first = NaiveDate::from_ymd_opt(year, self.month, 1)?;
         let next = if self.month == 12 {
@@ -135,21 +103,16 @@ impl YearlyRule {
     }
 }
 
-/// One STANDARD or DAYLIGHT observance of an iCalendar `VTIMEZONE`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Observance {
-    /// Its first onset, as a wall time in `offset_from`.
     pub onset: NaiveDateTime,
-    /// The UTC offsets before and after each onset, in seconds.
     pub offset_from: i32,
     pub offset_to: i32,
     pub rule: Option<YearlyRule>,
-    /// Further onsets, as wall times in `offset_from`.
     pub rdates: Vec<NaiveDateTime>,
 }
 
 impl Observance {
-    /// Each onset of this observance in `years`, as UTC instants.
     fn onsets(
         &self,
         years: std::ops::RangeInclusive<i32>,
@@ -167,9 +130,6 @@ impl Observance {
     }
 }
 
-/// The UTC offset, in seconds, `observances` give at the UTC instant `at`:
-/// the one the latest onset by then set, or before any onset the one the
-/// earliest leaves.
 fn offset_following(observances: &[Observance], at: NaiveDateTime) -> Option<i32> {
     let years = at.year() - 1..=at.year();
     let latest = observances
@@ -189,13 +149,6 @@ fn offset_following(observances: &[Observance], at: NaiveDateTime) -> Option<i32
     })
 }
 
-/// The IANA zone whose offsets in `year` are the ones `observances` give,
-/// for a `VTIMEZONE` whose TZID names no zone (`Customized Time Zone`,
-/// `(UTC+01:00) Amsterdam, Berlin, Bern, Rome, Stockholm, Vienna`). The
-/// zones Windows names come first; among zones that fit, one whose city the
-/// TZID mentions, then one that changes its clocks at the very instants the
-/// rules do (US Eastern time, not Havana, which moves its clocks on the same
-/// days two hours earlier). `None` when no zone keeps those offsets.
 pub fn zone_following(observances: &[Observance], year: i32, tzid: &str) -> Option<String> {
     let noon =
         |month| NaiveDate::from_ymd_opt(year, month, 1).and_then(|date| date.and_hms_opt(12, 0, 0));
@@ -265,8 +218,6 @@ mod tests {
 
     #[test]
     fn berlin_dst_gap_and_fold_resolve_and_invalid_zone_is_refused() {
-        // The fold/gap policy is the shared rule's; this checks it reaches
-        // Calendar's saved zones and still refuses an invalid one.
         let wall = at((2026, 3, 29), 2, 30);
         let (normalized, resolution) = normalize_wall("Europe/Berlin", wall).unwrap();
         assert_eq!(normalized, at((2026, 3, 29), 3, 0));
@@ -281,8 +232,6 @@ mod tests {
         assert_eq!(wall_to_utc("Mars/Olympus", at((2026, 1, 1), 12, 0)), None);
     }
 
-    /// Every Windows name maps to a zone the database knows, and the table
-    /// stays sorted for its binary search.
     #[test]
     fn windows_names_are_sorted_and_resolve() {
         let table = windows_zones::WINDOWS_ZONES;

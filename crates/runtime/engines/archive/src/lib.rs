@@ -1,21 +1,10 @@
-//! Files' archive codecs, as an engine library beside the shared runtime
+//! Files' archive codecs, as its own library in the runtime bundle
 //! (`libtilo_archive_engine.so`).
 //!
-//! Browsing into an archive, extracting it and packing a selection need the
-//! tar, zip and 7z readers and the gzip, xz, zstd and bzip2 codecs. Only
-//! Files reaches them, so none belongs in the runtime every app maps, and
-//! linked into Files' tapp they would grow the app past its size budget.
-//! Here they are a library of their own in the runtime bundle that only
-//! Files names `DT_NEEDED`.
-//!
-//! Like `runtime-dylib`, this crate re-exports the crate it provides, which
-//! records it as provided by this library for the apps' `-C prefer-dynamic`
-//! link. Outside the thin build (`thin`) it is empty: see the manifest.
+//! Like `runtime-dylib` it re-exports what it provides, which records it
+//! as provided by this library for the apps' `-C prefer-dynamic` link.
+//! Outside the thin build it is empty.
 
-// Load the runtime explicitly, as thin apps do: rustc ignores an `--extern`
-// nothing names, and without it in the crate graph this library would link
-// its own copy of every crate the runtime already provides, which the app's
-// link then refuses (each crate may show up once).
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 

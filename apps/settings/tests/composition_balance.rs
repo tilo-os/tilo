@@ -31,10 +31,8 @@ fn assert_finite_rects(widget: &dyn Widget, path: &str) {
     );
 }
 
-/// Compact first controls, the region preview and finite region layout.
 #[test]
 fn compact_heading_and_region_layout_stay_balanced() {
-    // Case `first_account_action_and_region_field_follow_compact_heading`.
     {
         for (category, label, limit) in [
             (Category::ExternalAccounts, "Add Email", 370.0),
@@ -51,7 +49,6 @@ fn compact_heading_and_region_layout_stay_balanced() {
         }
     }
 
-    // Case `region_preview_follows_every_format_control`.
     {
         let mut app = crate::support::window_on(Category::RegionFormats, (W, H));
         let root = app.harness().root_widget();
@@ -67,7 +64,6 @@ fn compact_heading_and_region_layout_stay_balanced() {
         );
     }
 
-    // Case `region_layout_keeps_every_painted_widget_finite`.
     {
         let mut app = crate::support::window_on(Category::RegionFormats, (W, H));
         assert_finite_rects(app.harness().root_widget(), "root");

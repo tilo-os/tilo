@@ -14,17 +14,13 @@ pub const DEFAULT_PROFILE: &str = "default";
 
 static PROFILE: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
 
-/// Make `profile` the one [`AppPaths::for_app`] resolves web storage in, for
-/// the rest of the process (on the web, the page). A browser host calls this
-/// once, with the profile it mounts, before any app resolves its paths.
-/// Native per-user directories belong to one profile already and do not
-/// change.
+/// Make `profile` the one [`AppPaths::for_app`] resolves web storage in, for the
+/// rest of the process (on the web, the page). A browser host calls this once, with
+/// the profile it mounts, before any app resolves its paths.
 pub fn set_default_profile(profile: &str) {
     *PROFILE.write_recover() = Some(component(profile));
 }
 
-/// The profile [`AppPaths::for_app`] resolves web storage in, as it appears
-/// in locations.
 #[must_use]
 pub fn default_profile() -> String {
     PROFILE
@@ -33,26 +29,7 @@ pub fn default_profile() -> String {
         .unwrap_or_else(|| DEFAULT_PROFILE.to_owned())
 }
 
-/// Where one app keeps its files, the same API on every target:
-///
-/// | | Linux | macOS | Web |
-/// |---|---|---|---|
-/// | `data` | `$XDG_DATA_HOME/<id>` | `~/Library/Application Support/<id>` | `opfs://<profile>/<id>/data` |
-/// | `config` | `$XDG_CONFIG_HOME/<id>` | `~/Library/Application Support/<id>` | `opfs://<profile>/<id>/config` |
-/// | `cache` | `$XDG_CACHE_HOME/<id>` | `~/Library/Caches/<id>` | `opfs://<profile>/<id>/cache` |
-/// | `state` | `$XDG_STATE_HOME/<id>` | `~/Library/Application Support/<id>` | `opfs://<profile>/<id>/state` |
-/// | `runtime` | `$XDG_RUNTIME_DIR/<id>` | `$TMPDIR/<id>` | memory, for the page's lifetime |
-/// | `user_dir` | `xdg-user-dirs` | `~/Documents`, … | unsupported |
-///
-/// On native targets these are exactly [`data_dir`](crate::data_dir) and the
-/// other per-user directories with the id joined on. When one does not
-/// resolve (no home directory), durable storage falls back to memory rather
-/// than to a path relative to wherever the process started.
-///
-/// The id is one path component, typically the app's reverse-DNS id. Bytes
-/// that cannot appear in one (`/`, `\`, `:`, `%`, control characters) are
-/// percent-escaped, as are the ids `.`, `..` and the empty id, so no id can
-/// name a location outside its own.
+/// Where one app keeps its files, the same API on every target.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppPaths {
     app: String,
@@ -66,7 +43,6 @@ enum Scope {
     Memory,
 }
 
-/// Per-app durable storage kinds, named as their web subdirectories.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Slot {
     Data,
@@ -91,8 +67,6 @@ impl Slot {
 const SCOPED: &str = "App paths scoped to one directory have no user folders, workspace or fonts.";
 
 impl AppPaths {
-    /// The app's locations in this user's (or on the web, the page's
-    /// profile's) storage.
     #[must_use]
     pub fn for_app(id: &str) -> Self {
         Self {
@@ -103,9 +77,6 @@ impl AppPaths {
         }
     }
 
-    /// Everything below `root/<id>`: `data`, `config`, `cache`, `state` and
-    /// `runtime` subdirectories, and no user folders, workspace or fonts.
-    /// For tests and for hosts that give each app a sandbox directory.
     #[must_use]
     pub fn under(root: impl Into<PathBuf>, id: &str) -> Self {
         Self {
@@ -114,7 +85,6 @@ impl AppPaths {
         }
     }
 
-    /// Everything in memory, for tests; nothing outlives the process.
     #[must_use]
     pub fn memory(id: &str) -> Self {
         Self {
@@ -123,9 +93,8 @@ impl AppPaths {
         }
     }
 
-    /// Keep web storage in `profile`'s tree. Native per-user directories
-    /// belong to one profile already, so native targets and scoped paths
-    /// resolve as before.
+    /// Keep web storage in `profile`'s tree; native per-user directories belong to one
+    /// profile already.
     #[must_use]
     pub fn with_profile(mut self, profile: &str) -> Self {
         if let Scope::System { profile: current } = &mut self.scope {
@@ -134,38 +103,31 @@ impl AppPaths {
         self
     }
 
-    /// The id as it appears in locations, escaped where needed.
     #[must_use]
     pub fn id(&self) -> &str {
         &self.app
     }
 
-    /// Durable files the app owns: documents, databases, downloads it manages.
     #[must_use]
     pub fn data(&self) -> Location {
         self.storage(Slot::Data)
     }
 
-    /// Settings the user chose.
     #[must_use]
     pub fn config(&self) -> Location {
         self.storage(Slot::Config)
     }
 
-    /// Files the app can rebuild, which the system may delete.
     #[must_use]
     pub fn cache(&self) -> Location {
         self.storage(Slot::Cache)
     }
 
-    /// State worth keeping across restarts but not worth backing up: history,
-    /// window layout, logs.
     #[must_use]
     pub fn state(&self) -> Location {
         self.storage(Slot::State)
     }
 
-    /// Scratch space for this login session (on the web, this page).
     pub fn runtime(&self) -> Result<Location, Unsupported> {
         match &self.scope {
             Scope::System { .. } => system::runtime(&self.app),
@@ -174,7 +136,6 @@ impl AppPaths {
         }
     }
 
-    /// One of the user's content folders.
     pub fn user_dir(&self, dir: UserDir) -> Result<Location, Unsupported> {
         match self.scope {
             Scope::System { .. } => system::user_dir(dir),
@@ -229,10 +190,8 @@ fn memory(app: &str, slot: Slot) -> Location {
     )
 }
 
-/// `raw` as one path component, percent-escaping what a component cannot
-/// hold. The mapping is injective: `%` itself is escaped, so the bare `%`
-/// that stands for the empty id and the `%2E` forms of `.` and `..` cannot
-/// arise from any other id.
+/// `raw` as one path component, percent-escaping what a component cannot hold. The
+/// mapping is injective, since `%` is escaped too.
 fn component(raw: &str) -> String {
     match raw {
         "" => return "%".to_owned(),
@@ -245,7 +204,6 @@ fn component(raw: &str) -> String {
         if matches!(character, '/' | '\\' | ':' | '%') || character.is_control() {
             let mut utf8 = [0; 4];
             for byte in character.encode_utf8(&mut utf8).bytes() {
-                // Writing to a `String` cannot fail.
                 let _ = write!(escaped, "%{byte:02X}");
             }
         } else {
@@ -255,7 +213,6 @@ fn component(raw: &str) -> String {
     escaped
 }
 
-/// The native backend: the crate's per-user directories with the id joined.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 mod system {
     use std::ffi::OsString;
@@ -285,7 +242,6 @@ mod system {
         joined(base, app, slot)
     }
 
-    /// `base/app`, or memory when the base directory does not resolve.
     pub(super) fn joined(base: Option<PathBuf>, app: &str, slot: Slot) -> Location {
         base.map_or_else(
             || memory(app, slot),
@@ -350,7 +306,6 @@ mod system {
         reason = "the signature every backend shares"
     )]
     pub(super) fn font_root() -> Result<Location, Unsupported> {
-        // The catalog's installed location, `font_catalog::INSTALLED_ROOT`.
         Ok(Location::Native(PathBuf::from("/usr/share/fonts/tilo")))
     }
 
@@ -373,8 +328,6 @@ mod system {
     }
 }
 
-/// The web backend: virtual roots in the origin-private file system, and
-/// page memory for runtime files.
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
 mod web {
     use super::{Slot, memory};

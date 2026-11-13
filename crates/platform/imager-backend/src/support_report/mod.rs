@@ -1,23 +1,8 @@
-//! Component-level hardware compatibility for the computer that will run Tilo.
+//! Hardware compatibility for the computer that will run Tilo: the components the kernel found,
+//! the driver bound and the evidence that makes a result applicable to the selected release.
 //!
-//! The report is a read-only observation of this machine. It names the model,
-//! the components the kernel found, and the evidence that makes a result
-//! applicable: the running kernel, bound drivers and firmware version. Presence
-//! alone is not support: a device without a driver, or
-//! a component whose user-space service was not verified, stays limited or
-//! unverified.
-//!
-//! The report grants nothing. It is not a disk identity, a TPM attestation or
-//! permission to install; the privileged staging helper re-probes before any
-//! mutation. A report from another computer is labelled as imported, and a
-//! declared model has no component results at all.
-//!
-//! A driver bound by the running system is evidence about that system, not
-//! about the selected Tilo release. Such a component is `Unverified` with
-//! [`Applicability::ObservationOnly`]; only evidence checked against the
-//! release may be `Supported`. Imported bytes are unsigned facts the person
-//! supplied: they are relabelled, never authenticated, and never authorize a
-//! boot, partition or protection change.
+//! A report grants nothing: the privileged helper re-probes before any change, and imported bytes
+//! are relabelled, never authenticated.
 
 use serde::{Deserialize, Serialize};
 
@@ -32,27 +17,20 @@ mod windows_json;
 #[cfg(test)]
 mod tests;
 
-/// The only report schema this build accepts.
 pub const REPORT_SCHEMA: &str = "tilo.hardware-report.v2";
-/// An imported report is bounded before parsing.
 pub const MAX_REPORT_BYTES: usize = 1 << 20;
-/// Enough for every component class plus a few variants of the same class.
+/// Every component class plus a few variants of the same class.
 pub const MAX_COMPONENTS: usize = 64;
 const MAX_FIELD_CHARS: usize = 512;
 
-/// Where the report's facts came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ReportSource {
-    /// Read from this computer by [`probe`](SupportReport::probe).
     LocalScan,
-    /// Produced on another computer and imported here.
     Imported,
-    /// A manufacturer, model and variant named by a person.
     DeclaredModel,
 }
 
-/// The destination as the report identifies it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DestinationIdentity {
@@ -66,8 +44,7 @@ pub struct DestinationIdentity {
 }
 
 impl DestinationIdentity {
-    /// A specific model names a manufacturer, a model and a distinguishing
-    /// variant, board or SKU. A model family alone is not a destination.
+    /// A variant, board or SKU distinguishes a destination; a family alone does not.
     #[must_use]
     pub fn is_specific(&self) -> bool {
         trimmed(self.manufacturer.as_deref()).is_some()
@@ -77,7 +54,6 @@ impl DestinationIdentity {
                 || trimmed(self.sku.as_deref()).is_some())
     }
 
-    /// A person-readable identification without claiming a scan.
     #[must_use]
     pub fn label(&self) -> String {
         let manufacturer = trimmed(self.manufacturer.as_deref());
@@ -119,7 +95,6 @@ impl DestinationIdentity {
     }
 }
 
-/// One component class the report covers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ComponentKind {
@@ -140,7 +115,6 @@ pub enum ComponentKind {
 }
 
 impl ComponentKind {
-    /// Stable key used by the semantic projection and tests.
     #[must_use]
     pub const fn key(self) -> &'static str {
         match self {
@@ -161,7 +135,6 @@ impl ComponentKind {
         }
     }
 
-    /// A missing or unsupported class here prevents a usable desktop.
     #[must_use]
     pub const fn critical(self) -> bool {
         matches!(
@@ -171,7 +144,6 @@ impl ComponentKind {
     }
 }
 
-/// The four support outcomes the installation experience distinguishes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SupportState {
@@ -193,41 +165,27 @@ impl SupportState {
     }
 }
 
-/// What the facts in this report can establish.
-///
-/// A running system can show that a device exists and which driver that system
-/// bound. It cannot show that the selected Tilo release ships the same kernel,
-/// firmware and userspace service for it. Only evidence checked against that
-/// release is [`Applicability::ReleaseVerified`], and only such a component may
-/// be [`SupportState::Supported`].
+/// What the facts can establish: only evidence checked against the selected release is
+/// [`ReleaseVerified`], and only such a component may be [`Supported`](SupportState::Supported).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Applicability {
-    /// Checked against the selected Tilo release.
     ReleaseVerified,
-    /// Observed on the running system only; the release is not proven.
     ObservationOnly,
-    /// No component observation exists at all.
     Unknown,
 }
 
-/// Where one piece of evidence came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EvidenceScope {
-    /// Read from the running system that produced the report.
     Observation,
-    /// Taken from the selected release's own metadata.
     SelectedRelease,
 }
 
-/// One device binding observed on the running system.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceBinding {
-    /// The hardware name, model or interface as reported by the system.
     pub device: String,
-    /// The driver the running system bound, when it bound one.
     pub driver: Option<String>,
 }
 
@@ -237,8 +195,7 @@ impl DeviceBinding {
     }
 }
 
-/// A fact the outcome rests on. Hardware names, driver names and versions are
-/// data; the view turns each fact into a localized sentence.
+/// A fact the outcome rests on; the view turns each into a localized sentence.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "fact", rename_all = "kebab-case")]
 pub enum EvidenceFact {
@@ -269,15 +226,12 @@ pub enum EvidenceFact {
     Suspend {
         states: Vec<String>,
     },
-    /// The architecture this observation ran on.
     Architecture {
         name: String,
     },
-    /// Hardware-accelerated virtualization this observation could open.
     Virtualization {
         names: Vec<String>,
     },
-    /// The board profile the running image was built for, when it carries one.
     Board {
         id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -285,7 +239,6 @@ pub enum EvidenceFact {
     },
 }
 
-/// A fact together with what it can establish.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Evidence {
     pub scope: EvidenceScope,
@@ -293,46 +246,50 @@ pub struct Evidence {
     pub fact: EvidenceFact,
 }
 
-/// The typed outcome of one component check. The view localizes the code;
-/// the report never carries a sentence whose wording the interface must copy.
+/// The outcome of one component check; the view localizes it, so the report carries no
+/// sentences.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "kebab-case")]
 pub enum SupportReason {
-    /// A driver is bound on the running system.
-    DriverBound { bindings: Vec<DeviceBinding> },
-    /// More than one graphics adapter drives the desktop.
+    DriverBound {
+        bindings: Vec<DeviceBinding>,
+    },
     HybridGraphics {
         primary: DeviceBinding,
         additional: Vec<DeviceBinding>,
     },
-    /// At least one device has no driver bound.
-    DriverMissing { devices: Vec<String> },
-    /// Only a virtual display adapter is present.
-    VirtualAdapter { device: String },
-    /// The open-source NVIDIA driver is bound.
-    OpenNvidia { device: String },
-    /// A platform camera pipeline cannot be checked from this observation.
-    PlatformPipeline { device: String },
-    /// No hardware of this class was found.
+    DriverMissing {
+        devices: Vec<String>,
+    },
+    VirtualAdapter {
+        device: String,
+    },
+    OpenNvidia {
+        device: String,
+    },
+    PlatformPipeline {
+        device: String,
+    },
     NotDetected,
-    /// A display connector exists but nothing is connected.
     DisplayDisconnected,
-    /// A display is connected but not active.
-    DisplayInactive { device: String },
+    DisplayInactive {
+        device: String,
+    },
     DisplaysActive {
         internal: usize,
         external: usize,
         devices: Vec<String>,
     },
-    /// A sound card has no playback device.
-    NoPlayback { device: String },
-    /// A sound card has no capture device.
-    NoCapture { device: String },
-    /// A reader needs a reader-specific driver this observation cannot check.
-    FingerprintUnverified { device: String },
-    /// The kernel advertises no suspend state.
+    NoPlayback {
+        device: String,
+    },
+    NoCapture {
+        device: String,
+    },
+    FingerprintUnverified {
+        device: String,
+    },
     SuspendUnavailable,
-    /// A battery is present.
     Battery {
         device: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -342,28 +299,22 @@ pub enum SupportReason {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         health: Option<u32>,
     },
-    /// The computer has mains power and no battery.
     AcOnly,
-    /// ACPI firmware tables are available.
-    AcpiTables { tables: usize },
-    /// The computer booted in UEFI mode.
+    AcpiTables {
+        tables: usize,
+    },
     Uefi {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secure_boot: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tpm: Option<String>,
     },
-    /// The computer did not boot in UEFI mode.
     LegacyBoot,
-    /// The startup mode could not be read.
     StartupUnknown,
-    /// The image was built for this architecture, which its boot chain needs.
     StartsHere {
         architecture: String,
-        /// The board profile the image carries, if any.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         board: Option<String>,
-        /// The device tree of that board profile, if any.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         devicetree: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -371,75 +322,60 @@ pub enum SupportReason {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tpm: Option<String>,
     },
-    /// The image was built for a different architecture than this computer.
     OtherArchitecture {
         architecture: String,
         running: String,
     },
-    /// A board profile needs its own device tree and the image has none.
-    BoardWithoutDevicetree { board: String, architecture: String },
-    /// Input devices were found.
-    InputDevices { count: usize },
-    /// Pointing devices were found without a built-in keyboard.
+    BoardWithoutDevicetree {
+        board: String,
+        architecture: String,
+    },
+    InputDevices {
+        count: usize,
+    },
     NoKeyboard,
 }
 
-/// What the person can do about a limitation or an absent component.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Remedy {
-    /// Check again on the destination computer itself.
     RunOnDestination,
-    /// Connect hardware of this component's class.
     Connect,
-    /// Check the driver after installation.
     CheckDriver,
-    /// Sign in with a password instead.
     PasswordSignIn,
     ExternalCamera,
     ExternalKeyboard,
-    /// Check power settings after installation.
     PowerSettings,
-    /// Check display settings after installation.
     DisplaySettings,
-    /// Start the installer in UEFI mode.
     UefiBoot,
-    /// Check the power adapter.
     PowerAdapter,
 }
 
-/// What the report says about one component.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComponentSupport {
     pub kind: ComponentKind,
-    /// The observed hardware name, when the observation named one. Empty for
-    /// `NotDetected`; the view names the component class itself from its kind.
+    /// The observed hardware name, empty for `NotDetected`; the view names the class itself.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
     pub present: bool,
     pub state: SupportState,
-    /// What the observation can establish for the selected release.
     pub applicability: Applicability,
-    /// The typed outcome the view localizes.
     pub reason: SupportReason,
-    /// The kernel, driver and firmware facts the outcome rests on.
     pub evidence: Vec<Evidence>,
-    /// What the person can do about a limitation or an absent component.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remedy: Option<Remedy>,
 }
 
 impl ComponentSupport {
-    /// Whether the person needs to read this without opening another view.
+    /// Whether this needs reading without opening another view.
     #[must_use]
     pub fn needs_attention(&self) -> bool {
         self.state != SupportState::Supported
             && (self.present || self.state == SupportState::Unsupported)
     }
 
-    /// A missing essential component, rather than an optional or unverified
-    /// one, blocks installation.
+    /// A missing essential component blocks installation.
     #[must_use]
     pub fn blocks_install(&self) -> bool {
         self.kind.critical() && self.state == SupportState::Unsupported
@@ -573,7 +509,6 @@ fn bounded(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 
-/// Counts for the compact summary above the component rows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SupportSummary {
     pub supported: usize,
@@ -583,23 +518,21 @@ pub struct SupportSummary {
     pub blocking: usize,
 }
 
-/// The compatibility facts for one destination.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SupportReport {
     pub schema: String,
     pub identity: DestinationIdentity,
-    /// The running kernel or OS build the results apply to.
     pub kernel: Option<String>,
-    /// The architecture the observation ran on. A report without it cannot
-    /// tell whether a medium prepared elsewhere will start on that computer.
+    /// A report without it cannot tell whether a medium prepared elsewhere starts on that
+    /// computer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub architecture: Option<String>,
     pub components: Vec<ComponentSupport>,
 }
 
 impl SupportReport {
-    /// Read this computer without privilege or mutation.
+    /// Reads this computer without privilege or mutation.
     #[must_use]
     pub fn probe() -> Self {
         #[cfg(target_os = "linux")]
@@ -616,13 +549,10 @@ impl SupportReport {
         }
     }
 
-    /// A model named for another computer. It carries no component results.
     pub fn declared_model(manufacturer: &str, model: &str, variant: &str) -> Result<Self, String> {
         Self::declared_model_with(manufacturer, model, variant, None, None)
     }
 
-    /// A model named for another computer, with the optional board and SKU
-    /// that distinguish otherwise identical model names.
     pub fn declared_model_with(
         manufacturer: &str,
         model: &str,
@@ -630,9 +560,8 @@ impl SupportReport {
         board: Option<&str>,
         sku: Option<&str>,
     ) -> Result<Self, String> {
-        // An omitted field is absent, not an empty value: `validate` refuses
-        // an empty string, and only a typed variant, board or SKU makes the
-        // model specific.
+        // An omitted field is absent, not empty: `validate` refuses an empty string, and only a
+        // typed variant, board or SKU makes the model specific.
         let identity = DestinationIdentity {
             source: ReportSource::DeclaredModel,
             manufacturer: trimmed(Some(manufacturer)).map(str::to_string),
@@ -658,11 +587,10 @@ impl SupportReport {
         Ok(report)
     }
 
-    /// Import a report produced by this probe on another computer.
-    ///
-    /// The bytes are unsigned evidence the person supplied, not installation
-    /// authority: they are relabelled as imported, validated for shape and
-    /// bounds, and every mutation still re-checks the destination itself.
+    /// Imports a report this probe produced on another computer.
+    /// The bytes are unsigned evidence the person supplied, not installation authority: they are
+    /// relabelled as imported, validated for shape and bounds, and every mutation re-checks the
+    /// destination itself.
     pub fn import_json(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > MAX_REPORT_BYTES {
             return Err("The hardware report is too large.".into());
@@ -677,13 +605,11 @@ impl SupportReport {
         Ok(report)
     }
 
-    /// Serialize a report so it can be carried to the preparing computer.
+    /// Serializes a report for carrying to the preparing computer.
     pub fn to_json(&self) -> Result<Vec<u8>, String> {
         serde_json::to_vec_pretty(self).map_err(|error| error.to_string())
     }
 
-    /// Validate the report before it is shown or imported.
-    /// # Errors
     /// Returns the first schema or field that cannot be trusted.
     pub fn validate(&self) -> Result<(), String> {
         if self.schema != REPORT_SCHEMA {
@@ -790,14 +716,13 @@ struct RawReport {
     tpm: Option<String>,
     disks: Vec<RawDisk>,
     inputs: Vec<String>,
-    /// Hardware-accelerated virtualization the kernel offered this process.
+    /// Hardware-accelerated virtualization the kernel offers.
     virtualization: Vec<String>,
-    /// The board profile the running image carries, if it carries one.
+    /// The board profile the running image carries.
     board: Option<RawBoard>,
 }
 
-/// The image's own record of the board it was built for, written by the image
-/// builder at `/usr/lib/tilo/hardware-profile.json`.
+/// The board the image was built for, from `/usr/lib/tilo/hardware-profile.json`.
 #[derive(Clone, Debug)]
 struct RawBoard {
     id: String,

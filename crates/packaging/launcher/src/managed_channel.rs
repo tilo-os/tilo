@@ -22,15 +22,9 @@ use std::{
 #[cfg(test)]
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-/// Installed canonical owner callback. Success means the exact actual PID/start
-/// binding is durable; any error after spawn is an uncertain launch, never a retry.
+/// Installed canonical owner callback.
 pub trait ManagedProcessAuthority {
     /// Durably bind the exact admitted agent process.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the binding cannot be made durable; the launch is then
-    /// uncertain.
     fn bind_process(&self, process: &VerifiedManagedProcess) -> Result<(), String>;
 }
 struct Executable {
@@ -39,9 +33,9 @@ struct Executable {
     /// Last full digest match and the exact file metadata it covered.
     hashed: std::sync::Mutex<Option<(std::time::Instant, [i64; 7])>>,
 }
-/// Longest interval a digest match of the executing image is reused while
-/// its inode, length, mtime and ctime are unchanged (an executing image
-/// cannot be written on Linux: ETXTBSY; any write or chmod changes ctime).
+/// Longest interval a digest match of the executing image is reused while its inode, length, mtime and
+/// ctime are unchanged (an executing image cannot be written on Linux: ETXTBSY; any write or chmod
+/// changes ctime).
 const EXECUTABLE_RECHECK: Duration = Duration::from_secs(2);
 fn image_stamp(metadata: &std::fs::Metadata) -> [i64; 7] {
     [
@@ -75,8 +69,7 @@ impl Executable {
         })
     }
     fn verify(&self, pid: u32) -> Result<(), String> {
-        // Opening /proc/PID/exe names the kernel's executable object, not a
-        // process-supplied pathname. Retained file keeps the installed inode live.
+        // Opening /proc/PID/exe names the kernel's executable object, not a process-supplied pathname.
         let path = format!("/proc/{pid}/exe");
         let mut actual = File::open(path).map_err(|e| format!("executing image: {e}"))?;
         let expected = self.file.metadata().map_err(|e| e.to_string())?;
@@ -110,9 +103,7 @@ impl Executable {
         if let Ok(mut hashed) = self.hashed.lock() {
             *hashed = (image_stamp(&after) == stamp).then_some((began, stamp));
         }
-        // exec preserves PID/start and leaves an already-open executable FD
-        // naming the prior image. Recheck the current kernel object after the
-        // digest read; this remains point-in-time evidence, refreshed per use.
+        // exec preserves PID/start and leaves an already-open executable FD naming the prior image.
         recheck_executable_object(pid, &expected)
     }
 }
@@ -182,17 +173,12 @@ pub struct PendingManagedConnection {
     channel_id: String,
 }
 
-/// Cancellation of exactly one connected startup descriptor. This cannot
-/// read/write protocol data, identify a process, or grant launch authority.
-/// Shutting it down also wakes an in-flight blocking descriptor challenge.
+/// Cancellation of exactly one connected startup descriptor.
 pub struct ManagedConnectionCancellation(UnixStream);
 
 impl ManagedConnectionCancellation {
-    /// Interrupt this connection only; the owning launcher must still stop
-    /// its actual children and retire canonical session custody.
-    ///
-    /// # Errors
-    /// Reports a kernel failure to shut down the retained connected socket.
+    /// Interrupt this connection only; the owning launcher must still stop its actual children and
+    /// retire canonical session custody.
     pub fn cancel(&self) -> std::io::Result<()> {
         self.0.shutdown(std::net::Shutdown::Both)
     }
@@ -204,16 +190,10 @@ impl PendingManagedConnection {
     }
 
     /// Retain cancellation before moving the one-use connection into a worker.
-    /// No protocol endpoint or process authority is exposed by this handle.
     pub fn cancellation(&self) -> std::io::Result<ManagedConnectionCancellation> {
         self.socket.try_clone().map(ManagedConnectionCancellation)
     }
     /// Allocate this attempt's one connected descriptor pair and challenge.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when a channel was already allocated, the permit or package no
-    /// longer verifies, or the socket cannot be configured.
     pub fn pair(permit: &mut VerifiedLaunchAuthority) -> Result<(Self, UnixStream), String> {
         if permit.channel_id.is_some() {
             return Err("managed channel already allocated for this attempt".into());
@@ -254,10 +234,6 @@ impl PendingManagedConnection {
         ))
     }
     /// Admit the agent and wrap its proof with the exact admitted socket.
-    ///
-    /// # Errors
-    ///
-    /// As [`PendingManagedConnection::admit`].
     pub fn admit_connection(
         self,
         supervisor: &VerifiedManagedSupervisor,
@@ -266,13 +242,7 @@ impl PendingManagedConnection {
         let (process, stream) = self.admit(supervisor, authority)?;
         Ok(AdmittedManagedConnection { process, stream })
     }
-    /// Authenticate the kernel sender, verify its executable and ancestry, and
-    /// durably bind it once.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when custody, the challenge, the sender's identity or executable,
-    /// or the durable binding fails; after spawn such a failure is an uncertain launch.
+    /// Authenticate the kernel sender, verify its executable and ancestry, and durably bind it once.
     pub fn admit(
         mut self,
         supervisor: &VerifiedManagedSupervisor,
@@ -368,7 +338,6 @@ impl PendingManagedConnection {
     }
 }
 // All installed SCM_RIGHTS descriptors become owned before any validation can return.
-// Holding the chunk keeps them close-on-exec until RAII closes them on every path.
 struct CredentialChunk {
     count: usize,
     credential: Option<libc::ucred>,
@@ -381,9 +350,8 @@ fn receive_credential_chunk(
     answer: &mut [u8],
 ) -> Result<CredentialChunk, String> {
     const WIDTH: usize = std::mem::size_of::<libc::c_int>();
-    // glibc types the control-message lengths as `size_t`, musl as 32-bit
-    // `socklen_t`; a message that fits is under both, so they are read as
-    // `usize` and handed back in the field's own type.
+    // glibc types the control-message lengths as `size_t`, musl as 32-bit `socklen_t`; a message that
+    // fits is under both, so they are read as `usize` and handed back in the field's own type.
     fn platform_length<T: TryInto<usize>>(value: T) -> usize {
         value.try_into().ok().unwrap_or(usize::MAX)
     }
@@ -416,8 +384,7 @@ fn receive_credential_chunk(
         invalid: false,
         truncated: msg.msg_flags & (libc::MSG_CTRUNC | libc::MSG_TRUNC) != 0,
     };
-    // recvmsg supplies kernel-validated headers. Bound each payload defensively;
-    // never stop after a rejected credential before owning later rights headers.
+    // recvmsg supplies kernel-validated headers.
     let used = platform_length(msg.msg_controllen).min(std::mem::size_of_val(&control));
     unsafe {
         let mut header = libc::CMSG_FIRSTHDR(&raw const msg);

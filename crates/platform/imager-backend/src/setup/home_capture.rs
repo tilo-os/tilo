@@ -1,5 +1,5 @@
-//! Privileged custody for an approved raw Home epoch. The app receives only
-//! an operation/status; snapshot paths and descriptors remain inside the broker.
+//! Privileged custody for an approved raw Home epoch: the app receives only an operation and status,
+//! and snapshot paths and descriptors stay inside the broker.
 use super::{
     migration::PinnedDirectory, migration_durability::readable_directory,
     migration_store::NativePath,
@@ -88,7 +88,6 @@ fn operation(value: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Absent provider support is distinct from substituted packaged evidence.
 pub fn provider_supported() -> io::Result<bool> {
     match runtime::TrustedCaptureService::native() {
         Ok(_) => Ok(true),
@@ -110,8 +109,8 @@ pub(in crate::setup) fn connect_rpc(
     RootSession::connect(rendezvous, directory, caller, operation, cancel)
 }
 
-/// Original scope consent; the privileged helper re-attests every field. Raw
-/// paths are private native input, never a replicated UI or public action result.
+/// Original scope consent; raw paths are private native input, never a replicated UI or public action
+/// result. The privileged helper re-attests every field.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "GrantWire")]
 pub struct Grant {
@@ -184,7 +183,6 @@ impl Grant {
         operation(operation_id)?;
         let pin = PinnedDirectory::open_absolute(home)?;
         let metadata = pin.file.metadata()?;
-        // SAFETY: getuid reads process credentials without changing them.
         let caller = rustix::process::getuid().as_raw();
         if metadata.uid() != caller {
             return Err(failure("capture home must belong to its original user"));
@@ -288,8 +286,8 @@ struct Resolved {
     relative: PathBuf,
 }
 
-/// The canonical launcher worker must own and reap all export descendants.
-/// An ordinary app request cannot supply an implementation of this interface.
+/// The launcher worker owns and reaps all export descendants; an app request cannot supply an
+/// implementation of this interface.
 pub trait Worker: Send {
     fn cancel_and_reap(&mut self) -> io::Result<()>;
 }
@@ -307,7 +305,6 @@ impl Broker {
         caller: u32,
         cancel: &AtomicBool,
     ) -> io::Result<Self> {
-        // SAFETY: only the declared elevated helper may own capture custody.
         if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
@@ -320,9 +317,8 @@ impl Broker {
         }
         Self::restore(store, record, caller, cancel)
     }
-    /// Cleanup remains possible after the old HOME disappears. The protected
-    /// record, caller and exact snapshot identity authorize deletion, not a fresh
-    /// resolution of a no-longer-present live source.
+    /// Cleanup remains possible after the old HOME disappears: the protected record, caller and exact
+    /// snapshot identity authorize deletion, not a fresh resolution of a missing source.
     pub(in crate::setup) fn release_existing(grant: &Grant, caller: u32) -> io::Result<Status> {
         // SAFETY: observes process credentials; does not confer authority.
         if rustix::process::geteuid().as_raw() != 0 {
@@ -347,14 +343,13 @@ impl Broker {
         })
     }
 
-    /// Called only by the declared elevated helper. The fixed store must be on
-    /// the same filesystem; no hidden directory is created in the user's Home.
+    /// Called only by the declared elevated helper; the fixed store must be on the same filesystem and
+    /// no hidden directory is created in the user's Home.
     pub(in crate::setup) fn capture(
         grant: Grant,
         caller: u32,
         cancel: &AtomicBool,
     ) -> io::Result<Self> {
-        // SAFETY: reads the helper's effective identity.
         if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
@@ -408,7 +403,6 @@ impl Broker {
             cancel,
         )?;
         broker.record.set_ready(lease.receipt())?;
-        // Hold native cleanup custody even if durable Ready publication fails.
         broker.lease = Some(lease);
         broker.store.save(&broker.record, false)?;
         Ok(broker)
@@ -429,8 +423,8 @@ impl Broker {
         };
         match record.state {
             State::Intended => {
-                // No readiness was acknowledged. Delete only the snapshot whose
-                // provenance the protected pre-ioctl intent admits.
+                // No readiness was acknowledged: delete only the snapshot whose provenance the
+                // protected pre-ioctl intent admits.
                 broker.store.recover_intended(&record)?;
                 record.state = State::Released;
                 broker.store.save(&record, false)?;
@@ -476,8 +470,8 @@ impl Broker {
         }
     }
 
-    /// Source identity and the only permitted omission come from protected
-    /// broker custody, never from a caller-authored provider command.
+    /// Source identity and the only permitted omission come from protected broker custody, never a
+    /// caller-authored provider command.
     fn worker_request(&self, command: worker::Command) -> io::Result<zeroize::Zeroizing<Vec<u8>>> {
         let request = worker::Request {
             schema: worker::WORKER_PROTOCOL,
@@ -501,8 +495,8 @@ impl Broker {
             .validate(cancel)
     }
 
-    /// Only a running admitted command may extend the same unexpired epoch.
-    /// Protected publication precedes native adoption for crash restoration.
+    /// Only a running admitted command extends the same unexpired epoch, and protected publication
+    /// precedes native adoption for crash restoration.
     fn renew_active(&mut self, cancel: &AtomicBool) -> io::Result<()> {
         self.validate(cancel)?;
         let lease = self
@@ -535,8 +529,8 @@ impl Broker {
             .commit_renewal(&renewal, cancel)
     }
 
-    /// The export target must not contain, or be contained in, the original
-    /// live HOME. Snapshot device numbers cannot establish this distinction.
+    /// The export target must not contain, or be contained in, the original live HOME; device numbers
+    /// cannot establish this.
     pub fn validate_output(&self, output: &File) -> io::Result<()> {
         use std::os::fd::AsRawFd;
         let approved = self
@@ -557,8 +551,8 @@ impl Broker {
             {
                 return Err(failure("capture output is inside original home"));
             }
-            // This trusted broker examines ancestry of the held grant only;
-            // it does not export a parent handle or its contents to an app.
+            // This trusted broker examines ancestry of the held grant only; it exports no parent
+            // handle or contents to an app.
             let parent = File::open(format!("/proc/self/fd/{}/..", current.as_raw_fd()))?;
             let parent_metadata = parent.metadata()?;
             if metadata.dev() == parent_metadata.dev() && metadata.ino() == parent_metadata.ino() {
@@ -599,8 +593,8 @@ impl Broker {
 
 impl Drop for Broker {
     fn drop(&mut self) {
-        // Preserve the lease if a worker cannot be proved stopped. Its protected
-        // record remains recoverable; never delete beneath an un-reaped writer.
+        // Preserve the lease if a worker cannot be proved stopped: its protected record stays
+        // recoverable, and nothing is deleted beneath an unreaped writer.
         if let Some(worker) = self.worker.as_mut()
             && worker.cancel_and_reap().is_err()
         {
@@ -625,7 +619,6 @@ pub use store::{
     review_uncommitted_original_applications_selection, review_uncommitted_original_selection,
 };
 
-// Retained backing proof for an already admitted preparation directory.
 pub use store::BackingWitness;
 
 pub fn installed_copy_retirement_pending() -> bool {

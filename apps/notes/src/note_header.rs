@@ -7,6 +7,7 @@
 //! toolkit. A press invokes the effect that browses the tag or opens the
 //! note, the same operation a command-palette entry does.
 
+use crate::metadata::CATALOG;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -212,14 +213,14 @@ impl NoteHeader {
             for tag in &self.tags {
                 let mut chip = Chip::new(&tag.name)
                     .with_id(format!("notes.tag-chip:{}", tag.id))
-                    .with_accessible_name(ui::i18n::I18nManager::format(
+                    .with_accessible_name(crate::metadata::CATALOG.t_args(
                         "notes-a11y-tag",
                         &[("tag", ui::i18n::ArgValue::from(tag.name.clone()))],
                     ))
-                    .tooltip(ui::i18n::I18nManager::format(
-                        "notes-surface-tag",
-                        &[("tag", tag.name.clone().into())],
-                    ));
+                    .tooltip(
+                        crate::metadata::CATALOG
+                            .t_args("notes-surface-tag", &[("tag", tag.name.clone().into())]),
+                    );
                 if let Some(open) = self.effect(&NotesEffect::OpenTag { tag: tag.id }) {
                     chip = chip.on_action(open);
                 }
@@ -247,7 +248,7 @@ impl NoteHeader {
                 .with_no_padding()
                 .with_gap(rhythm.related);
             links = links.push(Box::new(
-                Text::new(&ui::i18n!("notes-linked-from"))
+                Text::new(&CATALOG.t("notes-linked-from"))
                     .with_id("notes.linked-from")
                     .with_role(TextRole::Subheading)
                     .dimmed(),
@@ -256,11 +257,11 @@ impl NoteHeader {
             for backlink in &self.backlinks {
                 let mut chip = Chip::new(backlink_label(backlink))
                     .with_id(format!("notes.backlink-chip:{}", backlink.page))
-                    .with_accessible_name(ui::i18n::I18nManager::format(
+                    .with_accessible_name(crate::metadata::CATALOG.t_args(
                         "notes-a11y-backlink",
                         &[("title", ui::i18n::ArgValue::from(backlink.title.clone()))],
                     ))
-                    .tooltip(ui::i18n::I18nManager::format(
+                    .tooltip(crate::metadata::CATALOG.t_args(
                         "notes-surface-backlink",
                         &[("title", backlink.title.clone().into())],
                     ));

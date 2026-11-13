@@ -4,57 +4,10 @@
 
 use super::Desktop;
 
-/// Console, where an agent's card is.
-const CONSOLE_APP: &str = "so.tilo.console";
-/// The action key of a notice's choice that opens the card of the agent of the client after it.
-const AGENT_CARD_ACTION: &str = "agent-card:";
+use tilo_desktop::here::{AGENT_CARD_ACTION, finished_notice};
+
 /// How long a finished agent's notice waits for the history to say what its run did.
 const FINISHED_READ_MS: u64 = 3_000;
-
-/// The notice that `agent` finished: what its run changed and where, when `summary` says
-/// ("Claude Code finished: 4 changes in Storefront"), else that it finished; its last line under
-/// it, and its card one choice away.
-fn finished_notice(
-    agent: &tilo_desktop::here::AgentFinished,
-    summary: Option<&tilo_desktop::here::RunSummary>,
-) -> tilo_desktop_surface::notifications::Notification {
-    use tilo_desktop_surface::i18n::{t, t_args};
-    let name = || agent.label.clone().into();
-    let title = match summary {
-        Some(tilo_desktop::here::RunSummary {
-            changes,
-            workspace: Some(workspace),
-        }) => t_args(
-            "workspace-notice-agent-finished-in",
-            &[
-                ("agent", name()),
-                ("count", (*changes).into()),
-                ("workspace", workspace.clone().into()),
-            ],
-        ),
-        Some(tilo_desktop::here::RunSummary {
-            changes,
-            workspace: None,
-        }) => t_args(
-            "workspace-notice-agent-finished-changes",
-            &[("agent", name()), ("count", (*changes).into())],
-        ),
-        None => t_args("workspace-notice-agent-finished", &[("agent", name())]),
-    };
-    let client = ui::presence::agent_client(&agent.label);
-    let mut notice = tilo_desktop_surface::notifications::Notification::new(
-        title,
-        agent.last.clone().unwrap_or_default(),
-    )
-    .with_from(agent.label.clone(), agent.publisher.clone())
-    .with_app_id(CONSOLE_APP)
-    .with_app_name("Console");
-    notice.actions = vec![(
-        format!("{AGENT_CARD_ACTION}{client}"),
-        t("workspace-notice-agent-card"),
-    )];
-    notice
-}
 
 impl Desktop {
     /// An agent finishing is news this person did not cause: a notice says
@@ -124,8 +77,26 @@ impl Desktop {
                         }
                         summary
                     });
-            self.post(finished_notice(&agent, summary.as_ref()));
+            let notice =
+                finished_notice(&agent, summary.as_ref(), &mut self.told_runs.borrow_mut());
+            if let Some(notice) = notice {
+                self.post(notice);
+            }
         }
+    }
+
+    /// When a notice of an agent finishing is next due, in unix ms: an agent gone past the
+    /// reconnect's grace, or a run's history read past its wait. The page wakes for it: it draws
+    /// only when something changes, and an agent that stays gone changes nothing.
+    pub(super) fn agent_notices_due_ms(&self) -> Option<u64> {
+        let reads = self
+            .finishing
+            .borrow()
+            .iter()
+            .map(|(_, _, asked_ms)| asked_ms.saturating_add(FINISHED_READ_MS))
+            .min();
+        let left = self.here.borrow().next_agent_finished_ms();
+        reads.into_iter().chain(left).min()
     }
 
     /// Carry out what the person chose on a notice the page posted itself:

@@ -5,21 +5,7 @@
 
 //! Offscreen shots for the `DataTable` primitive's built-in draggable
 //! scrollbar.
-//!
-//! A 40-row table is put into internal-virtualization mode (a 300-px body
-//! viewport over ~960 px of rows) so the built-in vertical scrollbar is
-//! live, then two frames are rendered:
-//!   1. `data_table-top.png`    — `scroll_y = 0`: the thumb sits at the top.
-//!   2. `data_table-bottom.png` — `scroll_y = max`: the thumb sits at the
-//!      bottom, proving it tracks the offset.
-//!
-//! The example also *asserts* the thumb rect matches the offset (top thumb
-//! at the track top, bottom thumb at the track bottom) so it doubles as a
-//! self-checking geometry probe — a green run means "the thumb is where the
-//! offset says".
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- data_table`
-//! Out:  `$DATA_TABLE_SHOTS_OUT` (default `/tmp/data_table_shots`)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -33,6 +19,7 @@ use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::{TextKind, TextRenderer};
 use tilo_ui::theme::Theme;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::Widget;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 
@@ -147,7 +134,7 @@ fn shoot(table: &mut DataTable<Proc>, scroll_y: f32, out: &Path) -> Option<Rect>
         Affine::IDENTITY,
         &clip,
     );
-    table.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    table.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     scene.pop_layer();
 
     let mut r = OffscreenRenderer::new(WIDTH, h);

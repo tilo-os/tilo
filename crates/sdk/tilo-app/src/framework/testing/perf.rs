@@ -278,9 +278,12 @@ pub fn start<A: ResourceApp>(launches: usize) -> Result<Report, LaunchError> {
 /// frame as its window would, without a window or GPU. The profile is a
 /// private directory the first, unmeasured launch makes, so each measured
 /// launch opens an existing record, as a second launch does; the process's
-/// environment points nowhere real (no display, bus or runtime). The
-/// scratch directory is in memory where the system has one, as a test's
-/// profile is:
+/// environment points nowhere real (no display, bus or runtime), but for the
+/// catalog this process verified ([`ui_core::font_catalog::OVERRIDE_ENV`]): a
+/// program's own compiled-in path is the build directory it was made in, and a
+/// run of an existing build carries its units without the catalog published
+/// beside them. The scratch directory is in memory where the system has one,
+/// as a test's profile is:
 /// each launch syncs the records it opens and drains its store on exit, and
 /// on a shared disk those syncs wait for every other writer, seconds a
 /// launch on a loaded machine, none of it inside the measured span.
@@ -297,6 +300,7 @@ pub fn start<A: ResourceApp>(launches: usize) -> Result<Report, LaunchError> {
 pub fn cold_start(label: &str, exe: &std::path::Path, launches: usize) -> ColdStart {
     let scratch = crate::framework::headless::profile_directory().expect("a scratch directory");
     let root = scratch.path();
+    let catalog = ui_core::font_catalog::fixture_catalog();
     let launch = || {
         let output = std::process::Command::new(exe)
             .arg("--first-frame")
@@ -312,6 +316,7 @@ pub fn cold_start(label: &str, exe: &std::path::Path, launches: usize) -> ColdSt
             .env("XDG_RUNTIME_DIR", root.join("run"))
             .env("TILO_STARTUP_METRICS_PATH", root.join("metrics.json"))
             .env("LANG", "en_US.UTF-8")
+            .env(ui_core::font_catalog::OVERRIDE_ENV, catalog.root())
             .output()
             .expect("the app binary runs");
         assert!(

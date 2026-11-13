@@ -108,17 +108,16 @@ fn a_peers_window_arrives_as_its_app_without_clobbering_local_instances() {
             },
         );
         match &tab.tile {
-            TileContent::PeerWindow {
+            TileContent::LocalApp {
                 app_id,
                 label,
                 note,
-                ..
             } => {
                 assert_eq!(app_id, APP);
                 assert_eq!(label, "Word Processor", "the peer's own name for it");
                 assert!(note.is_empty(), "nobody has answered for it yet");
             }
-            other => panic!("expected a peer window, got {other:?}"),
+            other => panic!("expected a window to open here, got {other:?}"),
         }
     }
     // Phase `a_local_instance_is_not_clobbered_by_the_peers_own_surface`.
@@ -173,7 +172,7 @@ fn a_peers_window_arrives_as_its_app_without_clobbering_local_instances() {
             },
         );
         match &tab.tile {
-            TileContent::PeerWindow { app_id, .. } => assert_eq!(app_id, "so.tilo.terminal"),
+            TileContent::LocalApp { app_id, .. } => assert_eq!(app_id, "so.tilo.terminal"),
             other => panic!("expected the new app, got {other:?}"),
         }
         assert!(changed);

@@ -29,7 +29,7 @@ and nobody configures keys, ports or endpoints.
 | --- | --- | --- |
 | Helper | `crates/system/device-vpn` (`tilo-device-vpn`, root system service) | TUN devices, routes and policy rules, NetworkManager DNS for the tunnel, IPv4 forwarding, the nftables kill switch and masquerade |
 | Tunnel | same crate, feature `tunnel` | the `tilo-device-vpn/1` ALPN: handshake, exit authorisation, IP packets as QUIC datagrams, MTU, the exit's DNS relay |
-| Controller | `crates/session/session/src/mount/vpn.rs` | the person's choices, the client and exit state machines, the status Settings and quick settings show, the actions |
+| Controller | `crates/session/session/src/vpn.rs` | the person's choices, the client and exit state machines, the status Settings and quick settings show, the actions |
 | Choices and status | `settings_store::device_vpn` | the settings leaves Settings writes and the shell follows; the status file the shell publishes |
 
 ### The helper
@@ -38,7 +38,7 @@ A socket-activated root service (`tilo-device-vpn.socket`), the same shape as
 the NTFS mount service: one JSON request per connection on
 `/run/tilo-device-vpn/control.sock`, decided per connection from the kernel's
 account of the caller. Only the compositor of the person at the seat may ask
-(the seat's active uid, `/usr/bin/shell` read through a pidfd-pinned
+(the seat's active uid, `/usr/bin/tilo-session` read through a pidfd-pinned
 `/proc/<pid>/exe`, sharing the service's user and mount namespaces, which no
 sandboxed app does). Every other caller is refused before its request is read.
 

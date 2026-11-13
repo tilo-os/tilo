@@ -1,11 +1,10 @@
-//! Collections: naming and saving albums, offering only the controls a
-//! view can act on, and what collection views show and act on.
+//! Collections: naming and saving albums, offering only the controls a view can act on, and what
+//! collection views show and act on.
 
 use super::*;
 
 #[test]
 fn a_new_album_is_named_by_typing_and_saves_without_a_conflict() {
-    // A window opens on the Timeline, not an empty single-photo viewer.
     assert!(PhotosApp::new().state().library_mode);
 
     let mut app = test_app();
@@ -43,7 +42,6 @@ fn a_new_album_is_named_by_typing_and_saves_without_a_conflict() {
     let library = crate::test_doc::library(&doc);
     assert!(library.albums.values().any(|album| album.name == "Trip"));
 
-    // The new album, still empty, says how to fill it.
     let (title, _) = app.state().library_empty_state_text();
     assert_eq!(title, tr("photos-album-empty-title"));
     app.state().show_library();
@@ -79,7 +77,6 @@ fn people_offers_to_delete_face_data_only_when_there_is_some() {
     app.state().refresh_people_controls();
     assert!(deletes(&app));
 
-    // Places with no located photo has no map, so no list or zoom controls.
     let app = test_app();
     app.state().show_places_for_shot();
     assert!(app.state().places_items.is_empty());

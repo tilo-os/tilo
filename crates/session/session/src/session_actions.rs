@@ -28,7 +28,7 @@ use tilo_actions::remote::session_actions as wire;
 use tilo_actions::remote::{Pending, pending};
 use tilo_actions::{ActionDescriptor, ActionFailure};
 use tilo_broker_core::steps::{HostStepOutcome, HostStepRequest, HostStepServices};
-use tilo_lock::RwLockRecover as _;
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 use crate::platform::steps::SessionSteps;
 
@@ -39,6 +39,9 @@ pub(crate) struct SessionActions {
     /// Read on the loop and written here, so a catalogue built on the broker's own thread
     /// never waits on the session, and never reads the arrangement from off its thread.
     rows: std::sync::RwLock<Vec<tilo_actions::door::PlacedAction>>,
+    /// Where the door stood when the rows were last read
+    /// ([`tilo_session_core::door::Doors::revision`]).
+    read_at: std::sync::Mutex<Vec<(usize, u64)>>,
 }
 
 impl SessionActions {
@@ -47,7 +50,17 @@ impl SessionActions {
         Self {
             doors,
             rows: std::sync::RwLock::default(),
+            read_at: std::sync::Mutex::default(),
         }
+    }
+
+    /// Whether the door moved since its rows were last read: equal revisions offer the same rows,
+    /// so a pass reads them again only once what a surface offers moved.
+    pub(crate) fn door_moved(&self, revision: Vec<(usize, u64)>) -> bool {
+        let mut read_at = self.read_at.lock_recover();
+        let moved = *read_at != revision;
+        *read_at = revision;
+        moved
     }
 
     /// Publish the rows the session's own door offers now, as its pass read them: what the
@@ -110,13 +123,14 @@ impl HostStepServices for SessionActions {
             request.address.clone(),
             argument,
             beside,
+            request.run.cloned(),
             done,
         );
         Ok(asked.map(|ran| {
-            ran.map_err(|reason| {
+            ran.map_err(|error| {
                 Box::new(ActionFailure {
-                    code: "session_step_refused".into(),
-                    message: reason,
+                    code: error.code().to_owned(),
+                    message: error.to_string(),
                     details: None,
                     retryable: false,
                 })

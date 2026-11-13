@@ -2,14 +2,10 @@
 
 use std::fmt::Write as _;
 
-/// The `DAV:` namespace.
 pub const DAV: &str = "DAV:";
-/// The `CalDAV` namespace (RFC 4791).
 pub const CALDAV: &str = "urn:ietf:params:xml:ns:caldav";
-/// The `CardDAV` namespace (RFC 6352).
 pub const CARDDAV: &str = "urn:ietf:params:xml:ns:carddav";
 
-/// A property name: namespace URI plus local name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PropName {
     pub namespace: &'static str,
@@ -17,7 +13,6 @@ pub struct PropName {
 }
 
 impl PropName {
-    /// A `DAV:` property.
     pub const fn dav(name: &'static str) -> Self {
         Self {
             namespace: DAV,
@@ -25,7 +20,6 @@ impl PropName {
         }
     }
 
-    /// A `CalDAV` property.
     pub const fn caldav(name: &'static str) -> Self {
         Self {
             namespace: CALDAV,
@@ -34,7 +28,6 @@ impl PropName {
     }
 }
 
-/// Properties the Tilo clients request.
 pub mod props {
     use super::PropName;
 

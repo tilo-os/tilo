@@ -15,19 +15,6 @@
 //! installed ([`observe`], which a compositor's audit lists), and, on a
 //! thread a test marked with [`forbid_strictly_on_this_thread`], as a panic,
 //! so the test names the caller.
-//!
-//! Work such a thread would have waited for is done for it elsewhere (a
-//! store's own thread opening or reading a key) while it is told "not yet".
-//! The thread's wake ([`Forbidden::waking`], [`decline_on_this_thread`]:
-//! for a frame loop, its redraw) is how it hears that the work is done, so
-//! an idle thread asks again without polling; [`wake`] hands it to whoever
-//! does that work.
-//!
-//! A commit wait ([`refused_commit`]: waiting for another thread's fsync)
-//! is the one a frame loop can never bound, and the one a caller can always
-//! avoid by asking durability instead. A test of code that still reads the
-//! disk on its thread marks it with [`forbid_commit_waits_strictly`]: reads
-//! are reported as usual, and only a commit wait fails the test.
 
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
@@ -59,16 +46,12 @@ static OBSERVER: OnceLock<fn(&str)> = OnceLock::new();
 #[must_use = "waits are forbidden only while the guard lives"]
 pub struct Forbidden {
     previous: Rule,
-    /// The wake this guard replaced, when it set one.
     previous_wake: Replaced,
     _thread: PhantomData<*const ()>,
 }
 
-/// What a guard put back on its thread's wake when it drops.
 enum Replaced {
-    /// It set no wake: the thread's stays.
     Nothing,
-    /// It set one over this (none, where the thread had none).
     Wake(Option<crate::ReadyWake>),
 }
 
@@ -103,13 +86,10 @@ fn set(next: Rule) -> Forbidden {
     }
 }
 
-/// From now on, have stores do this thread's disk work (opening, reading)
-/// elsewhere and answer "not yet", waking it through `wake` once the work
-/// is done: for a frame loop, before its loop forbids every wait
-/// ([`forbid_on_this_thread`]). Its own waits, such as a flush it asks for,
-/// stay allowed. For the rest of the thread's life, or until a guard made
-/// before this drops; a forbidden thread keeps its rule and takes the new
-/// wake.
+/// From now on, stores do this thread's disk work elsewhere and answer "not yet",
+/// waking it through `wake`: for a frame loop, before its loop forbids every wait
+/// ([`forbid_on_this_thread`]). The thread's own waits stay allowed, for the rest of
+/// its life or until a guard made before this drops.
 pub fn decline_on_this_thread(wake: crate::ReadyWake) {
     RULE.with(|rule| match rule.get() {
         Rule::Allowed => rule.set(Rule::Declined),
@@ -119,10 +99,9 @@ pub fn decline_on_this_thread(wake: crate::ReadyWake) {
     WAKE.with(|slot| *slot.borrow_mut() = Some(wake));
 }
 
-/// Whether this thread must not touch the disk at all, so a store does its
-/// disk work elsewhere and answers "not yet" ([`wake`]): a thread that
-/// declined it, and every forbidden thread but one under
-/// [`forbid_commit_waits_strictly`], whose code still reads the disk itself.
+/// Whether this thread must not touch the disk at all, so a store does its disk work
+/// elsewhere and answers "not yet" ([`wake`]): a thread that declined it, and every
+/// forbidden thread but one under [`forbid_commit_waits_strictly`].
 #[must_use]
 pub fn disk_forbidden() -> bool {
     matches!(
@@ -131,10 +110,9 @@ pub fn disk_forbidden() -> bool {
     )
 }
 
-/// How to wake this thread once work it must not wait for is done: `None`
-/// where it may touch the disk ([`disk_forbidden`]). A thread that set no
-/// wake gets one that does nothing; it hears of the work only when it next
-/// asks.
+/// How to wake this thread once work it must not wait for is done: `None` where it
+/// may touch the disk ([`disk_forbidden`]). A thread that set no wake gets one that
+/// does nothing, and hears of the work only when it next asks.
 #[must_use]
 pub fn wake() -> Option<crate::ReadyWake> {
     if !disk_forbidden() {

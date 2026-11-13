@@ -1,4 +1,4 @@
-//! What an edit does to the sheet: reloading the presented view, applying the grid's commands and formats, the clipboard's copy and paste, and the fills that extend a selection.
+//! The cells the grid shows: values, formats and what an edit writes.
 
 use super::{
     Addr, CellFormat, CellValue, ClipboardGrid, Edits, Grid, GridCmd, Id, Rc, ReloadCache,
@@ -44,11 +44,7 @@ impl SheetsApp {
         };
         self.sheet_charts = charts;
         self.sheet_comments = comments;
-        // The dock takes its height from the annotations, so the sheet
-        // re-lays out whenever they change.
         self.relayout();
-        // Every sheet is evaluated in one workbook, kept between reloads:
-        // showing another sheet reads what is computed already.
         let id = self.active_sheet_id();
         self.calc
             .update(&state, id.as_ref().map(|id| (id, &snap.raw)));
@@ -92,10 +88,7 @@ impl SheetsApp {
                         writes.push((addr, inferred.raw, fmt));
                     }
                 }
-                GridCmd::Commit => {
-                    // The undo boundary is bracketed by the action host, so the
-                    // whole batch is one checkpoint.
-                }
+                GridCmd::Commit => {}
             }
         }
         if !writes.is_empty() {
@@ -201,26 +194,15 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    /// Paste at the selection's top-left. When the system clipboard still holds
-    /// exactly what we last copied, the rich rectangle is used — raw inputs and
-    /// formats are restored and, for a *copy*, relative formula references shift
-    /// to the new location (a *cut* moves the block verbatim, references
-    /// following it). When the paste target is a selection that is a whole
-    /// multiple of the copied block, the block **tiles** to fill it, each tile
-    /// offset by its own position — matching Excel/Sheets. Otherwise the
-    /// plain-text clipboard is parsed as a TSV grid and each field is
-    /// smart-typed, so a paste from any other app works too.
     pub(super) fn paste(&mut self, doc: &mut Edits<'_>) {
         let (target, sel_br) = self.grid.selection_bounds();
         let system = ui::clipboard_paste();
         let use_internal = match (&self.clipboard, &system) {
             (Some(cb), Some(text)) => *text == cb.tsv,
-            // No readable system clipboard (e.g. headless) → trust our own copy.
             (Some(_), None) => true,
             _ => false,
         };
 
-        // `take` so a cut is one-shot; a plain copy is re-stored below.
         let internal = if use_internal {
             self.clipboard.take()
         } else {
@@ -254,9 +236,6 @@ impl SheetsApp {
                     tile_count(span(target.1, sel_br.1), rows),
                 )
             };
-            // Collect the whole paste into one batched change. A cut moves the
-            // block: clear the source first (pushed ahead of the writes so an
-            // overlapping target still lands last), then write.
             let mut writes: Vec<(Addr, String, Option<CellFormat>)> = Vec::new();
             if cb.cut {
                 for r in 0..rows {
@@ -269,8 +248,6 @@ impl SheetsApp {
             let mut last = target;
             for tr in 0..tile_rows {
                 for tc in 0..tile_cols {
-                    // Where this tile's top-left sits relative to the block's
-                    // own origin, in columns/rows and as a reference shift.
                     let tile_col_off = tc.saturating_mul(cols);
                     let tile_row_off = tr.saturating_mul(rows);
                     for (ri, row) in (0u32..).zip(&cb.cells) {
@@ -314,10 +291,6 @@ impl SheetsApp {
         self.status = format!("Pasted into {}", self.grid.selection_label());
     }
 
-    /// Parse `text` as a tab/newline-separated grid pasted from another app and
-    /// write it starting at `target`, smart-typing each non-empty field.
-    /// Selects the pasted rectangle. Returns `false` (writing nothing) when the
-    /// payload has no content. This is the system-clipboard branch of `paste`.
     pub(super) fn paste_tsv(&mut self, doc: &mut Edits<'_>, target: Addr, text: &str) -> bool {
         let cur = self.default_currency();
         let normalized = text.replace('\r', "");
@@ -416,7 +389,6 @@ impl SheetsApp {
         self.status = format!("Filled down {}", self.grid.selection_label());
     }
 
-    /// Fill the left column of the selection rightward — Excel's Ctrl+R.
     pub(super) fn fill_right(&mut self, doc: &mut Edits<'_>) {
         let mut out = Vec::new();
         self.grid.flush_edit(&mut out);
@@ -451,12 +423,6 @@ impl SheetsApp {
         }
     }
 
-    /// Commit a fill-handle drag the grid recorded: the selected block is the
-    /// *pattern*, and the dragged-out region is filled by extending it (per
-    /// column when filling down, per row when filling right) through the smart
-    /// [`crate::fill`] engine — formulas offset their relative refs, numeric
-    /// pairs extrapolate a series, dates/names continue, text+number
-    /// increments. One batched action, one undo boundary.
     pub(super) fn run_pending_fill(&mut self, doc: &mut Edits<'_>) {
         let Some((src_tl, src_br, dst_tl, dst_br)) = self.grid.take_pending_fill() else {
             return;

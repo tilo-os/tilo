@@ -711,12 +711,17 @@ fn app_capture(
     theme: &str,
 ) -> image::RgbaImage {
     let at = beside.join(format!("{scenario}.png"));
-    let drawn = std::process::Command::new(app)
+    let mut command = std::process::Command::new(app);
+    command
         .args(["--scenario", scenario, "--shots"])
         .arg(&at)
-        .env("TILO_SHOTS_THEME", theme)
-        .output_locked()
-        .expect("the app draws its capture");
+        .env("TILO_SHOTS_THEME", theme);
+    // The app beside this test was built beside another build directory, whose prepared catalog
+    // this run may not hold: it sets text in the one this process verified.
+    if let Some(catalog) = ui::font_catalog::catalog_root() {
+        command.env(ui::font_catalog::OVERRIDE_ENV, catalog);
+    }
+    let drawn = command.output_locked().expect("the app draws its capture");
     assert!(
         drawn.status.success(),
         "{} draws {scenario}: {}",

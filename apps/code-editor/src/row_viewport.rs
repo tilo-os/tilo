@@ -36,8 +36,6 @@ impl RowViewportIndex {
         )
     }
 
-    /// Overscan callers choose their column budget; both endpoints preserve
-    /// complete graphemes rather than slicing combining marks or ZWJ emoji.
     pub(crate) fn window(&self, line: &str, columns: Range<usize>) -> (Range<usize>, usize) {
         let position = self
             .checkpoints

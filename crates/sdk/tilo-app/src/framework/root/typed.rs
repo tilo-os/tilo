@@ -101,11 +101,6 @@ pub(crate) trait TypedRoot {
     /// Bring the live state up to `doc`.
     fn sync(&self, doc: &AutoCommit) -> Result<bool, ModelError>;
 
-    /// Take `reading`, the state the session publishes for this resource, as
-    /// the live state — read through the type's own model form, with no
-    /// document here (`one-app-model.md` §4). Returns whether it moved.
-    fn adopt(&self, reading: &serde_json::Value) -> Result<bool, ModelError>;
-
     /// Whether the live state is `doc`'s.
     fn follows(&self, doc: &AutoCommit) -> bool;
 
@@ -161,6 +156,11 @@ pub(crate) trait TypedRoot {
     /// The edits the views bound over `state`.
     fn declarations(&self, state: &dyn Any) -> Box<dyn Any>;
 
+    /// How many times the list of bound edits changed
+    /// ([`Bindings::generation`](super::super::view::Bindings)): a reader that
+    /// saw the same count reads the same views' edits, over the same state.
+    fn bindings_generation(&self) -> u64;
+
     /// The ids of `declarations` (from [`Self::declarations`]).
     fn declaration_ids(&self, declarations: &dyn Any) -> Vec<&'static str>;
 
@@ -176,10 +176,10 @@ pub(crate) trait TypedRoot {
         declarations: Box<dyn Any>,
     ) -> tilo_actions::ResourceSpec;
 
-    /// [`Resource::read_content`].
+    /// [`tilo_resource::read::content`].
     ///
     /// # Errors
-    /// As [`Resource::read_content`].
+    /// As [`tilo_resource::read::content`].
     fn read_content(
         &self,
         state: &dyn Any,
@@ -279,9 +279,6 @@ pub(crate) trait TypedRoot {
 /// The handles of a root that name its resource type.
 pub(crate) struct Typed<R: Resource> {
     pub(crate) live: Live<R>,
-    /// The reading the live state was last adopted from, when the session
-    /// keeps the record: the same reading is no change.
-    pub(super) reading: std::cell::RefCell<Option<serde_json::Value>>,
     pub(super) updaters: Updaters<R>,
     pub(crate) dispatch: Dispatcher<R>,
     pub(super) bindings: Bindings<R>,
@@ -372,19 +369,6 @@ impl<R: Resource> TypedRoot for Typed<R> {
         self.live.sync(doc)
     }
 
-    fn adopt(&self, reading: &serde_json::Value) -> Result<bool, ModelError> {
-        // The reading is the state, so the same reading is no change: a
-        // frame that sees it again wakes nothing (`Resource::State` need
-        // not even be comparable).
-        if self.reading.borrow().as_ref() == Some(reading) {
-            return Ok(false);
-        }
-        let state: R::State = tilo_resource::state_from_reading::<R>(reading)?;
-        *self.reading.borrow_mut() = Some(reading.clone());
-        self.live.replace(state);
-        Ok(true)
-    }
-
     fn follows(&self, doc: &AutoCommit) -> bool {
         self.live.follows(doc)
     }
@@ -443,7 +427,7 @@ impl<R: Resource> TypedRoot for Typed<R> {
             None => tilo_actions::ResourceSpec::new(
                 id,
                 R::KIND,
-                tilo_resource::label::published(R::KIND, label, R::LABEL),
+                tilo_resource::label::published(R::KIND, label, R::LABEL, R::CATALOGUE),
             ),
         }
     }
@@ -484,6 +468,10 @@ impl<R: Resource> TypedRoot for Typed<R> {
         Box::new(declarations)
     }
 
+    fn bindings_generation(&self) -> u64 {
+        self.bindings.generation()
+    }
+
     fn declaration_ids(&self, declarations: &dyn Any) -> Vec<&'static str> {
         declarations
             .downcast_ref::<Vec<ActionDecl<R>>>()
@@ -514,7 +502,7 @@ impl<R: Resource> TypedRoot for Typed<R> {
     ) -> Result<serde_json::Value, String> {
         let state =
             state_of::<R>(state).ok_or_else(|| "the resource is not readable here".to_owned())?;
-        R::read_content(state, doc, item)
+        tilo_resource::read::content::<R>(state, doc, item)
     }
 
     fn facts(&self, state: &dyn Any, doc: &AutoCommit) -> Result<serde_json::Value, String> {

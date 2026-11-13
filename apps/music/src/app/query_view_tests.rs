@@ -1,11 +1,6 @@
-//! Music's search as a view of its own: the same songs as in the library,
-//! the stack that returns to the library as it was left, dragging results
-//! onto a playlist, chips, the controls group and kept views.
-
 use super::*;
 use ui::widget::Queryable as _;
 
-/// The sample library, with the hermetic catalogue a capture uses.
 fn searching_app() -> (Music, AutoCommit) {
     let (mut app, doc) = app_with_doc();
     app.disconnect();
@@ -13,7 +8,6 @@ fn searching_app() -> (Music, AutoCommit) {
     (app, doc)
 }
 
-/// Type `text` into the window bar's field, as the bar carries it.
 fn type_query(app: &mut Music, doc: &mut AutoCommit, text: &str) {
     app.query_opened();
     app.set_query_text(text);
@@ -26,7 +20,6 @@ fn ctrl() -> winit::event::Modifiers {
     winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL)
 }
 
-/// Ctrl-click the row of song `id`: it joins the selection.
 fn ctrl_click(app: &mut Music, doc: &mut AutoCommit, id: &str) {
     let row = track_row(app, id);
     let at = cursor_at(Point::new(row.x0 + row.width() * 0.3, row.center().y));
@@ -186,7 +179,6 @@ fn dragging_selected_results_onto_a_playlist_adds_them_all() {
         "the selected songs go with the drag"
     );
     draw_once(&mut app, &mut doc);
-    // The shell's sidebar, painted from the places Music declares.
     let sidebar = ui::widget::NavShell::new()
         .sidebar(Box::new(
             ui::widget::NavList::new(Vec::new()).fed_by(&app.places),
@@ -234,7 +226,6 @@ fn the_chips_are_artist_year_liked_and_in_library() {
         !offers[0].values.is_empty(),
         "the artists the results share"
     );
-    // Choosing from the list narrows and the chip reads the choice.
     let artist = offers[0].values[0].value.clone();
     app.dispatch(
         Action::SetQuery(offers[0].toggled(&results.query, &artist)),
@@ -244,7 +235,6 @@ fn the_chips_are_artist_year_liked_and_in_library() {
     let offers =
         ui::framework::views::facet_offers(app.search.engine.kinds(), &results.query, &results);
     assert_eq!(offers[0].label, format!("Artist: {artist}"));
-    // A typed token is the same chip.
     app.set_query_text("light liked:yes");
     let query = app.search.engine.results().query.clone();
     assert_eq!(query.text, "light");

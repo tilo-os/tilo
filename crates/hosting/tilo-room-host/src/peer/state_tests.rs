@@ -15,7 +15,10 @@ use super::*;
 use crate::workspace::{Membership, WorkspaceRuntime};
 use tilo_user_identity::{RevocationList, UserIdentity};
 
+mod channel_replay;
+mod crowd_replay;
 mod replay_boundary;
+mod sealed;
 mod supersede;
 
 struct Fixture {
@@ -56,13 +59,27 @@ impl Fixture {
             Side::Source => (&self.source.tx, &self.source.disconnect),
             Side::Recipient => (&self.recipient_tx, &self.recipient_disconnect),
         };
+        let mut ctx = self.connection_ctx(outbound, disconnect, state_outbound);
+        ctx.member_limits = member_limits;
+        ctx.own_user_public_key = own_user.unwrap_or(&self.source.own_user);
+        ctx
+    }
+
+    /// What a connection of its own to this fixture's workspace is handled
+    /// in, writing to `outbound` and ended through `disconnect`.
+    fn connection_ctx<'a>(
+        &'a self,
+        outbound: &'a mpsc::Sender<Envelope>,
+        disconnect: &'a mpsc::Sender<()>,
+        state_outbound: Option<&'a mpsc::Sender<StateDelivery>>,
+    ) -> SessionCtx<'a> {
         SessionCtx {
             workspaces: &self.registry,
             autobind: None,
             outbound,
             state_outbound,
             connection_live: None,
-            own_user_public_key: own_user.unwrap_or(&self.source.own_user),
+            own_user_public_key: &self.source.own_user,
             own_device_cert: &self.source.peer.cert,
             own_device_public_key: &self.source.peer.cert.device_public_key,
             app_serving: None,
@@ -74,13 +91,16 @@ impl Fixture {
             revocations: &self.source.revocations,
             carried_calls: None,
             admin: None,
-            here: None,
             fetch: None,
             agents: Box::leak(Box::default()),
+            environments: Box::leak(Box::default()),
             positions: None,
             compactor: None,
-            member_limits,
+            member_limits: None,
             resumes: Box::leak(Box::default()),
+            agent: Box::leak(Box::default()),
+            channel_reader: Box::leak(Box::default()),
+            execution: Box::leak(Box::new(tilo_actions::remote::ExecutionLease::mint())),
             lag: Box::leak(Box::default()),
         }
     }
@@ -166,6 +186,7 @@ impl Fixture {
                 live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 replay: None,
                 lag: None,
+                channel_reader: false,
             },
         );
         let source = StateSource {
@@ -178,6 +199,7 @@ impl Fixture {
             )),
             own_user: user.public_key,
             agents: AgentRegistry::default(),
+            environments: crate::environment::EnvironmentRegistry::default(),
             lease: None,
             session_live: None,
         };
@@ -1198,13 +1220,16 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 revocations: &source.revocations,
                 carried_calls: None,
                 admin: None,
-                here: None,
                 fetch: None,
                 agents: Box::leak(Box::default()),
+                environments: Box::leak(Box::default()),
                 positions: None,
                 compactor: None,
                 member_limits: None,
                 resumes: Box::leak(Box::default()),
+                agent: Box::leak(Box::default()),
+                channel_reader: Box::leak(Box::default()),
+                execution: Box::leak(Box::new(tilo_actions::remote::ExecutionLease::mint())),
                 lag: Box::leak(Box::default()),
             };
             handle_sync_request(&source.peer, &session, 7, vec![]).await
@@ -2038,7 +2063,8 @@ async fn interrupted_second_batch_preserves_entire_replay_until_reconnect() {
         reader.read_next().await.unwrap(),
         Some(EnvelopeV2::State(Envelope::Ready {
             workspace_id: 7,
-            pending_deltas: 25
+            pending_deltas: 25,
+            records_when_opened: false,
         }))
     );
     assert!(reader.read_next().await.unwrap().is_none());

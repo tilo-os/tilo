@@ -4,6 +4,10 @@
 use super::*;
 use ui::a11y::{AccessNode, Role};
 
+fn node_of(widget: &str, id: &str, rect: [f64; 4]) -> InspectionNode {
+    node(widget, id, rect, None)
+}
+
 fn node(widget: &str, id: &str, rect: [f64; 4], role: Option<Role>) -> InspectionNode {
     InspectionNode {
         path: id.to_owned(),
@@ -14,6 +18,7 @@ fn node(widget: &str, id: &str, rect: [f64; 4], role: Option<Role>) -> Inspectio
         child_clip: None,
         page_title: None,
         layout: None,
+        paint_key: None,
         semantics: role.map(AccessNode::new),
         children: Vec::new(),
     }
@@ -74,17 +79,37 @@ fn a_header_row_gives_up_its_labels_before_its_title() {
     assert!(dropped.contains("primary"), "{dropped}");
 }
 
+fn shell_layout(
+    sidebar: ui::widget::SidebarStanding,
+    beside: ui::widget::arrange::WidthClass,
+    width: f32,
+) -> ui::widget::ShellLayout {
+    ui::widget::ShellLayout {
+        sidebar,
+        beside,
+        needs: ui::widget::arrange::WidthClass::Medium,
+        beside_width: width,
+        rows: ui::widget::HeaderRows { rows: [None; 4] },
+    }
+}
+
 /// The shell reports how it held each header row, and the check holds it to the rule there.
 #[test]
 fn a_header_row_the_shell_reports_is_checked_where_it_stands() {
     let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 300.0], None);
-    shell.layout = Some(ui::widget::LayoutInfo::Headers(ui::widget::HeaderRows {
-        rows: [
-            None,
-            Some(header_row(120.0, 120.0, 0.0, false, false)),
-            None,
-            None,
-        ],
+    shell.layout = Some(ui::widget::LayoutInfo::Shell(ui::widget::ShellLayout {
+        sidebar: ui::widget::SidebarStanding::None,
+        beside: ui::widget::arrange::WidthClass::Compact,
+        needs: ui::widget::arrange::WidthClass::Compact,
+        beside_width: 400.0,
+        rows: ui::widget::HeaderRows {
+            rows: [
+                None,
+                Some(header_row(120.0, 120.0, 0.0, false, false)),
+                None,
+                None,
+            ],
+        },
     }));
     let found: Vec<Problem> = inspect(&shell, (400, 300), None, 1.0)
         .into_iter()
@@ -93,6 +118,52 @@ fn a_header_row_the_shell_reports_is_checked_where_it_stands() {
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0].keys.first().map(String::as_str), Some("shell"));
     assert!(found[0].detail.contains("primary"), "{}", found[0].detail);
+}
+
+/// A sidebar stands beside content of the window's own: a pane narrower than a column is a
+/// phone's screen, so the sidebar folds behind the bar's toggle there instead. The shell reports
+/// where its sidebar stood and how wide the pane beside it is, and the check holds it to it.
+#[test]
+fn a_sidebar_beside_a_phone_screen_is_caught() {
+    use ui::widget::SidebarStanding;
+    use ui::widget::arrange::WidthClass;
+    let with = |sidebar, beside, width| {
+        let mut shell = node("NavShell", "shell", [0.0, 0.0, 616.0, 700.0], None);
+        shell.layout = Some(ui::widget::LayoutInfo::Shell(shell_layout(
+            sidebar, beside, width,
+        )));
+        inspect(&shell, (616, 700), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::ContentBesideSidebar)
+            .collect::<Vec<Problem>>()
+    };
+    let found = with(SidebarStanding::Docked, WidthClass::Compact, 336.0);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].detail.contains("336"), "{}", found[0].detail);
+    assert!(
+        with(SidebarStanding::Docked, WidthClass::Medium, 420.0).is_empty(),
+        "content of a column's width stands beside the sidebar"
+    );
+    // A grid of tiles or a surface drawn on works narrower than a column: the same width is what
+    // its own kind asks for there.
+    let mut phone_pane = node("NavShell", "shell", [0.0, 0.0, 616.0, 700.0], None);
+    let mut layout = shell_layout(SidebarStanding::Docked, WidthClass::Compact, 336.0);
+    layout.needs = WidthClass::Compact;
+    phone_pane.layout = Some(ui::widget::LayoutInfo::Shell(layout));
+    assert!(
+        inspect(&phone_pane, (616, 700), None, 1.0)
+            .iter()
+            .all(|problem| problem.kind != Kind::ContentBesideSidebar),
+        "a surface works below a column where its kind says so"
+    );
+    assert!(
+        with(SidebarStanding::Alone, WidthClass::Compact, 336.0).is_empty(),
+        "a sidebar that folded beside a phone-width pane is what the rule asks for"
+    );
+    assert!(
+        with(SidebarStanding::Over, WidthClass::Compact, 336.0).is_empty(),
+        "a drawer stands over the content, not beside it"
+    );
 }
 
 fn overlaps(children: Vec<InspectionNode>) -> Vec<Problem> {
@@ -289,6 +360,66 @@ fn a_page_inside_a_page_is_caught() {
             "window".to_owned()
         ]],
         "a page inside the column's row is the gutter counted twice"
+    );
+}
+
+/// A bar docked at the foot of a column stands in the column the content over it is read at:
+/// an entry that adds to a list is as wide as the list, its leading edge where the list's is.
+/// A bar across the window beside the list it adds to is the defect, and one standing on the
+/// column is not, the room the content's scroller keeps for its bar aside.
+#[test]
+fn a_docked_bar_wider_than_the_column_over_it_is_caught() {
+    // The Docked's content as a scroller `scroll` wide holding a page `page` wide, its list
+    // `list` wide, and the bar of `bar` at its foot.
+    let docked = |scroll: [f64; 4], page: [f64; 4], list: [f64; 4], bar: [f64; 4]| {
+        let mut page = node_of("Page", "page", page);
+        page.children.push(node_of("DescribedList", "list", list));
+        let mut scroll = node_of("Scrollable", "scroll", scroll);
+        scroll.children.push(page);
+        let mut foot = node_of("Page", "foot", [280.0, 660.0, 1000.0, 96.0]);
+        foot.children.push(node_of("Stack", "bar", bar));
+        let mut column = node_of("Docked", "docked", [280.0, 0.0, 1000.0, 756.0]);
+        column.children.push(scroll);
+        column.children.push(foot);
+        stack_node("window", [0.0, 0.0, 1280.0, 756.0], vec![column])
+    };
+    let found = |root: &InspectionNode| {
+        inspect(root, (1280, 756), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::DockedColumn)
+            .map(|problem| problem.keys)
+            .collect::<Vec<_>>()
+    };
+    let read_at_the_measure = |bar: [f64; 4]| {
+        docked(
+            [280.0, 0.0, 1000.0, 648.0],
+            [280.0, 0.0, 984.0, 835.0],
+            [492.0, 48.0, 560.0, 739.0],
+            bar,
+        )
+    };
+    assert_eq!(
+        found(&read_at_the_measure([328.0, 676.0, 904.0, 32.0])),
+        vec![vec!["docked".to_owned(), "window".to_owned()]],
+        "a bar across the window beside the column is the defect"
+    );
+    assert!(
+        found(&read_at_the_measure([500.0, 676.0, 560.0, 32.0])).is_empty(),
+        "a bar standing on the column adds to it in its own column"
+    );
+    assert!(
+        found(&read_at_the_measure([492.0, 676.0, 560.0, 32.0])).is_empty(),
+        "and one the scroller's bar puts a few pixels in still stands on it"
+    );
+    assert!(
+        found(&docked(
+            [0.0, 0.0, 272.0, 648.0],
+            [0.0, 0.0, 256.0, 835.0],
+            [0.0, 48.0, 256.0, 739.0],
+            [8.0, 676.0, 272.0, 32.0],
+        ))
+        .is_empty(),
+        "the room a scroller keeps for its bar is no misalignment: the column keeps it at its trailing edge"
     );
 }
 
@@ -689,11 +820,153 @@ fn a_heading_with_nothing_in_it_is_caught() {
     );
 }
 
+fn crowded_headings(root: &InspectionNode) -> Vec<Problem> {
+    inspect(root, (1280, 800), None, 1.0)
+        .into_iter()
+        .filter(|p| p.kind == Kind::CrowdedHeading)
+        .collect()
+}
+
+/// A section's heading belongs to what follows it: it keeps clearly more room under the block
+/// over it than over its own content, or it reads as that block's last line.
+#[test]
+fn a_heading_keeps_more_room_over_it_than_over_its_content() {
+    let page = |above: f64, below: f64| {
+        let top = 200.0 + above;
+        let header = node(
+            HEADING,
+            "heading",
+            [304.0, top, 320.0, 29.0],
+            Some(Role::Heading { level: 2 }),
+        );
+        let item = node(
+            "ListRow",
+            "row",
+            [304.0, top + 29.0 + below, 320.0, 36.0],
+            None,
+        );
+        let section = holding(
+            node(
+                "Section",
+                "section",
+                [304.0, top, 320.0, 29.0 + below + 36.0],
+                None,
+            ),
+            vec![header, item],
+        );
+        holding(
+            node("Page", "page", [304.0, 100.0, 320.0, 600.0], None),
+            vec![
+                node("Text", "body", [304.0, 150.0, 320.0, 50.0], None),
+                section,
+            ],
+        )
+    };
+    assert!(
+        crowded_headings(&page(24.0, 8.0)).is_empty(),
+        "a group's gutter over the heading, its content a step under it"
+    );
+    assert!(
+        crowded_headings(&page(16.0, 8.0)).is_empty(),
+        "a section gap over the heading reads as more than its content's step"
+    );
+    let crowded = crowded_headings(&page(8.0, 16.0));
+    assert_eq!(crowded.len(), 1, "{crowded:?}");
+    assert!(
+        crowded[0].detail.contains("8 px") && crowded[0].detail.contains("16 px"),
+        "{crowded:?}"
+    );
+    // A heading first in its box has nothing over it to stand apart from.
+    let first = holding(
+        node("Page", "page", [304.0, 100.0, 320.0, 600.0], None),
+        vec![holding(
+            node("Section", "section", [304.0, 100.0, 320.0, 100.0], None),
+            vec![
+                node(
+                    HEADING,
+                    "heading",
+                    [304.0, 100.0, 320.0, 29.0],
+                    Some(Role::Heading { level: 2 }),
+                ),
+                node("ListRow", "row", [304.0, 140.0, 320.0, 36.0], None),
+            ],
+        )],
+    );
+    assert!(crowded_headings(&first).is_empty());
+}
+
 fn empty_surfaces(root: &InspectionNode) -> Vec<Problem> {
     inspect(root, (800, 600), None, 1.0)
         .into_iter()
         .filter(|p| p.kind == Kind::EmptySurface)
         .collect()
+}
+
+fn unruled_bodies(root: &InspectionNode) -> Vec<Problem> {
+    inspect(root, (1280, 800), None, 1.0)
+        .into_iter()
+        .filter(|p| p.kind == Kind::UnruledBody)
+        .collect()
+}
+
+/// A page's own sections stand under a rule, apart from the writing the page holds: a heading
+/// set like the writing's own and standing no further from it reads as another line of the text.
+#[test]
+fn a_page_section_after_the_writing_stands_under_a_rule() {
+    let page = |between: Vec<InspectionNode>, wrapped: bool| {
+        let top = 400.0;
+        let section = holding(
+            node("Section", "section", [304.0, top, 320.0, 120.0], None),
+            vec![
+                node(
+                    HEADING,
+                    "heading",
+                    [304.0, top, 320.0, 29.0],
+                    Some(Role::Heading { level: 2 }),
+                ),
+                node("ListRow", "row", [304.0, top + 37.0, 320.0, 36.0], None),
+            ],
+        );
+        let mut blocks = vec![node(
+            "BlockEditor",
+            "writing",
+            [304.0, 120.0, 320.0, 250.0],
+            None,
+        )];
+        if wrapped {
+            blocks.push(holding(
+                node("Stack", "tail", [304.0, top - 24.0, 320.0, 144.0], None),
+                {
+                    let mut tail = between;
+                    tail.push(section);
+                    tail
+                },
+            ));
+        } else {
+            blocks.extend(between);
+            blocks.push(section);
+        }
+        holding(
+            node("Page", "page", [304.0, 100.0, 320.0, 600.0], None),
+            blocks,
+        )
+    };
+    let rule = || node("Divider", "rule", [304.0, 378.0, 320.0, 1.0], None);
+    let unruled = unruled_bodies(&page(Vec::new(), false));
+    assert_eq!(unruled.len(), 1, "{unruled:?}");
+    assert!(unruled[0].detail.contains("writing"), "{unruled:?}");
+    assert!(
+        unruled_bodies(&page(vec![rule()], false)).is_empty(),
+        "a rule between the writing and the page's own sections says where the writing ends"
+    );
+    assert!(
+        unruled_bodies(&page(vec![rule()], true)).is_empty(),
+        "the rule stands in the box the page's sections are gathered in"
+    );
+    assert!(
+        !unruled_bodies(&page(Vec::new(), true)).is_empty(),
+        "a box of the page's own sections with no rule over them changes nothing"
+    );
 }
 
 /// A card standing empty in a column paints a filled block with nothing in it, and what it
@@ -1050,6 +1323,31 @@ fn text_that_cannot_break_a_word_wider_than_its_column_is_caught() {
     assert_eq!(clipped(ui::text_render::TextWrapMode::Indented), 1);
 }
 
+/// A line given less room than its text needs: its last rows are laid out and painted nowhere,
+/// which reads as a line cut short over empty space. A line with room for its text is no
+/// finding.
+#[test]
+fn a_line_with_less_room_than_its_text_needs_is_caught() {
+    let cut = |height: f32| {
+        let mut line = ui::widget::RichTextLine::new();
+        line.set_wrap(true);
+        line.set_text("The new onboarding build is on the test machines.");
+        let mut h = ui::headless::FrameHarness::for_root(
+            ui::State::new(),
+            ui::widget::Container::new()
+                .with_width(216.0)
+                .with_height(height)
+                .with_child(Box::new(line)),
+            (320, 200),
+            ui::Theme::light(),
+        );
+        let mut renderer = ui::TextRenderer::new();
+        clipped_text(h.root_widget_mut(), &mut renderer, (320, 200)).len()
+    };
+    assert_eq!(cut(17.5), 1, "one row of a two-row sentence is cut");
+    assert_eq!(cut(200.0), 0, "room for the whole sentence is no finding");
+}
+
 /// A place on a canvas past its viewport is reached by panning, so it is no finding; the
 /// same place in a region of a plain column reaches past it, and is caught.
 #[test]
@@ -1150,6 +1448,7 @@ fn stack_node(id: &str, rect: [f64; 4], children: Vec<InspectionNode>) -> Inspec
         child_clip: None,
         page_title: None,
         layout: None,
+        paint_key: None,
         semantics: None,
         children,
     }
@@ -1222,7 +1521,11 @@ fn control(
 }
 
 fn bar(controls: Vec<ui::window_toolbar::BarControl>, spare: f64) -> ui::window_toolbar::BarLayout {
-    ui::window_toolbar::BarLayout { spare, controls }
+    ui::window_toolbar::BarLayout {
+        spare,
+        controls,
+        labels: Vec::new(),
+    }
 }
 
 fn kinds(layout: &ui::window_toolbar::BarLayout) -> Vec<Kind> {
@@ -1251,6 +1554,88 @@ fn a_header_row_under_the_bar_is_a_second_row() {
     assert!(
         super::stacked_header_rows(44.0, 0.0).is_empty(),
         "an app drawing no row of its own stacks nothing under the bar"
+    );
+}
+
+/// Every column says what it shows, and offers what acts on it, in a row of its own at the
+/// window's top at every time: a window that declares that row and draws none at rest loses it
+/// until the person reaches for the window's bar.
+#[test]
+fn a_column_declares_its_header_and_draws_it_at_rest() {
+    let frame = |key: &'static str, x0: f64, header: Rect| ui::widget::ColumnFrame {
+        key,
+        column: Rect::new(x0, 0.0, x0 + 400.0, 800.0),
+        header,
+        rail: false,
+    };
+    let row = |x0: f64| Rect::new(x0, 0.0, x0 + 400.0, 44.0);
+    let at_rest = |declared: &[&str], frames: &[ui::widget::ColumnFrame]| {
+        super::column_headers_at_rest(declared, frames, 1280.0)
+    };
+    assert!(
+        at_rest(&[], &[frame("overview", 220.0, Rect::ZERO)]).is_empty(),
+        "a column the app gives no header is the app's own, drawn or not"
+    );
+    assert!(
+        at_rest(&["overview"], &[frame("overview", 220.0, row(220.0))]).is_empty(),
+        "the row that names the column stands at rest"
+    );
+    assert!(
+        at_rest(&["content"], &[frame("content", 1280.0, Rect::ZERO)]).is_empty(),
+        "a pushed screen behind the one in front is not on the window"
+    );
+    let rail = ui::widget::ColumnFrame {
+        rail: true,
+        ..frame("sidebar", 0.0, Rect::ZERO)
+    };
+    assert!(
+        at_rest(&["sidebar"], &[rail]).is_empty(),
+        "a rail says what it holds by its icons"
+    );
+    let found = at_rest(
+        &["sidebar", "overview"],
+        &[
+            frame("sidebar", 0.0, row(0.0)),
+            frame("overview", 400.0, Rect::ZERO),
+        ],
+    );
+    assert_eq!(found.len(), 1, "a declared header that only the bar shows");
+    assert_eq!(found[0].kind, Kind::HeaderOnReveal);
+    assert!(
+        found[0].detail.contains("overview") && found[0].detail.contains("400px"),
+        "the finding names the column and how wide it stands: {}",
+        found[0].detail
+    );
+}
+
+/// An action stands once: in its column's header row, never again in the window's bar.
+#[test]
+fn an_action_the_window_offers_is_never_offered_again_by_its_bar() {
+    let control = |name: &str, furniture: bool| ui::window_toolbar::BarControl {
+        name: name.to_owned(),
+        furniture,
+        ..ui::window_toolbar::BarControl::new("action", format!("bar.{name}"), Rect::ZERO)
+    };
+    let layout = ui::window_toolbar::BarLayout {
+        spare: 0.0,
+        controls: vec![
+            control("Compose", false),
+            control("Close", true),
+            ui::window_toolbar::BarControl {
+                name: "Close".to_owned(),
+                ..ui::window_toolbar::BarControl::new("close", "window-control-close", Rect::ZERO)
+            },
+        ],
+        labels: Vec::new(),
+    };
+    let buttons = vec!["Compose".to_owned(), "Close".to_owned()];
+    let found = super::offered_twice(&layout, &buttons);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].kind, Kind::OfferedTwice);
+    assert!(found[0].detail.contains("Compose"));
+    assert!(
+        super::offered_twice(&layout, &["Reply".to_owned()]).is_empty(),
+        "an action the window offers nowhere else stands in the bar alone"
     );
 }
 
@@ -1434,6 +1819,14 @@ fn a_bar_says_what_an_action_does_where_it_has_room_for_the_words() {
         400.0,
     );
     assert!(kinds(&quiet).is_empty());
+    // The window's own furniture is no action of the app's: the strip's door wears the "+"
+    // everyone reads, at its square chip, and says its name under the pointer alone.
+    let door =
+        ui::window_toolbar::BarControl::new("new-tab", "tab-new", Rect::new(0.0, 0.0, 32.0, 28.0))
+            .named("New tab")
+            .icon(Some("plus".to_owned()))
+            .furniture();
+    assert!(kinds(&bar(vec![door], 400.0)).is_empty());
 }
 
 /// A choice a list painted wide of what its row shows fills the gutter beside it: the lift
@@ -1454,4 +1847,909 @@ fn a_lift_reaching_past_what_its_row_shows_is_a_selection_bleed() {
     assert_eq!(reach_past(whole), None, "a row showing everything it has");
     let empty = lift([0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]);
     assert_eq!(reach_past(empty), None, "no lift at all");
+}
+
+/// A chevron folds the words of its row, so it centres on the line they stand on: the step in
+/// front of them is the chevron's column, not a second baseline beside it.
+#[test]
+fn a_chevron_centres_on_the_line_of_the_row_it_folds() {
+    use super::text::chevron_off_line;
+    let chevron = |rect: [f64; 4], line: [f64; 4]| ui::widget::virtual_list::RowChevron {
+        rect: ui::kurbo::Rect::new(rect[0], rect[1], rect[2], rect[3]),
+        line: ui::kurbo::Rect::new(line[0], line[1], line[2], line[3]),
+    };
+    // A row's line, and the chevron in the step in front of its words.
+    let line = [46.0, 56.0, 366.0, 84.0];
+    assert_eq!(
+        chevron_off_line(chevron([24.0, 63.0, 46.0, 77.0], line)),
+        None,
+        "one line: the chevron and the words share a centre"
+    );
+    // A chevron riding the taller slot a finger's row takes: 10 px under the words.
+    let off = chevron_off_line(chevron([24.0, 73.0, 46.0, 87.0], line))
+        .expect("a chevron below its line");
+    assert!((off - 10.0).abs() < 0.5, "{off}");
+    // A row with no line of its own (nothing laid out) says nothing.
+    assert_eq!(
+        chevron_off_line(chevron([0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0])),
+        None
+    );
+}
+
+/// The one main action a window declares stands in its bar as the primary button: a bar
+/// that shows it as every other action, behind its door, or not at all is what a person
+/// cannot tell from the rest of the row.
+#[test]
+fn a_bar_keeps_its_main_action_as_the_primary_button() {
+    let main = ui::window_toolbar::WindowToolbar {
+        actions: vec![
+            ui::window_toolbar::ToolbarAction::new("new", "plus", "New task")
+                .labelled()
+                .primary(),
+            ui::window_toolbar::ToolbarAction::new("sort", "arrow-up-down", "Sort").labelled(),
+        ],
+        ..ui::window_toolbar::WindowToolbar::default()
+    };
+    let shown = bar(
+        vec![
+            ui::window_toolbar::BarControl::new(
+                "action",
+                "new",
+                ui::kurbo::Rect::new(0.0, 0.0, 71.0, 28.0),
+            )
+            .named("New task")
+            .labelled()
+            .primary(),
+            ui::window_toolbar::BarControl::new(
+                "action",
+                "sort",
+                ui::kurbo::Rect::new(0.0, 0.0, 71.0, 28.0),
+            )
+            .named("Sort")
+            .labelled(),
+        ],
+        400.0,
+    );
+    assert!(
+        super::bar_primary(Some(&main), &shown).is_empty(),
+        "the main action stands as the primary button"
+    );
+    // Drawn as every other action, the bar does not say what the window is for.
+    let plain = bar(
+        vec![
+            ui::window_toolbar::BarControl::new(
+                "action",
+                "new",
+                ui::kurbo::Rect::new(0.0, 0.0, 71.0, 28.0),
+            )
+            .named("New task")
+            .labelled(),
+        ],
+        400.0,
+    );
+    let found = super::bar_primary(Some(&main), &plain);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].kind, Kind::UnmarkedBarPrimary);
+    // Behind the bar's door is no place for it either, and neither is out of the bar.
+    let folded = bar(
+        vec![
+            ui::window_toolbar::BarControl::new(
+                "overflow",
+                "window-toolbar-more",
+                ui::kurbo::Rect::new(0.0, 0.0, 28.0, 28.0),
+            )
+            .named("More actions")
+            .menu(),
+        ],
+        0.0,
+    );
+    assert_eq!(
+        super::bar_primary(Some(&main), &folded).len(),
+        1,
+        "an action only in the menu is no main action a person sees"
+    );
+    let absent = bar(Vec::new(), 0.0);
+    assert_eq!(super::bar_primary(Some(&main), &absent).len(), 1);
+    // A window that declares no main action has none drawn as one.
+    assert!(super::bar_primary(None, &shown).is_empty());
+}
+
+/// The bar's words are the bar's, painted where no widget lays them out: two of them drawn in
+/// one place are two words a person reads as one string of letters. A pill naming the window
+/// where its location already does paints its words on the location's, and the check reads the
+/// two labels as one place.
+#[test]
+fn a_bar_word_painted_where_another_stands_is_two_words_in_one_place() {
+    let window = node("TilolangWindow", "window", [0.0, 0.0, 900.0, 600.0], None);
+    let title =
+        ui::window_toolbar::BarLabel::new("TabTitle", "Täoday", Rect::new(42.0, 14.0, 98.0, 30.0));
+    let location = ui::window_toolbar::BarLabel::new(
+        "BarLocation",
+        "Täoday",
+        Rect::new(42.0, 14.0, 132.0, 30.0),
+    );
+    let found = text_on_text(
+        &window,
+        (900, 600),
+        &[title.clone(), location.clone()],
+        44.0,
+    );
+    assert_eq!(found.len(), 1, "the two words are one finding: {found:?}");
+    assert_eq!(found[0].kind, Kind::TextOnText);
+    assert_eq!(
+        found[0].widget, "BarLocation",
+        "the row's location paints over the pill beside it"
+    );
+    assert!(
+        found[0].detail.contains("Täoday"),
+        "the finding says which words: {}",
+        found[0].detail
+    );
+    // A window whose only tab shows its icon alone says the name once.
+    assert!(
+        text_on_text(&window, (900, 600), &[location], 44.0).is_empty(),
+        "one word in one place is read"
+    );
+    // Two words beside each other, each in its own place, are no finding.
+    let beside = ui::window_toolbar::BarLabel::new(
+        "TabTitle",
+        "Täoday",
+        Rect::new(140.0, 14.0, 196.0, 30.0),
+    );
+    assert!(
+        text_on_text(&window, (900, 600), &[beside, title], 44.0).is_empty(),
+        "a word drawn where another word ends covers nothing"
+    );
+}
+
+/// The frame's words are read where the window shows them, under the bar: a word at the top of
+/// the frame stands below the bar's own words, never over them.
+#[test]
+fn a_frames_words_stand_under_the_bars() {
+    let mut root = node("TilolangWindow", "window", [0.0, 0.0, 900.0, 600.0], None);
+    root.children.push(node(
+        "Text",
+        "page ~title",
+        [8.0, 0.0, 180.0, 22.0],
+        Some(Role::StaticText),
+    ));
+    let location =
+        ui::window_toolbar::BarLabel::new("BarLocation", "Today", Rect::new(8.0, 4.0, 100.0, 20.0));
+    assert!(
+        text_on_text(&root, (900, 600), std::slice::from_ref(&location), 44.0).is_empty(),
+        "the frame's first line stands at y 44 in the window, below the bar"
+    );
+    assert!(
+        !text_on_text(&root, (900, 600), &[location], 0.0).is_empty(),
+        "read at the window's top edge, the two words meet"
+    );
+}
+
+/// Two words on one card stand apart from the page under it: the card is a ground of its own,
+/// and what it covers is behind it — so only words sharing one ground are found.
+#[test]
+fn words_on_a_ground_of_their_own_stand_apart() {
+    let mut root = node("TilolangWindow", "window", [0.0, 0.0, 900.0, 600.0], None);
+    root.children.push(node(
+        "Text",
+        "page ~heading",
+        [8.0, 44.0, 200.0, 22.0],
+        Some(Role::StaticText),
+    ));
+    let mut card = node("Card", "page ~card", [8.0, 40.0, 300.0, 120.0], None);
+    // A card's own line, over the page's heading behind it.
+    card.children.push(node(
+        "Text",
+        "page ~card ~title",
+        [20.0, 44.0, 200.0, 22.0],
+        Some(Role::StaticText),
+    ));
+    root.children.push(card);
+    assert!(
+        text_on_text(&root, (900, 600), &[], 0.0).is_empty(),
+        "the card's ground holds its words away from the page's"
+    );
+}
+
+/// A rounded surface stands inside its column with a gutter on every side: one glued to the
+/// column's edges, cut by them, or one standing on the window's edge where no column holds it,
+/// is found — and the same surface a gutter in is no finding.
+#[test]
+fn a_rounded_surface_keeps_a_gutter_from_its_column_and_the_window() {
+    let shell_with = |banner: InspectionNode| {
+        let mut shell = node("NavShell", "shell", [0.0, 0.0, 900.0, 600.0], None);
+        let mut column = node("Stack", "column", [280.0, 0.0, 620.0, 600.0], None);
+        column.children.push(banner);
+        shell.children.push(column);
+        shell
+    };
+    let found = |root: &InspectionNode| -> Vec<Problem> {
+        inspect(root, (900, 600), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::RoundedOnEdge)
+            .collect()
+    };
+
+    let glued = found(&shell_with(node_of(
+        "Banner",
+        "banner",
+        [280.0, 0.0, 620.0, 65.0],
+    )));
+    assert_eq!(glued.len(), 1, "{glued:?}");
+    assert!(
+        glued[0].detail.contains("left") && glued[0].detail.contains("right"),
+        "both sides stand on the column's: {}",
+        glued[0].detail
+    );
+    assert!(
+        glued[0].detail.contains("its column"),
+        "the column is what it stands on: {}",
+        glued[0].detail
+    );
+
+    let inset = found(&shell_with(node_of(
+        "Banner",
+        "banner",
+        [304.0, 24.0, 572.0, 65.0],
+    )));
+    assert!(inset.is_empty(), "a gutter on every side: {inset:?}");
+
+    // A card is rounded too, and a surface without rounded corners is no finding.
+    assert_eq!(
+        found(&shell_with(node_of(
+            "Card",
+            "card",
+            [280.0, 0.0, 620.0, 65.0]
+        )))
+        .len(),
+        1
+    );
+    assert!(
+        found(&shell_with(node_of(
+            "Stack",
+            "box",
+            [280.0, 0.0, 620.0, 65.0]
+        )))
+        .is_empty()
+    );
+
+    // With no column around it, the window's edge is the one it must keep clear of.
+    let mut root = node("TilolangWindow", "window", [0.0, 0.0, 900.0, 600.0], None);
+    root.children
+        .push(node_of("Banner", "banner", [0.0, 0.0, 900.0, 65.0]));
+    let on_window = found(&root);
+    assert_eq!(on_window.len(), 1, "{on_window:?}");
+    assert!(
+        on_window[0].detail.contains("the window"),
+        "{}",
+        on_window[0].detail
+    );
+}
+
+/// A card a page scrolls is no card on the frame: its top and bottom are where the scroll stands,
+/// so a card whose last row ends within a pixel of the column's floor — or one the floor cuts on
+/// its way past — is no finding, while its sides are still the layout's to keep clear of the
+/// column.
+#[test]
+fn a_card_a_page_scrolls_is_no_card_on_the_edge() {
+    let column_with = |card: InspectionNode| {
+        let mut page = node("Page", "page", [0.0, 66.0, 752.0, 4107.5], None);
+        page.children.push(card);
+        let mut scroll = node_of("Scrollable", "scroll", [0.0, 66.0, 768.0, 958.0]);
+        scroll.child_clip = Some([0.0, 66.0, 768.0, 958.0]);
+        scroll.children.push(page);
+        let mut shell = node("NavShell", "shell", [0.0, 0.0, 768.0, 1024.0], None);
+        shell.children.push(scroll);
+        let mut root = node("TilolangWindow", "window", [0.0, 0.0, 768.0, 1024.0], None);
+        root.children.push(shell);
+        root
+    };
+    let found = |root: &InspectionNode| -> Vec<Problem> {
+        inspect(root, (768, 1024), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::RoundedOnEdge)
+            .collect()
+    };
+
+    assert!(
+        found(&column_with(node_of(
+            "Card",
+            "card",
+            [24.0, 777.5, 344.0, 245.5]
+        )))
+        .is_empty(),
+        "a card ending a pixel from the floor is on its way past"
+    );
+    assert!(
+        found(&column_with(node_of(
+            "Card",
+            "card",
+            [24.0, 700.0, 344.0, 400.0]
+        )))
+        .is_empty(),
+        "and one the floor cuts through is too"
+    );
+    // Its sides are the layout's to keep clear: a card across the page's whole width is one on
+    // the frame, however it is scrolled.
+    let across = found(&column_with(node_of(
+        "Card",
+        "card",
+        [0.0, 777.5, 752.0, 245.5],
+    )));
+    assert_eq!(across.len(), 1, "{across:?}");
+    assert!(
+        across[0].detail.contains("left"),
+        "its side stands on the column's: {}",
+        across[0].detail
+    );
+}
+
+/// A card keeps a sibling's gap from what stands over and under it: a notice glued to the list
+/// under it, or a card pressed against the one above it, is found — and the same card with the
+/// gap the toolkit's rhythm gives is no finding. A box beside it in a row is no neighbour.
+#[test]
+fn a_card_keeps_a_gap_from_its_neighbours() {
+    let column_with = |children: Vec<InspectionNode>| {
+        let mut column = node("Stack", "column", [280.0, 0.0, 620.0, 600.0], None);
+        column.children = children;
+        let mut root = node("TilolangWindow", "window", [0.0, 0.0, 900.0, 600.0], None);
+        root.children.push(column);
+        root
+    };
+    let found = |root: &InspectionNode| -> Vec<Problem> {
+        inspect(root, (900, 600), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::CrampedCard)
+            .collect()
+    };
+
+    // A notice standing on the list under it, with the page's gap above it.
+    let glued = found(&column_with(vec![
+        node_of("Banner", "notice", [304.0, 24.0, 572.0, 65.0]),
+        node_of("DescribedList", "list", [304.0, 89.0, 572.0, 400.0]),
+    ]));
+    assert_eq!(glued.len(), 1, "{glued:?}");
+    assert!(
+        glued[0].detail.contains("below") && glued[0].detail.contains("0 px"),
+        "it stands on the list under it: {}",
+        glued[0].detail
+    );
+    assert_eq!(
+        glued[0].id.as_deref(),
+        Some("notice"),
+        "the card is what the finding is about"
+    );
+
+    // The gap the toolkit gives cards and rows of a list: nothing to find.
+    assert!(
+        found(&column_with(vec![
+            node_of("Banner", "notice", [304.0, 24.0, 572.0, 65.0]),
+            node_of("DescribedList", "list", [304.0, 101.0, 572.0, 400.0]),
+        ]))
+        .is_empty(),
+        "a sibling's gap under the notice"
+    );
+
+    // A card pressed against the card above it is the same defect from the other side.
+    let stacked = found(&column_with(vec![
+        node_of("Card", "first", [304.0, 24.0, 572.0, 80.0]),
+        node_of("Card", "second", [304.0, 104.0, 572.0, 80.0]),
+    ]));
+    assert_eq!(stacked.len(), 2, "{stacked:?}");
+    assert!(
+        stacked
+            .iter()
+            .any(|problem| problem.detail.contains("above")),
+        "the card under it stands on the one over it: {stacked:?}"
+    );
+
+    // A card beside a box, in a row, has no neighbour over or under it.
+    let mut along = node("Row", "row", [280.0, 0.0, 620.0, 120.0], None);
+    along.children = vec![
+        node_of("Card", "card", [280.0, 0.0, 300.0, 120.0]),
+        node_of("Notice", "text", [300.0, 0.0, 600.0, 120.0]),
+    ];
+    let mut root = node("TilolangWindow", "window", [0.0, 0.0, 900.0, 600.0], None);
+    root.children.push(along);
+    assert!(found(&root).is_empty(), "nothing stands over or under it");
+}
+
+/// A row of a list, named `title`, standing at `rect`: `open` a row grown into its document.
+fn list_row(title: &str, rect: [f64; 4], open: bool) -> InspectionNode {
+    let mut row = node("SwipeRow", title, rect, Some(Role::ListItem));
+    let access = row.semantics.as_mut().expect("the row's semantics");
+    access.name = Some(title.to_owned());
+    access.state.expanded = open.then_some(true);
+    row
+}
+
+/// A row of an outline inside a document, named `title`.
+fn document_row(title: &str, rect: [f64; 4]) -> InspectionNode {
+    let mut row = node("ListRow", title, rect, Some(Role::ListItem));
+    row.semantics.as_mut().expect("the row's semantics").name = Some(title.to_owned());
+    row
+}
+
+/// What a document holds: the outline of the items under the row standing open.
+fn document(rows: Vec<InspectionNode>, rect: [f64; 4]) -> InspectionNode {
+    let mut tree = node("TreeView", "subtasks", rect, Some(Role::Tree));
+    tree.children = rows;
+    tree
+}
+
+/// An item stands once: the document of a row standing open that lists an item the list
+/// shows again is the same item twice, while a document listing items of its own is not.
+#[test]
+fn an_item_shown_in_an_open_rows_document_and_again_in_the_list_is_caught() {
+    let held = |rows: Vec<InspectionNode>| {
+        let mut list = node(
+            "DescribedList",
+            "list",
+            [280.0, 0.0, 1200.0, 600.0],
+            Some(Role::List),
+        );
+        list.children = rows;
+        let mut root = node("TilolangWindow", "window", [0.0, 0.0, 1280.0, 756.0], None);
+        root.children.push(list);
+        inspect(&root, (1280, 756), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::ItemShownTwice)
+            .collect::<Vec<Problem>>()
+    };
+
+    // The row standing open lists two steps, and the list shows one of them again.
+    let mut open = list_row("Call the landlord", [304.0, 100.0, 952.0, 400.0], true);
+    open.children = vec![document(
+        vec![
+            document_row("Find the service date", [344.0, 260.0, 912.0, 28.0]),
+            document_row("Ask about Tuesday", [344.0, 288.0, 912.0, 28.0]),
+        ],
+        [344.0, 260.0, 912.0, 56.0],
+    )];
+    let twice = held(vec![
+        list_row("Book a haircut", [304.0, 64.0, 952.0, 36.0], false),
+        open,
+        list_row("Find the service date", [304.0, 500.0, 952.0, 36.0], false),
+    ]);
+    assert_eq!(twice.len(), 1, "{twice:?}");
+    assert!(
+        twice[0].detail.contains("Find the service date")
+            && twice[0].detail.contains("Call the landlord"),
+        "the finding names the item and the row it stands in twice: {}",
+        twice[0].detail
+    );
+
+    // A document listing steps of its own, none of them a row of the list: one place each.
+    let mut open = list_row("Call the landlord", [304.0, 100.0, 952.0, 400.0], true);
+    open.children = vec![document(
+        vec![
+            document_row("Find the service date", [344.0, 260.0, 912.0, 28.0]),
+            document_row("Ask about Tuesday", [344.0, 288.0, 912.0, 28.0]),
+        ],
+        [344.0, 260.0, 912.0, 56.0],
+    )];
+    assert!(
+        held(vec![
+            list_row("Book a haircut", [304.0, 64.0, 952.0, 36.0], false),
+            open,
+            list_row("Buy oat milk", [304.0, 500.0, 952.0, 36.0], false),
+        ])
+        .is_empty(),
+        "nothing of the document stands in the list again"
+    );
+
+    // A page's document naming the item it was made from, as one reference row: it is no row
+    // of a list, and no finding.
+    let mut open = list_row("Call the landlord", [304.0, 100.0, 952.0, 400.0], true);
+    let mut section = node("Section", "linked", [344.0, 260.0, 912.0, 60.0], None);
+    section.children = vec![node_of("ListRow", "reference", [344.0, 260.0, 912.0, 36.0])];
+    section.children[0]
+        .semantics
+        .get_or_insert_with(|| AccessNode::new(Role::ListItem))
+        .name = Some("Book a haircut".to_owned());
+    open.children = vec![section];
+    assert!(
+        held(vec![
+            open,
+            list_row("Book a haircut", [304.0, 500.0, 952.0, 36.0], false),
+        ])
+        .is_empty(),
+        "a reference on its own is no row of a list"
+    );
+
+    // A branch of a tree whose rows show is expanded and holds no document: no finding.
+    let mut branch = node(
+        "ListRow",
+        "branch",
+        [304.0, 64.0, 952.0, 36.0],
+        Some(Role::ListItem),
+    );
+    let access = branch.semantics.as_mut().expect("the row's semantics");
+    access.name = Some("Outline".to_owned());
+    access.state.expanded = Some(true);
+    assert!(
+        held(vec![
+            branch,
+            list_row("First draft", [304.0, 100.0, 952.0, 36.0], false),
+        ])
+        .is_empty(),
+        "an expanded branch is a row of its list, and its document holds no row"
+    );
+}
+
+/// A group heading takes one band over its first row, and a finger's target where the window is
+/// held in the hand — never a slot or padding of its own between the heading and the row.
+#[test]
+fn a_group_heading_takes_one_band_and_stands_on_the_row_it_heads() {
+    let theme = ui::Theme::dark();
+    let band = band_height(&theme);
+    let with = |band: f64, row_top: f64| {
+        let mut list = node_of("DescribedList", "list", [0.0, 0.0, 400.0, 600.0]);
+        let mut access = AccessNode::new(Role::Tree);
+        access.children = vec![
+            AccessNode::new(Role::Button)
+                .with_name("Monday")
+                .with_action_target("group:Monday")
+                .with_bounds(Rect::new(0.0, 0.0, 400.0, band)),
+            AccessNode::new(Role::TreeItem)
+                .with_name("a task")
+                .with_bounds(Rect::new(0.0, row_top, 400.0, row_top + 48.0)),
+        ];
+        list.semantics = Some(access);
+        list
+    };
+    assert!(
+        heading_rooms(&with(band, band), &theme, None).is_empty(),
+        "one band, the row at its end"
+    );
+    let loose = heading_rooms(&with(band + 12.0, band + 12.0), &theme, None);
+    assert!(
+        loose
+            .iter()
+            .any(|p| p.kind == Kind::HeadingRoom && p.detail.contains("takes")),
+        "a band taller than a heading band: {loose:?}"
+    );
+    let slot = heading_rooms(&with(band, band + 12.0), &theme, None);
+    assert!(
+        slot.iter()
+            .any(|p| p.kind == Kind::HeadingRoom && p.detail.contains("heads stands")),
+        "a slot between the heading and its row: {slot:?}"
+    );
+    assert!(
+        heading_rooms(&with(48.0, 48.0), &theme, Some(48.0)).is_empty(),
+        "a finger's target is the one room a band grows by"
+    );
+}
+
+/// The first band a list that heads its rows draws — the heading over its first run, or the first
+/// row where the list leaves that heading out — stands on the column's content gutter, where a
+/// page's first block stands: one closer to the box over the list hugs it. A list whose rows name
+/// no group is one block and leads with its rows.
+#[test]
+fn a_list_that_heads_its_rows_starts_its_first_band_on_the_content_gutter() {
+    let theme = ui::Theme::dark();
+    let inset = ui::chrome::column_gutter(&theme);
+    let list = |heads_rows: bool, lead: f64| {
+        let mut list = node_of("VirtualList", "list", [100.0, 40.0, 400.0, 600.0]);
+        list.layout = Some(ui::widget::LayoutInfo::List(ui::widget::ListLayout {
+            heads_rows,
+            lead: ui::num::f32_of_f64(lead),
+        }));
+        let mut access = AccessNode::new(Role::List);
+        access.children = vec![
+            AccessNode::new(Role::ListItem)
+                .with_name("Water the plants")
+                .with_bounds(Rect::new(100.0, 40.0 + lead, 500.0, 88.0 + lead)),
+            AccessNode::new(Role::ListItem)
+                .with_name("Call the plumber")
+                .with_bounds(Rect::new(100.0, 88.0 + lead, 500.0, 136.0 + lead)),
+        ];
+        list.semantics = Some(access);
+        list
+    };
+    assert!(
+        heading_rooms(&list(true, inset), &theme, None).is_empty(),
+        "a content gutter of room over the first row"
+    );
+    let hugging = heading_rooms(&list(true, 0.0), &theme, None);
+    assert!(
+        hugging.iter().any(|p| p.kind == Kind::HuggingRow),
+        "a list that heads its rows with none of the content gutter over them: {hugging:?}"
+    );
+    assert!(
+        heading_rooms(&list(true, band_height(&theme)), &theme, None).is_empty(),
+        "a heading's own band is room enough over the row it heads"
+    );
+    assert!(
+        heading_rooms(&list(false, 0.0), &theme, None).is_empty(),
+        "a list whose rows name no group leads with them"
+    );
+    // The heading the list draws is held to the same inset, whatever room the list states.
+    let heading_over = |top: f64| {
+        let mut list = list(true, inset);
+        let mut access = AccessNode::new(Role::List);
+        access.children = vec![
+            AccessNode::new(Role::Heading { level: 3 })
+                .with_name("Overdue")
+                .with_bounds(Rect::new(100.0, top, 400.0, top + band_height(&theme)))
+                .with_action_target("group:Overdue"),
+            AccessNode::new(Role::ListItem)
+                .with_name("Water the plants")
+                .with_bounds(Rect::new(
+                    100.0,
+                    top + band_height(&theme),
+                    500.0,
+                    top + band_height(&theme) + 48.0,
+                )),
+        ];
+        list.semantics = Some(access);
+        list
+    };
+    assert!(
+        heading_rooms(&heading_over(40.0 + inset), &theme, None).is_empty(),
+        "a heading standing on the content gutter"
+    );
+    let hugging_heading = heading_rooms(&heading_over(40.0), &theme, None);
+    assert!(
+        hugging_heading.iter().any(|p| p.kind == Kind::HuggingRow),
+        "a heading hugging the box over the list: {hugging_heading:?}"
+    );
+}
+
+/// A page's body stands under the text a control beside its heading leads to only where the
+/// column has the room: on a phone's screen it starts on the gutter, and a section standing a
+/// control's width in is what a person sees the page lose on every line.
+#[test]
+fn a_page_on_a_phone_screen_starts_its_body_on_the_gutter() {
+    let theme = ui::Theme::dark();
+    let page = |width: f64, section_x: f64, section_width: f64| {
+        let mut page = node_of("Page", "page", [0.0, 56.0, width, 700.0]);
+        let mut stack = node_of("Stack", "blocks", [24.0, 80.0, width - 48.0, 600.0]);
+        stack.children.push(node_of(
+            "Section",
+            "section",
+            [section_x, 200.0, section_width, 85.0],
+        ));
+        page.children.push(stack);
+        page
+    };
+    // A control's cell and the gap after it, under a fine pointer.
+    let lead = 32.0 + f64::from(theme.tokens.spacing.rhythm.get(ui::tokens::Rhythm::Related));
+    let phone = indented_bodies(&page(390.0, 24.0 + lead, 302.0), &theme, None);
+    assert_eq!(phone.len(), 1, "{phone:?}");
+    assert_eq!(phone[0].kind, Kind::IndentedBody);
+    assert!(
+        phone[0].detail.contains("starts its body"),
+        "{}",
+        phone[0].detail
+    );
+    assert!(
+        indented_bodies(&page(390.0, 24.0, 342.0), &theme, None).is_empty(),
+        "a body on the gutter loses nothing"
+    );
+    assert!(
+        indented_bodies(&page(900.0, 24.0 + lead, 800.0), &theme, None).is_empty(),
+        "a column has the room the indent takes"
+    );
+    // A cell a grid places far across the page is no body indent, however narrow it is.
+    let mut wide = page(1280.0, 24.0, 1224.0);
+    wide.children[0]
+        .children
+        .push(node_of("Section", "cell", [869.0, 200.0, 371.0, 85.0]));
+    assert!(
+        indented_bodies(&wide, &theme, None).is_empty(),
+        "a grid's cell stands where its column does"
+    );
+}
+
+/// A presence name tag covers no word of the window, and one actor wears one tag.
+#[test]
+fn a_presence_tag_covers_no_word_and_one_actor_wears_one() {
+    let title = || {
+        let mut title = node(
+            "Text",
+            "title",
+            [40.0, 10.0, 120.0, 20.0],
+            Some(Role::StaticText),
+        );
+        title.semantics = title
+            .semantics
+            .map(|access| access.with_name("Buy oat milk"));
+        title
+    };
+    let tag = |at: [f64; 4], index: usize| {
+        let mut tag = node_of(ui::presence::TAG_WIDGET, "presence-tag-agent:helper", at);
+        tag.path = format!("presence-tag-agent:helper-{index}");
+        tag
+    };
+    let mut window = node_of("Window", "window", [0.0, 0.0, 400.0, 200.0]);
+    window.children = vec![title(), tag([40.0, 40.0, 80.0, 18.0], 0)];
+    let kinds = |root: &InspectionNode| {
+        inspect(root, (400, 200), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::PresenceTag)
+            .count()
+    };
+    assert_eq!(kinds(&window), 0, "a tag clear of the words is fine");
+    window.children = vec![title(), tag([60.0, 14.0, 80.0, 18.0], 0)];
+    assert_eq!(kinds(&window), 1, "a tag over the title is a fault");
+    window.children = vec![
+        title(),
+        tag([40.0, 40.0, 80.0, 18.0], 0),
+        tag([40.0, 80.0, 80.0, 18.0], 1),
+    ];
+    assert_eq!(kinds(&window), 1, "a second tag of one actor is a fault");
+}
+
+/// A list drawing one group heading over rows, under the title its window reads.
+fn grouped_list(title: &str, count: u32, heading: &str, rows: u32) -> InspectionNode {
+    grouped_list_of(title, count, heading, rows, 0)
+}
+
+/// A list drawing one group heading over `rows` rows, `done` of them checked off, under the
+/// title its window reads.
+fn grouped_list_of(title: &str, count: u32, heading: &str, rows: u32, done: u32) -> InspectionNode {
+    let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 700.0], None);
+    let mut list = node(
+        "VirtualList",
+        "list",
+        [0.0, 40.0, 400.0, 690.0],
+        Some(Role::List),
+    );
+    let mut head = AccessNode::new(Role::Button);
+    head.name = Some(heading.to_owned());
+    head.value = Some(count.to_string());
+    head.action_target = Some(format!("group:{heading}"));
+    head.bounds = Some(ui::a11y::AccessBounds {
+        x0: 0.0,
+        y0: 48.0,
+        x1: 400.0,
+        y1: 68.0,
+    });
+    let mut children = vec![head];
+    for row in 0..rows {
+        let mut item = AccessNode::new(Role::ListItem);
+        if row < done {
+            item.state.checked = Some(true);
+        }
+        let top = 68.0 + f64::from(row) * 40.0;
+        item.bounds = Some(ui::a11y::AccessBounds {
+            x0: 0.0,
+            y0: top,
+            x1: 400.0,
+            y1: top + 40.0,
+        });
+        children.push(item);
+    }
+    list.semantics
+        .as_mut()
+        .expect("the list's semantics")
+        .children = children;
+    shell.children = vec![
+        list,
+        counted(
+            "NavShellTitle",
+            "title",
+            [8.0, 8.0, 200.0, 32.0],
+            Role::Heading { level: 2 },
+            title,
+            &count.to_string(),
+        ),
+    ];
+    stack_node("window", [0.0, 0.0, 400.0, 700.0], vec![shell])
+}
+
+/// A card titled `heading` over a row whose trailing fact says `fact`.
+fn day_fact_card(heading: Option<&str>, fact: &str) -> InspectionNode {
+    let mut row = node(
+        "ListRow",
+        "row",
+        [8.0, 48.0, 384.0, 40.0],
+        Some(Role::ListItem),
+    );
+    {
+        let access = row.semantics.as_mut().expect("the row's semantics");
+        access.name = Some("Water the plants".to_owned());
+        access.value = Some(fact.to_owned());
+    }
+    let mut children = Vec::new();
+    if let Some(heading) = heading {
+        let mut header = node(
+            "SectionHeader",
+            "header",
+            [8.0, 8.0, 200.0, 32.0],
+            Some(Role::Heading { level: 3 }),
+        );
+        header
+            .semantics
+            .as_mut()
+            .expect("the header's semantics")
+            .name = Some(heading.to_owned());
+        children.push(header);
+    }
+    children.push(row);
+    let mut card = node("Card", "card", [0.0, 0.0, 400.0, 200.0], Some(Role::Group));
+    card.children = children;
+    stack_node("window", [0.0, 0.0, 400.0, 700.0], vec![card])
+}
+
+/// A row whose trailing fact names the day the card over it names is caught; a fact naming
+/// another day, or a row under no heading at all, is not.
+#[test]
+fn a_rows_day_fact_naming_the_day_the_heading_says_is_caught() {
+    let repeats = |heading: Option<&str>, fact: &str| {
+        inspect(&day_fact_card(heading, fact), (400, 700), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::RepeatedDayFact)
+            .count()
+    };
+    assert_eq!(
+        repeats(Some("Today"), "Today"),
+        1,
+        "the card says Today, and the row says it again"
+    );
+    assert_eq!(
+        repeats(Some("Today"), "Today 09:00"),
+        1,
+        "the row keeps its time of day, and gives the day back to the heading"
+    );
+    assert_eq!(
+        repeats(Some("Today"), "Tomorrow"),
+        0,
+        "a row due another day says something the card does not"
+    );
+    assert_eq!(
+        repeats(Some("Fieldwork"), "Fieldwork"),
+        0,
+        "a card named for a thing says nothing of when anything is due"
+    );
+    assert_eq!(
+        repeats(None, "Today"),
+        0,
+        "under no heading the row's day is the row's to say"
+    );
+}
+
+/// A list whose one group heading says what the title over it already says is caught; a heading
+/// saying something else, or counting other rows, is not.
+#[test]
+fn a_lone_group_heading_repeating_the_titles_words_is_caught() {
+    let repeated = |root: &InspectionNode| {
+        inspect(root, (400, 700), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::RepeatedGroupTitle)
+            .count()
+    };
+    assert_eq!(
+        repeated(&grouped_list("Today", 2, "Today", 2)),
+        1,
+        "the title says Today 2, and the heading over the rows says it again"
+    );
+    assert_eq!(
+        repeated(&grouped_list("Upcoming", 2, "Tomorrow", 2)),
+        0,
+        "a heading naming another day says something the title does not"
+    );
+    assert_eq!(
+        repeated(&grouped_list("Today", 3, "Today", 2)),
+        0,
+        "a title counting other rows than the heading does is no repeat"
+    );
+    assert_eq!(
+        repeated(&grouped_list("Today", 2, "Today", 1)),
+        0,
+        "a heading counting rows the list does not show heads part of it"
+    );
+    // A heading counts what is left to do: three rows under it, one of them finished, read as
+    // the two the title counts, and say what the title says.
+    assert_eq!(
+        repeated(&grouped_list_of("Today", 2, "Today", 3, 1)),
+        1,
+        "the heading counts the two rows left, as the title does"
+    );
+    assert_eq!(
+        repeated(&grouped_list_of("Today", 3, "Today", 3, 1)),
+        0,
+        "a title counting every row says something else than the two left"
+    );
 }

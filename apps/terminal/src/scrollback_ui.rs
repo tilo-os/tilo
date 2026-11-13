@@ -1,44 +1,26 @@
-// The terminal's scrollback as a scroll view: the wheel and fingers move it
-// pixel by pixel through the shared momentum and rubber band, and its frames
-// say which rows a scroll only moved, so a host copies them. Included into
-// `inner` beside `main_body.rs`.
+// The terminal's scrollback as a scroll view: the wheel and fingers move it through the shared
+// momentum and rubber band, and its frames say which rows a scroll only moved, so a host copies them.
+// Included into `inner` beside `main_body.rs`.
 
-/// The terminal's scrollback as a scroll view.
 #[derive(Default)]
 struct ScrollbackView {
-    /// How far past the top of its first row the view is scrolled, in
-    /// logical pixels, below one row: fingers and a glide move the
-    /// scrollback pixel by pixel. Zero at the live output.
     sub: f64,
-    /// Wheel and touchpad motion over the scrollback: a notch moves at once
-    /// and glides on, fingers move the rows 1:1 and a flick glides on after
-    /// they lift, through the rubber band past either end.
     glide: ui::ScrollMomentum,
-    /// The theme's motion, where the terminal last drew.
     motion: ui::tokens::EffectiveMotion,
     /// What the frame being drawn shows of the scrollback, and what the
     /// frame on screen showed: a scroll copies the rows it only moved.
     shown: ui::scroll_copy::PaintedFrames,
-    /// Whether the frame being drawn, and the frame on screen, painted the
-    /// terminal's top layer (its context menu, the environments panel).
     overlay_drawn: bool,
     overlay_presented: bool,
 }
 
 impl TerminalWidget {
-    /// How far the view stands below the top of the scrollback, in logical
-    /// pixels: whole rows, and the part of a row it scrolled past
-    /// (`view.sub`).
     fn scroll_from_top(&self) -> f64 {
         let max = self.max_scroll();
         max.saturating_sub(self.scroll_offset.min(max)) as f64 * self.char_h.max(1.0)
             + self.view.sub
     }
 
-    /// Move the view `px` logical pixels toward the live output (back into
-    /// history when negative), as far as the scrollback goes; returns how
-    /// far it moved. Fingers and a glide move it pixel by pixel; the rows it
-    /// shows are the scrollback's, whole.
     fn scroll_by_px(&mut self, px: f64) -> f64 {
         if self.alt_active || !px.is_finite() {
             return 0.0;
@@ -59,8 +41,6 @@ impl TerminalWidget {
         to - before
     }
 
-    /// Show the view `rows` rows back from the live output, at a row's top,
-    /// stopping any glide.
     fn set_scroll_offset(&mut self, rows: usize) {
         self.scroll_offset = rows;
         self.view.sub = 0.0;
@@ -68,32 +48,25 @@ impl TerminalWidget {
         self.view.glide.stop();
     }
 
-    /// Scroll the viewport back (toward older output) by `n` rows.
     pub fn scroll_up(&mut self, n: usize) {
         if self.alt_active {
             return;
         }
         self.set_scroll_offset((self.scroll_offset + n).min(self.max_scroll()));
     }
-    /// Scroll the viewport forward (toward the live bottom) by `n` rows.
     pub fn scroll_down(&mut self, n: usize) {
         self.set_scroll_offset(self.scroll_offset.saturating_sub(n));
     }
-    /// Jump to the oldest retained line.
     pub fn scroll_to_top(&mut self) {
         if self.alt_active {
             return;
         }
         self.set_scroll_offset(self.max_scroll());
     }
-    /// Pin the viewport back to the live output.
     pub fn scroll_to_bottom(&mut self) {
         self.set_scroll_offset(0);
     }
 
-    /// Step a glide after a flick or a wheel notch to the frame's time,
-    /// from `update`. A glide that meets an end of the scrollback stops
-    /// there.
     fn advance_glide(&mut self) {
         if !self.view.glide.is_active() {
             return;
@@ -108,10 +81,6 @@ impl TerminalWidget {
         }
     }
 
-    /// Helper for [`Widget::handle_event`]'s `WindowEvent::MouseWheel` arm.
-    /// Over the scrollback the wheel and fingers move the rows pixel by
-    /// pixel and glide on; a program that reads the mouse, or the alternate
-    /// screen, gets whole rows.
     fn handle_wheel_event(
         &mut self,
         delta: &MouseScrollDelta,
@@ -145,18 +114,11 @@ impl TerminalWidget {
             return;
         }
         if reports {
-            // xterm encodes wheel up/down as virtual buttons 4/5. One report
-            // per platform wheel event avoids turning high-resolution touchpad
-            // deltas into an input flood; the application owns acceleration.
             self.report_mouse(if lines > 0 { 64 } else { 65 }, true, modifiers);
             *handled = true;
             return;
         }
         if !self.modes.mouse_report {
-            // In the alternate screen (pager / editor) forward wheel
-            // notches as arrow keys so `less`/`man` scroll naturally.
-            // Honour DECCKM so apps that requested application cursor
-            // keys (`vim`, `less -R`) receive the SS3 form they expect.
             let seq: &[u8] = match (lines > 0, self.modes.app_cursor_keys) {
                 (true, false) => b"\x1b[A",
                 (false, false) => b"\x1b[B",
@@ -173,9 +135,6 @@ impl TerminalWidget {
         *handled = true;
     }
 
-    /// Wheel and touchpad motion over the scrollback, through the shared
-    /// momentum: a notch moves three rows at once and glides on, fingers
-    /// move the rows 1:1 in whole device pixels and a flick glides on.
     fn wheel_scrollback(
         &mut self,
         delta: &MouseScrollDelta,
@@ -199,32 +158,23 @@ impl TerminalWidget {
                 return;
             }
         };
-        // A notch is three rows, not the momentum's own step.
         let step = match delta {
             MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 3.0 * row,
             MouseScrollDelta::PixelDelta(_) => step,
         };
         let moved = self.scroll_by_px(step);
         if self.view.glide.wheel_applied(step, moved) {
-            // Reviewing history moves the viewport over the scrollback and
-            // nothing the terminal publishes; the text it exposes to
-            // assistive technology follows with the frame's accessibility
-            // refresh.
             ui::widget::note_view_only_pan();
         }
     }
 
-    /// Where this frame shows the scrollback.
     fn grid_frame(&self) -> GridFrame {
         let grid_rect = self.grid_rect;
         let row_h = self.char_h;
         let visible_rows = (grid_rect.height() / row_h).floor() as usize;
         let start_y = self.viewport_start_y;
-        // Between two rows' tops the view shows a part of one more.
         let rows = (visible_rows + usize::from(self.view.sub > 0.0))
             .min(self.grid.len().saturating_sub(start_y));
-        // Past an end of the scrollback, fingers pull the rows through the
-        // rubber band.
         let give = self.view.glide.give(ui::motion::frame_now());
         let top = grid_rect.y0.floor();
         GridFrame {
@@ -243,12 +193,9 @@ impl TerminalWidget {
         }
     }
 
-    /// Paint the grid: each row of the scrollback in view, with its share of
-    /// the selection and the find matches under its cells, drawn where it
-    /// stands in the scrollback as if unscrolled and landed scrolled, so a
-    /// row a scroll only moved paints the same and a host copies it
-    /// ([`ui::scroll_copy::PaintedFrames`]); then the cursor, the bar, the
-    /// bands above the grid (`outside`) and collaborators' marks.
+    /// Paint the grid: each row in view with its share of the selection and the find matches, drawn at
+    /// its place in the scrollback so a scroll only moves it ([`ui::scroll_copy::PaintedFrames`]); then the
+    /// cursor, the bar, the bands above the grid (`outside`) and collaborators' marks.
     fn draw_grid(
         &mut self,
         scene: &mut Scene,
@@ -270,11 +217,6 @@ impl TerminalWidget {
             transform,
             &frame.clip,
         );
-        // Images sit beneath selections and glyphs: text printed over a Kitty
-        // placement remains legible, and selecting cells still has the same
-        // visible feedback as plain terminal content. Their row anchors are
-        // buffer-absolute, so scrollback and history retention move them with
-        // the corresponding rows rather than pinning them to the viewport.
         let unscrolled = frame.unscrolled(self.grid_rect, self.char_h);
         let mut images = Scene::new();
         self.draw_terminal_images(
@@ -296,15 +238,11 @@ impl TerminalWidget {
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         self.draw_rows(&mut ctx, &frame, &mut pieces);
         self.draw_cursor_piece(&mut ctx, &frame, &mut pieces);
-        // Collaborators' selections and carets lie over the rows, where the
-        // view shows them.
         let mut peers = Scene::new();
         let marks = transform * Affine::translate((0.0, -(self.view.sub + frame.give)));
         self.draw_peer_marks(&mut peers, marks, theme, presence);
         scene.append(&peers, None);
         scene.pop_layer();
-        // The overlay history bar over the right padding, while the buffer
-        // overflows the viewport.
         let mut bar = Scene::new();
         self.draw_scrollbar(&mut bar, transform, theme, frame.visible_rows);
         scene.append(&bar, None);
@@ -337,8 +275,6 @@ impl TerminalWidget {
         }
     }
 
-    /// Paint the rows in view, each a damage part of the scene and a piece
-    /// of the frame: its selection and find matches, then its cells.
     fn draw_rows(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -372,7 +308,6 @@ impl TerminalWidget {
             };
             let py = frame.top + row as f64 * row_h;
             let mut drawn = Scene::new();
-            // The selection and the find matches under the row's glyphs.
             if let Some(selection) = self.selection
                 && let Some((from, to)) = selection_span_on(&selection, row, self.width)
             {
@@ -393,9 +328,6 @@ impl TerminalWidget {
             }
             let mut row_ctx = PaintCtx::new(&mut drawn, transform, &mut *text_renderer, theme);
             self.draw_cell_row(&mut row_ctx, &cell_style, line_text, attrs, py);
-            // Each row on screen is a damage part: typing repaints its row.
-            // Glyphs may overhang their row by up to a row above and below,
-            // and the widget's width by up to two cells.
             let band = frame.on_screen(Rect::new(
                 self.rect.x0 - 2.0 * self.char_w,
                 py - row_h,
@@ -415,8 +347,6 @@ impl TerminalWidget {
         }
     }
 
-    /// The cursor, a damage part of its own: moving it repaints the cell it
-    /// left and the cell it entered.
     fn draw_cursor_piece(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -458,12 +388,6 @@ impl TerminalWidget {
         }
     }
 
-    /// Paint the block cursor, pinned to the live output — while the user
-    /// has scrolled back into history it hides (matching xterm/kitty), so
-    /// it doesn't imply the caret is somewhere on an old line. `window` is
-    /// the first row in view and how many are, `top` where the first of
-    /// them is drawn. Returns where it may paint (its glyph may overhang the
-    /// cell by up to a cell on every side), `None` when it is hidden.
     fn draw_block_cursor(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -482,7 +406,6 @@ impl TerminalWidget {
         let grid_rect = self.grid_rect;
         let scroll = self.scroll_offset;
         let cursor_color = self.last_cursor_color;
-        // Absolute grid row of the cursor → visible row (may be scrolled off).
         let cursor_abs = self.grid.len().saturating_sub(self.height) + self.cursor_y;
         let scrolled_back = !self.alt_active && scroll > 0;
         let shown = self.modes.cursor_visible
@@ -495,17 +418,12 @@ impl TerminalWidget {
         let cy_local = cursor_abs.saturating_sub(start_y);
         let cx = grid_rect.x0 + self.cursor_x as f64 * self.char_w;
         let cy = (top + cy_local as f64 * self.char_h).floor();
-        // An unmistakable, theme-coloured "inverted cell" cursor.
         let cursor_rect = snap_to_device_pixels(
             transform,
             Rect::new(cx, cy, cx + self.char_w, cy + self.char_h),
         );
         scene.fill(Fill::NonZero, transform, cursor_color, None, &cursor_rect);
 
-        // Re-punch the glyph beneath the block in the background color so
-        // the character under the caret stays legible (a solid block that
-        // hides its own cell reads as a blank cursor). This is the standard
-        // "inverted cell" block cursor.
         if let Some(ch) = self
             .grid
             .get(cursor_abs)
@@ -530,34 +448,25 @@ impl TerminalWidget {
     }
 }
 
-/// Where a frame shows the scrollback: rows `start_y..end_y` of it, the
-/// first `top` plus its place in the scrollback down the grid unscrolled,
-/// landed `scroll` higher, in `clip`.
 struct GridFrame {
     start_y: usize,
     end_y: usize,
     visible_rows: usize,
     top: f64,
-    /// The rubber band's give past an end, part of `scroll`.
     give: f64,
     scroll: f64,
     clip: Rect,
 }
 
 impl GridFrame {
-    /// The transform that lands what was drawn unscrolled under
-    /// `transform` where the view shows it.
     fn scrolled(&self, transform: Affine) -> Affine {
         transform * Affine::translate((0.0, -self.scroll)) * transform.inverse()
     }
 
-    /// Where `rect`, drawn unscrolled, lands on screen.
     fn on_screen(&self, rect: Rect) -> Rect {
         rect - vello::kurbo::Vec2::new(0.0, self.scroll)
     }
 
-    /// The grid as if its first row were the scrollback's: what draws a row
-    /// at its place in the view draws it at its place in the scrollback.
     fn unscrolled(&self, grid_rect: Rect, row_h: f64) -> Rect {
         Rect::new(
             grid_rect.x0,

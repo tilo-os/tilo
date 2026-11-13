@@ -1,15 +1,7 @@
-//! `tilo-legacy confine-fs`: Landlock a helper to the paths it serves, then
-//! exec it. Used for every `virtiofsd` (see [`crate::virtiofs`]) and every
-//! hosted VM's share server ([`crate::hosted::files`]).
-//!
-//! Landlock decides what a helper may open, but not which Unix sockets it
-//! may connect to. A hosted VM's share server is reached by a stranger's
-//! VM, so it is also isolated (`--isolate`): it gets user, mount, network
-//! and IPC namespaces of its own, in which the directories named with
-//! `--hide` (the jails with every VM's API socket, the service's own
-//! socket) are empty read-only mounts and there is no network at all.
-//! Landlock then forbids it to change its mounts, so it cannot uncover
-//! them.
+//! `tilo-legacy confine-fs`: Landlock a helper to the paths it serves, then exec
+//! it. A hosted VM's share server is reached by a stranger's VM, so it also gets
+//! namespaces of its own (`--isolate`), in which the directories named with
+//! `--hide` are empty read-only mounts and there is no network.
 
 use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
@@ -21,8 +13,8 @@ use sandbox_core::landlock::{
     restrict_self,
 };
 
-/// Restrict this process as `confinement` says and replace it with its
-/// program. Returns only on failure: an unconfined helper is never started.
+/// Replaces this process with its program; returns only on failure, since an unconfined helper is
+/// never started.
 pub fn exec_confined(confinement: &Confinement) -> String {
     let Confinement {
         ro,

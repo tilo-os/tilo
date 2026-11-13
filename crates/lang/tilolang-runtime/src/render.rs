@@ -13,7 +13,7 @@ use crate::ids::{ModuleHash, Principal, ViewId};
 use crate::meta::ParamMeta;
 use crate::registry::Package;
 use crate::space::Space;
-use crate::value::{RefValue, Value};
+use crate::value::{CollRef, RefValue, Value};
 use crate::view::{LIST_LEN, NodeBuild, PREVIEW, UiNode};
 use crate::view_state::StateKey;
 
@@ -47,7 +47,6 @@ pub const ITEMS: &str = "items";
 /// The property of a `ui.VirtualList` naming the item where the person looking has seen
 /// nothing yet (`first_unseen`): the list draws its divider over the row that shows it.
 pub const UNSEEN_FROM: &str = "unseen_from";
-/// The kind of the divider over the first row the person looking has not seen.
 /// The property of a loop's node that names the parameter of its row view the item goes to.
 const EACH: &str = "each";
 /// The property of a loop's node that holds the key suffix of the rows around it.
@@ -72,6 +71,8 @@ pub struct Rendered {
     /// What it saw of the collections it read item by item.
     pub(crate) colls: Vec<CollSeen>,
     pub space_reads: Vec<(String, f64)>,
+    /// Whether it showed anything only the window knows: a name, a format, a word.
+    pub person_reads: bool,
     pub retained: Vec<Retained>,
     /// The view state slots read, with their generations.
     pub state_reads: Vec<(StateKey, u64)>,
@@ -84,12 +85,24 @@ pub struct Rendered {
 
 pub(crate) struct Acc {
     pub reads: Vec<(String, String)>,
+    /// The collections the view lists, as the document each is of and the field it is:
+    /// `rows` and `list` templates alike, filled in as the view's trees are built, so a window's
+    /// shell — built after the content it holds — reads what the window shows.
+    pub listed: Vec<(String, String)>,
     pub colls: Vec<CollSeen>,
     pub space_reads: Vec<(String, f64)>,
+    pub person_reads: bool,
     pub retained: Vec<Retained>,
     pub state_reads: Vec<(StateKey, u64)>,
     pub state_seen: Vec<(StateKey, Value)>,
     pub changes_at: Option<i64>,
+}
+
+/// Note the collection a view lists, for the shell above it to read: what a window shows by
+/// scrolling is what its mark counts ([`crate::marks`]).
+fn note_listed(coll: &CollRef, acc: &mut Acc) {
+    acc.listed
+        .push((coll.target.doc.clone(), coll.field.clone()));
 }
 
 /// The earlier of two instants at which something read changes; `None` stands for never.
@@ -135,6 +148,10 @@ pub(crate) struct Walk<'a> {
     /// Whether the nodes here are a row of a `list` that stands a divider where its unseen part
     /// starts (`unseen_from:`), which already says of a row there that it is new.
     pub says_new: bool,
+    /// Whether the nodes here are a row standing open into its item where it stands: a view the
+    /// row calls runs as the open row's, so the slot holding the item's document is built in it
+    /// (`row_open`), and in no closed row.
+    pub open: bool,
     /// How many rows that list shows, when it is a card's preview (its `preview` property):
     /// the rows after those are never shown, so they are not built.
     pub preview: Option<usize>,
@@ -151,6 +168,9 @@ impl<'a> Walk<'a> {
             prefix: if calls { Some(key) } else { walk.prefix },
             in_list: listed,
             says_new: walk.says_new,
+            // A row's own tree — the nodes a template's block was lowered into as well as the
+            // row view's — says whether it stands open; a call's tree is the callee's to walk.
+            open: walk.open,
             preview: match n.props.get(PREVIEW) {
                 Some(Value::Int(rows)) if n.kind == "list" => usize::try_from(*rows).ok(),
                 _ => None,
@@ -180,6 +200,9 @@ pub(crate) struct Stub<'a> {
     pub args: Vec<Value>,
     /// A row of a `list`: rendered when the host shows it, not now.
     pub lazy: bool,
+    /// Whether the call stands in a row the host shows open into its item: what its tree gives
+    /// as the row's document is built here, and in no closed row.
+    pub open: bool,
     pub depth: usize,
 }
 
@@ -224,6 +247,9 @@ pub(crate) struct Scoped<'p, 'b> {
     /// Whether the tree rendered is a row of a `list` that stands a divider where its unseen
     /// part starts (`unseen_from:`) (see [`Walk::says_new`]).
     pub says_new: bool,
+    /// Whether the tree rendered is a row of a `list` standing open into its item where it
+    /// stands (see [`Walk::open`]).
+    pub open: bool,
     pub boundaries: Option<&'b mut dyn Boundaries>,
 }
 
@@ -249,6 +275,7 @@ impl Acc {
         self.reads.extend(nested.reads);
         merge_seen(&mut self.colls, nested.colls);
         self.space_reads.extend(nested.space_reads);
+        self.person_reads |= nested.person_reads;
         self.retained.extend(nested.retained);
         self.state_reads.extend(nested.state_reads);
         self.state_seen.extend(nested.state_seen);
@@ -358,10 +385,12 @@ impl Core {
             .cloned()
             .or_else(|| self.written_author(&pkg.hash))
             .unwrap_or_else(|| pkg.hash.clone());
+        let open = scoped.as_ref().is_some_and(|scoped| scoped.open);
         self.frames.borrow_mut().push(
             author,
             FrameKind::View(ViewState {
                 space,
+                open,
                 window: offer.window.to_owned(),
                 viewer: offer.viewer.clone(),
                 ..ViewState::default()
@@ -384,8 +413,10 @@ impl Core {
         surfaced?;
         let mut acc = Acc {
             reads: state.reads,
+            listed: Vec::new(),
             colls: state.colls,
             space_reads: state.space_reads,
+            person_reads: state.person_reads,
             retained: Vec::new(),
             state_reads: state.state_reads,
             state_seen: state.state_seen,
@@ -399,19 +430,21 @@ impl Core {
             nodes: &state.nodes,
             offer,
         };
-        let (prefix, says_new, hook) = match scoped {
+        let (prefix, says_new, open, hook) = match scoped {
             Some(Scoped {
                 prefix,
                 says_new,
+                open,
                 boundaries,
-            }) => (prefix, says_new, boundaries),
-            None => (None, false, None),
+            }) => (prefix, says_new, open, boundaries),
+            None => (None, false, false, None),
         };
         let walk = Walk {
             level: 0,
             prefix,
             in_list: false,
             says_new,
+            open,
             preview: None,
         };
         let tree = self.build_node(&cx, root, walk, &mut acc, hook)?;
@@ -420,6 +453,7 @@ impl Core {
             reads: acc.reads,
             colls: acc.colls,
             space_reads: acc.space_reads,
+            person_reads: acc.person_reads,
             retained: acc.retained,
             state_reads: acc.state_reads,
             state_seen: acc.state_seen,
@@ -504,8 +538,10 @@ impl Core {
     fn waiting_rendered(&self) -> Rendered {
         let mut acc = Acc {
             reads: Vec::new(),
+            listed: Vec::new(),
             colls: Vec::new(),
             space_reads: Vec::new(),
+            person_reads: false,
             retained: Vec::new(),
             state_reads: Vec::new(),
             state_seen: Vec::new(),
@@ -541,6 +577,7 @@ impl Core {
             reads: acc.reads,
             colls: acc.colls,
             space_reads: acc.space_reads,
+            person_reads: acc.person_reads,
             retained: acc.retained,
             state_reads: acc.state_reads,
             state_seen: acc.state_seen,
@@ -556,8 +593,10 @@ impl Core {
     fn failed_rendered(&self, key: &str, failure: &crate::foreign::ViewFailure) -> Rendered {
         let mut acc = Acc {
             reads: Vec::new(),
+            listed: Vec::new(),
             colls: Vec::new(),
             space_reads: Vec::new(),
+            person_reads: false,
             retained: Vec::new(),
             state_reads: Vec::new(),
             state_seen: Vec::new(),
@@ -575,10 +614,7 @@ impl Core {
         acc.state_seen.push((state_key, seen));
         // The words are the reader's, through the words the host set, so a person in any
         // language reads what happened: the title, with the reason under it.
-        let title = self
-            .words
-            .borrow()
-            .word("tilolang-view-failed", &[], "This couldn't be shown");
+        let title = self.word_args("tilolang-view-failed", &[], "This couldn't be shown");
         let mut children = Vec::new();
         if !failure.reason.is_empty() {
             children.push(UiNode {
@@ -611,6 +647,7 @@ impl Core {
             reads: acc.reads,
             colls: acc.colls,
             space_reads: acc.space_reads,
+            person_reads: acc.person_reads,
             retained: acc.retained,
             state_reads: acc.state_reads,
             state_seen: acc.state_seen,
@@ -731,6 +768,7 @@ impl Core {
             target: Rc::new(vt),
             args,
             lazy: walk.in_list,
+            open: walk.open,
             depth: cx.offer.depth.saturating_add(1),
         })?;
         Ok(UiNode {
@@ -885,6 +923,20 @@ impl Core {
     /// A loop over a collection that is the only child of `parent` hands its rows to the
     /// boundaries ([`Boundaries::rows`]): they follow the collection's inserts and removals
     /// from then on, and the view holding the loop does not depend on which items it has.
+    /// The items of the collection a loop lists, noted for the shell above it ([`note_listed`]):
+    /// what a window shows by scrolling is what its mark counts ([`crate::marks`]).
+    fn listed_items<'a>(
+        &self,
+        coll: &'a std::rc::Rc<CollRef>,
+        acc: &mut Acc,
+    ) -> Result<Items<'a>, RuntimeError> {
+        note_listed(coll, acc);
+        Ok(Items::Coll(
+            coll,
+            self.coll_listing(coll).map_err(RuntimeError::Package)?,
+        ))
+    }
+
     fn build_rows<'h>(
         &self,
         cx: &Build<'_>,
@@ -900,10 +952,7 @@ impl Core {
         };
         let items = match n.props.get(ITEMS) {
             Some(Value::List(items)) => Items::List(items),
-            Some(Value::Coll(coll)) => Items::Coll(
-                coll,
-                self.coll_listing(coll).map_err(RuntimeError::Package)?,
-            ),
+            Some(Value::Coll(coll)) => self.listed_items(coll, acc)?,
             _ => {
                 return Err(RuntimeError::Package(format!(
                     "the loop `{}` has no list of items",
@@ -1503,6 +1552,11 @@ impl RowsOf {
         format!("{}/{}/{id}", self.key, coll.target.doc)
     }
 
+    /// The item of `coll` whose row is keyed `key`, as [`Self::coll_row_key`] wrote it.
+    pub fn coll_row_id<'k>(&self, coll: &crate::value::CollRef, key: &'k str) -> Option<&'k str> {
+        key.strip_prefix(format!("{}/{}/", self.key, coll.target.doc).as_str())
+    }
+
     /// The key of the row of `item`, the `index`th, and the row view's arguments.
     pub fn row(&self, item: &Value, index: usize) -> (String, Vec<Value>) {
         let item_key = item_key(item, index);
@@ -1539,6 +1593,9 @@ impl RowsOf {
             target: Rc::clone(&self.target),
             args,
             lazy: self.lazy,
+            // The row's own: the call stands in the list's rows, and what the list shows open
+            // is the row's to say.
+            open: false,
             depth: self.depth,
         }
     }

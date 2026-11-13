@@ -1,8 +1,7 @@
-//! Geometry of every Settings pane at a wide and a narrow window.
-//!
-//! A pane is one toolkit form on the toolkit's page frame, so these properties
-//! hold for all of them by construction; the test keeps them that way. Every
-//! assertion reads the production widget tree after a real layout pass.
+//! Geometry of every Settings pane at a wide and a narrow window. A pane is one
+//! toolkit form on the toolkit's page frame, so these properties hold for all
+//! of them by construction; the test keeps them that way. Every assertion reads
+//! the production widget tree after a real layout pass.
 
 use settings::categories::Category;
 use ui::widget::{LabelPlacement, LayoutInfo, Widget};
@@ -10,7 +9,6 @@ use vello::kurbo::Rect;
 
 const WIDE: (f32, f32) = (1200.0, 760.0);
 const NARROW: (f32, f32) = (440.0, 820.0);
-/// The toolkit's readable width, which bounds the form on a wide window.
 const READABLE: f64 = ui::tokens::Metrics::BASE.readable_width as f64;
 
 struct FieldGeometry {

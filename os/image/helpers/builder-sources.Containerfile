@@ -16,6 +16,10 @@ COPY keys/tpm2-pcr-signing.public.pem /build/keys/
 COPY crates /build/crates
 COPY apps /build/apps
 COPY examples /build/examples
+# The SDKs' native parts are workspace members, which every workspace build
+# needs the manifests of.
+COPY sdk/python/native /build/sdk/python/native
+COPY sdk/typescript/native /build/sdk/typescript/native
 COPY vendor /build/vendor
 COPY dist /build/dist
 COPY docs/developers/tasks /build/docs/developers/tasks
@@ -35,6 +39,7 @@ COPY tools/test-assets.py /build/tools/test-assets.py
 COPY tools/font-catalog.py /build/tools/font-catalog.py
 COPY tools/apps/language_packs.py tools/apps/stage_sdk_services.py /build/tools/apps/
 COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env
+COPY os/hosted-guest-snapshot.env /build/os/hosted-guest-snapshot.env
 # The empty workspace-hack the greeter's initramfs build links (compile.sh,
 # phase rust-boot-greeter).
 COPY os/initrd/workspace-hack /build/os/initrd/workspace-hack

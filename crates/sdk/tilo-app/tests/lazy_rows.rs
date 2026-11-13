@@ -19,7 +19,7 @@ pub struct Library {
     pub books: Collection<Book>,
 }
 
-#[resource(kind = "test.lazy-library", label = "Library")]
+#[resource(kind = "test.lazy-library", catalogue = "tests/locales")]
 impl Library {
     /// Add books.
     #[action]
@@ -37,7 +37,7 @@ impl Library {
 
 /// What the shelf does with a book it shows.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(operation = "test.lazy-library.shelf")]
+#[effect(operation = "test.lazy-library.shelf", catalogue = "tests/locales")]
 enum ShelfEffect {
     /// Open the book.
     #[effect(view, row)]

@@ -40,6 +40,10 @@ import {dirname, extname, join, normalize, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 
+/** The page expression that runs one of the supervisor's actions and answers its output. */
+const agentInvoke = (resource, action, argument) => `peer.actions.invoke({provider: 'agents', address: {resource: ${JSON.stringify(resource)}, `
+  + `action: ${JSON.stringify(action)}}}, ${JSON.stringify(argument ?? 'None')}).done.then(entry => entry?.update?.output?.value ?? entry)`;
+
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '../../../..');
 const argv = process.argv.slice(2);
@@ -206,15 +210,13 @@ for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
 <script type="module">
 try {
   const q = new URLSearchParams(location.search);
-  const wasm = await import('./pkg/tilo_browser_runtime.js');
   const {connectPeer} = await import('./peer.mjs');
   const {openDeviceCustody, idbStorage} = await import('./device-custody.mjs');
-  await wasm.default();
   const profile = q.get('profile');
   const custody = await openDeviceCustody({profile, storage: idbStorage()});
   const peer = globalThis.peer = await connectPeer({
     origin: q.get('origin'), userPublicKey: q.get('user'), label: q.get('label'), room: q.get('room'),
-    custody, profile, displayName: q.get('label'), runtime: wasm,
+    custody, profile, displayName: q.get('label'),
   });
   globalThis.tiloMount = await peer.mountDesktop(document.getElementById('surface'), {apps: [q.get('app')]});
   globalThis.harnessReady = true;
@@ -263,7 +265,7 @@ async function startNative(name) {
   }), {mode: 0o600});
   const daemon = detached(`${name}-daemon`, runtimeBin, ['--profile', profile, '--daemon'], {env: {
     TILO_COLLAB_HOST: host.irohAddr, TILO_RUNTIME_PROFILE: profile,
-    RUST_LOG: process.env.COLLAB_E2E_DAEMON_LOG ?? 'info,iroh=warn,shell::shell::network=debug',
+    RUST_LOG: process.env.COLLAB_E2E_DAEMON_LOG ?? 'info,iroh=warn',
   }});
   if (!await until(async () => /collaboration broker: bound/.test(read(daemon.stderr)), 300000, 250)) {
     throw new Error(`the runtime daemon did not start: ${read(daemon.stderr).slice(-600)}`);
@@ -587,23 +589,23 @@ async function runApp(name) {
     // 7. The agent edits; native and pages show it, with its cursor.
     if (withAgent) await phase('agent edit -> native and browsers', async () => {
       const label = 'E2E agent';
-      const grant = await a.tab.evaluate(`peer.agents.requestGrant(${JSON.stringify({label, rooms: [room], apps: [app.id], expiresInSecs: 3600})})`);
+      const grant = await a.tab.evaluate(`${agentInvoke('agents', 'request-grant', {Json: {label, rooms: [room], apps: [app.id], expiresInSecs: 3600}})}`);
       const grantId = grant?.grant ?? grant;
       const approved = await until(async () => {
-        const status = await a.tab.evaluate('peer.agents.status()');
-        return (status.grants ?? []).some(g => JSON.stringify(g).includes(String(grantId)) && /approved/i.test(JSON.stringify(g)));
+        const status = await a.tab.evaluate(`${agentInvoke('agents', 'status')}`);
+        return (status?.grants ?? []).some(g => JSON.stringify(g).includes(String(grantId)) && /approved/i.test(JSON.stringify(g)));
       }, 30000, 500);
       const task = app.agentTask(T.agent);
-      const spawned = approved && await a.tab.evaluate(`peer.agents.spawn(${JSON.stringify({grant: grantId, task})})`);
+      const spawned = approved && await a.tab.evaluate(`${agentInvoke('agents', 'spawn', {Json: {grant: grantId, task}})}`);
       const started = Date.now();
       let agentCursor = null, agentState = null;
       await until(async () => {
         if (!agentCursor) {
-          const seen = (await cursorLabels(b)).find(m => m.kind === 'agent') ?? (await b.tab.evaluate('peer.agents.cursors()'))[0];
+          const seen = (await cursorLabels(b)).find(m => m.kind === 'agent');
           if (seen) agentCursor = seen;
         }
-        const status = await a.tab.evaluate('peer.agents.status()');
-        const agent = (status.agents ?? []).find(x => JSON.stringify(x).includes(label)) ?? status.agents?.[0];
+        const status = await a.tab.evaluate(`${agentInvoke('agents', 'status')}`);
+        const agent = (status?.agents ?? []).find(x => JSON.stringify(x).includes(label)) ?? status?.agents?.[0];
         const run = agent?.tasks?.at(-1);
         if (run && !/queued|running|planning|working/i.test(String(run.state))) agentState = run;
         return agentState && agentCursor;

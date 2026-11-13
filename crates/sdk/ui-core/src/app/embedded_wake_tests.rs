@@ -167,6 +167,7 @@ fn queued_presence_arrival_and_departure_repaint_without_widget_dirtiness() {
                 Vec::new()
             },
             permissions: Vec::new(),
+            apps: Vec::new(),
         });
         if present {
             fixture

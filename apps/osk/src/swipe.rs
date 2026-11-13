@@ -42,24 +42,16 @@ const RESAMPLE_N: usize = 32;
 
 #[cfg(test)]
 thread_local! {
-    /// Dictionary words whose shape a decode on this thread scored.
     static SHAPES_SCORED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// A decoded swipe candidate: the word plus a score in `0.0..=1.0` (higher is
-/// better).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Candidate {
     pub word: String,
     pub score: f32,
 }
 
-/// The decoder seam. The shipping implementation is [`GeometricSwipeModel`];
-/// a future `FutoSwipeModel` (`ExecuTorch`) can implement the same trait and be
-/// swapped in with no change to the widget.
 pub trait SwipeModel {
-    /// Decode a gesture `path` (in the same coordinate space as `key_geom`)
-    /// into up to `top_n` ranked candidate words.
     fn decode(
         &self,
         path: &[Point],
@@ -77,30 +69,22 @@ pub trait SwipeModel {
 /// Offline geometric + dictionary swipe decoder with bounded elastic reranking.
 pub struct GeometricSwipeModel {
     dict: Dictionary,
-    /// Folded first/last-letter buckets avoid scanning the full vocabulary
-    /// for every gesture. The same location prune selects these candidates.
     endpoints: HashMap<(char, char), Vec<usize>>,
-    /// The embedded language `dict` holds; `None` for a custom dictionary,
-    /// which a language switch leaves alone.
     language: Option<Language>,
-    /// Frequency prior in hundredths; `None` reproduces the original matcher.
     elastic: Option<u8>,
 }
 
 impl GeometricSwipeModel {
-    /// Build a decoder over the embedded dictionary of `language`.
     pub fn for_language(language: Language) -> Self {
         let mut model = Self::with_dictionary(Dictionary::for_language(language));
         model.language = Some(language);
         model
     }
 
-    /// Build a decoder over the embedded English dictionary.
     pub fn english() -> Self {
         Self::for_language(Language::English)
     }
 
-    /// Build a decoder over a custom dictionary (tests / other locales).
     pub fn with_dictionary(dict: Dictionary) -> Self {
         let endpoints = index_endpoints(&dict);
         Self {
@@ -151,7 +135,6 @@ impl GeometricSwipeModel {
         indices
     }
 
-    /// Convenience over the trait method with a fixed top-N.
     pub fn decode_top(
         &self,
         path: &[Point],
@@ -220,7 +203,6 @@ impl SwipeModel for GeometricSwipeModel {
             return Vec::new();
         }
 
-        // letter -> key centre, for every single-letter Char key on screen.
         let centres = letter_centres(key_geom, layout);
         if centres.is_empty() {
             return Vec::new();
@@ -232,9 +214,6 @@ impl SwipeModel for GeometricSwipeModel {
         let user = resample(path, RESAMPLE_N);
         let user_bbox = bbox_diag(&user).max(1.0);
 
-        // The keys nearest the path's first and last points constrain the
-        // candidate's first/last letters — the cheapest, strongest prune.
-        // `path.len() >= 2` is checked above, so both ends always exist.
         let (Some(&start), Some(&end)) = (path.first(), path.last()) else {
             return Vec::new();
         };
@@ -252,9 +231,7 @@ impl SwipeModel for GeometricSwipeModel {
                 continue;
             };
             let word = &entry.word;
-            // Accented letters are swiped through their base key (é on e).
             let chars: Vec<char> = word.chars().map(fold_char).collect();
-            // length window: a swipe through k keys traces ~k segments.
             let len = chars.len() as i32;
             if len < 1 {
                 continue;
@@ -290,13 +267,9 @@ impl SwipeModel for GeometricSwipeModel {
             #[cfg(test)]
             SHAPES_SCORED.with(|count| count.set(count.get() + 1));
 
-            // Shape distance: mean point distance, normalised by the user
-            // path's bounding diagonal so longer swipes aren't penalised.
             let shape = mean_point_distance(&user, &ideal_rs) / user_bbox;
-            // Map distance → similarity in 0..1 (closer = higher).
             let shape_score = (1.0 - shape).clamp(0.0, 1.0) as f32;
 
-            // Blend with frequency (a strong prior for short ambiguous swipes).
             let freq = self.dict.frequency(word);
             let score = 0.78 * shape_score + 0.22 * freq;
 
@@ -356,7 +329,6 @@ fn index_endpoints(dict: &Dictionary) -> HashMap<(char, char), Vec<usize>> {
     index
 }
 
-/// Map each single-letter `Char` key to the centre of its rect.
 fn letter_centres(key_geom: &[(KeyId, Rect)], layout: &KeyboardLayout) -> HashMap<char, Point> {
     let mut out = HashMap::new();
     for (id, rect) in key_geom {
@@ -368,8 +340,6 @@ fn letter_centres(key_geom: &[(KeyId, Rect)], layout: &KeyboardLayout) -> HashMa
         if let (Some(c), None) = (it.next(), it.next())
             && c.is_alphabetic()
         {
-            // Lowercase: dictionary words + the candidate polyline are
-            // lowercase.
             out.entry(c.to_ascii_lowercase())
                 .or_insert_with(|| rect.center());
         }
@@ -392,7 +362,6 @@ pub(crate) fn letter_key_scale(key_geom: &[(KeyId, Rect)], layout: &KeyboardLayo
     (count != 0).then(|| sum / f64::from(count))
 }
 
-/// Letters whose key centre is within `radius` of `p`.
 fn nearby_letters(p: Point, centres: &HashMap<char, Point>, radius: f64) -> Vec<char> {
     let r2 = radius * radius;
     let mut v: Vec<char> = centres
@@ -400,8 +369,6 @@ fn nearby_letters(p: Point, centres: &HashMap<char, Point>, radius: f64) -> Vec<
         .filter(|&(_, &c)| dist2(p, c) <= r2)
         .map(|(&ch, _)| ch)
         .collect();
-    // Always include the single nearest letter even if just outside the
-    // radius — guards against a swipe that started slightly off the key.
     if let Some((&nearest, _)) = centres
         .iter()
         .min_by(|a, b| {
@@ -430,12 +397,10 @@ fn ideal_polyline(chars: &[char], centres: &HashMap<char, Point>) -> Option<Vec<
     Some(pts)
 }
 
-/// Resample a polyline to exactly `n` equally-spaced points along its arc.
 fn resample(path: &[Point], n: usize) -> Vec<Point> {
     if path.is_empty() {
         return Vec::new();
     }
-    // `path` is non-empty from the check above, so `first()` always hits.
     let Some(&first_pt) = path.first() else {
         return Vec::new();
     };
@@ -483,10 +448,7 @@ fn resample(path: &[Point], n: usize) -> Vec<Point> {
     out
 }
 
-/// Arc length already traversed up to `(seg, seg_consumed)`.
 fn traversed(path: &[Point], seg: usize, seg_consumed: f64) -> f64 {
-    // Same pairs as `for i in 0..seg { path[i], path[i + 1] }`, without
-    // indexing: `windows(2)` already yields `(path[i], path[i + 1])`.
     let t: f64 = path
         .windows(2)
         .take(seg)
@@ -522,14 +484,11 @@ fn bbox_diag(path: &[Point]) -> f64 {
     dist(min_pt, max_pt)
 }
 
-/// Mean Euclidean distance between corresponding points of two equal-length
-/// resampled paths.
 fn mean_point_distance(a: &[Point], b: &[Point]) -> f64 {
     let n = a.len().min(b.len());
     if n == 0 {
         return f64::MAX;
     }
-    // `zip` already yields exactly `n = a.len().min(b.len())` pairs.
     let sum: f64 = a.iter().zip(b.iter()).map(|(&pa, &pb)| dist(pa, pb)).sum();
     sum / n as f64
 }
@@ -544,10 +503,6 @@ fn dist2(a: Point, b: Point) -> f64 {
     dx * dx + dy * dy
 }
 
-/// Heuristic: does this pointer path look like a swipe (vs. a tap)? A swipe
-/// has travelled meaningfully relative to the key size; a tap stays put.
-/// `key_scale` is the average key dimension. Returns true when the path's
-/// total travel exceeds ~0.9× a key (i.e. it crossed into a neighbour).
 pub fn is_swipe(path: &[Point], key_scale: f64) -> bool {
     if path.len() < 2 {
         return false;
@@ -577,8 +532,6 @@ mod tests {
         let mut pts = Vec::new();
         for c in word.chars() {
             let centre = centres[&c];
-            // Push a couple of samples per key + interpolate toward the next,
-            // mimicking a real (denser) drag.
             if let Some(prev) = pts.last().copied() {
                 let prev: Point = prev;
                 for k in 1..=4 {
@@ -737,8 +690,6 @@ mod tests {
             let path = path_through("the", &geom, &layout);
             let cands = model.decode_top(&path, &geom, &layout, 8);
             let words: Vec<&str> = cands.iter().map(|c| c.word.as_str()).collect();
-            // "the" is by far the most common word; it should rank at the very top
-            // for a path through t-h-e.
             assert_eq!(cands[0].word, "the", "got {words:?}");
         }
     }
@@ -761,7 +712,6 @@ mod tests {
         {
             let (layout, geom) = qwerty_geom();
             let scale = letter_key_scale(&geom, &layout).expect("QWERTY has letter keys");
-            // A tap: a few samples all in the same spot.
             let tap = vec![
                 Point::new(100.0, 100.0),
                 Point::new(101.0, 100.5),
@@ -818,8 +768,6 @@ mod tests {
     /// row.
     const FUTO_AREA: Rect = Rect::new(0.0, 0.0, 406.0, 227.0);
 
-    /// Held-out accuracy floors over all 1500 swipes of `swipe_eval.txt`
-    /// (89.3% / 96.7%). Raise them when the decoder improves.
     const FLOOR_TOP1: usize = 1339;
     const FLOOR_TOP3: usize = 1451;
 
@@ -843,15 +791,12 @@ mod tests {
             .collect()
     }
 
-    /// Swipes whose word ranks first and within the top three, decoded in
-    /// parallel.
     fn hits(model: &GeometricSwipeModel, swipes: &[(&str, Vec<Point>)]) -> (usize, usize) {
         let layout = KeyboardLayout::qwerty();
         let geom = key_rects(&layout, FUTO_AREA, ShiftState::Off);
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(32));
         let chunk = swipes.len().div_ceil(threads).max(1);
         std::thread::scope(|scope| {
-            // Spawn every worker before joining any, so they run together.
             let mut workers = Vec::new();
             for part in swipes.chunks(chunk) {
                 let (layout, geom) = (&layout, &geom);

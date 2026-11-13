@@ -186,43 +186,49 @@ impl App {
         // draining a model wake must not acquire the person's input identity.
         let nested = crate::local_document_action::input_is_active();
         let background = crate::local_document_action::suspend();
+        let mut serviced = 0;
         if !nested && self.collaboration.manager.is_connected() {
             // Controls left by an earlier model pass are not this input's
             // actions. Service them before freezing the input's snapshot.
-            self.dispatch_control_invocations();
+            serviced = self.dispatch_control_invocations();
         }
-        self.publish_action_surface();
-        if self.actions.action_directory_snapshot.is_none() {
-            drop(background);
-            return crate::local_document_action::enter_unsigned_input(
-                self.local_input_capture.unsigned_edits.clone(),
-            );
-        }
+        // An input that arrives while the frame after an earlier one has
+        // still to show and publish what that one changed (a key's release
+        // after its press, the next key typed in the same wake) acts on what
+        // the window shows: the surface on the route. Building the surface
+        // again here would only be paid for again by that frame.
+        let owed = self.actions.action_surface_owed && serviced == 0;
+        let (revision, snapshot, pinned) = if let Some((revision, snapshot)) =
+            owed.then(|| self.published_action_directory()).flatten()
+        {
+            let pinned = self.pin_local_document_action_directory(&revision, snapshot.clone());
+            (Some(revision), snapshot, Some(pinned))
+        } else {
+            self.publish_action_surface();
+            let Some(snapshot) = self.actions.action_directory_snapshot.clone() else {
+                drop(background);
+                return crate::local_document_action::enter_unsigned_input(
+                    self.local_input_capture.unsigned_edits.clone(),
+                );
+            };
+            let revision = self
+                .actions
+                .action_directory_stamp
+                .as_ref()
+                .map(|(_, revision)| revision.clone());
+            let pinned = revision
+                .as_deref()
+                .map(|revision| self.try_pin_local_document_action_directory(revision));
+            (revision, snapshot, pinned)
+        };
         let mut routes: Vec<InputRoute> = Vec::new();
         let mut reports_nothing = false;
-        let revision = self
-            .actions
-            .action_directory_stamp
-            .as_ref()
-            .map(|(_, revision)| revision.clone());
-        let pinned = revision
-            .as_deref()
-            .map(|revision| self.try_pin_local_document_action_directory(revision));
-        // A surface that moved under this input (it was published while a
-        // route was still opening) leaves the input's actions without a
-        // revision: they are recorded once the next published surface can
-        // be pinned (`fill_pending_revisions`), quietly. While as many
-        // surfaces as may be retained are held by changes on their way, the
-        // input's actions still edit and report nothing, and the gap is shown.
         let revision_pending = !matches!(
             pinned,
             Some(Ok(_) | Err(action_directory_snapshot::PinRefused::Full))
         );
         let pin = pinned.and_then(Result::ok);
-        if let (Some((_, revision)), Some(snapshot)) = (
-            self.actions.action_directory_stamp.as_ref(),
-            self.actions.action_directory_snapshot.as_ref(),
-        ) {
+        if let Some(revision) = revision.as_ref() {
             let mut aliases: HashMap<
                 Option<uuid::Uuid>,
                 (crate::collaboration::RouteSpec, HashMap<String, String>),
@@ -375,7 +381,10 @@ impl App {
             .collect();
         for (route, queue) in queues {
             failures.extend(queue.take_refusals());
-            for (capture, lease) in queue.drain_leased() {
+            for (capture, mut lease) in queue.drain_leased() {
+                if let Some(pin) = self.report_pin(&capture) {
+                    lease.narrow_pin(pin);
+                }
                 let mut request_id = capture.invocation.as_u64_pair().0;
                 while self.local_input_capture.pending.contains_key(&request_id) {
                     request_id = request_id.wrapping_add(1);

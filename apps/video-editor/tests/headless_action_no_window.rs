@@ -105,7 +105,7 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
     agent
         .invoke(&address, &arguments, false)
         .expect("the surveyed action applies");
-    let changes = agent.take_changes();
+    let changes = agent.take_changes().unwrap();
     assert!(
         changes.is_some(),
         "the action reported success without changing the document",

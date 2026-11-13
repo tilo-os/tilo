@@ -1,4 +1,3 @@
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 
 /// One document. Its text fields are collaborative text: two people typing in
@@ -11,9 +10,8 @@ pub struct Document {
 
 /// Each field is edited at its path (`Document::paths().title`); the verbs
 /// are what one field edit cannot say.
-#[resource(kind = "generated.document", label = "Document")]
+#[resource(kind = "generated.document")]
 impl Document {
-    /// Replace the title and body in one undo step.
     #[action]
     pub fn set_content(
         &mut self,
@@ -43,10 +41,9 @@ impl ResourceApp for App {
         Some(&crate::locales::CATALOG)
     }
 
-    /// The name the palette, search and history show for the open document.
     fn label(document: &Document) -> String {
         if document.title.trim().is_empty() {
-            I18nManager::lookup_plain("document-untitled")
+            crate::locales::CATALOG.t("document-untitled")
         } else {
             document.title.clone()
         }
@@ -57,11 +54,11 @@ impl ResourceApp for App {
         let title = cx
             .input(p.title)
             .with_id("document-title-input")
-            .with_placeholder(crate::locales::keys::DOCUMENT_TITLE_PLACEHOLDER);
+            .with_placeholder("document-title-placeholder");
         let body = cx
             .input(p.body)
             .with_id("document-body-input")
-            .with_placeholder(crate::locales::keys::DOCUMENT_BODY_PLACEHOLDER)
+            .with_placeholder("document-body-placeholder")
             .multiline(true);
         // The preview reads the fields the inputs edit, so it follows every
         // edit, local or remote, with no notification code.
@@ -73,8 +70,8 @@ impl ResourceApp for App {
             .text(|document| document.body.clone())
             .with_id("document-body-preview");
         Box::new(ui::column![
-            labeled_field(crate::locales::keys::DOCUMENT_TITLE_LABEL, title),
-            labeled_field(crate::locales::keys::DOCUMENT_BODY_LABEL, body),
+            labeled_field("document-title-label", title),
+            labeled_field("document-body-label", body),
             Text::new("document-preview-heading").with_role(TextRole::Caption),
             preview_title,
             preview_body,

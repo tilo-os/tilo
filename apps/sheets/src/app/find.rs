@@ -23,8 +23,6 @@ use super::{FoundCell, SheetsApp};
 use crate::model::Addr;
 use crate::workbook::{Cell, Workbook};
 
-/// One compiled query: the needle as it is compared, and the rules it runs
-/// under.
 struct Query {
     needle: String,
     case_sensitive: bool,
@@ -48,9 +46,6 @@ impl Query {
     }
 }
 
-/// Fold `text`, keeping the raw byte start and end of every source scalar
-/// for each folded byte, so a match in the folded text maps back to the
-/// exact range in the cell.
 fn folded_with_origins(text: &str) -> (String, Vec<usize>, Vec<usize>) {
     let mut folded = String::with_capacity(text.len());
     let mut starts = Vec::with_capacity(text.len());
@@ -77,7 +72,6 @@ fn is_word(scalar: char) -> bool {
     scalar.is_alphanumeric() || scalar == '_'
 }
 
-/// Every non-overlapping occurrence of `query` in `text`, as raw byte ranges.
 fn matches_in(text: &str, query: &Query) -> Vec<(usize, usize)> {
     let (haystack, starts, ends) = if query.case_sensitive {
         (
@@ -125,7 +119,6 @@ fn matches_in(text: &str, query: &Query) -> Vec<(usize, usize)> {
     found
 }
 
-/// `raw` with `start..end` replaced by `with`.
 fn replace_range(raw: &str, start: usize, end: usize, with: &str) -> Option<String> {
     let mut out = String::with_capacity(raw.len().saturating_sub(end - start) + with.len());
     out.push_str(raw.get(..start)?);
@@ -135,8 +128,6 @@ fn replace_range(raw: &str, start: usize, end: usize, with: &str) -> Option<Stri
 }
 
 impl SheetsApp {
-    /// Every match of `query` over the shown sheets, in sheet, row, column
-    /// order.
     fn collect_find_matches(&self, query: &str, options: FindOptions) -> Vec<FoundCell> {
         let Some(query) = Query::compile(query, options) else {
             return Vec::new();
@@ -167,7 +158,6 @@ impl SheetsApp {
         found
     }
 
-    /// The raw input of a matched cell, if it still exists.
     fn find_cell_raw(&self, found: FoundCell) -> Option<String> {
         let id = self.sheet_ids.get(found.sheet)?;
         let sheet = self.workbook.sheet(id)?;
@@ -177,15 +167,12 @@ impl SheetsApp {
             .map(|cell| cell.raw.0.clone())
     }
 
-    /// One cell with `with` in place of the matched range.
     fn replaced_cell(&self, found: FoundCell, with: &str) -> Option<(usize, Addr, String)> {
         let raw = self.find_cell_raw(found)?;
         let replaced = replace_range(&raw, found.start, found.end, with)?;
         Some((found.sheet, found.addr, replaced))
     }
 
-    /// Apply the replacements the bar asked for as one grouped edit: one
-    /// history entry, one undo step, across every sheet they touch.
     pub(super) fn drain_find_replace(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if self.pending_find_replace.is_empty() {
             return;
@@ -293,7 +280,6 @@ impl Findable for SheetsApp {
     }
 
     fn supports_replace(&self) -> bool {
-        // The window bar's search keeps the replacement usable at any width.
         self.dispatch.is_some()
     }
 
@@ -330,8 +316,6 @@ impl Findable for SheetsApp {
             let Some(raw) = self.find_cell_raw(found) else {
                 continue;
             };
-            // Right to left, so each replacement leaves the ranges before
-            // it where they were found.
             ranges.sort_unstable_by_key(|range| std::cmp::Reverse(range.0));
             let mut replaced = raw;
             for (start, end) in ranges {
@@ -386,7 +370,6 @@ mod tests {
         let text = "aa a aa";
         assert_eq!(matches(text, "aa", true, true).len(), 2);
         assert_eq!(matches(text, "a", true, true).len(), 1);
-        // `aa` in `aaaa` is two matches, not three.
         assert_eq!(matches("aaaa", "aa", true, false).len(), 2);
     }
 

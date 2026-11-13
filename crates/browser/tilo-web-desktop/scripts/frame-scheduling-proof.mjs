@@ -31,7 +31,7 @@ try {
   await send('Page.enable', {}, sessionId);
   // The first visit's first screen (web/first-run.mjs) counts as seen: this
   // drives the desktop behind it, as a returning person sees it.
-  await send('Page.addScriptToEvaluateOnNewDocument', {source: "try { localStorage.setItem('tilo-first-run', '1'); } catch {}"}, sessionId);
+  await send('Page.addScriptToEvaluateOnNewDocument', {source: "try { localStorage.setItem('tilo-setup', JSON.stringify({step: 'done'})); } catch {}"}, sessionId);
   await send('Page.navigate', {url: pageURL}, sessionId);
   for (let i = 0; i < 600 && !await evaluate('Boolean(globalThis.tiloMount?.navigation)'); i++) await new Promise(resolve => setTimeout(resolve, 100));
   if (!await evaluate('Boolean(globalThis.tiloMount?.navigation)')) throw Error('Desktop did not present');

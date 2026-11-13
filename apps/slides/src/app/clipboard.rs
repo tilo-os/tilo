@@ -22,28 +22,23 @@ const TAG: &str = "tilo-slides";
 // ratchet-allow(pixel_const): an offset on the slide, in slide units, not pixels
 pub(crate) const PASTE_OFFSET: f64 = 24.0;
 
-/// Elements as they travel on the clipboard.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Clip {
-    /// Tells a slide clipboard apart from any other JSON.
     #[serde(rename = "tilo-slides")]
     pub(crate) elements: Vec<ElementData>,
 }
 
 impl Clip {
-    /// `element` as the clipboard carries it.
     pub(crate) fn of(element: &crate::model::Element) -> Self {
         Self {
             elements: vec![ElementData::of(element)],
         }
     }
 
-    /// The clipboard text.
     pub(crate) fn text(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
     }
 
-    /// What the clipboard holds, if it holds slide elements at all.
     pub(crate) fn read(text: &str) -> Option<Self> {
         let value: serde_json::Value = serde_json::from_str(text).ok()?;
         value.get(TAG)?;
@@ -51,8 +46,6 @@ impl Clip {
         (!clip.elements.is_empty()).then_some(clip)
     }
 
-    /// The elements moved by [`PASTE_OFFSET`] and given fresh ids by `fresh`:
-    /// the copies land beside what they came from, as themselves.
     pub(crate) fn pasted(&self, fresh: impl Fn() -> String) -> Vec<ElementData> {
         self.elements
             .iter()

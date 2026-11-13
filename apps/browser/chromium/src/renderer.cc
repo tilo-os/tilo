@@ -335,13 +335,19 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
   }
   void ClipboardPrime(CefRefPtr<CefFrame> frame,CefRefPtr<CefListValue> args) {
     if(!frame || !frame->IsValid() || args->GetSize()!=2 || args->GetType(0)!=VTYPE_INT || args->GetType(1)!=VTYPE_STRING) return;
-    auto found=clipboards_.find(frame->GetIdentifier().ToString());
-    if(found!=clipboards_.end() && found->second.context->IsValid() && found->second.context->Enter()) {
-      const auto clipboard=found->second;
-      clipboard.prime->ExecuteFunction(nullptr,{CefV8Value::CreateString(args->GetString(1))});
-      clipboard.context->Exit();
-    }
-    // Kept or not, the key goes on to the page now.
+    // Every document this process renders keeps the text: the paste key goes to
+    // the document that has the caret, and a click inside a frame of the page
+    // puts it there without the browser process always learning which document
+    // that is. Keeping it in all of them is what makes the paste the system
+    // clipboard's wherever the caret is, and a document only ever takes what
+    // its own next paste asks for.
+    for(auto& [key,clipboard]:clipboards_)
+      if(clipboard.context->IsValid() && clipboard.context->Enter()) {
+        clipboard.prime->ExecuteFunction(nullptr,{CefV8Value::CreateString(args->GetString(1))});
+        clipboard.context->Exit();
+      }
+    // The key goes on to the page now, whichever document the text was kept
+    // in: one this frame's own, or one beside it that the key may reach first.
     auto reply=CefProcessMessage::Create("tilo.clipboard_primed");reply->GetArgumentList()->SetInt(0,args->GetInt(0));
     frame->SendProcessMessage(PID_BROWSER,reply);
   }

@@ -16,6 +16,7 @@ use ui::widget::NavPane;
 use vello::kurbo::Rect;
 use zeroize::Zeroizing;
 
+use crate::CATALOG;
 use crate::actions::PasswordsEffect;
 use crate::transfer::ImportLogin;
 
@@ -76,16 +77,17 @@ impl VaultFilter {
     }
 
     /// The list's title and the sidebar row's label.
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::All => "All items",
-            Self::Favorites => "Favorites",
-            Self::Kind(SecretItemKind::Login) => "Logins",
-            Self::Kind(SecretItemKind::ApiKey) => "API keys",
-            Self::Kind(SecretItemKind::SecureNote) => "Secure notes",
-            Self::Kind(SecretItemKind::Wifi) => "Wi-Fi",
-            Self::Kind(SecretItemKind::Other) => "Other secrets",
-        }
+    pub(crate) fn label(self) -> String {
+        let message = match self {
+            Self::All => "passwords-filter-all",
+            Self::Favorites => "passwords-filter-favorites",
+            Self::Kind(SecretItemKind::Login) => "passwords-filter-logins",
+            Self::Kind(SecretItemKind::ApiKey) => "passwords-filter-api-keys",
+            Self::Kind(SecretItemKind::SecureNote) => "passwords-filter-notes",
+            Self::Kind(SecretItemKind::Wifi) => "passwords-filter-wifi",
+            Self::Kind(SecretItemKind::Other) => "passwords-filter-other",
+        };
+        CATALOG.t(message)
     }
 
     pub(crate) fn matches(self, item: &SecretItem) -> bool {
@@ -246,14 +248,15 @@ pub(crate) fn now_unix() -> u64 {
 }
 
 /// What a kind is called in the detail view and the editor.
-pub(crate) fn kind_label(kind: SecretItemKind) -> &'static str {
-    match kind {
-        SecretItemKind::Login => "Login",
-        SecretItemKind::ApiKey => "API key",
-        SecretItemKind::SecureNote => "Secure note",
-        SecretItemKind::Wifi => "Wi-Fi network",
-        SecretItemKind::Other => "Secret",
-    }
+pub(crate) fn kind_label(kind: SecretItemKind) -> String {
+    let message = match kind {
+        SecretItemKind::Login => "passwords-kind-login",
+        SecretItemKind::ApiKey => "passwords-kind-api-key",
+        SecretItemKind::SecureNote => "passwords-kind-note",
+        SecretItemKind::Wifi => "passwords-kind-wifi",
+        SecretItemKind::Other => "passwords-kind-secret",
+    };
+    CATALOG.t(message)
 }
 
 /// What the secret of a kind is called.
@@ -267,21 +270,25 @@ pub(crate) fn secret_label(kind: SecretItemKind) -> &'static str {
 }
 
 /// What the identity of a kind (the username row) is called.
-pub(crate) fn identity_label(kind: SecretItemKind) -> &'static str {
-    match kind {
-        SecretItemKind::ApiKey => "Account",
-        SecretItemKind::Wifi => "Network",
-        SecretItemKind::Login | SecretItemKind::Other | SecretItemKind::SecureNote => "Username",
-    }
+pub(crate) fn identity_label(kind: SecretItemKind) -> String {
+    let message = match kind {
+        SecretItemKind::ApiKey => "passwords-identity-account",
+        SecretItemKind::Wifi => "passwords-identity-network",
+        SecretItemKind::Login | SecretItemKind::Other | SecretItemKind::SecureNote => {
+            "passwords-identity-username"
+        }
+    };
+    CATALOG.t(message)
 }
 
 /// What the origins of a kind are called.
-pub(crate) fn origin_label(kind: SecretItemKind, count: usize) -> &'static str {
-    match (kind, count) {
-        (SecretItemKind::ApiKey, _) => "Service",
-        (_, 0 | 1) => "Website",
-        _ => "Websites",
-    }
+pub(crate) fn origin_label(kind: SecretItemKind, count: usize) -> String {
+    let message = match (kind, count) {
+        (SecretItemKind::ApiKey, _) => "passwords-origin-service",
+        (_, 0 | 1) => "passwords-origin-website",
+        _ => "passwords-origin-websites",
+    };
+    CATALOG.t(message)
 }
 
 /// The identity a row shows: the network for Wi-Fi, else the username.
@@ -304,7 +311,7 @@ pub(crate) fn summary(item: &SecretItem) -> String {
     if let Some(origin) = item.origins.iter().next() {
         return host_of(origin).to_owned();
     }
-    kind_label(item.kind).to_owned()
+    kind_label(item.kind)
 }
 
 /// `bank.example` for `https://bank.example`.
@@ -1926,6 +1933,9 @@ impl Core {
                         .unwrap_or_else(|| "The item was not saved".to_owned()));
                 }
             }
+            effect @ PasswordsEffect::SaveLogin { .. } => self.save_login(effect)?,
+            // Answered with its value where effects are answered ([`Self::logins`]).
+            PasswordsEffect::ListLogins => {}
             PasswordsEffect::Cancel => self.cancel_edit(),
             PasswordsEffect::Generate => {
                 if !self.is_editing() {
@@ -1975,6 +1985,54 @@ impl Core {
             PasswordsEffect::Open { item } => open(self, item)?,
         }
         Ok(())
+    }
+
+    /// Add a login in one step, through the editor's own checks and save: the editor is left as
+    /// it was found when the save is refused, and the draft holding the password is cleared either
+    /// way.
+    fn save_login(&mut self, effect: PasswordsEffect) -> Result<(), String> {
+        let PasswordsEffect::SaveLogin {
+            name,
+            origin,
+            username,
+            password,
+        } = effect
+        else {
+            return Err("not a login to save".to_owned());
+        };
+        let password = Zeroizing::new(password);
+        self.begin_add();
+        self.set_kind(SecretItemKind::Login);
+        self.set_draft(DraftField::Name, &name);
+        self.set_draft(DraftField::Origin, &origin);
+        self.set_draft(DraftField::Username, &username);
+        self.set_draft(DraftField::Password, &password);
+        drop(password);
+        self.toast = None;
+        self.save_draft();
+        if self.is_editing() {
+            let refused = self
+                .draft_error
+                .as_ref()
+                .map(|(_, message)| message.clone())
+                .or_else(|| self.toast.clone())
+                .unwrap_or_else(|| "The login was not saved".to_owned());
+            self.cancel_edit();
+            return Err(refused);
+        }
+        Ok(())
+    }
+
+    /// The vault's logins, by opaque id and name only: what [`PasswordsEffect::ListLogins`]
+    /// answers.
+    pub(crate) fn logins(&self) -> serde_json::Value {
+        let logins: Vec<_> = self
+            .items
+            .iter()
+            .filter(|item| item.kind == SecretItemKind::Login)
+            .map(|item| serde_json::json!({"item": item.id.0, "name": item.title}))
+            .collect();
+        serde_json::json!({ "logins": logins })
     }
 
     /// Live vault rows, one per item: what agents, scripts and the palette

@@ -1,20 +1,15 @@
-//! `OAuth2` for the mail providers that block plain-password IMAP/SMTP —
-//! Gmail and Outlook **require** OAuth, so the setup flow signs the user in
-//! through the browser instead of asking for a password.
+//! `OAuth2` for the mail providers that block plain-password IMAP and SMTP: Gmail and Outlook
+//! require it, so setup signs the person in through the browser instead of asking for a
+//! password.
 //!
-//! Mail owns none of the `OAuth` machinery. The client registration (Google's
-//! Desktop client id and secret, Microsoft's public client) and the mail
-//! scopes come from Tilo's one client table,
-//! [`account_custody::ClientTable`] (`oauth-clients.toml`), the same
-//! registration Settings signs in to Google Drive and `OneDrive` with. The
-//! grant is sealed in the account vault and refreshed by
-//! [`account_custody::Custodian`]; Mail only ever holds a current access
-//! token, long enough to present it as `XOAUTH2`.
+//! Mail owns none of the machinery: the client registration and mail scopes come from Tilo's
+//! one client table ([`account_custody::ClientTable`], `oauth-clients.toml`), the same
+//! registration Settings signs in to Google Drive and `OneDrive` with. The grant is sealed in
+//! the account vault and refreshed by [`account_custody::Custodian`]; Mail holds only a current
+//! access token, long enough to present it as `XOAUTH2`.
 
 use account_custody::{ClientTable, OAuthIssuer, OAuthUse};
 
-/// The OAuth providers we preset for. Both are IMAP/SMTP mail providers that
-/// require OAuth rather than a password.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OAuthProvider {
     Google,
@@ -22,7 +17,6 @@ pub enum OAuthProvider {
 }
 
 impl OAuthProvider {
-    /// Recognise a provider from an email domain (lower-cased).
     pub fn from_domain(domain: &str) -> Option<Self> {
         match domain.to_ascii_lowercase().as_str() {
             "gmail.com" | "googlemail.com" => Some(OAuthProvider::Google),
@@ -33,9 +27,6 @@ impl OAuthProvider {
         }
     }
 
-    /// The provider of an OAuth account: from its address, else from its
-    /// IMAP server (a Google Workspace or Microsoft 365 address on its own
-    /// domain).
     pub fn for_account(email: &str, imap_host: &str) -> Option<Self> {
         let domain = email.rsplit_once('@').map_or("", |(_, domain)| domain);
         Self::from_domain(domain).or_else(|| match imap_host.trim().to_ascii_lowercase().as_str() {
@@ -45,7 +36,6 @@ impl OAuthProvider {
         })
     }
 
-    /// The issuer whose client this provider signs in through.
     pub fn issuer(self) -> OAuthIssuer {
         match self {
             OAuthProvider::Google => OAuthIssuer::Google,
@@ -53,7 +43,6 @@ impl OAuthProvider {
         }
     }
 
-    /// Mail from this provider, as a use of its client.
     pub fn oauth_use(self) -> OAuthUse {
         OAuthUse::mail(self.issuer())
     }
@@ -62,23 +51,15 @@ impl OAuthProvider {
         self.issuer().label()
     }
 
-    /// Whether this build can sign in to this provider's mail. `false` means
-    /// no client id is configured: the flow can be explained but not
-    /// completed.
     pub fn is_configured(self) -> bool {
         ClientTable::defaults().is_configured(self.oauth_use())
     }
 }
 
-/// The `XOAUTH2` SASL initial response IMAP `AUTHENTICATE` expects (RFC 7628
-/// / Google + Microsoft mail), before base64: `user=<email>^Aauth=Bearer
-/// <token>^A^A` where `^A` is the `\x01` control byte.
 pub fn xoauth2_response(user: &str, access_token: &str) -> String {
     format!("user={user}\x01auth=Bearer {access_token}\x01\x01")
 }
 
-/// The async-imap `XOAUTH2` authenticator: it answers with the raw
-/// [`xoauth2_response`], which async-imap base64-encodes before sending.
 #[cfg(feature = "live")]
 pub struct XOAuth2 {
     pub user: String,
@@ -93,8 +74,6 @@ impl async_imap::Authenticator for XOAuth2 {
     }
 }
 
-/// What Mail shows for a custody failure. Messages that need a new sign-in
-/// name OAuth so the account is marked "sign in again".
 #[cfg(feature = "live")]
 fn custody_message(error: &account_custody::CustodyError) -> String {
     use account_custody::CustodyError;
@@ -109,9 +88,6 @@ fn custody_message(error: &account_custody::CustodyError) -> String {
     }
 }
 
-/// A current access token for an OAuth mail account, refreshed and resealed
-/// by custody when due. `force` refreshes even when the token looks valid
-/// (the server just rejected it).
 #[cfg(feature = "live")]
 pub fn access_token(
     custodian: &account_custody::Custodian,

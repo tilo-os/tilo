@@ -27,6 +27,8 @@
 //! - [`config`] and [`policy`] — the on-disk `relay.toml` schema;
 //! - [`home_peer`] — the registry record written after enrolling an
 //!   always-on peer;
+//! - [`hosted`] — what a host hands the browser session in a workspace's VM when
+//!   it gives it the workspace, and the address such a machine reaches it at;
 //! - [`metrics`] — the counter snapshot the daemon persists for status UIs;
 //! - [`process_lease`] — the PID + start-time pair carried across the
 //!   enrollment privilege boundary;
@@ -45,7 +47,10 @@ pub mod certify;
 pub mod compaction;
 pub mod config;
 pub mod directory;
+pub mod entering;
 pub mod home_peer;
+pub mod host_voice;
+pub mod hosted;
 pub mod live;
 pub mod login_code;
 pub mod mesh;
@@ -70,8 +75,8 @@ pub use tilo_workspace_join::{room_workspace_id, workspace_topic};
 pub use auth::{AuthError, AuthenticatedPeer};
 pub use config::{ConfigError, RelayConfig};
 pub use home_peer::{
-    HomePeerRegistration, home_peer_registry_path, personal_device_peer_path,
-    remember_personal_device, valid_home_peer_label,
+    HomePeerRegistration, checked_home_peers, home_peer_registry_path, personal_device_peer_path,
+    read_home_peers, remember_personal_device, valid_home_peer_label, write_home_peers,
 };
 pub use mesh::{
     ComputeAccelerator, DeviceKey, DeviceMeshProfile, DeviceRole, PowerAvailability,

@@ -1,13 +1,9 @@
 //! One line over a Unix stream, with at most one file descriptor beside it.
-//!
-//! The helper hands the shell an opened TUN this way: the descriptor rides
-//! as `SCM_RIGHTS` with the first byte of the answer line.
 
 use std::io;
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 
-/// Room for one descriptor's control message.
 const CONTROL_BYTES: usize = 64;
 
 /// Write `line` to `stream`, with `fd` attached to its first byte.

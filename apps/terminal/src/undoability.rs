@@ -1,15 +1,5 @@
-//! Whether what a run changed can be put back (docs/app-model/ush.md,
-//! "A run"): a run that only looked (`ls`, `git status`, `cargo test`) is
-//! marked *not undoable* whatever it touched, and a run that changed
-//! something is marked *undoable* only by the commands whose changes
-//! Tilo can take back — file writes and removals, the editor, the
-//! package-manager-free moves of the filesystem.
-//!
-//! The past does not say: a run that deleted the only copy of a file is not
-//! undoable, and the history must not offer to undo it. So a run that ran a
-//! command this list does not know is marked not undoable, and the two
-//! systems keep their own ledgers: the filesystem's history is Tilo's, and
-//! what a shell did to a file is in it like any other change.
+//! Whether what a run changed can be put back (docs/app-model/ush.md, "A run"): a run that only
+//! looked (`ls`, `git status`, `cargo test`) is never undoable.
 
 /// The commands that only read: whatever they print, nothing they run
 /// changed.
@@ -20,7 +10,6 @@ const READING: &[&str] = &[
     "wc", "which", "whoami", "xxd",
 ];
 
-/// The commands whose changes Tilo can take back.
 const CHANGING: &[&str] = &[
     "cp", "install", "mv", "patch", "rm", "rmdir", "tee", "touch", "truncate",
 ];
@@ -31,8 +20,6 @@ const CHANGING: &[&str] = &[
 #[must_use]
 pub fn of(command: &str) -> Option<bool> {
     let mut words = command.split_whitespace();
-    // `sudo` and an assignment in front (`LANG=C grep …`) do not change what
-    // the command is.
     while let Some(word) = words.next() {
         if word == "sudo" || (word.contains('=') && !word.starts_with('-')) {
             continue;
@@ -47,9 +34,6 @@ fn classify(program: &str, args: &[&str]) -> Option<bool> {
     let changed_by_flags = args.iter().any(|arg| *arg == "-i" || *arg == "--in-place");
     match name {
         "git" => classify_git(args),
-        // A build writes the target directory, which is the build's own and
-        // not the person's content: the changes worth undoing are the files
-        // they edit in an app.
         "cargo" => Some(false),
         "cp" | "ln" | "mkdir" | "mv" | "rm" | "tar" | "tee" | "truncate" | "unzip" => Some(true),
         "sed" if changed_by_flags => Some(true),
@@ -68,8 +52,6 @@ fn classify_git(args: &[&str]) -> Option<bool> {
     match subcommand {
         "status" | "log" | "diff" | "show" | "blame" | "grep" | "rev-parse" | "branch"
         | "remote" | "describe" | "shortlog" | "ls-files" => Some(false),
-        // Both change the repository, and both leave what they replaced in
-        // it, which is a change Tilo's history cannot put back.
         _ => None,
     }
 }

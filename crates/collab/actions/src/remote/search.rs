@@ -6,16 +6,19 @@
 //! signature", "scrolling" against "Scroll down with `PageDown`". Reducing
 //! both to a stem is what makes those the same word.
 //!
-//! [`ResourceSearch`] is the one search the desktop runs — the palette, text
-//! typed on the canvas and an agent's `find` — reached from a host that
-//! holds it. Its results are the ranking's own, best first, each naming the
-//! resource a caller addresses.
+//! [`ResourceSearch`] is a host's search of what its workspace holds: on a
+//! desktop the one search it runs — the palette, text typed on the canvas
+//! and an agent's `find` — and on a host with no desktop its ranking of the
+//! records it holds. Its results are the ranking's own, best first, each
+//! naming the resource a caller addresses.
 
 use super::ActionHostError;
 
 /// One resource a search found, as every caller of the one search reads a
-/// result: the resource it is about, what it is, and what it reads as.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// result: the resource it is about, what it is, and what it reads as. It
+/// crosses the wire as a host's answer to a search asked over its door
+/// ([`super::RemoteActionMessage::SearchRequest`]).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Found {
     /// The resource's published id: what a caller addresses it by.
     pub resource: String,
@@ -26,17 +29,23 @@ pub struct Found {
     /// The action a caller runs to open it, when the result is one a caller
     /// opens (`open`); `None` for a result that is not a resource of an app
     /// (a setting, a file, a command) or one reached another way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open: Option<String>,
     /// The arguments that open it, by parameter name.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub arguments: serde_json::Map<String, serde_json::Value>,
     /// The app publishing it, when one does: what a caller names it as.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
 }
 
-/// The desktop's one search, as a host that holds it offers it to a caller
-/// who asks by words: the palette's ranking, the same results in the same
-/// order. The search itself lives on the thread that holds the desktop, so
-/// an answer comes back later, as an action's does.
+/// A host's search of what its workspace holds, as it offers it to a caller
+/// who asks by words. A desktop answers with its one search, the palette's
+/// ranking, the same results in the same order; a host with no desktop (a
+/// relay's workspace) ranks the records it holds by what they say. Either
+/// way the search lives where the records are, so an answer comes back
+/// later, as an action's does, and a caller across the wire asks the same
+/// search ([`super::RemoteActionMessage::SearchRequest`]).
 pub trait ResourceSearch: Send + Sync {
     /// What `needle` finds, best first, over the workspace `caller` acts in
     /// and what it may read there.

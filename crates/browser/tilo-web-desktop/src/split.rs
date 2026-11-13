@@ -123,3 +123,46 @@ pub(crate) async fn definition(
     // leaked, never freed definition.
     unsafe { definition().as_ref() }
 }
+
+/// Name exports of the runtime that module `$module` answers instead of the
+/// start module: tools/web/wasm-split moves what only they reach into that
+/// module, and the start module's export calls into it once the page loaded
+/// it (`load(module)` of `__wasm_split.js`). An export ending in `*` names
+/// every export with that prefix (a class's methods).
+macro_rules! lazy_exports {
+    ($module:literal: $($export:literal),+ $(,)?) => {
+        const _: () = {
+            const LINES: &str = concat!($($module, " ", $export, "\n"),+);
+            #[unsafe(link_section = "tilo_split_exports")]
+            #[used]
+            static SECTION: [u8; LINES.len()] = match LINES.as_bytes().first_chunk() {
+                Some(lines) => *lines,
+                // The chunk is the whole of `LINES`, so it is always there.
+                None => [0; LINES.len()],
+            };
+        };
+    };
+}
+
+// The way into a workspace: the certified peer (the crypto, the transport
+// and the workspaces' replication behind it), the person's root identity,
+// links, the workspaces this page entered, the accounts this browser keeps,
+// the invitation a site shelves for a link and the answers a workspace's host
+// gives a window's catalogue requests. The page loads it once the
+// start module is in, and every door into a workspace waits for it
+// (`loadRuntime` of `web/host.mjs`): the entry reads and shelves a link, and
+// drops a workspace its host says is gone, only with the runtime in hand.
+lazy_exports!("peer":
+    "hostRefusal", "hostInfo", "certifyDevice", "channelVault", "issueDeviceCert",
+    "redeemInvitation", "inspectInvitation", "reconnectCertificate",
+    "invitationEntry", "doorEntry", "deviceCertCanonical", "certifyWithRoot",
+    "createLoginCode", "followLoginCode", "keepStandIn", "retireStandIn", "revokeDevice",
+    "wasmpeer_*", "__wbg_wasmpeer_*", "pairinghost_*", "__wbg_pairinghost_*",
+    "rootNew", "rootHeld", "rootOpenRecovery", "rootOpenPasskey", "rootEnvelopeEmpty",
+    "rootEnvelopePublicKey", "rootEnvelopeKept", "rootEnvelopePasskeys", "nodeSessionVouched",
+    "root_*", "__wbg_root_*", "signInAnswer", "wayIn", "wayInAfter", "admittedAsAsked",
+    "parseLink", "formatLink", "formatInviteLink", "nativeLink", "qrSvg",
+    "rememberEntered", "nameEntered", "markEnteredUnavailable", "forgetGoneWorkspaces",
+    "settleFailedWorkspace", "sealedInvitationLink", "workspaceDeleted",
+    "forgetDeletedWorkspace", "component_catalogue_response", "project_browser_accounts",
+);

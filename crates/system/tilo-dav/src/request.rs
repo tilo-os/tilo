@@ -1,5 +1,5 @@
-//! The request vocabulary both DAV clients share: credentials, transport
-//! options, `Depth` and write preconditions.
+//! The request vocabulary both DAV clients share: credentials, transport options,
+//! `Depth` and write preconditions.
 
 use std::fmt;
 use std::time::Duration;
@@ -8,7 +8,6 @@ use zeroize::Zeroizing;
 
 pub(crate) const XML_CONTENT_TYPE: &str = "application/xml; charset=utf-8";
 
-/// HTTP Basic credentials or an `OAuth2` bearer token, zeroized on drop.
 pub struct Credentials {
     username: String,
     password: Zeroizing<String>,
@@ -24,7 +23,6 @@ impl Credentials {
         }
     }
 
-    /// `Authorization: Bearer <token>`.
     pub fn bearer(token: impl Into<String>) -> Self {
         Self {
             username: String::new(),
@@ -55,7 +53,6 @@ impl fmt::Debug for Credentials {
     }
 }
 
-/// What the client does with a 3xx.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Redirects {
     /// Follow up to ten hops. Both clients drop `Authorization` when a hop
@@ -66,11 +63,9 @@ pub enum Redirects {
     Refuse,
 }
 
-/// Transport configuration.
 #[derive(Clone, Debug)]
 pub struct Options {
     pub user_agent: Option<&'static str>,
-    /// Whole-request deadline.
     pub timeout: Duration,
     pub connect_timeout: Option<Duration>,
     pub redirects: Redirects,
@@ -87,7 +82,6 @@ impl Default for Options {
     }
 }
 
-/// `Depth` header values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Depth {
     Zero,
@@ -105,10 +99,8 @@ impl Depth {
     }
 }
 
-/// A write/delete precondition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Precondition<'a> {
-    /// Unconditional.
     None,
     /// `If-Match: <etag>`; `"*"` requires only that the resource exists.
     IfMatch(&'a str),

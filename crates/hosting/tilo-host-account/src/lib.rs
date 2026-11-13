@@ -4,13 +4,16 @@
 //!
 //! Such a host runs a workspace's Linux programs in VMs of its own
 //! ([`legacy_vm::hosted`]), admitted by its plans file and metered in its
-//! usage ledger. Its account answer is read from those two and nothing else:
+//! usage ledger, and runs the workspaces' Browser, metered in the ledger its
+//! relay keeps ([`browser_actions`]). Its account answer is read from those
+//! and nothing else:
 //!
 //! - the plans file says what the host sells, if anything
-//!   ([`Plans::sells`]), and the account's plan, limits, billing period and
-//!   invoices, which the hosting provider writes there;
+//!   ([`Plans::sells`]), and the account's plan, limits, billing period,
+//!   card and invoices, which the hosting provider writes there;
 //! - the hosted-VM service answers the account's usage records and which of
-//!   its VMs run.
+//!   its VMs run;
+//! - the Browser ledger answers the page actions it ran in the period.
 //!
 //! A host whose plans file sells nothing answers no plans and no standing.
 //! [`HostedAccount::watch`] calls back whenever the plans file changes (a
@@ -28,12 +31,19 @@ use tilo_actions::remote::host_account::{
     Entitlement, HostAccount, HostKind, Limits, Standing, Usage, WorkspaceUsage,
 };
 
+pub mod browser_actions;
+
+use browser_actions::Ledger;
+
 /// The hosted-VM service's socket. Set on a host that serves workspaces.
 pub const SOCKET_ENV: &str = "TILO_HOSTED_VM_SOCKET";
 /// The account the session's VM time is billed to.
 pub const ACCOUNT_ENV: &str = "TILO_HOSTED_ACCOUNT";
 /// The plans file the hosted-VM service admits by.
 pub const PLANS_ENV: &str = "TILO_HOSTED_PLANS";
+/// The ledger of Browser page actions the relay keeps
+/// ([`browser_actions::LEDGER_ENV`]).
+pub const LEDGER_ENV: &str = browser_actions::LEDGER_ENV;
 /// The host's name, as people know it, when its plans file sells nothing
 /// (a host that sells names itself there).
 pub const NAME_ENV: &str = "TILO_HOSTED_NAME";
@@ -46,6 +56,9 @@ const PATIENCE: Duration = Duration::from_secs(5);
 pub struct HostedAccount {
     pub account: String,
     pub plans: PathBuf,
+    /// The ledger of Browser page actions the relay keeps; `None` reads
+    /// none.
+    pub ledger: Option<PathBuf>,
     /// The hosted-VM service, which answers usage; `None` reads none.
     pub socket: Option<PathBuf>,
     /// The host's name when it sells nothing.
@@ -60,6 +73,7 @@ impl HostedAccount {
         Some(Self {
             account: std::env::var(ACCOUNT_ENV).ok()?,
             plans: PathBuf::from(std::env::var_os(PLANS_ENV)?),
+            ledger: std::env::var_os(LEDGER_ENV).map(PathBuf::from),
             socket: std::env::var_os(SOCKET_ENV).map(PathBuf::from),
             name: std::env::var(NAME_ENV).unwrap_or_else(|_| "This host".to_owned()),
         })
@@ -67,19 +81,22 @@ impl HostedAccount {
 
     /// The account as the host knows it at `now_ms`. A plans file that does
     /// not read answers as a host that sells nothing; the service not
-    /// answering, as no usage.
+    /// answering, as no usage; no ledger, as no page actions.
     #[must_use]
     pub fn read(&self, now_ms: u64) -> HostAccount {
         let plans = Plans::load(&self.plans).unwrap_or_default();
         let (from_ms, to_ms) = period(&plans, &self.account, now_ms);
-        let usage = self.socket.as_deref().map_or_else(
+        let mut usage = self.socket.as_deref().map_or_else(
             || Usage {
                 period_start_ms: from_ms,
                 period_end_ms: to_ms,
-                workspaces: Vec::new(),
+                ..Usage::default()
             },
             |socket| self.usage(socket, from_ms, to_ms),
         );
+        usage.browser_actions = self.ledger.as_ref().map_or(0, |ledger| {
+            Ledger::new(ledger.clone()).count(&self.account, from_ms, to_ms)
+        });
         account_of(&plans, &self.account, &self.name, usage)
     }
 
@@ -142,7 +159,8 @@ pub fn watch_plans(
 
 /// The billing period of `account` around `now_ms`: from the provider's
 /// period start, or the calendar month (UTC), for a month.
-fn period(plans: &Plans, account: &str, now_ms: u64) -> (u64, u64) {
+#[must_use]
+pub fn period(plans: &Plans, account: &str, now_ms: u64) -> (u64, u64) {
     let millis = |at: DateTime<Utc>| u64::try_from(at.timestamp_millis()).unwrap_or(0);
     let at = |ms: u64| {
         Utc.timestamp_millis_opt(i64::try_from(ms).unwrap_or(i64::MAX))
@@ -212,6 +230,7 @@ pub fn usage_of(records: &[UsageRecord], running: &[String], from_ms: u64, to_ms
         period_start_ms: from_ms,
         period_end_ms: to_ms,
         workspaces,
+        ..Usage::default()
     }
 }
 
@@ -240,6 +259,7 @@ pub fn account_of(plans: &Plans, account: &str, name: &str, usage: Usage) -> Hos
                         .find(|offer| offer.id == id)
                         .and_then(|offer| offer.limits.included_vm_seconds)
                 }),
+                free_browser_actions: sells.browser_free_actions,
                 ..Limits::default()
             }),
             usage,
@@ -248,6 +268,12 @@ pub fn account_of(plans: &Plans, account: &str, name: &str, usage: Usage) -> Hos
         },
         None => Standing {
             account: account.to_owned(),
+            // No card, so no plan: the free Browser page actions are all it
+            // may use here.
+            limits: sells.browser_free_actions.map(|free| Limits {
+                free_browser_actions: Some(free),
+                ..Limits::default()
+            }),
             usage,
             ..Standing::default()
         },

@@ -7,7 +7,6 @@ use ui::prelude::*;
 use super::caption;
 use crate::tools::Tool;
 
-/// One shortcut: the keys as a person presses them and what they do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Shortcut {
     /// The keys, `+`-joined: `Ctrl+Shift+G`, `Shift+1`, `Space+drag`.
@@ -17,7 +16,6 @@ pub struct Shortcut {
 }
 
 pub struct Group {
-    /// The Fluent id of the heading.
     pub heading: &'static str,
     pub shortcuts: &'static [Shortcut],
 }
@@ -113,9 +111,7 @@ fn keycaps(keys: &str) -> Element {
     for part in parts {
         let shown = match part {
             "Arrows" => "← ↑ → ↓".to_owned(),
-            "drag" | "scroll" => {
-                ui::i18n::I18nManager::lookup_plain(&format!("canvas-keys-{part}"))
-            }
+            "drag" | "scroll" => crate::locales::CATALOG.t(&format!("canvas-keys-{part}")),
             other => other.to_owned(),
         };
         row = row.push(Box::new(
@@ -207,8 +203,6 @@ pub fn overview() -> Element {
             ))
             .push(super::heading(tools_heading))
             .push(Box::new(letters))
-            .push(caption(&ui::i18n::I18nManager::lookup_plain(
-                "canvas-keys-focus",
-            ))),
+            .push(caption(&crate::locales::CATALOG.t("canvas-keys-focus"))),
     )
 }

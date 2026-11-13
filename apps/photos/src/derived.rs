@@ -1,10 +1,6 @@
-//! What is derived from the library and published as places people act
-//! on: favorites, albums, the timeline and its months and days, shared
-//! places, people, folders, tags, and the objects and pets analysis found.
-//!
-//! Each is computed from the photographs alone, so every replica publishes
-//! the same places under the same ids, and offers the views that show it
-//! and the verbs that change it with their arguments bound.
+//! What is derived from the library and published as places people act on: favorites, albums, the
+//! timeline and its months and days, shared places, people, folders, tags, and the objects and pets
+//! analysis found.
 
 use std::collections::BTreeMap;
 
@@ -14,11 +10,10 @@ use crate::actions::{PhotosEffect, TimelineAnchor};
 use crate::model::{PhotoLibrary, PhotoLocation};
 use crate::resource::photo_library;
 
-/// Labels of one kind with how many photographs carry each.
 pub(crate) type LabelCounts = Vec<(String, usize)>;
 
-/// One kind of label: its counts, the kind its places are published as, and
-/// the view that shows a label's photographs.
+/// One kind of label: its counts, the kind its places are published as, and the view that shows a
+/// label's photographs.
 type Labelled<'a> = (&'a LabelCounts, &'static str, fn(&str) -> PhotosEffect);
 
 pub(crate) fn derived(library: &PhotoLibrary) -> Vec<Derived<PhotoLibrary>> {
@@ -57,20 +52,16 @@ pub(crate) fn derived(library: &PhotoLibrary) -> Vec<Derived<PhotoLibrary>> {
     places
 }
 
-/// How many photographs a place holds, as a child of it.
 fn counted(count: usize) -> Derived<PhotoLibrary> {
     Derived::new(crate::strings::tr_count("photos-count-photos", count))
         .of_kind("count")
         .identified("count")
 }
 
-/// The id a label of `kind` is published under: its hash, so a label of
-/// any length or script is one portable segment.
 pub(crate) fn label_id(kind: &str, label: &str) -> String {
     format!("{kind}:{}", tilo_content::hash_bytes(label.as_bytes()))
 }
 
-/// The analysis this device runs over the library.
 fn analysis() -> Derived<PhotoLibrary> {
     Derived::new(crate::strings::tr("photos-act-photo-analysis"))
         .of_kind("analysis")
@@ -92,8 +83,6 @@ fn favorites(library: &PhotoLibrary) -> Derived<PhotoLibrary> {
         .with_child(counted(count))
 }
 
-/// The albums as one place to browse them; each album is an item of the
-/// library itself.
 fn albums(library: &PhotoLibrary) -> Derived<PhotoLibrary> {
     Derived::new(crate::strings::tr("photos-albums"))
         .of_kind("albums")
@@ -109,8 +98,6 @@ fn albums(library: &PhotoLibrary) -> Derived<PhotoLibrary> {
         )
 }
 
-/// The places photographs were shared at, each a cluster on the offline
-/// map.
 fn located(library: &PhotoLibrary) -> Derived<PhotoLibrary> {
     let count = library
         .all_photos()
@@ -133,8 +120,6 @@ fn located(library: &PhotoLibrary) -> Derived<PhotoLibrary> {
     places
 }
 
-/// The people named in the library: each offers its photographs, renaming
-/// or merging, and coming off every photograph.
 fn people_root(people: &LabelCounts) -> Derived<PhotoLibrary> {
     let mut root = Derived::new(crate::strings::tr("photos-people"))
         .of_kind("people")
@@ -145,7 +130,6 @@ fn people_root(people: &LabelCounts) -> Derived<PhotoLibrary> {
         .with_effect(&PhotosEffect::EnablePeopleRecognition)
         .with_effect(&PhotosEffect::AnalyzePeopleLibrary);
     for (person, count) in people {
-        // A stored label is never blank; one that were is offered no verbs.
         let Some(named) = ui::tilo_resource::NonBlank::parse(person) else {
             continue;
         };
@@ -177,7 +161,6 @@ fn people_root(people: &LabelCounts) -> Derived<PhotoLibrary> {
     root
 }
 
-/// The timeline, its months and each month's days.
 fn timeline(library: &PhotoLibrary) -> Derived<PhotoLibrary> {
     let boundaries = timeline_boundaries(library);
     let mut timeline = Derived::new(crate::strings::tr("photos-timeline"))
@@ -219,7 +202,6 @@ pub(crate) fn timeline_month_resource_id(month: &str) -> String {
     crate::resource::derived_resource_id(&format!("timeline/month:{month}"))
 }
 
-/// The published id of the timeline day `day` (`YYYY-MM-DD`).
 pub(crate) fn timeline_day_resource_id(day: &str) -> String {
     let month = day.get(..7).unwrap_or(day);
     crate::resource::derived_resource_id(&format!("timeline/month:{month}/day:{day}"))
@@ -237,23 +219,18 @@ pub(crate) fn tag_resource_id(tag: &str) -> String {
     crate::resource::derived_resource_id(&label_id("tag", tag))
 }
 
-/// The published id of the object label `object`.
 pub(crate) fn object_resource_id(object: &str) -> String {
     crate::resource::derived_resource_id(&label_id("object", object))
 }
 
-/// The published id of the pet label `pet`.
 pub(crate) fn pet_resource_id(pet: &str) -> String {
     crate::resource::derived_resource_id(&label_id("pet", pet))
 }
 
-/// The published id of the place cluster `place_key`.
 pub(crate) fn place_resource_id(place_key: &str) -> String {
     crate::resource::derived_resource_id(&format!("places/{}", label_id("place", place_key)))
 }
 
-/// Compact, shared-metadata-only counts for timeline navigation, newest
-/// first to match the rendered timeline.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TimelineBoundaries {
     pub months: Vec<(String, usize)>,
@@ -281,8 +258,6 @@ pub(crate) fn timeline_boundaries(library: &PhotoLibrary) -> TimelineBoundaries 
     }
 }
 
-/// The calendar day (`YYYY-MM-DD`) a capture value starts with, when it
-/// starts with a real one.
 pub(crate) fn timeline_day_from_capture(captured_at: &str) -> Option<String> {
     let day = captured_at.get(..10)?;
     let bytes = day.as_bytes();
@@ -302,8 +277,6 @@ pub(crate) fn timeline_day_from_capture(captured_at: &str) -> Option<String> {
     .then(|| day.to_owned())
 }
 
-/// Deterministic, bounded place clusters based only on intentional location
-/// metadata: each place's key, its label and how many photographs it holds.
 pub(crate) fn place_counts(library: &PhotoLibrary) -> Vec<(String, String, usize)> {
     let mut counts = BTreeMap::<String, (String, usize)>::new();
     for photo in library.all_photos() {
@@ -324,8 +297,6 @@ pub(crate) fn place_counts(library: &PhotoLibrary) -> Vec<(String, String, usize
         .collect()
 }
 
-/// The folders, people, tags, objects and pets of the library, each with
-/// how many photographs carry it.
 pub(crate) fn metadata_label_counts(
     library: &PhotoLibrary,
 ) -> (

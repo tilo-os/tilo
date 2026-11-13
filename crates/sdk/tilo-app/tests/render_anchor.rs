@@ -17,7 +17,7 @@ pub struct Notebook {
     pub pages: Collection<Page>,
 }
 
-#[resource(kind = "test.notebook", label = "Notebook")]
+#[resource(kind = "test.notebook", catalogue = "tests/locales")]
 impl Notebook {
     /// Write a page.
     #[action]

@@ -96,9 +96,9 @@ impl server::Handler for GitServer {
     async fn auth_publickey(
         &mut self,
         user: &str,
-        key: &PublicKey,
+        key: server::VerifiedPublicKey<'_>,
     ) -> Result<server::Auth, Self::Error> {
-        Ok(if user == "fixture" && key == &self.identity {
+        Ok(if user == "fixture" && key.public_key == &self.identity {
             server::Auth::Accept
         } else {
             server::Auth::Reject {

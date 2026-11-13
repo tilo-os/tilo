@@ -91,6 +91,23 @@ impl HeaderTitle {
 }
 
 impl Widget for HeaderTitle {
+    /// The page's title as a heading of the bar, unless the page shows it
+    /// itself.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("h2");
+        let Some(title) = self.title.as_deref().filter(|_| !self.covered) else {
+            return;
+        };
+        let theme = cx.theme();
+        let look = crate::composition::TextLook::new(
+            title.to_owned(),
+            &crate::chrome::header_row::title_style(theme),
+            Some(theme.tokens.colors.text_primary),
+        )
+        .with_max_lines(Some(1));
+        cx.text(look);
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

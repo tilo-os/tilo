@@ -1,11 +1,6 @@
-//! The `accessibility` section: the pointer, typing, hearing, vision and
-//! screen-reader assists. Settings edits this model and the compositor and
-//! the shell read it, so they cannot disagree about a key, its default or its
-//! range. Toolkit apps read only the screen-reader keys, through
-//! `settings_store::accessibility`, which this model shares its definitions
-//! with; keeping the rest here leaves it out of the shared runtime. The
-//! vision comforts that theme the whole system (high contrast, reduced
-//! motion, text size) live in the `appearance` section instead.
+//! The `accessibility` section: pointer, typing, hearing, vision and
+//! screen-reader assists, one model for Settings, the compositor and the shell.
+//! Toolkit apps read the screen-reader keys through the same definitions.
 use std::ops::RangeInclusive;
 
 use settings_store::dictation::DictationLanguage;
@@ -16,18 +11,11 @@ pub use settings_store::accessibility::{
     DEFAULT_SCREEN_READER_RATE, SECTION, ScreenReaderSettings, ScreenReaderVoice,
 };
 
-/// The pointer size without the large cursor, in logical pixels.
 pub const DEFAULT_CURSOR_SIZE: u32 = 24;
 pub const CURSOR_SIZE_RANGE: RangeInclusive<u32> = DEFAULT_CURSOR_SIZE..=64;
 
-/// The pointer theme the desktop ships with: Adwaita is in every GTK
-/// install, and the theme the desktop and the toolkits it draws for used
-/// before the theme was the person's choice.
 pub const DEFAULT_CURSOR_THEME: &str = "Adwaita";
 
-/// The longest pointer-theme name accepted, in characters. Theme directories
-/// are named in a word or two; the limit keeps the whole stored section small
-/// enough to hand around by value.
 pub const CURSOR_THEME_MAX_CHARS: usize = 48;
 
 /// A whole name of [`CURSOR_THEME_MAX_CHARS`] characters in its longest
@@ -35,20 +23,16 @@ pub const CURSOR_THEME_MAX_CHARS: usize = 48;
 const CURSOR_THEME_BYTES: usize = CURSOR_THEME_MAX_CHARS * 4;
 
 /// The name of a pointer theme: the directory it is installed under, never a
-/// path. Held inline, so a section holding one stays `Copy` for the
-/// compositor, which hands its own settings out by value.
+/// path. Inline, so a section holding one stays `Copy` for the compositor.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CursorTheme {
-    /// The name as UTF-8, zero-padded: a name holds no control character, so
-    /// the first zero ends it.
+    /// Zero-padded; a name holds no control character, so the first zero ends it.
     bytes: [u8; CURSOR_THEME_BYTES],
 }
 
 impl CursorTheme {
-    /// `name` as a pointer theme, trimmed, or `None` when it is not one:
-    /// nothing, longer than [`CURSOR_THEME_MAX_CHARS`], hidden or a path. A
-    /// theme is named by the directory it is installed under, so a name never
-    /// leads out of the theme directories.
+    /// `name` as a pointer theme, or `None` when it is empty, too long, hidden or
+    /// a path.
     #[must_use]
     pub fn new(name: &str) -> Option<Self> {
         let name = name.trim();
@@ -60,7 +44,6 @@ impl CursorTheme {
         .then(|| Self::of(name))
     }
 
-    /// The name.
     #[must_use]
     pub fn as_str(&self) -> &str {
         let end = self
@@ -72,7 +55,6 @@ impl CursorTheme {
         std::str::from_utf8(bytes).unwrap_or_default()
     }
 
-    /// A theme named `name`, which [`Self::new`] has already accepted.
     fn of(name: &str) -> Self {
         let mut bytes = [0; CURSOR_THEME_BYTES];
         if let Some(start) = bytes.get_mut(..name.len()) {
@@ -215,8 +197,6 @@ impl tilo_resource::Model for CursorTheme {
         op: &tilo_resource::EditOp,
         _cx: &mut tilo_resource::ActionCx,
     ) -> Result<(), tilo_resource::ModelError> {
-        // A name is set whole: typing through the text of a theme would let a
-        // name that is not one be spelled into the field.
         tilo_resource::edit_whole::<Self>(doc, slot, path, op)
     }
 
@@ -225,24 +205,14 @@ impl tilo_resource::Model for CursorTheme {
     }
 }
 
-/// Default bounce-keys window: a second press of the same key this soon
-/// after its release is treated as a bounce, not a keystroke.
 pub const BOUNCE_KEYS_DEFAULT_DELAY_MS: u32 = 300;
 pub const BOUNCE_KEYS_DELAY_RANGE: RangeInclusive<u32> = 50..=1_000;
 
-/// Automatic switch-scan periods outside this range mean manual scanning.
 pub const SWITCH_SCAN_RANGE_MS: RangeInclusive<u16> = 500..=5_000;
 
-/// Defines `AccessibilitySettings`, the person's assists, in the calling
-/// crate: the shell's plain copy here, and Settings' copy that adds its
-/// record attributes (`$record` on the type, `$readonly` on the keys only
-/// the record's verbs change). One definition for both keeps
-/// them from disagreeing about a key, a default or a range, and Settings'
-/// copy keeps the record's generated code inside the one app that edits it.
-/// The caller has the field types in scope by their own names
-/// (`ColorFilter`, `DictationLanguage`, `MagnifierView`, `OnScreenKeyboard`,
-/// `ScreenReaderVoice`, `SwitchKeyPair`), so a record's stored field types
-/// read the same in its surface whichever crate defines it.
+/// Defines `AccessibilitySettings` in the calling crate: the shell's plain copy
+/// here, Settings' copy with its record attributes. One definition keeps both
+/// from disagreeing about a key, a default or a range.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! accessibility_settings {
@@ -258,12 +228,8 @@ macro_rules! accessibility_settings {
                       independently meaningful serialized setting, not a related toggle group"
         )]
         pub struct AccessibilitySettings {
-            /// Enlarge the mouse pointer to [`Self::cursor_size`].
             pub large_cursor: bool,
-            /// Pointer size in logical pixels (the compositor's cursor theme size).
             pub cursor_size: u32,
-            /// The pointer theme's name: the directory it is installed under,
-            /// drawn by the compositor and reported to toolkits alike.
             pub cursor_theme: $crate::CursorTheme,
             $(#[$readonly])*
             pub screen_reader: bool,
@@ -272,46 +238,29 @@ macro_rules! accessibility_settings {
             pub on_screen_keyboard: OnScreenKeyboard,
             /// Latch modifier keys so chords can be typed one key at a time.
             pub sticky_keys: bool,
-            /// Require a key to be held briefly before it registers, ignoring
-            /// accidental brushes.
             pub slow_keys: bool,
-            /// Ignore a second press of the same key soon after its release.
             pub bounce_keys: bool,
-            /// The bounce-keys window in milliseconds.
             pub bounce_keys_delay_ms: u32,
-            /// Flash the visual alert when bounce keys ignores a press.
             pub bounce_keys_alert: bool,
-            /// Move the pointer with the numeric keypad.
             pub mouse_keys: bool,
             /// Flash the screen instead of (or alongside) an audible alert.
             pub visual_alerts: bool,
-            /// Whole-desktop colour transform owned by the compositor.
             pub color_filter: ColorFilter,
-            /// Desktop magnification factor; [`OFF`]($crate::__private::OFF) means disabled.
             pub magnifier_zoom: u8,
-            /// A lens around the point of interest, or the whole screen magnified.
             pub magnifier_view: MagnifierView,
-            /// The zoom the magnifier's toggle turns back on to: the last one
-            /// in use. Changed by stepping the magnifier.
             $(#[$readonly])*
             pub magnifier_last_zoom: u8,
-            /// Paint full-screen guide lines through the hardware pointer.
             pub cursor_crosshair: bool,
-            /// Make text insertion carets wider in every Tilo toolkit application.
             pub thick_text_caret: bool,
-            /// Turn switch signals into standard scan-next/activate actions.
             pub switch_control: bool,
-            /// Which ordinary key pair a two-switch device emits.
             pub switch_key_pair: SwitchKeyPair,
             /// Automatic scan period in milliseconds; zero means manual two-switch scanning.
             pub switch_scan_ms: u16,
             /// Normalised screen-reader speech rate, where 100 is the engine default.
             pub screen_reader_rate: u16,
-            /// Backend-neutral voice/language preset.
             pub screen_reader_voice: ScreenReaderVoice,
             /// Personal recognition language; selecting it never grants microphone access.
             pub dictation_language: DictationLanguage,
-            /// Preserve recognised speech without removing explicit self-repairs.
             pub dictation_literal: bool,
         }
 
@@ -363,7 +312,6 @@ macro_rules! accessibility_settings {
                 ("800 ms", 800),
             ];
 
-            /// The offered pointer sizes as `(display label, size px)`.
             pub const CURSOR_SIZES: &'static [(&'static str, u32)] = &[
                 ("Default", 24),
                 ("Large", 36),
@@ -378,7 +326,6 @@ macro_rules! accessibility_settings {
             pub fn from_section(
             section: &::serde_json::Map<::std::string::String, ::serde_json::Value>,
         ) -> Self {
-                /// One reader per value type, shared by every key of that type.
                 #[inline(never)]
                 fn key<T: for<'de> ::serde::Deserialize<'de>>(
                     section: &::serde_json::Map<::std::string::String, ::serde_json::Value>,
@@ -474,7 +421,6 @@ macro_rules! accessibility_settings {
                 settings
             }
 
-            /// The pointer size the compositor draws.
             pub fn effective_cursor_size(self) -> u32 {
                 if self.large_cursor {
                     self.cursor_size
@@ -492,15 +438,12 @@ macro_rules! accessibility_settings {
                 }
             }
 
-            /// The automatic switch-scan period; `None` scans manually.
             pub fn switch_scan(self) -> Option<::std::time::Duration> {
                 $crate::__private::SWITCH_SCAN_RANGE_MS
                     .contains(&self.switch_scan_ms)
                     .then(|| ::std::time::Duration::from_millis(u64::from(self.switch_scan_ms)))
             }
 
-            /// Step the magnifier: turn it on at the zoom last in use or
-            /// off, or magnify a level more or less, remembering the zoom.
             pub fn step_magnifier(&mut self, step: $crate::__private::MagnifierStep) {
                 let (zoom, remembered) = $crate::__private::step_zoom(
                     self.magnifier_zoom,
@@ -526,17 +469,14 @@ macro_rules! accessibility_settings {
                 )
             }
 
-            /// The offered bounce-keys window closest to `ms`.
             pub fn bounce_delay_label(ms: u32) -> &'static str {
                 $crate::__private::closest_label(Self::BOUNCE_DELAYS, ms)
             }
 
-            /// Map a bounce-keys label back to milliseconds, if recognised.
             pub fn bounce_delay_ms(label: &str) -> Option<u32> {
                 $crate::__private::labelled(Self::BOUNCE_DELAYS, label)
             }
 
-            /// The offered pointer size closest to `size`.
             pub fn cursor_size_label(size: u32) -> &'static str {
                 $crate::__private::closest_label(Self::CURSOR_SIZES, size)
             }
@@ -577,7 +517,6 @@ pub mod __private {
 }
 
 labelled_choice!(
-    /// The whole-desktop colour transform.
     ColorFilter {
         #[default]
         None => "Off",
@@ -588,9 +527,6 @@ labelled_choice!(
 );
 
 labelled_choice!(
-    /// When the compositor runs the on-screen keyboard. `Auto` follows the
-    /// hardware in use: a touchscreen with no physical typing since the last
-    /// touch, or a convertible folded into tablet mode.
     OnScreenKeyboard {
         #[default]
         Auto => "Automatic",
@@ -600,7 +536,6 @@ labelled_choice!(
 );
 
 labelled_choice!(
-    /// Which ordinary key pair a two-switch device emits.
     SwitchKeyPair {
         #[default]
         F6F7 => "F6 / F7",
@@ -658,9 +593,6 @@ mod tests {
         assert_eq!(settings.switch_scan(), None);
     }
 
-    /// The pointer theme is a theme's name, trimmed; anything that is not a
-    /// name keeps the theme the desktop ships with, like a size out of range
-    /// keeps the default size.
     #[test]
     fn a_theme_is_a_name_and_anything_else_keeps_the_default() {
         assert_eq!(DEFAULT_CURSOR_THEME, "Adwaita");
@@ -694,8 +626,6 @@ mod tests {
         }
     }
 
-    /// A name is a value the settings hold, so a name that is not one cannot
-    /// be built at all: the section reads it as the default instead.
     #[test]
     fn a_theme_name_holds_its_text_and_nothing_else() {
         let theme = CursorTheme::new("Bibata-Modern-Ice").expect("a name");

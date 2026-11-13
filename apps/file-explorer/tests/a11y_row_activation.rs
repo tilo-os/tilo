@@ -1,19 +1,14 @@
-//! A row of Files answers the activation an assistive technology makes on it
-//! by name, exactly as a double-click opens it: the same table, the same
-//! command, the same navigation.
-//!
-//! Files draws its list itself, so the row is a node of the table the view
-//! paints rather than of the host's tree; a semantic target that stopped at
-//! the painting ancestor would select the row and open nothing.
 #![allow(
     clippy::unwrap_used,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+//! A row of Files answers an assistive technology's activation as a double-click opens
+//! it.
+
 use super::common::{Harness, row_center};
 use ui::headless::Framed;
 
-/// A temp dir containing a single folder (row 0) plus a file.
 fn dir_with_folder() -> (tempfile::TempDir, std::path::PathBuf) {
     let d = tempfile::tempdir().unwrap();
     let folder = d.path().join("Aardvark");
@@ -22,7 +17,6 @@ fn dir_with_folder() -> (tempfile::TempDir, std::path::PathBuf) {
     (d, folder)
 }
 
-/// What a double-click at the row's centre does, as the control.
 #[test]
 fn a_double_click_opens_the_folder_row() {
     let (dir, folder) = dir_with_folder();
@@ -41,7 +35,6 @@ fn a_double_click_opens_the_folder_row() {
     );
 }
 
-/// What an assistive technology's activation of the row does.
 #[test]
 fn an_assistive_technology_opens_the_folder_row() {
     let (dir, folder) = dir_with_folder();
@@ -60,7 +53,6 @@ fn an_assistive_technology_opens_the_folder_row() {
     );
 }
 
-/// What an assistive technology's context-menu request on the row does.
 #[test]
 fn an_assistive_technology_opens_the_row_menu() {
     let (dir, _folder) = dir_with_folder();

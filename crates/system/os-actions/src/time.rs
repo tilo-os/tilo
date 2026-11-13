@@ -1,7 +1,5 @@
-//! Time / NTP wrappers via `timedatectl` and `date`, shared by the
-//! Settings time-date panel. Same design as the other modules: sync,
-//! presence-checked shell-outs with no extra deps — formatting is
-//! delegated to `date(1)` rather than pulling in a datetime crate.
+//! Time and NTP through `timedatectl`, shared by the Settings time panel; formatting is
+//! `date(1)`'s rather than a datetime crate's.
 
 use crate::process::{run, run_capture};
 
@@ -13,14 +11,8 @@ pub struct TimeSyncStatus {
     pub source: Option<String>,
 }
 
-/// Read timedated's authoritative state and, when systemd-timesyncd is the
-/// provider, its selected server. Missing providers remain `None`; Settings
-/// can distinguish unavailable from disabled.
-///
-/// # Errors
-///
-/// Returns an error message if `timedatectl` is not installed or timedated
-/// cannot be asked; a missing time-sync provider is not an error.
+/// timedated's state, and its selected server when systemd-timesyncd provides it. A missing provider
+/// stays `None`, so Settings can tell unavailable from disabled.
 pub fn get_time_sync_status() -> Result<TimeSyncStatus, String> {
     let mut status = parse_time_status(&run_capture(
         "timedatectl",
@@ -40,8 +32,8 @@ pub fn get_time_sync_status() -> Result<TimeSyncStatus, String> {
     Ok(status)
 }
 
-/// The IANA zones timedated accepts. This uses the system zoneinfo database,
-/// so the list follows tzdata updates instead of an embedded copy.
+/// The IANA zones timedated accepts, from the system zoneinfo database, so the list follows tzdata
+/// rather than an embedded copy.
 pub fn list_timezones() -> Result<Vec<String>, String> {
     let out = run_capture("timedatectl", &["list-timezones"])?;
     let mut zones: Vec<String> = out
@@ -55,18 +47,12 @@ pub fn list_timezones() -> Result<Vec<String>, String> {
     Ok(zones)
 }
 
-/// Set the system time zone to the IANA identifier `timezone`.
-///
-/// # Errors
-///
-/// Returns an error message if `timezone` fails [`valid_timezone`], or if `timedatectl` is not
-/// installed, is not authorised, or the command otherwise fails.
 pub fn set_timezone(timezone: &str) -> Result<(), String> {
     if !valid_timezone(timezone) {
         return Err("invalid IANA time-zone identifier".into());
     }
-    // timedated validates membership in the installed tzdata set and polkit
-    // authorises the active session.
+    // timedated validates membership in the installed tzdata set and polkit authorises the active
+    // session.
     run("timedatectl", &["set-timezone", timezone])
 }
 
@@ -119,15 +105,12 @@ fn parse_time_source(out: &str) -> Option<String> {
     None
 }
 
-/// Is automatic time synchronisation (NTP) enabled?
-/// `timedatectl show -p NTP --value` prints `yes` / `no`.
 pub fn get_ntp() -> Result<bool, String> {
     let out = run_capture("timedatectl", &["show", "-p", "NTP", "--value"])?;
     parse_timedatectl_ntp(&out)
 }
 
-/// Enable/disable automatic time synchronisation. Needs privilege, so a
-/// denial surfaces as the command's error string.
+/// Needs privilege, so a denial surfaces as the command's error string.
 pub fn set_ntp(enabled: bool) -> Result<(), String> {
     run(
         "timedatectl",
@@ -135,7 +118,6 @@ pub fn set_ntp(enabled: bool) -> Result<(), String> {
     )
 }
 
-/// Parse the `yes`/`no` value from `timedatectl show -p NTP --value`.
 fn parse_timedatectl_ntp(stdout: &str) -> Result<bool, String> {
     match stdout.trim() {
         "yes" => Ok(true),

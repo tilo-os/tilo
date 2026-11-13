@@ -38,8 +38,6 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
@@ -124,7 +122,7 @@ impl Theme {
 /// chat and mail apps published, and the person's settings service beside them, which publishes the
 /// appearance section the theme is chosen through.
 fn session() -> Session {
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     crate::common::headless(Options {
         person: PERSON.to_owned(),
         shell: true,
@@ -146,7 +144,7 @@ fn step(session: &mut Session, frames: usize) {
 
 /// Run frames until `done` holds; `false` when it never did.
 fn reached(session: &mut Session, mut done: impl FnMut(&Session) -> bool) -> bool {
-    common::reached(session, |session| done(session))
+    crate::common::reached(session, |session| done(session))
 }
 
 /// Set the field `field` of the appearance section to `value` through the section's own published

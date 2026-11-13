@@ -1,8 +1,5 @@
 //! The editor's text sync against the current authoritative document.
 //!
-//! The search projection may already have read the active buffer in this
-//! sync. Handing that immutable observation to the editor avoids walking the
-//! same CRDT text twice while keeping the document authoritative.
 
 use super::{AppModel, EditorView, ModelPath, ObjId};
 

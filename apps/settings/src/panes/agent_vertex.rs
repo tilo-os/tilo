@@ -1,20 +1,8 @@
-//! Google Vertex AI, or the Gemini API, as an agent model provider, signed
-//! in with Google rather than set up with an API key.
-//!
-//! The person signs in in the system browser (PKCE with a loopback
-//! redirect, through account custody), then chooses the Google Cloud
-//! project billed for requests and, for Vertex AI, the location they run in
-//! and the model. A Gemini API provider's model is chosen from the list the
-//! API gives, like any provider's.
-//! The grant asks for Google Cloud access only and is sealed under its own
-//! vault id ([`agent_provider_config::sign_in_grant_id`]), apart from any
-//! Mail or Files grant of the same Google account: signing in here never
-//! widens those, and removing the provider forgets only this grant. It
-//! never revokes it at Google, because Google revokes every grant of Tilo's
-//! client for that person at once, Gmail's included.
-//!
-//! The provider is saved only once a project is chosen: until then there is
-//! nothing the gateway could call.
+//! Google Vertex AI, or the Gemini API, as an agent model provider, signed in
+//! with Google rather than set up with an API key. The person signs in in the
+//! system browser (PKCE with a loopback redirect, through account custody),
+//! then chooses the Google Cloud project billed for requests and, for Vertex
+//! AI, the location they run in and the model.
 
 use std::sync::Arc;
 
@@ -38,50 +26,36 @@ use crate::panes::agent_sign_in::{SignInWait, Waited};
 use crate::resource::Settings;
 use provider_settings_ui::widgets::{Item, SettingsSection, field_row, note, row, rows, section};
 
-/// The use a Vertex AI grant is signed in and refreshed through.
 pub(crate) const GOOGLE_MODELS: OAuthUse = OAuthUse::new(OAuthIssuer::Google, Capability::Models);
 
 /// The scope a Vertex AI grant must carry; Google lets the person untick it
 /// on the consent page.
 const CLOUD_PLATFORM: &str = "https://www.googleapis.com/auth/cloud-platform";
 
-/// At most this many listed projects are offered as buttons; anything else
-/// is typed.
 const SHOWN_PROJECTS: usize = 12;
 
-/// The vault id of `profile_id`'s Google grant.
 pub(crate) fn grant_id(profile_id: &str) -> AccountId {
     AccountId::new(sign_in_grant_id(profile_id))
 }
 
-/// What a finished browser sign-in brings back.
 struct SignedIn {
     /// The projects the grant can see, or why they could not be listed.
     projects: Result<Vec<CloudProject>, String>,
 }
 
 enum Stage {
-    /// Explained; nothing started.
     Intro,
-    /// The browser is open; a worker waits for Google's redirect.
     Waiting(SignInWait<Result<SignedIn, String>>),
-    /// Signed in; the project, location and model are being chosen.
     Choose,
 }
 
-/// What [`VertexSetup::poll`] reports.
 pub(crate) enum Polled {
     Nothing,
     Changed,
-    /// An existing provider signed in again; nothing is left to choose.
     SignedInAgain,
 }
 
-/// One Vertex AI sign-in: of a provider being added, or of an existing one
-/// signing in again.
 pub(crate) struct VertexSetup {
-    /// The provider the grant is for: the existing one, or the id a new one
-    /// will be saved under.
     pub(crate) profile_id: String,
     /// Whether the provider already exists.
     pub(crate) existing: bool,
@@ -97,7 +71,6 @@ pub(crate) struct VertexSetup {
 }
 
 impl VertexSetup {
-    /// A provider to be added, with Vertex AI's default location and model.
     pub(crate) fn adding() -> Self {
         Self::new(
             uuid::Uuid::new_v4().to_string(),
@@ -106,7 +79,6 @@ impl VertexSetup {
         )
     }
 
-    /// A Gemini API provider to be added.
     pub(crate) fn adding_gemini() -> Self {
         Self {
             gemini: true,
@@ -118,7 +90,6 @@ impl VertexSetup {
         }
     }
 
-    /// `profile` signing in again.
     pub(crate) fn again(profile: &ProviderProfile) -> Self {
         let fields = VertexFields::of(profile);
         let text = |state: &LocalState<String>| state.with(Clone::clone);
@@ -155,22 +126,18 @@ impl VertexSetup {
         }
     }
 
-    /// What went wrong last, for the person.
     pub(crate) fn message(&self) -> Option<&str> {
         self.message.as_deref()
     }
 
-    /// Whether a worker waits for the browser.
     pub(crate) fn waiting(&self) -> bool {
         matches!(self.stage, Stage::Waiting(_))
     }
 
-    /// Whether the person is choosing the project of a new provider.
     pub(crate) fn choosing(&self) -> bool {
         matches!(self.stage, Stage::Choose)
     }
 
-    /// Put `project` in the project field.
     pub(crate) fn choose_project(&self, project: &str) {
         self.project.set(project.to_string());
     }
@@ -181,8 +148,6 @@ impl VertexSetup {
         self.projects = projects;
     }
 
-    /// Open Google's consent page in the browser and wait for its answer on
-    /// a worker, which seals the grant and lists the person's projects.
     pub(crate) fn begin(&mut self, custodian: &Custodian, opener: &Arc<dyn BrowserOpener>) {
         if self.waiting() {
             return;
@@ -234,7 +199,6 @@ impl VertexSetup {
         self.stage = Stage::Waiting(wait);
     }
 
-    /// Stop waiting for the browser.
     pub(crate) fn cancel(&mut self) {
         if let Stage::Waiting(wait) = &self.stage {
             wait.cancel();
@@ -242,7 +206,6 @@ impl VertexSetup {
         self.stage = Stage::Intro;
     }
 
-    /// Take the browser's outcome and the worker's result when they arrive.
     pub(crate) fn poll(&mut self) -> Polled {
         let Stage::Waiting(wait) = &mut self.stage else {
             return Polled::Nothing;
@@ -288,7 +251,6 @@ impl VertexSetup {
         }
     }
 
-    /// The setup card of a provider being added.
     pub(crate) fn section(&self, actions: &Actions<Settings>) -> SettingsSection {
         let mut body: Vec<Item> = Vec::new();
         let cancel = || {
@@ -431,8 +393,6 @@ impl VertexSetup {
     }
 }
 
-/// The editable project, location and model of a Vertex AI provider, or
-/// the project of a Gemini API one.
 #[derive(Clone)]
 pub(crate) struct VertexFields {
     pub(crate) project: LocalState<String>,
@@ -468,7 +428,6 @@ impl VertexFields {
         }
     }
 
-    /// The fields and their save button for the provider `profile_id`.
     pub(crate) fn push(&self, actions: &Actions<Settings>, body: &mut Vec<Item>, profile_id: &str) {
         push_vertex_fields(
             body,
@@ -539,7 +498,6 @@ fn push_vertex_fields(
             model,
         ),
     ];
-    // A Gemini API provider bills a project; its model comes from its list.
     for (name, label, placeholder, state) in fields.into_iter().take(if gemini { 1 } else { 3 }) {
         body.push(field_row(
             &t(label),
@@ -553,7 +511,6 @@ fn push_vertex_fields(
     }
 }
 
-/// The arguments of [`AgentModelsEffect::SetVertexProvider`] from the fields.
 fn fields_value(
     provider: Option<String>,
     project: &LocalState<String>,
@@ -570,15 +527,10 @@ fn fields_value(
     )
 }
 
-/// A model id as the person typed it: Gemini's without the `google/` that
-/// Vertex AI's endpoint wants.
 fn display_model(id: &str) -> &str {
     id.strip_prefix("google/").unwrap_or(id)
 }
 
-/// Add the Vertex AI provider `profile_id` to `config`, or change the
-/// project, location and model of the existing one, after checking what
-/// was typed.
 pub(crate) fn apply(
     config: &mut ProviderConfig,
     profile_id: &str,
@@ -630,8 +582,6 @@ pub(crate) fn apply(
     Ok(())
 }
 
-/// Add the Gemini API provider `profile_id` billed to `project`, or bill
-/// another project with the existing one, after checking the project id.
 pub(crate) fn apply_gemini(
     config: &mut ProviderConfig,
     profile_id: &str,
@@ -661,7 +611,6 @@ pub(crate) fn apply_gemini(
     Ok(())
 }
 
-/// Whether `custodian` holds a usable grant for `profile_id`.
 #[cfg(test)]
 pub(crate) fn signed_in(custodian: &Custodian, profile_id: &str) -> bool {
     matches!(

@@ -1,5 +1,4 @@
-//! Shared helpers: whether the host can run a job, and running one to a
-//! captured output.
+//! Shared helpers: whether the host can run a job, and running one to a captured output.
 
 use std::io::Read;
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -7,10 +6,9 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_sandbox::job::{JobSpec, Launch, Root, SpawnError};
 
-/// Whether this host can create the job's namespaces at all. When it can't
-/// (an old kernel, unprivileged user namespaces disabled, a CI container
-/// that forbids them), a test prints why and passes: it cannot observe its
-/// subject here.
+/// Whether this host can create the job's namespaces at all. When it can't (an old kernel,
+/// unprivileged user namespaces disabled, a CI container that forbids them), a test prints why and
+/// passes: it cannot observe its subject here.
 pub fn can_run() -> Result<(), String> {
     let spec = JobSpec::new(Root::Host { extra: vec![] }, ["/bin/true"]);
     match Launch::new(&spec).spawn() {
@@ -23,7 +21,6 @@ pub fn can_run() -> Result<(), String> {
     }
 }
 
-/// Run `name`'s body only where a job can start.
 #[macro_export]
 macro_rules! needs_sandbox {
     () => {
@@ -48,8 +45,8 @@ pub fn pipe() -> (std::fs::File, OwnedFd) {
     }
 }
 
-/// Run a job built by `build`, returning its exit status and everything it
-/// wrote to stdout and stderr.
+/// Run a job built by `build`, returning its exit status and everything it wrote to stdout and
+/// stderr.
 pub fn run(build: impl FnOnce(&mut JobSpec)) -> (tilo_sandbox::job::ExitStatus, String) {
     let mut spec = JobSpec::new(Root::Host { extra: vec![] }, ["/bin/sh"]);
     build(&mut spec);
@@ -71,8 +68,8 @@ pub fn shell(spec: &mut JobSpec, script: &str) {
     spec.argv = ["/bin/sh", "-c", script].map(Into::into).to_vec();
 }
 
-/// A cgroup of the test's own below this process's, removed (its processes killed) when
-/// dropped; or why there is none (no delegated cgroup here).
+/// A cgroup of the test's own below this process's, removed (its processes killed) when dropped; or
+/// why there is none (no delegated cgroup here).
 pub struct TestCgroup {
     pub path: std::path::PathBuf,
     dir: std::fs::File,
@@ -134,10 +131,9 @@ pub fn is_root() -> bool {
 /// Where [`start_in_child`] tells the starter what to start.
 const STARTER_ENV: &str = "TILO_SANDBOX_TEST_STARTER";
 
-/// Start what `dir` describes (see [`starter`]) from another process, a child of this one, on
-/// a thread that ends at once, and return the pid of what it started. A detached job's or a
-/// helper's init is its starter's parent's child: this process's, which reaps it with
-/// [`reap`].
+/// Start what `dir` describes (see [`starter`]) from another process, a child of this one, on a
+/// thread that ends at once, and return the pid of what it started. A detached job's or a helper's
+/// init is its starter's parent's child, this process's, which reaps it with [`reap`].
 pub fn start_in_child(dir: &std::path::Path) -> i32 {
     let exe = std::env::current_exe().expect("this test binary");
     let status = std::process::Command::new(exe)
@@ -180,10 +176,10 @@ pub fn status_file(path: &std::path::Path) -> Option<i32> {
         .map(i32::from_ne_bytes)
 }
 
-/// Not a test of its own: run by [`start_in_child`] in a process of its own. `dir` holds
-/// `kind` (`job`, `helper`, `helper-probe` or `helper-netns`), `script` (for `/bin/sh -c`) and
-/// optionally `cgroup` (a path); the started job's status goes to `status`, its output to
-/// `out`, its pid to `pid`.
+/// Not a test of its own: run by [`start_in_child`] in a process of its own. `dir` holds `kind`
+/// (`job`, `helper`, `helper-probe` or `helper-netns`), `script` (for `/bin/sh -c`) and optionally
+/// `cgroup` (a path); the started job's status goes to `status`, its output to `out`, its pid to
+/// `pid`.
 #[test]
 fn starter() {
     let Some(dir) = std::env::var_os(STARTER_ENV) else {
@@ -253,8 +249,8 @@ fn start(dir: &std::path::Path) -> Result<i32, String> {
     .map_err(|e| e.to_string())
 }
 
-/// Mount a tmpfs of the caller's own, in a mount namespace of this thread's, which a helper
-/// started from here must not see; whether this thread sees it goes to `probe-seen`.
+/// Mount a tmpfs of the caller's own, in a mount namespace of this thread's, which a helper started
+/// from here must not see; whether this thread sees it goes to `probe-seen`.
 fn probe_own_mount(dir: &std::path::Path) -> Result<(), String> {
     // SAFETY (this block): namespace and mount calls on static strings, on this thread.
     unsafe {
@@ -296,8 +292,7 @@ fn probe_own_mount(dir: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-/// A network namespace made on this thread, which returns to its own; its name goes to
-/// `netns`.
+/// A network namespace made on this thread, which returns to its own; its name goes to `netns`.
 fn own_netns(dir: &std::path::Path) -> Result<std::fs::File, String> {
     let home = std::fs::File::open("/proc/thread-self/ns/net").map_err(|e| e.to_string())?;
     // SAFETY: unshare and setns on this thread, with a namespace descriptor we hold.

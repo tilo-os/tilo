@@ -103,7 +103,6 @@ impl Drop for OwnedChild {
     fn drop(&mut self) {
         if let Some(mut child) = self.0.take() {
             // Kill and reap only this fixture's child, including unwind/error paths.
-            // A prior try_wait may already have reaped it; kill/wait remain harmless.
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -286,8 +285,8 @@ fn outer() {
     owned(&blocked, 1003, 1003, 0o700);
     let source_mount = Mounted::readonly(source_path);
     let source = pathfd(source_path);
-    // A genuine admitted Home without mounted children keeps Bubblewrap's
-    // ordinary baseline; no filter lease or rewritten bootstrap is produced.
+    // A genuine admitted Home without mounted children keeps Bubblewrap's ordinary baseline; no filter
+    // lease or rewritten bootstrap is produced.
     let home_only = Bootstrap::admit(&source, 1000, 1001, &[1002], [7; 32]).unwrap();
     let untouched_token = home_only.descriptor();
     let empty_compiler: std::os::fd::OwnedFd = tempfile::tempfile().unwrap().into();
@@ -306,8 +305,7 @@ fn outer() {
             .unwrap()
             .is_none()
     );
-    // Inputs::admit rejects empty attachments today. Retain that refusal rather
-    // than manufacturing a test-only source input or weakening admission.
+    // Inputs::admit rejects empty attachments today.
     assert!(home_only.with_roots(Vec::new()).is_err());
     let input =
         OriginalMountedInput::from_reviewed("blocked/target".into(), pathfd(&approved)).unwrap();
@@ -470,8 +468,8 @@ fn inner() {
             );
             let source = CString::new("/proc/self/fd/1800").unwrap();
             let absent = CString::new("/run/tilo/migration/absent-mount-target").unwrap();
-            // SAFETY: the inherited reviewed source FD and missing literal target
-            // are live named inputs; this real syscall must fail without a mount.
+            // SAFETY: the inherited reviewed source FD and missing literal target are live named
+            // inputs; this real syscall must fail without a mount.
             if unsafe {
                 libc::mount(
                     source.as_ptr(),
@@ -614,7 +612,6 @@ fn actual_private_home_final_observation_restores_root_before_sealing_mounted_re
         assert_eq!(unsafe { libc::close(51) }, 0);
         drop(mounted);
         // The original backing file is still present; the scope above performed no writes.
-        // Root no longer has DAC override, so inspect bytes under the same explicit caller IDs.
         apply_filesystem_ids(1000, 1001, &[1002]).unwrap();
         assert_eq!(
             std::fs::read(nested.join("document")).unwrap(),

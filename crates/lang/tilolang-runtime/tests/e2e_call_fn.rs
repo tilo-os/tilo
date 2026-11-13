@@ -2,12 +2,8 @@
 //! reads are the caller's, and a run that replays after a question takes the path it took.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{
         AmStore, InvokeOutcome, Resolution, ResourceRef, RunOutcome, Runtime, SimpleAuthority,
         Value,

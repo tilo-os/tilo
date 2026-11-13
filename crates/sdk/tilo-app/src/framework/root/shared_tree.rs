@@ -182,11 +182,12 @@ impl ResourceRoot {
         let parts = self.typed.children_parts(state);
         let items = self.item_children(parts.items, &parts.item_actions, live, state);
         let head = match epoch {
-            Some(epoch) => self.live_head(state, epoch),
-            None => Rc::new(
-                self.typed
-                    .head(self.dispatch.resource_id(), &self.label, state),
-            ),
+            Some(epoch) => self.live_head(state, epoch, &self.name_of(state)),
+            None => Rc::new(self.typed.head(
+                self.dispatch.resource_id(),
+                &self.name_of(state),
+                state,
+            )),
         };
         let mut kept = self.document_children.borrow_mut();
         let last = kept
@@ -358,10 +359,7 @@ impl ResourceRoot {
             return None;
         }
         let surface = self.has_surface();
-        // The session keeps the record: the state is the one the view synced
-        // from the reading, never a reading of a document this process
-        // lent an empty pass (`one-app-model.md` §4).
-        let current = if self.source.is_connection() || self.typed.follows(doc) {
+        let current = if self.typed.follows(doc) {
             None
         } else {
             Some(self.typed.read(doc).ok()?)
@@ -838,7 +836,7 @@ mod tests {
         pub notes: Collection<Note>,
     }
 
-    #[resource(kind = "test.shared-board", label = "Board")]
+    #[resource(kind = "test.shared-board", catalogue = "tests/locales")]
     impl Board {
         /// Set the draft.
         #[action]
@@ -954,7 +952,7 @@ mod tests {
                 let kept = root.shared_document_tree(&*state);
                 let fresh = tilo_resource::publish::<Board>(
                     root.dispatch.resource_id(),
-                    &root.label,
+                    &root.name_of(&*state),
                     &*state,
                 );
                 assert_eq!(
@@ -1011,7 +1009,7 @@ mod tests {
                     outline(&root.shared_document_tree(&empty).to_resource()),
                     outline(&tilo_resource::publish::<Board>(
                         root.dispatch.resource_id(),
-                        &root.label,
+                        &root.name_of(&empty),
                         &empty
                     )),
                     "an unsynced version's document tree"
@@ -1263,7 +1261,7 @@ mod tests {
         pub tags: Vec<String>,
     }
 
-    #[resource(kind = "test.tagged", label = "Tagged", children = Tagged::tag_places)]
+    #[resource(kind = "test.tagged", children = Tagged::tag_places, catalogue = "tests/locales")]
     impl Tagged {
         /// Write the draft.
         #[action]

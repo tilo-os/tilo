@@ -187,6 +187,12 @@ pub(crate) fn take_presses() -> Vec<Point> {
     PRESSES.with(|presses| std::mem::take(&mut *presses.borrow_mut()))
 }
 
+/// Whether a press asked for by [`press_where_drawn`] waits for the host's next tick: work the
+/// frame that asked for it owes, which it must not rest on.
+pub(crate) fn press_waiting() -> bool {
+    PRESSES.with(|presses| !presses.borrow().is_empty())
+}
+
 #[derive(Default)]
 pub(crate) struct Activation {
     id: String,

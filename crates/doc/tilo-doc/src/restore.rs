@@ -1,17 +1,9 @@
-//! Restore an earlier state of a document as a new change on top of its
-//! current heads.
-//!
-//! Version history restores are CRDT operations, not byte replacement: the
-//! restored document keeps every change it had and gains one that takes its
-//! state back to the selected version. A peer that edited the same document
-//! concurrently merges with the restore like with any other edit, and the
-//! history continues instead of forking.
-//!
-//! The change is the structural difference between the current state and the
-//! selected one (Automerge's own diff between the two head sets), so objects
-//! both states share keep their identity and only what differs is written.
-//! An object the selected version has but the current state lost is authored
-//! afresh from the selected version, marks included. Before the caller commits
+//! Restore an earlier state of a document as a new change on top of its current
+//! heads. A restore is a CRDT operation, not byte replacement: the document keeps
+//! every change it had and gains one that takes its state back to the selected
+//! version, so a peer's concurrent edit merges with it and the history continues
+//! instead of forking. The change is the structural difference between the two
+//! states, so objects both share keep their identity. Before the caller commits
 //! anything, the written state is compared with the selected one in full; a
 //! difference is an error, never a silently different document.
 
@@ -27,18 +19,15 @@ use tilo_automerge::ApplyIncoming;
 use tilo_resource::history::commit_stamped_with_message;
 use tilo_sort::CompactSort as _;
 
-/// Write into `doc`'s open transaction the operations that take its current
-/// state to the state it had at `target`, whose changes `doc` must hold.
-/// Marks written by the restore expand like `expand`.
-///
-/// Returns whether anything was written. The caller commits.
+/// Write into `doc`'s open transaction the operations that take its current state to the state it
+/// had at `target`, whose changes `doc` must hold. Marks written by the restore expand like
+/// `expand`; the caller commits.
 ///
 /// # Errors
 ///
-/// [`DocError::Invalid`] when `doc` lacks a change of `target` or the written
-/// state differs from the one at `target`; [`DocError::Automerge`] when a write
-/// fails. Either way the open transaction holds partial work the caller
-/// must roll back.
+/// [`DocError::Invalid`] when `doc` lacks a change of `target` or the written state differs from
+/// the one at `target`; [`DocError::Automerge`] when a write fails. Either way the open transaction
+/// holds partial work the caller must roll back.
 pub fn restore_to_heads(
     doc: &mut AutoCommit,
     target: &[ChangeHash],
@@ -78,25 +67,15 @@ pub fn restore_to_heads(
     Ok(writer.doc.pending_ops() > 0)
 }
 
-/// Restore serialized document `current` to the state of the serialized
-/// version `target` of the same document: `current`'s history plus one change
-/// whose state equals `target`'s. A `target` from a separate history is merged
-/// in first, so the result descends from both.
-///
-/// Returns `None` when `current` already has `target`'s heads, so a restore
-/// would change nothing.
-///
-/// # Errors
-///
-/// As [`restore_to_heads`], and [`DocError::Load`] / [`DocError::Invalid`]
-/// when either input or the result is not a document.
+/// Restore serialized document `current` to the state of serialized version `target` of the same
+/// document: `current`'s history plus one change whose state equals `target`'s. A `target` from a
+/// separate history is merged in first, so the result descends from both; `None` when `current`
+/// already has `target`'s heads.
 pub fn restore_serialized(
     current: &[u8],
     target: &[u8],
     message: Option<String>,
 ) -> Result<Option<Vec<u8>>, DocError> {
-    // Loading through `Document` rejects Automerge data that is not a
-    // document of this schema.
     crate::Document::load(current)?;
     crate::Document::load(target)?;
     let mut doc = AutoCommit::load(current).map_err(|e| DocError::Load(e.to_string()))?;
@@ -118,10 +97,9 @@ struct Writer<'a> {
     doc: &'a mut AutoCommit,
     target: &'a [ChangeHash],
     expand: ExpandMark,
-    /// Objects of the selected state the restore authored afresh, by their
-    /// id in the selected state.
+    /// Objects of the selected state the restore authored afresh, by their id in the selected
+    /// state.
     created: HashMap<ObjId, ObjId>,
-    /// Selected-state objects whose whole content the restore already wrote.
     authored: HashSet<ObjId>,
 }
 
@@ -133,7 +111,6 @@ impl Writer<'_> {
                 .iter()
                 .any(|(obj, _)| self.authored.contains(obj))
         {
-            // Inside an object written whole from the selected state.
             return Ok(());
         }
         let obj = self.created.get(&patch.obj).cloned().unwrap_or(patch.obj);
@@ -192,8 +169,8 @@ impl Writer<'_> {
         Ok(())
     }
 
-    /// Give the `len` characters just inserted at `index` exactly the marks
-    /// `wanted`, whatever they inherited from their neighbours.
+    /// Give the `len` characters just inserted at `index` exactly the marks `wanted`, whatever they
+    /// inherited from their neighbours.
     fn settle_marks(
         &mut self,
         obj: &ObjId,
@@ -225,8 +202,8 @@ impl Writer<'_> {
         Ok(())
     }
 
-    /// Write one value at `prop` of `parent`: a scalar as itself, an object
-    /// as a new object holding the selected state's copy of it.
+    /// Write one value at `prop` of `parent`: a scalar as itself, an object as a new object holding
+    /// the selected state's copy of it.
     fn put(
         &mut self,
         parent: &ObjId,
@@ -251,8 +228,6 @@ impl Writer<'_> {
         Ok(())
     }
 
-    /// Fill the new object `created` with the whole content `selected` has
-    /// in the selected state.
     fn author(&mut self, selected: ObjId, created: ObjId, kind: ObjType) -> Result<(), DocError> {
         let mut pending = vec![(selected, created, kind)];
         while let Some((source, destination, kind)) = pending.pop() {
@@ -301,7 +276,6 @@ impl Writer<'_> {
     }
 }
 
-/// One value of an object, owned.
 #[derive(PartialEq)]
 enum Entry {
     Scalar(ScalarValue),
@@ -324,8 +298,8 @@ fn entry(
     }))
 }
 
-/// Whether `doc`'s current state equals its state at `target`: the same
-/// keys, values, sequences, text and marks, whatever the objects' ids.
+/// Whether `doc`'s current state equals its state at `target`: the same keys, values, sequences,
+/// text and marks, whatever the objects' ids.
 fn same_state(doc: &AutoCommit, target: &[ChangeHash]) -> Result<bool, DocError> {
     let mut pending = vec![(ROOT, ROOT, ObjType::Map)];
     while let Some((now, then, kind)) = pending.pop() {

@@ -1,5 +1,5 @@
-//! Finite root-service source projections, before source credential application.
-//! Inputs must come from retained protected source contexts, never public paths.
+//! Finite root-service source projections, before source credential application. Inputs
+//! must come from retained protected source contexts, never public paths.
 use super::{
     AsRawFd, Deserialize, Facts, File, FromRawFd, MAX_BYTES, MetadataExt, OpenOptionsExt, RawFd,
     SEALS, Seek, Serialize, Write, io, readonly, refused, root,
@@ -19,8 +19,7 @@ pub use protocol::{
 pub(super) use protocol::{observe, publish};
 const FIRST_FD: RawFd = 1800;
 const LIMIT: usize = 256;
-// Linux UAPI mount.h; libc exposes these only on GNU, while the shim also
-// supports Linux musl. Empty endpoints name held descriptors, never paths.
+// Linux UAPI mount.h; libc exposes these only on GNU, while the shim also supports Linux musl.
 const MOVE_MOUNT_EMPTY_ENDPOINTS: libc::c_uint = 0x0000_0004 | 0x0000_0040;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,17 +29,13 @@ pub(super) struct Projection {
     pub(super) identity: (u64, u64, u32, u32, u32),
     mount: u64,
 }
-/// Actual readonly `O_PATH` source descriptor. Root is required at construction;
-/// this type supplies no credentials or public app-selected source authority.
+/// Actual readonly `O_PATH` source descriptor.
 pub struct OriginalMountedInput {
     placement: PathBuf,
     file: File,
 }
 impl OriginalMountedInput {
     /// The root broker must first verify its protected per-root source record.
-    /// This constructor validates only native descriptor shape, not that record.
-    /// # Errors
-    /// Refuses non-root, nonliteral placement or non-readonly `O_PATH` input.
     pub fn from_reviewed(placement: PathBuf, file: File) -> io::Result<Self> {
         root()?;
         placement_shape(placement.as_os_str().as_bytes())?;
@@ -80,7 +75,6 @@ impl Inputs {
             check_input(&input.file)?;
             let identity = identity(&input.file)?;
             // Cross-volume readers require independent participant records.
-            // This first bootstrap accepts only the protected SAME-volume set.
             if identity.0 != source_device && expected.is_none() {
                 return Err(refused("Mounted source needs independent volume custody"));
             }
@@ -209,7 +203,6 @@ pub(super) fn validate(projections: &[Projection]) -> io::Result<()> {
     Ok(())
 }
 /// Signed shim only, called after exact namespace and primary mount validation.
-/// Mounts happen while root; ambient source FDs close before caller drop.
 pub(super) fn project(
     projections: &[Projection],
     access: &super::credentials::ProjectionFilesystemAccess,
@@ -242,8 +235,7 @@ pub(super) fn project(
         if target_kind != p.identity.4 & libc::S_IFMT {
             return Err(refused("Original root placement kind differs"));
         }
-        // Only the fresh authenticated detached mount can move into this
-        // namespace. Both endpoints are held FDs; caller DAC selected target.
+        // Only the fresh authenticated detached mount can move into this namespace.
         super::phase(
             super::Stage::AttachMountedRoot,
             access.with_root_mount(|| {
@@ -264,8 +256,8 @@ pub(super) fn project(
                 Ok(())
             }),
         )?;
-        // Reopen through the confined Home path; a descriptor for the covered
-        // mountpoint still refers to its underlying inode, not the new bind.
+        // Reopen through the confined Home path; a descriptor for the covered mountpoint still refers
+        // to its underlying inode, not the new bind.
         let mounted = open_target(&p.placement, true)?;
         let mounted_path = CString::new(format!("/proc/self/fd/{}", mounted.as_raw_fd()))
             .map_err(io::Error::other)?;

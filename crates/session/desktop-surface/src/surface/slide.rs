@@ -102,22 +102,12 @@ struct Running {
     progress: MotionValue<f64>,
 }
 
-/// Fingers carrying the deck: the strip they landed on, and how far they have carried it since, in
-/// the strip's height, positive toward the strips below.
-#[derive(Clone, Copy, Debug)]
-struct Lift {
-    from: StripId,
-    travel: f64,
-}
-
 /// What the surface draws of a change, and the place each strip stood in its last frame.
 #[derive(Default)]
 pub struct Slides {
     /// Where each strip was last laid out, by strip: what the view that leaves is drawn at.
     laid: HashMap<StripId, Rect>,
     running: Option<Running>,
-    /// Fingers carrying the deck, while they are down.
-    lift: Option<Lift>,
     /// The strip the surface showed at the last change.
     shown: Option<StripId>,
 }
@@ -166,23 +156,8 @@ impl Slides {
         self.running = Running::start(started, from, motion, now);
     }
 
-    /// Fingers landed on `strip` , which the surface shows now, to carry the deck.
-    pub fn begin_lift(&mut self, strip: Option<StripId>) {
-        self.running = None;
-        self.shown = strip;
-        self.lift = strip.map(|from| Lift { from, travel: 0.0 });
-    }
-
-    /// The fingers have carried the deck `travel` (in the strip's height,
-    /// positive toward the strips below).
-    pub fn lift_to(&mut self, travel: f64) {
-        if let Some(lift) = self.lift.as_mut() {
-            lift.travel = travel;
-        }
-    }
-
     pub fn is_moving(&self, now: Instant) -> bool {
-        self.lift.is_some() || self.running.as_ref().is_some_and(|run| run.is_moving(now))
+        self.running.as_ref().is_some_and(|run| run.is_moving(now))
     }
 
     /// Forget a slide already drawn: the strip left behind had no place to leave from.
@@ -203,14 +178,6 @@ impl Slides {
     /// The leaving view to draw this frame: the strip, the place it was laid out at and its pose.
     /// `None` once the change has come to rest, or while nothing is moving.
     fn leaving_at(&self, motion: EffectiveMotion, now: Instant) -> Option<(StripId, Rect, Pose)> {
-        if let Some(lift) = self.lift {
-            let rect = self.laid.get(&lift.from).copied()?;
-            let pose = Pose {
-                opacity: unit_opacity(1.0),
-                transform: Affine::translate((0.0, lift.travel.clamp(-1.0, 1.0) * rect.height())),
-            };
-            return Some((lift.from, rect, pose));
-        }
         let running = self.running.as_ref()?;
         if !running.is_moving(now) {
             return None;
@@ -360,36 +327,6 @@ impl super::DesktopSurface {
     /// action).
     pub fn note_source(&mut self, source: ui::tokens::MotionSource) {
         self.navigation_source = Some(source);
-    }
-
-    /// The strip the surface shows now.
-    #[must_use]
-    pub fn shown_strip_id(&self) -> Option<StripId> {
-        self.shown
-    }
-
-    /// The slides the surface draws its strip and workspace changes with: a host carrying the deck
-    /// under the person's fingers moves them here.
-    pub fn slides_mut(&mut self) -> &mut Slides {
-        self.slides.get_mut()
-    }
-
-    /// Three fingers landed on the strip shown to carry the deck: it follows them from here.
-    pub fn begin_strip_slide(&self) {
-        let shown = self.shown;
-        self.slides.borrow_mut().begin_lift(shown);
-    }
-
-    /// The fingers have carried the deck `travel` pixels, positive toward the strips below, since
-    /// they landed. The strip they landed on is drawn exactly that far the other way, so the deck
-    /// is under the hand.
-    pub fn drag_strip_slide(&self, travel: f64) {
-        let height = self
-            .shown_row_ref()
-            .map(GroupRow::get_rect)
-            .map_or(0.0, |rect| rect.height())
-            .max(1.0);
-        self.slides.borrow_mut().lift_to(travel / height);
     }
 
     /// Draw the strip the person left behind, at its pose, under the strip that arrived: a strip or

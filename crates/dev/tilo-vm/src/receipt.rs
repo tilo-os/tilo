@@ -1,6 +1,6 @@
-//! Run receipts under `target/dev-runs/<id>/run.json`, in the same spirit as
-//! `tools/dev.py`: written for every command, never overwriting earlier
-//! evidence, carrying per-phase timings and no ambient environment.
+//! Run receipts under `target/dev-runs/<id>/run.json`: written for every
+//! command, never overwriting earlier evidence, with per-phase timings and no
+//! ambient environment.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -39,7 +39,6 @@ fn round(seconds: f64) -> f64 {
 }
 
 impl Receipt {
-    /// `base` is the worktree root, or a per-user data dir outside one.
     pub fn new(base: &Path, command: Vec<String>) -> Self {
         let id = uuid::Uuid::new_v4().simple().to_string();
         Self {
@@ -63,7 +62,6 @@ impl Receipt {
         );
     }
 
-    /// Time `f` as the named phase.
     pub fn phase<T>(&mut self, name: &str, f: impl FnOnce() -> T) -> T {
         let start = Instant::now();
         let value = f();
@@ -90,7 +88,6 @@ impl Receipt {
             .join(", ")
     }
 
-    /// Phases over their goal, as human sentences.
     pub fn slow(&self) -> Vec<String> {
         exceeded(&self.phases)
     }
@@ -150,10 +147,8 @@ fn exceeded(phases: &[Phase]) -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// Receipts record phases and flag slow ones, and never overwrite.
     #[test]
     fn receipts_record_phases_flag_slow_ones_and_never_overwrite() {
-        // Phase: receipt_records_phases_and_flags_slow_ones.
         {
             let dir = tempfile::tempdir().unwrap();
             let mut receipt = Receipt::new(dir.path(), vec!["tilo-vm".into(), "swap".into()]);
@@ -178,7 +173,6 @@ mod tests {
             assert_eq!(written["slow"].as_array().unwrap().len(), 1);
         }
 
-        // Phase: receipts_never_overwrite.
         {
             let dir = tempfile::tempdir().unwrap();
             let a = Receipt::new(dir.path(), vec![])

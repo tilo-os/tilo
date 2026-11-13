@@ -11,7 +11,6 @@
 //! person to copy, and restoring hands the seed straight to the provider.
 //! Every error describes the phrase by word count or position, never by a
 //! word, so none of it reaches a log or an error dialog.
-
 use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -37,24 +36,25 @@ pub const DEFAULT_AVATAR_COLOR: [u8; 3] = [128, 128, 128];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecoveryWordsError {
     /// Not [`RECOVERY_WORD_COUNT`] words.
-    WordCount { found: usize },
+    WordCount {
+        found: usize,
+    },
     /// The word at this position (from 1) is not on the BIP39 list.
-    UnknownWord { position: usize },
+    UnknownWord {
+        position: usize,
+    },
     /// Every word is on the list but they do not carry their checksum: one
     /// is mistyped as another listed word, or two are swapped.
     Checksum,
     /// The words restore a valid identity, but not the one this account
     /// already has.
     DifferentIdentity {
-        /// This account's identity ([`recovery_expected_identity`]).
         expected: [u8; 32],
-        /// The identity the words restore.
         found: [u8; 32],
     },
     /// This device keeps no secret of the identity (it joined from another
     /// device), so it has no recovery key to show.
     NoSecretOnThisDevice,
-    /// A threshold identity has no single secret; its shares recover it.
     ThresholdIdentity,
 }
 
@@ -127,9 +127,7 @@ pub fn recovery_words(identity_path: impl AsRef<Path>) -> io::Result<Zeroizing<S
     bip39::encode(seed.as_slice())
         .ok_or_else(|| io::Error::other("a 32-byte seed did not encode as words"))
 }
-
 /// Check that `phrase` is a well-formed recovery key, without restoring it.
-/// Input is read leniently (see [`recovery_words_public_key`]).
 ///
 /// # Errors
 ///
@@ -196,9 +194,8 @@ pub fn unknown_recovery_words(phrase: &str) -> Vec<Range<usize>> {
     }
     unknown
 }
-
-/// The recovery-key word a mistyped `typed` most likely meant, in any case,
-/// to suggest it; `None` when no single word stands out.
+/// The recovery-key word a mistyped `typed` most likely meant, to suggest it;
+/// `None` when no single word stands out.
 #[must_use]
 pub fn closest_recovery_word(typed: &str) -> Option<&'static str> {
     bip39::closest_word(&Zeroizing::new(typed.to_lowercase()))
@@ -214,6 +211,9 @@ pub fn closest_recovery_word(typed: &str) -> Option<&'static str> {
 /// # Errors
 ///
 /// As [`check_recovery_words`].
+/// The root public key a phrase encodes, read leniently: letters are
+/// lowercased, and every run of anything else separates words, which drops
+/// list numbering and commas.
 pub fn recovery_words_public_key(phrase: &str) -> Result<[u8; 32], RecoveryWordsError> {
     let seed = decode_seed(phrase)?;
     Ok(SigningKey::from_bytes(&seed).verifying_key().to_bytes())
@@ -256,11 +256,6 @@ pub fn import_recovery_words(
     import_inner(identity_dir, id, phrase, display_name, None)
 }
 
-/// [`import_recovery_words`] through a provider chosen by trusted host code.
-///
-/// # Errors
-///
-/// As [`import_recovery_words`].
 pub fn import_recovery_words_with_provider(
     identity_dir: &Path,
     id: &str,
@@ -481,9 +476,6 @@ fn single_device_seed(path: &Path) -> io::Result<Zeroizing<[u8; 32]>> {
     Ok(seed)
 }
 
-/// The seed `phrase` encodes, read leniently: letters are lowercased and
-/// every run of anything else (digits, punctuation, whitespace) separates
-/// words, which drops list numbering and commas.
 fn decode_seed(phrase: &str) -> Result<Zeroizing<[u8; 32]>, RecoveryWordsError> {
     let normalized = normalize(phrase);
     let found = normalized.split_whitespace().count();
@@ -616,7 +608,6 @@ mod tests {
             identity.sign(b"recovered").unwrap(),
             original.sign(b"recovered").unwrap()
         );
-        // Restoring again is a no-op on the record that now holds the key.
         assert_eq!(
             import_recovery_words_with_provider(target.path(), "again", &words, "", &provider)
                 .unwrap(),
@@ -677,7 +668,6 @@ mod tests {
         let checksum = check_recovery_words(&mistyped.join(" ")).unwrap_err();
         assert_eq!(checksum, RecoveryWordsError::Checksum);
 
-        // No error, in any rendering, repeats a word of the phrase.
         let errors = [
             RecoveryWordsError::WordCount { found: 23 },
             RecoveryWordsError::UnknownWord { position: 7 },
@@ -733,8 +723,6 @@ mod tests {
         );
         assert!(!dir.path().join("other.json").exists());
 
-        // The right words give the joined record its secret back, keeping
-        // its id and the name the person chose.
         let restored = import_recovery_words_with_provider(
             dir.path(),
             "ignored",

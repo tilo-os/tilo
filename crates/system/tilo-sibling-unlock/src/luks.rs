@@ -23,12 +23,10 @@ pub fn metadata(device: &Path) -> Result<String> {
     String::from_utf8(out.to_vec()).context("cryptsetup printed metadata that is not UTF-8")
 }
 
-/// The volume's sibling-unlock token, if it has one.
 pub fn token(device: &Path) -> Result<Option<Token>> {
     token::from_metadata(&metadata(device)?)
 }
 
-/// The volume's UUID.
 pub fn uuid(device: &Path) -> Result<String> {
     let out = exec::run(
         "cryptsetup",
@@ -130,7 +128,6 @@ pub fn add_slot(device: &Path, authorise: Option<&Path>, passphrase: &str) -> Re
     }
 }
 
-/// Removes `keyslot` (and with it any token bound only to it).
 pub fn kill_slot(device: &Path, keyslot: u32, authorise: Option<&Path>) -> Result<()> {
     let mut args: Vec<std::ffi::OsString> = vec!["luksKillSlot".into(), "--batch-mode".into()];
     if let Some(key) = authorise {
@@ -142,7 +139,6 @@ pub fn kill_slot(device: &Path, keyslot: u32, authorise: Option<&Path>) -> Resul
     exec::check("cryptsetup", &args, None)
 }
 
-/// Removes the sibling-unlock token, if there is one.
 pub fn remove_token(device: &Path) -> Result<()> {
     if let Some(existing) = token_id(&metadata(device)?)? {
         exec::check(
@@ -160,7 +156,6 @@ pub fn remove_token(device: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Writes `token` into the header, replacing an earlier sibling-unlock token.
 pub fn import_token(device: &Path, token: &Token) -> Result<()> {
     let json = zeroize::Zeroizing::new(serde_json::to_vec(token)?);
     // An earlier token is replaced in one header write, so a failure leaves

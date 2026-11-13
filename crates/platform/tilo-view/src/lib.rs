@@ -1,12 +1,9 @@
-//! A Rust app's views: named functions of a resource that return described components, exactly
-//! as a tilolang view returns them (docs/designs/app-language/one-app-model.md §2).
+//! A Rust app's views: named functions of a resource that return described components,
+//! exactly as a tilolang view returns them.
 //!
-//! A view is a function from a resource to a tree of the toolkit's described components. The app
-//! sends that tree the way a tilolang app sends its views, over the component-patch stream
-//! ([`tilo_render_protocol::patch`]), and the shell draws it in whatever place shows the
-//! resource, through the same UI host, by resource and view name. Nothing in the app knows about
-//! windows, places or themes.
-//!
+//! The app sends that tree the way a tilolang app sends its views, over the
+//! component-patch stream, and the shell draws it in whatever place shows the
+//! resource. Nothing in the app knows about windows, places or themes.
 //! ```
 //! # use tilo_view::{ui, ViewCx};
 //! # use tilo_view::node::{Node, ResourceRef, Principal};
@@ -46,8 +43,6 @@ pub use cx::{Arg, Effect, ViewCx};
 pub use node::{Binding, BuildError, Event, Node, Offered, Picture, Principal, ResourceRef, Value};
 pub use registry::{View, ViewRegistry, ViewResource};
 
-/// The component-patch stream a view's tree travels on, as the runtime and the UI host read it.
 pub use tilo_render_protocol::patch;
 
-/// The registry a `#[view]` submits itself to, and the JSON a view's resource is read from.
 pub use {inventory, serde, serde_json};

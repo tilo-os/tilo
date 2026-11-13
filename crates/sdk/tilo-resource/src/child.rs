@@ -12,8 +12,9 @@
 //! document action re-encoded as the parent's, so the palette, agents and
 //! scripts address the child like any resource — its own named actions,
 //! [`APPLY`](crate::APPLY) and [`GROUP`](crate::GROUP) — and every invocation
-//! applies as the parent's action. The framework's child dispatcher submits
-//! to the same address.
+//! applies as the parent's action. A view edits such a child through its
+//! dispatcher, which publishes it there; a field the record itself declares
+//! (`#[model(resource)]`) is published for it.
 
 use std::sync::Arc;
 
@@ -28,8 +29,8 @@ pub fn child_resource_id<R: Resource>(name: &str) -> String {
     format!("{}/{name}", R::KIND)
 }
 
-/// The child resource `C` at `id`, inside a resource `R`,
-/// for [`Resource::children`]: `C`'s whole published tree (its declared actions,
+/// The child resource `C` at `id`, inside a resource `R`: `C`'s whole
+/// published tree (its declared actions,
 /// [`APPLY`](crate::resource::APPLY), [`GROUP`](crate::GROUP), and given its `state` its views and
 /// its own children), each document action building `R`'s action
 /// `wrap(edit)` instead of `C`'s. A group of `C`'s edits becomes one group

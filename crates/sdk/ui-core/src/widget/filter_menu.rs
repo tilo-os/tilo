@@ -21,6 +21,7 @@
 //! The menu has no layout node: the parent calls [`FilterMenu::draw_overlay`] after its main draw
 //! pass, as with [`ContextMenu`](crate::widget::context_menu::ContextMenu).
 
+use crate::i18n::widget_text;
 use std::collections::HashMap;
 
 use taffy::{NodeId, Style, TaffyTree};
@@ -116,6 +117,9 @@ pub struct FilterMenu<T> {
     visible_flag: bool,
     /// The query is the parent's text, not the menu's own field.
     inline: bool,
+    /// Whether its own filter text narrows its rows. A menu whose host answers the text with the
+    /// rows it finds shows the rows it is given: they are already what the text asked for.
+    narrows_itself: bool,
     /// The text scale its field and width grow with.
     scale: f64,
     /// One-shot: the committed row's value, drained by the parent. Hiding
@@ -151,6 +155,7 @@ impl<T: Clone> FilterMenu<T> {
             filter_composition: QueryComposition::new(),
             visible_flag: false,
             inline: false,
+            narrows_itself: true,
             scale: 1.0,
             pending: None,
             appear: crate::motion::Appearing::closed(),
@@ -222,6 +227,18 @@ impl<T: Clone> FilterMenu<T> {
         self.inline
     }
 
+    /// Whether the filter text narrows the rows. A menu whose host answers the text itself — a
+    /// picker over a collection, asked for what its text finds — shows the rows it is given,
+    /// ranked as the host found them, and the text only says what it asked for.
+    pub fn set_narrows_itself(&mut self, narrows: bool) {
+        if self.narrows_itself == narrows {
+            return;
+        }
+        self.narrows_itself = narrows;
+        self.dirty = true;
+        self.rebuild_visible();
+    }
+
     /// Grow the field and width with the reader's text scale; the rows
     /// grow with the theme's type.
     pub fn set_scale(&mut self, scale: f64) {
@@ -286,7 +303,7 @@ impl<T: Clone> FilterMenu<T> {
         self.dirty = true;
         self.list.set_header(self.field_height());
         let empty = (!self.inline && self.visible.is_empty())
-            .then(|| crate::i18n!("filter-menu-no-matches"));
+            .then(|| widget_text("filter-menu-no-matches"));
         self.list.set_status(empty);
     }
 
@@ -353,18 +370,22 @@ impl<T: Clone> FilterMenu<T> {
 
     /// Rank the rows against the filter and start at the top one.
     fn rebuild_visible(&mut self) {
-        self.visible = crate::search::ranked_rows(
-            &self.index,
-            self.filter.trim(),
-            self.entries.iter().map(|entry| {
-                std::iter::once((entry.label.as_str(), FieldWeight::TITLE)).chain(
-                    entry
-                        .keywords
-                        .iter()
-                        .map(|keyword| (*keyword, FieldWeight::KEYWORD)),
-                )
-            }),
-        );
+        self.visible = if self.narrows_itself {
+            crate::search::ranked_rows(
+                &self.index,
+                self.filter.trim(),
+                self.entries.iter().map(|entry| {
+                    std::iter::once((entry.label.as_str(), FieldWeight::TITLE)).chain(
+                        entry
+                            .keywords
+                            .iter()
+                            .map(|keyword| (*keyword, FieldWeight::KEYWORD)),
+                    )
+                }),
+            )
+        } else {
+            (0..self.entries.len()).collect()
+        };
         let rows = self
             .visible
             .iter()
@@ -542,7 +563,7 @@ impl<T: Clone> FilterMenu<T> {
             QueryView {
                 text,
                 selection: &selection,
-                placeholder: &crate::i18n!(self.spec.placeholder),
+                placeholder: &widget_text(self.spec.placeholder),
                 show_caret: leaving.is_none(),
             },
             filter_rect.inset((-6.0, 0.0)),
@@ -610,7 +631,7 @@ impl<T: Clone + 'static> Widget for FilterMenu<T> {
         if self.accessibility_hidden() {
             return Some(
                 AccessNode::new(Role::Menu)
-                    .with_name(crate::i18n!(self.spec.access_name))
+                    .with_name(widget_text(self.spec.access_name))
                     .with_state(AccessState {
                         expanded: Some(false),
                         hidden: true,
@@ -637,7 +658,7 @@ impl<T: Clone + 'static> Widget for FilterMenu<T> {
             .collect();
         Some(
             AccessNode::new(Role::Menu)
-                .with_name(crate::i18n!(self.spec.access_name))
+                .with_name(widget_text(self.spec.access_name))
                 .with_optional_value((!self.filter.is_empty()).then(|| self.filter.clone()))
                 .with_state(AccessState::new().expanded(true))
                 .with_children(items),

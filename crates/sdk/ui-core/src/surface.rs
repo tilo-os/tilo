@@ -688,6 +688,34 @@ pub fn edge_on_with(surface: Color, alpha: u8) -> Color {
     Colors::hairline_on(surface, alpha)
 }
 
+/// How far a rule that carries a colour of its own moves the ground it lands on: clearly more
+/// than the neutral hairline beside it ([`crate::tokens::colors::HAIRLINE_MIN_DELTA`]) does. A
+/// neutral rule divides two things of one kind and says nothing by itself; a rule in the accent
+/// says "this is where something starts", so it reads as a mark at a glance, never as another
+/// division.
+pub const COLOURED_RULE_MIN_DELTA: f64 = crate::tokens::colors::HAIRLINE_MIN_DELTA * 3.0;
+
+/// The 1 px rule `ink` draws when it is painted on `ground`: the ink's own hue, at the smallest
+/// alpha that moves that ground by [`COLOURED_RULE_MIN_DELTA`] — clearly more than the ground's
+/// own hairline ([`edge_on`]) moves it — or the ink whole where even a full wash moves it less.
+///
+/// [`edge_on`] derives the neutral edge of a surface it *is*: it picks black or white from the
+/// surface and is then painted on a ground of another tone, where a rule that carries a colour
+/// of its own (a divider in the accent where reading starts again) would land as nothing. A
+/// rule meant to carry a colour is derived against the ground it lands on, never against
+/// itself, and is drawn at a weight a person reads without looking for it.
+#[must_use]
+pub fn rule_of(ink: Color, ground: Color) -> Color {
+    let [r, g, b, _] = ink.to_rgba8().to_u8_array();
+    for alpha in [150, 190, 230, 255] {
+        let wash = Color::from_rgba8(r, g, b, alpha);
+        if edge_delta(wash, ground) >= COLOURED_RULE_MIN_DELTA {
+            return wash;
+        }
+    }
+    ink
+}
+
 /// The outline a crisp 1 px edge is stroked on: half a pixel inside `rect`,
 /// so a 1 px stroke covers exactly the outermost pixel row of the surface
 /// and never bleeds onto the ground beside it.

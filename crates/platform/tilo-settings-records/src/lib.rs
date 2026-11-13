@@ -3,7 +3,7 @@
 //!
 //! A profile keeps its documents in `<root>/records/`. One process holds
 //! them at a time ([`Records::try_hold`]); the others read the same files,
-//! notice the holder's saves ([`Records::stamp`], [`Records::watch`]) and
+//! notice the holder's saves ([`Records::revision`], [`Records::watch`]) and
 //! hand it their writes through its door ([`Records::open_door`],
 //! [`Records::knock`]). A target without files, locks or local sockets (a
 //! browser page) reads nothing, holds what it opens and has no door.
@@ -19,6 +19,10 @@ pub const RECORDS_DIR: &str = "records";
 #[cfg(not(target_arch = "wasm32"))]
 pub const LOCK_FILE: &str = "settings.lock";
 const DOOR_FILE: &str = "settings.sock";
+/// The number of the save the documents stand at: what the holder writes once both documents are
+/// written, so a follower that looks while a save is under way reads the save before it, whole,
+/// rather than one document of each.
+pub const REVISION_FILE: &str = "documents.revision";
 
 /// The root of this person's own settings profile: `tilo` below the XDG
 /// config home.
@@ -32,11 +36,6 @@ pub fn profile_root() -> Option<PathBuf> {
 pub struct Records {
     dir: PathBuf,
 }
-
-/// What tells two saves of a document apart without reading it: its size
-/// and modification time, or nothing where it does not exist.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Stamp(Option<(u64, std::time::SystemTime)>);
 
 /// Whether this process could take the profile.
 pub enum Hold {
@@ -127,13 +126,23 @@ impl Records {
         }
     }
 
-    /// What tells this save of document `name` from the next.
+    /// The number of the save both documents stand at, or `0` when the holder has saved none yet.
+    /// It is written after the documents of a save, so a follower answering it takes up a whole
+    /// save and never one document of it and one of the save before.
     #[must_use]
-    pub fn stamp(&self, name: &str) -> Stamp {
-        Stamp(
-            std::fs::metadata(self.dir.join(name))
-                .ok()
-                .and_then(|meta| Some((meta.len(), meta.modified().ok()?))),
+    pub fn revision(&self) -> u64 {
+        std::fs::read_to_string(self.dir.join(REVISION_FILE))
+            .ok()
+            .and_then(|number| number.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// Say that both documents now stand at save `revision`: written once they are, so a follower
+    /// reading it finds the save whole.
+    pub fn commit(&self, revision: u64) -> std::io::Result<()> {
+        tilo_files::native::atomic::write(
+            &self.dir.join(REVISION_FILE),
+            revision.to_string().as_bytes(),
         )
     }
 
@@ -314,9 +323,10 @@ mod tests {
             matches!(held, Hold::Held(_)),
             "nobody else holds a fresh profile"
         );
-        let before = records.stamp("person.automerge");
+        assert_eq!(records.revision(), 0, "nothing is saved yet");
         records.write("person.automerge", b"bytes").unwrap();
-        assert_ne!(records.stamp("person.automerge"), before);
+        records.commit(1).unwrap();
+        assert_eq!(records.revision(), 1, "the save both documents stand at");
         assert_eq!(
             records.read("person.automerge").unwrap().as_deref(),
             Some(&b"bytes"[..])

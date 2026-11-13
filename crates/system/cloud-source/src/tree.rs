@@ -1,9 +1,5 @@
 //! Projecting id-based items onto a POSIX tree.
 //!
-//! Providers identify items by id; people and tools see paths. [`Tree`] holds
-//! the known items of one account and derives, for every folder, a set of
-//! child names that is valid and unique on a POSIX filesystem:
-//!
 //! - names that cannot be file names (`/`, NUL, `.`, `..`, empty) are
 //!   rewritten;
 //! - siblings with the same name (Google Drive allows them) are told apart
@@ -19,10 +15,8 @@ use crate::{Item, ItemId, ItemKind};
 
 /// Longest projected name in bytes (`NAME_MAX`).
 pub const MAX_NAME_BYTES: usize = 255;
-/// Deepest path [`Tree::paths`] follows; deeper chains are treated as cycles.
 const MAX_DEPTH: usize = 256;
 
-/// The known items of one account, indexed by id and by parent.
 #[derive(Clone, Debug, Default)]
 pub struct Tree {
     root: ItemId,
@@ -59,7 +53,6 @@ impl Tree {
         self.items.values()
     }
 
-    /// Insert or replace an item. Returns the previous version.
     pub fn upsert(&mut self, item: Item) -> Option<Item> {
         let previous = self.unlink(&item.id);
         for parent in &item.parents {
@@ -78,7 +71,6 @@ impl Tree {
         self.unlink(id)
     }
 
-    /// Remove an item and everything reachable only through it.
     pub fn remove_recursive(&mut self, id: &ItemId) -> Vec<Item> {
         // Discover the whole subtree before deciding which other parents
         // survive. A sibling scheduled for removal is not an escape route.
@@ -178,7 +170,6 @@ impl Tree {
             .map(|(_, item)| item)
     }
 
-    /// The item at a projected path (components relative to the root).
     pub fn resolve<'a>(&self, path: impl IntoIterator<Item = &'a str>) -> Option<&Item> {
         let mut current = self.root.clone();
         let mut found = None;
@@ -190,7 +181,6 @@ impl Tree {
         found.or_else(|| self.items.get(&self.root))
     }
 
-    /// The projected name of `id` inside `parent`.
     pub fn name_in(&self, parent: &ItemId, id: &ItemId) -> Option<String> {
         self.children(parent)
             .into_iter()
@@ -234,7 +224,6 @@ impl Tree {
     }
 }
 
-/// The projected name of an item before sibling disambiguation.
 pub fn base_name(item: &Item) -> String {
     let name = sanitize(&item.name);
     match &item.kind {
@@ -246,7 +235,6 @@ pub fn base_name(item: &Item) -> String {
     }
 }
 
-/// A valid POSIX file name for a provider name.
 pub fn sanitize(name: &str) -> String {
     let cleaned: String = name
         .chars()
@@ -265,7 +253,6 @@ pub fn sanitize(name: &str) -> String {
     truncate_keeping(&cleaned, "")
 }
 
-/// `stem (n).ext`.
 fn numbered(name: &str, ordinal: u32) -> String {
     let (stem, extension) = match name.rfind('.') {
         Some(dot) if dot > 0 => (

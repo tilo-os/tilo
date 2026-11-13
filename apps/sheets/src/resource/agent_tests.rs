@@ -1,8 +1,3 @@
-//! What an agent does with a workbook through the published door: sheets
-//! made with their content, records written by header, sheets named rather
-//! than numbered, reads that answer what the cells mean, and workbooks
-//! carried in and out as content.
-
 use serde_json::{Value, json};
 use ui::framework::testing::TestApp;
 
@@ -95,9 +90,6 @@ fn new_sheet_rows_take_iso_dates_and_text_marked_with_an_apostrophe() {
     assert_eq!(read["formats"]["B2"], "text");
 }
 
-/// `write-cells` reads a value as `set-cells` does: an ISO date is a real
-/// date whether or not the write names a format, so a form's date check
-/// counts it; a format naming text keeps it as typed.
 #[test]
 fn written_cells_take_iso_dates_as_real_dates() {
     let mut app = app();
@@ -273,7 +265,6 @@ fn upsert_item_finds_a_row_by_its_header_values_and_appends_a_new_one() {
         "upsert-item",
         json!({"sheet": "Guests", "match": {"Name": "Cy"}, "value": {"Team": "Ops", "Seats": 1}}),
     );
-    // Run again, it changes nothing.
     call(
         &mut app,
         "upsert-item",
@@ -414,8 +405,6 @@ fn the_workbook_exports_as_xlsx_content_that_imports_back() {
     );
 }
 
-/// A past version reads with the cells it held, and History draws it with
-/// the workbook's own view, read-only.
 #[test]
 fn a_past_version_reads_and_shows_its_cells() {
     let mut app = app();

@@ -1,15 +1,12 @@
-//! Bounded peer transport for the other-computer handoff. The existing
-//! `tilo-net-p2p` endpoint carries frames; the package keeps its existing
-//! password envelope and only the generated password is sealed to the
-//! destination's ephemeral HPKE key.
+//! Bounded peer transport for the other-computer handoff: the `tilo-net-p2p`
+//! endpoint carries frames, and only the generated package password is sealed to
+//! the destination's ephemeral HPKE key.
 //!
 //! The transport proves the destination's certified device and ephemeral key
-//! together, bound to this operation, descriptor, package and person identity.
-//! It releases the password only after a person approves that exact request.
-//! The package receipt names the exact package digest and an explicit
-//! `prepared-package-imported` stage: receiving the package is not a claim that
-//! Home or application migration has finished, and nothing here deletes an
-//! original.
+//! together with this operation, descriptor and package, and releases the password
+//! only after a person approves that exact request. The receipt names the package
+//! digest and an explicit `prepared-package-imported` stage: receiving the package
+//! does not mean Home or application migration finished.
 
 use super::{
     ALPN, CHUNK, HandoffIdentity, MAX_FRAME, MAX_PACKAGE, PublicHandoff, SourceState, bootstrap,
@@ -384,9 +381,8 @@ pub(crate) fn verify_device(
     ))
 }
 
-/// The preparation computer's live source. It can be bound before the medium
-/// is written, so the published descriptor names the endpoint that will serve
-/// the package.
+/// The preparation computer's live source, bound before the medium is written so
+/// the published descriptor names the endpoint that will serve the package.
 pub struct Source {
     identity: HandoffIdentity,
     state: Channel<SourceState>,
@@ -397,15 +393,12 @@ pub struct Source {
 }
 
 impl Source {
-    /// Bind the source endpoint. The returned identity is written to the
-    /// medium by the package producer; no private source data is exposed.
     pub fn bind(operation_id: String, identity_public_key: [u8; 32]) -> io::Result<Self> {
         Self::bind_inner(operation_id, identity_public_key, None)
     }
 
-    /// Bind a source that can also admit a fresh destination into this exact
-    /// person before it receives the package. The signer stays in the
-    /// prepared-identity vault; only the root signature leaves it.
+    /// Bind a source that can also admit a fresh destination into this exact person
+    /// before it receives the package; only the root signature leaves the vault.
     ///
     /// # Errors
     ///
@@ -468,8 +461,8 @@ impl Source {
         &self.identity
     }
 
-    /// Make the exact ciphertext available. The password stays in this
-    /// process and is only sealed to the approved receiver.
+    /// Make the exact ciphertext available; the password stays in this process and is
+    /// sealed only to the approved receiver.
     pub fn serve(
         &self,
         ciphertext: Vec<u8>,
@@ -492,7 +485,7 @@ impl Source {
     }
 
     /// Approve the exact request a person saw. The token comes from
-    /// [`SourceState::Requested`]; a later request never inherits it.
+    /// [`SourceState::Requested`], and a later request never inherits it.
     pub fn approve(&self, approval: &str) -> io::Result<()> {
         if !valid_operation(approval) {
             return Err(invalid("Invalid handoff approval"));
@@ -520,31 +513,26 @@ impl Drop for Source {
     }
 }
 
-/// Approvals source workers took that named another request.
 #[cfg(any(test, feature = "test-support"))]
 static REFUSED_APPROVALS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-/// Join requests source workers refused: another operation, person or
-/// package, or a request that does not verify.
 #[cfg(any(test, feature = "test-support"))]
 static REFUSED_JOIN_REQUESTS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-/// How many approvals naming another request source workers in this process
-/// have refused, so a test can wait for a refusal instead of sleeping.
+/// How many approvals naming another request source workers here have refused, so
+/// a test can wait for a refusal instead of sleeping.
 #[cfg(any(test, feature = "test-support"))]
 #[must_use]
 pub fn refused_approvals() -> usize {
     REFUSED_APPROVALS.load(Ordering::SeqCst)
 }
 
-/// How many join requests source workers in this process have refused.
 #[cfg(any(test, feature = "test-support"))]
 #[must_use]
 pub fn refused_join_requests() -> usize {
     REFUSED_JOIN_REQUESTS.load(Ordering::SeqCst)
 }
 
-/// Take the next approval, if one came, and whether it names `expected`.
 fn take_approval(approve: &Channel<String>, expected: &str) -> bool {
     let Ok(received) = approve.try_recv() else {
         return false;
@@ -704,8 +692,6 @@ fn source_worker(
                                 if device_public_key == &request.device_public_key
                         )
                     {
-                        // The response was lost or the destination restarted
-                        // its wait: resend exactly the same signed answer.
                         if let Some(destination) = bootstrap_peer.as_ref() {
                             send(destination, response, cancel)?;
                         } else if let Ok(destination) = endpoint.connect(reply_ticket, QUEUE) {
@@ -714,8 +700,6 @@ fn source_worker(
                         }
                         continue;
                     }
-                    // A person approves one join for one exact request. Do not
-                    // replace it while an approval or the admission is in flight.
                     if approved
                         || pending.is_some()
                         || pending_bootstrap.is_some()
@@ -800,14 +784,10 @@ fn source_worker(
                     });
                 }
                 Frame::Request { reply_ticket, .. } => {
-                    // Once a person approved one request, no later request may
-                    // replace it and inherit that approval.
                     if approved {
                         continue;
                     }
                     let Some(ready) = ready.as_ref() else {
-                        // The package is not prepared yet. Do not show an
-                        // approval prompt whose exact package cannot be named.
                         continue;
                     };
                     let digest = encode_hex(&ready.digest);
@@ -816,21 +796,17 @@ fn source_worker(
                     else {
                         continue;
                     };
-                    // A destination whose join this person just approved for
-                    // this exact package already proved this device key. The
-                    // typed enrollment receipt bound that key to this
-                    // operation and package, so no second person prompt can
-                    // release a different package or device.
+                    // A destination whose join this person just approved for this exact package
+                    // already proved this device key: the typed enrollment receipt bound that key to
+                    // this operation and package, so no second prompt can release another package.
                     let joined = bootstrap_joined.is_some_and(|(device, package)| {
                         device == device_key && package == ready.digest
                     });
                     if pending_bootstrap.is_some() && !joined {
                         continue;
                     }
-                    // The destination repeats its request until the source
-                    // has the package ready. A repeat of the exact same
-                    // device and ephemeral key must not mint a new approval
-                    // token behind the person's back.
+                    // The destination repeats its request until the source has the package ready; a
+                    // repeat of the same device and ephemeral key must not mint a new approval token.
                     if pending.as_ref().is_some_and(|request| {
                         request.reply_ticket == *reply_ticket && request.ephemeral == ephemeral
                     }) {
@@ -1020,10 +996,9 @@ fn source_worker(
     }
 }
 
-/// The destination side of the handoff. It binds its own endpoint, proves its
-/// certified device identity, receives the package, writes the ordinary
-/// prepared-setup transport, and releases the source only after a verified
-/// import receipt.
+/// The destination side: it binds its own endpoint, proves its certified device
+/// identity, receives the package, writes the ordinary prepared-setup transport,
+/// and releases the source only after a verified import receipt.
 pub struct Receiver {
     state: Channel<ReceiverState>,
     acknowledge: Sender<[u8; 32]>,
@@ -1039,8 +1014,8 @@ enum ReceiverState {
     Complete,
 }
 
-/// A package that has arrived and verified, before the canonical import has
-/// run. The password exists only in this struct and the caller's worker.
+/// A package that has arrived and verified, before the canonical import has run.
+/// The password exists only in this struct and the caller's worker.
 pub struct Received {
     pub password: Zeroizing<String>,
     pub package_sha256: [u8; 32],
@@ -1048,17 +1023,12 @@ pub struct Received {
     pub package_path: PathBuf,
 }
 
-/// The installed destination's real identity. The identity directory holds
-/// the person's record; the system root holds the certified device key.
 pub struct ReceiverIdentity {
     pub identity_root: PathBuf,
     pub identity_dir: PathBuf,
 }
 
 impl Receiver {
-    /// Connect to the source named by `handoff` and wait for approval. The
-    /// descriptor is validated against this computer's clock and the active
-    /// person identity before any frame is sent.
     pub fn open(
         handoff: PublicHandoff,
         identity: ReceiverIdentity,
@@ -1102,12 +1072,6 @@ impl Receiver {
         })
     }
 
-    /// Join the person named by `handoff` as a new member device before
-    /// receiving the package. This is the path for a fresh computer that has
-    /// no person yet. The source signs a canonical member certificate for
-    /// this computer's own new device key after a person approves the displayed
-    /// code; the typed enrollment receipt binds that key to this exact
-    /// operation and package. Nothing is written over an existing identity.
     pub fn join(
         handoff: PublicHandoff,
         identity: ReceiverIdentity,
@@ -1159,9 +1123,8 @@ impl Receiver {
         })
     }
 
-    /// The code both screens must show before the person approves this
-    /// computer on the source. It appears once this receiver has bound its
-    /// endpoint and ephemeral key.
+    /// The code both screens show before the person approves this computer on the
+    /// source, once the receiver has bound its endpoint and ephemeral key.
     pub fn verification_code(&self) -> Option<String> {
         self.code
             .lock()
@@ -1169,13 +1132,13 @@ impl Receiver {
             .and_then(|value| value.as_ref().cloned())
     }
 
-    /// Block until the package has arrived or the peer ends. This is used by
-    /// first boot, which runs the handoff on its own worker.
+    /// Block until the package has arrived or the peer ends; first boot runs this on
+    /// its own worker.
     ///
     /// # Errors
     ///
-    /// Refuses a source rejection, a completed handoff without a package, or a
-    /// stopped worker.
+    /// A source rejection, a completed handoff without a package, or a stopped
+    /// worker.
     pub fn wait(&self) -> io::Result<Received> {
         match self.state.recv() {
             Ok(ReceiverState::Received(received)) => Ok(*received),
@@ -1218,11 +1181,6 @@ impl Receiver {
 
 impl Drop for Receiver {
     fn drop(&mut self) {
-        // The compositor drops this on its own loop after the canonical
-        // importer has acknowledged. Setting cancellation wakes the worker,
-        // but joining here would freeze a frame on the network; the worker
-        // still processes an already queued acknowledgement, flushes its
-        // receipt and then releases the endpoint on its own thread.
         self.cancel.store(true, Ordering::Release);
         drop(self.joined.take());
     }
@@ -1573,10 +1531,6 @@ fn receiver_worker(
     let mut delivered = false;
     loop {
         if cancel.load(Ordering::Acquire) {
-            // A dropped receiver can still hold the one acknowledgement the
-            // canonical importer just produced. Send its receipt before
-            // leaving; without it the source would wait forever for a stage
-            // the destination actually verified.
             if delivered && let Ok(imported) = acknowledge.try_recv() {
                 if imported != expected {
                     return Err(invalid("Import receipt is for another package"));

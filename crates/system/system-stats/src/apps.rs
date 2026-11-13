@@ -1,15 +1,5 @@
 //! Which app a process belongs to, and whether the person may end it.
 //!
-//! Every app runs in a cgroup of its own, so its processes are found by the
-//! cgroup path in `/proc/<pid>/cgroup`, never by a name a program can pick:
-//!
-//! - a Tilo launch the launcher placed itself:
-//!   `…/app.slice/app-tilo-<escaped id>-<pid>.scope`;
-//! - another desktop's application, by the systemd convention
-//!   (<https://systemd.io/DESKTOP_ENVIRONMENTS>):
-//!   `app[-<launcher>]-<application id>[-<random>].scope` or
-//!   `app[-<launcher>]-<application id>[@<random>].service`.
-//!
 //! Anything else — system services, the login session that holds the
 //! compositor, the person's own background services (audio, the bus) — is
 //! not an app. The person may end only processes that are theirs **and**
@@ -31,14 +21,12 @@ pub fn app_of_cgroup(path: &str) -> Option<String> {
     None
 }
 
-/// `<escaped id>-<number>`, the id spelled as in a unit name.
 fn tilo_leaf(leaf: &str) -> Option<String> {
     let (escaped, number) = leaf.rsplit_once('-')?;
     (!escaped.is_empty() && !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
         .then(|| unescape(escaped))
 }
 
-/// An application unit by the systemd convention.
 fn desktop_unit(part: &str) -> Option<String> {
     let rest = part.strip_prefix("app-")?;
     let (stem, scope) = if let Some(stem) = rest.strip_suffix(".scope") {
@@ -46,13 +34,11 @@ fn desktop_unit(part: &str) -> Option<String> {
     } else {
         (rest.strip_suffix(".service")?, false)
     };
-    // `@<random>` ends a service's name; a scope ends in `-<random>`.
     let stem = stem.split_once('@').map_or(stem, |(stem, _)| stem);
     let mut fields: Vec<&str> = stem.split('-').filter(|f| !f.is_empty()).collect();
     if scope && fields.len() > 1 {
         fields.pop();
     }
-    // With two fields left the first names the launcher that started it.
     let id = match fields.as_slice() {
         [id] | [_, id] => *id,
         _ => return None,
@@ -61,7 +47,6 @@ fn desktop_unit(part: &str) -> Option<String> {
     (!id.is_empty()).then_some(id)
 }
 
-/// Undo a unit name's `\xNN` escapes.
 #[must_use]
 pub fn unescape(escaped: &str) -> String {
     let bytes = escaped.as_bytes();
@@ -85,7 +70,6 @@ pub fn unescape(escaped: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The unified hierarchy's path in a `/proc/<pid>/cgroup` file.
 #[must_use]
 pub fn unified_path(cgroup_file: &str) -> Option<&str> {
     cgroup_file
@@ -94,10 +78,8 @@ pub fn unified_path(cgroup_file: &str) -> Option<&str> {
         .map(str::trim)
 }
 
-/// Who may end what: the person's uid, and the root of their apps.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EndPolicy {
-    /// The person the service works for.
     pub uid: u32,
     /// The cgroup every one of their apps lives under
     /// (`/user.slice/user-<uid>.slice/user@<uid>.service/app.slice`).
@@ -107,7 +89,6 @@ pub struct EndPolicy {
 }
 
 impl EndPolicy {
-    /// The policy for `uid`, with the standard app root.
     #[must_use]
     pub fn for_user(uid: u32, own_pid: u32) -> Self {
         Self {
@@ -117,7 +98,6 @@ impl EndPolicy {
         }
     }
 
-    /// The policy for the person running this process.
     #[must_use]
     pub fn current() -> Self {
         #[cfg(unix)]
@@ -127,7 +107,6 @@ impl EndPolicy {
         Self::for_user(uid, std::process::id())
     }
 
-    /// Whether a process of `uid` in cgroup `cgroup` may be ended.
     pub fn check(
         &self,
         pid: u32,

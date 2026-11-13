@@ -1,11 +1,4 @@
-//! Bounded internal-installer manifest validation.
-//! Consistency is not authenticated provenance, filesystem qualification, or boot proof.
-//!
-//! Schema 2 is the contract of `os/dev/internal-bundle.py`, which exports it;
-//! both sides must accept exactly the same manifests. Both test suites
-//! validate the shared fixture `os/tests/fixtures/internal-bundle-v2.json`,
-//! and the Python suite derives that fixture's command line from the live
-//! installer's real kargs (design spec 2026-09-22-usb-free-install §3).
+//! Validating the internal installer's manifest, and the views over what it bound.
 
 use super::staging::STAGING_ROOT_TYPE;
 use serde::Deserialize;
@@ -13,17 +6,10 @@ use serde::Deserialize;
 pub const MAX_MANIFEST_BYTES: usize = 65_536;
 const MAX_IMAGE_BYTES: u64 = 1 << 40;
 const ESP_GUID: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
-/// The only manifest schema this build accepts.
 pub const SCHEMA: u32 = 2;
-/// Manifest purpose; the release catalog's internal entries carry the same tag.
 pub const PURPOSE: &str = "tilo-internal-installer";
-/// The staging root partition is never smaller than the live root floor, even
-/// though its minimised image is; the live installer grows it at boot.
 pub const LIVE_ROOT_FLOOR_BYTES: u64 = 40 << 30;
-/// The one root locator every Tilo UKI carries; os/usr/libexec/tilo-root-discover
-/// resolves it on the disk whose ESP booted the UKI.
 pub const ROOT_LOCATOR: &str = "tilo-auto";
-/// Bare flags the live command line carries (os/Containerfile.installer).
 const LIVE_FLAGS: [&str; 6] = [
     "rw",
     "quiet",
@@ -33,8 +19,6 @@ const LIVE_FLAGS: [&str; 6] = [
     "tilo.install",
 ];
 
-/// The removable-media fallback loader a staging ESP boots through. The
-/// exporter installs the unchanged live UKI itself at this path.
 pub fn fallback_loader(architecture: &str) -> Option<&'static str> {
     match architecture {
         "x86_64" => Some("/EFI/BOOT/BOOTX64.EFI"),
@@ -90,7 +74,6 @@ struct BootBinding {
     composefs_digest: String,
 }
 
-/// Validated data only. This value grants neither stable-byte nor installation authority.
 #[derive(Debug)]
 pub struct InternalBundle {
     manifest: Manifest,
@@ -103,10 +86,8 @@ pub struct ComponentView<'a> {
     pub filename: &'a str,
     pub byte_size: u64,
     pub sha256: &'a str,
-    /// Size of the partition the staging writer creates; `>= byte_size`.
     pub minimum_partition_bytes: u64,
     pub partition_type_guid: &'a str,
-    /// `XXXX-XXXX` for the ESP, the Btrfs fsid (lowercase UUID) for the root.
     pub filesystem_uuid: &'a str,
 }
 
@@ -123,7 +104,6 @@ impl InternalBundle {
         })
     }
 
-    /// The component with this role (`staging-esp` or `staging-root`).
     pub fn component_by_role(&self, role: &str) -> Option<ComponentView<'_>> {
         let index = self
             .manifest
@@ -133,16 +113,13 @@ impl InternalBundle {
         self.component(index)
     }
 
-    /// Fallback loader path inside the staging ESP; it holds the live UKI.
     pub fn efi_path(&self) -> &str {
         &self.manifest.boot_binding.efi_path
     }
-    /// SHA-256 of the live UKI at `efi_path`, as built and signed.
     pub fn uki_sha256(&self) -> &str {
         &self.manifest.boot_binding.uki_sha256
     }
 
-    /// Check the prepared account requirement against this selected image's proof.
     pub fn require_account_protocol(&self, required: Option<u32>) -> Result<(), String> {
         if required.is_some_and(|protocol| {
             self.manifest
@@ -155,16 +132,12 @@ impl InternalBundle {
         Ok(())
     }
 
-    /// Consumer proof is authenticated only when this bundle comes from the signed release selection.
     pub fn account_custody(
         &self,
     ) -> Option<&imager_backend::account_admission::ConsumerCapability> {
         self.manifest.account_custody.as_ref()
     }
 
-    /// Check separately selected website sessions against the authenticated receiver.
-    /// # Errors
-    /// Refuses a target without its actual browser and engine consumer proof.
     pub fn require_service_session_protocol(&self, required: Option<u32>) -> Result<(), String> {
         if required.is_some_and(|protocol| {
             self.manifest.account_custody.as_ref().is_none_or(|proof| {
@@ -178,11 +151,6 @@ impl InternalBundle {
         Ok(())
     }
 
-    /// Check the Home declaration against authenticated target consumers.
-    /// # Errors
-    /// Refuses images without the required archive protocol.
-    /// # Errors
-    /// Refuses selected app data without its separate authenticated consumer proof.
     pub fn require_applications_protocol(&self, required: Option<u32>) -> Result<(), String> {
         imager_backend::applications_admission::require(
             self.manifest.applications.as_ref(),
@@ -195,13 +163,10 @@ impl InternalBundle {
             .map_err(|error| error.to_string())
     }
 
-    /// This proof is authenticated by the enclosing selected signed image manifest.
     pub fn home_archive(&self) -> Option<&imager_backend::home_admission::ConsumerCapability> {
         self.manifest.home_archive.as_ref()
     }
 
-    /// The enclosing selected manifest authenticates this declaration only;
-    /// actual installed readiness must still be independently checked.
     pub fn original_source(&self) -> Option<&super::original_admission::ConsumerCapability> {
         self.manifest.original_source.as_ref()
     }
@@ -257,8 +222,6 @@ fn guid(value: &str) -> bool {
         })
 }
 
-/// Accept exactly the live installer command line, as built. Mirrors
-/// `validate_cmdline` in os/dev/internal-bundle.py.
 fn validate_cmdline(boot: &BootBinding) -> Result<(), String> {
     let text = &boot.uki_cmdline;
     require(
@@ -318,15 +281,11 @@ fn validate_cmdline(boot: &BootBinding) -> Result<(), String> {
     )
 }
 
-/// Parse the exact schema-2 exporter contract, without authenticating its origin.
 pub fn validate_internal_bundle(manifest: &[u8]) -> Result<InternalBundle, String> {
     require(
         !manifest.is_empty() && manifest.len() <= MAX_MANIFEST_BYTES,
         "manifest exceeds size limit",
     )?;
-    // Serde's derived structs also accept positional arrays. Check the wire
-    // shapes first, then strictly decode the ORIGINAL bytes below: never
-    // serialize this Value, which would collapse duplicate object keys.
     {
         let shape: serde_json::Value =
             serde_json::from_slice(manifest).map_err(|error| error.to_string())?;
@@ -416,8 +375,6 @@ pub fn validate_internal_bundle(manifest: &[u8]) -> Result<InternalBundle, Strin
                 && (c.byte_size..=MAX_IMAGE_BYTES).contains(&c.minimum_partition_bytes),
             "invalid component extent",
         )?;
-        // The staging root image is the minimised filesystem; its partition
-        // keeps the live root floor and the live installer grows into it.
         require(
             c.role != "staging-root" || c.minimum_partition_bytes >= LIVE_ROOT_FLOOR_BYTES,
             "staging root partition below the live root floor",
@@ -443,8 +400,6 @@ pub fn validate_internal_bundle(manifest: &[u8]) -> Result<InternalBundle, Strin
                 "unsupported ESP",
             )?;
         } else {
-            // The Tilo staging root type, never the Tilo root type: an
-            // installed UKI must keep seeing exactly one Tilo root beside it.
             require(
                 c.partition_type_guid == STAGING_ROOT_TYPE
                     && c.filesystem_type == "btrfs"
@@ -497,8 +452,6 @@ pub(in crate::setup) fn windows_directory_leaf_supported(name: &[u16]) -> bool {
     {
         return false;
     }
-    // Fold only ASCII for reserved-device comparison. Retain the original
-    // code units, including unpaired surrogates, for every actual open.
     let mut stem: Vec<_> = name
         .iter()
         .copied()
@@ -518,7 +471,6 @@ pub(in crate::setup) fn windows_directory_leaf_supported(name: &[u16]) -> bool {
             && ["COM", "LPT"]
                 .iter()
                 .any(|prefix| stem[..3].iter().copied().eq(prefix.encode_utf16()))
-            // Include DOS digit aliases and Windows superscript ¹, ² and ³.
             && matches!(stem[3], 0x30..=0x39 | 0xb9 | 0xb2 | 0xb3))
 }
 
@@ -526,8 +478,6 @@ pub(in crate::setup) fn windows_directory_leaf_supported(name: &[u16]) -> bool {
 pub(in crate::setup) fn windows_directory_path(
     raw: impl IntoIterator<Item = u16>,
 ) -> Result<WindowsDirectoryPath, String> {
-    // Validate raw units before Path::components can normalize aliases. One
-    // extra unit detects overflow without collecting an unbounded input.
     let raw: Vec<_> = raw.into_iter().take(4097).collect();
     require(
         (3..=4096).contains(&raw.len())
@@ -556,11 +506,6 @@ pub(crate) mod tests {
     use super::*;
     use serde_json::{Value, json};
 
-    /// The one fixture both validators accept. os/tests/internal_bundle_test.py
-    /// derives its command line from the live image's kargs.d and
-    /// Containerfile.installer, so this also proves the Rust allow-list
-    /// accepts the real live command line. Its payloads are
-    /// ordinary synthetic bytes, not filesystems or a bootable UKI.
     const SHARED_FIXTURE: &str =
         include_str!("../../../../os/tests/fixtures/internal-bundle-v2.json");
     const ROOT_UUID: &str = "12345678-1234-4234-8234-123456789abc";
@@ -582,7 +527,6 @@ pub(crate) mod tests {
         data["boot_binding"]["uki_cmdline"] = json!(cmdline);
         validate_internal_bundle(&bytes(&data))
     }
-    /// Python-compatible fixture, live cmdline, root floor and closed cmdline profile.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -659,7 +603,6 @@ pub(crate) mod tests {
                 " root=tilo-auto",
                 " rd.luks.options=tpm2-device=auto,fido2-device=auto",
                 " tilo.luks=000000000000000000000000000000000000000000000",
-                // Left out of the live hardening set (01-hardening.toml).
                 " init_on_free=1",
             ] {
                 assert!(
@@ -720,7 +663,6 @@ pub(crate) mod tests {
             }
         }
     }
-    /// Schema corruption, ambiguous JSON, architectures and object representation.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -809,7 +751,6 @@ pub(crate) mod tests {
             let mut data = fixture();
             data["components"][0]["source_attributes"] = json!(0);
             assert!(validate_internal_bundle(&bytes(&data)).is_err());
-            // The device-bound root locator of earlier exports is not a field.
             let mut data = fixture();
             data["boot_binding"]["root_locator"] = json!(format!("UUID={ROOT_UUID}"));
             assert!(validate_internal_bundle(&bytes(&data)).is_err());
@@ -822,7 +763,6 @@ pub(crate) mod tests {
             let mut value = fixture();
             value["architecture"] = json!("aarch64");
             value["boot_binding"]["uki_architecture"] = json!("aarch64");
-            // Each architecture boots through its own fallback loader path.
             assert!(validate_internal_bundle(&bytes(&value)).is_err());
             value["boot_binding"]["efi_path"] = json!("/EFI/BOOT/BOOTAA64.EFI");
             assert!(validate_internal_bundle(&bytes(&value)).is_ok());
@@ -875,7 +815,6 @@ pub(crate) mod tests {
         windows_directory_path(text.encode_utf16())
     }
 
-    /// Windows Unicode ancestor names, bounds and bridges.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -906,7 +845,6 @@ pub(crate) mod tests {
             assert_ne!(composed, decomposed);
         }
 
-        // Phase `windows_unicode_ancestor_bounds_count_utf16_units`.
         {
             let leaf = format!("{}a", "😀".repeat(127));
             assert_eq!(leaf.encode_utf16().count(), 255);
@@ -917,7 +855,6 @@ pub(crate) mod tests {
             let path = format!("C:\\{}", names.join("\\"));
             assert_eq!(path.encode_utf16().count(), 4096);
             assert!(windows_path(&path).is_ok());
-            // The last leaf remains below 255; only the total path limit changes.
             assert!(windows_path(&(path + "a")).is_err());
             assert!(windows_path(&format!("C:\\{}", vec!["é"; 64].join("\\"))).is_ok());
             assert!(windows_path(&format!("C:\\{}", vec!["é"; 65].join("\\"))).is_err());
@@ -959,7 +896,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// Namespaces, separators, aliases, devices and streams.
     #[test]
     #[allow(
         clippy::too_many_lines,

@@ -1,23 +1,10 @@
-//! System interfaces: the versioned contracts between an app and the OS
-//! services it calls.
+//! System interfaces: the versioned contracts between an app and the OS services it calls.
 //!
-//! An app names each service it uses in its manifest's `[sandbox.services]`
-//! table as `required@N` or `optional@N`, `N` being the version of the
-//! interface the service belongs to that the app was built against. The
-//! image serves exactly one version of each interface
-//! ([`ProvidedInterfaces`]); an app speaks to it only at that version, with
-//! no negotiation and nothing kept for an older one
-//! (docs/architecture/compatibility.md). A device can therefore tell before
-//! installing, and again before running, whether an app build fits the OS
-//! under it, and which of the two is behind.
-//!
-//! Most services belong to the runtime interface ([`RUNTIME_INTERFACE`]):
-//! the image lists them, and their version is the runtime's. `shell-ui` and
-//! `system` are interfaces of their own.
-//!
-//! A registry version carries its build's requirements in
-//! [`RegistryTarget::interfaces`](crate::RegistryTarget::interfaces) in the
-//! wire form `name@N`, which [`InterfaceRequirement`] parses.
+//! An app names each service in its manifest's `[sandbox.services]` as `required@N` or `optional@N`,
+//! `N` being the version it was built against. The image serves exactly one version of each interface
+//! and an app speaks only at that version, with no negotiation (docs/architecture/compatibility.md),
+//! so a device can tell before installing and before running whether a build fits, and which side is
+//! behind. Most services belong to the runtime interface; `shell-ui` and `system` are their own.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -25,15 +12,12 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-/// The interface of the system services a device's control panel drives:
-/// network, displays, power, accounts, updates and the rest, reached through
-/// the image-owned system authority grant.
+/// The interface of the system services a device's control panel drives, through the image-owned
+/// system authority grant.
 pub const SYSTEM_INTERFACE: &str = "system";
 
-/// Longest interface name accepted.
 pub const MAX_INTERFACE_NAME: usize = 64;
 
-/// One required interface version: `system@1`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InterfaceRequirement {
     pub name: String,
@@ -50,7 +34,6 @@ pub enum InterfaceError {
     Version(String),
 }
 
-/// Whether `name` is a well-formed interface name.
 pub fn valid_interface_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= MAX_INTERFACE_NAME
@@ -61,7 +44,6 @@ pub fn valid_interface_name(name: &str) -> bool {
 }
 
 impl InterfaceRequirement {
-    /// A requirement on `version` of `name`.
     pub fn new(name: &str, version: u32) -> Result<Self, InterfaceError> {
         if !valid_interface_name(name) {
             return Err(InterfaceError::Name(name.to_owned()));
@@ -98,14 +80,12 @@ impl FromStr for InterfaceRequirement {
     }
 }
 
-/// The interface every session service the image lists under `[runtime]`
-/// belongs to: collaboration, the filesystem, the app host, the identity
-/// broker and the rest an app is connected to.
+/// The interface of every session service the image lists under `[runtime]`: collaboration, the
+/// filesystem, the app host, the identity broker and the rest an app is connected to.
 pub const RUNTIME_INTERFACE: &str = "runtime";
 
-/// The one interface version an OS image serves of each, as its
-/// `system-interfaces.toml` declares them, and the services that are part of
-/// the runtime interface:
+/// The one version this OS serves of each interface, as its `system-interfaces.toml` declares them,
+/// and the services that speak the runtime interface:
 ///
 /// ```toml
 /// [interfaces]
@@ -126,7 +106,6 @@ pub struct ProvidedInterfaces {
     pub runtime: RuntimeServices,
 }
 
-/// The services that speak the runtime interface's version.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeServices {
@@ -134,38 +113,30 @@ pub struct RuntimeServices {
     pub services: BTreeSet<String>,
 }
 
-/// Which side of a mismatch is behind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Behind {
-    /// The package was built against an older version than the OS serves:
-    /// a newer build of the package fits.
+    /// The package is older than the OS serves: a newer build of it fits.
     Package,
-    /// The package needs a newer version than this OS serves: the OS
-    /// updates first.
+    /// The package needs a newer version than this OS serves: the OS updates first.
     System,
-    /// The OS has no such interface, or the requirement could not be read.
     Unknown,
 }
 
-/// A requirement the OS does not meet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unmet {
-    /// The requirement as the app wrote it.
     pub requirement: String,
-    /// The version this OS serves of the requirement's interface; `None`
-    /// when it serves none, or the requirement could not be read.
+    /// The version this OS serves of the requirement's interface; `None` when it serves none or the
+    /// requirement could not be read.
     pub provided: Option<u32>,
 }
 
 impl Unmet {
-    /// The interface the requirement names, as written.
     pub fn interface(&self) -> &str {
         self.requirement
             .split_once('@')
             .map_or(self.requirement.as_str(), |(name, _)| name)
     }
 
-    /// Which side is behind.
     pub fn behind(&self) -> Behind {
         let wanted = self
             .requirement
@@ -198,15 +169,14 @@ impl fmt::Display for Unmet {
     }
 }
 
-/// Whether some of `unmet` mean the package is behind and none that the OS
-/// is: the package's next build fits.
+/// Whether some of `unmet` mean the package is behind and none that the OS is: the next build fits.
 pub fn package_is_behind(unmet: &[Unmet]) -> bool {
     !unmet.is_empty() && unmet.iter().all(|unmet| unmet.behind() == Behind::Package)
 }
 
 impl ProvidedInterfaces {
-    /// A declaration serving exactly `interfaces`, with `runtime_services`
-    /// speaking the runtime interface's version.
+    /// A declaration serving exactly `interfaces`, with `runtime_services` speaking the runtime
+    /// interface's version.
     pub fn new<'a>(
         interfaces: impl IntoIterator<Item = (&'a str, u32)>,
         runtime_services: impl IntoIterator<Item = &'a str>,
@@ -222,8 +192,8 @@ impl ProvidedInterfaces {
         }
     }
 
-    /// The version this OS serves of `name`: an interface's own, or the
-    /// runtime's for a service the runtime interface includes.
+    /// The version this OS serves of `name`: an interface's own, or the runtime's for a service the
+    /// runtime interface includes.
     pub fn version(&self, name: &str) -> Option<u32> {
         self.interfaces.get(name).copied().or_else(|| {
             self.runtime
@@ -234,12 +204,10 @@ impl ProvidedInterfaces {
         })
     }
 
-    /// Whether this OS serves `requirement`.
     pub fn provides(&self, requirement: &InterfaceRequirement) -> bool {
         self.version(&requirement.name) == Some(requirement.version)
     }
 
-    /// The requirements this OS does not meet, in the order given.
     pub fn unmet<'a>(
         &self,
         requirements: impl IntoIterator<Item = &'a InterfaceRequirement>,
@@ -254,9 +222,8 @@ impl ProvidedInterfaces {
             .collect()
     }
 
-    /// [`ProvidedInterfaces::unmet`] over the wire form a registry version
-    /// carries. A requirement that does not parse is unmet: a device cannot
-    /// know it serves a contract it cannot read.
+    /// [`ProvidedInterfaces::unmet`] over a registry version's wire form. A requirement that does not
+    /// parse is unmet: a device cannot know it serves a contract it cannot read.
     pub fn unmet_wire<'a>(&self, requirements: impl IntoIterator<Item = &'a String>) -> Vec<Unmet> {
         requirements
             .into_iter()
@@ -274,7 +241,6 @@ impl ProvidedInterfaces {
             .collect()
     }
 
-    /// Whether every one of `requirements` (wire form) is served.
     pub fn meets_wire<'a>(&self, requirements: impl IntoIterator<Item = &'a String>) -> bool {
         self.unmet_wire(requirements).is_empty()
     }

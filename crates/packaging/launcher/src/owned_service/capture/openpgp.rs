@@ -240,9 +240,7 @@ impl OpenPgp {
             .collect()
     }
     pub(super) fn splice(&self, argv: &mut Vec<String>, ro_paths: &mut Vec<String>) {
-        // OSTree uses the kernel boot ID for repository locking. The existing
-        // private procfs supplies it; grant only this file, only after signed
-        // original-source OSTree/OpenPGP admission. No ambient mount is added.
+        // OSTree uses the kernel boot ID for repository locking.
         ro_paths.push(BOOT_ID.into());
         let mut mounts = vec!["--dir".into(), LIB_PATH.into()];
         for entry in &self.entries {

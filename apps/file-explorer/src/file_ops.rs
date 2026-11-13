@@ -1,15 +1,5 @@
-//! Filesystem changes as the Files document records them.
-//!
-//! Creating a folder, renaming, moving to Trash, moving and copying files,
-//! writing a file and packing files into an archive are
-//! the Files resource's verbs: each queues a [`FileOp`] in the document's
-//! outbox ([`crate::resource::FileExplorer::ops`]) for the device whose
-//! filesystem it changes, which carries it out and settles it with what was
-//! done ([`Outcome`]). Being document actions, they are in the document's
-//! history and undoable: undoing one queues a [`FileOp::Revert`], which the
-//! same device carries out by compensating each recorded [`Change`] in
-//! reverse order — renaming back, moving back, restoring from Trash, removing
-//! the created folder, moving a copy or a written file to Trash.
+//! The filesystem changes Files records: what each one does on disk, and how
+//! a revert takes it back.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -24,29 +14,32 @@ use ui::tilo_resource::Settled;
 
 use crate::fileops;
 
-/// One filesystem change a person or an agent asked for.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileOp {
-    /// Create the folder `name` in `parent`.
-    NewFolder { parent: String, name: String },
-    /// Rename `path` to `name`, in the same folder.
-    Rename { path: String, name: String },
-    /// Move `paths` to Trash.
-    Trash { paths: Vec<String> },
-    /// Move `paths` into `folder`, keeping their names; create `folder` first
-    /// when `create` and it does not exist.
+    NewFolder {
+        parent: String,
+        name: String,
+    },
+    Rename {
+        path: String,
+        name: String,
+    },
+    Trash {
+        paths: Vec<String>,
+    },
     Move {
         paths: Vec<String>,
         folder: String,
         create: bool,
     },
-    /// Copy `paths` into `folder`; a copy whose name is taken gets a free
-    /// one.
-    Copy { paths: Vec<String>, folder: String },
-    /// Import independent, owner-writable copies of mounted native files.
-    /// Uses the same recorded changes and undo as an ordinary copy.
-    ImportMounted { paths: Vec<String>, folder: String },
-    /// Import independent local copies from a cloud account.
+    Copy {
+        paths: Vec<String>,
+        folder: String,
+    },
+    ImportMounted {
+        paths: Vec<String>,
+        folder: String,
+    },
     CloudImport {
         job_id: String,
         account: String,
@@ -54,145 +47,126 @@ pub enum FileOp {
         folder: String,
         destination: crate::cloud_transfer::DestinationIdentity,
     },
-    /// Write `text` as the new file `name` in `folder`, as given
-    /// ([`crate::documents::bytes_for`]). With `replace`, a file already
-    /// called that goes to Trash first.
     Write {
         folder: String,
         name: String,
         text: String,
         replace: bool,
     },
-    /// Pack `paths` into the archive `name` (a free name) in `folder`: a
-    /// tar compressed with zstd when the name ends in `.tar.zst`, else zip.
     Compress {
         paths: Vec<String>,
         folder: String,
         name: String,
     },
-    /// Extract the archive `archive` into `folder`: as the one folder the
-    /// archive holds at its top, else into a new folder named after it.
-    /// `if_exists` settles a name `folder` already has.
     Extract {
         archive: String,
         folder: String,
         #[serde(default)]
         if_exists: IfExists,
     },
-    /// A transfer the native host already carried out, by its receipt's
-    /// operation. It is never carried out here; only the host compensates it.
-    ClipboardReceipt { operation: String },
-    /// Undo the queued operation `op`: compensate what it changed.
-    Revert { op: String },
+    ClipboardReceipt {
+        operation: String,
+    },
+    Revert {
+        op: String,
+    },
 }
 
-/// What an extraction does when its folder's name is taken.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum IfExists {
-    /// The extracted folder gets a free name, like “Photos 2”.
     #[default]
     KeepBoth,
-    /// The existing item goes to Trash first; undo brings it back.
     Replace,
-    /// Nothing is extracted.
     Skip,
 }
 
-/// One change an operation made, enough to take it back.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Change {
-    /// A folder was created at `path`.
-    Created { path: String },
-    /// `from` was renamed (or moved) to `to`.
-    Moved { from: String, to: String },
-    /// `from` was copied to `to`.
-    Copied { from: String, to: String },
-    /// An admitted cloud import produced this exact local object.
+    Created {
+        path: String,
+    },
+    Moved {
+        from: String,
+        to: String,
+    },
+    Copied {
+        from: String,
+        to: String,
+    },
     CloudImported {
         from: String,
         to: String,
         destination: crate::cloud_transfer::DestinationIdentity,
         output: crate::cloud_transfer::DestinationIdentity,
     },
-    /// The exact imported output is in Trash; retain its admission for redo.
     CloudTrashed {
         to: String,
         entry: String,
         destination: crate::cloud_transfer::DestinationIdentity,
         output: crate::cloud_transfer::DestinationIdentity,
     },
-    /// `from` was moved to Trash as the Trash entry `entry` (when Files
-    /// could tell which one it became).
-    Trashed { from: String, entry: Option<String> },
-    /// The Trash entry `entry` was put back at `to`.
-    Restored { entry: String, to: String },
-    /// The empty folder `path` was removed.
-    Removed { path: String },
-    /// The new file `path` was written.
-    Wrote { path: String },
-    /// The native host's transfer `operation` is in effect.
-    ClipboardTransfer { operation: String },
-    /// The native host took the transfer `operation` back.
-    ClipboardUndo { operation: String },
+    Trashed {
+        from: String,
+        entry: Option<String>,
+    },
+    Restored {
+        entry: String,
+        to: String,
+    },
+    Removed {
+        path: String,
+    },
+    Wrote {
+        path: String,
+    },
+    ClipboardTransfer {
+        operation: String,
+    },
+    ClipboardUndo {
+        operation: String,
+    },
 }
 
 impl Default for FileOp {
-    /// Nothing to do: Trash of no paths.
     fn default() -> Self {
         Self::Trash { paths: Vec::new() }
     }
 }
 
-/// What carrying out an operation came to: every change it made, or why it
-/// stopped after the ones it made.
 pub type Outcome = Settled<Vec<Change>>;
 
 fn text(path: &Path) -> String {
     path.display().to_string()
 }
 
-/// What a local transfer does.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TransferKind {
     #[default]
     Copy,
     Move,
-    /// Extracting the archive named in [`LocalTransfer::folder`]'s place:
-    /// `folder` is the archive.
     Extract,
     Compress,
 }
 
-/// A local copy, move, extraction or packing under way, as the window
-/// shows it: how far it is, and whether the person asked to stop.
 #[derive(Debug, Default)]
 pub struct LocalTransfer {
-    /// Bytes copied so far, and of how many. An extraction counts the
-    /// archive's bytes read, of its size.
     pub done: std::sync::atomic::AtomicU64,
     pub total: std::sync::atomic::AtomicU64,
-    /// Set by Cancel; the transfer stops at the next chunk.
     pub cancel: AtomicBool,
-    /// What it does, how many items, and into which folder (for an
-    /// extraction, the archive being extracted).
     pub kind: TransferKind,
     pub count: usize,
     pub folder: String,
-    /// When it started, so a quick transfer never flashes a progress card.
     pub started: Option<ui::time::Instant>,
 }
 
-/// The local transfers running on this device now.
 static ACTIVE: std::sync::Mutex<Vec<std::sync::Arc<LocalTransfer>>> =
     std::sync::Mutex::new(Vec::new());
 
-/// The local copies and moves running now, oldest first.
 pub fn active_transfers() -> Vec<std::sync::Arc<LocalTransfer>> {
     ACTIVE.lock_recover().clone()
 }
 
-/// Stop every running local transfer at its next chunk.
 pub fn cancel_transfers() {
     for transfer in active_transfers() {
         transfer
@@ -201,7 +175,6 @@ pub fn cancel_transfers() {
     }
 }
 
-/// How many bytes copying `path` writes (symlinks count as themselves).
 fn tree_size(path: &Path) -> u64 {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return 0;
@@ -217,7 +190,6 @@ fn tree_size(path: &Path) -> u64 {
     })
 }
 
-/// Counts the bytes a transfer copies and stops it on Cancel.
 struct Tracked<'a> {
     transfer: &'a LocalTransfer,
     report: &'a dyn Fn(&LocalTransfer),
@@ -245,7 +217,6 @@ impl Tracked<'_> {
     }
 }
 
-/// The reason a transfer the person stopped settles with.
 pub const CANCELLED: &str = "cancelled";
 
 impl fileops::TransferObserver for Tracked<'_> {
@@ -283,10 +254,6 @@ impl fileops::TransferObserver for Tracked<'_> {
     }
 }
 
-/// Carry out a copy or move with its progress shown and Cancel honoured,
-/// trying every item even when one fails; any other operation as
-/// [`execute`]. `report` hears how far it is now and then, off the UI
-/// thread.
 pub fn execute_tracked(
     op: &FileOp,
     reverting: Option<&[Change]>,
@@ -380,14 +347,10 @@ pub fn execute_tracked(
     }
 }
 
-/// Carry out `op` on this device's filesystem. A revert is given the changes
-/// the operation it takes back made (`None` when that operation is unknown).
 pub fn execute(op: &FileOp, reverting: Option<&[Change]>) -> Outcome {
     execute_with_progress(op, reverting, &AtomicBool::new(false), |_| {})
 }
 
-/// Carry out an operation on a worker thread, with cancellable cloud imports.
-/// Progress callbacks run on that same worker and must not touch the UI.
 pub fn execute_with_progress(
     op: &FileOp,
     reverting: Option<&[Change]>,
@@ -501,7 +464,6 @@ fn move_into(
     Ok(())
 }
 
-/// Register `transfer` as running until the returned guard drops.
 pub struct Running(std::sync::Arc<LocalTransfer>);
 
 impl Running {
@@ -520,29 +482,20 @@ impl Drop for Running {
     }
 }
 
-/// Show `transfer` as running while the returned guard lives: a capture's
-/// staged transfer, followed by the window like any other, gone with the
-/// window that staged it rather than shown by every window after it.
 #[doc(hidden)]
 #[must_use = "the transfer stops showing once the guard drops"]
 pub fn run_for_capture(transfer: LocalTransfer) -> Running {
     Running::start(transfer)
 }
 
-/// Free space an extraction always leaves on the disk it writes to.
+/// The free space an extraction leaves on the disk it writes to.
 const SPACE_RESERVE: u64 = 512 << 20;
-/// How often, in bytes written, an extraction looks at the free space.
 const SPACE_CHECK_EVERY: u64 = 64 << 20;
 
-/// An archive operation's progress: the bytes it read reach the window and
-/// the caller's job, Cancel stops it, and an extraction stops before the
-/// disk it writes to is full.
 struct ArchiveProgress<'a> {
     transfer: &'a LocalTransfer,
     report: &'a dyn Fn(&LocalTransfer),
     since_report: std::cell::Cell<u64>,
-    /// The folder written to, and the bytes written since its free space
-    /// was last looked at.
     destination: &'a Path,
     unchecked: std::cell::Cell<u64>,
 }
@@ -558,7 +511,6 @@ impl<'a> ArchiveProgress<'a> {
             report,
             since_report: std::cell::Cell::new(0),
             destination,
-            // Look before the first write.
             unchecked: std::cell::Cell::new(SPACE_CHECK_EVERY),
         }
     }
@@ -597,15 +549,12 @@ impl crate::archive::Observer for ArchiveProgress<'_> {
                     "there is not enough free space on the disk",
                 ))
             }
-            // A filesystem that cannot say how full it is still reports a
-            // full disk when a write fails.
+            // A filesystem that cannot say how full it is reports a full disk when the write fails.
             _ => Ok(()),
         }
     }
 }
 
-/// The reason an archive operation's `error` settles with: [`CANCELLED`]
-/// when the person stopped it.
 fn archive_failure(what: &str, error: &std::io::Error) -> String {
     if tilo_archive::is_cancelled(error) {
         CANCELLED.into()
@@ -614,8 +563,6 @@ fn archive_failure(what: &str, error: &std::io::Error) -> String {
     }
 }
 
-/// Pack `paths` into a new archive called `name`, or a free name like it,
-/// in `folder`, with progress and Cancel.
 fn compress_tracked(
     paths: &[String],
     folder: &Path,
@@ -658,7 +605,6 @@ fn compress_tracked(
     }
 }
 
-/// Rename `from` to `to`, never over something already there.
 fn place(from: &Path, to: &Path) -> Result<(), String> {
     match host_fs::rename_noreplace(from, to) {
         Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
@@ -672,9 +618,6 @@ fn place(from: &Path, to: &Path) -> Result<(), String> {
     .map_err(|error| format!("cannot move into {}: {error}", to.display()))
 }
 
-/// Extract `archive` into `folder` with progress and Cancel: into a hidden
-/// folder first, moved into place only once complete, so a failed or
-/// stopped extraction leaves nothing in `folder`.
 fn extract_tracked(
     archive: &Path,
     folder: &Path,
@@ -743,7 +686,6 @@ fn extract_into_place(
     Ok(())
 }
 
-/// Write `bytes` as the new file `path`, never over an existing one.
 fn write_new(path: &Path, bytes: &[u8]) -> Result<Change, String> {
     use std::io::Write as _;
     let mut file = std::fs::OpenOptions::new()
@@ -761,8 +703,6 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<Change, String> {
     Ok(Change::Wrote { path: text(path) })
 }
 
-/// Write `content` as the file `name` in `folder`; with `replace`, a file
-/// already called that goes to Trash first, so undo brings it back.
 fn write_file(
     folder: &Path,
     name: &str,
@@ -794,11 +734,7 @@ fn write_file(
     Ok(())
 }
 
-/// Move `path` to Trash, noting the Trash entry it became: the one the host
-/// names, else the one that appeared when exactly one did.
 pub(crate) fn trash(path: &Path) -> Result<Change, String> {
-    // A Trash that does not exist yet holds nothing: the entry the first
-    // move to it makes is still found, so that move can be undone too.
     let before = fileops::trash_entries_snapshot().or_else(|| {
         fileops::trash_dir()
             .filter(|dir| !dir.exists())
@@ -826,8 +762,6 @@ pub(crate) fn trash(path: &Path) -> Result<Change, String> {
     })
 }
 
-/// Take back one change; the change that does so, which takes it back in
-/// turn.
 fn compensate(change: &Change) -> Result<Change, String> {
     match change {
         Change::CloudTrashed {
@@ -856,7 +790,6 @@ fn compensate(change: &Change) -> Result<Change, String> {
         Change::Moved { from, to } => {
             let from = Path::new(from);
             let back = match (from.parent(), Path::new(to).parent()) {
-                // A rename: give it its name back, in its folder.
                 (Some(origin), Some(here)) if origin == here => {
                     let name = from
                         .file_name()
@@ -888,8 +821,6 @@ fn compensate(change: &Change) -> Result<Change, String> {
                 to: from.clone(),
             })
         }
-        // A restored entry goes back to Trash; so does a copy or a written
-        // file, which is not deleted, so undoing the undo puts it back.
         Change::Restored { to, .. } | Change::Copied { to, .. } | Change::Wrote { path: to } => {
             trash(Path::new(to))
         }
@@ -897,13 +828,6 @@ fn compensate(change: &Change) -> Result<Change, String> {
 }
 
 impl FileOp {
-    /// The paths carrying this operation out writes (a folder covers what
-    /// is under it): what an agent's invocation names before writing, so
-    /// the versions these writes make record the agent
-    /// ([`ui::framework::EffectCx::attribute_writes`]). A revert writes the
-    /// paths of the changes it takes back. At most
-    /// [`ui::collaboration::write_attribution::MAX_PATHS`]; more are named by
-    /// their folders.
     pub fn written_paths(&self, reverting: Option<&[Change]>) -> Vec<String> {
         let within = |folder: &str, name: &str| text(&Path::new(folder).join(name));
         let mut paths: Vec<String> = match self {
@@ -965,8 +889,6 @@ mod tests {
         outcome.result()
     }
 
-    /// An operation names every path it writes, and a revert the paths of
-    /// what it takes back, before an agent's invocation writes them.
     #[test]
     fn operations_name_the_paths_they_write() {
         let rename = FileOp::Rename {
@@ -1010,8 +932,6 @@ mod tests {
         assert_eq!(many.written_paths(None), ["/w/0", "/w/1", "/w/2"]);
     }
 
-    /// Each operation records what it changed, and its revert takes exactly
-    /// that back; a revert of the revert does it again.
     #[test]
     fn operations_record_their_changes_and_reverts_take_them_back() {
         let root = tempfile::tempdir().unwrap();
@@ -1076,9 +996,6 @@ mod tests {
         assert!(!nothing.is_done());
     }
 
-    /// Move to Trash records the entry the item became and its undo puts the
-    /// item back, on the freedesktop Trash managed without the mount table a
-    /// sandboxed Files cannot read.
     #[cfg(unix)]
     #[test]
     fn move_to_trash_records_its_entry_and_undo_restores_it() {
@@ -1110,7 +1027,6 @@ mod tests {
         assert!(!entry.exists());
     }
 
-    /// Only a mounted import makes the independent destination editable.
     #[cfg(unix)]
     #[test]
     fn mounted_import_is_writable_without_changing_source_or_ordinary_copy() {
@@ -1235,7 +1151,6 @@ mod tests {
         );
     }
 
-    /// A move stops at the first failure and records what it moved before.
     #[test]
     fn a_failed_operation_records_what_it_did() {
         let root = tempfile::tempdir().unwrap();
@@ -1308,9 +1223,6 @@ mod tests {
         assert_eq!(std::fs::read(source).unwrap(), b"source");
     }
 
-    /// Writing and compressing each record the new file, and
-    /// their revert moves it to Trash; a replacing write keeps the old file
-    /// in Trash and its revert brings it back.
     #[test]
     fn written_files_are_recorded_and_undone_through_trash() {
         let _home = tilo_test_env::TestHome::new().unwrap();
@@ -1393,7 +1305,6 @@ mod tests {
         assert!(at("Summary.md").exists(), "the original stays");
     }
 
-    /// The entries below `folder`, by name, recursively, hidden ones too.
     fn tree(folder: &Path) -> Vec<String> {
         let mut names = Vec::new();
         let mut stack = vec![folder.to_path_buf()];
@@ -1410,10 +1321,6 @@ mod tests {
         names
     }
 
-    /// Extract here: an archive holding one folder at its top extracts as
-    /// that folder, anything else into a folder named after the archive; a
-    /// taken name keeps both, replaces (the old one to Trash, back on
-    /// undo) or skips; undo moves what was extracted to Trash.
     #[test]
     fn extracting_names_the_folder_and_settles_a_taken_name() {
         let _home = tilo_test_env::TestHome::new().unwrap();
@@ -1502,16 +1409,11 @@ mod tests {
         );
     }
 
-    /// Cancel stops an extraction and leaves the destination as it was:
-    /// nothing partial, no staging folder. A refused archive (a name
-    /// climbing out) does the same, and nothing lands beside it.
     #[test]
     fn a_stopped_or_refused_extraction_leaves_nothing() {
         let root = tempfile::tempdir().unwrap();
         let at = |name: &str| root.path().join(name);
         std::fs::create_dir_all(at("src/Big")).unwrap();
-        // Noise, so the archive is as big as what it holds and its reading
-        // reports progress before it is done.
         let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
         for i in 0..8 {
             let noise: Vec<u8> = (0..3 << 20)
@@ -1536,7 +1438,6 @@ mod tests {
         std::fs::create_dir(&out).unwrap();
         std::fs::write(out.join("kept.txt"), b"k").unwrap();
         let before = tree(&out);
-        // Cancel as the person would, once the window shows progress.
         let stopped = execute_tracked(
             &FileOp::Extract {
                 archive: text(&archive),

@@ -218,6 +218,17 @@ pub fn device_scale() -> f32 {
     DEVICE_SCALE.with(std::cell::Cell::get)
 }
 
+/// `value` on the device pixels of the display a layout is for
+/// ([`device_scale`]): where a widget's own arithmetic — a scroll offset, a
+/// camera, a measured gap — must land, since the solver rounds only the trees
+/// it solves itself. A length that is no whole number of device pixels is the
+/// nearest one, so what is drawn from it stands crisp rather than across two.
+#[must_use]
+pub fn snap_to_device_pixels(value: f64) -> f64 {
+    let grid = f64::from(device_scale());
+    (value * grid).round() / grid
+}
+
 /// Lay out at `scale` device pixels per logical pixel until the guard is
 /// dropped: a host enters it around its whole layout pass (solving and
 /// placing, with every tree a widget solves of its own), with its display's
@@ -452,6 +463,32 @@ pub(super) unsafe fn compute_widget_layout_depth(
     text: &mut TextRenderer,
     depth: usize,
 ) -> Result<(), WidgetLayoutError> {
+    // The window's own solve is what it pays for a frame; a probe inside it is
+    // counted apart, and timing it here as well would read as more work than
+    // ran.
+    let started = (depth == 0).then(crate::time::now);
+    // SAFETY: forwards the caller's exact live-tree ownership contract.
+    let settled =
+        unsafe { solve_widget_layout(taffy, root, available, nodes, bindings, text, depth) };
+    crate::profiling::layout_counts::solved(started.map_or(0, |started| {
+        u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+    }));
+    settled
+}
+
+/// One solve's settlement, counted by [`compute_widget_layout_depth`].
+///
+/// # Safety
+/// The same live-tree contract as [`compute_widget_layout`].
+unsafe fn solve_widget_layout(
+    taffy: &mut TaffyTree<()>,
+    root: NodeId,
+    available: Size<AvailableSpace>,
+    nodes: &HashMap<NodeId, *mut dyn Widget>,
+    bindings: &BoundNodeMap,
+    text: &mut TextRenderer,
+    depth: usize,
+) -> Result<(), WidgetLayoutError> {
     if depth > 32 {
         return Err(WidgetLayoutError::ManualNestingLimit);
     }
@@ -460,30 +497,56 @@ pub(super) unsafe fn compute_widget_layout_depth(
     let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
     while let Some(node) = pending.pop() {
         // SAFETY: the caller's exact live-tree ownership contract.
-        let policy = unsafe { sweep.inspect(node, |widget| widget.manual_layout_policy()) }
-            .ok()
-            .flatten();
-        if let Some(policy) = policy {
-            policies.push((node, policy));
+        let found = unsafe {
+            sweep.inspect(node, |widget| {
+                (widget.manual_layout_policy(), widget.layout_needs_measure())
+            })
+        }
+        .ok()
+        .and_then(|(policy, needs_measure)| policy.map(|policy| (policy, needs_measure)));
+        if let Some((policy, needs_measure)) = found {
+            policies.push((node, policy, needs_measure));
         }
         pending.extend(taffy.children(node)?.into_iter().rev());
     }
     // Intrinsic content can change without changing a Taffy style or topology.
     // Invalidate the measured node itself: marking only the root leaves cached
     // descendant heights intact and clips paragraphs as they wrap while typing.
+    let mut asked: Vec<NodeId> = Vec::new();
     for &node in nodes.keys() {
         // SAFETY: use the same admission/lifetime checks as measurement below.
         let needs_measure =
             unsafe { sweep.layout(node, |widget| widget.layout_needs_measure()) }.unwrap_or(false);
         if needs_measure {
+            asked.push(node);
             taffy.mark_dirty(node)?;
         }
     }
     // Measurement enters each measured node's own scope.
     drop(sweep);
-    // Outermost first: resetting a region dirties the regions inside it.
-    for (node, policy) in &policies {
-        super::manual::reset_region(policy, taffy, *node)?;
+    // A region is solved again only when something it reads moved: the
+    // allocation it is handed, a measure inside its own subtree, or a revision
+    // its owner asked for. `reusable` is that question, one answer per region:
+    // a still window keeps every solve it made.
+    let mut probes = super::manual::Probes::default();
+    let mut reusable = Vec::with_capacity(policies.len());
+    let mut regions = HashMap::with_capacity(policies.len());
+    for (index, (node, policy, needs_measure)) in policies.iter().enumerate() {
+        // Outermost first: resetting a region dirties the regions inside it.
+        let reset = super::manual::reset_region(policy, taffy, *node)?;
+        // A probe solves inside a copy of a tree whose regions may hold what
+        // the window placed, so it solves every region it finds.
+        reusable.push(depth == 0 && !reset && !needs_measure);
+        regions.insert(*node, index);
+    }
+    if depth == 0 {
+        // A region that starts its solve again is an input the regions holding
+        // it read too.
+        for (index, (node, _, _)) in policies.iter().enumerate() {
+            if !reusable[index] {
+                mark_enclosing_regions(taffy, &regions, &mut reusable, *node);
+            }
+        }
     }
     let mut still_changing = Vec::new();
     // The last passes' solved sizes of the nodes that changed in them.
@@ -502,18 +565,27 @@ pub(super) unsafe fn compute_widget_layout_depth(
             );
         }
         still_changing.clear();
+        crate::profiling::layout_counts::pass();
         solve_layout(taffy, root, available, &mut |known, available, node| {
             // SAFETY: caller owns the stable matching tree, each callback is
             // exclusive, and bound dispatch checks admission and lifetime.
             unsafe {
                 layout_bound_node(bindings, nodes, node, |widget| {
+                    crate::profiling::layout_counts::measure();
                     widget.measure(known, available, text)
                 })
             }
             .unwrap_or(Size::ZERO)
         })?;
         let mut changed = false;
-        for (node, policy) in &policies {
+        for (index, (node, policy, _)) in policies.iter().enumerate() {
+            // What this region was handed last time it solved here: the same
+            // allocation with nothing changed inside its subtree answers the
+            // same, so its placement stands and its policy is not run.
+            if reusable[index] && policy.settled_at(taffy.unrounded_layout(*node).size) {
+                crate::profiling::layout_counts::kept();
+                continue;
+            }
             // Descriptor extraction proved admission (including unbound).
             // Re-enter the same owner's existing lease for the WHOLE policy.
             let binding = bindings.binding_for(*node);
@@ -524,11 +596,22 @@ pub(super) unsafe fn compute_widget_layout_depth(
             else {
                 continue;
             };
+            crate::profiling::layout_counts::region();
             let placed = unsafe {
-                super::manual::run_policy(policy, taffy, *node, nodes, bindings, text, depth)?
+                super::manual::run_policy(
+                    policy,
+                    taffy,
+                    *node,
+                    nodes,
+                    bindings,
+                    text,
+                    depth,
+                    &mut probes,
+                )?
             };
             if placed {
                 still_changing.push(*node);
+                mark_enclosing_regions(taffy, &regions, &mut reusable, *node);
             }
             changed |= placed;
         }
@@ -542,11 +625,22 @@ pub(super) unsafe fn compute_widget_layout_depth(
             .unwrap_or(false);
             if adjusted {
                 still_changing.push(node);
+                mark_enclosing_regions(taffy, &regions, &mut reusable, node);
             }
             changed |= adjusted;
         }
         drop(sweep);
         if !changed {
+            // The solve has read every size that asked for one, so the
+            // requests are met here rather than by a draw that may never
+            // come: a widget placed and not drawn (a shut overflow door's
+            // controls, a row a scroll hides) would otherwise ask again on
+            // every frame after, and re-measure its path to the root.
+            let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
+            for node in std::mem::take(&mut asked) {
+                // SAFETY: the caller's exact live-tree ownership contract.
+                let _ = unsafe { sweep.layout(node, |widget| widget.layout_measured()) };
+            }
             return Ok(());
         }
     }
@@ -586,6 +680,24 @@ pub(super) unsafe fn compute_widget_layout_depth(
     })
 }
 
+/// Stop keeping the solve of every region whose own subtree holds `node`,
+/// `node`'s own region included: what a region's policy read is its subtree,
+/// and something in it moved.
+fn mark_enclosing_regions(
+    taffy: &TaffyTree<()>,
+    regions: &HashMap<NodeId, usize>,
+    reusable: &mut [bool],
+    node: NodeId,
+) {
+    let mut current = Some(node);
+    while let Some(at) = current {
+        if let Some(&index) = regions.get(&at) {
+            reusable[index] = false;
+        }
+        current = taffy.parent(at);
+    }
+}
+
 /// `node`'s unrounded solved size, its minimum height and its trailing
 /// padding (where a scroll view reserves its bar), for an unsettled layout's
 /// error.
@@ -622,7 +734,10 @@ unsafe fn widget_name(
 
 /// Whether any widget under `root` composes from its allocation (see
 /// [`Widget::composition_follows_allocation`]): only then does a resize
-/// recompose the tree rather than re-solve it.
+/// recompose the tree rather than re-solve it. History is no such tree: its
+/// chrome rebuilds its own bar in place when the window crosses the width
+/// class it presents in (`set_width`), and the refresh that does it asks for
+/// the tree rebuilt around the controls it replaced.
 pub(crate) fn tree_composition_follows_allocation(root: &(impl Widget + ?Sized)) -> bool {
     root.composition_follows_allocation() || {
         let mut found = false;
@@ -1094,6 +1209,10 @@ impl CompositionFocus {
                 mutate_bound_node(bindings, nodes, node, |widget| {
                     if Some(node) != keep && Some(node) != target && widget.is_focused() {
                         widget.set_focus(false);
+                        // Focus leaving is input the component takes up.
+                        if let Some(binding) = bindings.binding_ref(node) {
+                            binding.note_input();
+                        }
                     }
                 })
             };
@@ -1107,6 +1226,9 @@ impl CompositionFocus {
         // must not clear a child after its owner has just focused it.
         if let Some(node) = target {
             let _ = unsafe {
+                if let Some(binding) = bindings.binding_ref(node) {
+                    binding.note_input();
+                }
                 mutate_bound_node(bindings, nodes, node, |widget| {
                     widget.set_focus(true);
                     if let Some(state) = &self.state {
@@ -1997,6 +2119,68 @@ mod tests {
                 });
             }
         }
+    }
+
+    /// A widget the solver measures answers its request there, whether or not
+    /// a frame draws it. A label in a container nobody shows this frame (a
+    /// shut door's, a folded pane's) has no draw to clear it: one change of
+    /// its text kept it, and its path to the root, re-measuring every frame
+    /// after.
+    #[test]
+    fn a_label_laid_out_and_never_drawn_answers_its_measure() {
+        use crate::widget::{Column, Text};
+        let mut root = Column::new().push(Box::new(Text::new("Label").with_id("label")));
+        let mut tree = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let tree_root = root.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+        let mut bindings = BoundNodeMap::new();
+        // SAFETY: the tree, its widgets and both maps live to the end of the
+        // test, and nothing else lays them out beside it.
+        unsafe {
+            bindings.rebuild(&root, &tree, tree_root, &nodes);
+        }
+        let available = Size {
+            width: AvailableSpace::Definite(400.0),
+            height: AvailableSpace::Definite(300.0),
+        };
+        // What a host does for a frame: solve the sizes, place the boxes.
+        let lay_out = |root: &mut Column, tree: &mut TaffyTree<()>| {
+            let mut text = crate::font_catalog::fixture_renderer();
+            // SAFETY: as above.
+            unsafe {
+                compute_widget_layout(tree, tree_root, available, &nodes, &bindings, &mut text)
+                    .expect("solves");
+            }
+            root.apply_layout(tree, tree_root, Point::ZERO);
+        };
+        lay_out(&mut root, &mut tree);
+        let with_label = |root: &mut Column, ask: &mut dyn FnMut(&mut Text)| {
+            let label = root
+                .children_mut()
+                .into_iter()
+                .find_map(|child| child.as_any_mut()?.downcast_mut::<Text>())
+                .expect("the label is the column's child");
+            ask(label);
+        };
+        with_label(&mut root, &mut |label| {
+            assert!(!label.layout_needs_measure(), "placed once, it rests");
+        });
+
+        // Its text takes more lines than the room it has: it asks to be
+        // measured again, and the frame that answers is one that lays it out
+        // and never draws it.
+        with_label(&mut root, &mut |label| {
+            label.set_lines(Some(2));
+            assert!(label.layout_needs_measure(), "the label asks for its size");
+        });
+        lay_out(&mut root, &mut tree);
+        with_label(&mut root, &mut |label| {
+            assert!(
+                !label.layout_needs_measure(),
+                "a label the solver measured asks for no second measure, drawn or not"
+            );
+            assert!(!label.is_layout_dirty(), "and its path stays clean");
+        });
     }
 }
 

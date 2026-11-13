@@ -16,7 +16,6 @@ use std::sync::OnceLock;
 
 use anyhow::{Result, bail};
 
-/// A pkg-config module and the package that provides it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Library {
     pub module: &'static str,

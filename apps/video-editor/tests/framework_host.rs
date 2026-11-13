@@ -21,14 +21,12 @@ fn with_sample() -> HeadlessApp<VideoEditor> {
 
 #[test]
 fn host_door_edits_publish_resources_and_undo_as_one_action() {
-    // Case `a_typed_edit_through_the_door_reaches_the_timeline`.
     {
         let app = with_sample();
         let stored = app.state();
         assert_eq!(stored.clips.len(), sample_project().clips.len());
         assert!(!stored.clips.is_empty());
     }
-    // Case `the_surface_keeps_publishing_its_own_resource_tree`.
     {
         let mut app = with_sample();
         let resources = app.harness().resources();
@@ -43,7 +41,6 @@ fn host_door_edits_publish_resources_and_undo_as_one_action() {
             "{ids:?}"
         );
     }
-    // Case `a_keyboard_edit_on_the_custom_surface_is_one_undoable_host_action`.
     {
         let mut app = with_sample();
         let markers = app.state().markers.len();
@@ -63,7 +60,6 @@ fn host_door_edits_publish_resources_and_undo_as_one_action() {
         assert!(app.redo());
         assert_eq!(app.state().markers.len(), markers + 1);
     }
-    // Case `a_gesture_of_several_edits_is_one_undo_step`.
     {
         let mut app = with_sample();
         let clips = app.state().clips.len();
@@ -99,7 +95,6 @@ fn walk(resource: &tilo_actions::ResourceSpec, ids: &mut Vec<String>) {
 
 #[test]
 fn host_declarations_roles_and_replay_are_honoured() {
-    // Case `named_declarations_are_offered_to_the_palette_and_agents`.
     {
         let mut app = with_sample();
         app.invoke(Project::PLACE_MARKER.with((12.5, "Chorus".into())))
@@ -113,7 +108,6 @@ fn host_declarations_roles_and_replay_are_honoured() {
         let refused = app.invoke(Project::PLACE_MARKER.with((-1.0, "Before time".into())));
         assert!(refused.is_err());
     }
-    // Case `a_viewer_sees_the_timeline_but_cannot_change_it`.
     {
         let mut app = HeadlessApp::<VideoEditor>::with_role(ui::Role::Viewer).unwrap();
         let invoke = Invoke::edit(&load_project(&sample_project())).unwrap();
@@ -122,7 +116,6 @@ fn host_declarations_roles_and_replay_are_honoured() {
         app.harness().key("m");
         assert!(app.state().markers.is_empty());
     }
-    // Case `existing_actions_replay_byte_identically_through_the_resource_contract`.
     {
         let mut origin = Replica::<Project>::new();
         let mut peer = origin.fork();
@@ -153,7 +146,6 @@ fn host_declarations_roles_and_replay_are_honoured() {
 
 #[test]
 fn undoable_host_edits_apply_at_once_and_undo_takes_them_back() {
-    // Case `deleting_a_clip_and_trimming_one_both_apply_at_once`.
     {
         let mut app = with_sample();
         let clip = app.state().clips.first().cloned().unwrap();
@@ -190,7 +182,6 @@ fn undoable_host_edits_apply_at_once_and_undo_takes_them_back() {
         assert!(app.undo(), "the delete is one undo step");
         assert_eq!(app.state().clips.len(), clips);
     }
-    // Case `a_delete_key_on_the_surface_applies_at_once`.
     {
         let mut app = with_sample();
         let clips = app.state().clips.len();
@@ -203,7 +194,6 @@ fn undoable_host_edits_apply_at_once_and_undo_takes_them_back() {
         assert!(app.undo(), "the delete is one undo step");
         assert_eq!(app.state().clips.len(), clips);
     }
-    // Case `a_destructive_gesture_applies_as_one_and_undoes_as_one`.
     {
         let mut app = with_sample();
         let clips = app.state().clips.len();
@@ -292,10 +282,12 @@ fn an_agent_is_asked_first_before_a_file_is_read_or_written() {
     let mut app = with_sample();
     // An agent with no answer of the person's yet, inside a turn of the
     // person's that bound how far it reaches.
-    let grants = policy::roles::agent_turn(LOCAL_WORKSPACE, AGENT, LOCAL_USER, &[]).grants;
+    let grants = policy::roles::agent_grants(LOCAL_WORKSPACE, AGENT, LOCAL_USER, &[]);
     app.set_permissions(
-        PermissionContext::member(LOCAL_USER, Role::Owner)
-            .acting_as(policy::Subject::agent(AGENT), grants),
+        PermissionContext::member(LOCAL_USER, Role::Owner).acting_as(
+            policy::Actor::Member(policy::MemberId::agent(AGENT)),
+            grants,
+        ),
     );
     // Reading or writing a file is an outside effect: it asks first, like
     // any other.

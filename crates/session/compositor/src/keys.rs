@@ -1,6 +1,8 @@
 //! Keys for hosted surfaces: which surface a key goes to, and its repeat.
 //! A key reaches a hosted surface in one of two ways. A surface that wants the keyboard (an open
-//! launcher, menu or panel) takes every key from the focused window. Any surface may also claim a
+//! launcher, menu or panel) holds it: the client that had it is left, as it is for any other
+//! surface taking the keys, so it stops drawing its caret, repeating keys and composing, and is
+//! entered again when the surface gives them back. Any surface may also claim a
 //! single press ([`SurfaceHost::claim_key`]) whatever has the keyboard: the desktop's chords, the
 //! volume and brightness keys. A claimed press's release goes to the same surface, and the window
 //! never sees either.
@@ -17,26 +19,15 @@
 
 use std::time::{Duration, Instant};
 
+use smithay::reexports::wayland_server::Resource as _;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::{SERIAL_COUNTER, Serial};
 use smithay::wayland::keyboard_shortcuts_inhibit::{
     KeyboardShortcutsInhibitor, KeyboardShortcutsInhibitorSeat,
 };
 
-use crate::input::HostKey;
 use crate::state::State;
-
-/// What a hosted surface answers to a press it is offered.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum KeyClaim {
-    /// Not this surface's: the press goes on to whoever has the keyboard.
-    #[default]
-    Pass,
-    /// The surface takes the press and its release.
-    Take,
-    /// The surface takes the press, repeats while it is held, and its release (volume up held down
-    /// ramps the volume).
-    TakeRepeating,
-}
+use tilo_session_core::surface::HostKey;
 
 /// How held keys repeat: after `delay` , `rate` times a second.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +68,17 @@ pub(crate) struct HostKeys {
     held: Vec<(u32, usize)>,
     repeating: Option<Repeating>,
     pub(crate) repeat: KeyRepeat,
+    owner: Owner,
+}
+
+/// Who has the keyboard ([`State::sync_keyboard_owner`]).
+#[derive(Debug, Default)]
+enum Owner {
+    /// The client with keyboard focus, if any.
+    #[default]
+    Focus,
+    /// A hosted surface, while no client has focus; the client it goes back to.
+    Host(Option<WlSurface>),
 }
 
 impl HostKeys {
@@ -155,14 +157,65 @@ impl ShortcutInhibit {
 }
 
 impl State {
+    /// Whether a hosted surface holds the keyboard now: one that wants it, above the lock while
+    /// locked, unless a seat's keys are being delivered.
+    pub(crate) fn host_holds_keys(&self) -> bool {
+        let locked = self.locked();
+        !self.seat_keys_only
+            && self
+                .hosts
+                .iter()
+                .any(|host| (!locked || host.above_lock()) && host.wants_keyboard())
+    }
+
+    /// Keep one owner of the keyboard: while a hosted surface holds it no client has focus, and the
+    /// client that had it has it back with the keys.
+    pub(crate) fn sync_keyboard_owner(&mut self) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let serial = SERIAL_COUNTER.next_serial();
+        match (self.host_holds_keys(), &mut self.host_keys.owner) {
+            (true, owner @ Owner::Focus) => {
+                let back = keyboard.current_focus();
+                *owner = Owner::Host(back.clone());
+                if back.is_some() {
+                    keyboard.set_focus(self, None, serial);
+                }
+            }
+            (false, owner @ Owner::Host(_)) => {
+                if let Owner::Host(back) = std::mem::take(owner) {
+                    keyboard.set_focus(self, back.filter(WlSurface::is_alive), serial);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Give `focus` the keyboard among the clients; while a hosted surface holds it, that is
+    /// where it goes back to.
+    pub(crate) fn set_keyboard_focus(&mut self, focus: Option<WlSurface>, serial: Serial) {
+        if let Owner::Host(back) = &mut self.host_keys.owner {
+            *back = focus;
+        } else if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.set_focus(self, focus, serial);
+        }
+    }
+
+    /// The client surface the keyboard belongs to: the one with keyboard focus, or the one it
+    /// goes back to while a hosted surface holds it.
+    pub(crate) fn keyboard_focus(&self) -> Option<WlSurface> {
+        match &self.host_keys.owner {
+            Owner::Host(back) => back.clone(),
+            Owner::Focus => self.seat.get_keyboard()?.current_focus(),
+        }
+    }
+
     /// Grant or withdraw shortcut inhibition for this moment: only the focused surface, and only
     /// while the session is unlocked and no hosted surface is taking input.
     pub(crate) fn sync_shortcut_inhibit(&mut self) {
-        let allowed = !self.locked() && !self.hosts.iter().any(|host| host.wants_keyboard());
-        let focus = self
-            .seat
-            .get_keyboard()
-            .and_then(|keyboard| keyboard.current_focus());
+        let allowed = !self.locked() && matches!(self.host_keys.owner, Owner::Focus);
+        let focus = self.keyboard_focus();
         if self.shortcut_inhibit.suspended.is_some() && self.shortcut_inhibit.suspended != focus {
             self.shortcut_inhibit.suspended = None;
         }
@@ -224,7 +277,7 @@ impl State {
 )]
 mod tests {
     use super::*;
-    use crate::input::KeyModifiers;
+    use tilo_session_core::surface::KeyModifiers;
 
     fn key(keycode: u32) -> HostKey {
         HostKey {

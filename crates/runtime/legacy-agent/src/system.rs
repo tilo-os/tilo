@@ -1,6 +1,5 @@
 //! What the guest reports about itself.
 
-/// `(MemTotal, MemAvailable)` in KiB from `/proc/meminfo`.
 #[must_use]
 pub fn meminfo(contents: &str) -> (u64, u64) {
     let field = |name: &str| {
@@ -13,7 +12,6 @@ pub fn meminfo(contents: &str) -> (u64, u64) {
     (field("MemTotal"), field("MemAvailable"))
 }
 
-/// Whole seconds from `/proc/uptime`.
 #[must_use]
 pub fn uptime_secs(contents: &str) -> u64 {
     contents

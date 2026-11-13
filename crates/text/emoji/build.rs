@@ -7,9 +7,6 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-/// # Errors
-///
-/// Returns an error when `data/` or `OUT_DIR` cannot be read or written.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = Path::new("data");
     println!("cargo:rerun-if-changed=data");

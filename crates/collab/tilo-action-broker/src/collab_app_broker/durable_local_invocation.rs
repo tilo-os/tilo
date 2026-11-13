@@ -556,7 +556,7 @@ impl AppBrokerState {
         // Ordinary durable observations may reconcile effects too. Only a workspace
         // that confines its agents to their runs keeps a task agent from
         // observing on a grant alone: that needs an authenticated admission.
-        if actor.is_agent && self.confines_agents_to_tasks(workspace) {
+        if actor.is_agent && !actor.is_app() && self.confines_agents_to_tasks(workspace) {
             return Err(unavailable(
                 "native task agent requires authenticated task action admission",
             ));

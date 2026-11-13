@@ -182,22 +182,16 @@ fn pick_controls(pick: &Pick, asked: &Controls<'_>, details: bool) -> Element {
     Box::new(controls)
 }
 
-fn pick_card(pick: Pick, asked: &Controls<'_>, details: bool) -> Element {
-    let controls = pick_controls(&pick, asked, details);
+fn pick_card(pick: &Pick, asked: &Controls<'_>, details: bool) -> Element {
+    let controls = pick_controls(pick, asked, details);
     Box::new(
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .push(Box::new(
-                Text::with_args(
-                    "music-recommendations-song",
-                    &[
-                        ("title", pick.title.into()),
-                        ("artist", pick.artist_name.into()),
-                    ],
-                )
-                .with_role(TextRole::Heading),
+                Text::new(&pick.title).with_role(TextRole::Heading),
             ))
+            .push(Box::new(Text::new(&pick.artist_name).dimmed()))
             .push(Box::new(Text::new(&pick.reason)))
             .push(controls),
     )
@@ -284,7 +278,7 @@ fn page(
                 Action::Nav(View::Songs),
             ));
     }
-    for pick in std::mem::take(&mut presentation.picks) {
+    for pick in &presentation.picks {
         content = content.push(pick_card(pick, asked, details));
     }
     if details {

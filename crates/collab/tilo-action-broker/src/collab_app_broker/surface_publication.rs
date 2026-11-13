@@ -6,8 +6,52 @@
 #[cfg(any(test, feature = "test-support"))]
 use super::WitnessPublicationKind;
 use super::{AppBrokerState, PublishedSurface};
+use std::sync::{OnceLock, Weak, mpsc};
+
+/// Builds the catalogue subscribers follow, every published surface listed
+/// for each audience, on a thread of its own: built on the connection
+/// thread, each change of any app's surface held every app's document
+/// changes behind it for tens of milliseconds. Changes that come while one
+/// is built are taken by the next.
+pub(super) struct CatalogueRefresh {
+    state: Weak<AppBrokerState>,
+    due: OnceLock<mpsc::Sender<()>>,
+}
+
+impl CatalogueRefresh {
+    pub(super) const fn new(state: Weak<AppBrokerState>) -> Self {
+        Self {
+            state,
+            due: OnceLock::new(),
+        }
+    }
+}
 
 impl AppBrokerState {
+    /// What the broker offers changed: its catalogue subscribers are handed
+    /// it again, built by [`CatalogueRefresh`]. The thread ends with the broker.
+    pub(super) fn catalogue_changed(&self) {
+        let refresh = &self.catalogue_refresh;
+        let due = refresh.due.get_or_init(|| {
+            let (due, changes) = mpsc::channel::<()>();
+            let state = refresh.state.clone();
+            let spawned = std::thread::Builder::new()
+                .name("tilo-catalogue".into())
+                .spawn(move || {
+                    while changes.recv().is_ok() {
+                        while changes.try_recv().is_ok() {}
+                        let Some(state) = state.upgrade() else { return };
+                        state.publish_action_catalogue();
+                    }
+                });
+            if let Err(error) = spawned {
+                tracing::error!(%error, "the action catalogue cannot be built");
+            }
+            due
+        });
+        let _ = due.send(());
+    }
+
     /// Record that a published surface changed: the generation moves and
     /// every launch waiting for its app to publish wakes. Each move is
     /// traced with where it came from: every listing and open palette reads
@@ -52,7 +96,7 @@ impl AppBrokerState {
             "action surface changed"
         );
         self.surfaces_changed();
-        self.publish_action_catalogue();
+        self.catalogue_changed();
     }
 
     /// [`crate::collab_broker::AppActionBroker::publish_surface_for_test`].

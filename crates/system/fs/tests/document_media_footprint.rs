@@ -52,8 +52,6 @@ use runtime_fs::blobs::{
     MAX_BLOB_BYTES, MAX_PUT_CHUNK, MAX_READ_CHUNK, ReadOutcome, write_handoff,
 };
 
-/// The system allocator, counting live heap bytes across every thread and
-/// the peak since the last [`reset_peak`].
 struct PeakCounting;
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);
@@ -68,11 +66,8 @@ fn shrank(bytes: usize) {
     LIVE.fetch_sub(bytes, Ordering::Relaxed);
 }
 
-// SAFETY: every call forwards to the system allocator with the caller's
-// arguments; the counters only record sizes.
 unsafe impl GlobalAlloc for PeakCounting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract, which `System` shares.
         let pointer = unsafe { System.alloc(layout) };
         if !pointer.is_null() {
             grew(layout.size());
@@ -81,7 +76,6 @@ unsafe impl GlobalAlloc for PeakCounting {
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: as for `alloc`.
         let pointer = unsafe { System.alloc_zeroed(layout) };
         if !pointer.is_null() {
             grew(layout.size());
@@ -91,12 +85,10 @@ unsafe impl GlobalAlloc for PeakCounting {
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
         shrank(layout.size());
-        // SAFETY: `pointer` came from this allocator, i.e. from `System`, with this layout.
         unsafe { System.dealloc(pointer, layout) }
     }
 
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        // SAFETY: as for `dealloc`, and the caller upholds `realloc`'s size contract.
         let new = unsafe { System.realloc(pointer, layout, new_size) };
         if !new.is_null() {
             grew(new_size);
@@ -109,60 +101,31 @@ unsafe impl GlobalAlloc for PeakCounting {
 #[global_allocator]
 static HEAP: PeakCounting = PeakCounting;
 
-/// Live heap bytes now; the peak starts again from here.
 fn reset_peak() -> usize {
     let live = LIVE.load(Ordering::Relaxed);
     PEAK.store(live, Ordering::Relaxed);
     live
 }
 
-/// Peak live heap bytes above `base` since [`reset_peak`] returned it.
 fn peak_above(base: usize) -> usize {
     PEAK.load(Ordering::Relaxed).saturating_sub(base)
 }
 
-/// Live heap bytes above `base` now.
 fn live_above(base: usize) -> usize {
     LIVE.load(Ordering::Relaxed).saturating_sub(base)
 }
 
-/// Daemon heap an empty-range status read may hold: a tag lookup, a status
-/// query and the store actors' bookkeeping for them, no blob data. Measured
-/// at 1.4 KiB (debug build, macOS); before ranged reads it was 128 MiB, the
-/// whole attachment twice over while it was collected.
 const STATUS_READ_PEAK: usize = 64 * 1024;
 
-/// Daemon heap one range may hold beyond the range it returns: the 16 KiB
-/// chunk groups in flight between the store actor and the reader, the
-/// outboard pages that verify them, and the store actors' bookkeeping.
-/// Measured at 0.07 MiB to 0.19 MiB over the 4 MiB range.
 const RANGE_READ_OVERHEAD: usize = 1024 * 1024;
 
-/// Daemon heap a stored attachment may leave behind once `store` returned:
-/// the workspace's reference and the store's bookkeeping, none of the content.
-/// Before, the content store cached every stored blob whole, 64 MiB for the
-/// largest attachment. Measured at 0 B.
 const STORE_RETAINED_HEAP_SLO: usize = 256 * 1024;
 
-/// Heap an upload of the largest attachment may hold at once, the app's end
-/// included (it runs in this process): the app's chunk and the message
-/// carrying it, the message as the daemon reads it, the pieces in flight to
-/// the store and the store's spill writes. Four messages' worth
-/// (4 × [`MAX_PUT_CHUNK`]); measured at 8.2 MiB (debug build, macOS).
-/// Before, the daemon gathered the whole upload before storing it: 101.6 MiB
-/// at the peak, its buffer growing past 64 MiB.
 const UPLOAD_PEAK_HEAP_SLO: usize = 16 * 1024 * 1024;
 const _: () = assert!(UPLOAD_PEAK_HEAP_SLO == 4 * MAX_PUT_CHUNK);
 
-/// Heap an upload may leave behind once the app's connection closed: the
-/// thread pool and connection bookkeeping, measured at 149 KiB, none of the
-/// content. Before, the stored attachment stayed cached, 64 MiB.
 const UPLOAD_RETAINED: usize = 1024 * 1024;
 
-/// What many large reads through the whole-blob API may leave behind: the
-/// blob cache's byte budget and 1 MiB of its own bookkeeping; measured at
-/// 32.1 MiB. Before, the cache was bounded by entry count and kept every
-/// blob read.
 const CACHE_RETAINED_HEAP_SLO: usize = 33 * 1024 * 1024;
 const _: () = assert!(CACHE_RETAINED_HEAP_SLO as u64 == BLOB_CACHE_BYTES + 1024 * 1024);
 
@@ -172,7 +135,6 @@ fn photos() -> BlobScope {
     BlobScope::new(PHOTOS.0, PHOTOS.1).unwrap()
 }
 
-/// The xorshift stream behind [`deterministic_bytes`] and [`Generated`].
 struct Xorshift(u64);
 
 impl Xorshift {
@@ -193,8 +155,6 @@ fn deterministic_bytes(len: usize) -> Vec<u8> {
     (0..len).map(|_| bytes.next()).collect()
 }
 
-/// [`deterministic_bytes`] produced as they are read, so an upload's source
-/// holds none of the content itself.
 struct Generated {
     bytes: Xorshift,
     left: usize,
@@ -232,7 +192,6 @@ fn mib(bytes: usize) -> f64 {
     kib(bytes) / 1024.0
 }
 
-/// Print a footprint KPI and hold it to its ceiling.
 fn report_heap(name: &str, bytes: usize, ceiling: usize) {
     eprintln!(
         "PERF {name}: {:.3} MiB (SLO <= {:.3} MiB)",
@@ -245,8 +204,6 @@ fn report_heap(name: &str, bytes: usize, ceiling: usize) {
     );
 }
 
-/// What `run` returns, how long it took and the peak heap above what was
-/// live when it began.
 async fn measured<T>(run: impl Future<Output = T>) -> (T, Duration, usize) {
     let base = reset_peak();
     let started = Instant::now();
@@ -254,9 +211,6 @@ async fn measured<T>(run: impl Future<Output = T>) -> (T, Duration, usize) {
     (value, started.elapsed(), peak_above(base))
 }
 
-/// The hash of the whole of `hash`'s content, read a range at a time as
-/// `BlobReader` reads it, each range consumed before the next is asked for;
-/// `None` when a range is unreadable or empty before the end.
 async fn stream_whole(
     media: &DocumentMedia,
     scope: &BlobScope,
@@ -281,9 +235,6 @@ async fn stream_whole(
     Some(hasher.finalize())
 }
 
-/// A document-media backend that gathers a streamed upload whole before
-/// storing it, as the capability's server did before uploads streamed. The
-/// probe must register what it holds, or the upload bound proves nothing.
 struct Gathering(Arc<DocumentMedia>);
 
 impl BlobBackend for Gathering {
@@ -332,8 +283,6 @@ impl BlobBackend for Gathering {
     }
 }
 
-/// Serve `backend` on a fresh socket under `dir`, as the daemon serves its
-/// document media.
 fn serve(dir: &Path, name: &str, backend: Arc<dyn BlobBackend>) -> PathBuf {
     let socket = dir.join(name);
     runtime_fs::blobs::spawn_blob_server(
@@ -345,8 +294,6 @@ fn serve(dir: &Path, name: &str, backend: Arc<dyn BlobBackend>) -> PathBuf {
     socket
 }
 
-/// Upload `len` generated bytes through `socket` as the photos app,
-/// returning the stored reference and the peak heap the upload took.
 async fn upload(socket: PathBuf, len: usize) -> (BlobRef, Duration, usize) {
     let base = reset_peak();
     let started = Instant::now();
@@ -375,7 +322,6 @@ async fn cold_reads_hold_one_range_of_the_largest_attachment() {
     let len = usize::try_from(MAX_BLOB_BYTES).unwrap();
     let chunk = MAX_READ_CHUNK as usize;
     let data = deterministic_bytes(len);
-    // Near the end, and not on a 16 KiB chunk-group boundary.
     let tail_offset = len - chunk - 12_345;
     let tail = data[tail_offset..tail_offset + chunk].to_vec();
     let hash = {
@@ -389,7 +335,6 @@ async fn cold_reads_hold_one_range_of_the_largest_attachment() {
     let media = DocumentMedia::new(Arc::clone(&store));
     let total_len = MAX_BLOB_BYTES;
 
-    // What `state()` sends: an empty range.
     let (status, status_time, status_peak) =
         measured(media.read_range(photos.clone(), hash, 0, 0)).await;
     assert_eq!(
@@ -400,7 +345,6 @@ async fn cold_reads_hold_one_range_of_the_largest_attachment() {
         }
     );
 
-    // One range near the end, as a seek to the end of a video asks for.
     let (read, tail_time, tail_peak) =
         measured(media.read_range(photos.clone(), hash, tail_offset as u64, MAX_READ_CHUNK)).await;
     assert_eq!(
@@ -412,7 +356,6 @@ async fn cold_reads_hold_one_range_of_the_largest_attachment() {
     );
     drop(read);
 
-    // The whole attachment, streamed a range at a time.
     let (streamed, stream_time, stream_peak) =
         measured(stream_whole(&media, &photos, hash, total_len)).await;
     assert_eq!(
@@ -420,11 +363,6 @@ async fn cold_reads_hold_one_range_of_the_largest_attachment() {
         Some(hash.as_bytes())
     );
 
-    // The same tail range the way reads were answered before: the whole
-    // blob loaded and verified, then sliced. This is also the probe's own
-    // check: a counter that cannot see a whole-blob load must fail here
-    // rather than pass the bounds above. It also fails if any read above left
-    // the blob in the cache, since this load would then allocate nothing.
     let ((), whole_time, whole_peak) = measured(async {
         let whole = store.local(hash).await.unwrap();
         drop(whole[tail_offset..tail_offset + chunk].to_vec());
@@ -455,8 +393,6 @@ async fn cold_reads_hold_one_range_of_the_largest_attachment() {
          (budget {} B)",
         chunk + RANGE_READ_OVERHEAD
     );
-    // Each range is consumed before the next is asked for, as `BlobReader`
-    // does, so a stream holds no more than one range at a time.
     assert!(
         stream_peak <= chunk + RANGE_READ_OVERHEAD,
         "streaming a {len} B attachment held {stream_peak} B of daemon heap at once (budget {} B)",
@@ -476,21 +412,15 @@ async fn storing_and_uploading_hold_no_whole_attachment() {
     let store = Arc::new(ContentStore::open(dir.path().join("store")).await.unwrap());
     let media = DocumentMedia::new(Arc::clone(&store));
 
-    // Storing: the caller hands over the attachment, and once the call
-    // returns none of it may stay in the daemon's heap.
     let data = deterministic_bytes(len);
     let expected = blake3::hash(&data);
     let base = reset_peak();
     let started = Instant::now();
     let stored = media.store(&photos(), data).await.unwrap();
     let store_time = started.elapsed();
-    // `base` counted the attachment the call consumed.
     let stored_retained = (LIVE.load(Ordering::Relaxed) + len).saturating_sub(base);
     assert_eq!(stored.as_bytes(), expected.as_bytes());
 
-    // Uploading over the capability, as an app does: the app's source
-    // produces the bytes as they are read, so all the heap counted is what
-    // the app's client and the daemon hold on the way.
     let socket = serve(
         dir.path(),
         "media.sock",
@@ -511,9 +441,6 @@ async fn storing_and_uploading_hold_no_whole_attachment() {
         "the uploaded attachment reads back whole and verified"
     );
 
-    // The probe's own check: the same upload through a server that gathers
-    // it whole must register the whole attachment, or the bound above
-    // cannot see the buffering it is there to catch.
     let gathering = serve(
         dir.path(),
         "gathering.sock",
@@ -557,8 +484,6 @@ async fn storing_and_uploading_hold_no_whole_attachment() {
 
 async fn many_large_reads_leave_no_more_than_the_cache_budget() {
     let dir = tempfile::tempdir().unwrap();
-    // Twice the cache budget in blobs the cache admits, and as much again in
-    // blobs too large for it.
     let small = 2 * usize::try_from(BLOB_CACHE_BYTES).unwrap() / MAX_CACHED_BLOB;
     let large_len = 16 * 1024 * 1024;
     let large = 4;
@@ -607,9 +532,6 @@ async fn many_large_reads_leave_no_more_than_the_cache_budget() {
         retained,
         CACHE_RETAINED_HEAP_SLO,
     );
-    // The probe's own check: the cache does keep what fits its budget, so a
-    // probe that registered nothing could not tell a bounded cache from one
-    // that keeps everything.
     assert!(
         retained >= usize::try_from(BLOB_CACHE_BYTES).unwrap() / 2,
         "{retained} B left behind by reads that fill a {BLOB_CACHE_BYTES} B cache: the heap probe \

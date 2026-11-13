@@ -85,7 +85,6 @@ pub trait SignalAuthority: Send + Sync {
     fn check_account(&self) -> Result<(), SendError> {
         Err(SendError::Unavailable)
     }
-    /// Bind a verified provider self identity to this frozen current account.
     fn check_account_scope(&self, _scope: &str) -> Result<(), SendError> {
         Err(SendError::Unavailable)
     }
@@ -128,7 +127,7 @@ impl SignalBroker {
             return Err(SendError::Unavailable);
         }
         let setup = runtime
-            .verify_account(tilo_clock::Duration::from_secs(10))
+            .verify_account(tilo_clock::time::Duration::from_secs(10))
             .map_err(|_| SendError::Unavailable)?;
         let scope = setup.scope();
         let wire_account = setup.number.ok_or(SendError::Unavailable)?;
@@ -145,7 +144,6 @@ impl SignalBroker {
             observers: Arc::default(),
         })
     }
-    /// Assemble from a supervisor's verified handle and existing OS custody.
     pub fn open_system(
         root: &std::path::Path,
         owner: crate::journal::Owner,
@@ -183,7 +181,6 @@ impl SignalBroker {
     pub fn client(&self) -> MessagingClient {
         MessagingClient::new(self.principal.clone(), Arc::new(self.clone()))
     }
-    /// Self scope verified on this broker's actual owned provider stream.
     pub fn scope(&self) -> &str {
         &self.scope
     }
@@ -238,13 +235,12 @@ impl SignalBroker {
             .verify_recipient(
                 &request.route.recipient,
                 &request.route.revision,
-                tilo_clock::Duration::from_secs(10),
+                tilo_clock::time::Duration::from_secs(10),
             )
             .map_err(|_| SendError::Revoked)?;
         worker
             .history
             .reserve(&request.route, &request.operation, &request.text)?;
-        // Revalidate after durable reservation, immediately before the adapter.
         let auth = self.authorized(&request.route)?;
         let result = worker.runtime.send(
             &auth.accounts,
@@ -252,7 +248,7 @@ impl SignalBroker {
             &route,
             &request.operation,
             &request.text,
-            tilo_clock::Duration::from_secs(10),
+            tilo_clock::time::Duration::from_secs(10),
         );
         let acknowledgment = result.map_err(|error| match error {
             crate::signal_session::CheckedSendError::Routing(_) => SendError::Revoked,
@@ -477,7 +473,6 @@ impl HistoryHost for SignalBroker {
     }
 }
 
-/// Supervisor-owned lifetime and health of one inbound worker.
 pub struct ReceiveGuard {
     control: std::os::unix::net::UnixStream,
     stopped: Arc<std::sync::atomic::AtomicBool>,

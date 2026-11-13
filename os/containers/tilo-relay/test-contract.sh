@@ -3,7 +3,7 @@
 #
 # Keep this cheap: t's image-relay check builds the image (tools/ci/publish/relay-build.sh,
 # which runs this contract first), while this asserts the Compose artifact includes the
-# complete filesystem replica.
+# complete filesystem replica and the image compiles nothing of its own.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,15 +11,16 @@ compose="$root/compose.yaml"
 config="$root/relay.toml.example"
 readme="$root/README.md"
 containerfile="$root/Containerfile"
-dockerignore="$root/Containerfile.dockerignore"
 build="$root/../../../tools/ci/publish/relay-build.sh"
+binaries="$root/../../../tools/ci/publish/server-binaries.sh"
 compose="$root/compose.yaml"
 entrypoint="$root/tilo-home-peer"
 
 fail() { echo "tilo-relay container contract: FAIL: $*" >&2; exit 1; }
 need() { grep -Fq -- "$2" "$1" || fail "$(basename "$1") lacks: $2"; }
+forbid() { if grep -Fq -- "$2" "$1"; then fail "$(basename "$1") must not contain: $2"; fi; }
 
-for path in "$compose" "$config" "$readme" "$dockerignore" "$build"; do
+for path in "$compose" "$config" "$readme" "$build" "$binaries"; do
   [ -f "$path" ] || fail "missing $(basename "$path")"
 done
 
@@ -48,29 +49,41 @@ PY
 need "$readme" "filesystem peer"
 need "$readme" "selected workspace IDs"
 need "$readme" "Pair home server"
-need "$containerfile" "target/release/fs"
-need "$containerfile" "rust cargo capnproto"
-need "$containerfile" "CARGO_BUILD_JOBS=2"
-need "$containerfile" "CARGO_PROFILE_RELEASE_LTO=thin"
-need "$containerfile" "RUSTC_WRAPPER=/usr/local/bin/sccache"
-need "$containerfile" "SCCACHE_SHA256_X86_64=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006"
-need "$containerfile" "SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77"
-need "$containerfile" "SCCACHE_GHA_VERSION=tilo-relay-v1"
-need "$containerfile" "--mount=type=secret,id=actions_cache_url"
-need "$containerfile" "--mount=type=secret,id=actions_runtime_token"
-need "$containerfile" "sccache --zero-stats"
-need "$containerfile" "! sccache --start-server"
-need "$containerfile" "export RUSTC_WRAPPER="
-need "$containerfile" "sccache backend unavailable; compiling normally"
-need "$containerfile" "required compiler cache configuration is unavailable"
-need "$containerfile" "probe-sccache.py"
-need "$containerfile" "test ! -e /context/.git/config"
-need "$containerfile" "test ! -e /context/.forgejo"
-need "$containerfile" "cargo build --locked --release -p tilo-relay -p tilo-fs --bins"
-if grep -Fq 'sed -i' "$containerfile"; then
-  fail "Containerfile mutates the locked workspace before compiling"
-fi
+
+# The image packages programs t built: the relay, its admin, its enroll program and the
+# filesystem replica come from the staged context, and nothing in the image compiles.
+need "$containerfile" "COPY bin/tilo-relay /usr/libexec/tilo/tilo-relay"
+need "$containerfile" "COPY bin/tilo-relay-admin /usr/libexec/tilo/tilo-relay-admin"
+need "$containerfile" "COPY bin/tilo-enroll /usr/libexec/tilo/tilo-enroll"
+need "$containerfile" 'COPY bin/fs /usr/bin/fs'
+forbid "$containerfile" "cargo build"
+forbid "$containerfile" "--mount=type=cache"
+forbid "$containerfile" "sccache"
+forbid "$containerfile" "COPY . "
 need "$containerfile" 'ENTRYPOINT ["/usr/bin/tilo-home-peer"]'
+# The runtime keeps its OpenSSL-free, package-manager-free surface.
+need "$containerfile" "microdnf install -y --setopt=reposdir=/repo --disablerepo='*' --enablerepo=frozen"
+need "$containerfile" "microdnf remove -y --setopt=protected_packages= openssl-libs coreutils dnf5"
+
+# The programs are one check's, thin LTO and read back off the ELF, from one feature resolution
+# per image: the relay and the replica in one, as the image compiled them before.
+need "$binaries" "packages=(-p tilo-relay -p tilo-fs --bins)"
+need "$binaries" "bins=(tilo-relay tilo-relay-admin tilo-enroll fs)"
+need "$binaries" "export CARGO_PROFILE_RELEASE_LTO=thin"
+need "$binaries" 'bash os/scripts/verify-elf-hardening.sh "$out"'
+
+# The build t runs (image-relay): this contract first; the base and the frozen RPM snapshot are
+# passed by digest; the binaries are the check's output, staged with the entrypoint and the unit
+# the image copies; nothing else enters the context, and a commit time is no input.
+need "$build" "bash os/containers/tilo-relay/test-contract.sh"
+need "$build" 'for bin in tilo-relay tilo-relay-admin tilo-enroll fs; do'
+need "$build" '--build-arg "RPMS_REF=$rpms_ref"'
+need "$build" 'cp os/containers/tilo-relay/tilo-home-peer "$context/os/containers/tilo-relay/"'
+need "$build" 'cp os/usr/lib/systemd/system/tilo-relay.service "$context/os/usr/lib/systemd/system/"'
+forbid "$build" '--build-arg "BASE_REF'
+forbid "$build" 'SOURCE_DATE_EPOCH'
+forbid "$build" "sccache"
+
 need "$compose" "./config:/etc/tilo:Z"
 need "$compose" "tilo-full-replica"
 need "$entrypoint" "/usr/bin/fs replica"
@@ -80,27 +93,5 @@ need "$entrypoint" "/usr/libexec/tilo/tilo-enroll pair"
 need "$entrypoint" "/var/lib/tilo-relay/decommissioned"
 need "$entrypoint" "exec /usr/bin/busybox sleep infinity"
 need "$entrypoint" "wait -n"
-# The build t runs (image-relay): this contract first; a commit time is no input (the
-# Containerfile's SOURCE_DATE_EPOCH defaults to 0 and no build argument overrides it); the pinned
-# sccache release reaches the build only through the verified github-assets context; the base
-# and the frozen RPM snapshot are passed by digest; the context is the ignore file's filtered copy.
-need "$build" "bash os/containers/tilo-relay/test-contract.sh"
-need "$containerfile" "ARG SOURCE_DATE_EPOCH=0"
-if grep -Fq -- '--build-arg "SOURCE_DATE_EPOCH' "$build" || grep -Fq -- '--build-arg SOURCE_DATE_EPOCH' "$build"; then
-  fail "relay-build.sh passes a commit time into the image"
-fi
-if grep -Fq 'SCCACHE_AWS' "$build"; then
-  fail "relay-build.sh binds the static compiler-cache key"
-fi
-need "$build" 'assets=$(pinned_assets sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz)'
-need "$build" '--build-context "github-assets=$assets"'
-need "$build" '--build-arg "BASE_REF=$BASE_REF"'
-need "$build" '--build-arg "RPMS_REF=$rpms_ref"'
-need "$build" 'stage_context os/containers/tilo-relay/Containerfile.dockerignore "$context"'
-need "$build" '--ignorefile os/containers/tilo-relay/Containerfile.dockerignore'
-
-for excluded in .git .forgejo target os/output; do
-  grep -qxF "$excluded" "$dockerignore" || fail "Docker build context includes $excluded"
-done
 
 echo "tilo-relay container contract: PASS"

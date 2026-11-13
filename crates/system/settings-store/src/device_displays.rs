@@ -1,5 +1,5 @@
-//! Certified device display observations, published by the existing compositor.
-//! These are observations, never input permissions or durable display intent.
+//! Certified device display observations, published by the compositor: observations, never input
+//! permissions or durable display intent.
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -7,8 +7,6 @@ pub struct DeviceDisplay {
     pub device: String,
     pub device_label: String,
     pub connector: String,
-    /// Stable output identity from the same certified topology revision.
-    /// Absent on legacy observations; never inferred from a port or label.
     #[serde(default)]
     pub output_id: Option<String>,
     pub label: String,
@@ -19,13 +17,10 @@ pub struct DeviceDisplay {
     pub width: u32,
     pub height: u32,
     pub scale_milli: u16,
-    /// Owner-authored topology revision; zero denotes a legacy observation.
     #[serde(default)]
     pub revision: u64,
 }
 
-/// A semantic drag over one observed screen. The peer authors the resulting
-/// placement; this request grants no input access.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceDisplayMove {
@@ -35,7 +30,6 @@ pub struct DeviceDisplayMove {
 }
 
 impl DeviceDisplay {
-    /// Device-qualified semantic identity even when peers have identical ports.
     pub fn key(&self) -> String {
         format!("{}/{}", self.device, self.connector)
     }
@@ -65,7 +59,6 @@ impl DeviceDisplaySnapshot {
         .then_some(snapshot)
     }
 
-    /// Publish under the existing compositor's runtime lease.
     pub fn save(&self) -> std::io::Result<()> {
         let path = path().ok_or_else(|| std::io::Error::other("runtime unavailable"))?;
         // The clock's sample must not re-author unchanged runtime observations.
@@ -81,7 +74,6 @@ impl DeviceDisplaySnapshot {
     }
 }
 
-/// Where the compositor keeps the observation, beside its own display snapshot.
 pub fn path() -> Option<std::path::PathBuf> {
     crate::hardware::display_snapshot_path()
         .map(|path| path.with_file_name("device-display-state.json"))

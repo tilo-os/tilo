@@ -1,15 +1,5 @@
 //! The provider interface behind mounted cloud accounts.
 //!
-//! A cloud account configured in Settings (`WebDAV`, Nextcloud, Google Drive,
-//! `OneDrive`, Dropbox, `iCloud` Drive) becomes a folder the storage daemon
-//! serves like any other part of the workspace: metadata is listed and
-//! cached, file bodies hydrate on first read, local writes upload in the
-//! background and conflicts keep both versions. Everything the daemon needs
-//! from a provider goes through [`CloudSource`]; everything provider-specific
-//! stays behind it.
-//!
-//! # Model
-//!
 //! - **Items are identified by id, projected to paths.** [`ItemId`] is the
 //!   provider's stable identity (a Drive file id, a Graph item id, a Dropbox
 //!   `id:`; for `WebDAV` the href relative to the account root). An [`Item`]
@@ -45,10 +35,6 @@
 //! - **Unofficial APIs say so.** A provider built on an undocumented API
 //!   (`iCloud` Drive's web API) declares [`Support::BestEffort`], and the UI
 //!   labels it.
-//!
-//! The `conformance` suite (feature `conformance`) checks any provider
-//! against an in-process fake, a real server in a container, or a live
-//! account, unchanged.
 
 #![allow(
     clippy::missing_errors_doc,
@@ -111,12 +97,10 @@ impl Revision {
     }
 }
 
-/// A position in a provider's change feed. Opaque; persisted by the daemon.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Cursor(pub String);
 
-/// Content hash algorithms providers report.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HashAlgorithm {
@@ -125,10 +109,8 @@ pub enum HashAlgorithm {
     Sha256,
     /// Dropbox `content_hash` (SHA-256 over 4 MiB block hashes).
     DropboxContentHash,
-    /// `OneDrive` `quickXorHash`.
     QuickXor,
     Blake3,
-    /// Anything else, named as the provider names it.
     Other(String),
 }
 
@@ -140,11 +122,9 @@ pub struct ContentHash {
     pub value: String,
 }
 
-/// An export format of a provider-native document.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ExportFormat {
     pub mime: String,
-    /// Extension without the dot, e.g. `"pdf"`, `"docx"`.
     pub extension: String,
 }
 
@@ -158,7 +138,6 @@ pub struct NativeDocument {
     /// metadata consumers. The tree uses the preferred Office export suffix
     /// instead, or leaves unsupported native document names unadorned.
     pub link_extension: String,
-    /// Where the provider's editor opens it.
     pub web_url: Option<String>,
     pub exports: Vec<ExportFormat>,
 }
@@ -170,11 +149,9 @@ pub enum ItemKind {
     Native(NativeDocument),
 }
 
-/// Metadata of one remote item.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Item {
     pub id: ItemId,
-    /// Parents by id. Empty only for the root. Drive items may have several.
     pub parents: Vec<ItemId>,
     /// The provider's display name. Not unique among siblings on every
     /// provider; [`tree::Tree`] makes the projected names unique.
@@ -208,12 +185,9 @@ impl Item {
     }
 }
 
-/// How the daemon learns about remote changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChangeFeed {
-    /// [`CloudSource::changes`] returns pages from a cursor.
     Cursor,
-    /// No feed: walk [`CloudSource::list`], comparing revisions.
     Poll,
 }
 
@@ -224,14 +198,11 @@ pub enum Notify {
     None,
     /// [`CloudSource::wait`] holds a request open until something changes.
     LongPoll,
-    /// [`CloudSource::wait`] returns on a pushed notification.
     Push,
 }
 
-/// How far a provider's behaviour is backed by a documented API.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Support {
-    /// A documented, stable API.
     Official,
     /// An undocumented API that may change without notice (`iCloud` Drive's
     /// web API). Shown as such; failures are expected to need updates.
@@ -256,13 +227,10 @@ pub struct Capabilities {
     /// [`CloudSource::revisions`], [`CloudSource::read_revision`] and
     /// [`CloudSource::restore_revision`] work.
     pub revisions: bool,
-    /// Hashes the provider reports on items.
     pub hashes: Vec<HashAlgorithm>,
     pub share_links: bool,
     pub quota: bool,
-    /// Delete moves to a provider trash instead of removing.
     pub trash: bool,
-    /// [`UploadSession::state`] survives a restart.
     pub resumable_upload: bool,
     /// Preferred bytes per [`UploadSession::write_chunk`]; a single chunk
     /// for providers without upload sessions (`u64::MAX`).
@@ -271,11 +239,9 @@ pub struct Capabilities {
     /// provider still returns only the requested range, but pays for the
     /// skipped prefix.
     pub range_reads: bool,
-    /// Writes and deletes honour a [`Revision`] precondition.
     pub conditional_writes: bool,
     pub multiple_parents: bool,
     pub duplicate_names: bool,
-    /// Names differing only in case are the same item.
     pub case_insensitive: bool,
     pub native_documents: bool,
 }
@@ -305,48 +271,38 @@ impl Capabilities {
     }
 }
 
-/// One entry of a change page.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(
     clippy::large_enum_variant,
     reason = "pages are short-lived vectors; boxing every item costs more than the padding"
 )]
 pub enum Change {
-    /// The item is new or its metadata changed.
     Upsert(Item),
-    /// The item is gone (deleted or no longer visible to this account).
     Remove(ItemId),
 }
 
-/// One page of a cursor change feed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChangePage {
     pub changes: Vec<Change>,
-    /// Where the next call continues.
     pub cursor: Cursor,
-    /// More pages are available now; call again without waiting.
     pub has_more: bool,
     /// This page begins a full enumeration (first call, or the old cursor
     /// expired). Items not upserted before `has_more` turns false are gone.
     pub reset: bool,
 }
 
-/// The outcome of [`CloudSource::wait`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Wait {
     Changed,
     /// Nothing changed before the timeout; wait again.
     Idle,
-    /// The server asks to wait this long before the next request.
     Backoff(Duration),
 }
 
-/// A streaming body of an item or a range of it.
 pub struct Download {
     /// Exactly the bytes of `range`.
     pub body: Box<dyn Read + Send>,
     pub range: Range<u64>,
-    /// Total size of the item when the server said.
     pub total: Option<u64>,
     /// The revision the bytes belong to, when the server said.
     pub revision: Option<Revision>,
@@ -362,7 +318,6 @@ impl fmt::Debug for Download {
     }
 }
 
-/// Where an upload goes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UploadTarget {
     /// Replace an existing file's body. With `expect`, the write fails with
@@ -387,17 +342,13 @@ pub struct UploadState(pub String);
 pub trait UploadSession: Send {
     /// Where the next chunk starts: the bytes the server has committed.
     fn offset(&self) -> u64;
-    /// State to resume from after a restart, for resumable sessions.
     fn state(&self) -> Option<UploadState>;
-    /// Send the next `len` bytes, read from `data`.
     fn write_chunk(&mut self, data: Box<dyn Read + Send>, len: u64) -> Result<()>;
     /// Commit the upload once every byte was written.
     fn finish(self: Box<Self>) -> Result<Item>;
-    /// Discard the session and whatever it staged.
     fn abort(self: Box<Self>) -> Result<()>;
 }
 
-/// One historic version of a file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RevisionInfo {
     pub revision: Revision,
@@ -412,7 +363,6 @@ pub struct Quota {
     pub total: Option<u64>,
 }
 
-/// A credential for one request. Zeroized on drop.
 pub enum Credential {
     Basic {
         username: String,
@@ -476,7 +426,6 @@ impl Clone for Credential {
     }
 }
 
-/// Hands a source the credential of its one account.
 pub trait CredentialSource: Send + Sync {
     /// The current credential. [`Error::Unauthorized`] when there is none
     /// (signed out, disabled, removed).
@@ -504,7 +453,6 @@ pub fn is_secure_endpoint(endpoint: &str) -> bool {
     url.host().is_some() && (url.scheme() == "https" || (url.scheme() == "http" && loopback))
 }
 
-/// A fixed credential, for tests and servers without refresh.
 pub struct StaticCredential(pub Credential);
 
 impl CredentialSource for StaticCredential {
@@ -519,10 +467,8 @@ impl CredentialSource for StaticCredential {
 /// secrets or response bodies.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// The server could not be reached.
     #[error("the server is unreachable")]
     Offline,
-    /// The credential was missing or rejected.
     #[error("sign-in required")]
     Unauthorized,
     #[error("access denied")]
@@ -534,10 +480,8 @@ pub enum Error {
     Conflict { current: Option<Revision> },
     #[error("an item with that name already exists")]
     AlreadyExists,
-    /// The change cursor is no longer valid; start a full enumeration.
     #[error("the change cursor expired")]
     CursorExpired,
-    /// The upload session is gone; start the upload again.
     #[error("the upload session expired")]
     SessionExpired,
     /// The server asks to slow down. One policy for every provider
@@ -551,12 +495,10 @@ pub enum Error {
     InsufficientStorage,
     #[error("the response exceeds the size limit")]
     TooLarge,
-    /// The provider or this server does not offer the operation.
     #[error("not supported: {0}")]
     Unsupported(&'static str),
     #[error("invalid server response: {0}")]
     InvalidResponse(&'static str),
-    /// Any other HTTP status.
     #[error("the server answered {0}")]
     Status(u16),
     #[error(transparent)]
@@ -588,12 +530,10 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 pub trait CloudSource: Send + Sync {
     fn capabilities(&self) -> Capabilities;
 
-    /// The account's root folder.
     fn root(&self) -> ItemId;
 
     fn stat(&self, id: &ItemId) -> Result<Item>;
 
-    /// The direct children of a folder.
     fn list(&self, folder: &ItemId) -> Result<Vec<Item>>;
 
     /// The next page of the change feed after `cursor`; from the beginning
@@ -623,7 +563,6 @@ pub trait CloudSource: Send + Sync {
     /// Start an upload of `size` bytes.
     fn begin_upload(&self, target: UploadTarget, size: u64) -> Result<Box<dyn UploadSession>>;
 
-    /// Continue a session from [`UploadSession::state`].
     fn resume_upload(&self, state: &UploadState) -> Result<Box<dyn UploadSession>> {
         let _ = state;
         Err(Error::SessionExpired)
@@ -641,10 +580,8 @@ pub trait CloudSource: Send + Sync {
         expect: Option<&Revision>,
     ) -> Result<Item>;
 
-    /// Delete (to the provider trash when [`Capabilities::trash`]).
     fn delete(&self, id: &ItemId, expect: Option<&Revision>) -> Result<()>;
 
-    /// Historic versions, newest first.
     fn revisions(&self, id: &ItemId) -> Result<Vec<RevisionInfo>> {
         let _ = id;
         Err(Error::Unsupported("revisions"))
@@ -660,13 +597,11 @@ pub trait CloudSource: Send + Sync {
         Err(Error::Unsupported("revisions"))
     }
 
-    /// Make a historic version current again.
     fn restore_revision(&self, id: &ItemId, revision: &Revision) -> Result<Item> {
         let _ = (id, revision);
         Err(Error::Unsupported("revisions"))
     }
 
-    /// Export a provider-native document.
     fn export(&self, id: &ItemId, format: &ExportFormat) -> Result<Download> {
         let _ = (id, format);
         Err(Error::Unsupported("export"))
@@ -697,7 +632,6 @@ pub fn upload(
     session.finish()
 }
 
-/// Write the remaining chunks of `session` up to `size`.
 pub fn drive(
     session: &mut dyn UploadSession,
     size: u64,

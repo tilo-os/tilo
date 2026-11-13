@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use tilo_seal::{Context, Label, SymmetricKey, envelope};
 use zeroize::Zeroizing;
 
-/// Provider identity without account credentials.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Provider {
     #[default]
@@ -70,13 +69,10 @@ pub fn group_hints(hints: Vec<AccountHint>) -> Vec<AccountHint> {
 
 const MAX_HINTS: usize = 32;
 const MAX_FIELD_BYTES: usize = 2048;
-// JSON can double every permitted byte through quote/backslash escaping.
 const MAX_PLAINTEXT_BYTES: usize = MAX_HINTS * (MAX_FIELD_BYTES * 4 + 256) + 64;
 const MAX_SEALED_BYTES: usize = MAX_PLAINTEXT_BYTES + 56;
 const DOMAIN: &[u8] = b"tilo-installer/online-account-hints/v1\0";
 
-/// Deliberately contains neither plaintext nor a source identifier, and has no
-/// serialization or debug implementation. Parsing does not authenticate it.
 #[derive(Clone)]
 pub struct SealedHints(Vec<u8>);
 
@@ -121,7 +117,6 @@ impl SealedHints {
     }
 }
 
-// Local wire types keep serde off the form's provider and decrypted hint types.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WireHints {
@@ -197,7 +192,6 @@ fn valid_fields(email: &str, server: &str) -> bool {
         })
 }
 
-/// Encrypt suggestions under a local key and the explicit selection generation.
 pub fn seal(
     key: &SymmetricKey,
     source: &str,
@@ -236,8 +230,6 @@ pub fn seal(
     .map_err(|_| HintsError::Sealing)
 }
 
-/// Authenticate before parsing; reject the whole payload rather than truncating
-/// or filtering it. Unknown/duplicate fields and trailing JSON are rejected.
 pub fn open(
     key: &SymmetricKey,
     source: &str,
@@ -295,7 +287,6 @@ impl PasswordHints {
     }
 }
 
-/// Seal the canonical hint wire format for a later live session.
 pub fn seal_password(
     password: &[u8],
     source: &str,
@@ -339,7 +330,6 @@ pub fn seal_password(
     .map_err(|_| HintsError::Sealing)
 }
 
-/// Authenticate offline suggestions before presenting them for live sign-in.
 pub fn open_password(
     password: &[u8],
     source: &str,

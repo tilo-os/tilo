@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.policy.check_dev_overrides_contract import audit
+from tools.policy.check_dev_overrides_contract import audit, unread_flags
 
 
 class DevOverridesContractTests(unittest.TestCase):
@@ -45,6 +45,70 @@ class DevOverridesContractTests(unittest.TestCase):
             self.assertIn("Fix:", message)
         with self.subTest(phase='repository production containerfiles are clean'):
             self.assertEqual([str(v) for v in audit()], [])
+
+    def test_the_repository_documents_only_controls_something_reads(self):
+        self.assertEqual([str(flag) for flag in unread_flags()], [])
+
+
+def documented(files: dict[str, str]) -> list[str]:
+    """The flags the page in `files` documents that nothing in the tree reads."""
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        doc = root / "docs" / "performance-flags.md"
+        doc.parent.mkdir(parents=True)
+        doc.write_text(files.pop("docs/performance-flags.md"), encoding="utf-8")
+        for name, text in files.items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        return [flag.flag for flag in unread_flags(root, doc)]
+
+
+PAGE = """| Variable | Default | Effect |
+| -------- | ------- | ------ |
+| `TILO_READ` | off | read by the runtime |
+| `TILO_EXPORTED` | off | a launcher hands it on |
+| `TILO_SHELL` | off | a script reads it |
+| `TILO_PYTHON` | off | a harness reads it |
+| `TILO_PASSED_ONLY` | off | a harness hands it on |
+"""
+
+
+class DocumentedFlagTests(unittest.TestCase):
+    def test_a_flag_the_runtime_reads_passes(self):
+        self.assertEqual(documented({
+            "docs/performance-flags.md": "`TILO_READ`\n",
+            "crates/ui/src/env.rs": 'let grade = std::env::var("TILO_READ");\n',
+        }), [])
+
+    def test_a_flag_only_a_launcher_exports_is_reported(self):
+        self.assertEqual(documented({
+            "docs/performance-flags.md": "| `TILO_EXPORTED` | off | nothing reads it |\n",
+            "dist/session/run": "#!/bin/sh\nexport TILO_EXPORTED=1\n",
+        }), ["TILO_EXPORTED"])
+
+    def test_a_flag_a_script_expands_passes(self):
+        self.assertEqual(documented({
+            "docs/performance-flags.md": "| `TILO_SHELL` | 800x600 | a script reads it |\n",
+            "dist/dev/session.sh": 'size=${TILO_SHELL:-800x600}\n',
+        }), [])
+
+    def test_a_flag_a_harness_reads_passes_and_one_it_only_passes_on_does_not(self):
+        files = {
+            "docs/performance-flags.md": PAGE,
+            "crates/ui/src/env.rs": 'let read = std::env::var("TILO_READ");\n'
+                                    'let size = std::env::var("TILO_HEADLESS_SIZE");\n',
+            "dist/dev/session.sh": 'size=${TILO_SHELL:-800x600}\n',
+            "scripts/bench.py": 'import os\n'
+                                'hz = os.environ.get("TILO_PYTHON", "60")\n'
+                                'env = {"TILO_PASSED_ONLY": str(hz)}\n',
+        }
+        self.assertEqual(documented(files), ["TILO_EXPORTED", "TILO_PASSED_ONLY"])
+
+    def test_the_page_naming_a_flag_is_never_its_reader(self):
+        self.assertEqual(documented({
+            "docs/performance-flags.md": "`TILO_READ` and again `TILO_READ`\n",
+        }), ["TILO_READ"])
 
 
 if __name__ == "__main__":

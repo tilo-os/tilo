@@ -397,11 +397,15 @@ async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
             base.view = None;
             let (shape_id, template) = ([5; SHAPE_ID_BYTES], [6; SHAPE_ID_BYTES]);
             let resources = ["workspace:a", "workspace:b", "workspace:c"];
+            // The words naming the resource name the label it is published with.
+            let named = |text: &str, label: &str| text.replace(&base.resource_label, label);
             let expanded = |resource: &str, label: &str| runtime_collab::ExportedAction {
                 state: tilo_actions::ActionState::default(),
                 resource: resource.into(),
                 resource_label: label.into(),
                 semantic_identity: None,
+                action_label: named(&base.action_label, label),
+                description: base.description.as_deref().map(|text| named(text, label)),
                 ..base.clone()
             };
             let resource =

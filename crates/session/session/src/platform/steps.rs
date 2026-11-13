@@ -6,11 +6,12 @@
 //! doors answer it (the native session's door queue, the page's own).
 
 use tilo_actions::ActionAddress;
-use tilo_actions::remote::Completer;
+use tilo_actions::remote::{ActionHostError, Completer};
 
 /// A step of the session's own actions, answered on its pass.
 pub(crate) trait SessionSteps: Send + Sync {
-    /// Run `address` as `actor` with `slot` (its arguments in the slot form the broker carries):
+    /// Run `address` as `actor` with `slot` (its arguments in the slot form the broker carries),
+    /// as a step of `run` when its invocation names one:
     /// completed on the session's pass, which is where the arrangement and the windows are. The
     /// answer is `None` for a step the session accepted and carries on with.
     ///
@@ -23,6 +24,7 @@ pub(crate) trait SessionSteps: Send + Sync {
         address: ActionAddress,
         slot: Option<String>,
         beside: String,
-        done: Completer<Result<Option<tilo_actions::ActionOutput>, String>>,
+        run: Option<tilo_actions::WorkGroup>,
+        done: Completer<Result<Option<tilo_actions::ActionOutput>, ActionHostError>>,
     );
 }

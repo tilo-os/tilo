@@ -46,6 +46,26 @@ pub enum Invocation {
 }
 
 impl Invocation {
+    /// An action's arguments as its subject's door takes them, by name, as any caller gives them
+    /// ([`crate::value::to_argument`]): the subject itself and every option left out are not sent.
+    #[must_use]
+    pub fn door_arguments(&self) -> serde_json::Map<String, serde_json::Value> {
+        let Self::Action { args, subject, .. } = self else {
+            return serde_json::Map::new();
+        };
+        let subject = subject.as_ref().map(ResourceRef::id_string);
+        args.iter()
+            .filter(|(_, value)| match value {
+                Value::Ref(r) => subject.as_ref() != Some(&r.target.id_string()),
+                value => !matches!(value, Value::Opt(None)),
+            })
+            .map(|(name, value)| {
+                let json = crate::value::to_argument(value).unwrap_or_default();
+                (name.clone(), json)
+            })
+            .collect()
+    }
+
     /// The app whose node decides it.
     #[must_use]
     pub fn app(&self) -> &str {
@@ -102,6 +122,10 @@ pub enum Invoked {
     Refused(String),
     /// Policy asks the person first: the program stops here and its step waits on the answer.
     Asks(String),
+    /// It went to the app that holds the resource, which runs it and answers there: what it
+    /// changes comes back as that app's readings. The code goes on without its result, as the
+    /// result type's empty value.
+    Sent,
 }
 
 /// Where a runtime sends the changes a program makes.

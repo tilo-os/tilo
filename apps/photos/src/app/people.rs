@@ -1,5 +1,5 @@
-//! The People surface: its cards and controls, how they are laid out and
-//! painted, and what choosing one does.
+//! The People surface: its cards and controls, how they are laid out and painted, and what choosing
+//! one does.
 
 use crate::actions::PhotosEffect;
 use crate::model::PhotoLibrary;
@@ -19,7 +19,6 @@ use super::{
 };
 
 impl PeopleControl {
-    /// A person or a suggestion is opened by its card, not by a button.
     pub(super) fn is_card(&self) -> bool {
         matches!(
             self.intent,
@@ -29,22 +28,14 @@ impl PeopleControl {
 }
 
 impl Photos {
-    /// Device-local People controller for a platform-specific face pipeline
-    /// or the shared People management surface. It intentionally exposes no
-    /// document reference: local clusters and their evidence never sync.
     pub fn people_controller(&self) -> &crate::people::PeopleController {
         &self.people_controller
     }
 
-    /// Mutable local People controller. Callers use this for explicit opt-in,
-    /// review, hiding, merging, and deletion of private clusters.
     pub fn people_controller_mut(&mut self) -> &mut crate::people::PeopleController {
         &mut self.people_controller
     }
 
-    /// Commit a reviewed cluster's compact, user-approved membership through
-    /// the library's verb. The local cluster stays local; the
-    /// action contains only the selected display name and stable photo ids.
     pub fn approve_people_cluster(&mut self, cluster_id: &str) -> bool {
         let Some(membership) = self.people_controller.approve_membership(cluster_id) else {
             self.notice = Some(tr("photos-people-confirm-first"));
@@ -128,13 +119,10 @@ impl Photos {
                 button = button.role(ButtonRole::Destructive);
             }
             if matches!(intent, PeopleIntent::Scan) && !recognition_enabled {
-                // Say why it can't be pressed, not just grey it out.
                 button = button
                     .with_enabled(false)
                     .tooltip(tr("photos-people-scan-needs-recognition"));
             }
-            // The width is the button's own measure, read back from the
-            // layout pass that places it.
             self.people_controls.push(PeopleControl {
                 intent,
                 label,
@@ -166,8 +154,6 @@ impl Photos {
                     false,
                 );
             }
-            // A red "Delete local face data" with nothing to delete only
-            // alarms; it shows once this device holds face data.
             let has_face_data = self.people_controller.all_clusters().next().is_some()
                 || !self.people_approved.is_empty();
             if has_face_data || self.people_delete_confirm {
@@ -348,7 +334,6 @@ impl Photos {
                 .unwrap_or_default(),
         };
         self.people_selection = Some(selection);
-        // Into a person's detail: a drill in (`ui::motion::Drill`).
         self.people_detail_transition.show(
             true,
             ui::motion::Drill::SPEC,
@@ -525,20 +510,14 @@ impl Photos {
         self.people_control_signature.clear();
     }
 
-    /// Pose one real local suggestion for the deterministic visual gallery.
-    /// The named cluster must already exist; this never invents recognition
-    /// output or runs on a live launch.
     pub fn show_people_suggestion_for_shot(&mut self, cluster_id: &str) {
         self.show_people();
         if self.people_controller.cluster(cluster_id).is_some() {
             self.select_people_item(PeopleSelection::Suggestion(cluster_id.to_owned()));
-            // Acceptance shots exercise the settled visual state. Live entry
-            // still starts the shared transition in `select_people_item`.
             self.people_detail_transition = ui::motion::Presence::opened();
         }
     }
 
-    /// The side and gap of the People surface's cards at `width`.
     fn people_grid(theme: &Theme, width: f64) -> (usize, f64, f64) {
         let gap = f64::from(theme.tokens.spacing.rhythm.section);
         let extent = ui::widget::MediaSize::Small.extent(theme);
@@ -550,11 +529,6 @@ impl Photos {
         )
     }
 
-    /// Place the People surface: the recognition section and its controls,
-    /// then the people you named and the suggestions to review, which scroll
-    /// under the section; the photographs, the name field and the decisions
-    /// in a person's detail. Controls are placed with their measured widths,
-    /// so paint and hit-testing read the same rects.
     #[expect(
         clippy::too_many_lines,
         reason = "the overview and the detail are laid out in one pass so hit targets and paint agree"
@@ -583,9 +557,6 @@ impl Photos {
             y += heading + related;
             layout.recognition_text = Rect::new(frame.x0, y, frame.x1, y + body);
             y += body + sibling;
-            // The recognition controls lead the row; deleting the face data
-            // stands apart at its trailing end, or under them where the row
-            // has no room for it.
             let mut x = frame.x0;
             let mut row_y = y;
             for control in &mut self.people_controls {
@@ -614,10 +585,6 @@ impl Photos {
             }
             y = row_y + control_h + group;
 
-            // People and suggestions side by side where two lanes of cards
-            // fit, one above the other where they do not; both scroll in the
-            // rest of the column, laid out from its top and moved by the
-            // scroll offset afterwards.
             let lanes_top = y;
             let viewport = Rect::new(frame.x0, lanes_top, frame.x1, self.canvas_rect.y1);
             let extent = ui::widget::MediaSize::Small.extent(theme);
@@ -670,7 +637,6 @@ impl Photos {
                 }
                 lanes_bottom = lanes_bottom.max(y);
             }
-            // The last row's gap becomes the page's bottom margin.
             let content_h = lanes_bottom - group + f64::from(rhythm.section);
             self.people_scroll = self
                 .people_scroll
@@ -704,8 +670,6 @@ impl Photos {
                 .filter(|rect| rect.x1 <= frame.x1 + 0.5)
                 .collect();
             y += side + group;
-            // A named person's name is the header's title; a suggestion asks
-            // who it is, and merging says what is being merged.
             let titled = self.people_merge_mode
                 || matches!(self.people_selection, Some(PeopleSelection::Suggestion(_)));
             if titled {
@@ -750,9 +714,6 @@ impl Photos {
         self.people_layout = layout;
     }
 
-    /// The People surface: who you named and what this device suggests, as
-    /// media cards; one person's photographs and decisions in the detail.
-    /// It never paints a made-up suggestion when no face model is installed.
     pub(super) fn draw_people(
         &mut self,
         scene: &mut Scene,
@@ -765,7 +726,6 @@ impl Photos {
         self.metadata_filter_cards.clear();
         let layout = self.people_layout.clone();
         let frame = self.content_frame(theme);
-        // What does not fit stays inside the content column.
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -953,7 +913,6 @@ impl Photos {
             None,
         );
 
-        // The cards scroll under the recognition section.
         let lanes = layout.lanes;
         ctx.scene.push_layer(
             vello::peniko::Fill::NonZero,

@@ -14,7 +14,6 @@ pub const APP_TITLE: &str = "Counter";
 
 pub mod locales;
 
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 
 /// The largest count, either way. Keeping it far below `i64::MAX` gives
@@ -44,7 +43,7 @@ impl Counter {
 /// `#[action]` method is a verb: its doc comment is its label, its parameters
 /// are typed and described with `#[param]`, and returning `Err` refuses it
 /// without changing anything.
-#[resource(kind = "example.counter", label = "Counter")]
+#[resource(kind = "example.counter")]
 impl Counter {
     /// Add an amount to the count.
     #[action]
@@ -81,7 +80,7 @@ impl ResourceApp for App {
 
     /// How the palette, search and history name the open counter.
     fn label(counter: &Counter) -> String {
-        I18nManager::format("counter-label", &[("count", counter.count.into())])
+        crate::locales::CATALOG.t_args("counter-label", &[("count", counter.count.into())])
     }
 
     /// Apps start empty. A screenshot that needs a busier state stages it with
@@ -110,10 +109,7 @@ impl ResourceApp for App {
         let step = |id: &str, label: &str, amount: i64| {
             actions.bind_invocation(Button::new(id, label), Counter::ADD.with(amount))
         };
-        let reset = cx.button(
-            crate::locales::keys::COUNTER_RESET_BUTTON,
-            Counter::RESET.invoke(),
-        );
+        let reset = cx.button("counter-reset-button", Counter::RESET.invoke());
         Box::new(ui::column![
             Text::new("counter-heading").with_role(TextRole::Title),
             count,

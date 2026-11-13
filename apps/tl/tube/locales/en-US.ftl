@@ -136,11 +136,12 @@ d-dmm6f63t = Watched
 d-omff5ciz = Progress
     .doc = How far in they were, as a share of its length; zero when they watched it to the end.
 
-d-thwdswkk = You tube
+# refined
+d-thwdswkk = YouTube
     .doc = What the client holds: the channels, videos and playlists the service answered with, the person's subscriptions, their watch history, and how the last search stands.
     .noun = { $count ->
-        [one] you tube
-       *[other] you tubes
+        [one] channel
+       *[other] channels
     }
 
 d-olrung72 = Title
@@ -168,20 +169,37 @@ d-zjw3anaz = Search trouble
 d-nnvco6w3 = Feed state
     .doc = How the subscriptions feed stands: `loading`, `done`, `failed` or empty.
 
-d-hycswkws = Feed trouble
-    .doc = Why the feed could not be fetched; empty while it went through.
+d-r3ksw6bn = Trouble
+    .doc = Why the client is not in step now: YouTube cannot be reached, or what it said could not be saved; empty while it is.
+
+d-qv7t2mza = Online
+    .doc = Whether YouTube answered the last time it was asked.
+
+d-thwdswkk-filter-online = Online
 
 d-tmam46un = Subscribe
     .doc = Subscribes to the channel, or unsubscribes: the button says which it will do.
 
+d-tmam46un-subscribed = Subscribed
+
 d-hcgvcroq = Subscribe
     .doc = Subscribes to the channel, or takes the subscription back.
+    .w-unsubscribe = Unsubscribe
+    .w-subscribe = Subscribe
 
 d-weyz2uyl = Like
     .doc = Likes the video, or takes the like back.
+    .w-unlike = Unlike
+    .w-like = Like
+
+d-weyz2uyl-liked = Liked
 
 d-yw4tuoq4 = Watch later
     .doc = Keeps the video to watch later, or takes it off the list.
+    .w-remove-from-watch-later = Remove from Watch later
+    .w-watch-later = Watch later
+
+d-yw4tuoq4-saved = On the Watch later list
 
 d-6ux63onw = Play
     .doc = Plays the video, whether or not it was played before.
@@ -192,6 +210,8 @@ d-s334bmn6 = Resume
 d-jxokfijg = Progress
     .doc = Records how far into the video the person is, and that they watched it now: it moves to the front of the history, and asks the service for the address its bytes play from when that is not known yet.
 
+d-jxokfijg-at = At
+
 d-oqumfxkj = Delete from history
     .doc = Takes one video out of the history.
 
@@ -200,9 +220,13 @@ d-wzt3qvyb = Delete history
 
 d-6lgqby4s = Search
     .doc = Searches YouTube: the service answers with channels, playlists and videos, written where the search view lists them.
+    .w-type-something-to-search-for = Type something to search for
+
+d-6lgqby4s-query = Query
 
 d-vhf33pa7 = Leave search
     .doc = Leaves the search the feed is showing for the place the person chose: the results stay where the service wrote them (found again by the query that found them), and the client shows the place chosen.
+    .w-no-search-is-showing = No search is showing
 
 d-hpjdxg6k = Refresh
     .doc = Asks the service for the newest videos of each subscribed channel: what the subscriptions feed shows.
@@ -210,11 +234,16 @@ d-hpjdxg6k = Refresh
 d-wx26izlg = Refresh
     .doc = Asks the service for the channel's videos.
 
-d-khblapap = Trending
+d-khblapap = Refresh trending
     .doc = Asks the service for the videos it lists as trending.
 
 d-yc4rjoeg = Play again
     .doc = Plays the video a history entry names, from where the person left off.
+
+d-yc4rjoeg-h = H
+
+d-qgtk64v3 = Item clock
+    .w-live = Live
 
 d-5ozzrcey = Toggle subscription~present
 
@@ -234,17 +263,16 @@ d-mufcicuu = Feed
     .w-liked-videos = Liked videos
     .w-history = History
     .w-nothing-kept-for-later = Nothing kept for later
-    .w-the-videos-you-keep-are-here = The videos you keep are here
     .w-nothing-liked-yet = Nothing liked yet
-    .w-the-videos-you-like-are-here = The videos you like are here
     .w-nothing-trending-yet = Nothing trending yet
-    .w-ask-youtube-what-is-trending = Ask YouTube what is trending
+    .w-refresh-trending = Refresh trending
     .w-no-subscriptions-yet = No subscriptions yet
-    .w-a-channel-s-page-subscribes-to = A channel's page subscribes to it, and its newest videos arrive here
     .w-nothing-new-yet = Nothing new yet
-    .w-ask-youtube-for-the-newest-videos = Ask YouTube for the newest videos of the channels you follow
     .w-refresh = Refresh
-    .w-youtube-could-not-be-reached = YouTube could not be reached
+    .w-can-t-save-what-fetched = Can't save what { $name } fetched
+    .w-can-t-reach = Can't reach { $name }
+    .w-last-fetched = { $reason }. Last fetched { $fetched }
+    .w-try-again = Try again
 
 d-dfz6u5sa = Video grid
 
@@ -267,7 +295,6 @@ d-yf5l4ysw = Watched page
 
 d-lhrpz5jd = History list
     .w-nothing-watched-yet = Nothing watched yet
-    .w-the-videos-you-watch-are-listed = The videos you watch are listed here
 
 d-yh23kjna = Channel page
     .w-unsubscribe = Unsubscribe
@@ -278,7 +305,6 @@ d-yh23kjna = Channel page
     .w-about = About
     .w-videos-2 = Videos
     .w-no-videos-here-yet = No videos here yet
-    .w-ask-youtube-for-this-channel-s = Ask YouTube for this channel's videos
 
 d-w7mpbzm4 = Video page
     .w-play = Play
@@ -294,7 +320,6 @@ d-w7mpbzm4 = Video page
 d-eijjevst = Playlist page
     .w-videos = { $video_count } videos
     .w-nothing-here-yet = Nothing here yet
-    .w-the-playlist-s-videos-arrive-when = The playlist's videos arrive when it is opened
 
 d-z642pnnw = Video row
 

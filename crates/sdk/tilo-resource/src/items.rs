@@ -257,7 +257,8 @@ type Cached = HashMap<Id, (String, u64, tilo_actions::ResourceSpec)>;
 
 thread_local! {
     /// Item resources built before, by resource type and collection, then
-    /// item: rebuilt only when the item's label or the app's code changed.
+    /// item: rebuilt only when the item's label, the app's code or the
+    /// language its actions' words are read in changed.
     static BUILT: RefCell<HashMap<(TypeId, String), Cached>> = RefCell::new(HashMap::new());
 }
 
@@ -277,7 +278,7 @@ fn item_resource(
 }
 
 /// The item resource `build` makes, from the cache of the resource type
-/// `kind` when it was built for the same label and code.
+/// `kind` when it was built for the same label, code and language.
 fn cached_item(
     kind: TypeId,
     field: &str,
@@ -285,7 +286,7 @@ fn cached_item(
     label: &str,
     build: &dyn Fn() -> tilo_actions::ResourceSpec,
 ) -> tilo_actions::ResourceSpec {
-    let epoch = crate::resource::type_epoch();
+    let epoch = crate::resource::words_epoch();
     let key = (kind, field.to_owned());
     let cached = BUILT.with(|built| {
         built
@@ -967,10 +968,11 @@ fn bound_type(decl: &Declaration, values: &[(String, serde_json::Value)]) -> Arc
     let params = unbound_params(&decl.params, values);
     let all = decl.params.clone();
     let build = Arc::clone(&decl.build);
+    let label = decl.shown_label();
     let spec = ActionSpec::typed_on(
         decl.id,
-        decl.label.clone(),
-        decl.label.clone(),
+        label.clone(),
+        label,
         ExecutionLocus::ClientLocal,
         params,
         move |target, args| {
@@ -982,7 +984,9 @@ fn bound_type(decl: &Declaration, values: &[(String, serde_json::Value)]) -> Arc
                 }
             }
             let action = match ActionArgs::bind_json(&all, &arguments) {
-                Ok(args) => build(&args, crate::resource::origin_now_ms()),
+                Ok(args) => {
+                    crate::content::invoking(|| build(&args, crate::resource::origin_now_ms()))
+                }
                 Err(error) => Err(error.to_string()),
             };
             crate::resource::encode_built(action)

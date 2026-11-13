@@ -8,10 +8,7 @@ use std::{io, sync::atomic::AtomicBool};
 mod native;
 #[cfg(target_os = "linux")]
 pub use native::{MediaFilesystemGrant, check_writable_directory};
-/// Check whether the descriptor's filesystem is writable on a supported host.
-///
-/// # Errors
-/// Always returns [`io::ErrorKind::Unsupported`] on this platform.
+/// Always [`io::ErrorKind::Unsupported`] on this platform.
 #[cfg(not(target_os = "linux"))]
 pub fn check_writable_directory(_: &std::fs::File) -> io::Result<()> {
     Err(unsupported())
@@ -23,27 +20,18 @@ pub struct MediaFilesystemGrant {
 }
 #[cfg(not(target_os = "linux"))]
 impl MediaFilesystemGrant {
-    /// Resolve a mounted filesystem grant.
-    ///
-    /// # Errors
-    /// Always returns [`io::ErrorKind::Unsupported`] on this platform.
+    /// Always [`io::ErrorKind::Unsupported`] on this platform.
     pub fn resolve(_: &TargetDrive, _: &Path) -> io::Result<Self> {
         Err(unsupported())
     }
-    /// Revalidate a filesystem grant.
-    ///
-    /// # Errors
-    /// Always returns [`io::ErrorKind::Unsupported`] on this platform.
+    /// Always [`io::ErrorKind::Unsupported`] on this platform.
     pub fn validate(&self) -> io::Result<()> {
         Err(unsupported())
     }
     pub fn root_path(&self) -> &Path {
         match self._private {}
     }
-    /// Check a descriptor against the granted directory.
-    ///
-    /// # Errors
-    /// Always returns [`io::ErrorKind::Unsupported`] on this platform.
+    /// Always [`io::ErrorKind::Unsupported`] on this platform.
     pub fn check_directory_identity(&self, _: &std::fs::File) -> io::Result<()> {
         Err(unsupported())
     }
@@ -55,14 +43,9 @@ fn unsupported() -> io::Error {
         "Mounted prepared media requires the native Linux media writer",
     )
 }
-/// Mount only the reviewed medium's unique EFI filesystem. Release only mounts
-/// created by this operation, after rechecking device and partition identity.
-///
-/// # Errors
-/// Returns an error for cancellation, changed or ambiguous media/partition
-/// identity, mount or grant validation failures, callback errors, or cleanup
-/// failures. Returns [`io::ErrorKind::Unsupported`] without the native Linux
-/// media writer feature.
+/// Mounts only the reviewed medium's unique EFI filesystem, and releases only mounts it created,
+/// after rechecking device and partition identity. Unsupported without the native Linux media
+/// writer feature.
 pub fn with_efi_filesystem<T>(
     target: &TargetDrive,
     cancel: &AtomicBool,
@@ -79,14 +62,8 @@ pub fn with_efi_filesystem<T>(
     }
 }
 
-/// Deliver through the authenticated migration partition. Formatting and reuse
-/// witness policy stay within the native actor, never a frontend callback.
-///
-/// # Errors
-/// Returns an error for cancellation, failed device/GPT attestation, incompatible
-/// partition geometry or filesystem, format/mount/witness failures, invalid
-/// grants, callback errors, or cleanup failures. Returns
-/// [`io::ErrorKind::Unsupported`] without the native Linux media writer feature.
+/// Delivers through the authenticated migration partition; formatting and reuse-witness policy stay
+/// in the native actor. Unsupported without the native Linux media writer feature.
 pub fn with_home_filesystem<T>(
     target: &TargetDrive,
     cancel: &AtomicBool,
@@ -102,15 +79,8 @@ pub fn with_home_filesystem<T>(
         Err(unsupported())
     }
 }
-/// Read an existing migration filesystem without formatting it, checking its
-/// binding against the expected partition and its stored reuse witness.
-///
-/// # Errors
-/// Returns an error without root privileges or an unmounted ext4 partition,
-/// or for cancellation, changed device/GPT or filesystem identity, missing or
-/// invalid reuse witnesses, mount or grant failures, callback errors, or cleanup
-/// failures. Returns [`io::ErrorKind::Unsupported`] without the
-/// native Linux media writer feature.
+/// Reads an existing migration filesystem without formatting it, checking its partition binding and
+/// stored reuse witness. Unsupported without the native Linux media writer feature.
 pub fn with_existing_home<T>(
     target: &TargetDrive,
     expected: &crate::media_model::MediaPartitionBinding,

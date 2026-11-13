@@ -1,6 +1,3 @@
-/// The native input observer across fixture reload, wheel + selection,
-/// logical-cursor tracking and the not-ready states — each phase on its own
-/// temp directory and harness.
 #[test]
 fn native_observer_tracks_fixture_reload_wheel_selection_and_pointer() {
     native_fixture_reloads_real_files_and_refuses_existing_directory();
@@ -13,7 +10,6 @@ fn native_fixture_reloads_real_files_and_refuses_existing_directory() {
     let temp = tempfile::tempdir().unwrap();
     let directory = temp.path().join("fixture");
     let manifest = crate::native_fixture::seed(&directory).unwrap();
-    // Independently derived from the documented name/kind byte encoding.
     assert_eq!(
         manifest["order_hash"],
         "b8b390ea86922b9297a211bf10ab47e3a9cff0c70b81a976448714323f35f863"
@@ -114,7 +110,6 @@ fn native_observer_follows_actual_wheel_and_selection() {
     assert_eq!(reversed["offset_y"], 0.0);
     assert_eq!(reversed["content_rect"], initial["content_rect"]);
     assert_eq!(reversed["selected_indices"], selected["selected_indices"]);
-    // The unscrolled first row lies below the 30px header at this fixed size.
     h.cursor(x, y);
     h.left_press();
     h.left_release();
@@ -145,7 +140,6 @@ fn native_pointer_observer_tracks_logical_cursor_and_survives_rebuild() {
         h.w.native_input_snapshot(&h.state.doc, &h.state.root)
             .unwrap();
     assert_eq!(snapshot["last_cursor"], serde_json::json!([500.0, 200.0]));
-    // Force the production content composition to replace the Scrollable.
     h.w.state().set_view_mode(crate::model::ViewMode::Grid);
     h.lay_out(1200.0, 720.0);
     let wheel = ui::synthetic_input::mouse_wheel(0.0, -3.0);
@@ -182,8 +176,6 @@ fn native_observer_is_not_ready_before_layout_or_on_load_error() {
     assert_eq!(snapshot["has_error"], true);
 }
 
-/// Each phase builds its own harness; `ACCESSIBILITY_BUILDS` is reset by the
-/// phase that counts it.
 #[test]
 fn control_presence_matches_inventory_without_materializing_files() {
     control_presence_real_files_scroll_skips_file_accessibility_but_inventory_keeps_it();

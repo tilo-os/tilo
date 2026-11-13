@@ -54,11 +54,7 @@ pub fn try_restored_component(
     notes::definition().instantiate(context, target, restore)
 }
 pub fn renderer() -> ui::TextRenderer {
-    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-        ui::font_catalog::checkout_root(),
-        "en-US",
-    );
-    ui::TextRenderer::with_font_catalog(&catalog).unwrap()
+    ui::font_catalog::fixture_renderer()
 }
 /// Mount `editor` in the production frame host `width` wide at its content
 /// height, the way a scrolling page lays its body out, with its top-left

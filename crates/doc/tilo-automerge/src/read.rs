@@ -11,7 +11,6 @@
 use automerge::{AutoCommit, ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value};
 use std::collections::BTreeMap;
 
-/// Typed readers for every [`ReadDoc`].
 pub trait ReadTyped: ReadDoc {
     fn str_at(&self, obj: &ObjId, prop: impl Into<Prop>) -> Option<String> {
         match self.get(obj, prop) {
@@ -23,7 +22,6 @@ pub trait ReadTyped: ReadDoc {
         }
     }
 
-    /// The integer at `prop` of `obj`, when it fits an `i64`.
     fn int_at(&self, obj: &ObjId, prop: impl Into<Prop>) -> Option<i64> {
         match self.get(obj, prop) {
             Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
@@ -35,7 +33,6 @@ pub trait ReadTyped: ReadDoc {
         }
     }
 
-    /// The integer at `prop` of `obj`, when it fits a `u64`.
     fn uint_at(&self, obj: &ObjId, prop: impl Into<Prop>) -> Option<u64> {
         match self.get(obj, prop) {
             Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
@@ -47,7 +44,6 @@ pub trait ReadTyped: ReadDoc {
         }
     }
 
-    /// The number at `prop` of `obj` as a float.
     #[allow(
         clippy::cast_precision_loss,
         reason = "document numbers read as floats are measures well below 2^53"
@@ -114,7 +110,6 @@ pub fn map_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
     doc.obj_at(obj, key, ObjType::Map)
 }
 
-/// Every string entry of the map `obj`, sorted by key; other values are skipped.
 pub fn str_entries(doc: &AutoCommit, obj: &ObjId) -> BTreeMap<String, String> {
     doc.keys(obj)
         .filter_map(|key| str_at(doc, obj, &key).map(|value| (key, value)))

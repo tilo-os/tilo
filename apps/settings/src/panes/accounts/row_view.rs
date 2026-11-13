@@ -1,9 +1,7 @@
 //! How one account row says what it is: the name and icon of its kind, the
 //! status chip, the sync line under it, and the menu of everything else to do
-//! with the account.
-//!
-//! The pane decides what an account holds and what may be done with it; this
-//! decides how one row puts that.
+//! with the account. The pane decides what an account holds and what may be
+//! done with it; this decides how one row puts that.
 
 use accounts::{AccountSyncHealth, AccountSyncStatus};
 
@@ -25,7 +23,6 @@ pub(super) fn kind_shown(kind: AccountKind) -> String {
     })
 }
 
-/// One entry of an account's menu: what it says and the row effect it runs.
 pub(super) struct AccountEntry {
     pub(super) label: String,
     pub(super) effect: AccountsEffect,
@@ -50,7 +47,6 @@ impl AccountEntry {
     }
 }
 
-/// Sync now, and pause or resume, for a mounted file account.
 pub(super) fn sync_entries(id: &str, paused: bool) -> [AccountEntry; 2] {
     let toggle = if paused {
         AccountEntry::new(
@@ -78,7 +74,6 @@ pub(super) fn sync_entries(id: &str, paused: bool) -> [AccountEntry; 2] {
     ]
 }
 
-/// The icon of an account's kind.
 pub(super) fn kind_icon(kind: AccountKind) -> ui::icons::Icon {
     use ui::icons::Icon;
     match kind {

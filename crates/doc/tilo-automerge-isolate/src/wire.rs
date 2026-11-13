@@ -23,9 +23,7 @@ use automerge::ChangeHash;
 use crate::engine::Key;
 use crate::{Applied, Dependencies};
 
-/// The first frame a worker sends, once confined and before reading anything.
 pub(crate) const READY: &[u8] = b"tilo-automerge-isolate 1";
-/// Replies are a few keys at most; anything larger is not a worker speaking.
 pub(crate) const MAX_REPLY_BYTES: u64 = 16 * 1024 * 1024;
 
 pub(crate) enum Prepare<'a> {
@@ -49,13 +47,10 @@ pub(crate) enum Request<'a> {
     Escape(Escape),
 }
 
-/// What [`Request::Escape`] tries.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Escape {
-    /// `open` a file that exists and anyone may read.
     Open,
-    /// Create a Unix socket.
     Socket,
 }
 
@@ -77,7 +72,6 @@ pub(crate) fn write_frame(out: &mut impl Write, payload: &[u8]) -> io::Result<()
     out.flush()
 }
 
-/// `None` at a clean end of input.
 pub(crate) fn read_frame(input: &mut impl Read, max: u64) -> io::Result<Option<Vec<u8>>> {
     let mut length = [0u8; 8];
     match input.read_exact(&mut length) {

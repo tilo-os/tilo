@@ -1,11 +1,10 @@
-//! A guest's network, end to end: a record that allows one host, a shell
-//! in a real guest, and what that shell can and cannot reach.
+//! A guest's network, end to end: a record that allows one host, a shell in a real guest, and
+//! what that shell can and cannot reach.
 //!
-//! The outside world is faked on loopback — a resolver that answers every
-//! name with one address, and a TCP server — and `pasta` maps that address
-//! to the host's loopback (`TILO_USH_EGRESS_MAP_HOST_LOOPBACK`), so the
-//! guest's connections really leave its namespace through the filter and
-//! `pasta`, without the internet.
+//! The outside world is faked on loopback — a resolver that answers every name with one
+//! address, and a TCP server — and `TILO_USH_EGRESS_MAP_HOST_LOOPBACK` maps that address to
+//! the host's loopback, so the guest's connections leave its namespace through the filter and
+//! `pasta` without the internet.
 
 #![allow(
     clippy::unwrap_used,
@@ -27,10 +26,8 @@ use ush::store::Store;
 
 use crate::serve_handoff::{RUNTIME, fixture_images, guest_unavailable, namespace_entry};
 
-/// Where the fake world is, as the guest sees it.
 const WORLD: &str = "192.0.2.10";
 
-/// A resolver on host loopback answering every A query with [`WORLD`].
 fn fake_resolver() -> SocketAddr {
     let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
     let addr = sock.local_addr().unwrap();
@@ -60,7 +57,6 @@ fn fake_resolver() -> SocketAddr {
     addr
 }
 
-/// A TCP server on host loopback that greets every connection.
 fn fake_server() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -72,7 +68,6 @@ fn fake_server() -> u16 {
     port
 }
 
-/// A store whose default environment allows `hosts`.
 fn store_allowing(dir: &Path, hosts: &[&str]) -> Store {
     let store = Store::at(dir.join("store"));
     store.ensure().unwrap();
@@ -105,8 +100,6 @@ fn run(dir: &Path, store: &Store, script: &str, env: &[(&str, String)]) -> Outpu
         fixture_images(&images).expect("the guest's fixture images");
     }
     let mut cmd = Command::new(tilo_test_env::package_binary!("tilo-ush"));
-    // bash in a guest of its own, as a command session runs it: `-c` would
-    // run ush's shell on the Tilo side, which starts no guest for `echo`.
     cmd.args(["run", "--", "/usr/bin/bash", "-c", script])
         .env(ush::store::STORE_ENV, store.root())
         .env("TILO_USH_IMAGES", &images)
@@ -131,10 +124,6 @@ fn network_unavailable() -> Option<String> {
     None
 }
 
-/// The guest reaches the host its record allows — by name, through the
-/// session's resolver — and nothing else: not an address literal, not a
-/// name nobody granted. `perm allow-host` takes effect in the running
-/// session, and `guard status` reports the enforcement it tested.
 #[test]
 fn a_guest_reaches_its_granted_host_and_nothing_else() {
     if let Some(reason) = network_unavailable() {
@@ -145,8 +134,6 @@ fn a_guest_reaches_its_granted_host_and_nothing_else() {
     let store = store_allowing(dir.path(), &["granted.test"]);
     let resolver = fake_resolver();
     let port = fake_server();
-    // Markers are printed by the guest; a subshell keeps a failed `exec`
-    // redirection from ending the script.
     let script = format!(
         "( exec 3<>/dev/tcp/{WORLD}/{port} ) 2>/dev/null && echo RAW_REACHED || echo RAW_REFUSED; \
          getent hosts denied.test >/dev/null && echo DENIED_RESOLVED || echo DENIED_NXDOMAIN; \
@@ -201,7 +188,6 @@ fn a_guest_reaches_its_granted_host_and_nothing_else() {
         stdout.contains(&format!("denied.test (granted) resolved to {WORLD}")),
         "guard status must test a granted host:\n{both}"
     );
-    // The grant is the record's, for the next session too.
     let env = Records::at(store.records_root())
         .load(DEFAULT_RECORD)
         .unwrap()
@@ -215,9 +201,6 @@ fn a_guest_reaches_its_granted_host_and_nothing_else() {
     );
 }
 
-/// When the kernel will not take the packet filter, a guest whose record
-/// grants hosts does not start — it never runs with an unfiltered network.
-/// One with nothing granted starts offline.
 #[test]
 fn a_guest_whose_hosts_cannot_be_enforced_does_not_start() {
     tilo_test_env::require_capability!(

@@ -1,6 +1,5 @@
-//! What the power settings found by search are set to, as the page reads
-//! them: the stored timers and actions, and what the hardware last
-//! reported.
+//! What the power settings found by search are set to, as the page reads them:
+//! the stored timers and actions, and what the hardware last reported.
 
 use super::{
     PowerPrefs, action_shown, area, blank_label, lock_label, profile_label, suspend_label,

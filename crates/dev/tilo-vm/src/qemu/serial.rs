@@ -4,8 +4,6 @@
 use regex::Regex;
 use serde::Serialize;
 
-/// The serial log as text: NULs, carriage returns and ANSI colour sequences
-/// removed, so `[  OK  ] Reached target ...` matches like a bare line.
 #[must_use]
 pub fn clean(raw: &[u8]) -> String {
     let text = String::from_utf8_lossy(raw);
@@ -16,7 +14,6 @@ pub fn clean(raw: &[u8]) -> String {
             '\0' | '\r' => {}
             '\u{1b}' if chars.peek() == Some(&'[') => {
                 chars.next();
-                // CSI: parameters and intermediates up to one final byte.
                 for c in chars.by_ref() {
                     if ('\u{40}'..='\u{7e}').contains(&c) {
                         break;
@@ -32,28 +29,21 @@ pub fn clean(raw: &[u8]) -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Verdict {
-    /// A `--ready` pattern matched.
     Ready,
-    /// A `--fail` pattern matched.
     Failed,
-    /// Ready, but no kernel timestamp precedes the ready line, so there is
-    /// no boot time to report and none is made up.
     MissingTiming,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Hit {
     pub verdict: Verdict,
-    /// The pattern that matched.
     pub pattern: String,
-    /// The line it matched.
     pub line: String,
     /// The last kernel timestamp (`[    1.250000]`) at or before that line,
     /// in milliseconds since the kernel started.
     pub kernel_ms: Option<u64>,
 }
 
-/// The last kernel timestamp on `line` (`[    1.250000]`), in milliseconds.
 fn kernel_stamp(line: &str) -> Option<u64> {
     line.match_indices('[')
         .filter_map(|(start, _)| {

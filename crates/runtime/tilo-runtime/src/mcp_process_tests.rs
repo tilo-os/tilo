@@ -161,7 +161,7 @@ fn stdio_framing_is_bounded_line_based_and_flushed() {
 /// invokes wait, and every reply is one whole line.
 #[test]
 fn parallel_requests_complete_out_of_order() {
-    use crate::mcp_http::tests::settle_tests::{GatedHost, overlapping_lines};
+    use crate::mcp_test_hosts::{GatedHost, overlapping_lines};
     let host = GatedHost::default();
     let server = std::sync::Arc::new(crate::mcp::McpServer::new(
         host.clone(),

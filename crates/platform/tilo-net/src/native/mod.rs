@@ -8,7 +8,6 @@ pub(crate) mod webtransport;
 #[cfg(feature = "ws")]
 pub(crate) mod ws;
 
-/// Run `future` with an optional deadline.
 #[cfg(feature = "sockets")]
 pub(crate) async fn deadline<T>(
     timeout: Option<std::time::Duration>,
@@ -22,8 +21,7 @@ pub(crate) async fn deadline<T>(
     }
 }
 
-/// The error and its sources, which carry the useful part (DNS, TLS,
-/// refused).
+/// An error's whole source chain: the top-level text alone hides the cause.
 #[cfg(any(feature = "http", feature = "ws", feature = "webtransport"))]
 pub(crate) fn chain(error: &(dyn std::error::Error + 'static)) -> String {
     let mut message = error.to_string();

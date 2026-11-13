@@ -10,8 +10,6 @@ use quick_xml::reader::Reader;
 use tilo_doc::model::DocMut;
 use tilo_doc::snapshot::CommentView;
 
-/// Parse one `<office:annotation>` element into a fresh comment, importing its author/date
-/// and body paragraphs. Returns `(office:name, comment_id)`; `None` name for a point comment.
 pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> (Option<String>, String) {
     let name = annotation_name(raw);
     let (author, date) = annotation_meta(raw);
@@ -27,7 +25,6 @@ pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> (Option<String>,
     (name, comment_id)
 }
 
-/// Read `office:name` from a raw `<office:annotation …>` or `<office:annotation-end …/>` tag.
 pub(super) fn annotation_name(raw: &str) -> Option<String> {
     let mut reader = Reader::from_str(raw);
     loop {
@@ -50,7 +47,6 @@ pub(super) fn annotation_name(raw: &str) -> Option<String> {
     }
 }
 
-/// Read the author (`dc:creator`) + date (`dc:date`) from an annotation's metadata.
 fn annotation_meta(raw: &str) -> (String, String) {
     let mut reader = Reader::from_str(raw);
     let mut author = String::new();
@@ -91,7 +87,6 @@ fn annotation_meta(raw: &str) -> (String, String) {
     (author, date)
 }
 
-/// Opening `<office:annotation>` XML for a comment, with `office:name` tying it to the matching `annotation-end`.
 pub(super) fn render_annotation_start(comment: &CommentView) -> String {
     let name = escape_attr(&comment.id);
     let date = if comment.date.is_empty() {
@@ -106,7 +101,6 @@ pub(super) fn render_annotation_start(comment: &CommentView) -> String {
     )
 }
 
-/// Empty `<office:annotation-end/>` XML closing a comment's range; `office:name` matches the opening annotation's.
 pub(super) fn render_annotation_end(comment: &CommentView) -> String {
     format!(
         r#"<office:annotation-end office:name="{}"/>"#,

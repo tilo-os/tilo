@@ -16,12 +16,12 @@ use std::collections::BTreeMap;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use tilo_device_fabric::link::SharedLink;
-use tilo_device_fabric::{DeviceId, PersonalFabricAction, PersonalFabricActionEnvelope};
+use crate::platform::fabric::SharedLink;
+use crate::platform::fabric::{DeviceId, PersonalFabricAction, PersonalFabricActionEnvelope};
 
 use crate::Shared;
 use crate::i18n::{t, t_args};
-use crate::notices::Notice;
+use crate::platform::notice::Notice;
 
 /// How long one move may take before both devices give it up and the accessory goes back where it
 /// was.
@@ -258,7 +258,7 @@ impl Handoffs {
                     address: done.address.to_ascii_uppercase(),
                     name: name.clone(),
                 };
-                let Ok(request_id) = fabric.send_personal_fabric_action(&target, action) else {
+                let Ok(request_id) = fabric.try_send_personal_fabric_action(&target, action) else {
                     tracing::warn!("a Bluetooth handoff was not asked of the destination");
                     refused(shared, &name, &t("session-bluetooth-target-away"));
                     return;
@@ -311,7 +311,7 @@ impl Handoffs {
                     ready,
                 };
                 if fabric
-                    .send_personal_fabric_action(&transaction.peer, action)
+                    .try_send_personal_fabric_action(&transaction.peer, action)
                     .is_err()
                     && ready
                 {
@@ -374,7 +374,7 @@ impl Handoffs {
             address: address.to_owned(),
         };
         if fabric
-            .send_personal_fabric_action(&transaction.peer, action)
+            .try_send_personal_fabric_action(&transaction.peer, action)
             .is_err()
         {
             self.transactions.borrow_mut().remove(&request_id);
@@ -428,7 +428,7 @@ impl Handoffs {
             connected,
         };
         if fabric
-            .send_personal_fabric_action(&transaction.peer, action)
+            .try_send_personal_fabric_action(&transaction.peer, action)
             .is_err()
         {
             self.transactions.borrow_mut().remove(&request_id);
@@ -474,7 +474,7 @@ impl Handoffs {
                 operation: Operation::Inspect,
             });
         } else {
-            let _ = fabric.send_personal_fabric_action(
+            let _ = fabric.try_send_personal_fabric_action(
                 &envelope.source,
                 PersonalFabricAction::BluetoothHandoffPrepared {
                     request_id,
@@ -540,7 +540,7 @@ impl Handoffs {
                 transaction.is(&envelope.source, address, false, Phase::Ready)
             });
         if !accepts {
-            let _ = fabric.send_personal_fabric_action(
+            let _ = fabric.try_send_personal_fabric_action(
                 &envelope.source,
                 PersonalFabricAction::BluetoothHandoffFinished {
                     request_id: *request_id,
@@ -591,7 +591,7 @@ impl Handoffs {
             return;
         }
         let confirmed = fabric
-            .send_personal_fabric_action(
+            .try_send_personal_fabric_action(
                 &transaction.peer,
                 PersonalFabricAction::BluetoothHandoffAccepted {
                     request_id: *request_id,
@@ -704,7 +704,7 @@ impl Handoffs {
         for (request_id, transaction, away) in stopped {
             self.transactions.borrow_mut().remove(&request_id);
             self.put_back(request_id, &transaction);
-            let _ = fabric.send_personal_fabric_action(
+            let _ = fabric.try_send_personal_fabric_action(
                 &transaction.peer,
                 PersonalFabricAction::BluetoothHandoffCancel {
                     request_id,
@@ -813,7 +813,7 @@ fn label(fabric: &SharedLink, peer: &DeviceId) -> String {
 
 /// Tell the person how one move went.
 fn tell(shared: &Shared, urgency: u8, title: String, body: String) {
-    shared.notifications.borrow().tell(Notice::new(
+    shared.notifications.borrow().tell(&Notice::new(
         t("session-bluetooth-app"),
         urgency,
         title,

@@ -86,6 +86,10 @@ pub struct CommandRow {
     /// Other activations behind a held modifier; the selected row shows the
     /// one whose modifier is down, else the first as a hint.
     pub alternates: Vec<Alternate>,
+    /// The row's title restates the query ("Search the web for …", "Send to
+    /// Ada: …") instead of being something the query found: its words are
+    /// the person's own, so no span of them is set off as a match.
+    pub echoes_query: bool,
 }
 
 impl CommandRow {
@@ -194,6 +198,16 @@ impl SearchRow {
             kind: kind.into(),
             id: id.into(),
         }
+    }
+
+    /// A command row whose title is what the person typed, said back to
+    /// them: the row that hands a request to an agent or takes a query to
+    /// the web ([`CommandRow::echoes_query`]).
+    pub fn echoing_query() -> Self {
+        Self::Command(Box::new(CommandRow {
+            echoes_query: true,
+            ..CommandRow::default()
+        }))
     }
 
     /// The item row for `resource` (`notes.notebook/pages/<id>`) of `app`:
@@ -410,6 +424,18 @@ mod tests {
         assert!(matches!(bad, SearchRow::FileHit { matched: None, .. }));
         let media = SearchRow::media("Talk").byline("Conf").duration("12:04");
         assert_eq!(media.spoken(), "Talk, Conf, 12:04");
+    }
+
+    /// A row that restates the query says so, so every palette draws it without setting off
+    /// spans of the person's own words; an ordinary command row matches as it always did.
+    #[test]
+    fn a_row_that_restates_the_query_declares_itself() {
+        let echo = SearchRow::echoing_query();
+        let SearchRow::Command(row) = &echo else {
+            panic!("an echo is a command row");
+        };
+        assert!(row.echoes_query);
+        assert!(!CommandRow::default().echoes_query);
     }
 
     /// A hit that is an item of a resource is a reference to it: the app, the

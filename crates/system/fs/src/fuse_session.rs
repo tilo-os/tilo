@@ -1,20 +1,11 @@
-//! How a FUSE session's end is read.
-//!
-//! Unmounting aborts the kernel connection, and a session thread blocked in
-//! a read of the FUSE device can wake inside that abort: the kernel has
-//! already disconnected the device's processing queue while a request (such
-//! as the asynchronous `RELEASE` of a just-closed file) still sits in the
-//! input queue. That read fails with `ECONNABORTED` even though the session
-//! never negotiated `FUSE_ABORT_ERROR` (Linux `fuse_dev_do_read`), where the
-//! usual unmount answer is `ENODEV`. fuser 0.18 ends the loop cleanly only
-//! on `ENODEV` and hands the `ECONNABORTED` back as the session's error, so
-//! an ordinary unmount intermittently reported failure. Either errno means
-//! the connection is gone, which is how every session ends.
+//! How a FUSE session's end is read. Unmounting aborts the connection, and a
+//! session thread woken inside that abort fails with `ECONNABORTED` even though
+//! the session never negotiated `FUSE_ABORT_ERROR`; fuser 0.18 reports that as the
+//! session's error, so either errno means the connection is gone.
 
 use std::io;
 use std::path::Path;
 
-/// The session's result with an aborted connection read as a clean end.
 pub fn ended(result: io::Result<()>) -> io::Result<()> {
     match result {
         Err(error) if error.raw_os_error() == Some(libc::ECONNABORTED) => Ok(()),
@@ -22,18 +13,13 @@ pub fn ended(result: io::Result<()>) -> io::Result<()> {
     }
 }
 
-/// Unmounts `session`, mounted at `mount_point`, and waits for its thread,
-/// reading an aborted connection as the end it is.
+/// Unmounts `session`, mounted at `mount_point`, and waits for its thread, reading
+/// an aborted connection as the end it is.
 ///
-/// fuser cannot be left to unmount by itself. A session mounted with
-/// `AutoUnmount` only closes its socket to `fusermount3`, and `fusermount3`
-/// unmounts only a filesystem whose daemon has died: this one is still
-/// serving, so the mount stays, the session's workers keep reading the
-/// device and the join never returns (a stopping `fs.service` hung until
-/// systemd aborted it). And a mount that is still in use (an open file, a
-/// shell's working directory) cannot be unmounted at all; detaching it
-/// leaves the connection serving its open files, and the join waits for
-/// every one of them to close.
+/// fuser cannot be left to unmount by itself: a session mounted with `AutoUnmount`
+/// only closes its socket to `fusermount3`, which unmounts only a filesystem whose
+/// daemon has died. A mount still in use cannot be unmounted at all; detaching it
+/// leaves the connection serving its open files until each one closes.
 pub fn unmount_and_join(session: fuser::BackgroundSession, mount_point: &Path) -> io::Result<()> {
     if end_connection(mount_point)? {
         ended(session.join())
@@ -42,11 +28,9 @@ pub fn unmount_and_join(session: fuser::BackgroundSession, mount_point: &Path) -
     }
 }
 
-/// Unmounts the filesystem at `mount_point`; one still in use has its
-/// writes flushed, then its connection ended and its mount detached, as
-/// the daemon's exit would. Returns whether it did: where this process may
-/// not unmount (an unprivileged mount, which `fusermount3 -u` ends) or
-/// nothing is mounted any more, fuser's own unmount is left to do it.
+/// Unmounts the filesystem at `mount_point`; one still in use has its writes
+/// flushed, then its connection ended and its mount detached. Returns whether it
+/// did: where this process may not unmount, fuser's own unmount does it.
 #[cfg(target_os = "linux")]
 fn end_connection(mount_point: &Path) -> io::Result<bool> {
     use rustix::io::Errno;

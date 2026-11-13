@@ -64,7 +64,7 @@ fn ctrl(tools: &Tools, label: &str, does: &str, ch: &str) -> MenuEntry {
 }
 
 fn lookup(id: &str) -> String {
-    ui::i18n::I18nManager::lookup_plain(id)
+    crate::locales::CATALOG.t(id)
 }
 
 fn applying(dispatcher: &Dispatcher<Artwork>, label: &str, action: Invoke<Artwork>) -> MenuEntry {
@@ -72,7 +72,6 @@ fn applying(dispatcher: &Dispatcher<Artwork>, label: &str, action: Invoke<Artwor
     MenuEntry::new(lookup(label), move || dispatcher.submit(action.clone()))
 }
 
-/// What the menu offers now.
 fn entries(tools: &Tools, art: &Artwork, dispatcher: &Dispatcher<Artwork>) -> Vec<MenuEntry> {
     let picked = tools.selection.get();
     let mut entries = Vec::new();

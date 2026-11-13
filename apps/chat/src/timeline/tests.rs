@@ -13,6 +13,7 @@ use ui::theme::Theme;
 
 use crate::app::{ChatApp, Focus};
 use crate::timeline::TimelineCounts;
+use ui::widget::DrawChild;
 
 /// The size the owner's browser shows the Lounge at.
 const WINDOW: (f64, f64) = (1440.0, 900.0);
@@ -71,7 +72,7 @@ impl Frames {
     fn scene(&mut self, app: &mut ChatApp) -> Scene {
         app.rect = Rect::new(0.0, 0.0, WINDOW.0, WINDOW.1);
         let mut scene = Scene::new();
-        app.draw(
+        app.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut self.text,
@@ -110,7 +111,10 @@ fn a_wheel_step_lays_out_nothing_and_draws_only_the_rows_it_brings_into_view() {
     let (mut app, mut doc) = long_channel(300);
     let mut frames = Frames::new();
     let (first, _) = frames.draw(&mut app);
-    assert_eq!(first.measured, 300, "the first frame measures every row");
+    assert!(
+        first.measured > 0 && first.measured < 300,
+        "the first frame measures the rows standing in view, not every row: {first:?}"
+    );
     settle(&mut app, &mut frames);
     // The pointer rests over the timeline's gutter, where no row lifts.
     let area = app.messages_rect();
@@ -133,7 +137,10 @@ fn a_wheel_step_lays_out_nothing_and_draws_only_the_rows_it_brings_into_view() {
         let seen: HashSet<&String> = before.iter().collect();
         let entered = shown.iter().filter(|id| !seen.contains(id)).count();
         came += entered;
-        assert_eq!(counts.measured, 0, "step {step} measured no row");
+        assert!(
+            counts.measured < 60,
+            "step {step} measured only what stands near the view: {counts:?}"
+        );
         assert_eq!(
             counts.drawn, entered,
             "step {step} drew only the {entered} rows that came into view: {counts:?}"
@@ -142,6 +149,66 @@ fn a_wheel_step_lays_out_nothing_and_draws_only_the_rows_it_brings_into_view() {
         before = shown;
     }
     assert!(came > 3, "the steps brought rows into view");
+}
+
+/// A timeline of thousands of messages measures what stands in view, and the rows a step
+/// reaches as the reader scrolls: no frame of it walks every row of the conversation.
+#[test]
+fn a_long_timeline_measures_what_stands_in_view_and_no_more() {
+    let (mut app, mut doc) = long_channel(2_000);
+    let mut frames = Frames::new();
+    let (first, shown) = frames.draw(&mut app);
+    assert!(
+        first.measured > 0 && first.measured < 200,
+        "the first frame measures the rows in view and a margin, not two thousand: {first:?}"
+    );
+    assert!(!shown.is_empty(), "the newest rows stand in view");
+    let first_total = app.timeline_total_height;
+    settle(&mut app, &mut frames);
+    let area = app.messages_rect();
+    feed(
+        &mut app,
+        &mut doc,
+        &ui::synthetic_input::cursor_moved(area.x0 + 2.0, area.center().y),
+    );
+    // The reader scrolls back through the conversation: every step measures what its
+    // window reaches and no more, so a step costs a screenful however long the chat
+    // has run.
+    let mut measured = 0;
+    let mut moved = 0;
+    for step in 0..300 {
+        let scroll = app.scroll;
+        feed(
+            &mut app,
+            &mut doc,
+            &ui::synthetic_input::mouse_wheel(0.0, 1.0),
+        );
+        let (counts, _) = frames.draw(&mut app);
+        // A step that measured rows stands where its anchor was kept, not where the wheel
+        // pushed it: the row the reader was reading stays under the pointer.
+        assert!(
+            app.scroll >= scroll,
+            "step {step} does not move forward through history"
+        );
+        if app.scroll > scroll {
+            moved += 1;
+        }
+        assert!(
+            counts.measured < 120,
+            "step {step} measures only what its window reaches: {counts:?}"
+        );
+        measured += counts.measured;
+    }
+    assert!(measured > 0, "scrolling back measured the rows it reached");
+    assert!(moved > 100, "the steps moved back through {moved} rows");
+    // What stands there now is the height of two thousand rows, most of them measured as
+    // the reader scrolled past, and not the screenful the first frame measured.
+    assert!(
+        app.timeline_total_height > first_total * 1.5,
+        "the timeline stands at the height of its rows: {} against {}",
+        app.timeline_total_height,
+        first_total
+    );
 }
 
 #[test]
@@ -310,4 +377,91 @@ fn a_received_message_lays_out_and_draws_only_its_row() {
         assert_eq!(counts.reused + counts.drawn, shown.len());
     }
     eprintln!("{report}received message (sync, draw): {took:?}");
+}
+
+#[test]
+fn a_channel_keeps_its_answers_in_a_thread_and_a_direct_conversation_shows_them_inline() {
+    use crate::record::{Chat, Participant};
+    use ui::tilo_resource::Id;
+
+    let mut doc = crate::testing::demo_doc();
+    let mut app = ChatApp::new_ephemeral();
+    app.attach_workspace(&doc);
+    app.reload(&doc);
+    let mut frames = Frames::new();
+
+    // The rows the timeline stands on, as the view groups them.
+    let rows = |app: &ChatApp| -> Vec<String> {
+        app.timeline_groups()
+            .iter()
+            .flat_map(|group| group.message_indices.iter())
+            .filter_map(|index| app.messages.get(*index))
+            .map(|message| message.id.clone())
+            .collect()
+    };
+
+    // `#design-crit` holds the three answers to one message as a thread: the
+    // timeline stands on the message they answer, and the link into them.
+    let chat = crate::projection::read(&doc.chat);
+    app.open_conversation(&Id::from_raw("c_crit"), &chat);
+    assert!(app.keeps_threads(), "a channel keeps its threads");
+    let shown = rows(&app);
+    assert!(shown.contains(&"m_concept".to_owned()), "{shown:?}");
+    assert!(
+        !shown.iter().any(|id| id.starts_with("m_thread_")),
+        "the channel's answers stay behind their thread: {shown:?}"
+    );
+
+    // The same workspace, spoken into a conversation with an agent: the
+    // person's message and the agent's answer to it stand in the timeline,
+    // in the order they were written.
+    let dm = Chat::direct_id([
+        Participant::person(crate::model::ME),
+        Participant::agent("notes"),
+    ]);
+    let asked = crate::testing::say(
+        &mut doc,
+        crate::model::ME,
+        dm.as_str(),
+        "Fasse die Besprechungsnotizen zusammen.",
+    );
+    crate::testing::apply_part_as(
+        &mut doc,
+        "agent:notes",
+        crate::demo::post(
+            dm.as_str(),
+            "Drei Punkte: Budget steht, Termin am Freitag, Ada schreibt das Protokoll.",
+            Some(&asked),
+        ),
+    )
+    .expect("the agent answers");
+    app.reload(&doc);
+    let chat = crate::projection::read(&doc.chat);
+    app.open_agent("notes", &chat);
+    assert!(
+        !app.keeps_threads(),
+        "a direct conversation has no threads to fold its answers into"
+    );
+    let answered = app
+        .messages
+        .iter()
+        .find(|message| message.author.as_str() == "agent:notes")
+        .map(|message| message.id.clone())
+        .expect("the conversation holds the agent's answer");
+    assert_eq!(
+        rows(&app),
+        vec![asked.clone(), answered.clone()],
+        "the answer stands right under the message it answers"
+    );
+    // And the frame paints it there, as a row of its own.
+    let (_, painted) = frames.draw(&mut app);
+    assert!(
+        painted.contains(&answered),
+        "the agent's answer is painted in the conversation: {painted:?}"
+    );
+    assert!(
+        !app.bar_actions(&asked)
+            .contains(&crate::app::MenuAction::ReplyInThread),
+        "an answer is not hidden behind a thread the conversation does not have"
+    );
 }

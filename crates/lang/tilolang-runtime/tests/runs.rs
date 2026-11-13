@@ -2,15 +2,11 @@
 //! resolving replays it from the journal, and the journaled calls are not executed again.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
     use std::cell::Cell;
     use std::rc::Rc;
 
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::{
         InvokeOutcome, ModelHost, Pending, Resolution, RunOutcome, Runtime, Store, Value,
     };

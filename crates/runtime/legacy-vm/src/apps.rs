@@ -1,13 +1,7 @@
-//! Installed legacy apps, as the host knows them.
-//!
-//! After every install or removal the host asks the guest what it has
-//! installed and records it in `apps.json`. From that record:
-//!
-//! - each app gets a desktop entry in `~/.local/share/applications`, which
-//!   the shell's search already scans, launching through `tilo-legacy launch`
-//!   and matching its windows by their legacy app id (`StartupWMClass`);
-//! - each app gets a command name, which environments put on their `PATH`
-//!   as a shim that asks the broker for `LegacyLaunch`.
+//! Installed legacy apps, as the host knows them: what the guest reports after
+//! every install or removal, recorded in `apps.json`. Each app gets a desktop entry
+//! the shell's search finds and a command name whose shim asks the broker for
+//! `LegacyLaunch`.
 
 use std::path::{Path, PathBuf};
 
@@ -16,7 +10,6 @@ pub use legacy_agent_protocol::InstalledApp;
 use legacy_agent_protocol::window::host_app_id;
 use serde::{Deserialize, Serialize};
 
-/// One installed app and the command environments know it by.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LegacyApp {
     pub guest: GuestOs,
@@ -99,7 +92,6 @@ pub fn valid_app_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
 }
 
-/// `com.visualstudio.code` → `code`, `org.gnome.Calculator` → `calculator`.
 #[must_use]
 pub fn command_name(id: &str) -> String {
     let last = id.rsplit('.').next().unwrap_or(id);
@@ -130,13 +122,11 @@ impl LegacyApp {
         )
     }
 
-    /// `tilo-legacy-<guest>-<id>.desktop`.
     #[must_use]
     pub fn desktop_file_name(&self) -> String {
         format!("tilo-legacy-{}-{}.desktop", self.guest.as_str(), self.id)
     }
 
-    /// The desktop entry search shows.
     #[must_use]
     pub fn desktop_entry(&self) -> String {
         let comment = self
@@ -169,7 +159,6 @@ fn single_line(text: &str) -> String {
     text.replace(['\n', '\r'], " ")
 }
 
-/// Make `dir` hold exactly the desktop entries of `registry` for `guest`.
 pub fn sync_desktop_entries(
     dir: &Path,
     guest: GuestOs,
@@ -198,7 +187,6 @@ pub fn sync_desktop_entries(
     Ok(())
 }
 
-/// `~/.local/share/applications`.
 #[must_use]
 pub fn applications_dir() -> Option<PathBuf> {
     Some(tilo_paths::xdg::data_home()?.join("applications"))
@@ -231,7 +219,6 @@ mod tests {
             ],
             &["pkg", "perm"],
         );
-        // phase: commands are unique, readable and avoid environment commands
         {
             let commands: Vec<&str> = registry
                 .apps
@@ -246,7 +233,6 @@ mod tests {
             );
             assert!(registry.find("evil").is_none());
         }
-        // phase: the search entry launches through tilo-legacy and claims the legacy windows
         {
             let entry = registry.find("code").unwrap().desktop_entry();
             assert!(entry.contains("Name=Visual Studio Code (Linux)\n"));
@@ -259,7 +245,6 @@ mod tests {
                 Some("legacy.linux.code")
             );
         }
-        // phase: the applications directory converges on the registry
         {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("tilo-legacy-linux-gone.desktop"), "x").unwrap();

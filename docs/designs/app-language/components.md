@@ -69,7 +69,18 @@ view contact_row(c: Contact) {
   a `RichText` (`rich`, its paragraphs) and to a Markdown `Text` field (`markdown`, the same
   text round-tripped), and edits the one the view bound; a change from elsewhere shows when the
   person is not typing there. The view places the editor; no marker on a field says which
-  control draws it.
+  control draws it. `links:` names the records its `[[` picker offers, which the editor is given
+  as the references they are and what each reads as now, so a record renamed later reads by its
+  new title wherever it was linked; choosing one writes a reference in the text, which is what
+  `linked(r)` reports the record by. A picker over a collection reads the records while it is
+  open, and only what it shows: the view keeps the picker's state (`on links_open(open)` and
+  `on links_query(text)`) and answers it with a query of what is typed,
+  `links: if linking { nb.notes.matching(text).take(48) } else { [] }`, so a keystroke in the
+  document reads no note and the picker reads the page it offers. `commands:` adds the view's
+  own `/` commands, each reported as `command` by its label when chosen; `headings` is told the
+  document's headings as they change; and a picture the body holds (`tilo-blob://…`) shows
+  through the window's own content store, as every described component's pictures do.
+
 
 Some components *attach*: `ui.ContextMenu`, `ui.HoverToolbar` and `ui.Swipe` draw nothing where
 a view puts them and give the view they stand in a menu, a toolbar shown on hover and focus, or

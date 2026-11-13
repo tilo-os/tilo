@@ -8,6 +8,7 @@ use wayland_server::{protocol::wl_seat::WlSeat, Client, DataInit, Dispatch, Disp
 
 use crate::{
     input::{Seat, SeatHandler},
+    utils::Serial,
     wayland::{
         seat::WaylandFocus,
         selection::{
@@ -51,9 +52,9 @@ where
         };
 
         match request {
-            primary_device::Request::SetSelection { source, .. } => {
+            primary_device::Request::SetSelection { source, serial } => {
                 let seat_data = match seat.get_keyboard() {
-                    Some(keyboard) if keyboard.client_of_object_has_focus(&resource.id()) => seat
+                    Some(keyboard) if keyboard.client_of_object_may_set_selection(&resource.id(), Serial::from(serial)) => seat
                         .user_data()
                         .get::<RefCell<SeatData<D::SelectionUserData>>>()
                         .unwrap(),

@@ -1,10 +1,10 @@
-//! `tilo-vm-install-proof --target-root … --output OUTPUT`: binds a completed
-//! VM install to its booted medium and installed deployment.
+//! `tilo-vm-install-proof --target-root … --output OUTPUT`: binds a completed VM
+//! install to its booted medium and installed deployment.
 //!
-//! The caller writes the result to /run before closing the encrypted target
-//! and emits it only after the install backend finishes successfully. The
-//! record is guest evidence, not a signature or a substitute for host
-//! readback. Its schema is printed on stdout.
+//! The caller writes the result to /run before closing the encrypted target and
+//! emits it only after the install backend finishes successfully. The record is
+//! guest evidence, not a signature or a substitute for host readback; its
+//! schema is printed on stdout.
 
 use std::fs;
 use std::os::unix::fs::FileTypeExt;
@@ -19,7 +19,6 @@ use crate::py::Dumps;
 use crate::target_transport::{is_digest, is_hex};
 use crate::{Error, Result, require};
 
-/// The command line.
 pub const COMMAND: Command = Command {
     prog: "tilo-vm-install-proof",
     usage: "usage: tilo-vm-install-proof [-h] --target-root TARGET_ROOT --deploy-etc DEPLOY_ETC
@@ -98,7 +97,6 @@ const OFFLINE_RECEIPT: &str = "/run/tilo-installer/offline-target.json";
 const DEV_SCHEMA: &str = "tilo.installer-dev-target.v1";
 const OFFLINE_SCHEMA: &str = "tilo.installer-offline-target.v1";
 
-/// What the proof binds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     pub target_root: PathBuf,
@@ -137,9 +135,6 @@ pub trait Host {
     }
 
     /// The manifest digest of the VM-only bootc export in local storage.
-    ///
-    /// # Errors
-    /// Outside the VM-only installer, or no local manifest.
     fn copied_dev_manifest_digest(&self) -> Result<String> {
         let marker = self.dev_vm_marker();
         require(
@@ -164,7 +159,6 @@ pub trait Host {
     }
 }
 
-/// The installer VM as it is.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct System;
 
@@ -379,9 +373,9 @@ fn booted_image(host: &dyn Host) -> Result<(String, String)> {
     Ok((booted_digest, booted_composefs))
 }
 
-/// The installed target UKI's hash and the disk and partition GPT
-/// identities, after checking the UKI sits on the selected ESP and boots the
-/// deployed composefs digest.
+/// The installed target UKI's hash and the disk and partition GPT identities,
+/// after checking the UKI sits on the selected ESP and boots the deployed
+/// composefs digest.
 fn boot_identities(
     host: &dyn Host,
     request: &Request,
@@ -556,11 +550,8 @@ pub fn write(destination: &Path, result: &Value) -> Result<()> {
     Ok(())
 }
 
-/// The command: build the proof, write it and print its schema, which names
-/// the proof line the backend emits.
-///
-/// # Errors
-/// As [`build_proof`] and [`write()`].
+/// The command: build the proof, write it and print its schema, which names the
+/// proof line the backend emits.
 pub fn run(host: &dyn Host, values: &Values) -> Result<()> {
     let path = |flag: &str| values.required(flag).map(PathBuf::from);
     let request = Request {

@@ -1,8 +1,5 @@
 //! An in-memory Microsoft Graph drive on the shared test responder.
 //!
-//! Enough of the `driveItem` API to exercise a real client, with Graph's
-//! semantics rather than a convenient approximation:
-//!
 //! - items by id and by path below an item (`items/{id}:/{path}:`), names
 //!   unique among siblings case-insensitively;
 //! - `root/delta` with paging (`@odata.nextLink`), `@odata.deltaLink`,
@@ -22,9 +19,6 @@
 //!   byte with the name clash detected at commit, status and cancel;
 //! - versions (list newest first, download, `restoreVersion`), the recycle
 //!   bin, `createLink`, quota, `OneNote` notebooks (`package`).
-//!
-//! Faults can be injected into the next request, and the server can go
-//! offline (connections are dropped unanswered).
 //!
 //! Test support only (feature `fake-server`).
 
@@ -53,27 +47,21 @@ use crate::quickxor::quick_xor_base64;
 use crate::{FRAGMENT_UNIT, OneDriveConfig, RootSelector};
 
 pub const TOKEN: &str = "fake-graph-access-token";
-/// Total storage the fake reports.
 pub const QUOTA_TOTAL: u64 = 5 * 1024 * 1024 * 1024;
 const VERSIONS_KEPT: usize = 25;
 
-/// A fault for the next matching request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FakeFault {
     /// 429 with `Retry-After: 1`.
     RateLimited,
-    /// 503.
     ServerError,
-    /// The next download declares its full length but sends half the body.
     TruncatedBody,
     /// The next download sends half the body, declares no length and closes
     /// the connection.
     ClosedEarly,
-    /// 401 once, as for an expired access token.
     ExpiredCredential,
 }
 
-/// Request counters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     pub graph_requests: usize,
@@ -82,7 +70,6 @@ pub struct Stats {
     pub ranged_downloads: usize,
     pub fragments: usize,
     pub bytes_served: u64,
-    /// Requests to pre-authenticated URLs that carried a bearer token.
     pub bearer_leaks: usize,
 }
 
@@ -112,9 +99,7 @@ struct Node {
     ctag: u64,
     created: SystemTime,
     modified: SystemTime,
-    /// The change sequence number of the last change, for delta.
     seq: u64,
-    /// Content history, oldest first; the last entry is the current body.
     versions: Vec<StoredVersion>,
     version_counter: u64,
     link: Option<String>,
@@ -176,19 +161,16 @@ struct State {
     stats: Stats,
 }
 
-/// A running fake drive. Dropping it stops the server.
 pub struct FakeGraph {
     responder: Responder,
     state: Arc<Mutex<State>>,
 }
 
 impl FakeGraph {
-    /// A consumer `OneDrive`.
     pub fn personal() -> Self {
         Self::start(DriveType::Personal)
     }
 
-    /// A `OneDrive` for Business drive.
     pub fn business() -> Self {
         Self::start(DriveType::Business)
     }
@@ -254,7 +236,6 @@ impl FakeGraph {
         self.state.lock().expect("fake state")
     }
 
-    /// The Graph endpoint, `http://127.0.0.1:<port>/v1.0/`.
     pub fn api(&self) -> String {
         format!("{}/v1.0/", self.responder.url())
     }
@@ -278,7 +259,6 @@ impl FakeGraph {
         }
     }
 
-    /// Items per `children` and `delta` page.
     pub fn set_page_size(&self, size: usize) {
         self.lock().page_size = size.max(1);
     }
@@ -297,7 +277,6 @@ impl FakeGraph {
         folder
     }
 
-    /// Create or replace a file at `path` below the drive root.
     pub fn put(&self, path: &str, bytes: &[u8]) -> String {
         let (parent, name) = split_path(path);
         let folder = self.mkdirs(parent);
@@ -311,7 +290,6 @@ impl FakeGraph {
         }
     }
 
-    /// Create a `OneNote` notebook (a `package` item) in folder `parent`.
     pub fn put_notebook(&self, parent: &str, name: &str) -> Option<String> {
         let mut state = self.lock();
         if state.child(parent, name).is_some() || !state.items.contains_key(parent) {
@@ -320,12 +298,10 @@ impl FakeGraph {
         Some(state.insert(parent, name, Kind::Notebook, Vec::new()))
     }
 
-    /// The current body of an item, if it exists.
     pub fn bytes(&self, id: &str) -> Option<Vec<u8>> {
         self.lock().items.get(id).map(|node| node.bytes.clone())
     }
 
-    /// Names of items in the recycle bin.
     pub fn recycle_bin(&self) -> Vec<String> {
         self.lock()
             .recycle_bin
@@ -342,7 +318,6 @@ impl FakeGraph {
         self.lock().offline = offline;
     }
 
-    /// Forget every delta token issued so far.
     pub fn reset_cursors(&self) {
         let mut state = self.lock();
         state.epoch = state.epoch.saturating_add(1);
@@ -352,7 +327,6 @@ impl FakeGraph {
         self.lock().stats
     }
 
-    /// Open upload sessions.
     pub fn open_uploads(&self) -> usize {
         self.lock().uploads.len()
     }
@@ -403,7 +377,6 @@ fn error(status: u16, code: &str) -> Reply {
     )
 }
 
-/// Characters no `OneDrive` flavour accepts in a name.
 fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 255
@@ -412,7 +385,6 @@ fn valid_name(name: &str) -> bool {
         && !name.starts_with(' ')
 }
 
-/// What a request's `If-Match` asks for.
 fn precondition_holds(request: &Request, node: &Node) -> bool {
     match request.header("if-match") {
         None | Some("*") => true,
@@ -761,7 +733,6 @@ impl State {
         })
     }
 
-    /// Pop the first queued fault that applies to a request of this kind.
     fn take_fault(&mut self, applies: impl Fn(FakeFault) -> bool) -> Option<FakeFault> {
         let index = self.faults.iter().position(|fault| applies(*fault))?;
         self.faults.remove(index)
@@ -1035,7 +1006,6 @@ impl State {
         json_reply(200, &value)
     }
 
-    /// Move an item and everything below it to the recycle bin.
     fn remove(&mut self, id: &str) {
         let mut doomed = self.descendants(id);
         doomed.push(id.to_owned());
@@ -1172,7 +1142,6 @@ impl State {
         )
     }
 
-    /// `PUT …/content`: replace by id, or create/replace by path.
     fn simple_put(
         &mut self,
         request: &Request,
@@ -1210,7 +1179,6 @@ impl State {
         json_reply(201, &value)
     }
 
-    /// For a path address naming a missing item: its parent folder and name.
     fn creation_target(&self, address: &Address) -> Option<(String, String)> {
         let path = address.path.as_ref()?;
         let (name, parents) = path.split_last()?;
@@ -1232,7 +1200,6 @@ impl State {
             .unwrap_or("fail")
             .to_owned();
         let target = match (&address.path, self.resolve(address)) {
-            // By id: replace that file.
             (None, Some(id)) => {
                 let Some(node) = self.items.get(&id) else {
                     return error(404, "itemNotFound");
@@ -1246,7 +1213,6 @@ impl State {
                 SessionTarget::Replace(id)
             }
             (None, None) => return error(404, "itemNotFound"),
-            // By path: a name clash is only detected at commit.
             (Some(_), _) => {
                 let Some(path) = &address.path else {
                     return error(400, "invalidRequest");

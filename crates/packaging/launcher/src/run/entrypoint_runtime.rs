@@ -1,13 +1,13 @@
 //! The runtime bundle an entrypoint executes a binary of (`[entrypoint].runtime`):
-//! resolved among the app's required runtimes, and its binary's libraries checked as the
-//! sandboxed loader looks for them.
+//! resolved among the app's required runtimes, and its binary's libraries checked as
+//! the sandboxed loader looks for them.
 use std::path::{Path, PathBuf};
 
 use super::{ManifestView, RunError, RunOptions, launch_entry_bin};
 
-/// [`preflight_runtime_libraries`] for an entrypoint that executes a binary
-/// of its runtime bundle: the binary must find its libraries in that bundle,
-/// the app's runtime or the system, exactly as the sandboxed loader looks.
+/// [`preflight_runtime_libraries`] for an entrypoint that executes a binary of its runtime bundle: the
+/// binary must find its libraries in that bundle, the app's runtime or the system, exactly as the
+/// sandboxed loader looks.
 pub(super) fn preflight_entrypoint_runtime(
     manifest: &ManifestView,
     opts: &RunOptions,
@@ -34,8 +34,7 @@ pub(super) fn preflight_entrypoint_runtime(
     let mut mounts = vec![(entry_mount.clone(), entry_root.clone())];
     let mut library_path = Vec::new();
     if let Some((root, version)) = runtime {
-        // The app's own runtime: what `LD_LIBRARY_PATH` points into inside
-        // the sandbox.
+        // The app's own runtime: what `LD_LIBRARY_PATH` points into inside the sandbox.
         mounts.push((
             crate::sandbox::runtime_mount_for(version),
             root.to_path_buf(),

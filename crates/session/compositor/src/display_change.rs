@@ -355,24 +355,13 @@ impl State {
             .output_under(self.pointer)
             .map(Output::name)
             .collect();
-        let focus = self
-            .seat
-            .get_keyboard()
-            .and_then(|keyboard| keyboard.current_focus());
-        if let Some(focus) = focus {
-            let window = self.space.elements().find(|window| {
-                window
-                    .toplevel()
-                    .is_some_and(|toplevel| toplevel.wl_surface() == &focus)
-            });
-            if let Some(window) = window {
-                watched.extend(
-                    self.space
-                        .outputs_for_element(window)
-                        .iter()
-                        .map(Output::name),
-                );
-            }
+        if let Some(window) = self.focused_element() {
+            watched.extend(
+                self.space
+                    .outputs_for_element(window)
+                    .iter()
+                    .map(Output::name),
+            );
         }
         watched
     }

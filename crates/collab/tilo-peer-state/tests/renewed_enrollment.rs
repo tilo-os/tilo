@@ -15,12 +15,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-mod common;
+use crate::common::endpoint;
 
-use common::endpoint;
-
-use std::collections::HashMap;
-use std::time::SystemTime;
+use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use tilo_identity_host::custody::HostIdentity;
@@ -29,8 +26,6 @@ use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::workspaces::IssueInvitationRequest;
 use tilo_relay::{Relay, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
-
-tilo_automerge_isolate::test_worker!();
 
 const SECOND: u64 = 1_000_000_000;
 
@@ -56,13 +51,7 @@ fn certificate(
 }
 
 fn custody(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
-    HostIdentity {
-        device_cert: cert.clone(),
-        device_signing_key: key.clone(),
-        workspace_device_certs: HashMap::default(),
-        workspace_revocations: HashMap::default(),
-        identity_paths: None,
-    }
+    HostIdentity::kept(cert.clone(), key.clone())
 }
 
 /// A workspace on a relay with an invitation for Bob, which Bob's device proved
@@ -84,7 +73,7 @@ impl Admitted {
     async fn start(held: impl FnOnce(&SigningKey, &SigningKey) -> DeviceCert) -> Self {
         let alice = SigningKey::from_bytes(&[1; 32]);
         let bob = SigningKey::from_bytes(&[2; 32]);
-        let host_key = SigningKey::from_bytes(&[3; 32]);
+        let host_key = SigningKey::from_bytes(&tilo_test_env::node_key());
         let laptop_key = SigningKey::from_bytes(&[4; 32]);
         let desk_key = SigningKey::from_bytes(&[5; 32]);
         let host = certificate(&alice, &host_key, DeviceCapabilities::host(), 1, None);
@@ -92,7 +81,10 @@ impl Admitted {
         let held = held(&bob, &desk_key);
         let now = tilo_clock::unix_now_ns();
         let state = tempfile::tempdir().unwrap();
-        let relay = Relay::start(
+        // The host reaches no packet relay: the link it hands out then names the addresses it
+        // has here, which the device dials directly. A host with a public relay names only that
+        // relay, which this test's device would reach over the internet or not at all.
+        let relay = Relay::start_with_relay_mode(
             RelayConfig {
                 state_root: state.path().to_path_buf(),
                 ..RelayConfig::default()
@@ -103,6 +95,7 @@ impl Admitted {
                 device_cert: host.clone(),
                 revocations: RevocationList::new(),
             },
+            iroh::RelayMode::Disabled,
         )
         .await
         .unwrap();
@@ -193,14 +186,14 @@ impl Admitted {
                 && !enrollment.bootstrap().certified_roster.contains(replaced),
             "the host holds it in place of the certificate it replaced"
         );
-        self.owner.install(&enrollment, SystemTime::now()).unwrap();
+        self.owner.install(&enrollment, tilo_clock::wall()).unwrap();
         let joined = tilo_desktop_model::WorkspaceId::parse(&self.workspace).unwrap();
         let role = self
             .owner
             .with_current(joined, |view| {
                 Ok(view
                     .peer()
-                    .permissions(self.desk_key.verifying_key().to_bytes(), SystemTime::now())
+                    .permissions(self.desk_key.verifying_key().to_bytes(), tilo_clock::wall())
                     .ok()
                     .map(|member| member.role))
             })
@@ -242,10 +235,32 @@ async fn a_retained_proof_with_a_certificate_due_for_renewal_presents_the_renewa
 /// The certificate the host admitted ran out before the device took the
 /// workspace in. The host does not refuse the retained proof for it, forever:
 /// the device proves its membership again with the renewal.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_retained_proof_whose_certificate_ran_out_is_answered_for_the_renewal() {
-    let now = tilo_clock::unix_now_ns();
+#[test]
+fn a_retained_proof_whose_certificate_ran_out_is_answered_for_the_renewal() {
+    // The certificate lapses because this test moves the process's wall clock
+    // past its expiry, never because the setup happened to take that long. The
+    // host and the device read that clock from their own threads, so the test
+    // takes the process to itself, with a runtime of its own.
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_retained_proof_whose_certificate_ran_out_is_answered_for_the_renewal",
+        || {
+            let process = tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process();
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .expect("a runtime for this test alone")
+                .block_on(a_lapsed_certificate_is_answered_by_the_renewal(process));
+        },
+    );
+}
+
+async fn a_lapsed_certificate_is_answered_by_the_renewal(process: tilo_clock::testing::OwnProcess) {
+    let started = tilo_clock::wall();
+    let held = tilo_clock::testing::hold_wall_everywhere(process, started);
     let lifetime = 3 * SECOND;
+    let now = tilo_clock::unix_now_ns();
     let mut lapsing = None;
     let admitted = Admitted::start(|bob, desk_key| {
         let cert = certificate(
@@ -260,11 +275,12 @@ async fn a_retained_proof_whose_certificate_ran_out_is_answered_for_the_renewal(
     })
     .await;
     let lapsing = lapsing.unwrap();
-    let left = lapsing
-        .expires_at_ns
-        .unwrap()
-        .saturating_sub(tilo_clock::unix_now_ns());
-    tokio::time::sleep(std::time::Duration::from_nanos(left + SECOND / 2)).await;
+    // The device is away for longer than the certificate lasts.
+    drop(held);
+    let lapsed_at = started
+        .checked_add(Duration::from_nanos(lifetime.saturating_add(SECOND)))
+        .expect("a wall time past the certificate's expiry");
+    let _lapsed = tilo_clock::testing::hold_wall_everywhere(process, lapsed_at);
     let bob = SigningKey::from_bytes(&[2; 32]);
     let now = tilo_clock::unix_now_ns();
     let renewed = certificate(

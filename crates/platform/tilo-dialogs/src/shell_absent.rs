@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use crate::{FilePicker, UriOpener};
 
-/// A connection to the session shell; none exists on this target.
 #[derive(Clone)]
 pub struct ShellLink(Never);
 
@@ -15,24 +14,20 @@ pub struct ShellLink(Never);
 enum Never {}
 
 impl ShellLink {
-    /// Always `None`: no session shell hands this process a connection.
     pub fn inherited() -> Option<Self> {
         None
     }
 
-    /// The shell's choosers (unreachable: no link exists here).
     #[must_use]
     pub fn picker(&self, _unattended: Option<Arc<dyn FilePicker>>) -> Arc<dyn FilePicker> {
         match self.0 {}
     }
 
-    /// Links opened by the shell (unreachable: no link exists here).
     #[must_use]
     pub fn opener(&self, _elsewhere: Arc<dyn UriOpener>) -> Arc<dyn UriOpener> {
         match self.0 {}
     }
 
-    /// Show the shell's app chooser (unreachable: no link exists here).
     pub fn choose_app(
         &self,
         _purpose: &str,
@@ -42,7 +37,6 @@ impl ShellLink {
     }
 }
 
-/// The app the person chose in the shell's app chooser.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChosenApp {
     pub id: String,
@@ -50,12 +44,10 @@ pub struct ChosenApp {
     pub window_ids: Vec<String>,
 }
 
-/// Always `None`: no session shell hands this process a connection.
 pub fn inherited_picker(_unattended: Option<Arc<dyn FilePicker>>) -> Option<Arc<dyn FilePicker>> {
     None
 }
 
-/// Always `None`: no session shell hands this process a connection.
 pub fn inherited_opener(_elsewhere: Arc<dyn UriOpener>) -> Option<Arc<dyn UriOpener>> {
     None
 }

@@ -1,23 +1,10 @@
-//! Firecracker, the hypervisor of hosted VMs: its configuration, its API,
-//! and the snapshot files.
-//!
-//! # Snapshots
-//!
-//! Every VM runs with dirty-page tracking. Suspending writes a *diff*
-//! snapshot: only the pages written since the VM booted or was last
-//! restored. The first one after a cold boot is the whole state (a page the
-//! guest never wrote is zero), stored as a sparse file the size of the
-//! guest's RAM that takes only what the guest touched on disk. Each later
-//! diff is merged into that file ([`merge_diff`]) once Firecracker has
-//! exited, so the file is always the VM's complete memory.
-//!
-//! Restoring maps that file privately: the guest's pages are read from it
-//! only when touched, so a restored VM costs what it uses, not its size.
-//! The file must stay unchanged while the VM runs, and is only valid
-//! together with the disk as it was at the snapshot: so the state file is
-//! removed while the VM runs ([`SnapshotFiles::in_use`]) and only a
-//! completed suspend writes it back. A VM whose state file is missing boots
-//! cold from its disk.
+//! Firecracker, the hypervisor of hosted VMs: its configuration, its API and the
+//! snapshot files. Every VM runs with dirty-page tracking, so a suspend writes a
+//! diff snapshot merged into a sparse memory file the size of the guest's RAM. A
+//! restore maps that file privately and needs it unchanged while the VM runs, so
+//! the state file is removed while it runs and only a completed suspend writes it
+//! back; a clone of a template links the template's memory file and copies it on
+//! its first suspend.
 
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -53,9 +40,8 @@ pub struct Machine {
     pub kernel: PathBuf,
     pub initramfs: Option<PathBuf>,
     pub cmdline: String,
-    /// A raw ext4 image every VM's disk starts as a copy of (reflinked where
-    /// the filesystem can), then grown to the VM's size. Without one, a
-    /// fresh disk is a blank ext4 filesystem.
+    /// A raw ext4 image every VM's disk starts as a copy of (reflinked where the filesystem can),
+    /// then grown to the VM's size. Without one, a fresh disk is a blank ext4 filesystem.
     pub base_disk: Option<PathBuf>,
 }
 
@@ -63,7 +49,6 @@ impl Machine {
     pub const DEFAULT_CMDLINE: &'static str = "console=ttyS0 reboot=k panic=1 quiet";
 }
 
-/// Where one VM's files are.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VmFiles {
     /// Durable: the meter and console log, and [`Self::vmm`].
@@ -150,7 +135,6 @@ impl VmFiles {
     }
 }
 
-/// A VM's snapshot on disk.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SnapshotFiles {
     /// Device and vCPU state. Present only while the snapshot is valid.
@@ -164,7 +148,6 @@ pub struct SnapshotFiles {
 }
 
 impl SnapshotFiles {
-    /// Whether the VM can be restored from here.
     #[must_use]
     pub fn valid(&self) -> bool {
         self.state.is_file() && self.memory.is_file()
@@ -177,7 +160,6 @@ impl SnapshotFiles {
         remove_if_present(&self.state)
     }
 
-    /// A cold boot starts from nothing: no memory to merge into.
     pub fn discard(&self) -> io::Result<()> {
         for path in [&self.state, &self.memory, &self.new_state, &self.diff] {
             remove_if_present(path)?;
@@ -197,16 +179,21 @@ impl SnapshotFiles {
     }
 
     /// Finish a suspend whose files Firecracker wrote and which has exited:
-    /// merge the diff, then make the state valid.
+    /// merge the diff, then make the state valid. Memory still shared with a
+    /// template is copied first: the diff goes into the clone's own copy.
     pub fn complete(&self) -> io::Result<()> {
         if self.diff.is_file() {
+            if shared(&self.memory) {
+                let private = self.memory.with_extension("mem.private");
+                copy_sparse(&self.memory, &private)?;
+                std::fs::rename(&private, &self.memory)?;
+            }
             merge_diff(&self.diff, &self.memory)?;
             std::fs::remove_file(&self.diff)?;
         }
         std::fs::rename(&self.new_state, &self.state)
     }
 
-    /// Bytes the snapshot takes on disk.
     #[must_use]
     pub fn bytes_on_disk(&self) -> u64 {
         allocated(&self.state).saturating_add(allocated(&self.memory))
@@ -220,7 +207,52 @@ fn remove_if_present(path: &Path) -> io::Result<()> {
     }
 }
 
-/// What a file takes on disk, holes not counted.
+/// Whether `path` has other names: a clone's memory still shared with its
+/// template.
+#[must_use]
+pub fn shared(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::metadata(path).is_ok_and(|meta| meta.nlink() > 1)
+}
+
+/// Copy `from` to `to`, sharing its blocks where the filesystem can and
+/// keeping its holes, as the service's own to write.
+fn copy_sparse(from: &Path, to: &Path) -> io::Result<()> {
+    let _ = std::fs::remove_file(to);
+    let status = std::process::Command::new("cp")
+        .arg("--reflink=auto")
+        .arg("--sparse=always")
+        .arg(from)
+        .arg(to)
+        .status()?;
+    if !status.success() {
+        return Err(io::Error::other(format!(
+            "could not copy {}",
+            from.display()
+        )));
+    }
+    // The copy takes the source's mode, and a guest image or a template is
+    // read-only.
+    std::fs::set_permissions(
+        to,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+}
+
+/// Make `files`' VM a clone of `template`'s snapshot: its memory linked to
+/// the template's, its state copied, and its disk a reflinked copy of the
+/// template's, written last, as a VM is what its disk says.
+pub fn clone_vm(template: &VmFiles, files: &VmFiles) -> io::Result<()> {
+    let (from, to) = (template.snapshot(), files.snapshot());
+    std::fs::create_dir_all(files.vmm())?;
+    to.discard()?;
+    std::fs::hard_link(&from.memory, &to.memory)?;
+    copy_sparse(&from.state, &to.state)?;
+    let partial = files.disk().with_extension("raw.partial");
+    copy_sparse(&template.disk(), &partial)?;
+    std::fs::rename(&partial, files.disk())
+}
+
 #[must_use]
 pub fn allocated(path: &Path) -> u64 {
     use std::os::unix::fs::MetadataExt as _;
@@ -266,6 +298,16 @@ pub fn config_json(
             "guest_cid": GUEST_CID,
             "uds_path": path(&files.vsock_socket()),
         },
+        // The balloon starts holding nothing and holds back what the host
+        // asks for under pressure ([`Api::balloon`]). `deflate_on_oom` is
+        // what keeps a guest the balloon pushed too far alive: it gives the
+        // memory back itself rather than the workspace losing a page, or the
+        // kernel killing what holds it.
+        "balloon": {
+            "amount_mib": 0,
+            "deflate_on_oom": true,
+            "stats_polling_interval_s": 0,
+        },
         // Randomness for the guest's TLS from its first moment.
         "entropy": {},
     });
@@ -278,7 +320,6 @@ pub fn config_json(
     config.to_string()
 }
 
-/// `firecracker` booting from `config`.
 #[must_use]
 pub fn boot_argv(machine: &Machine, files: &VmFiles) -> Vec<String> {
     vec![
@@ -300,7 +341,6 @@ pub fn restore_argv(machine: &Machine, files: &VmFiles) -> Vec<String> {
     ]
 }
 
-/// One VM's Firecracker API.
 #[derive(Clone, Debug)]
 pub struct Api {
     socket: PathBuf,
@@ -365,6 +405,14 @@ impl Api {
         )
     }
 
+    /// Move the VM's balloon to `amount_mib`: the guest's usable memory shrinks by that much, which
+    /// the host gets back. A VM whose Firecracker has no balloon device answers with a client
+    /// error, which [`HostedVm::balloon`](super::vm::HostedVm::balloon) tells apart from a host
+    /// that failed.
+    pub fn balloon(&self, amount_mib: u64) -> Result<(), FirecrackerError> {
+        self.call("PATCH", "/balloon", &json!({ "amount_mib": amount_mib }))
+    }
+
     fn call(
         &self,
         method: &str,
@@ -393,7 +441,6 @@ impl Api {
     }
 }
 
-/// The status and body of one HTTP/1.1 response.
 fn read_response(stream: &mut impl io::Read) -> io::Result<(u16, String)> {
     let mut head = Vec::new();
     let mut byte = [0_u8; 1];
@@ -475,24 +522,7 @@ pub fn create_disk(machine: &Machine, disk: &Path, size: VmSize) -> io::Result<(
     let partial = disk.with_extension("raw.partial");
     let _ = std::fs::remove_file(&partial);
     if let Some(base) = &machine.base_disk {
-        let status = std::process::Command::new("cp")
-            .arg("--reflink=auto")
-            .arg("--sparse=always")
-            .arg(base)
-            .arg(&partial)
-            .status()?;
-        if !status.success() {
-            return Err(io::Error::other(format!(
-                "could not copy {}",
-                base.display()
-            )));
-        }
-        // The copy takes the base's mode, and a fetched guest's root
-        // filesystem is read-only: the VM's own disk is the service's to write.
-        std::fs::set_permissions(
-            &partial,
-            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
-        )?;
+        copy_sparse(base, &partial)?;
         grow_disk(&partial, size)?;
     } else {
         std::fs::File::create(&partial)?.set_len(size.disk_bytes())?;
@@ -547,6 +577,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_clone_shares_its_templates_memory_until_its_first_suspend() {
+        let dir = tempfile::tempdir().unwrap();
+        let template = files(&dir.path().join("template"));
+        let (from, disk) = (template.snapshot(), template.disk());
+        std::fs::create_dir_all(template.vmm()).unwrap();
+        std::fs::write(&disk, b"the template's disk").unwrap();
+        std::fs::write(&from.state, b"state").unwrap();
+        std::fs::write(&from.memory, [1_u8; 8192]).unwrap();
+        for path in [&disk, &from.state, &from.memory] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        }
+        let clone = files(&dir.path().join("clone"));
+        clone_vm(&template, &clone).unwrap();
+        let to = clone.snapshot();
+        assert!(to.valid(), "the clone wakes by restoring");
+        assert_eq!(std::fs::read(clone.disk()).unwrap(), b"the template's disk");
+        assert!(
+            shared(&to.memory) && shared(&from.memory),
+            "one memory file, mapped by both"
+        );
+        to.in_use().unwrap();
+        let diff = std::fs::File::create(&to.diff).unwrap();
+        diff.set_len(8192).unwrap();
+        diff.write_all_at(&[9; 4096], 4096).unwrap();
+        std::fs::write(&to.new_state, b"its state").unwrap();
+        to.complete().unwrap();
+        assert!(!shared(&to.memory), "the clone's memory is its own now");
+        assert_eq!(std::fs::read(&from.memory).unwrap(), [1_u8; 8192]);
+        let memory = std::fs::read(&to.memory).unwrap();
+        assert_eq!((memory[0], memory[4096]), (1, 9));
+    }
+
     fn files(dir: &Path) -> VmFiles {
         VmFiles {
             state: dir.join("state"),
@@ -571,6 +634,14 @@ mod tests {
         assert_eq!(config["machine-config"]["mem_size_mib"], 16384);
         assert_eq!(config["machine-config"]["track_dirty_pages"], true);
         assert_eq!(
+            config["balloon"]["amount_mib"], 0,
+            "a VM starts holding its memory, and gives it back under pressure"
+        );
+        assert_eq!(
+            config["balloon"]["deflate_on_oom"], true,
+            "a guest the balloon pushed too far gives the memory back itself"
+        );
+        assert_eq!(
             config["drives"][0]["path_on_host"],
             "/h/vm/state/vmm/disk.raw"
         );
@@ -594,7 +665,6 @@ mod tests {
                 "/h/vm/state/vmm/firecracker.json"
             ]
         );
-        // phase: jailed, Firecracker names everything inside its jail
         let jailed = VmFiles {
             jailed: true,
             ..files
@@ -613,7 +683,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let snapshot = files(dir.path()).snapshot();
         std::fs::create_dir_all(dir.path().join("state/vmm")).unwrap();
-        // phase: after a cold boot the first suspend writes the base itself
         {
             assert_eq!(snapshot.next_memory_target(), snapshot.memory);
             let base = std::fs::File::create(&snapshot.memory).unwrap();
@@ -625,7 +694,6 @@ mod tests {
             assert!(snapshot.valid());
             assert!(snapshot.bytes_on_disk() < 1 << 20, "holes are not stored");
         }
-        // phase: a restored VM's suspend writes a diff that is merged in
         {
             snapshot.in_use().unwrap();
             assert!(!snapshot.valid(), "a running VM's snapshot is stale");
@@ -651,7 +719,6 @@ mod tests {
             }
             assert_eq!(std::fs::read(&snapshot.state).unwrap(), b"state-2");
         }
-        // phase: a cold boot discards it all
         {
             snapshot.discard().unwrap();
             assert!(!snapshot.memory.exists() && !snapshot.state.exists());

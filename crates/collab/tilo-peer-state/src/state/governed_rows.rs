@@ -15,7 +15,7 @@ pub(crate) fn identity_rows(doc: &AutoCommit) -> Result<Vec<IdentityRow>, String
         .identities
         .into_iter()
         .map(|(id, bytes)| {
-            serde_json::from_slice(&bytes)
+            GovernedIdentity::decode(&bytes)
                 .map(|row| (id, bytes, row))
                 .map_err(err)
         })
@@ -31,7 +31,7 @@ pub(crate) fn put_identity_rows(
     let map = identities(doc)?;
     let mut changed = false;
     for (id, old, row) in rows {
-        let bytes = serde_json::to_vec(row).map_err(err)?;
+        let bytes = row.encode().map_err(err)?;
         if bytes != *old {
             doc.put(&map, id, ScalarValue::Bytes(bytes)).map_err(err)?;
             changed = true;
@@ -52,19 +52,18 @@ fn err(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+/// A device row as the workspace document holds it: postcard, keys and
+/// signatures as the bytes they are. A delegate's row, which few devices
+/// carry, is kept as the JSON its own types read and write.
+#[derive(Clone)]
 pub(crate) struct GovernedIdentity {
     pub(crate) device_cert: DeviceCert,
-    #[serde(default)]
     pub(crate) revocations: Vec<tilo_user_identity::RevocationEntry>,
-    #[serde(default)]
     pub(crate) admission: Option<RedemptionReceipt>,
-    #[serde(default)]
     pub(crate) admissions: Vec<RedemptionReceipt>,
     /// Present when the device is a delegate of its person: an agent, or an
     /// installed bot ([`super::delegates`]). Absent from every other identity's
     /// bytes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) delegate: Option<GovernedDelegateRow>,
     /// The workspace delegations a build before [`super::DURABLE_BASE_VERSION`]
     /// wrote in this row: it let another device issue invitations for a
@@ -72,8 +71,91 @@ pub(crate) struct GovernedIdentity {
     /// act on; they are kept because the row's bytes, and the media
     /// authorization basis computed over them, are a digest a stored policy
     /// still names. Written back as they were read, never added to.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) workspace_delegations: Vec<WorkspaceDelegation>,
+}
+
+impl GovernedIdentity {
+    /// The identity row `bytes` hold, as stored.
+    ///
+    /// # Errors
+    ///
+    /// The bytes are not an identity row.
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, RowError> {
+        crate::governance_work::identity_decoded();
+        let stored: StoredIdentity = postcard::from_bytes(bytes).map_err(RowError::Postcard)?;
+        Ok(Self {
+            device_cert: stored.device_cert,
+            revocations: stored.revocations,
+            admission: stored.admission,
+            admissions: stored.admissions,
+            delegate: stored
+                .delegate
+                .map(|json| serde_json::from_slice(&json))
+                .transpose()
+                .map_err(RowError::Delegate)?,
+            workspace_delegations: stored.workspace_delegations,
+        })
+    }
+
+    /// The bytes the workspace document holds for this row.
+    ///
+    /// # Errors
+    ///
+    /// A field does not encode.
+    pub(crate) fn encode(&self) -> Result<Vec<u8>, RowError> {
+        let delegate = self
+            .delegate
+            .as_ref()
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(RowError::Delegate)?;
+        postcard::to_stdvec(&StoredIdentityRef {
+            device_cert: &self.device_cert,
+            revocations: &self.revocations,
+            admission: self.admission.as_ref(),
+            admissions: &self.admissions,
+            delegate: delegate.as_deref(),
+            workspace_delegations: &self.workspace_delegations,
+        })
+        .map_err(RowError::Postcard)
+    }
+}
+
+/// Why a device row does not read or write.
+#[derive(Debug)]
+pub enum RowError {
+    Postcard(postcard::Error),
+    Delegate(serde_json::Error),
+}
+impl std::fmt::Display for RowError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Postcard(error) => write!(f, "governed identity row: {error}"),
+            Self::Delegate(error) => write!(f, "governed identity row's delegate: {error}"),
+        }
+    }
+}
+impl std::error::Error for RowError {}
+
+/// [`GovernedIdentity`] as stored, in field order.
+#[derive(Deserialize)]
+struct StoredIdentity {
+    device_cert: DeviceCert,
+    revocations: Vec<tilo_user_identity::RevocationEntry>,
+    admission: Option<RedemptionReceipt>,
+    admissions: Vec<RedemptionReceipt>,
+    delegate: Option<Vec<u8>>,
+    workspace_delegations: Vec<WorkspaceDelegation>,
+}
+/// [`StoredIdentity`], borrowed to be written.
+#[derive(Serialize)]
+struct StoredIdentityRef<'a> {
+    device_cert: &'a DeviceCert,
+    revocations: &'a [tilo_user_identity::RevocationEntry],
+    admission: Option<&'a RedemptionReceipt>,
+    admissions: &'a [RedemptionReceipt],
+    delegate: Option<&'a [u8]>,
+    workspace_delegations: &'a [WorkspaceDelegation],
 }
 
 /// A workspace delegation as a build before [`super::DURABLE_BASE_VERSION`]
@@ -109,13 +191,7 @@ impl Default for GovernedIdentity {
                 device_label: String::new(),
                 capabilities: tilo_user_identity::DeviceCapabilities {
                     can_own_workspaces: false,
-                    can_admit_devices: false,
-                    can_act_as_host: false,
-                    can_read_all_workspaces: false,
-                    foreign: false,
-                    can_administer_devices: false,
-                    agent: None,
-                    stand_in: false,
+                    ..tilo_user_identity::DeviceCapabilities::member()
                 },
                 issued_at_ns: 0,
                 expires_at_ns: None,
@@ -151,19 +227,4 @@ pub(crate) struct RedemptionReceipt {
     pub(crate) device_public_key: [u8; 32],
     pub(crate) request_id: [u8; 32],
     pub(crate) role: crate::join::MemberRole,
-    /// The signed invitation redeemed, in its text form
-    /// ([`crate::join::encode_invitation_text`]): what lets every receiver
-    /// check the admission itself, whoever wrote it. Kept once, in the
-    /// workspace's per-invite ledger; an identity row's copy leaves it out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) invitation: Option<String>,
-}
-impl RedemptionReceipt {
-    /// The receipt as an identity row keeps it: without the invitation.
-    pub(crate) fn on_row(&self) -> Self {
-        Self {
-            invitation: None,
-            ..self.clone()
-        }
-    }
 }

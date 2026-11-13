@@ -222,6 +222,27 @@ enum RelayConnectionError {
     Established { source: RunError },
 }
 
+/// Whether a relay connection survives a network change, before it is
+/// verified with a ping.
+///
+/// TILO PATCH: a connection with no local address to compare (a browser's
+/// WebSocket never has one) is pinged rather than dropped. Upstream broke it
+/// off with a "No local address" error, so every network change in a
+/// browser (an `online` event, or a wall-clock jump such as a throttled
+/// background tab) closed a healthy home relay connection and lost the
+/// datagrams in flight while it was dialed again. A dead connection still
+/// ends through the ping's timeout. Native connections always have a local
+/// address, so they are unchanged.
+fn check_connection(
+    local_addr: Option<std::net::SocketAddr>,
+    local_ips: &[std::net::IpAddr],
+) -> Result<(), RunError> {
+    match local_addr {
+        Some(addr) if !local_ips.contains(&addr.ip()) => Err(e!(RunError::LocalIpInvalid)),
+        Some(_) | None => Ok(()),
+    }
+}
+
 #[allow(missing_docs)]
 #[stack_error(derive, add_meta)]
 enum RunError {
@@ -231,8 +252,6 @@ enum RunError {
     PingTimeout,
     #[error("Local IP no longer valid")]
     LocalIpInvalid,
-    #[error("No local address")]
-    LocalAddrMissing,
     #[error("Stream closed by server.")]
     StreamClosedServer,
     #[error("Client stream read failed")]
@@ -306,7 +325,11 @@ impl ActiveRelayActor {
             dns_resolver,
         )
         .tls_client_config(tls_config)
-        .address_family_selector(move || prefer_ipv6.load(Ordering::Relaxed));
+        .address_family_selector(move || prefer_ipv6.load(Ordering::Relaxed))
+        // TILO PATCH: the first datagrams (a dial's QUIC Initial) go out right
+        // behind the relay handshake's answer, a round trip sooner. See
+        // TILO-PATCH.md, "Datagrams follow the relay handshake's answer".
+        .send_before_confirmed(true);
         if let Some(proxy_url) = proxy_url {
             builder = builder.proxy_url(proxy_url);
         }
@@ -584,15 +607,14 @@ impl ActiveRelayActor {
                             }
                         }
                         ActiveRelayMessage::CheckConnection { local_ips } => {
-                            match client_stream.local_addr() {
-                                Some(addr) if local_ips.contains(&addr.ip()) => {
-                                    let data = state.ping_tracker.new_ping();
-                                    let fut = client_sink.send(ClientToRelayMsg::Ping(data));
-                                    self.run_sending(fut, &mut state, &mut client_stream).await?;
-                                }
-                                Some(_) => break Err(e!(RunError::LocalIpInvalid)),
-                                None => break Err(e!(RunError::LocalAddrMissing)),
+                            if let Err(err) =
+                                check_connection(client_stream.local_addr(), &local_ips)
+                            {
+                                break Err(err);
                             }
+                            let data = state.ping_tracker.new_ping();
+                            let fut = client_sink.send(ClientToRelayMsg::Ping(data));
+                            self.run_sending(fut, &mut state, &mut client_stream).await?;
                         }
                         #[cfg(test)]
                         ActiveRelayMessage::GetLocalAddr(sender) => {
@@ -1741,6 +1763,26 @@ mod tests {
 
         cancel_token.cancel();
         Ok(())
+    }
+
+    #[test]
+    fn test_check_connection_without_local_addr_pings() {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        use super::{RunError, check_connection};
+
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7));
+        let addr = SocketAddr::new(ip, 4433);
+        // A browser's connection has no local address: it is kept and pinged,
+        // with or without local IPs to compare against.
+        assert!(check_connection(None, &[]).is_ok());
+        assert!(check_connection(None, &[ip]).is_ok());
+        // Native connections keep upstream's check.
+        assert!(check_connection(Some(addr), &[ip]).is_ok());
+        assert!(matches!(
+            check_connection(Some(addr), &[IpAddr::V4(Ipv4Addr::LOCALHOST)]),
+            Err(RunError::LocalIpInvalid { .. })
+        ));
     }
 
     #[tokio::test]

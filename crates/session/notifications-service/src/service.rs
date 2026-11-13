@@ -235,18 +235,22 @@ fn resource(notification: &Notification) -> ResourceSpec {
 impl Service for Notifications {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![
-            ResourceSpec::new(NOTIFICATIONS_RESOURCE, NOTIFICATIONS_KIND, "Notifications")
-                .with_children(self.live().iter().map(resource)),
+            ResourceSpec::new(
+                NOTIFICATIONS_RESOURCE,
+                NOTIFICATIONS_KIND,
+                crate::i18n::name(NOTIFICATIONS_KIND, "Notifications"),
+            )
+            .with_children(self.live().iter().map(resource)),
             offer::<SchedulesEffect>(ResourceSpec::new(
                 SCHEDULES_RESOURCE,
                 SCHEDULES_KIND,
-                "Scheduled notifications",
+                crate::i18n::name(SCHEDULES_KIND, "Scheduled notifications"),
             ))
             .with_children(self.schedules().deadlines().iter().map(schedule)),
             offer::<PriorityContactsEffect>(ResourceSpec::new(
                 PRIORITY_CONTACTS_RESOURCE,
                 PRIORITY_CONTACTS_KIND,
-                "Priority contacts",
+                crate::i18n::name(PRIORITY_CONTACTS_KIND, "Priority contacts"),
             ))
             .with_children(
                 self.priority_contacts()

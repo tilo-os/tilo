@@ -294,7 +294,7 @@ impl Calls {
     /// connection closed. Returns the workspaces that still have participants.
     fn expire(&self) -> Vec<String> {
         let mut state = self.state();
-        let now = Instant::now();
+        let now = tilo_clock::now();
         let gone: Vec<[u8; 32]> = state
             .participations
             .iter()
@@ -355,7 +355,7 @@ impl Policy {
         } else {
             peer.validated_media_policy()?
         };
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         Ok(Self {
             calls,
             access: peer.governance().governed_access(now)?,
@@ -817,7 +817,7 @@ impl Workspaces {
             let access = workspace
                 .peer()
                 .governance()
-                .governed_access(SystemTime::now())?;
+                .governed_access(tilo_clock::wall())?;
             if !access.member_devices.contains(&caller.device_public_key)
                 && !access.member_user_roots.contains(&caller.user_public_key)
             {
@@ -869,7 +869,7 @@ impl Workspaces {
             }
             _ => None,
         };
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut candidate = workspace.peer().clone();
         super::prepare_governance(&mut candidate, &self.inner.host.key, now)?;
         let call = transition(
@@ -949,7 +949,7 @@ impl Workspaces {
                 .get_mut(&id)
                 .filter(|existing| existing.call == call && existing.device == device)
                 .ok_or("the participation ended; join afresh")?;
-            existing.seen = Instant::now();
+            existing.seen = tilo_clock::now();
             existing.outbound = outbound;
             id
         } else {
@@ -974,7 +974,7 @@ impl Workspaces {
                     user,
                     directions,
                     showing: Showing::default(),
-                    seen: Instant::now(),
+                    seen: tilo_clock::now(),
                     outbound,
                 },
             );
@@ -1226,7 +1226,7 @@ mod tests {
                 subscribe: true,
             },
             showing: Showing::default(),
-            seen: Instant::now(),
+            seen: tilo_clock::now(),
             outbound,
         }
     }

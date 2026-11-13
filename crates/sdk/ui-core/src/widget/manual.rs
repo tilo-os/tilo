@@ -37,6 +37,10 @@ struct PolicyRevision {
     requested: Cell<u64>,
     solved: Cell<Option<u64>>,
     applied: Cell<Option<u64>>,
+    /// The allocation the region's last solve was handed. Nothing the policy
+    /// read changed since, when its children's flags say so and its subtree
+    /// stands where that solve put it, so the same allocation answers again.
+    settled_at: Cell<Option<Size<f32>>>,
 }
 impl ManualInvalidation {
     /// Request another solve without replacing the region or its children.
@@ -45,6 +49,17 @@ impl ManualInvalidation {
     }
     pub(crate) fn is_pending(&self) -> bool {
         self.0.applied.get() != Some(self.0.requested.get())
+    }
+    /// Whether the region's last solve was handed `available`: its answer
+    /// stands for that allocation.
+    pub(crate) fn settled_at(&self, available: Size<f32>) -> bool {
+        self.0.settled_at.get() == Some(available)
+    }
+    /// The region's children carry the styles it built them with, not ones a
+    /// solve placed (a rebuilt tree): its next solve is owed.
+    pub(crate) fn rebuilt(&self) {
+        self.0.applied.set(None);
+        self.0.settled_at.set(None);
     }
     /// Acknowledge the solved revision once its geometry has been applied
     /// (what [`Manual`] does in `apply_layout`), for another widget that
@@ -87,6 +102,12 @@ impl ManualPolicy {
             info: Rc::new(Cell::new(None)),
             invalidation,
         }
+    }
+
+    /// Whether the region's answer for `available` stands: it solved at that
+    /// allocation and nothing it read has moved since.
+    pub(super) fn settled_at(&self, available: Size<f32>) -> bool {
+        self.invalidation.settled_at(available)
     }
 }
 
@@ -239,6 +260,7 @@ impl Widget for Manual {
             .map(|&child| (child, tree.style(child).cloned().unwrap_or_default()))
             .collect();
         self.info.set(None);
+        self.invalidation.rebuilt();
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -269,6 +291,29 @@ impl Widget for Manual {
     }
 }
 
+/// The trees one solve measures its regions' children in.
+///
+/// A measurement hands a subtree a proposal and reads what it answers, without
+/// the window's own geometry learning anything of it: the answer comes from a
+/// copy. One copy serves every probe of a solve — the copies are the cost, and
+/// a region that measures a row per viewport would otherwise copy the whole
+/// window's tree once per row. Before a probe, the copy is given back the
+/// window's own styles for the subtree it is about to solve, so it starts
+/// where a fresh copy would.
+#[derive(Default)]
+pub(super) struct Probes {
+    tree: Option<TaffyTree<()>>,
+}
+
+impl Probes {
+    fn of(&mut self, live: &TaffyTree<()>) -> &mut TaffyTree<()> {
+        self.tree.get_or_insert_with(|| {
+            crate::profiling::layout_counts::copy();
+            live.clone()
+        })
+    }
+}
+
 /// Safe child-indexed measurement/placement services supplied by the host.
 /// Measurements solve current retained topology; they never apply geometry or
 /// rebuild widgets. Actual placement participates in the normal host settlement.
@@ -280,6 +325,7 @@ pub struct ManualContext<'a> {
     children: &'a [(NodeId, Style)],
     available: Size<f32>,
     placements: Vec<Option<Rect>>,
+    probes: &'a mut Probes,
     depth: usize,
 }
 impl ManualContext<'_> {
@@ -336,11 +382,33 @@ impl ManualContext<'_> {
         index: usize,
         proposal: Size<MeasureConstraint>,
     ) -> Result<ChildMeasurement, WidgetLayoutError> {
-        let (root, baseline) = self
-            .children
+        crate::profiling::layout_counts::probe();
+        let children = self.children;
+        let (root, baseline) = children
             .get(index)
             .ok_or(WidgetLayoutError::ManualChildIndex(index))?;
-        let mut probe = self.tree.clone();
+        let root = *root;
+        // The subtree the proposal solves, and the widgets the host admitted
+        // for it: a copy holds matching node ids, so the admission stands.
+        let mut solved = Vec::new();
+        let mut pending = vec![root];
+        let mut subtree = HashMap::new();
+        while let Some(node) = pending.pop() {
+            solved.push(node);
+            if let Some(&pointer) = self.nodes.get(&node) {
+                subtree.insert(node, pointer);
+            }
+            pending.extend(self.tree.children(node)?);
+        }
+        let live = self.tree;
+        let probe = self.probes.of(live);
+        // A copy may hold what an earlier probe left in the regions inside
+        // this subtree; the window's own styles are what a fresh one gives.
+        // A node whose style already matches keeps its solved layout, as it
+        // would in a fresh copy.
+        for &node in &solved {
+            set_style(probe, node, live.style(node)?.clone())?;
+        }
         let mut style = baseline.clone();
         style.position = taffy::Position::Relative;
         style.inset = taffy::Rect::auto();
@@ -357,22 +425,15 @@ impl ManualContext<'_> {
             &mut style.min_size.height,
             &mut style.max_size.height,
         )?;
-        probe.set_style(*root, style)?;
-        let mut subtree = HashMap::new();
-        let mut pending = vec![*root];
-        while let Some(node) = pending.pop() {
-            if let Some(&pointer) = self.nodes.get(&node) {
-                subtree.insert(node, pointer);
-            }
-            pending.extend(probe.children(node)?);
-        }
+        // The proposal is this probe's, whatever the copy solved there before.
+        probe.set_style(root, style)?;
         // SAFETY: context is created only by the admitted host solver, with no
         // ancestor widget borrow alive. Reuse ORIGINAL admission, never rebuild
-        // it from the filtered raw map. The cloned Taffy retains matching IDs.
+        // it from the filtered raw map. The copy retains matching IDs.
         unsafe {
             super::layout::compute_widget_layout_depth(
-                &mut probe,
-                *root,
+                probe,
+                root,
                 Size { width, height },
                 &subtree,
                 self.bindings,
@@ -380,7 +441,7 @@ impl ManualContext<'_> {
                 self.depth.saturating_add(1),
             )?;
         }
-        let layout = probe.unrounded_layout(*root);
+        let layout = probe.unrounded_layout(root);
         Ok(ChildMeasurement {
             size: layout.size,
             content_size: layout.content_size,
@@ -426,11 +487,14 @@ fn propose(
 /// with a wider parent. Only a region whose allocation can have changed (it,
 /// or an ancestor, is dirty) is reset; a clean one keeps its cached solve. An
 /// axis the region sizes itself (`auto`) keeps the policy's answer.
+///
+/// Answers whether it did reset the region: a region whose size was taken
+/// back is solved again, whatever its inputs say.
 pub(super) fn reset_region(
     descriptor: &ManualPolicy,
     tree: &mut TaffyTree<()>,
     node: NodeId,
-) -> Result<(), taffy::TaffyError> {
+) -> Result<bool, taffy::TaffyError> {
     let mut style = tree.style(node)?.clone();
     let authored = descriptor.region;
     let reset = |authored: Dimension, current: &mut Dimension| {
@@ -441,17 +505,17 @@ pub(super) fn reset_region(
     reset(authored.width, &mut style.size.width);
     reset(authored.height, &mut style.size.height);
     if style.size == tree.style(node)?.size {
-        return Ok(());
+        return Ok(false);
     }
     let mut current = Some(node);
     while let Some(id) = current {
         if tree.dirty(id)? {
             set_style(tree, node, style)?;
-            return Ok(());
+            return Ok(true);
         }
         current = tree.parent(id);
     }
-    Ok(())
+    Ok(false)
 }
 
 /// The region's size on one axis after its policy answered `answer` for an
@@ -488,6 +552,7 @@ pub(super) unsafe fn run_policy(
     bindings: &BoundNodeMap,
     text: &mut TextRenderer,
     depth: usize,
+    probes: &mut Probes,
 ) -> Result<bool, WidgetLayoutError> {
     let revision = descriptor.invalidation.0.requested.get();
     // A policy allocates in the solver's own geometry: the tree rounds its
@@ -502,6 +567,7 @@ pub(super) unsafe fn run_policy(
         children: &descriptor.children,
         available: layout.size,
         placements: vec![None; descriptor.children.len()],
+        probes,
         depth,
     };
     let size = (descriptor.policy)(&mut context)?;
@@ -579,6 +645,12 @@ pub(super) unsafe fn run_policy(
         first_conflict: conflict,
     }));
     descriptor.invalidation.0.solved.set(Some(revision));
+    // What this region answers for this allocation, once its children's flags
+    // say nothing in its subtree moved. A probe solves a copy: what it places
+    // says nothing about where the window's own children stand.
+    if depth == 0 {
+        descriptor.invalidation.0.settled_at.set(Some(layout.size));
+    }
     Ok(changed)
 }
 /// Conservative solved-layout paint bounds, relative to the root's parent.

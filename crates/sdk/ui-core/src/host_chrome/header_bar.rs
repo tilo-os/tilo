@@ -25,6 +25,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::ControlSize;
+use crate::widget::DrawChild;
 use crate::widget::{Button, ContextMenu, MenuItem, Row, Spacer, Text, Widget};
 
 /// What the person asked of the window or the app through the bar.
@@ -342,7 +343,7 @@ impl Widget for HeaderBar {
         presence: &PresenceCtx,
     ) {
         crate::widget::toolbar::paint_band(scene, transform, theme, self.rect);
-        self.row.draw(scene, transform, text, theme, presence);
+        self.row.draw_child(scene, transform, text, theme, presence);
         self.menu.layout_within(text, theme);
     }
 
@@ -630,7 +631,8 @@ mod tests {
         assert!(
             labels[2..]
                 .iter()
-                .all(|label| label.is_some_and(|label| label.contains(" · ")))
+                .all(|label| label.is_some_and(|label| label.contains(" by "))),
+            "a change names who made it: {labels:?}"
         );
         let newest = bar.menu.item_rect(2).unwrap().center();
         drop(bar);

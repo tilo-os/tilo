@@ -35,7 +35,6 @@ fn run_on(host: &MemoryHost, script: &str) -> Ran {
     }
 }
 
-/// Run `script` for an agent.
 fn agent(host: &MemoryHost, script: &str) -> Ran {
     run_on(host, &format!("USH_RENDER=agent\n{script}"))
 }
@@ -49,8 +48,6 @@ fn project() -> MemoryHost {
     host
 }
 
-/// A directory of `n` files, `f000.txt` on, each with `n` lines matching
-/// `hit`.
 fn many(n: usize) -> MemoryHost {
     let host = MemoryHost::new();
     let mut text = String::new();
@@ -62,8 +59,6 @@ fn many(n: usize) -> MemoryHost {
     }
     host
 }
-
-// ls
 
 #[test]
 fn ls_for_an_agent_is_a_line_per_directory() {
@@ -119,8 +114,6 @@ fn ls_text_is_unchanged() {
     );
 }
 
-// grep
-
 #[test]
 fn grep_for_an_agent_groups_matches_by_file_with_line_numbers() {
     let host = project();
@@ -134,7 +127,6 @@ fn grep_for_an_agent_groups_matches_by_file_with_line_numbers() {
         "{}",
         r.err
     );
-    // One file: still named, so the path survives.
     let r = agent(&host, "grep foo p/a.rs");
     assert_eq!(r.out, "p/a.rs\n  1: foo\n  3: foo again\n", "{}", r.err);
     let r = agent(&host, "grep -C1 again p/a.rs");
@@ -150,12 +142,10 @@ fn grep_for_an_agent_groups_matches_by_file_with_line_numbers() {
 #[test]
 fn grep_for_an_agent_says_exactly_how_much_it_left_out() {
     let host = many(30);
-    // 30 files of 30 matching lines: 900 lines, 200 shown.
     let r = agent(&host, "grep -r hit big");
     assert_eq!(r.status, 0, "{}", r.err);
     let shown = r.out.lines().filter(|l| l.starts_with("  ")).count();
     assert_eq!(shown, 200);
-    // The 200th line is line 20 of the seventh file; that file loses ten.
     assert!(r.out.contains("big/f006.txt\n"), "{}", r.out);
     assert!(!r.out.contains("big/f007.txt"), "{}", r.out);
     assert!(
@@ -193,8 +183,6 @@ fn grep_text_is_unchanged() {
     assert_eq!(r.out, "foo\nfoo again\n");
 }
 
-// find
-
 #[test]
 fn find_for_an_agent_groups_names_by_directory() {
     let host = project();
@@ -229,8 +217,6 @@ fn find_text_is_unchanged() {
     let r = run_on(&host, "find p -name '*.rs'");
     assert_eq!(r.out, "p/a.rs\np/sub/x.rs\n");
 }
-
-// diff
 
 #[test]
 fn diff_for_an_agent_is_its_hunks() {
@@ -269,7 +255,6 @@ fn diff_for_an_agent_says_exactly_how_much_it_left_out() {
         }
     }
     host.file("/home/me/a.txt", a).file("/home/me/b.txt", b);
-    // 150 hunks of two added lines: 300 lines, 200 shown (100 hunks).
     let r = agent(&host, "diff a.txt b.txt");
     assert_eq!(r.status, 1, "{}", r.err);
     assert_eq!(

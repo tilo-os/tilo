@@ -12,11 +12,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-mod common;
-
 use std::fmt::Write as _;
 
-use common::{WORKSPACE, catalogue};
+use crate::common::{WORKSPACE, catalogue};
 use ui::accesskit;
 use ui::application::{ApplicationHost, ComponentRunnerInputs};
 use ui::headless::FrameHarness;

@@ -12,17 +12,9 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-#[path = "headless/harness.rs"]
-#[allow(
-    dead_code,
-    reason = "the harness is shared with the other headless tests; this one drives part of it"
-)]
-mod harness;
-
 use std::sync::Arc;
 
-use harness::{TestClient, headless, mapped_client, pump};
-use neighbour_wire::NeighbourMsg;
+use crate::harness::{TestClient, headless, mapped_client, pump};
 use neighbour_wire::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
 };
@@ -48,17 +40,11 @@ impl ShareStream for Tells {
     }
 }
 
-/// What `session` would announce to its viewers now, as `(colour, mastering volume)` : the same
-/// report a stream start carries.
+/// What `session` tells its viewers its pictures are now, as `(colour, mastering volume)` : what
+/// each keyframe says.
 fn announced(session: &SharedFlatpakSession) -> (Option<Colorimetry>, Option<Hdr10Metadata>) {
-    match session.stream_start_msg() {
-        NeighbourMsg::SurfaceStreamStart {
-            colorimetry,
-            hdr_static_metadata,
-            ..
-        } => (colorimetry, hdr_static_metadata),
-        other => panic!("expected SurfaceStreamStart, got {other:?}"),
-    }
+    let picture = session.picture();
+    (Some(picture.colorimetry), picture.hdr)
 }
 
 /// A BT.2020 PQ description, what an HDR video player attaches.
@@ -71,8 +57,8 @@ fn hdr10_pq() -> Colorimetry {
     }
 }
 
-/// A share of `window` that encodes nothing: the colour is decided before any byte reaches an
-/// encoder, so no encoder is needed to see what it announces.
+/// A share of `window` as its app starts it: the colour is decided before any byte reaches an
+/// encoder, so nothing here needs a frame to see what it announces.
 fn shared(compositor: &mut Compositor, window: u64) -> Arc<SharedFlatpakSession> {
     let config = FlatpakShareConfig {
         max_bitrate_kbps: 8000,
@@ -81,8 +67,8 @@ fn shared(compositor: &mut Compositor, window: u64) -> Arc<SharedFlatpakSession>
         hdr: None,
     };
     let session = Arc::new(
-        SharedFlatpakSession::start_paint(1, "colour", window, 200, 100, &config)
-            .expect("a paint share needs no encoder"),
+        SharedFlatpakSession::start(1, "colour", window, 200, 100, &config)
+            .expect("a share of the window"),
     );
     compositor.share_window(window, Arc::new(Tells(Arc::clone(&session))));
     session

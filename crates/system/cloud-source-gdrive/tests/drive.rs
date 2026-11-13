@@ -32,7 +32,6 @@ fn drive(config: DriveConfig, token: &str) -> GDrive {
     .unwrap()
 }
 
-/// A source on the whole of a fresh fake My Drive.
 fn setup() -> (FakeDrive, GDrive) {
     let server = FakeDrive::start();
     let source = drive(server.config(), SOURCE_TOKEN);
@@ -533,7 +532,6 @@ fn folders_moving_across_the_root_boundary() {
 
     let (initial, cursor) = drain(&source, None);
     assert!(initial.is_empty(), "{initial:?}");
-    // Outside changes are not upserted.
     server.write_file(&file, b"s2");
     let (delta, cursor) = drain(&source, Some(&cursor));
     assert!(
@@ -541,7 +539,6 @@ fn folders_moving_across_the_root_boundary() {
         "{delta:?}"
     );
 
-    // Moving a folder in brings its unchanged contents along.
     account
         .move_item(&project.id, &mounted.id, "Project", None)
         .unwrap();
@@ -555,7 +552,6 @@ fn folders_moving_across_the_root_boundary() {
         );
     }
 
-    // Moving it out again removes it.
     account
         .move_item(&project.id, &outside.id, "Project", None)
         .unwrap();
@@ -586,7 +582,6 @@ fn enumeration_lists_many_folders_per_request() {
             .count(),
         30
     );
-    // The root, then 30 folders in batches of 20.
     assert_eq!(lists, 3, "one query per batch of folders");
 }
 
@@ -647,7 +642,6 @@ fn shared_drives_need_their_parameters() {
     let (changes, _) = drain(&source, None);
     assert_eq!(changes.len(), 2, "{changes:?}");
     assert!(matches!(source.quota(), Err(Error::Unsupported(_))));
-    // My Drive does not see shared drive items in its listings.
     let my_drive = drive(server.config(), SOURCE_TOKEN);
     assert!(my_drive.list(&my_drive.root()).unwrap().is_empty());
 }

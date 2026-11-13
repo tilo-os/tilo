@@ -1,7 +1,4 @@
 //! `tilo-authd`: owns every person's record and does every unwrap.
-//!
-//! Requests are answered one at a time: each may ask the TPM or spend
-//! 256 MiB on Argon2id, and neither should run twice at once.
 
 mod enroll;
 pub mod server;
@@ -34,36 +31,25 @@ use tilo_rollback::policy::Workspace;
 use tilo_seal::envelope::PasswordParams;
 use volume::Locate;
 
-/// How long a boot sign-in waits for its session.
 pub const BOOT_SIGN_IN_FOR: Duration = Duration::from_secs(handoff::TIMEOUT_S as u64);
 
 pub struct Config {
     pub socket: PathBuf,
     pub records: PathBuf,
-    /// The root `/etc/passwd` and `/etc/group` are read under.
     pub accounts_root: PathBuf,
     pub lockout: PathBuf,
     pub lockout_legacy: PathBuf,
-    /// The disk passphrase tilo-rollback's unlock left for this boot.
     pub proof_file: PathBuf,
-    /// A root-only directory for the tools' scratch files.
     pub scratch: PathBuf,
-    /// The account the login screen runs as.
     pub greeter_user: String,
-    /// The uid that may do what only root may.
     pub privileged_uid: u32,
     pub tcti: Option<String>,
     pub passphrase_params: PasswordParams,
     pub volume: Locate,
-    /// The boot handoff key's description; `None` takes none.
     pub handoff: Option<String>,
-    /// The linked volume key's description; `None` uses none.
     pub volume_key: Option<String>,
-    /// Where logind keeps a state file per signed-in uid.
     pub sessions: PathBuf,
-    /// What decides when a migrated person's old password hash may go.
     pub rollback_set: RollbackSet,
-    /// The device's sign-in comforts.
     pub comforts: PathBuf,
 }
 
@@ -91,13 +77,11 @@ impl Default for Config {
     }
 }
 
-/// Who is asking, from the socket's peer credentials.
 #[derive(Clone, Copy, Debug)]
 pub struct Peer {
     pub uid: u32,
 }
 
-/// What goes back on the socket.
 pub enum Answer {
     Reply(Reply),
     Pending(Option<PendingSignIn>),
@@ -137,12 +121,10 @@ pub struct Daemon {
     lockout: LockoutStore,
     comforts: comforts::Store,
     state: Mutex<State>,
-    /// Signalled after every request, which may have remembered a wrong entry.
     requests: Condvar,
     held: Mutex<HashMap<u32, Held>>,
 }
 
-/// One request's scratch directory and tool runner.
 struct Work {
     _dir: tempfile::TempDir,
     runner: Real,
@@ -166,7 +148,6 @@ fn tries_reply(refusal: Refusal, tries: Option<Tries>) -> Reply {
     }
 }
 
-/// What offering a secret to a person's record came to.
 enum Checked {
     Key(UserKey),
     Refused(Reply),
@@ -221,7 +202,6 @@ fn open_with_recovery(record: &Record, typed: &str) -> Result<Option<(UserKey, R
     Ok(None)
 }
 
-/// How a new secret is proven to be the person's right to change it.
 enum Proof<'a> {
     Current(&'a str),
     Recovery(&'a str),
@@ -426,7 +406,6 @@ impl Daemon {
         peer.uid == self.cfg.privileged_uid
     }
 
-    /// The account `user` names, when `peer` may ask about it.
     fn subject(&self, peer: Peer, user: &str) -> Result<Result<Account, Reply>> {
         let account = self.accounts.by_name(user)?;
         Ok(match account {
@@ -486,7 +465,6 @@ impl Daemon {
         self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Keep `uid`'s key for the session this sign-in starts or confirms.
     pub(super) fn hold(&self, uid: u32, key: UserKey) {
         let in_session = self.has_session(uid);
         self.held().insert(
@@ -499,7 +477,6 @@ impl Daemon {
         );
     }
 
-    /// Whether logind counts a session of `uid`'s right now.
     fn has_session(&self, uid: u32) -> bool {
         std::fs::read_to_string(self.cfg.sessions.join(uid.to_string())).is_ok_and(|state| {
             state.lines().any(|line| {
@@ -523,7 +500,6 @@ impl Daemon {
         });
     }
 
-    /// Whether `peer` is the greeter's account.
     fn is_greeter(&self, peer: Peer) -> bool {
         self.accounts
             .by_name(&self.cfg.greeter_user)
@@ -717,7 +693,6 @@ impl Daemon {
                 None => return Ok(Reply::refused(Refusal::Wrong)),
             },
         };
-        // Recovering ends a lockout first: a locked-out TPM seals nothing.
         if let Some(recovery_key) = &recovery_key {
             self.reset_lockout_with_recovery(&work, account, &key, recovery_key);
         }
@@ -774,7 +749,6 @@ impl Daemon {
             Checked::Key(key) => key,
             Checked::Refused(reply) => return Ok(reply),
         };
-        // The machine's recovery key is the one its recovery keyslot takes.
         if record.unlocks_system
             && let Some(volume) = self.cfg.volume.find(&work.runner)
             && !tilo_rollback::keyslots::verify_passphrase(

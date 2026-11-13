@@ -1,18 +1,10 @@
-//! The Linux backend: the freedesktop Secret Service
-//! (`org.freedesktop.secrets`: GNOME Keyring, `KWallet`, `KeePassXC`) over the
-//! session bus, with a plain session.
+//! The Linux backend: the freedesktop Secret Service (`org.freedesktop.secrets`: GNOME
+//! Keyring, `KWallet`, `KeePassXC`) over the session bus, with a plain session.
 //!
-//! A plain session carries secrets unencrypted over the bus, which is private
-//! to the user's session — the same trade `secret-tool` makes. Items carry
-//! `application = <app id>` and `purpose = <key>`. Locked collections and
-//! items are unlocked through the service's own prompt; dismissing it is
-//! [`SecretError::Denied`].
-//!
-//! Every call runs on one bus thread of this module's own. zbus' blocking API
-//! drives each call on a runtime of its own, which panics on a thread that
-//! already drives a tokio runtime, and callers include services answering on
-//! their runtime's thread. They wait on the bus thread instead, for as long
-//! as the person takes to answer a prompt.
+//! A plain session carries secrets unencrypted over the bus, which is private to the
+//! user's session — the trade `secret-tool` makes. Items carry `application = <app id>`
+//! and `purpose = <key>`, and locked collections are unlocked through the service's own
+//! prompt.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock, mpsc};
@@ -31,13 +23,10 @@ mod goa;
 pub(crate) use chromium::read_chromium;
 pub(crate) use goa::read_goa;
 
-/// `(session, parameters, value, content type)`.
 type WireSecret = (OwnedObjectPath, Vec<u8>, Vec<u8>, String);
 
 pub(crate) struct SecretService;
 
-/// One connection and plain session per process, opened on first use and
-/// reopened after a failure.
 struct Session {
     connection: Connection,
     path: OwnedObjectPath,
@@ -57,9 +46,6 @@ fn session() -> Result<std::sync::MutexGuard<'static, Option<Session>>, SecretEr
 
 fn open_session() -> Result<Session, SecretError> {
     let connection = Connection::session().map_err(unavailable)?;
-    // A process the store cannot examine proves who it is first; one it can
-    // examine does nothing here. A failed proof is not an error of its own:
-    // the store then refuses the calls, as it would have without it.
     let _proved = crate::device_proof::prove_blocking(&connection);
     let (_, path): (OwnedValue, OwnedObjectPath) = service(&connection)?
         .call("OpenSession", &("plain", Value::from("")))
@@ -67,10 +53,9 @@ fn open_session() -> Result<Session, SecretError> {
     Ok(Session { connection, path })
 }
 
-/// Why one attempt at a call failed: the service no longer knows this
-/// process's session (it restarted since the session was opened), it
-/// refused a process that identifies itself by proof (a restarted service
-/// has forgotten the proof too), or anything else.
+/// Why one attempt at a call failed: the service no longer knows this process's session
+/// (it restarted since), it refused a process that identifies itself by proof, or the
+/// call itself failed.
 enum Attempt {
     StaleSession,
     Refused(SecretError),
@@ -83,8 +68,6 @@ impl From<SecretError> for Attempt {
     }
 }
 
-/// [`failed`] for a call that names this process's session: a service that
-/// restarted since the session was opened answers `NoSession`.
 fn session_call_failed(error: zbus::Error) -> Attempt {
     if let zbus::Error::MethodError(name, _, _) = &error {
         if name.as_str() == "org.freedesktop.Secret.Error.NoSession" {
@@ -99,12 +82,8 @@ fn session_call_failed(error: zbus::Error) -> Attempt {
     Attempt::Failed(failed(error))
 }
 
-/// Run `call` with the process's session. A session the service has
-/// forgotten (it restarted, through D-Bus activation or its unit's
-/// `Restart=`) is reopened and the call made once more, so a long-lived
-/// client's first call after a restart does not fail. A process that
-/// proves who it is gets the same second attempt after a refusal, on a
-/// connection that proved again.
+/// Run `call` with the process's session. A session the service has forgotten (it
+/// restarted) is reopened and the call made once more.
 fn with_session<T>(call: impl Fn(&Session) -> Result<T, Attempt>) -> Result<T, SecretError> {
     let mut guard = session()?;
     let result = call_reopening(&mut guard, call);
@@ -113,8 +92,6 @@ fn with_session<T>(call: impl Fn(&Session) -> Result<T, Attempt>) -> Result<T, S
     result
 }
 
-/// [`with_session`]'s call on `current`, reopening it once if the service
-/// forgot it.
 fn call_reopening<T>(
     current: &mut Option<Session>,
     call: impl Fn(&Session) -> Result<T, Attempt>,
@@ -179,8 +156,6 @@ fn attributes<'a>(app: &'a str, key: &'a str) -> HashMap<&'a str, &'a str> {
     HashMap::from([("application", app), ("purpose", key)])
 }
 
-/// Run the service's unlock or confirmation prompt at `prompt`, if any, and
-/// wait for the user. `Ok(false)` when they dismissed it.
 fn complete_prompt(connection: &Connection, prompt: &OwnedObjectPath) -> Result<bool, SecretError> {
     if prompt.as_str() == "/" {
         return Ok(true);
@@ -195,7 +170,6 @@ fn complete_prompt(connection: &Connection, prompt: &OwnedObjectPath) -> Result<
     Ok(!dismissed)
 }
 
-/// Unlock `objects`, prompting if the service asks to.
 fn unlock(connection: &Connection, objects: Vec<OwnedObjectPath>) -> Result<(), SecretError> {
     let (_unlocked, prompt): (Vec<OwnedObjectPath>, OwnedObjectPath) = service(connection)?
         .call("Unlock", &(objects,))
@@ -207,7 +181,6 @@ fn unlock(connection: &Connection, objects: Vec<OwnedObjectPath>) -> Result<(), 
     }
 }
 
-/// Every item carrying `attributes`, unlocked.
 fn items(
     connection: &Connection,
     attributes: &HashMap<&str, &str>,
@@ -224,8 +197,6 @@ fn items(
 
 type Job = Box<dyn FnOnce() + Send>;
 
-/// The bus thread's queue and identity. `None` when the thread could not
-/// start.
 fn bus() -> Option<&'static (Mutex<mpsc::Sender<Job>>, std::thread::ThreadId)> {
     static BUS: OnceLock<Option<(Mutex<mpsc::Sender<Job>>, std::thread::ThreadId)>> =
         OnceLock::new();
@@ -242,7 +213,6 @@ fn bus() -> Option<&'static (Mutex<mpsc::Sender<Job>>, std::thread::ThreadId)> {
     .as_ref()
 }
 
-/// Run `call` on the bus thread and wait for its answer.
 fn on_bus<T: Send + 'static>(
     call: impl FnOnce() -> Result<T, SecretError> + Send + 'static,
 ) -> Result<T, SecretError> {
@@ -292,7 +262,6 @@ impl SecretBackend for SecretService {
     }
 }
 
-/// Store `value` under `app` and `key` in the default collection.
 fn create(app: &str, key: &str, value: &[u8], label: &str) -> Result<(), SecretError> {
     with_session(|Session { connection, path }| {
         let collection = proxy(
@@ -329,8 +298,6 @@ fn create(app: &str, key: &str, value: &[u8], label: &str) -> Result<(), SecretE
     })
 }
 
-/// The first item carrying `attributes`, in search order, as `secret-tool
-/// lookup` reads it.
 fn lookup(attributes: &HashMap<&str, &str>) -> Result<Option<Secret>, SecretError> {
     with_session(|Session { connection, path }| {
         let found = items(connection, attributes)?;
@@ -347,7 +314,6 @@ fn lookup(attributes: &HashMap<&str, &str>) -> Result<Option<Secret>, SecretErro
     })
 }
 
-/// Delete every item carrying `attributes`.
 fn remove(attributes: &HashMap<&str, &str>) -> Result<(), SecretError> {
     with_session(|Session { connection, .. }| {
         for item in items(connection, attributes)? {
@@ -411,9 +377,6 @@ mod nextcloud_tests;
 mod tests {
     use super::*;
 
-    /// A service answering on its runtime's thread (the collaboration
-    /// broker presenting an app's presence) reached the secret store and
-    /// aborted the session: zbus' blocking call panicked inside the runtime.
     #[test]
     fn a_runtime_thread_gets_an_answer_rather_than_a_panic() {
         let scratch = tempfile::tempdir().expect("scratch directory");

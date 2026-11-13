@@ -1,6 +1,7 @@
 use super::*;
-use crate::owner::application_record::tests::{Fixture, fixture};
+use crate::owner::fixture::{Fixture, fixture};
 use crate::owner::testing::record_on_disk;
+use ed25519_dalek::SigningKey;
 use tilo_actions::{ActionContext, ActionFacet, EffectReceiptStatus, InvocationId};
 use tilo_user_identity::DeviceCert;
 
@@ -11,17 +12,16 @@ fn a_member_device_records_its_own_receipts_which_the_governor_admits_as_theirs(
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("member.json");
     let member = enroll_remote_history_member(&mut fixture, &path);
-    let member_key = SigningKey::from_bytes(&[116; 32]);
     let owner = crate::owner::open_file(&path).unwrap();
     let operation = request(&member, EffectReceiptStatus::Succeeded);
     let original = owner
-        .commit_effect_receipt(&operation, &member_key, fixture.now)
+        .commit_effect_receipt(&operation, fixture.now)
         .unwrap();
     original.validate_for(&operation).unwrap();
     let committed = record_on_disk(&path);
     let reopened = crate::owner::open_file(&path).unwrap();
     let retry = reopened
-        .commit_effect_receipt(&operation, &member_key, fixture.now)
+        .commit_effect_receipt(&operation, fixture.now)
         .unwrap();
     assert_eq!(retry.binding, original.binding);
     assert_eq!(retry.generation, original.generation);
@@ -31,17 +31,10 @@ fn a_member_device_records_its_own_receipts_which_the_governor_admits_as_theirs(
         reopened
             .commit_effect_receipt(
                 &request(&fixture.certificate, EffectReceiptStatus::Succeeded),
-                &member_key,
                 fixture.now,
             )
             .is_err(),
         "a member records no one else's receipt"
-    );
-    assert!(
-        reopened
-            .commit_effect_receipt(&operation, &fixture.key, fixture.now)
-            .is_err(),
-        "a receipt is signed by the recording device's own key"
     );
     assert_eq!(record_on_disk(&path), committed);
     let frames = reopened
@@ -84,11 +77,10 @@ fn the_owner_that_committed_a_receipt_publishes_it_without_reopening() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("member.json");
     let member = enroll_remote_history_member(&mut fixture, &path);
-    let member_key = SigningKey::from_bytes(&[116; 32]);
     let owner = crate::owner::open_file(&path).unwrap();
     let operation = request(&member, EffectReceiptStatus::Succeeded);
     owner
-        .commit_effect_receipt(&operation, &member_key, fixture.now)
+        .commit_effect_receipt(&operation, fixture.now)
         .unwrap();
     let frames = owner
         .with_outgoing(workspace, fixture.now, |_, outgoing| {
@@ -131,11 +123,10 @@ fn a_receipt_whose_public_half_is_not_admitted_keeps_its_workspace() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("member.json");
     let member = enroll_remote_history_member(&mut fixture, &path);
-    let member_key = SigningKey::from_bytes(&[116; 32]);
     let owner = crate::owner::open_file(&path).unwrap();
     let operation = request(&member, EffectReceiptStatus::Succeeded);
     owner
-        .commit_effect_receipt(&operation, &member_key, fixture.now)
+        .commit_effect_receipt(&operation, fixture.now)
         .unwrap();
     drop(owner);
     // The view a device restores is the workspace as its host admits it, which
@@ -376,7 +367,6 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
                     publisher: fixture.certificate.device_public_key,
                 },
                 postcard::from_bytes(&frame).unwrap(),
-                Some(&fixture.key),
                 fixture.now,
             )
             .unwrap();
@@ -401,7 +391,6 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
                 workspace,
                 crate::TransportOrigin::RetainedRelayDelta(fixture.certificate.device_public_key),
                 postcard::from_bytes(&frame).unwrap(),
-                Some(&fixture.key),
                 fixture.now,
             )
             .unwrap();
@@ -430,18 +419,15 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
         reopened
             .commit_effect_receipt(
                 &request(&fixture.certificate, EffectReceiptStatus::Succeeded),
-                &fixture.key,
                 fixture.now,
             )
             .is_err(),
-        "a member's device does not record with another device's key"
+        "a member's device records no one else's receipt"
     );
 }
 
 fn commit(fixture: &Fixture, request: &OwnerCommitRequest) -> Result<OwnerCommitReceipt, String> {
-    fixture
-        .owner
-        .commit_effect_receipt(request, &fixture.key, fixture.now)
+    fixture.owner.commit_effect_receipt(request, fixture.now)
 }
 
 #[test]
@@ -461,7 +447,7 @@ fn effect_terminal_is_durable_exact_retry_and_signed_workspace_publication() {
         let bytes = record_on_disk(&path);
         let reopened = crate::owner::open_file(&path).unwrap();
         let retry = reopened
-            .commit_effect_receipt(&operation, &fixture.key, fixture.now)
+            .commit_effect_receipt(&operation, fixture.now)
             .unwrap();
         assert_eq!(retry.binding, receipt.binding);
         assert_eq!(retry.generation, receipt.generation);
@@ -505,20 +491,12 @@ fn effect_terminal_is_durable_exact_retry_and_signed_workspace_publication() {
 }
 
 #[test]
-fn effect_wrong_key_and_failed_publish_never_ack_or_mutate() {
+fn effect_failed_publish_never_acks_or_mutates() {
     use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let fixture = fixture();
     let path = fixture.directory.path().join("owner.json");
     let bytes = record_on_disk(&path);
     let operation = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
-    let wrong_key = SigningKey::from_bytes(&[119; 32]);
-    assert!(
-        fixture
-            .owner
-            .commit_effect_receipt(&operation, &wrong_key, fixture.now)
-            .is_err()
-    );
-    assert_eq!(record_on_disk(&path), bytes);
     assert!(with_failure(Checkpoint::BeforePublish, || commit(&fixture, &operation)).is_err());
     assert_eq!(record_on_disk(&path), bytes);
     fixture
@@ -611,9 +589,7 @@ fn effect_hot_cache_archives_beyond_128_and_reopens_exact_original_retry() {
     assert_ne!(record_on_disk(&path), bytes);
     let bytes = record_on_disk(&path);
     let reopened = crate::owner::open_file(&path).unwrap();
-    let retry = reopened
-        .commit_effect_receipt(&first, &fixture.key, fixture.now)
-        .unwrap();
+    let retry = reopened.commit_effect_receipt(&first, fixture.now).unwrap();
     assert_eq!(retry.binding, accepted.binding);
     assert_eq!(retry.generation, accepted.generation);
     assert_eq!(retry.aggregate_hash, accepted.aggregate_hash);
@@ -657,7 +633,7 @@ fn effect_hot_cache_archives_beyond_128_and_reopens_exact_original_retry() {
     }
     assert!(
         reopened
-            .commit_effect_receipt(&changed, &fixture.key, fixture.now)
+            .commit_effect_receipt(&changed, fixture.now)
             .is_err()
     );
     assert_eq!(record_on_disk(&path), bytes);

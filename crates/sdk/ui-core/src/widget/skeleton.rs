@@ -302,6 +302,8 @@ pub struct Skeleton {
     theme: Option<Theme>,
     /// Its shape changed since the last frame drew it.
     dirty: bool,
+    /// What it holds changed its size since the layout pass last placed it.
+    layout_dirty: bool,
 }
 
 impl Skeleton {
@@ -312,6 +314,7 @@ impl Skeleton {
             rect: Rect::ZERO,
             theme: None,
             dirty: true,
+            layout_dirty: true,
         }
     }
 
@@ -323,6 +326,7 @@ impl Skeleton {
         }
         self.shape = shape;
         self.dirty = true;
+        self.layout_dirty = true;
     }
 
     #[must_use]
@@ -382,7 +386,7 @@ impl Widget for Skeleton {
         }
     }
 
-    crate::rect_geometry!();
+    crate::rect_geometry!(measured);
 
     fn draw(
         &mut self,
@@ -402,10 +406,6 @@ impl Widget for Skeleton {
         );
     }
 
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO || self.dirty
-    }
-
     crate::redraw_flag!();
 
     fn name(&self) -> &'static str {
@@ -416,7 +416,7 @@ impl Widget for Skeleton {
         use crate::a11y::{AccessNode, AccessState, Role};
         Some(
             AccessNode::new(Role::Generic)
-                .with_name("Loading")
+                .with_name(crate::i18n::widget_format("widget-loading", &[]))
                 .with_state(AccessState::new().busy(true)),
         )
     }

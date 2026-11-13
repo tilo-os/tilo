@@ -1,6 +1,5 @@
-//! Narrow session lifecycle actions used by shell chrome.
-//!
-//! Keeping these here means UI code cannot construct an arbitrary command.
+//! The session lifecycle actions shell chrome may take, kept here so UI code cannot
+//! construct an arbitrary command.
 
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -14,8 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_power_mgmt::LogindManager;
 
 const LOGOUT_REQUEST_ENV: &str = "TILO_SESSION_LOGOUT_REQUEST";
-/// The only display manager with a user-switch call Tilo can make: GDM's
-/// local display factory, which it permits to ordinary local users.
+/// GDM's local display factory: the only display manager with a user-switch call an ordinary local user
+/// may make.
 const GDM_BUS_NAME: &str = "org.gnome.DisplayManager";
 static LOGOUT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -29,10 +28,7 @@ pub enum SessionAction {
     ShutDown,
 }
 
-/// Whether the running display manager can open a greeter beside this
-/// session. Only GDM exposes that on the system bus; greetd (the Tilo image's
-/// login manager) runs one session per seat and has no such call. Probed once
-/// per process: the display manager does not change under a running session.
+/// Only GDM exposes that on the system bus; greetd runs one session per seat and has no such call.
 pub fn user_switching_supported() -> bool {
     static SUPPORTED: OnceLock<bool> = OnceLock::new();
     *SUPPORTED.get_or_init(|| {
@@ -43,7 +39,6 @@ pub fn user_switching_supported() -> bool {
     })
 }
 
-/// Whether a name currently has an owner on the system bus.
 fn bus_name_owned(name: &str) -> Result<bool, String> {
     crate::block_on(async {
         let bus = zbus::Connection::system()
@@ -66,7 +61,6 @@ fn bus_name_owned(name: &str) -> Result<bool, String> {
     })
 }
 
-/// Ask GDM's local display factory for a greeter session.
 fn open_greeter() -> Result<(), String> {
     crate::block_on(async {
         let bus = zbus::Connection::system()
@@ -85,13 +79,7 @@ fn open_greeter() -> Result<(), String> {
     })
 }
 
-/// Perform `action`.
-///
-/// # Errors
-///
-/// Returns an error message if logind cannot be reached, does not authorise the action, or
-/// the command otherwise fails, or when switching users on a display manager that
-/// cannot (see [`user_switching_supported`]).
+/// Errors when logind cannot be reached, does not authorise the action, or the command fails.
 pub fn perform_session_action(action: SessionAction) -> Result<(), String> {
     match action {
         SessionAction::Lock => crate::block_on(async {
@@ -102,10 +90,8 @@ pub fn perform_session_action(action: SessionAction) -> Result<(), String> {
                 .map_err(|e| format!("logind Lock: {e}"))
         }),
         SessionAction::Logout => request_logout(),
-        // A greeter is a display-manager session, not a magic logind session
-        // id. Ask the active display manager to create/activate its greeter.
-        // GDM deliberately permits this exact method to ordinary local users
-        // in `/usr/share/dbus-1/system.d/gdm.conf`.
+        // A greeter is a display-manager session, not a logind session id: ask GDM for its greeter,
+        // which it permits ordinary local users to do.
         SessionAction::SwitchUser if !user_switching_supported() => {
             Err("This computer's login screen cannot switch users".into())
         }
@@ -135,8 +121,8 @@ pub fn perform_session_action(action: SessionAction) -> Result<(), String> {
     }
 }
 
-/// The process's handle on logind, opened once and kept: brightness keys
-/// auto-repeat, and a connection per call would cost a bus handshake each.
+/// Opened once and kept: brightness keys auto-repeat, and a connection per call would cost a bus
+/// handshake each.
 pub(crate) async fn logind() -> Result<LogindManager, String> {
     static LOGIND: std::sync::Mutex<Option<LogindManager>> = std::sync::Mutex::new(None);
     if let Some(logind) = LOGIND.lock().ok().and_then(|slot| slot.clone()) {
@@ -174,29 +160,19 @@ fn request_wrapper_logout_at(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("writing Tilo logout request: {error}"))
 }
 
-/// Request an orderly compositor-owned logout through the display-manager
-/// wrapper's private channel.
-///
-/// This is intentionally synchronous: it only creates and writes one private
-/// local file, then publishes an in-process edge. Running it on a worker can
-/// strand an otherwise-idle compositor because completing the worker does not
-/// itself wake the compositor event loop.
+/// Asks the display-manager wrapper for an orderly logout over its private channel. Synchronous on
+/// purpose: it creates and writes one local file and publishes an in-process edge, and on a worker the
+/// finishing would not wake an otherwise idle compositor.
 pub fn request_logout() -> Result<(), String> {
     request_wrapper_logout_at(&logout_request_path()?)?;
-    // The wrapper owns teardown, but it cannot observe the request until this
-    // compositor exits. Publish an in-process edge for the native frame loop;
-    // the request file remains the cross-process proof that this was an
-    // intentional logout rather than a compositor crash.
+    // The wrapper owns teardown but cannot see the request until this compositor exits, so an
+    // in-process edge tells the frame loop; the request file remains the cross-process proof.
     LOGOUT_REQUESTED.store(true, Ordering::Release);
     tracing::info!(target: "tilo::session", "logout requested through session wrapper");
     Ok(())
 }
 
-/// Consume the process-local logout edge written by [`perform_session_action`].
-///
-/// The compositor calls this from its owning thread. Keeping the edge here
-/// avoids a per-frame filesystem poll while still letting the wrapper perform
-/// orderly target and activation-environment cleanup after the shell exits.
+/// The compositor calls this from its owning thread; the edge avoids a filesystem poll per frame.
 #[must_use]
 pub fn take_logout_request() -> bool {
     LOGOUT_REQUESTED.swap(false, Ordering::AcqRel)

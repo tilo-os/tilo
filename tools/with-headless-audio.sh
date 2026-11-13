@@ -29,6 +29,8 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 chmod 700 "$audio_dir"
+# The daemon belongs to whoever the tests run as, so they can reach it.
+bash "$(dirname -- "${BASH_SOURCE[0]}")/as-test-user.sh" --own "$audio_dir"
 export PULSE_RUNTIME_PATH="$audio_dir"
 export PULSE_STATE_PATH="$audio_dir/state"
 export PULSE_COOKIE="$audio_dir/cookie"
@@ -42,7 +44,8 @@ export TILO_REQUIRE_AUDIO=1
 socket_path=${audio_dir//\\/\\\\}/native
 socket_path=${socket_path//\"/\\\"}
 # Timestamped info-level logging shows how far a slow or stuck start got.
-pulseaudio --daemonize=no --exit-idle-time=-1 --use-pid-file=no \
+HOME=$audio_dir bash "$(dirname -- "${BASH_SOURCE[0]}")/as-test-user.sh" \
+    pulseaudio --daemonize=no --exit-idle-time=-1 --use-pid-file=no \
     --high-priority=no --realtime=no --disable-shm=yes --log-target=stderr -n \
     --log-level=info --log-time=yes \
     --load="module-null-sink sink_name=tilo_test_output" \

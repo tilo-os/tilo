@@ -33,7 +33,6 @@ pub struct ApplianceState {
     pub schema_version: u32,
     pub phase: AppliancePhase,
     pub license: LicenseState,
-    /// Monotonic catalogue generation last accepted from the authenticated guest bridge.
     pub catalog_generation: u64,
     /// Last complete, authenticated guest publication. This is a passive cache:
     /// reading it never wakes the singleton appliance. A missing or mismatched

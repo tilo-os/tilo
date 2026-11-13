@@ -20,7 +20,79 @@ use tilolang_runtime::store::{FieldRead, FieldSpec, FieldValue, Pred, Scalar, St
 use tilolang_runtime::value::{ResourceRef, Value};
 
 use crate::host::Host;
-use crate::store::Triggering;
+use crate::store::{Triggering, Watch};
+
+/// When the packages' triggers next have something to run, as last worked out: a frame looks
+/// for what is due only when the store moved since, a package loaded, or that time came, so a
+/// frame that brings none of them reads no index for its triggers.
+pub(crate) struct Schedule {
+    /// What the store moved since the schedule was last worked out.
+    moved: Watch,
+    /// The next instant a trigger has something to run, once worked out.
+    next: std::cell::Cell<Next>,
+}
+
+/// The next instant a trigger has something to run, as a [`Schedule`] holds it.
+#[derive(Clone, Copy)]
+enum Next {
+    /// Not worked out since something moved.
+    Unknown,
+    /// No trigger will come due again.
+    Never,
+    At(i64),
+}
+
+impl Schedule {
+    pub(crate) fn new(moved: Watch) -> Self {
+        Self {
+            moved,
+            next: std::cell::Cell::new(Next::Unknown),
+        }
+    }
+
+    /// Work the schedule out again: what the packages declare changed.
+    pub(crate) fn forget(&self) {
+        self.next.set(Next::Unknown);
+    }
+
+    /// The next instant worked out, while the store has not moved since.
+    fn known(&self) -> Next {
+        if !self.moved.take().is_empty() {
+            self.next.set(Next::Unknown);
+        }
+        self.next.get()
+    }
+
+    fn set(&self, at: Option<i64>) {
+        self.next.set(at.map_or(Next::Never, Next::At));
+    }
+}
+
+/// [`run`], when something may be due at `now`: the schedule was not worked out since the store
+/// last moved, or its next instant came.
+pub(crate) fn run_due(host: &Host, schedule: &Schedule, now: i64) -> usize {
+    match schedule.known() {
+        Next::Never => return 0,
+        Next::At(at) if at > now => return 0,
+        Next::At(_) | Next::Unknown => {}
+    }
+    let ran = run(host, now);
+    schedule.set(next(host, now));
+    ran
+}
+
+/// [`next`], as the schedule last worked it out while nothing moved since.
+pub(crate) fn next_due(host: &Host, schedule: &Schedule, now: i64) -> Option<i64> {
+    match schedule.known() {
+        Next::Never => None,
+        Next::At(at) => Some(at),
+        Next::Unknown => {
+            let at = next(host, now);
+            schedule.set(at);
+            at
+        }
+    }
+}
 
 /// Run what `host`'s packages declare due at `now` (seconds since the epoch): each trigger, for
 /// each record of the type it runs for, as the app's own invocation. Returns how many ran. A

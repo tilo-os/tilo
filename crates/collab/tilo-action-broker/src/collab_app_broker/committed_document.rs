@@ -1,23 +1,16 @@
 //! Current committed reads on the actual admitted channel.
 mod capture;
-use super::{Arc, CrdtRoute, Duration, JoinedChannel, Ordering, Rc, Weak};
+use super::{
+    Arc, CrdtRoute, Duration, JoinedChannel, Ordering, Rc, RouteAccess, Weak, identity_reads_record,
+};
+use crate::channel_encryption::ChannelKeyProvider;
 pub(super) use capture::Budget;
 pub use capture::DocumentBytes;
-use runtime_collab::committed_document::{
-    CreationReceipt, CreationWorkspace, MAX_DOCUMENT_BYTES, Reply, Request,
-};
+use runtime_collab::committed_document::{MAX_DOCUMENT_BYTES, Reply, Request};
 
-/// What [`NativeDocumentReads::prepare_application_elsewhere`] answers: the
-/// creation another device made for this caller, or `None` when the record
-/// was already there.
-pub type PreparedElsewhere = Result<Option<CreationWorkspace>, String>;
-/// A creation another device makes, awaited on the broker's local set.
-pub type PreparingElsewhere =
-    std::pin::Pin<Box<dyn std::future::Future<Output = PreparedElsewhere>>>;
-
-/// What [`NativeDocumentReads::await_sealed_history`] waits on, awaited on
+/// What [`NativeDocumentReads::await_arriving_record`] waits on, awaited on
 /// the broker's local set.
-pub type AwaitingHistory = std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
+pub type AwaitingRecord = std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
 
 /// No public constructor. The route and original caller are retained from the
 /// admitted channel, together with live launcher/host-worker custody.
@@ -26,7 +19,6 @@ pub struct NativeDocumentReadContext {
     route: CrdtRoute,
     certificate: tilo_user_identity::DeviceCert,
     record_kind: Option<String>,
-    creation: Option<crate::services::ApplicationCreationEvidence>,
     revalidate: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
 }
 
@@ -37,14 +29,11 @@ mod await_tests;
 #[path = "committed_document/changes_tests.rs"]
 mod changes_tests;
 #[cfg(test)]
-#[path = "committed_document/initialization_tests.rs"]
-mod initialization_tests;
-#[cfg(test)]
 #[path = "committed_document/service_session_tests.rs"]
 mod service_session_tests;
 impl NativeDocumentReadContext {
     /// A read of `route` by an agent task acting for the person whose device certificate is
-    /// `certificate` (`record_read`): no launcher custody and no creation, only `revalidate`,
+    /// `certificate` (`record_read`): no launcher custody, only `revalidate`,
     /// which decides the task's read of the record again. Only the broker can make one.
     pub(super) fn for_task(
         route: CrdtRoute,
@@ -55,16 +44,21 @@ impl NativeDocumentReadContext {
             route,
             certificate,
             record_kind: None,
-            creation: None,
             revalidate,
         }
     }
-    /// Bind a read to a source record while retaining the original channel's
-    /// launcher custody and live admission check. Only the broker can do so.
-    pub(super) fn for_source(mut self, app: &str, record: &str) -> Self {
-        app.clone_into(&mut self.route.app_id);
-        record.clone_into(&mut self.route.record_id);
-        self
+
+    /// A read of `route` by `certificate`'s device with nothing else to check: what a test of a
+    /// document owner outside this crate reads with.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn for_reader(route: CrdtRoute, certificate: tilo_user_identity::DeviceCert) -> Self {
+        Self {
+            route,
+            certificate,
+            record_kind: None,
+            revalidate: Arc::new(|| Ok(())),
+        }
     }
     pub fn route(&self) -> &CrdtRoute {
         &self.route
@@ -74,27 +68,6 @@ impl NativeDocumentReadContext {
     }
     pub fn record_kind(&self) -> Option<&str> {
         self.record_kind.as_deref()
-    }
-    pub fn application_creation(&self) -> Option<&crate::services::ApplicationCreationEvidence> {
-        self.creation.as_ref()
-    }
-    /// The record this Open created for the caller, if any: decided by
-    /// `service` itself, or by the device that `prepared` the record
-    /// elsewhere before the Open ran.
-    fn prepare_application(
-        &self,
-        service: &dyn NativeDocumentReads,
-        prepared: Option<PreparedElsewhere>,
-    ) -> Result<Option<CreationWorkspace>, String> {
-        if self.application_creation().is_some() {
-            let created = match prepared {
-                Some(prepared) => prepared?,
-                None => service.prepare_application(self)?,
-            };
-            self.revalidate()?;
-            return Ok(created);
-        }
-        Ok(None)
     }
     /// Re-checks the admitted channel's live custody and admission.
     pub fn revalidate(&self) -> Result<(), String> {
@@ -158,6 +131,17 @@ pub enum RecordRead {
     /// policy, plus the launcher's custody whenever the app has one.
     Sealed,
 }
+/// What a workspace's hosts answered about the head of a chain: the record that
+/// names whichever part of the chain is its newest, and holds nothing of its own
+/// ([`NativeDocumentReads::chain_head_answer`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChainHeadAnswer {
+    /// The workspace has no part of the chain at all, so the chain starts its first.
+    NoPart,
+    /// A part, or the host's word about it, is still on its way: it arrives on the
+    /// part's own route, and the chain waits for it there.
+    NewestPartOnItsWay,
+}
 pub trait NativeDocumentReads: Send + Sync {
     /// Durable native installation obligation, independent of runtime health.
     fn requires_workspace(&self, workspace: &str) -> bool;
@@ -177,58 +161,34 @@ pub trait NativeDocumentReads: Send + Sync {
         }
     }
     /// Whether this device holds anything of `app`'s `record` in `workspace`: what its owner commits
-    /// or holds, or sealed writes of it. A sealed workspace's record it holds nothing of is new to
-    /// this device: the workspace has none yet, once its host's replay landed
-    /// ([`Self::await_sealed_history`]).
+    /// or holds, or sealed writes of it. A record it holds nothing of is new to this device: the
+    /// workspace has none yet, once the host said all it sends of it has come
+    /// ([`Self::await_arriving_record`]).
     fn holds_record(&self, workspace: &str, app: &str, record: &str) -> bool {
         self.record_read(workspace, app, record) != RecordRead::Own
     }
-    /// Prepare only a missing record for a live, original-package-attested
-    /// person launch. This is not a read/capture fallback or a wire capability.
-    fn prepare_application(
-        &self,
-        context: &NativeDocumentReadContext,
-    ) -> Result<Option<CreationWorkspace>, String> {
-        let _ = context;
-        Ok(None)
-    }
-    /// Where another device must create a missing record (the host that
-    /// governs the workspace): the future that asks it on the Open's behalf and
-    /// resolves once the record is in this owner's workspace. It answers the
-    /// creation workspace when it created the record for this caller, which
-    /// then initializes it, and `None` when the record was already there.
-    /// The broker awaits it without blocking the channel, then answers the
-    /// Open with it in place of [`Self::prepare_application`]. `None` (no
-    /// future) when this owner decides creation itself.
-    fn prepare_application_elsewhere(
-        &self,
-        context: &NativeDocumentReadContext,
-    ) -> Option<PreparingElsewhere> {
-        let _ = context;
-        None
-    }
     /// Before an Open this owner would answer [`RecordRead::Own`], as a
     /// record that is new: the wait for what decides it, when the record may
-    /// exist where this device has not seen it yet. In a workspace whose records
-    /// are sealed channels, a record this device holds nothing of may have
-    /// been made on another device or before this session, and reaches this
-    /// device only in the workspace's host's replay; deciding before it landed
-    /// would have the app make a second one. The broker awaits it without
-    /// blocking the channel, then decides. `None` when nothing is awaited.
-    fn await_sealed_history(&self, context: &NativeDocumentReadContext) -> Option<AwaitingHistory> {
+    /// exist where this device has not seen it yet. A record this device
+    /// holds nothing of may have been made on another device or before this
+    /// session, and reaches this device only in the workspace's host's
+    /// replay, or — in a workspace whose host sends each record once a device
+    /// opens it — once this device asked for it. Deciding before then would
+    /// have the app make a second copy of the workspace's record. The broker
+    /// awaits it without blocking the channel, then decides. `None` when
+    /// nothing is awaited.
+    fn await_arriving_record(&self, context: &NativeDocumentReadContext) -> Option<AwaitingRecord> {
         let _ = context;
         None
     }
-    /// Commit bootstrap only after the broker checks the original creation receipt.
-    fn initialize_application(
-        &self,
-        context: &NativeDocumentReadContext,
-        revision: [u8; 32],
-        kind: &str,
-        document: &[u8],
-    ) -> Result<[u8; 32], String> {
-        let _ = (context, revision, kind, document);
-        Err("native application initialization unavailable".into())
+    /// What the workspace's hosts answered about the chain's head at `context`'s route
+    /// ([`ChainHeadAnswer`]), which they were asked for
+    /// ([`Self::await_arriving_record`]) and which names the chain's newest part without holding a
+    /// document of its own. `None` when nothing here answers chain heads, which then reads as any
+    /// record the app's own channel serves.
+    fn chain_head_answer(&self, context: &NativeDocumentReadContext) -> Option<ChainHeadAnswer> {
+        let _ = context;
+        None
     }
     /// Must check exact current selected custody, caller certificate, and native
     /// document Read permission. Called again before every returned chunk.
@@ -309,54 +269,10 @@ struct Active {
     capture: capture::Capture,
     context: NativeDocumentReadContext,
     service: Arc<dyn NativeDocumentReads>,
-}
-struct Initialization {
-    receipt: CreationReceipt,
-    revision: [u8; 32],
-    context: NativeDocumentReadContext,
-    service: Arc<dyn NativeDocumentReads>,
-    deadline: std::time::Instant,
-    completed: Option<([u8; 32], [u8; 32])>,
-    acknowledged: bool,
-    capture_id: u64,
-}
-impl Initialization {
-    fn commit(
-        &mut self,
-        token: [u8; 16],
-        revision: [u8; 32],
-        kind: &str,
-        document: &[u8],
-    ) -> Result<Reply, String> {
-        if !self.acknowledged
-            || token != self.receipt.token
-            || revision != self.revision
-            || self.context.record_kind() != Some(kind)
-            || std::time::Instant::now() >= self.deadline
-        {
-            return Err("application initialization receipt mismatch or expired".into());
-        }
-        self.context.revalidate()?;
-        self.service.authorize(&self.context)?;
-        let digest = *blake3::hash(document).as_bytes();
-        if let Some((original, committed)) = self.completed {
-            return if original == digest {
-                Ok(Reply::Initialized {
-                    revision: committed,
-                })
-            } else {
-                Err("application initialization receipt already consumed".into())
-            };
-        }
-        let committed =
-            self.service
-                .initialize_application(&self.context, revision, kind, document)?;
-        self.context.revalidate()?;
-        self.completed = Some((digest, committed));
-        Ok(Reply::Initialized {
-            revision: committed,
-        })
-    }
+    /// Started as the answer to a held `Await`, and asked nothing since: a
+    /// reader that gave up the wait before its answer came never saw it, so
+    /// its next read replaces it.
+    unseen: bool,
 }
 /// A held `Await` on this channel; a newer request on the channel ends it.
 struct HeldWait {
@@ -366,7 +282,6 @@ struct HeldWait {
 #[derive(Default)]
 pub(super) struct Slot {
     active: Option<Active>,
-    initialization: Option<Initialization>,
     closed: bool,
     wait: Option<HeldWait>,
     waits: u64,
@@ -376,9 +291,6 @@ pub(super) struct Slot {
     /// This channel's place in the byte budget's queue, after an Open found
     /// the budget held and answered `Busy`.
     queued: Option<Queued>,
-    /// The record another device prepared for an Open that then answered
-    /// `Busy`: the next Open answers with it, so a creation is never lost.
-    prepared: Option<PreparedElsewhere>,
     /// Whether the last Open without a revision answered [`Reply::Absent`]
     /// rather than [`Reply::Unavailable`]: what a held `Await` for `None`
     /// holds.
@@ -449,12 +361,11 @@ impl Slot {
     /// Close the channel once an unacknowledged capture outlived its
     /// deadline; refuse every request on a closed channel.
     fn expire(&mut self) -> Result<(), String> {
-        if self.active.as_mut().is_some_and(|active| {
-            active
-                .capture
-                .check_deadline(std::time::Instant::now())
-                .is_err()
-        }) {
+        if self
+            .active
+            .as_mut()
+            .is_some_and(|active| active.capture.check_deadline(tilo_clock::now()).is_err())
+        {
             self.closed = true;
         }
         if self.closed {
@@ -469,6 +380,13 @@ impl Slot {
     fn held(&self, known: [u8; 32]) -> Option<HeldRevision> {
         self.delivered.clone().filter(|held| held.revision == known)
     }
+    /// Drop a capture that answered a held `Await` the reader gave up before
+    /// the answer came: the reader asks again, and never saw it.
+    fn drop_unseen(&mut self) {
+        if self.active.as_ref().is_some_and(|active| active.unseen) {
+            self.active = None;
+        }
+    }
     /// The next piece of the active capture, re-checking custody and the
     /// owner's authorization before it is handed out.
     fn next(&mut self, capture: u64, offset: u32, token: [u8; 16]) -> Result<Reply, String> {
@@ -479,6 +397,7 @@ impl Slot {
         if active.capture.id != capture {
             return Err("committed read capture mismatch".into());
         }
+        active.unseen = false;
         active.context.revalidate()?;
         active.service.authorize(&active.context)?;
         active.capture.chunk(offset, token)
@@ -490,13 +409,6 @@ impl Slot {
             active.capture.id == capture && active.capture.acknowledges(token)
         }) {
             return Err("committed read acknowledgement mismatch".into());
-        }
-        let finished = self
-            .active
-            .as_ref()
-            .is_some_and(|active| active.capture.finished());
-        if let Some(initialization) = self.initialization.as_mut() {
-            initialization.acknowledged |= finished && initialization.capture_id == capture;
         }
         if let Some(held) = self
             .active
@@ -513,42 +425,6 @@ impl Slot {
         if let Some(wait) = self.wait.take() {
             wait.wake.notify_one();
         }
-    }
-    fn creation_reply(
-        &mut self,
-        reply: Reply,
-        workspace: Option<CreationWorkspace>,
-        context: &NativeDocumentReadContext,
-        service: &Arc<dyn NativeDocumentReads>,
-    ) -> Result<Reply, String> {
-        let Some(workspace) = workspace else {
-            return Ok(reply);
-        };
-        if self.initialization.is_some()
-            || !workspace.valid()
-            || workspace.id != context.route().cluster_id
-        {
-            return Err("invalid repeated application creation receipt".into());
-        }
-        let chunk = runtime_collab::committed_document::CreationChunk::from_reply(reply)
-            .map_err(str::to_owned)?;
-        let receipt = CreationReceipt {
-            token: uuid::Uuid::new_v4().into_bytes(),
-            workspace,
-        };
-        self.initialization = Some(Initialization {
-            receipt: receipt.clone(),
-            revision: chunk.revision,
-            context: context.clone(),
-            service: service.clone(),
-            deadline: std::time::Instant::now()
-                .checked_add(Duration::from_secs(30))
-                .ok_or("initialization deadline overflow")?,
-            completed: None,
-            acknowledged: false,
-            capture_id: chunk.capture,
-        });
-        Ok(Reply::Created { receipt, chunk })
     }
 }
 impl JoinedChannel {
@@ -616,27 +492,9 @@ impl JoinedChannel {
             .as_ref()
             .and_then(|lease| lease.local_media.clone());
         let peer = self.peer_id;
-        let workspace_record = local
-            .as_ref()
-            .and_then(|local| launch_workspace_record(local, &route));
-        let creation = local
-            .as_ref()
-            .filter(|_| admitted.agent_id.is_none())
-            .and_then(|local| local.creation.clone())
-            .map(|evidence| match workspace_record {
-                // A workspace record's kind is declared by the platform's
-                // list of them, not by the package of the window that
-                // opens it; the launch's signed original still stands for
-                // who creates it, and the workspace's grants decide whether they
-                // may.
-                Some(record) => crate::services::ApplicationCreationEvidence {
-                    declared_kinds: vec![record.kind.to_owned()],
-                    ..evidence
-                },
-                None => evidence,
-            });
         let state = Arc::downgrade(&self.state);
         let checked_route = route.clone();
+        let read_only = self.route_access == RouteAccess::ReadOnly;
         let revalidate = Arc::new(move || {
             let state = state.upgrade().ok_or("committed read broker ended")?;
             if !state.is_accepting() {
@@ -647,16 +505,26 @@ impl JoinedChannel {
                     return Err("committed read worker ended".into());
                 }
             } else if let Some(local) = local.as_ref() {
-                // The launch's own routes, or a record every app of its
-                // workspace opens: the owner's grants decide the rest, below and
-                // in the owner's own authorization.
-                if !local.current()
-                    || (!local.keeps_records_of(&checked_route.app_id)
-                        && launch_workspace_record(local, &checked_route).is_none())
-                    || local.workspace_id != checked_route.cluster_id
+                // The launch's own routes, a record every app of its workspace
+                // opens, or another app's record it joined to read: the owner's
+                // grants decide the rest, below and in the owner's own
+                // authorization.
+                if launch_holds(local, &checked_route, read_only).is_none()
                     || admitted.agent_id.is_some()
                 {
                     return Err("committed read launcher custody ended".into());
+                }
+                // Another app's record is read with the person's own standing
+                // on it, as the join decided, and again at every read.
+                if read_only
+                    && !identity_reads_record(
+                        state.membership.as_ref(),
+                        &admitted,
+                        &checked_route,
+                        state.policy_now_ns()? / 1_000_000_000,
+                    )
+                {
+                    return Err("committed read of another app's record ended".into());
                 }
             } else if !sealed || admitted.agent_id.is_some() {
                 return Err("committed read requires launcher custody".into());
@@ -670,7 +538,6 @@ impl JoinedChannel {
             route,
             certificate,
             record_kind: self.record_kind.clone(),
-            creation,
             revalidate,
         };
         context.revalidate()?;
@@ -696,19 +563,12 @@ impl JoinedChannel {
         else {
             return Ok(None);
         };
-        // Another app's workspace record is no record of this window's own:
-        // it carries no private binding.
-        if local.current()
-            && !local.keeps_records_of(&route.app_id)
-            && launch_workspace_record(local, &route).is_some()
-        {
-            return Ok(None);
-        }
-        if !local.current()
-            || !local.keeps_records_of(&route.app_id)
-            || local.workspace_id != route.cluster_id
-        {
-            return Err("native private launch custody ended".into());
+        // Another app's workspace record, or another app's record this window
+        // reads, is no record of this window's own: it carries no private binding.
+        match launch_holds(local, &route, self.route_access == RouteAccess::ReadOnly) {
+            Some(true) => {}
+            Some(false) => return Ok(None),
+            None => return Err("native private launch custody ended".into()),
         }
         let context = self.document_read_context()?;
         self.state
@@ -743,46 +603,43 @@ impl JoinedChannel {
             .map_err(|error| format!("continuation names no durable shell tab id: {error}"))
     }
 
-    /// For an Open of a record another device creates (the host governing
-    /// the workspace), the creation to await before the Open answers: see
-    /// [`NativeDocumentReads::prepare_application_elsewhere`]. `None` for
-    /// every other request, and whenever the Open decides creation itself.
-    pub(super) fn committed_creation_elsewhere(
-        &self,
-        request: &Request,
-    ) -> Option<PreparingElsewhere> {
-        if !matches!(request, Request::Open { .. }) {
-            return None;
-        }
-        let service = self.state.services.committed_documents.clone()?;
-        if !service.requires_workspace(&self.route().cluster_id) {
-            return None;
-        }
-        let context = self.document_read_context().ok()?;
-        context.application_creation()?;
-        service.prepare_application_elsewhere(&context)
-    }
-
     /// For an Open this channel's record would answer as new
     /// ([`RecordRead::Own`]): the wait before deciding, see
-    /// [`NativeDocumentReads::await_sealed_history`]. `None` for every other
+    /// [`NativeDocumentReads::await_arriving_record`]. `None` for every other
     /// request, and when nothing is awaited.
-    pub(super) fn committed_history_wait(&self, request: &Request) -> Option<AwaitingHistory> {
+    pub(super) fn committed_arrival_wait(&self, request: &Request) -> Option<AwaitingRecord> {
         if !matches!(request, Request::Open { .. }) || self.record_read() != RecordRead::Own {
             return None;
         }
         let service = self.state.services.committed_documents.clone()?;
         let context = self.document_read_context().ok()?;
-        service.await_sealed_history(&context)
+        service.await_arriving_record(&context)
     }
 
-    /// Answer a committed-document request, with an Open's record already
-    /// `prepared` by the device that creates it, if another does.
-    pub(super) fn committed_document_dispatch_prepared(
-        &self,
-        request: &Request,
-        prepared: Option<PreparedElsewhere>,
-    ) -> Result<Reply, String> {
+    /// The answer to an Open of a chain's head (`neighbour_wire::chain_head`), which
+    /// names the chain's newest part and holds no document of its own: the workspace
+    /// was asked which part that is, and answered with a part on its own route or with
+    /// nothing at all. `None` for every other request and record, which read as they
+    /// always have.
+    pub(super) fn chain_head_answered(&self, request: &Request) -> Option<Reply> {
+        if !matches!(request, Request::Open { .. })
+            || !matches!(
+                neighbour_wire::record_sync(&self.record_route().record_id),
+                neighbour_wire::RecordSync::ChainHead { .. }
+            )
+        {
+            return None;
+        }
+        let service = self.state.services.committed_documents.clone()?;
+        let context = self.document_read_context().ok()?;
+        Some(match service.chain_head_answer(&context)? {
+            ChainHeadAnswer::NoPart => Reply::Absent,
+            ChainHeadAnswer::NewestPartOnItsWay => Reply::Unavailable,
+        })
+    }
+
+    /// Answer a committed-document request.
+    pub(super) fn committed_document_dispatch(&self, request: &Request) -> Result<Reply, String> {
         if matches!(request, Request::ConnectionSnapshot) {
             // The connection as its record names it: the channel's own route.
             let route = self.record_route();
@@ -812,6 +669,14 @@ impl JoinedChannel {
                 sealed: self.seals_records(),
             });
         }
+        // A chain's head is a name for whichever of the chain's parts is the newest,
+        // not a document: opening it asks the workspace for that part, and is answered
+        // with it on the part's own route, or with nothing when the chain has none.
+        if matches!(request, Request::Open { .. })
+            && let Some(answered) = self.chain_head_answered(request)
+        {
+            return Ok(answered);
+        }
         if self.record_read() == RecordRead::Own {
             return Ok(Reply::Legacy);
         }
@@ -825,31 +690,18 @@ impl JoinedChannel {
             Request::PrivateWindowBinding => Ok(Reply::PrivateWindowBinding {
                 instance: self.native_private_window_instance()?,
             }),
-            Request::Initialize {
-                token,
-                revision,
-                kind,
-                document,
-            } => {
-                if slot.active.is_some() {
-                    return Err("initialization requires capture acknowledgement".into());
-                }
-                slot.initialization
-                    .as_mut()
-                    .ok_or("application creation receipt unavailable")?
-                    .commit(*token, *revision, kind, document)
-            }
+            Request::RetiredInitialize => Err("no record is created through this channel".into()),
             Request::Cancel { capture, token } => slot.acknowledge(*capture, *token),
             Request::Leave => {
                 slot.leave();
                 Ok(Reply::Cancelled)
             }
             Request::Open { known_revision } => {
-                self.open_committed_document(&mut slot, *known_revision, None, prepared)
+                self.open_committed_document(&mut slot, *known_revision, None)
             }
             Request::OpenChanges { known_revision } => {
                 let held = slot.held(*known_revision);
-                self.open_committed_document(&mut slot, Some(*known_revision), held.as_ref(), None)
+                self.open_committed_document(&mut slot, Some(*known_revision), held.as_ref())
             }
             Request::Next {
                 capture,
@@ -866,11 +718,7 @@ impl JoinedChannel {
         slot: &mut Slot,
         known_revision: Option<[u8; 32]>,
         held: Option<&HeldRevision>,
-        prepared: Option<PreparedElsewhere>,
     ) -> Result<Reply, String> {
-        if slot.active.is_some() {
-            return Err("committed read requires previous response acknowledgement".into());
-        }
         let Some(service) = self.state.services.committed_documents.clone() else {
             return Ok(Reply::Unavailable);
         };
@@ -880,7 +728,6 @@ impl JoinedChannel {
                 service,
                 budget: &self.state.committed_read_budget,
                 ids: &self.state.committed_read_id,
-                prepared,
             };
             open_read(slot, reading, known_revision, held)
         });
@@ -894,16 +741,23 @@ impl JoinedChannel {
     }
 }
 
-/// The record every app of `local`'s launch workspace opens that `route` names
-/// ([`collab_types::workspace_record`]), when it does: the one route of
-/// another app a launch reads and commits to, and only in its own workspace.
-fn launch_workspace_record(
+/// Whether `local`'s live launch holds `route` in its own workspace: `Some(true)`
+/// for a record of its own, `Some(false)` for another app's it reads — one
+/// every app of the workspace opens ([`collab_types::workspace_record`]), or
+/// one it joined `read_only` as its surface declares — and `None` otherwise.
+fn launch_holds(
     local: &super::native_media::LocalAppConnection,
     route: &CrdtRoute,
-) -> Option<&'static collab_types::WorkspaceRecord> {
-    (local.workspace_id == route.cluster_id)
-        .then(|| collab_types::workspace_record(&route.app_id, &route.record_id))
-        .flatten()
+    read_only: bool,
+) -> Option<bool> {
+    if !local.current() || local.workspace_id != route.cluster_id {
+        return None;
+    }
+    if local.keeps_records_of(&route.app_id) {
+        return Some(true);
+    }
+    (read_only || collab_types::workspace_record(&route.app_id, &route.record_id).is_some())
+        .then_some(false)
 }
 
 /// What an Open reads with: the channel's checked custody and admission
@@ -913,9 +767,6 @@ struct Reading<'a> {
     service: Arc<dyn NativeDocumentReads>,
     budget: &'a Arc<Budget>,
     ids: &'a std::sync::atomic::AtomicU64,
-    /// The record as the device that creates it elsewhere prepared it
-    /// before this Open, if one does.
-    prepared: Option<PreparedElsewhere>,
 }
 
 /// An Open's answer for `known_revision`, and the id of the capture it
@@ -934,27 +785,21 @@ fn open_read(
         service,
         budget,
         ids,
-        prepared,
     } = reading;
+    slot.drop_unseen();
     if slot.active.is_some() {
         return Err("committed read requires previous response acknowledgement".into());
     }
     // Custody and admission first: a reader that may no longer read is
     // refused, never queued. Then capacity: a read that must wait its turn
-    // has done nothing yet, and a record prepared elsewhere for it is kept
-    // for its next Open.
+    // has done nothing yet.
     if let Err(refused) = context.revalidate() {
         slot.queued = None;
         return Err(refused);
     }
     let Some(reservation) = slot.admit(budget) else {
-        if let Some(prepared) = prepared {
-            slot.prepared = Some(prepared);
-        }
         return Ok((Reply::Busy, None));
     };
-    let prepared = prepared.or_else(|| slot.prepared.take());
-    let created = context.prepare_application(service.as_ref(), prepared)?;
     service.authorize(&context)?;
     let read = match held {
         Some(held) => service.capture_since(&context, held, MAX_DOCUMENT_BYTES)?,
@@ -967,13 +812,8 @@ fn open_read(
         NativeDocumentRead::Unchanged(revision) => {
             return Ok((Reply::Unchanged { revision }, None));
         }
-        // A record created by this Open is answered with its capture or
-        // not at all; only an existing record may be read again later.
-        NativeDocumentRead::Pending if created.is_none() => return Ok((Reply::Unavailable, None)),
-        NativeDocumentRead::Absent if created.is_none() => return Ok((Reply::Absent, None)),
-        NativeDocumentRead::Pending | NativeDocumentRead::Absent => {
-            return Err("created record capture unavailable".into());
-        }
+        NativeDocumentRead::Pending => return Ok((Reply::Unavailable, None)),
+        NativeDocumentRead::Absent => return Ok((Reply::Absent, None)),
         NativeDocumentRead::Captured {
             revision,
             heads,
@@ -985,9 +825,7 @@ fn open_read(
             heads,
             base,
             body,
-        } if created.is_none() && held.is_some_and(|held| held.heads == base) => {
-            (revision, body, heads, Some(base))
-        }
+        } if held.is_some_and(|held| held.heads == base) => (revision, body, heads, Some(base)),
         NativeDocumentRead::Changes { .. } => {
             return Err("native document changes from a revision never handed out".into());
         }
@@ -999,11 +837,12 @@ fn open_read(
     if let Some(base) = base {
         capture = capture.changes_since(base)?;
     }
-    let reply = slot.creation_reply(capture.chunk(0, [0; 16])?, created, &context, &service)?;
+    let reply = capture.chunk(0, [0; 16])?;
     slot.active = Some(Active {
         capture,
         context,
         service,
+        unseen: false,
     });
     Ok((reply, Some(id)))
 }
@@ -1062,24 +901,43 @@ fn captured_unchanged(
 }
 
 /// Re-run `check` whenever `wake` fires (re-`arm`ed before each check, so a
-/// change made while it runs is kept), until it says the read changed, and
-/// answer [`Reply::Stale`]. `check` answers `Some(announced)` while the read
-/// is unchanged: with `announced` false some input can change unannounced,
-/// and it re-runs every [`UNANNOUNCED_RECHECK`] as well.
-async fn hold_until_stale(
+/// change made while it runs is kept), until it says the read changed.
+/// `check` answers `Some(announced)` while the read is unchanged: with
+/// `announced` false some input can change unannounced, and it re-runs every
+/// [`UNANNOUNCED_RECHECK`] as well.
+///
+/// A sealed record's read also changes when this device's channel `keys`
+/// do: a write sealed under an epoch or branch whose key had not reached the
+/// device opens once it has, with nothing written to the record.
+async fn hold_until_changed(
     wake: &tokio::sync::Notify,
+    keys: Option<&ChannelKeyProvider>,
     mut arm: impl FnMut(),
     mut check: impl FnMut() -> Result<Option<bool>, String>,
-) -> Result<Reply, String> {
+) -> Result<(), String> {
+    // Read before the first check, so keys arriving while it runs are seen.
+    let mut keyed = keys.map(ChannelKeyProvider::generation);
     loop {
         arm();
         let Some(announced) = check()? else {
-            return Ok(Reply::Stale);
+            return Ok(());
         };
-        if announced {
-            wake.notified().await;
-        } else {
-            let _ = tokio::time::timeout_at(next_unannounced_recheck(), wake.notified()).await;
+        let keys_changed = async move {
+            match keys.zip(keyed) {
+                Some((keys, after)) => keys.changed(after).await,
+                None => std::future::pending().await,
+            }
+        };
+        let changed = async {
+            if announced {
+                wake.notified().await;
+            } else {
+                let _ = tokio::time::timeout_at(next_unannounced_recheck(), wake.notified()).await;
+            }
+        };
+        tokio::select! {
+            generation = keys_changed => keyed = Some(generation),
+            () = changed => {}
         }
     }
 }
@@ -1099,6 +957,18 @@ pub(super) fn next_unannounced_recheck() -> tokio::time::Instant {
     let until = Duration::from_nanos(u64::try_from(until).unwrap_or(u64::MAX));
     now.checked_add(until)
         .unwrap_or_else(|| now.checked_add(UNANNOUNCED_RECHECK).unwrap_or(now))
+}
+
+/// Whether `reply` is what a reader holding `known` holds already: its own
+/// revision unchanged, or for `None` the `Unavailable` or `Absent` (as
+/// `absent` says) the channel last answered.
+fn holds_what_it_answers(reply: &Reply, known: Option<[u8; 32]>, absent: bool) -> bool {
+    match (reply, known) {
+        (Reply::Unchanged { revision }, Some(known)) => *revision == known,
+        (Reply::Unavailable, None) => !absent,
+        (Reply::Absent, None) => absent,
+        _ => false,
+    }
 }
 
 /// Ends the slot's record of a held wait when the wait is dropped (answered,
@@ -1123,8 +993,10 @@ impl Drop for WaitGuard<'_> {
 
 impl JoinedChannel {
     /// Answer an `Await { known_revision }`: hold until an
-    /// `Open { known_revision }` on this channel would answer anything but
-    /// what the caller holds, then answer [`Reply::Stale`].
+    /// `Open { known_revision }` on this channel (an `OpenChanges` when the
+    /// caller holds a revision) would answer anything but what the caller
+    /// holds, then answer with what that Open answers: the changed record
+    /// goes to the reader with the wake.
     ///
     /// The checks are the Open's own (custody, admission, the owner's
     /// authorization and capture), re-run whenever something they read may
@@ -1132,10 +1004,8 @@ impl JoinedChannel {
     /// ([`tilo_identity_host::policy_change`]), and the first instant a
     /// time-bound input changes is registered with `wake_at`. Where that
     /// cannot be relied on, they re-run every [`UNANNOUNCED_RECHECK`], as the
-    /// reader's poll did. A check that fails answers `Stale` too: the
-    /// caller's Open then meets the same refusal and fails closed, so a
-    /// revocation ends the reader as it always did, only without the poll.
-    /// No document byte and no readiness ever comes from this answer.
+    /// reader's poll did. A check that fails ends the hold too, and the Open
+    /// meets the same refusal: a revocation ends the reader as it always did.
     #[allow(
         clippy::future_not_send,
         reason = "channel handles are Rc-based; driven only on the broker LocalSet"
@@ -1145,9 +1015,10 @@ impl JoinedChannel {
         known_revision: Option<[u8; 32]>,
     ) -> Result<Reply, String> {
         let wake = Arc::new(tokio::sync::Notify::new());
-        let generation = {
+        let (generation, turn) = {
             let mut slot = self.committed_read.borrow_mut();
             slot.expire()?;
+            slot.drop_unseen();
             if slot.active.is_some() {
                 return Err(
                     "committed read wait requires previous response acknowledgement".into(),
@@ -1166,7 +1037,6 @@ impl JoinedChannel {
                 .map(|queued| (Rc::clone(&queued.granted), Rc::clone(&queued.wake)));
             (generation, turn)
         };
-        let (generation, turn) = generation;
         let _guard = WaitGuard {
             handle: &self,
             generation,
@@ -1181,7 +1051,7 @@ impl JoinedChannel {
             // A read waiting in the budget's queue: what changes its Open's
             // answer is its turn coming, announced by the queue itself, or
             // its custody or admission ending, announced as any policy
-            // change is. Either way its next Open decides.
+            // change is. Either way the Open decides now.
             loop {
                 if !self.holds_wait(generation) {
                     return Err("committed read wait was replaced".into());
@@ -1193,7 +1063,7 @@ impl JoinedChannel {
                         .and_then(|context| context.revalidate())
                         .is_err()
                 {
-                    return Ok(Reply::Stale);
+                    return self.answer_wait(known_revision);
                 }
                 tokio::select! {
                     () = turn.notified() => {}
@@ -1201,19 +1071,68 @@ impl JoinedChannel {
                 }
             }
         }
-        hold_until_stale(
-            &wake,
-            || {
-                let _ = watch.arm();
-            },
-            || {
-                if !self.holds_wait(generation) {
-                    return Err("committed read wait was replaced".into());
-                }
-                Ok(self.committed_read_unchanged(known_revision))
-            },
-        )
-        .await
+        let keys = (self.record_read() == RecordRead::Sealed)
+            .then(|| self.state.services.channel_keys.clone())
+            .flatten();
+        // The context the last whole check passed with, and the announcement
+        // epoch it read before it: while nothing was announced since, nothing
+        // that check decided changed, and a write landing on the record is
+        // checked by its revision alone.
+        let mut checked: Option<(u64, NativeDocumentReadContext)> = None;
+        loop {
+            hold_until_changed(
+                &wake,
+                keys.as_ref(),
+                || {
+                    let _ = watch.arm();
+                },
+                || {
+                    if !self.holds_wait(generation) {
+                        return Err("committed read wait was replaced".into());
+                    }
+                    let epoch = tilo_identity_host::policy_change::epoch();
+                    if let Some((at, context)) = &checked
+                        && *at == epoch
+                        && let Some(service) = &self.state.services.committed_documents
+                        && let Ok(Some(unchanged)) = service.unchanged(context, known_revision)
+                    {
+                        return Ok(unchanged.then_some(true));
+                    }
+                    let held = self.committed_read_unchanged(known_revision);
+                    checked = held
+                        .as_ref()
+                        .filter(|(announced, _)| *announced)
+                        .map(|(_, context)| (epoch, context.clone()));
+                    Ok(held.map(|(announced, _)| announced))
+                },
+            )
+            .await?;
+            let absent = self.committed_read.borrow().absent;
+            let reply = self.answer_wait(known_revision)?;
+            if !holds_what_it_answers(&reply, known_revision, absent) {
+                return Ok(reply);
+            }
+            // The check and the Open disagreed: look again on the next
+            // announcement or tick, not at once.
+            let _ = tokio::time::timeout_at(next_unannounced_recheck(), wake.notified()).await;
+        }
+    }
+
+    /// What the Open a held wait stands for answers now: `OpenChanges` for a
+    /// revision this channel handed out, otherwise `Open`. A capture it
+    /// starts is the reader's to read on.
+    fn answer_wait(&self, known_revision: Option<[u8; 32]>) -> Result<Reply, String> {
+        if self.record_read() == RecordRead::Own {
+            return Ok(Reply::Legacy);
+        }
+        let mut slot = self.committed_read.borrow_mut();
+        slot.expire()?;
+        let held = known_revision.and_then(|known| slot.held(known));
+        let reply = self.open_committed_document(&mut slot, known_revision, held.as_ref())?;
+        if let Some(active) = slot.active.as_mut() {
+            active.unseen = true;
+        }
+        Ok(reply)
     }
 
     fn holds_wait(&self, generation: u64) -> bool {
@@ -1227,10 +1146,14 @@ impl JoinedChannel {
         })
     }
 
-    /// [`read_unchanged`] on this channel: `Some(announced)` while an Open
-    /// would answer exactly what the caller holds, where `announced` says
-    /// whether every input that can change that is announced or timed.
-    fn committed_read_unchanged(&self, known_revision: Option<[u8; 32]>) -> Option<bool> {
+    /// [`read_unchanged`] on this channel: `Some((announced, context))` while
+    /// an Open would answer exactly what the caller holds, where `announced`
+    /// says whether every input that can change that is announced or timed,
+    /// and `context` is the one the checks passed with.
+    fn committed_read_unchanged(
+        &self,
+        known_revision: Option<[u8; 32]>,
+    ) -> Option<(bool, NativeDocumentReadContext)> {
         let service = self.state.services.committed_documents.clone()?;
         let absent = self.committed_read.try_borrow().ok()?.absent;
         let context = read_unchanged(
@@ -1241,7 +1164,10 @@ impl JoinedChannel {
             known_revision,
             absent,
         )?;
-        Some(self.register_read_expiry(&context, service.as_ref()))
+        Some((
+            self.register_read_expiry(&context, service.as_ref()),
+            context,
+        ))
     }
 
     /// Register with [`tilo_identity_host::policy_change::wake_at`] the first
@@ -1299,44 +1225,13 @@ impl JoinedChannel {
     }
 }
 
-impl JoinedChannel {
-    pub(super) fn resource_view_query(
-        &self,
-        correlation: u64,
-        query: tilo_actions::remote::CatalogueQuery,
-    ) -> super::wire::Answer<tilo_actions::remote::RemoteActionMessage> {
-        let context = query
-            .provider
-            .as_deref()
-            .and_then(|provider| provider.strip_prefix("record:"))
-            .and_then(|provider| provider.split_once(':'))
-            .ok_or_else(|| "view discovery requires an exact record provider".to_owned())
-            .and_then(|(app, record)| {
-                self.document_read_context()
-                    .map(|context| context.for_source(app, record))
-            });
-        let service = self.state.services.resource_views.clone();
-        Box::pin(async move {
-            let result = match (context, service) {
-                (Ok(context), Some(service)) => service.query(context, query).await,
-                (Err(reason), _) => {
-                    Err(tilo_actions::remote::ActionHostError::Unavailable { reason })
-                }
-                (_, None) => Err(tilo_actions::remote::ActionHostError::Unavailable {
-                    reason: "the native host cannot discover shared resource views".into(),
-                }),
-            };
-            Ok(
-                tilo_actions::remote::RemoteActionMessage::CatalogueResponse {
-                    correlation,
-                    result,
-                },
-            )
-        })
-    }
-}
-
 impl super::AppBrokerState {
+    /// A write another device made in `record` of `app` in `workspace` landed here: what a read
+    /// holding that record open sees changed, and what nothing else announces.
+    pub fn wake_record_reads(&self, workspace: &str, app: &str, record: &str) {
+        self.wake_committed_reads(&CrdtRoute::record(app, workspace, record));
+    }
+
     /// Wake the held committed-read waits of every channel `route`
     /// delivers to: a write on it changed what their reads answer (a sealed
     /// record's read is made of the writes this broker holds), and nothing
@@ -1347,12 +1242,8 @@ impl super::AppBrokerState {
             return;
         };
         waits.retain(|channel, held| {
-            held.retain(|wake| wake.strong_count() > 0);
-            if route.delivers_to(&CrdtRoute::from_channel_key(channel)) {
-                for wake in held.iter().filter_map(Weak::upgrade) {
-                    wake.notify_one();
-                }
-            }
+            let delivers = route.delivers_to(&CrdtRoute::from_channel_key(channel));
+            held.retain(|wake| wake.landed(delivers));
             !held.is_empty()
         });
     }
@@ -1364,11 +1255,54 @@ impl super::AppBrokerState {
         channel_id: &str,
         wake: &Arc<tokio::sync::Notify>,
     ) {
+        self.follow_writes(channel_id, LandedWake::Held(Arc::downgrade(wake)));
+    }
+
+    /// Have the next write on `route` wake `wake`, a record reader's
+    /// ([`tilo_actions::remote::RecordReads::watch`]).
+    pub(super) fn follow_record_writes(
+        &self,
+        route: &CrdtRoute,
+        wake: &tilo_actions::remote::RecordWake,
+    ) {
+        self.follow_writes(&route.channel_key(), LandedWake::Once(wake.clone()));
+    }
+
+    fn follow_writes(&self, channel_id: &str, wake: LandedWake) {
         if let Ok(mut waits) = self.committed_waits.lock() {
-            waits
-                .entry(channel_id.to_owned())
-                .or_default()
-                .push(Arc::downgrade(wake));
+            waits.entry(channel_id.to_owned()).or_default().push(wake);
+        }
+    }
+}
+
+/// Who a write landing on a channel wakes.
+pub(super) enum LandedWake {
+    /// A held committed read, for as long as it holds its wait.
+    Held(Weak<tokio::sync::Notify>),
+    /// A record reader, once.
+    Once(tilo_actions::remote::RecordWake),
+}
+
+impl LandedWake {
+    /// A write landed, on this wake's channel when `delivers`: wake it then.
+    /// Whether it still waits for another.
+    fn landed(&self, delivers: bool) -> bool {
+        match self {
+            Self::Held(wake) => {
+                let Some(wake) = wake.upgrade() else {
+                    return false;
+                };
+                if delivers {
+                    wake.notify_one();
+                }
+                true
+            }
+            Self::Once(wake) => {
+                if delivers {
+                    wake.wake();
+                }
+                wake.waiting()
+            }
         }
     }
 }

@@ -17,8 +17,6 @@ fn scripted(sample: Option<MobileSample>) -> (Arc<ScriptedModem>, MobileModel) {
     (device, model)
 }
 
-/// Begin `effect`, carry out its work as the worker would, and take in
-/// the read that follows a change.
 fn run(model: &mut MobileModel, effect: MobileEffect) -> Result<(), String> {
     let landed = match model.begin(effect)? {
         Begun::Done => return Ok(()),
@@ -30,9 +28,6 @@ fn run(model: &mut MobileModel, effect: MobileEffect) -> Result<(), String> {
     answer
 }
 
-/// What `read` finds in a Settings window on the modem's page over `model`
-/// as it is now. The model is lent to the window's Mobile area meanwhile
-/// and handed back as the page left it.
 fn on_its_page<T>(model: &mut MobileModel, read: impl FnOnce(&dyn ui::widget::Widget) -> T) -> T {
     let mut app = App::new().unwrap();
     // Away from Network, so its page is built over the model lent.
@@ -58,7 +53,6 @@ fn on_its_page<T>(model: &mut MobileModel, read: impl FnOnce(&dyn ui::widget::Wi
     found
 }
 
-/// What a Settings window shows on the modem's page over `model`.
 fn said(model: &mut MobileModel) -> Vec<String> {
     on_its_page(model, provider_settings_ui::widgets::announced_text)
 }
@@ -95,7 +89,6 @@ fn without_a_modem_there_is_no_section_and_no_mobile_setting_is_tried() {
 
 type App = ui::framework::testing::TestApp<crate::SettingsShell>;
 
-/// The availability Settings publishes for `id`.
 fn published(app: &mut App, id: &str) -> ui::tilo_actions::Availability {
     app.actions()
         .expect("the actions are published")
@@ -141,7 +134,6 @@ fn mobile_settings_follow_the_kernel_until_read_then_modem_manager() {
         Availability::Available
     );
 
-    // Before the modems are read, the kernel listing one offers it.
     let cx = cx();
     let unread = MobileArea::new(&cx);
     assert!(unread.statuses().is_empty(), "nothing has said yet");
@@ -154,8 +146,6 @@ fn mobile_settings_follow_the_kernel_until_read_then_modem_manager() {
     );
 
     radios.set(Present::ALL);
-    // Once read, ModemManager's answer is the one: the scripted device
-    // has no modem, whatever the kernel says.
     app.with_widget::<crate::window::Inspected, _>(|settings| {
         area(settings).unwrap().model();
     })
@@ -242,8 +232,6 @@ fn roaming_is_said_and_switched_on_the_profile() {
     );
 }
 
-/// The window over a scripted modem standing as `sample`, its Network
-/// pane open on the first page.
 fn hosted(sample: MobileSample) -> (Arc<ScriptedModem>, App) {
     let device = Arc::new(ScriptedModem::new(Some(sample)));
     let service = Arc::clone(&device) as Arc<dyn MobileService>;
@@ -278,7 +266,6 @@ fn settle_until(app: &mut App, done: impl Fn(&MobileModel) -> bool) {
     }
 }
 
-/// What the window shows, in reading order.
 fn shown(app: &mut App) -> Vec<String> {
     provider_settings_ui::widgets::announced_text(app.harness().root_widget())
 }
@@ -295,7 +282,6 @@ fn lock(app: &mut App) -> Option<SimLock> {
     .unwrap()
 }
 
-/// Answer the open prompt: `codes` typed into its fields in order.
 fn answer(app: &mut App, codes: &[&str]) {
     for (at, code) in codes.iter().enumerate() {
         if at > 0 {
@@ -306,9 +292,6 @@ fn answer(app: &mut App, codes: &[&str]) {
     app.harness().key("Return");
 }
 
-/// The first page shows the modem next to Wi-Fi: how it stands with the
-/// signal meter, its data switch, and the way to its page; a device
-/// without a modem shows no Mobile card.
 #[test]
 fn the_first_page_shows_the_modem_next_to_wifi() {
     let (_, mut app) = hosted(MobileSample::Registered);
@@ -336,9 +319,6 @@ fn the_first_page_shows_the_modem_next_to_wifi() {
     assert!(!shown(&mut app).iter().any(|text| text == "Mobile"));
 }
 
-/// A locked SIM asks for its PIN with the window's password prompt: a
-/// wrong PIN is said there with one try fewer, the right one unlocks it
-/// and closes the prompt. No code is drawn, inspected or recorded.
 #[test]
 fn a_locked_sim_is_unlocked_from_the_password_prompt() {
     let (device, mut app) = hosted(MobileSample::Locked);
@@ -395,8 +375,6 @@ fn a_locked_sim_is_unlocked_from_the_password_prompt() {
     }
 }
 
-/// The last wrong PIN blocks the SIM, and the prompt asks for its PUK and
-/// a new PIN next; they unblock it.
 #[test]
 fn the_last_wrong_pin_asks_for_the_puk_and_a_new_pin() {
     let (_, mut app) = hosted(MobileSample::Locked);
@@ -431,8 +409,6 @@ fn the_last_wrong_pin_asks_for_the_puk_and_a_new_pin() {
     assert_eq!(lock(&mut app), Some(SimLock::None));
 }
 
-/// The PUK sample opens on the modem's page with the prompt asking for the
-/// PUK, as the capture shows it.
 #[test]
 fn the_puk_sample_starts_blocked() {
     let (_, mut model) = scripted(Some(MobileSample::Puk));
@@ -441,8 +417,6 @@ fn the_puk_sample_starts_blocked() {
     assert!(says(&mut model, "Unblock SIM…"));
 }
 
-/// Turning the PIN lock off asks for the PIN first; nothing is sent until
-/// it is given, and Cancel leaves the lock as it was.
 #[test]
 fn turning_the_pin_lock_off_asks_for_the_pin_first() {
     let (device, mut app) = hosted(MobileSample::Registered);
@@ -473,8 +447,6 @@ fn turning_the_pin_lock_off_asks_for_the_pin_first() {
     });
 }
 
-/// Changing the PIN asks for the current and a new one; a wrong current
-/// PIN is said and asked again.
 #[test]
 fn changing_the_pin_asks_for_the_current_one_and_a_new_one() {
     let (_, mut app) = hosted(MobileSample::Registered);
@@ -506,8 +478,6 @@ fn changing_the_pin_asks_for_the_current_one_and_a_new_one() {
     );
 }
 
-/// Codes given to the effects change the SIM at once, as an agent gives
-/// them; a wrong one is refused with what went wrong.
 #[test]
 fn codes_given_to_the_effects_change_the_sim_directly() {
     let (_, mut model) = scripted(Some(MobileSample::Locked));
@@ -706,7 +676,6 @@ fn the_other_sim_is_used_by_its_slot() {
     );
 }
 
-/// One modem's traffic total, as the session counts it.
 fn counted(total: u64, at: i64) -> serde_json::Value {
     serde_json::json!({
         "readings": [{
@@ -718,10 +687,6 @@ fn counted(total: u64, at: i64) -> serde_json::Value {
     })
 }
 
-/// The count is the device's: the session counts the modem's totals into
-/// the section through its verb with no page ever opened, and an agent
-/// reading the section sees them. Reading the modem in Settings counts
-/// nothing of its own.
 #[test]
 fn the_count_is_kept_in_the_section_with_no_page_opened() {
     use crate::testing::invoke_section;
@@ -749,9 +714,6 @@ fn the_count_is_kept_in_the_section_with_no_page_opened() {
     );
 }
 
-/// The reset day and the plan are the section's fields, bound on the
-/// modem's page, the reset day refused unless every month has it;
-/// resetting is the section's verb.
 #[test]
 fn the_reset_day_limit_and_reset_are_the_sections() {
     use crate::testing::{edit_field, invoke_section};
@@ -793,7 +755,6 @@ fn the_reset_day_limit_and_reset_are_the_sections() {
     assert_eq!(app.settings::<NetworkUsage>().get().mobile_used(today), 0);
 }
 
-/// A modem service whose changes are followed by hand.
 struct FollowedModem {
     modem: ScriptedModem,
     reads: std::sync::atomic::AtomicUsize,
@@ -817,9 +778,6 @@ impl MobileService for FollowedModem {
     }
 }
 
-/// The open section reads the modems again when the modem service says
-/// they changed, and only then: no timer reads them while nothing changes,
-/// and a closed section reads nothing.
 #[test]
 fn the_shown_section_reads_the_modems_again_when_they_change() {
     let device = Arc::new(FollowedModem {

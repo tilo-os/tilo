@@ -1,13 +1,9 @@
-//! Whole-desktop display layouts: extend, mirror, only the built-in screen,
-//! only external screens.
+//! Whole-desktop display layouts: extend, mirror, only the built-in screen, only external screens.
 //!
-//! These are the four answers to "where should my desktop appear?" that a
-//! user expects from one keystroke. Each one is a pure function of the
-//! compositor-published hardware snapshot and the committed layout, and
-//! always yields a [`DisplayConfig`] that passes
-//! [`DisplayConfig::validate_for`]. Applying one goes through the same
-//! [`DisplayTransaction`] handshake as the Settings pane, so a layout that
-//! blanks every screen restores itself when nobody confirms it.
+//! Each is a pure function of the compositor's hardware snapshot and the committed layout, and
+//! always yields a [`DisplayConfig`] that passes [`DisplayConfig::validate_for`]. Applying one goes
+//! through the same [`DisplayTransaction`] handshake as the Settings pane, so a layout that blanks
+//! every screen restores itself when nobody confirms it.
 
 use serde::{Deserialize, Serialize};
 
@@ -16,22 +12,16 @@ use crate::hardware::{
     DisplayTransaction, OutputConfig, OutputMode, logical_extent,
 };
 
-/// Where the desktop appears across the connected displays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DisplayLayoutMode {
-    /// Every display shows its own part of one larger desktop.
     Extend,
-    /// Every display shows the same picture.
     Mirror,
-    /// Only the built-in panel is on.
     BuiltinOnly,
-    /// The built-in panel is off; external displays carry the desktop.
     ExternalOnly,
 }
 
 impl DisplayLayoutMode {
-    /// Order in which the switcher lists and cycles the layouts.
     pub const ALL: [Self; 4] = [
         Self::Extend,
         Self::Mirror,
@@ -39,7 +29,6 @@ impl DisplayLayoutMode {
         Self::ExternalOnly,
     ];
 
-    /// Stable identifier used in action ids and persisted state.
     pub const fn id(self) -> &'static str {
         match self {
             Self::Extend => "extend",
@@ -53,7 +42,6 @@ impl DisplayLayoutMode {
         Self::ALL.into_iter().find(|mode| mode.id() == id)
     }
 
-    /// Position in [`Self::ALL`].
     pub fn index(self) -> usize {
         Self::ALL
             .iter()
@@ -62,18 +50,12 @@ impl DisplayLayoutMode {
     }
 }
 
-/// Why a layout cannot be planned for the attached hardware.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DisplayLayoutError {
-    /// Fewer than two displays are attached, so there is nothing to arrange.
     SingleDisplay,
-    /// The layout needs a built-in panel and none is attached.
     NoBuiltin,
-    /// No two displays share a resolution, so they cannot show one picture.
     NoCommonMirrorMode,
-    /// The compositor has not published which displays are attached.
     NoHardwareSnapshot,
-    /// The planned layout failed validation against the attached hardware.
     Invalid(DisplayConfigError),
 }
 
@@ -93,14 +75,6 @@ impl std::fmt::Display for DisplayLayoutError {
 
 impl std::error::Error for DisplayLayoutError {}
 
-/// Plan `mode` for the attached `outputs`, starting from `base` so every
-/// per-display choice the layout does not decide (scale, rotation, HDR,
-/// colour profile, the user's own arrangement) is kept.
-///
-/// # Errors
-///
-/// Returns why the layout is unavailable for this hardware; see
-/// [`DisplayLayoutError`].
 pub fn plan_layout(
     mode: DisplayLayoutMode,
     outputs: &[DisplayOutputSnapshot],
@@ -118,8 +92,6 @@ pub fn plan_layout(
             .entry(output.descriptor.connector.clone())
             .or_insert_with(|| output.unconfigured());
         config.mirror_of = None;
-        // A mirror pins every participant to a shared extent. Leaving the
-        // mirror hands each display back to its own preferred timing.
         if mirrored.contains(&output.descriptor.connector) {
             config.mode = None;
         }
@@ -168,8 +140,6 @@ pub fn plan_layout(
     Ok(next)
 }
 
-/// The layout `config` currently expresses for `outputs`, if it is one of
-/// the four whole-desktop layouts.
 pub fn active_layout(
     outputs: &[DisplayOutputSnapshot],
     config: &DisplayConfig,
@@ -213,7 +183,6 @@ pub fn active_layout(
     }
 }
 
-/// Whether `mode` can be planned for `outputs` right now.
 pub fn layout_available(
     mode: DisplayLayoutMode,
     outputs: &[DisplayOutputSnapshot],
@@ -222,10 +191,6 @@ pub fn layout_available(
     plan_layout(mode, outputs, base).is_ok()
 }
 
-/// Plan `mode` against the live hardware snapshot and the committed layout,
-/// then stage it as a [`DisplayTransaction`]. The compositor applies it at
-/// once and restores the previous layout unless it is confirmed within
-/// [`DisplayTransaction::CONFIRM_TIMEOUT_MS`].
 pub fn stage_layout(mode: DisplayLayoutMode) -> std::io::Result<DisplayTransaction> {
     let snapshot = DisplayHardwareSnapshot::load()
         .ok_or_else(|| std::io::Error::other(DisplayLayoutError::NoHardwareSnapshot))?;
@@ -235,16 +200,11 @@ pub fn stage_layout(mode: DisplayLayoutMode) -> std::io::Result<DisplayTransacti
     DisplayTransaction::request(set, candidate)
 }
 
-/// The monitor set `outputs` describe; layouts are remembered per set.
 pub fn attached_set(outputs: &[DisplayOutputSnapshot]) -> DisplaySet {
     let descriptors: Vec<_> = outputs.iter().map(|o| o.descriptor.clone()).collect();
     DisplaySet::of_descriptors(&descriptors)
 }
 
-/// Extent of an output in the shared desktop plane, where
-/// [`OutputConfig::x`]/[`OutputConfig::y`] live: the mode it will run over
-/// its scale, turned by its rotation. Placing displays by mode size instead
-/// leaves a gap beside a `HiDPI` panel that the pointer cannot cross.
 fn desktop_extent(output: &DisplayOutputSnapshot, config: &OutputConfig) -> (i32, i32) {
     let mode = effective_mode(output, config);
     let (width, height) = logical_extent((mode.width, mode.height), config.scale, config.transform);
@@ -282,8 +242,6 @@ fn set_enabled(
     }
 }
 
-/// Keep the user's primary when it stays on; otherwise prefer the built-in
-/// panel, then the first eligible display.
 fn choose_primary<'a>(
     config: &DisplayConfig,
     outputs: &'a [DisplayOutputSnapshot],
@@ -317,9 +275,6 @@ fn set_primary(config: &mut DisplayConfig, outputs: &[DisplayOutputSnapshot], pr
     }
 }
 
-/// The mode an output will run: its configured mode, else the native mode
-/// the compositor picks when none is configured (the largest advertised),
-/// else what it runs now.
 fn effective_mode(output: &DisplayOutputSnapshot, config: &OutputConfig) -> OutputMode {
     config.mode.unwrap_or_else(|| {
         output
@@ -337,7 +292,6 @@ fn effective_mode(output: &DisplayOutputSnapshot, config: &OutputConfig) -> Outp
     })
 }
 
-/// Rectangles of the enabled outputs in the shared plane.
 fn enabled_rects(
     config: &DisplayConfig,
     outputs: &[DisplayOutputSnapshot],
@@ -362,9 +316,6 @@ fn enabled_rects(
         .collect()
 }
 
-/// Keep the user's arrangement unless two enabled displays would cover the
-/// same part of the desktop (every fresh config places all of them at the
-/// origin). Then lay them out in a row, primary first.
 fn arrange_if_overlapping(
     config: &mut DisplayConfig,
     outputs: &[DisplayOutputSnapshot],
@@ -402,12 +353,6 @@ fn arrange_if_overlapping(
     }
 }
 
-/// Point every other display at `target` and pick the largest resolution
-/// they all advertise, each at its own best refresh rate: the compositor
-/// samples one viewport per sink, so timings may differ but extents may not.
-/// A resolution larger than one a display is driving now is taken only when
-/// nothing smaller is shared: sinks (virtual ones especially) advertise
-/// modes they cannot scan out, and a mirror that picks one goes black.
 fn apply_mirror(
     config: &mut DisplayConfig,
     outputs: &[DisplayOutputSnapshot],
@@ -581,7 +526,6 @@ mod tests {
         assert_eq!(plan.outputs["HDMI-A-1"].x, 1600);
     }
 
-    /// The output whose logical rectangle holds the desktop point `(x, y)`.
     fn output_at(
         plan: &DisplayConfig,
         outputs: &[DisplayOutputSnapshot],
@@ -598,8 +542,6 @@ mod tests {
 
     #[test]
     fn extend_places_mixed_dpi_displays_edge_to_edge_in_logical_size() {
-        // A 2x laptop panel beside a 1x monitor: the panel is 1280 logical
-        // pixels wide, so the monitor starts there, not at its 2560 pixels.
         let outputs = vec![
             output("eDP-1", true, &[mode(2560, 1600, 60_000)]),
             output("HDMI-A-1", false, &[mode(1920, 1080, 60_000)]),
@@ -619,8 +561,6 @@ mod tests {
             (1280, 0),
             "no gap beside the 2x panel"
         );
-        // The pointer crosses the shared edge: the last column is the
-        // panel's, the next one the monitor's.
         assert_eq!(
             output_at(&plan, &outputs, 1279, 400).as_deref(),
             Some("eDP-1")
@@ -659,9 +599,6 @@ mod tests {
 
     #[test]
     fn extend_keeps_an_arrangement_that_is_edge_to_edge_in_logical_size() {
-        // A 1.5x 4K monitor is 2560 logical pixels wide, so at x = -2560 it
-        // ends exactly where the 1x panel begins. Measured in mode pixels it
-        // would seem to overlap the panel and be pushed aside.
         let outputs = vec![
             output("eDP-1", true, &[mode(1920, 1080, 60_000)]),
             output("DP-1", false, &[mode(3840, 2160, 60_000)]),
@@ -714,7 +651,6 @@ mod tests {
 
     #[test]
     fn mirror_never_picks_a_resolution_neither_display_is_driving() {
-        // Two virtual outputs running 1024x768 that both advertise 4K.
         let mut outputs = vec![
             output(
                 "Virtual-1",

@@ -1,7 +1,6 @@
-//! A job with host ids of its own (`IdBlock`): it runs as a host user no
-//! other job is, while the files it is given stay their owner's. Root only
-//! (mapping a block and idmapping mounts take it); elsewhere each test says
-//! why it skipped and passes.
+//! A job with host ids of its own (`IdBlock`): it runs as a host user no other job is, while the
+//! files it is given stay their owner's. Root only (mapping a block and idmapping mounts take it);
+//! elsewhere each test says why it skipped and passes.
 
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
@@ -11,8 +10,8 @@ use tilo_sandbox::job::{IdBlock, JobSpec, Launch, Mount, MountKind, Root};
 use crate::needs_sandbox;
 use crate::support::{pipe, run, shell};
 
-/// The files' owner on the host: not the test's own uid, so a write that
-/// keeps it was translated, not just made as root.
+/// The files' owner on the host: not the test's own uid, so a write that keeps it was translated,
+/// not just made as root.
 const OWNER: u32 = 4242;
 
 /// A block far from any user on a test machine.
@@ -32,7 +31,47 @@ macro_rules! needs_root {
     };
 }
 
-/// A directory of `OWNER`'s, with one file of theirs in it.
+/// A directory for a job's files on a filesystem that takes idmapped mounts, or why this host has
+/// none. A test environment's temporary root need not take them (a container's overlay does not),
+/// so the files are kept in memory: tmpfs takes them from Linux 6.3. A path that cannot be idmapped
+/// is bound as it is and named, as the test of a ramfs shows.
+fn idmappable_dir() -> Result<tempfile::TempDir, String> {
+    let dir =
+        tilo_test_env::memory_tempdir().map_err(|e| format!("no directory in memory: {e}"))?;
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
+    let mut spec = JobSpec::new(Root::Host { extra: vec![] }, ["/bin/true"]);
+    with_block(&mut spec);
+    spec.mount(Mount::read_write(dir.path(), "/probe"));
+    let (_r, w) = pipe();
+    let mut job = Launch::new(&spec)
+        .stdout(w)
+        .spawn()
+        .map_err(|e| format!("starting a probe job: {e}"))?;
+    let idmapped = job.unmapped().is_empty();
+    let _ = job.wait();
+    if idmapped {
+        Ok(dir)
+    } else {
+        Err(format!(
+            "this kernel cannot idmap tmpfs ({}); it can from Linux 6.3",
+            dir.path().display()
+        ))
+    }
+}
+
+macro_rules! idmappable_dir {
+    () => {
+        match idmappable_dir() {
+            Ok(dir) => dir,
+            Err(why) => {
+                eprintln!("skipped: {why}");
+                return;
+            }
+        }
+    };
+}
+
 fn owned_dir(root: &Path, name: &str) -> std::path::PathBuf {
     let dir = root.join(name);
     std::fs::create_dir_all(&dir).unwrap();
@@ -57,8 +96,7 @@ fn owner(p: &Path) -> (u32, u32) {
 #[test]
 fn a_job_runs_as_a_host_user_of_its_own_and_writes_as_the_files_owner() {
     needs_root!();
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let dir = idmappable_dir!();
     let work = owned_dir(dir.path(), "work");
     let (status, out) = run(|s| {
         with_block(s);
@@ -104,8 +142,7 @@ fn the_jobs_processes_are_its_blocks_user_on_the_host() {
 #[test]
 fn a_nested_job_with_a_block_writes_as_the_files_owner() {
     needs_root!();
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let dir = idmappable_dir!();
     let work = owned_dir(dir.path(), "work");
     let tmp = owned_dir(dir.path(), "tmp");
     let (status, out) = run(|s| {
@@ -131,8 +168,7 @@ fn a_nested_job_with_a_block_writes_as_the_files_owner() {
 #[test]
 fn an_overlay_with_a_block_keeps_the_owner_on_both_layers() {
     needs_root!();
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let dir = idmappable_dir!();
     let lower = owned_dir(dir.path(), "lower");
     let layer = owned_dir(dir.path(), "layer");
     let (upper, work) = (layer.join("upper"), layer.join("work"));
@@ -168,8 +204,7 @@ fn an_overlay_with_a_block_keeps_the_owner_on_both_layers() {
 #[test]
 fn stacked_layers_with_a_block_are_the_jobs_own_and_stay_the_owners() {
     needs_root!();
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let dir = idmappable_dir!();
     let bottom = owned_dir(dir.path(), "bottom");
     let top = owned_dir(dir.path(), "top");
     std::fs::write(top.join("top"), "top\n").unwrap();
@@ -253,8 +288,7 @@ fn a_job_with_a_block_connects_to_a_socket_made_for_it() {
     }
     let dir = tempfile::tempdir().unwrap();
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-    // As passt makes its socket: by root, mode 0755 under the umask, so only its owner may
-    // connect.
+    // As passt makes its socket: by root, mode 0755 under the umask, so only its owner may connect.
     let sock = dir.path().join("sock");
     let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
     std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -275,27 +309,68 @@ fn a_job_with_a_block_connects_to_a_socket_made_for_it() {
     assert!(status.success() && out.contains("hello"), "{out}");
 }
 
+struct Ramfs {
+    dir: std::path::PathBuf,
+    _parent: tempfile::TempDir,
+}
+
+impl Ramfs {
+    fn mount() -> Self {
+        let parent = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(parent.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let dir = parent.path().join("ramfs");
+        std::fs::create_dir(&dir).unwrap();
+        let target = std::ffi::CString::new(dir.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: live C strings and no data argument.
+        let rc = unsafe {
+            libc::mount(
+                c"none".as_ptr(),
+                target.as_ptr(),
+                c"ramfs".as_ptr(),
+                0,
+                std::ptr::null(),
+            )
+        };
+        assert_eq!(
+            rc,
+            0,
+            "mounting a ramfs: {}",
+            std::io::Error::last_os_error()
+        );
+        Self {
+            dir,
+            _parent: parent,
+        }
+    }
+}
+
+impl Drop for Ramfs {
+    fn drop(&mut self) {
+        let target = std::ffi::CString::new(self.dir.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: a live C string.
+        unsafe { libc::umount2(target.as_ptr(), libc::MNT_DETACH) };
+    }
+}
+
 #[test]
 fn a_writable_path_that_cannot_be_idmapped_is_bound_and_named() {
     needs_root!();
-    // devtmpfs takes no idmapped mounts.
-    let dir = Path::new("/dev").join(format!("job-ids-test-{}", std::process::id()));
-    std::fs::create_dir(&dir).unwrap();
+    // ramfs takes no idmapped mounts, on any kernel and in any container.
+    let ramfs = Ramfs::mount();
+    let dir = ramfs.dir.clone();
     std::fs::write(dir.join("theirs"), "theirs\n").unwrap();
     let mut spec = JobSpec::new(Root::Host { extra: vec![] }, ["/bin/cat", "/d/theirs"]);
     with_block(&mut spec);
     spec.mount(Mount::read_write(&dir, "/d"));
     let (mut out_r, out_w) = pipe();
-    let started = Launch::new(&spec).stdout(out_w).spawn();
-    let result = started.map(|mut job| {
-        let unmapped = job.unmapped().to_vec();
-        let status = job.wait().unwrap();
-        let mut out = String::new();
-        std::io::Read::read_to_string(&mut out_r, &mut out).unwrap();
-        (unmapped, status, out)
-    });
-    std::fs::remove_dir_all(&dir).unwrap();
-    let (unmapped, status, out) = result.expect("the job starts");
+    let mut job = Launch::new(&spec)
+        .stdout(out_w)
+        .spawn()
+        .expect("the job starts");
+    let unmapped = job.unmapped().to_vec();
+    let status = job.wait().unwrap();
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut out_r, &mut out).unwrap();
     assert_eq!(unmapped, std::slice::from_ref(&dir));
     assert!(status.success() && out == "theirs\n", "{out}");
 }
@@ -303,8 +378,7 @@ fn a_writable_path_that_cannot_be_idmapped_is_bound_and_named() {
 #[test]
 fn a_job_with_a_block_names_other_users_on_its_directories() {
     needs_root!();
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let dir = idmappable_dir!();
     let work = owned_dir(dir.path(), "work");
     // What a file of another of the job's users looks like: made on the host as that id.
     std::fs::write(work.join("nobodys"), "").unwrap();
@@ -325,15 +399,14 @@ fn a_job_with_a_block_names_other_users_on_its_directories() {
     assert_eq!(owner(&work.join("nobodys")), (65534, 65534));
 }
 
-/// A nested job's system files as a root worker shows them: an image and
-/// the host's `/usr` whose files are root's on disk, as the worker's own
-/// files are. They stay root's in the job, not the job's own, so a program
-/// that trusts only root's files (ush's loader check) trusts them; and the
+/// A nested job's system files as a root worker shows them: an image and the host's `/usr` whose
+/// files are root's on disk, as the worker's own files are. They stay root's in the job, not the
+/// job's own, so a program that trusts only root's files (ush's loader check) trusts them; and the
 /// job, unknown to the image, finds an entry for itself.
 #[test]
 fn a_nested_jobs_system_files_stay_roots_and_it_has_an_account() {
     needs_root!();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = idmappable_dir!();
     let image = dir.path().join("image");
     for d in ["usr", "etc", "proc", "dev", "tmp", "sys", "run"] {
         std::fs::create_dir_all(image.join(d)).unwrap();
@@ -345,7 +418,6 @@ fn a_nested_jobs_system_files_stay_roots_and_it_has_an_account() {
     std::fs::write(image.join("etc/group"), "root:x:0:\n").unwrap();
     std::fs::write(image.join("marker"), "").unwrap();
     std::fs::set_permissions(&image, std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
     let (status, out) = run(|s| {
         s.root = Root::Image(image.clone());
         s.allow_nested_sandboxes();
@@ -385,8 +457,8 @@ fn a_nested_jobs_system_files_stay_roots_and_it_has_an_account() {
     assert_eq!(lines.len(), 8, "{out}");
 }
 
-/// The same for a job in the host's own root, whose `/usr` is root's: it
-/// never shows as the job's own.
+/// The same for a job in the host's own root, whose `/usr` is root's: it never shows as the job's
+/// own.
 #[test]
 fn a_nested_job_in_the_host_root_sees_its_usr_as_roots() {
     needs_root!();
@@ -403,8 +475,8 @@ fn a_nested_job_in_the_host_root_sees_its_usr_as_roots() {
     assert!(status.success(), "{out}");
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines.first(), Some(&"1000"), "{out}");
-    // Root's where the host's /usr takes an idmapped mount; `nobody` where
-    // it can't (a micro-VM's root) and is bound as it is. Never the job's.
+    // Root's where the host's /usr takes an idmapped mount; `nobody` where it can't (a micro-VM's
+    // root) and is bound as it is. Never the job's.
     assert!(matches!(lines.get(1), Some(&("0" | "65534"))), "{out}");
     assert_eq!(lines.get(2), Some(&"known"), "{out}");
 }

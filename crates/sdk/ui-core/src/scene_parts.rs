@@ -27,14 +27,13 @@ use vello_encoding::{Encoding, Patch};
 
 mod widget_keys;
 pub use widget_keys::{
-    Begun, DrawnScroll, Keyer, begin_frame, begin_item, begin_widget, drawn_scrolls, end_widget,
-    item_key, key_widgets, keyed, keyer, keys_widgets, painted_key, retain_shown, scroll_widget,
-    skip_widget,
+    Begun, DrawnField, DrawnScroll, FieldText, Keyer, begin_frame, begin_item, begin_widget,
+    drawn_fields, drawn_pictures, drawn_scrolls, end_widget, item_key, key_widgets, keyed, keyer,
+    keys_widgets, native_field, painted_key, picture, retain_shown, scroll_widget, skip_widget,
 };
 
 /// Bounds what a section draws outside its parts ([`damage_with_copies`],
 /// [`drawn_bounds`]); keep one across frames.
-#[cfg(feature = "native")]
 pub use tilo_cpu_raster::DrawBounds;
 
 /// Identifies one part among the parts of a section. Two frames' parts are
@@ -664,7 +663,6 @@ pub fn damage(
 ///
 /// # Errors
 /// As [`damage`].
-#[cfg(feature = "native")]
 pub fn damage_with_copies(
     previous: &Scene,
     previous_parts: &SectionParts,
@@ -706,7 +704,6 @@ pub fn damage_with_copies(
 /// Where `scene`, drawn with `parts` (if it was), paints anything: inside a
 /// bounded part by that part's bounds, anywhere else by its draw bounds.
 /// `None` when some of it cannot be bounded.
-#[cfg(feature = "native")]
 pub fn drawn_bounds(
     scene: &Scene,
     parts: Option<&SectionParts>,
@@ -743,7 +740,6 @@ fn end_of(events: &[Event], begin: usize) -> Option<usize> {
 /// cover that part too, so their bounds would say everything after it is
 /// over it: a piece only they bound counts by its draw bounds, and by
 /// theirs only where those cannot bound it.
-#[cfg(feature = "native")]
 fn drawn_from(
     scene: &Scene,
     events: &[Event],

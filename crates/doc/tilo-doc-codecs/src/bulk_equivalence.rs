@@ -40,13 +40,10 @@ struct Replica {
 }
 
 impl Replica {
-    /// A fresh document with a fixed actor, so every path mints the same block ids.
     fn new(path: Path) -> Self {
         let mut doc = AutoCommit::new().with_actor(ActorId::from(b"bulk-equivalence".as_slice()));
         let c = model::init(&mut doc, &ROOT);
         let actor = doc.get_actor().to_hex_string();
-        // A host editing a document seeds its generator from it; one creating a document starts
-        // a new one. Both count from zero here, so every path mints the same ids.
         let mut ids = match path {
             Path::BulkLocalMarks => IdGen::with_counter(actor, 0),
             _ => IdGen::new(actor),
@@ -152,8 +149,6 @@ fn assert_paths_agree(name: &str, codec: &dyn FormatProvider, bytes: &[u8]) {
     }
 }
 
-/// A document exercising what Markdown can't carry: comments, tracked changes, bookmarks,
-/// header/footer with a page-number field, footnotes.
 fn rich_document() -> Replica {
     let mut r = Replica::new(Path::OpByOp);
     let mut dm = r.dm();
@@ -199,13 +194,11 @@ fn rich_document() -> Replica {
 
 #[test]
 fn bulk_and_incremental_imports_agree() {
-    // Phase `markdown_imports_agree`.
     {
         let mut md = b"---\ntitle: Scaling\nauthor: Ada\n---\n\n".to_vec();
         md.extend(synth::markdown(8_000));
         assert_paths_agree("md", &MarkdownCodec, &md);
     }
-    // Phase `exported_formats_import_alike`.
     {
         let md = synth::markdown(8_000);
         let source = import(&MarkdownCodec, &md, Path::OpByOp);
@@ -232,7 +225,6 @@ fn bulk_and_incremental_imports_agree() {
         assert_paths_agree("html", &HtmlCodec, html.as_bytes());
         assert_paths_agree("rtf", &RtfCodec, render_rtf(&snap).as_bytes());
     }
-    // Phase `office_features_import_alike`.
     {
         let source = rich_document();
         let doc = DocRef {
@@ -254,11 +246,9 @@ fn bulk_and_incremental_imports_agree() {
             &OdtCodec.export(doc, &tilo_content::NoContent).unwrap(),
         );
     }
-    // Phase `fixture_documents_import_alike`.
     {
         assert_paths_agree("sample.docx", &DocxCodec, SAMPLE_DOCX);
         assert_paths_agree("sample.odt", &OdtCodec, SAMPLE_ODT);
-        // LibreOffice-written documents full of content kept verbatim, merged cells and styles.
         for (name, docx, odt) in [
             (
                 "lo-structure",

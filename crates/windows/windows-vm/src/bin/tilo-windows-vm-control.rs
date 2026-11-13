@@ -15,11 +15,8 @@ use windows_vm::{
 const ROOT: &str = "/var/lib/tilo/windows";
 const UUID_FILE: &str = "/var/lib/tilo/windows/domain.uuid";
 const SYSTEM_DISK: &str = "/var/lib/tilo/windows/system.qcow2";
-/// Group-readable by the normal Tilo owner, for `owner-status`.
 const APPLIANCE_STATE: &str = "/var/lib/tilo/windows/session/state.json";
 const NVRAM: &str = "/var/lib/tilo/windows/nvram.fd";
-// Keep controller egress state apart from per-session portal-file lease
-// projections below `$XDG_RUNTIME_DIR/tilo/windows-vm`.
 const EGRESS_RUNTIME_ROOT: &str = "/run/tilo/windows-egress";
 const LEASE_ROOT: &str = "/run/tilo/windows-egress/leases";
 const EGRESS_SUMMARY: &str = "/run/tilo/windows-egress/summary.json";
@@ -564,8 +561,6 @@ fn active_lease() -> Result<Option<(String, EgressPurpose, u64)>, String> {
     Ok(active)
 }
 
-/// The one reader for controller-written lease records: `active_lease`, the
-/// reaper's locked passes and its unlocked scan all go through it.
 fn read_lease_record(path: &Path) -> Result<EgressLease, String> {
     let source =
         fs::read_to_string(path).map_err(|error| format!("cannot read egress lease: {error}"))?;
@@ -633,7 +628,6 @@ fn reap_leases<R: VmBackend>(
 
 #[derive(Debug, Default, Eq, PartialEq)]
 struct ReapPass {
-    /// A lease NIC was detached, or found gone, and its record retired.
     closed_any: bool,
     /// Expired records whose NIC could not be detached, kept for a retry.
     failed: Vec<PathBuf>,
@@ -691,7 +685,6 @@ fn reap_lease_records<R: VmBackend>(
     Ok(pass)
 }
 
-/// A lease record is a regular `egress-*.json` file.
 fn is_lease_record(path: &Path) -> bool {
     path.extension().and_then(|extension| extension.to_str()) == Some("json")
         && path
@@ -745,8 +738,6 @@ fn discard_records(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Move the records the reaper gave up on out of `LEASE_ROOT`, where they
-/// would keep its path unit firing. Every later locked pass retries them.
 fn set_aside(paths: &[PathBuf], unretired_root: &Path) -> Result<(), String> {
     fs::create_dir_all(unretired_root)
         .map_err(|error| format!("cannot create the unretired lease directory: {error}"))?;
@@ -794,7 +785,6 @@ fn appliance() -> Result<(ApplianceConfig, LibvirtBackend), String> {
 fn reap_pass(now: u64, give_up: bool) -> Result<ReapPass, String> {
     let _lock = acquire_controller_lock()?;
     if !Path::new(UUID_FILE).exists() {
-        // Also drop any public status a failed or replaced appliance left.
         discard_records(Path::new(LEASE_ROOT))?;
         discard_records(Path::new(UNRETIRED_ROOT))?;
         remove_egress_summary();
@@ -815,8 +805,6 @@ fn reap_pass(now: u64, give_up: bool) -> Result<ReapPass, String> {
     Ok(pass)
 }
 
-/// The status summary is refreshed this often while a lease keeps the
-/// reaper running, matching the status timer's period.
 const STATUS_REFRESH_SECONDS: u64 = 30;
 /// The reaper wakes this often while a lease record exists. Each wake reads
 /// the records afresh, so a lease opened while it slept is enforced at its
@@ -835,12 +823,9 @@ const REAP_GIVE_UP_SECONDS: u64 = 10 * 60;
 /// retry, only something to report.
 const IDLE_AFTER_FAILURE_EXIT: u8 = 3;
 
-/// An unlocked look at the lease records between locked passes.
 #[derive(Debug, Default, Eq, PartialEq)]
 struct LeaseScan {
     entries: usize,
-    /// Expiries of the records that could be read. A record being written
-    /// reads as unreadable here and is left to the next locked pass.
     expiries: Vec<u64>,
 }
 
@@ -867,11 +852,8 @@ enum Wake {
 /// policy is tested as it runs.
 #[derive(Debug, Default)]
 struct ReaperSchedule {
-    /// Unix time of the last locked pass; `None` before the first.
     last_pass: Option<u64>,
-    /// Unix time the next pass is due even if no lease expires before it.
     next_pass: u64,
-    /// Start of the current run of failed passes.
     failing_since: Option<u64>,
     failures: u32,
     last_error: Option<String>,
@@ -968,7 +950,6 @@ fn reap_until_idle() -> Result<ReaperExit, String> {
                     eprintln!("tilo-windows-vm-control: egress reaper pass failed: {error}");
                 }
                 schedule.after_pass(&outcome, now);
-                // Decide at once whether anything is left to wait for.
                 continue;
             }
             Wake::Sleep => {}
@@ -1122,7 +1103,6 @@ mod tests {
         scan_lease_records(root).unwrap().entries
     }
 
-    /// The schedule right after a clean pass at `at`.
     fn after_clean_pass(at: u64) -> ReaperSchedule {
         let mut schedule = ReaperSchedule::default();
         schedule.after_pass(&Ok(ReapPass::default()), at);

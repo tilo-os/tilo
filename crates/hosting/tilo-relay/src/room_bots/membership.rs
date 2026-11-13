@@ -87,16 +87,7 @@ impl HostRootCertifier {
             user_public_key: self.root.verifying_key().to_bytes(),
             device_public_key,
             device_label: format!("Bot: {}", bot.name),
-            capabilities: DeviceCapabilities {
-                can_own_workspaces: false,
-                can_admit_devices: false,
-                can_act_as_host: false,
-                can_read_all_workspaces: false,
-                foreign: false,
-                can_administer_devices: false,
-                agent: None,
-                stand_in: false,
-            },
+            capabilities: DeviceCapabilities::nothing(),
             issued_at_ns: u64::try_from(bot.installed_at_ms)
                 .unwrap_or(0)
                 .saturating_mul(1_000_000)

@@ -14,7 +14,11 @@ pub struct Memo {
     pub pinned: bool,
 }
 
-#[resource(kind = "test.memo", label = "Memo", app = "so.tilo.test-unreadable")]
+#[resource(
+    kind = "test.memo",
+    app = "so.tilo.test-unreadable",
+    catalogue = "tests/locales"
+)]
 impl Memo {
     /// Clear the title.
     #[action]
@@ -117,8 +121,8 @@ pub struct Learned {
 
 #[resource(
     kind = "test.learned",
-    label = "Learned words",
-    app = "so.tilo.test-unreadable-person"
+    app = "so.tilo.test-unreadable-person",
+    catalogue = "tests/locales"
 )]
 impl Learned {
     /// Forget everything the keyboard learned.

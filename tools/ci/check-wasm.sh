@@ -31,6 +31,14 @@ if [ "${1:-}" = --check ]; then
   mode=check
   shift
 fi
+# std's clocks panic in a browser page, so this pass bans their reads on top
+# of the root clippy.toml (tools/ci/wasm_clippy_conf.py says why).
+if [ "$mode" = clippy ]; then
+  # A fixed place, so an unchanged configuration keeps the lint cache.
+  conf_dir=$(realpath -m "${CARGO_TARGET_DIR:-target}/wasm-clippy")
+  python3 tools/ci/wasm_clippy_conf.py "$conf_dir"
+  export CLIPPY_CONF_DIR=$conf_dir
+fi
 passed=()
 failed=()
 verify() {

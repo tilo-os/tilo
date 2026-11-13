@@ -13,6 +13,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::floating_surface::DetachedContent;
 use crate::widget::{BandMotion, Element, TaffyTreeExt, Widget, layout_rect};
 
@@ -186,7 +187,6 @@ impl Widget for DisclosureBand {
             self.rect = rect;
             self.dirty = true;
         }
-        self.layout_dirty = false;
         if !self.band.laid_in_flow {
             // On its way: its container puts it in its slot, and its
             // content is placed there when it is drawn.
@@ -216,7 +216,7 @@ impl Widget for DisclosureBand {
             // building it.
             let mut painted = self.band.take_painted();
             self.child
-                .draw(&mut painted, Affine::IDENTITY, text, theme, presence);
+                .draw_child(&mut painted, Affine::IDENTITY, text, theme, presence);
             self.band.show_at_rest(painted, scene, transform);
             return;
         }
@@ -234,7 +234,7 @@ impl Widget for DisclosureBand {
         }
         let mut painted = self.band.take_painted();
         self.child
-            .draw(&mut painted, Affine::IDENTITY, text, theme, presence);
+            .draw_child(&mut painted, Affine::IDENTITY, text, theme, presence);
         self.band.show_moving(painted, scene, transform);
     }
 
@@ -306,6 +306,10 @@ impl Widget for DisclosureBand {
 
     fn layout_needs_measure(&self) -> bool {
         self.is_layout_dirty()
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     /// Joining or leaving the layout adds or removes the child's nodes in

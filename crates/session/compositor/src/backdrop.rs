@@ -4,9 +4,9 @@
 //! made of a material that shows a blur of what lies behind it. A hosted
 //! app cannot see behind itself: the windows and the surfaces below are the
 //! compositor's. So a hosted surface names the regions it draws the material
-//! in ([`BackdropRequest`], from [`crate::SurfaceHost::backdrops`]) and the
+//! in ([`BackdropRequest`], from [`SurfaceHost::backdrops`](tilo_session_core::surface::SurfaceHost::backdrops)) and the
 //! compositor hands back, after each frame, a blurred image of what lies
-//! below each ([`BackdropImage`], [`crate::SurfaceHost::set_backdrops`]),
+//! below each ([`BackdropImage`], [`SurfaceHost::set_backdrops`](tilo_session_core::surface::SurfaceHost::set_backdrops)),
 //! drawn at the request's texel size, only when what lies below changed.
 //! The app draws it in its material, under its tint, the next frame.
 //!
@@ -38,6 +38,7 @@ use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Size, Transfor
 use crate::backend::BackendError;
 use crate::render::{BACKGROUND, below_host};
 use crate::state::State;
+use tilo_session_core::surface::{BackdropImage, BackdropRequest};
 
 /// The shader each of the blur's two passes runs.
 const SHADER: &str = include_str!("blur.glsl");
@@ -51,25 +52,6 @@ const MAX_SIGMA: f64 = 4.0;
 
 /// Upper bound on halvings.
 const MAX_HALVINGS: u32 = 6;
-
-/// A region a hosted surface draws its material in.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BackdropRequest {
-    /// The region, logical `(x, y, width, height)` .
-    pub rect: (f64, f64, f64, f64),
-    /// The size of the image it takes, in texels.
-    pub texels: (u32, u32),
-    /// The blur's standard deviation, in texels.
-    pub blur: f64,
-}
-
-/// What lies below a [`BackdropRequest`]'s region, blurred: rows of premultiplied R, G, B, A at its
-/// texel size.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BackdropImage {
-    pub rgba: Vec<u8>,
-    pub texels: (u32, u32),
-}
 
 /// Which GL context made a texture or a program: neither is usable in another.
 type Context = usize;
@@ -250,8 +232,9 @@ fn read_back(
 }
 
 impl dyn crate::Backend {
-    /// Hand every hosted surface that draws translucent material the backdrops that changed.
-    pub(crate) fn serve_backdrops(&mut self, state: &mut State) {
+    /// Hand every hosted surface that draws translucent material the backdrops that changed, and
+    /// answer the hosts that were handed one: those draw their material in the frame being built.
+    pub(crate) fn serve_backdrops(&mut self, state: &mut State) -> Vec<usize> {
         let requests: Vec<(usize, Vec<BackdropRequest>)> = state
             .hosts
             .iter()
@@ -266,6 +249,7 @@ impl dyn crate::Backend {
             .backdrops
             .watches
             .retain(|watch| live.contains(&watch.key));
+        let mut fed = Vec::new();
         for (host, list) in requests {
             if list.is_empty() {
                 continue;
@@ -287,8 +271,10 @@ impl dyn crate::Backend {
                 && let Some(surface) = state.hosts.get_mut(host)
             {
                 surface.set_backdrops(images);
+                fed.push(host);
             }
         }
+        fed
     }
 }
 

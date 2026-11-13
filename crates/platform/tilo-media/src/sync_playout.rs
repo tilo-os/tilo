@@ -1,62 +1,38 @@
 //! Presentation-time playout for synchronized speaker groups.
 //!
-//! A group leader stamps every audio frame with its media timestamp: the index
-//! of its first sample on the leader's clock, so the frame's leader time is
-//! `media_ts / sample_rate`. Every member plays that sample at the same
-//! instant: `leader time + group latency + member trim`, converted to the
-//! member's local clock through a [`ClockMapping`] the caller supplies (the
-//! clock estimator lives outside this crate and plugs in through the trait).
+//! A group leader stamps every frame with the index of its first sample on the leader's
+//! clock, and every member plays that sample at the leader's time plus the group latency
+//! and its own trim, converted to its own clock through a [`ClockMapping`] the caller
+//! supplies.
 //!
-//! [`SyncPlayout`] is the member side:
-//!
-//! * a jitter buffer ordered by media timestamp that ignores duplicates,
-//!   drops frames whose playout time has passed, conceals losses with a short
-//!   fade to silence, and never waits for a missing frame;
-//! * a windowed-sinc polyphase resampler whose ratio a PI controller trims
-//!   within ±500 ppm of nominal, so the presentation error converges to zero
-//!   without audible pitch change; only an error beyond 20 ms is corrected with
-//!   a hard skip or an inserted silence;
-//! * a [`ChannelRole`] mapping that renders a stereo source as what this
-//!   member plays: one side of a stereo pair, a mono or centre downmix, a
-//!   low-passed LFE feed, or the stereo signal itself.
-//!
-//! Everything here is pure computation over sample buffers; the audio device
-//! callback drives [`SyncPlayout::render`] with the local time at which the
-//! first rendered sample will leave the speaker.
+//! [`SyncPlayout`] is the member side: a jitter buffer ordered by media timestamp that
+//! ignores duplicates, drops frames whose playout has passed, conceals losses with a
+//! short fade and never waits for a missing frame; a windowed-sinc resampler whose ratio
+//! a PI controller trims within ±500 ppm, so the presentation error converges without
+//! audible pitch change, with a hard skip or inserted silence only beyond 20 ms; and a
+//! [`ChannelRole`] mapping that renders a stereo source as what this member plays.
+//! Everything here is pure computation over sample buffers.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::f64::consts::PI;
 
-/// Nanoseconds per second.
 const NS_PER_SEC: i64 = 1_000_000_000;
 
-/// Half the number of resampler taps: each output sample reads this many
-/// source samples on either side of its position.
 const HALF_TAPS: usize = 16;
-/// Resampler taps per output sample.
 const TAPS: usize = HALF_TAPS * 2;
-/// Fractional positions tabulated between two source samples; coefficients
-/// between two tabulated phases are interpolated linearly.
 const PHASES: usize = 512;
-/// Coefficients in the resampler table: one row of taps per tabulated phase,
-/// both ends included.
 const TABLE_LEN: usize = 513 * TAPS;
-/// Kaiser window shape. 9 puts the stop band near -90 dB.
 const KAISER_BETA: f64 = 9.0;
 /// Resampler cutoff as a fraction of the sample rate (0.5 is Nyquist). The
 /// ratio never leaves 1 ± 500 ppm, so the band edge only has to protect the
 /// top of the audible range from imaging.
 const CUTOFF: f64 = 0.45;
 
-/// Largest deviation of the resampling ratio from 1. At 500 ppm a pitch change
-/// is under a hundredth of a semitone, far below what a listener hears.
 pub const MAX_RATIO_DEVIATION: f64 = 500e-6;
 /// A presentation error beyond this is corrected at once, by skipping source
 /// or inserting silence, instead of by resampling.
 pub const HARD_CORRECTION_NS: i64 = 20_000_000;
 
-/// Natural frequency of the drift loop. Half a hertz follows a clock estimate
-/// that settles over seconds while ignoring block-to-block noise.
 const LOOP_NATURAL_HZ: f64 = 0.5;
 /// Damping of the drift loop: critically damped enough not to ring.
 const LOOP_DAMPING: f64 = 0.707;
@@ -65,7 +41,6 @@ const LOOP_DAMPING: f64 = 0.707;
 /// click, short enough to keep concealment tight.
 const FADE_SECONDS: f64 = 0.002;
 
-/// Corner frequency of the LFE feed's low-pass filter.
 pub const LFE_CUTOFF_HZ: f64 = 120.0;
 
 /// Converts between the group leader's clock and this device's clock.
@@ -74,19 +49,13 @@ pub const LFE_CUTOFF_HZ: f64 = 120.0;
 /// a skew fitted by a clock estimator; the playout only needs the two
 /// conversions and calls them once per rendered block.
 pub trait ClockMapping {
-    /// The local time at which the leader's clock reads `leader_ns`.
     fn leader_to_local_ns(&self, leader_ns: i64) -> i64;
-    /// The leader's clock reading at local time `local_ns`.
     fn local_to_leader_ns(&self, local_ns: i64) -> i64;
 }
 
-/// An offset-and-skew clock mapping:
-/// `local = offset + leader · (1 + skew_ppm · 10⁻⁶)`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct LinearClockMapping {
     pub offset_ns: i64,
-    /// How much faster the local clock runs than the leader's, in parts per
-    /// million.
     pub skew_ppm: f64,
 }
 
@@ -106,24 +75,17 @@ impl ClockMapping for LinearClockMapping {
     }
 }
 
-/// Which part of a stereo source a group member plays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChannelRole {
     Left,
-    /// The right channel of a stereo pair.
     Right,
-    /// A single speaker covering the whole source: `(L + R) / 2`.
     Mono,
-    /// The middle speaker of a room: the mid signal `(L + R) / 2`.
     Center,
-    /// A subwoofer: the mid signal low-passed at [`LFE_CUTOFF_HZ`].
     Lfe,
-    /// Both channels unchanged, for a member that is itself stereo.
     Stereo,
 }
 
 impl ChannelRole {
-    /// Interleaved channels [`SyncPlayout::render`] writes for this role.
     pub const fn channels(self) -> usize {
         match self {
             Self::Stereo => 2,
@@ -132,12 +94,9 @@ impl ChannelRole {
     }
 }
 
-/// Interleaved samples as they arrive from the leader.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Payload {
-    /// Floating point in `-1.0..=1.0`.
     F32(Vec<f32>),
-    /// Signed 16-bit PCM.
     I16(Vec<i16>),
 }
 
@@ -159,13 +118,11 @@ impl Payload {
     }
 }
 
-/// One frame of the leader's stream.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioFrame {
     /// Sender sequence number, reported back in statistics only; ordering and
     /// duplicate detection use `media_ts`.
     pub seq: u64,
-    /// Index of the frame's first sample on the leader's clock.
     pub media_ts: i64,
     /// Interleaved channels in `payload`. One channel is played as both sides
     /// of a stereo source; beyond two, only the first two are used.
@@ -173,19 +130,16 @@ pub struct AudioFrame {
     pub payload: Payload,
 }
 
-/// What [`SyncPlayout::push`] did with a frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PushOutcome {
     Queued,
     /// A frame with the same media timestamp is already buffered.
     Duplicate,
-    /// Its samples were due before it arrived.
     Late,
     /// No channels, or a payload that is not a whole number of samples.
     Malformed,
 }
 
-/// Counters and the current state of the drift loop.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PlayoutStats {
     pub queued: u64,
@@ -194,34 +148,23 @@ pub struct PlayoutStats {
     pub malformed: u64,
     /// Frames discarded because the buffer exceeded its capacity.
     pub overflowed: u64,
-    /// Sequence number of the most recently queued frame.
     pub last_seq: Option<u64>,
     /// Source samples played as concealment because no frame covered them.
     pub concealed_samples: u64,
-    /// Hard corrections that skipped source to catch up.
     pub skips: u64,
-    /// Hard corrections that inserted silence to wait.
     pub inserts: u64,
-    /// Presentation error at the start of the last rendered block: positive
-    /// when this member plays ahead of the group.
     pub presentation_error_ns: i64,
-    /// Source samples consumed per output sample in the last block.
     pub ratio: f64,
 }
 
-/// How a member plays the group's stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlayoutConfig {
-    /// Sample rate of both the stream and the output device.
     pub sample_rate: u32,
     /// Delay from a sample's leader time to its playout, shared by the whole
     /// group; it must cover network jitter.
     pub group_latency_ns: i64,
-    /// This member's own additional delay, from acoustic calibration.
     pub trim_ns: i64,
     pub role: ChannelRole,
-    /// Most audio the jitter buffer holds; the oldest frames are discarded
-    /// beyond it.
     pub capacity_ns: i64,
 }
 
@@ -258,13 +201,11 @@ impl Position {
         self.fraction = sum - whole;
     }
 
-    /// `self - other` in samples.
     fn minus(self, other: Self) -> f64 {
         i64_to_f64(self.index.saturating_sub(other.index)) + self.fraction - other.fraction
     }
 }
 
-/// A second-order IIR section (transposed direct form II).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Biquad {
     b0: f64,
@@ -277,7 +218,6 @@ struct Biquad {
 }
 
 impl Biquad {
-    /// Low-pass section from the audio EQ cookbook.
     fn low_pass(sample_rate: f64, corner_hz: f64, q: f64) -> Self {
         let w0 = 2.0 * PI * corner_hz / sample_rate;
         let alpha = w0.sin() / (2.0 * q);
@@ -302,8 +242,6 @@ impl Biquad {
     }
 }
 
-/// Fourth-order Butterworth low-pass: two cookbook sections with the
-/// Butterworth pole Qs.
 fn lfe_filter(sample_rate: f64) -> [Biquad; 2] {
     [
         Biquad::low_pass(sample_rate, LFE_CUTOFF_HZ, 0.541_196_1),
@@ -311,28 +249,20 @@ fn lfe_filter(sample_rate: f64) -> [Biquad; 2] {
     ]
 }
 
-/// A buffered frame, already converted to stereo `f32`.
 #[derive(Clone, Debug)]
 struct StoredFrame {
     samples: Vec<[f32; 2]>,
 }
 
-/// The member side of a synchronized speaker group; see the module
-/// documentation.
 #[derive(Debug)]
 pub struct SyncPlayout {
     config: PlayoutConfig,
-    /// `(PHASES + 1) · TAPS` resampler coefficients, one row per phase.
     coefficients: Vec<f32>,
     frames: BTreeMap<i64, StoredFrame>,
-    /// Role-mapped source samples, interleaved by the role's channel count,
-    /// starting at source index `history_start`.
     history: VecDeque<f32>,
     history_start: i64,
-    /// Source samples to fade in after a gap; counts down.
     fade_in_remaining: usize,
     fade_len: usize,
-    /// Next source position to render; `None` before the first block.
     position: Option<Position>,
     integrator: f64,
     /// Output samples of silence still to insert for a hard correction.
@@ -376,18 +306,14 @@ impl SyncPlayout {
         &self.stats
     }
 
-    /// Changes this member's trim. A change under [`HARD_CORRECTION_NS`] is
-    /// absorbed by resampling, without a gap.
     pub const fn set_trim_ns(&mut self, trim_ns: i64) {
         self.config.trim_ns = trim_ns;
     }
 
-    /// Changes the group latency, absorbed like a trim change.
     pub const fn set_group_latency_ns(&mut self, latency_ns: i64) {
         self.config.group_latency_ns = latency_ns;
     }
 
-    /// Audio buffered ahead of the playout position, in nanoseconds.
     #[cfg(test)]
     pub fn buffered_ns(&self) -> i64 {
         let Some((&start, last)) = self.frames.last_key_value() else {
@@ -405,7 +331,6 @@ impl SyncPlayout {
         self.samples_to_ns(end.saturating_sub(from).max(0))
     }
 
-    /// Accepts a frame from the network.
     pub fn push(&mut self, frame: &AudioFrame) -> PushOutcome {
         let outcome = self.queue(frame);
         match outcome {
@@ -470,11 +395,6 @@ impl SyncPlayout {
         }
     }
 
-    /// Renders `out` (interleaved, [`ChannelRole::channels`] per sample
-    /// frame), whose first sample leaves the speaker at local time
-    /// `local_now_ns`.
-    ///
-    /// Always fills the whole buffer: missing audio becomes silence.
     pub fn render(&mut self, clock: &dyn ClockMapping, local_now_ns: i64, out: &mut [f32]) {
         let channels = self.config.role.channels();
         let count = out.len().checked_div(channels).unwrap_or(0);
@@ -544,8 +464,6 @@ impl SyncPlayout {
             .retain(|&start, frame| start.saturating_add(len_i64(frame.samples.len())) > consumed);
     }
 
-    /// PI controller on the presentation error (seconds, positive when ahead):
-    /// returns the resampling ratio for the next block.
     fn steer(&mut self, error_s: f64, feed_forward: f64, block_s: f64) -> f64 {
         let omega = 2.0 * PI * LOOP_NATURAL_HZ;
         let kp = 2.0 * LOOP_DAMPING * omega;
@@ -561,7 +479,6 @@ impl SyncPlayout {
         ratio
     }
 
-    /// The source position that should be leaving the speaker at `local_ns`.
     fn desired_position(&self, clock: &dyn ClockMapping, local_ns: i64) -> Position {
         let leader_ns = clock.local_to_leader_ns(local_ns);
         let media_ns = leader_ns
@@ -596,8 +513,6 @@ impl SyncPlayout {
         self.history_start.saturating_add(len_i64(frames))
     }
 
-    /// Drops history the resampler no longer reads for `index`, or restarts
-    /// it there when `index` lies outside it.
     fn prune_history(&mut self, index: i64) {
         let front = index.saturating_sub(len_i64(HALF_TAPS)).saturating_add(1);
         let end = self.history_end();
@@ -674,8 +589,6 @@ impl SyncPlayout {
         self.scratch = scratch;
     }
 
-    /// Applies the channel role to stereo source samples and appends them to
-    /// the history.
     fn append_mapped(&mut self, samples: &[[f32; 2]]) {
         for &[left, right] in samples {
             let mid = 0.5 * (left + right);
@@ -698,7 +611,6 @@ impl SyncPlayout {
         }
     }
 
-    /// Band-limited interpolation of one channel at `position`.
     fn interpolate(&self, position: Position, channel: usize, channels: usize) -> f32 {
         let phase = position.fraction * usize_to_f64(PHASES);
         let lower = round_to_usize(phase.floor()).min(PHASES.saturating_sub(1));
@@ -733,8 +645,6 @@ impl SyncPlayout {
     }
 }
 
-/// Kaiser-windowed sinc coefficients for `PHASES + 1` fractional positions,
-/// each row normalized to unit DC gain.
 fn sinc_table() -> Vec<f32> {
     let half = usize_to_f64(HALF_TAPS);
     let norm = bessel_i0(KAISER_BETA);
@@ -761,7 +671,6 @@ fn sinc_table() -> Vec<f32> {
     table
 }
 
-/// Modified Bessel function of the first kind, order zero (power series).
 fn bessel_i0(x: f64) -> f64 {
     let quarter = x * x / 4.0;
     let mut term = 1.0;
@@ -867,7 +776,6 @@ mod tests {
     struct Network {
         loss: f64,
         duplicate: f64,
-        /// Probability that a frame is held back far beyond the latency.
         very_late: f64,
         min_delay_ns: i64,
         max_delay_ns: i64,
@@ -883,9 +791,7 @@ mod tests {
 
     struct Run {
         output: Vec<f32>,
-        /// Local time of each output sample frame.
         times: Vec<i64>,
-        /// Presentation error reported at each block.
         errors_ns: Vec<i64>,
         max_buffered_ns: i64,
         stats: PlayoutStats,
@@ -903,9 +809,6 @@ mod tests {
             .collect()
     }
 
-    /// Streams `seconds` of a stereo tone from a leader whose clock relates to
-    /// the member's through `clock`, over `network`, into a member whose
-    /// output device runs `dac_ppm` fast against its own clock.
     fn simulate(
         role: ChannelRole,
         clock: &mut dyn FnMut(f64) -> LinearClockMapping,
@@ -937,8 +840,6 @@ mod tests {
             let local_now = start_local + block as i64 * block_ns;
             let elapsed = block as f64 * BLOCK as f64 / f64::from(RATE);
             let mapping = clock(elapsed);
-            // The leader sends each frame once its last sample exists on its
-            // clock, reading the true relationship between the clocks.
             let leader_now = mapping.local_to_leader_ns(local_now + block_ns);
             while (next_ts + FRAME as i64) * NS_PER_SEC / i64::from(RATE) <= leader_now {
                 let sent_leader = (next_ts + FRAME as i64) * NS_PER_SEC / i64::from(RATE);
@@ -981,8 +882,6 @@ mod tests {
         run
     }
 
-    /// Least-squares fit of a tone at the source position each output sample
-    /// should present: returns (presentation error in seconds, THD+N in dB).
     fn fit_tone(
         output: &[f32],
         times: &[i64],
@@ -996,7 +895,6 @@ mod tests {
                 2.0 * PI * hz * media_s
             })
             .collect();
-        // Normal equations of y ≈ a·sin θ + b·cos θ.
         let (mut ss, mut cc, mut sc, mut ys, mut yc) = (0.0, 0.0, 0.0, 0.0, 0.0);
         for (&y, &theta) in output.iter().zip(&thetas) {
             let (s, c, y) = (theta.sin(), theta.cos(), f64::from(y));
@@ -1093,8 +991,6 @@ mod tests {
             (250.0, 440.0),
         );
         assert_eq!(run.stats.skips + run.stats.inserts, 0);
-        // The leader's clock runs 300 ppm slow against the member's, and the
-        // device consumes its samples 150 ppm faster than the member's clock.
         assert!(
             (run.stats.ratio - (1.0 + 300e-6 - 150e-6)).abs() < 50e-6,
             "{}",
@@ -1134,14 +1030,11 @@ mod tests {
         assert!(run.max_buffered_ns < 2 * LATENCY_NS);
         let converged = &run.errors_ns[run.errors_ns.len() / 2..];
         assert!(converged.iter().all(|e| e.abs() < 1_000_000));
-        // Every second after start-up carries sound: losses are brief gaps.
         let second = RATE as usize * 2;
         for chunk in run.output[second..].chunks(second) {
             let energy: f32 = chunk.iter().map(|s| s * s).sum::<f32>() / chunk.len() as f32;
             assert!(energy > 0.1, "energy {energy}");
         }
-        // Concealment fades: no step larger than a full-scale tone's slope
-        // allows, even across gaps.
         let left: Vec<f32> = run.output[second..].iter().copied().step_by(2).collect();
         let max_step = left
             .windows(2)
@@ -1212,7 +1105,6 @@ mod tests {
         out
     }
 
-    /// Amplitude of `hz` in a mono signal at the stream rate.
     fn amplitude(signal: &[f32], hz: f64) -> f64 {
         let (mut s, mut c) = (0.0, 0.0);
         for (i, &y) in signal.iter().enumerate() {
@@ -1246,7 +1138,6 @@ mod tests {
         assert!(amplitude(&l, 660.0) < 0.001);
         assert!((amplitude(&r, 660.0) - 0.5).abs() < 0.01);
 
-        // The LFE feed keeps the bass and removes the rest.
         let lfe = render_role(ChannelRole::Lfe, 40.0, 2_000.0);
         let settled = &lfe[RATE as usize / 8..];
         assert!(amplitude(settled, 40.0) > 0.24);

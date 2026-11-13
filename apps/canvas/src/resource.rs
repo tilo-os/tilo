@@ -506,14 +506,7 @@ fn picture_size(src: &str, bytes: &[u8]) -> Result<(u32, u32), String> {
     } else {
         "the picture"
     };
-    let format = image::guess_format(bytes)
-        .map_err(|error| format!("{named} is not a PNG, JPEG or WebP: {error}"))?;
-    if !matches!(
-        format,
-        image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP
-    ) {
-        return Err(format!("{named} is {format:?}, not a PNG, JPEG or WebP"));
-    }
+    crate::picture::accepted(bytes).map_err(|error| format!("{named}: {error}"))?;
     let (width, height) = crate::picture::dimensions(bytes)
         .map_err(|error| format!("{named} cannot be read: {error}"))?;
     if width.max(height) > crate::picture::MAX_PICTURE_SIDE || width == 0 || height == 0 {
@@ -525,9 +518,13 @@ fn picture_size(src: &str, bytes: &[u8]) -> Result<(u32, u32), String> {
     Ok((width, height))
 }
 
+/// Pictures kept in one step, by what the caller named them by: a picture
+/// placed twice in one step is kept once, so the artwork names one content.
+pub type Kept = std::collections::HashMap<String, (String, (u32, u32))>;
+
 /// An image shape as authored: its picture kept by content and its frame
 /// filled in from the picture's size where it was left out.
-fn kept_image(shape: &mut crate::model::Shape) -> Result<(), String> {
+fn kept_image(shape: &mut crate::model::Shape, kept: &mut Kept) -> Result<(), String> {
     let crate::model::Shape::Image {
         src,
         width,
@@ -538,7 +535,14 @@ fn kept_image(shape: &mut crate::model::Shape) -> Result<(), String> {
     else {
         return Ok(());
     };
-    let (address, (pw, ph)) = keep_picture(src)?;
+    let given = src.clone();
+    let (address, (pw, ph)) = if let Some(known) = kept.get(&given) {
+        known.clone()
+    } else {
+        let stored = keep_picture(&given)?;
+        kept.insert(given, stored.clone());
+        stored
+    };
     *src = address;
     let [.., cw, ch] = crop.unwrap_or([0.0, 0.0, 1.0, 1.0]);
     let (natural_w, natural_h) = (f64::from(pw) * cw, f64::from(ph) * ch);
@@ -606,12 +610,13 @@ pub fn store(bytes: &[u8]) -> Result<String, String> {
 /// files and inline pictures kept as content, what the window shows. The
 /// invocation then carries the result, so every replica applies the same.
 mod prepare {
-    use super::{artwork, keep_picture, kept_image, title_of};
+    use super::{Kept, artwork, keep_picture, kept_image, title_of};
 
     /// A drawn picture given by path or inline is kept as content.
     pub(super) fn draw(params: &mut artwork::Draw) -> Result<(), String> {
+        let mut kept = Kept::new();
         for mark in &mut params.shapes.marks {
-            kept_image(&mut mark.shape)?;
+            kept_image(&mut mark.shape, &mut kept)?;
         }
         Ok(())
     }
@@ -619,7 +624,7 @@ mod prepare {
     /// A picture an edit gives by path or inline is kept as content.
     pub(super) fn edit_marks(params: &mut artwork::EditMarks) -> Result<(), String> {
         if let Some(shape) = &mut params.edit.shape {
-            kept_image(&mut shape.0)?;
+            kept_image(&mut shape.0, &mut Kept::new())?;
         }
         Ok(())
     }
@@ -665,13 +670,28 @@ mod prepare {
     }
 }
 
+impl Artwork {
+    /// What the record holds: the artwork's size and ground, its layers, and the marks and text
+    /// each holds.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
 /// The artwork's verbs: everything that changes it beyond one field.
 ///
 /// Each takes its documented argument struct flat, applies to the artwork
 /// as read, and is refused whole when any part of it is.
 #[resource(
     kind = "canvas.artwork",
-    label = "Artwork",
     app = "so.tilo.canvas",
     initialize = Artwork::genesis,
     load = Artwork::loaded,
@@ -680,7 +700,8 @@ mod prepare {
     answer = crate::answer::answer,
     effects = ViewOp,
     version = 2,
-    migrate = crate::model::upgrade
+    migrate = crate::model::upgrade,
+    read_content = Artwork::read_document
 )]
 impl Artwork {
     /// Paint strokes.
@@ -767,7 +788,7 @@ impl Artwork {
     ///
     /// Add a layer on top (or above another). Give it a medium (see media) to
     /// paint in oil or watercolour; without one it holds crisp vector art.
-    #[action]
+    #[action(label = "canvas-command-add-layer")]
     pub fn add_layer(
         &mut self,
         cx: &mut ActionCx,
@@ -908,7 +929,7 @@ impl Artwork {
     /// Start a blank artwork (one undo away). size: screen, a4, letter,
     /// square, poster, icon (landscape turns it). start: paper, white,
     /// watercolour, oil, panel, dark.
-    #[action]
+    #[action(label = "canvas-command-new-artwork")]
     pub fn new_artwork(&mut self, #[param(flatten)] new: BlankArtwork) -> Result<(), Refusal> {
         crate::actions::replace(self, &new.file()?)
     }

@@ -1,25 +1,7 @@
-//! A page of [`Segment`]s as Markdown, the form `read-text` answers by
-//! default: one line per block, ending in the block's `{#id}`.
-//!
-//! ```text
-//! ## Standup {#b1}
-//! - accessibility review {#b2}
-//!   1. screen reader pass {#b3}
-//! | Person {#c1} | Blocked {#c2} | {#table t7}
-//! | --- | --- |
-//! | Maya {#c3} | {#c4} |
-//! ```
-//!
-//! Headings carry their level, list items their numbering and depth (tilo-doc's
-//! `level`, the block editor's `nesting`), and a run of cells becomes a
-//! Markdown table tagged with its table id (the id `EditTable` takes), each
-//! cell ending in its own block id, empty or not, so a caller can select
-//! and fill it. A line break inside a block reads as `↵`, one
-//! character as in the document. Inline marks read as Markdown around
-//! their text (`**bold**`, `*italic*`, `~~struck~~`, `` `code` ``,
-//! `[text](href)`); leaving those delimiters out, a block's character
-//! offsets are its text's. A block the page ends inside closes with `…`;
-//! the next page continues it.
+//! A page of [`Segment`]s as Markdown, the form `read-text` answers by default: one
+//! line per block, ending in the block's `{#id}`, headings at their level, list items
+//! numbered, and a run of cells as a table tagged with its id. A block the page ends
+//! inside closes with `…`.
 
 use tilo_doc::document::{MarkSpan, MarkValue};
 
@@ -73,11 +55,8 @@ pub fn render(segments: &[Segment]) -> String {
     out
 }
 
-/// The longest link target a line spells out; a longer one reads as its text.
 const MAX_HREF_BYTES: usize = 512;
 
-/// How an inline mark reads: its opening and closing Markdown. Marks
-/// Markdown has no syntax for (underline, colour, size) do not show.
 fn delimiters(mark: &MarkSpan) -> Option<(&'static str, String)> {
     let on = !matches!(mark.value, MarkValue::Bool(false));
     match (mark.name.as_str(), &mark.value) {
@@ -92,9 +71,8 @@ fn delimiters(mark: &MarkSpan) -> Option<(&'static str, String)> {
     }
 }
 
-/// A block's text with its inline marks as Markdown (`**bold**`, `*italic*`,
-/// `` `code` ``, `[text](href)`). The delimiters are not part of the text:
-/// character offsets count the text alone.
+/// A block's text with its inline marks as Markdown. The delimiters are not part of
+/// the text: character offsets count the text alone.
 fn inline(segment: &Segment) -> String {
     let mut spans: Vec<(usize, usize, &'static str, String)> = segment
         .marks
@@ -135,7 +113,6 @@ fn inline(segment: &Segment) -> String {
     text
 }
 
-/// One table's cells on this page, in document order, as rows by `row`.
 fn table(out: &mut String, cells: &[Segment]) {
     let mut rows: Vec<(i64, Vec<&Segment>)> = Vec::new();
     for cell in cells {

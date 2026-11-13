@@ -1,24 +1,19 @@
 //! Turning image ids into read-only trees.
 //!
-//! An image is a tapp package of kind `env-runtime` or `tool`, materialised
-//! by the package store as a plain read-only directory tree whose `usr/` and
-//! `etc/` become the guest's. The supervisor needs no privilege to use one:
-//! `bwrap` stacks the trees as overlay lowers inside the guest's own user
-//! namespace.
+//! An image is a tapp package of kind `env-runtime` or `tool`, materialised by the
+//! package store as a plain read-only tree whose `usr/` and `etc/` become the guest's.
+//! The supervisor needs no privilege for it: `bwrap` stacks the trees as overlay lowers
+//! inside the guest's own user namespace.
 
 use std::path::PathBuf;
 
 use tilo_environment::{PackageId, ToolBuildError, ToolBuilder};
 
-/// Where images come from.
 pub trait Images: Send + Sync {
     /// The read-only root of an image, fetching and materialising it first
     /// when it is not on this device.
     fn tree(&self, id: &PackageId) -> Result<PathBuf, String>;
 
-    /// Whether [`Self::tree`] of `id` can be answered from this device's own
-    /// copy, rather than by first importing or fetching the image — the wait
-    /// a session tells its person about.
     fn is_local(&self, _id: &PackageId) -> bool {
         true
     }
@@ -27,9 +22,6 @@ pub trait Images: Send + Sync {
     /// never stacked on a runtime it was not built for.
     fn check_tool(&self, tool: &PackageId, runtime: &PackageId) -> Result<(), String>;
 
-    /// The `env-runtime` a new environment starts on — its release and this
-    /// architecture's image: the newest one this device holds, the system
-    /// store's shipped one included.
     fn current_runtime(&self) -> Result<(String, PackageId), String>;
 
     /// Make the image `id`, built here, available to the user's other
@@ -44,12 +36,8 @@ pub trait Images: Send + Sync {
 /// relay sets it for its members' supervisors; a device leaves it unset.
 pub const IMAGE_SOURCES_ENV: &str = "TILO_USH_IMAGE_SOURCES";
 
-/// Where images fetched from [`IMAGE_SOURCES_ENV`] are cached.
 pub const IMAGE_CACHE_ENV: &str = "TILO_USH_IMAGE_CACHE";
 
-/// A publisher (hex Ed25519 key) whose images are trusted besides this
-/// device's own: on a relay, the relay's key, which signs the tools its
-/// worker builds for a member.
 pub const TRUSTED_PUBLISHER_ENV: &str = "TILO_USH_TRUSTED_PUBLISHER";
 
 /// The shelf images are fetched from and shared on, when not the one in
@@ -57,17 +45,12 @@ pub const TRUSTED_PUBLISHER_ENV: &str = "TILO_USH_TRUSTED_PUBLISHER";
 /// worker leaves the tools it signed for them.
 pub const IMAGE_SHELF_ENV: &str = "TILO_USH_IMAGE_SHELF";
 
-/// The device's package store: system stores first, then the user's, with
-/// the store's own trust deciding which images are admitted, and the shelf
-/// the user's devices share their builds on.
 #[derive(Debug, Clone)]
 pub struct StoreImages {
     store: package_store::Store,
     shelf: Option<package_store::ImageShelf>,
 }
 
-/// Where in the user's synced files their devices shelve the images they
-/// build.
 pub const SHELF_DIR: &str = ".tilo/images";
 
 impl StoreImages {
@@ -75,7 +58,6 @@ impl StoreImages {
         Self { store, shelf: None }
     }
 
-    /// Fetch images from `shared` too, and share the ones built here on it.
     #[must_use]
     pub fn with_shelf(mut self, shared: package_store::ImageShelf) -> Self {
         self.store = self.store.with_shelf(shared.clone());
@@ -104,7 +86,6 @@ impl StoreImages {
         if let Some(key) = trusted_publisher_from_env()? {
             trust = trust.with_publisher(key);
         }
-        // Sources in the order they are asked: the shelf, then the registry.
         let mut images = Self::new(store.with_trust(trust));
         let shelf = std::env::var_os(IMAGE_SHELF_ENV)
             .map(PathBuf::from)
@@ -226,8 +207,6 @@ impl Images for StoreImages {
     }
 
     fn share(&self, id: &PackageId) -> Result<(), String> {
-        // A catalog image the builder named rather than built is fetched by
-        // every device from where this one gets it.
         if self
             .store
             .user()
@@ -292,8 +271,6 @@ impl Images for NoImages {
     }
 }
 
-/// The public key of this device, whose key signs the tool images its
-/// builder makes. `None` where the session cannot read it.
 fn device_publisher() -> Option<[u8; 32]> {
     let paths = std::env::var_os("TILO_IDENTITY_ROOT")
         .filter(|root| !root.is_empty())
@@ -326,14 +303,10 @@ impl DirImages {
     }
 }
 
-/// Where images come from on this device: the package store, or fixture
-/// trees under `TILO_USH_IMAGES` in tests.
 pub fn on_this_device() -> std::sync::Arc<dyn Images> {
     if let Some(root) = std::env::var_os("TILO_USH_IMAGES") {
         return std::sync::Arc::new(DirImages::at(PathBuf::from(root)));
     }
-    // The device's own key, the user's fleet, a relay's publisher and
-    // image sources, and the shelf: everything `from_env` reads.
     match StoreImages::from_env() {
         Ok(images) => std::sync::Arc::new(images),
         Err(reason) => std::sync::Arc::new(NoImages(format!(
@@ -432,9 +405,6 @@ mod tests {
         }
     }
 
-    /// A tool the user's laptop built and shelved opens on their relay as
-    /// it is, while the laptop is theirs; once it is removed, the relay
-    /// refuses it and builds its own.
     #[test]
     fn a_tool_built_on_another_of_your_devices_is_fetched_not_rebuilt() {
         let dir = tempfile::tempdir().unwrap();
@@ -455,7 +425,6 @@ mod tests {
         let mut fleet = CertifiedFleet::new(user.public_key);
         fleet.certify(cert).unwrap();
 
-        // The OS ships the runtime; the laptop built pandoc on it.
         let runtime = seal(&dir.path().join("runtime"), Kind::EnvRuntime, None, &ci);
         let tool = seal(
             &dir.path().join("tool"),
@@ -479,7 +448,6 @@ mod tests {
         let laptop_images = StoreImages::new(Store::new(laptop_store)).with_shelf(shelf.clone());
         laptop_images.share(&tool.meta.id).unwrap();
 
-        // The relay: its own store, the user's fleet, the same synced files.
         let relay_store = |fleet: CertifiedFleet| {
             let store = Store::new(PackageStore::at(dir.path().join("relay")))
                 .with_system(package_store::Layout::new(&system))
@@ -529,7 +497,6 @@ mod tests {
         assert_eq!(builds.0.load(Ordering::Relaxed), 1, "built here instead");
     }
 
-    /// `packed` as it was written at package `format`, signed by `signer`.
     fn at_format(
         packed: &Packed,
         format: u32,
@@ -549,10 +516,6 @@ mod tests {
         .unwrap()
     }
 
-    /// A device keeps the images it was installed with across package
-    /// format changes: a runtime the OS shipped at any format that shipped
-    /// is the current one and opens, and a tool built on it at that format
-    /// travels through the shelf to the user's other devices as it is.
     #[test]
     fn images_of_every_shipped_package_format_open() {
         for format in tilo_app_package::tapp::READABLE_FORMATS {
@@ -612,9 +575,6 @@ mod tests {
         }
     }
 
-    /// The runtime the OS ships is imported into the user's store on its
-    /// first use, which is the wait a session announces; afterwards the
-    /// user's own copy answers.
     #[test]
     fn a_system_runtime_is_local_only_once_its_first_use_imported_it() {
         let dir = tempfile::tempdir().unwrap();

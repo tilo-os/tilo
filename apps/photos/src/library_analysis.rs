@@ -1,10 +1,5 @@
-//! Device-local orchestration state for whole-library image analysis.
-//!
-//! The analyzers themselves live in [`crate::analysis`].  This module only
-//! keeps the bounded, inspectable job state used by the Photos UI and semantic
-//! actions.  It deliberately stores stable photo ids rather than pixels or
-//! model output: original bytes are fetched immediately before one worker job
-//! and are never retained by the queue.
+//! Device-local orchestration state for whole-library image analysis. The analyzers themselves live
+//! in [`crate::analysis`].
 
 use std::collections::VecDeque;
 
@@ -31,9 +26,6 @@ pub struct LibraryAnalysisFailure {
     pub message: String,
 }
 
-/// One explicit library scan. `targets` is a bounded list of resource ids,
-/// never image bytes. Exactly one target may be in flight; the shared worker's
-/// sync channel supplies the second bound between UI and model runtime.
 #[derive(Debug, Default)]
 pub struct LibraryAnalysisState {
     pub phase: LibraryAnalysisPhase,

@@ -1,25 +1,10 @@
-//! Online-account custody and the IMAP client, as an engine library beside
-//! the shared runtime (`libtilo_accounts_engine.so`).
+//! Online-account custody and the IMAP client, as its own library in the runtime
+//! bundle (`libtilo_accounts_engine.so`).
 //!
-//! Mail and Settings sign in to online accounts through `account-custody`
-//! (`OAuth` through `tilo-oauth`, the Google Drive, `OneDrive`, Dropbox and
-//! `iCloud` providers it resolves new accounts against) and talk IMAP through
-//! `async-imap`; Calendar and Settings talk WebDAV/CalDAV through `tilo-dav`,
-//! whose calendar sign-in reaches custody too; Music's Spotify sign-in reaches
-//! custody through its own engine library, which chains on this one. Inside `libruntime_dylib.so`
-//! every app process mapped and relocated them. Here they are a library of
-//! their own in the runtime bundle that only those name `DT_NEEDED`, and no
-//! tapp carries a copy; the runtime keeps what they share with other apps
-//! (`accounts`, `cloud-source`, the HTTP stack).
-//!
-//! Like `runtime-dylib`, this crate re-exports the crates it provides, which
-//! records them as provided by this library for the apps' `-C prefer-dynamic`
-//! link. Outside the thin build (`thin`) it is empty: see the manifest.
+//! Like `runtime-dylib` it re-exports what it provides, which records it
+//! as provided by this library for the apps' `-C prefer-dynamic` link.
+//! Outside the thin build it is empty.
 
-// Load the runtime explicitly, as thin apps do: rustc ignores an `--extern`
-// nothing names, and without it in the crate graph this library would link
-// its own copy of every crate the runtime already provides, which the app's
-// link then refuses (each crate may show up once).
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
@@ -36,9 +21,8 @@ pub use tilo_oauth;
 /// client's PKCE against RFC 7636's example, the committed client table's
 /// providers and scopes, and the IMAP parser on a server's capabilities.
 ///
-/// The engine's check binary and the apps' `--probe-accounts-engine` call
-/// it, so a release proves the library loads and runs against the runtime
-/// it ships with, and that the apps load it themselves.
+/// The engine's check binary and the app's `--probe-…` call it, so a release
+/// proves the library loads and runs against its runtime.
 #[cfg(feature = "thin")]
 pub fn self_check() -> Result<String, String> {
     use account_custody::{ClientTable, OAuthCloud, OAuthIssuer, OAuthUse};

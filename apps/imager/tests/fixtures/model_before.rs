@@ -199,14 +199,16 @@ impl TiloRelease {
         }
     }
 
-    pub fn target_label(&self) -> String {
+    /// The machines the release starts on as a stored word rather than as
+    /// copy: a window paints its catalogue's own name for it.
+    pub fn target_key(&self) -> String {
         if self.hardware_profile != "generic" {
-            return format!("{} only", self.hardware_profile);
+            return self.hardware_profile.clone();
         }
         match self.architecture.as_str() {
-            "aarch64" => "Generic ARM64",
-            "x86_64" => "Generic x86-64",
-            _ => "Generic media",
+            "aarch64" => "aarch64",
+            "x86_64" => "x86-64",
+            _ => "media",
         }
         .into()
     }
@@ -244,7 +246,7 @@ impl TiloRelease {
                 "Tilo {} ({}), {}",
                 self.version,
                 self.channel,
-                self.target_label()
+                self.target_key()
             ),
             installable: authenticated,
             identity: None,

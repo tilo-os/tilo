@@ -253,8 +253,6 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
     installer.journey.destination = Some(super::super::model::Destination::Another);
     installer.journey.migrate = Some(true);
     installer.journey.categories[2] = true;
-    // The other computer is identified first; this fixture focuses on the
-    // missing storage backend after that gate.
     for (field, value) in [
         ("manufacturer", "Prepared Vendor"),
         ("model", "Prepared Laptop 14"),
@@ -1065,7 +1063,6 @@ fn removing_prepared_import_requires_confirmation_and_preserves_original_credent
         "copied source grant must not be revoked"
     );
     assert_eq!(std::fs::read_to_string(&source_config).unwrap(), original);
-    // Discovery still offers the unselected source for an explicit re-import.
     accounts
         .apply(AccountRequest::Source(candidate_id))
         .unwrap();
@@ -1578,7 +1575,6 @@ fn detected_oauth_profile_obeys_configuration_in_rows_and_semantic_actions() {
         accounts.apply(AccountRequest::Provider("google-drive".into())),
         Err("installer-accounts-unavailable")
     );
-    // Configuration can be withdrawn after a prior confirmation screen was built.
     accounts.step = Step::Confirm(Selection::OAuth {
         provider: ConnectionProvider::Spotify,
         candidate: Some(candidate.clone()),
@@ -2605,7 +2601,6 @@ fn unavailable_selected_goa_credentials_offer_explicit_bound_reconnect_without_k
     let source = config.join("goa-1.0/accounts.conf");
     let original = "[Account account_1]\nProvider=google\nIdentity=person@example.test\nPresentationIdentity=Personal Drive\nFilesEnabled=true\n";
     std::fs::write(&source, original).unwrap();
-    // An uncontrolled config is refused before asking the actual owner keyring.
     std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o666)).unwrap();
     let roots = SourceRoots { home, config };
     let inventory = imager_backend::account_transfer::discover(&roots);
@@ -2805,7 +2800,6 @@ music_streaming = ["streaming", "user-read-private"]
         assert!(
             matches!(&accounts.step, Step::SpotifyPurpose(Some(selected)) if selected.id == candidate.id)
         );
-        // Withdrawal is checked by the same semantic action before it starts any OAuth work.
         accounts.actions = AccountActions::default().with_custodian(
             account_custody::Custodian::for_root(None)
                 .with_client_table(account_custody::ClientTable::parse("").unwrap()),

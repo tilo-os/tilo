@@ -16,7 +16,6 @@ use crate::model::{Mark, Shape, StrokePoint};
 /// The most points a stroke's editor shows.
 const MOST_SHOWN: usize = 40;
 
-/// A mark's editable points.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Editable {
     Outline(Outline),

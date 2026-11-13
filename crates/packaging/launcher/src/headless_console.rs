@@ -54,8 +54,7 @@ impl Namespace {
         })
     }
 
-    /// A wait error does not establish that the app has exited. Keep that
-    /// namespace rather than deleting a possibly live app's socket.
+    /// A wait error does not establish that the app has exited.
     pub(crate) fn before_spawn(&mut self) {
         self.cleanup_on_drop = false;
     }
@@ -106,7 +105,7 @@ impl Namespace {
         } else if io::Error::last_os_error().kind() != io::ErrorKind::NotFound {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: remove only the pinned namespace, and only if empty. Unknown files prevent removal.
+        // SAFETY: remove only the pinned namespace, and only if empty.
         if unsafe {
             libc::unlinkat(
                 self.parent.as_raw_fd(),

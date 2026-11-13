@@ -8,3 +8,9 @@ graph-load-error = The screens could not be loaded: { $error }
 generated-create = Created a project
 generated-projects-draft = Edited the draft
 generated-project-name = Renamed a project
+
+## Actions: what the record and each of its actions are called, looked up as
+## <kind>-<action>, the kind with its dots as dashes.
+
+generated-graph-project = Project
+generated-graph-project-create = Create a project

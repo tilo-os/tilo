@@ -20,8 +20,6 @@ use tokio::sync::oneshot;
 
 use crate::pool::JobPool;
 
-/// Threads in the I/O pool. Enough to keep a few operations in flight per
-/// device without a thread per request.
 const IO_THREADS: usize = 4;
 
 fn pool() -> Result<&'static JobPool, std::io::Error> {
@@ -35,7 +33,6 @@ fn pool() -> Result<&'static JobPool, std::io::Error> {
         .map_err(|message| std::io::Error::other(message.clone()))
 }
 
-/// Run `op` on an I/O thread and await its result.
 pub async fn run<R, F>(op: F) -> std::io::Result<R>
 where
     F: FnOnce() -> std::io::Result<R> + Send + 'static,
@@ -54,27 +51,16 @@ where
         .map_err(|_| std::io::Error::other("an I/O operation panicked"))?
 }
 
-/// Read a whole file.
-///
-/// # Errors
-///
-/// As [`std::fs::read`].
 pub async fn read(path: impl Into<PathBuf>) -> std::io::Result<Vec<u8>> {
     let path = path.into();
     run(move || std::fs::read(path)).await
 }
 
-/// Create or truncate `path` and write `contents` to it.
-///
-/// # Errors
-///
-/// As [`std::fs::write`].
 pub async fn write(path: impl Into<PathBuf>, contents: Vec<u8>) -> std::io::Result<()> {
     let path = path.into();
     run(move || std::fs::write(path, contents)).await
 }
 
-/// Read up to `len` bytes at `offset`. Returns fewer only at end of file.
 pub async fn read_at(file: Arc<File>, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
     run(move || {
         let mut buffer = vec![0_u8; len];
@@ -111,11 +97,6 @@ pub async fn write_all_at(file: Arc<File>, offset: u64, data: Vec<u8>) -> std::i
     .await
 }
 
-/// Flush `file`'s data and metadata to the device.
-///
-/// # Errors
-///
-/// As [`File::sync_all`].
 pub async fn sync_all(file: Arc<File>) -> std::io::Result<()> {
     run(move || file.sync_all()).await
 }
@@ -177,7 +158,6 @@ mod tests {
 
     #[test]
     fn file_io_round_trips_off_the_runtime_and_returns_errors() {
-        // phase: whole_file_and_positioned_io_round_trip_off_the_runtime
         {
             let path = scratch("round-trip");
             crate::block_on(async {
@@ -203,7 +183,6 @@ mod tests {
             .unwrap();
             std::fs::remove_file(path).unwrap();
         }
-        // phase: errors_come_back_to_the_caller
         {
             let missing = scratch("missing").join("absent");
             let error = crate::block_on(read(missing)).unwrap().unwrap_err();

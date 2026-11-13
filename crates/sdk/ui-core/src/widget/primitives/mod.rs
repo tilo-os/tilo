@@ -57,7 +57,7 @@ pub use bar_chip_component::{BarChip, BarChipProps};
 pub use bar_control::{BarControlFace, IconButton};
 pub use control_row_paint::{control_fill, control_radius, paint_control_row, paint_severity_rail};
 pub use disclosure_row::{DisclosureGroup, DisclosureRow, DisclosureRowProps, DisclosureState};
-pub use facts::{Fact, FactProps, Facts, FactsFace, FactsProps};
+pub use facts::{Fact, FactMark, FactProps, Facts, FactsFace, FactsProps};
 pub use notification_list::{
     NotificationListControl, NotificationListLayout, NotificationListRow, NotificationListView,
     NotificationRowControls,

@@ -217,7 +217,7 @@ Generic images retain the official `latest` default and trusted overrides.
 ### CI-built Lenovo install image
 
 The Lenovo board's release is `tools/ci/publish/os-release.sh` (`sign-board` and
-`publish-board`, run on stable or a release tag; `os-image.sh board` builds the unsigned dev
+`publish-board`, run on a release tag; `os-image.sh board` builds the unsigned dev
 board image). Its firmware is the
 reviewed OCI artifact `TILO_LENOVO_FIRMWARE_REF` with its independently pinned
 `TILO_LENOVO_FIRMWARE_MANIFEST_SHA256` (`os/publication.env`): a native Linux OCI image

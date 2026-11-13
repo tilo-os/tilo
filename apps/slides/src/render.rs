@@ -21,13 +21,11 @@ use crate::assets::{ImageLookup, ImageState};
 use crate::model::{DeckLook, Element, ElementKind, Palette, SLIDE_W, Slide, TextAlign};
 pub use ui::paint::with_alpha;
 
-/// Map a point from slide space to destination pixels.
 #[inline]
 fn map(dest: Rect, s: f64, x: f64, y: f64) -> Point {
     Point::new(dest.x0 + x * s, dest.y0 + y * s)
 }
 
-/// The destination rect for an element, in pixels.
 pub fn element_dest(dest: Rect, s: f64, e: &Element) -> Rect {
     Rect::new(
         dest.x0 + e.x * s,
@@ -37,15 +35,10 @@ pub fn element_dest(dest: Rect, s: f64, e: &Element) -> Rect {
     )
 }
 
-/// The deck-wide values a slide's colour roles and image sources resolve
-/// against.
 #[derive(Clone, Copy)]
 pub struct DeckAssets<'a> {
     pub palette: &'a Palette,
     pub images: &'a dyn ImageLookup,
-    /// Where collaborators are in the deck's words, for the canvas to show
-    /// their carets and selections; `None` where nobody's place is shown (a
-    /// thumbnail, a presentation).
     pub presence: Option<&'a ui::presence::PresenceCtx>,
 }
 
@@ -76,8 +69,6 @@ pub fn words_theme(look: DeckLook, reader: &ui::theme::Theme) -> std::rc::Rc<ui:
     })
 }
 
-/// The colour under the middle of text element `e`: the topmost filled
-/// shape beneath it on the slide, else the slide's background.
 fn ground_under(palette: &Palette, slide: &Slide, e: &Element) -> Color {
     let centre = Point::new(e.x + e.w / 2.0, e.y + e.h / 2.0);
     let mut ground = palette.slide_bg(slide.background);
@@ -120,8 +111,6 @@ pub fn text_ink(palette: &Palette, slide: &Slide, e: &Element) -> Color {
     }
 }
 
-/// Paint one slide into `dest`. `corner` is the slide-card corner radius
-/// in pixels (0 for present mode's full-bleed render).
 pub fn draw_slide(
     ctx: &mut PaintCtx<'_>,
     assets: DeckAssets<'_>,
@@ -132,10 +121,6 @@ pub fn draw_slide(
     draw_slide_except(ctx, assets, slide, dest, corner, None, false);
 }
 
-/// [`draw_slide`], leaving out the words of text element `editing`: the
-/// canvas draws that box's editor in their place. With `prompts`, a text
-/// box with no words yet shows a dimmed prompt for them (the editor's
-/// canvas); a thumbnail or a presentation shows it empty.
 pub fn draw_slide_except(
     ctx: &mut PaintCtx<'_>,
     assets: DeckAssets<'_>,
@@ -147,7 +132,6 @@ pub fn draw_slide_except(
 ) {
     let (scene, transform) = (&mut *ctx.scene, ctx.transform);
     let s = dest.width() / SLIDE_W;
-    // Text roles resolve against this slide's own background.
     let palette = &assets.palette.on(slide.background);
     let bg = palette.slide_bg(slide.background);
     let card = RoundedRect::from_rect(dest, corner);
@@ -157,12 +141,9 @@ pub fn draw_slide_except(
         // white window keeps its outline.
         ui::surface::card(scene, transform, dest, corner, bg);
     } else {
-        // Full bleed while presenting.
         scene.fill(Fill::NonZero, transform, bg, None, &card);
     }
 
-    // Clip element painting to the slide card so overflowing shapes stay
-    // crisp at the rounded edge.
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &card);
     draw_decor(scene, transform, palette, slide, dest, s);
     let assets = DeckAssets {
@@ -199,8 +180,6 @@ pub fn draw_slide_except(
     ctx.scene.pop_layer();
 }
 
-/// What text box `e` on `slide` asks for while it has no words: the slide's
-/// largest text box asks for a title, any other for text.
 pub fn prompt_text(slide: &Slide, e: &Element) -> String {
     let largest = slide
         .elements
@@ -215,8 +194,6 @@ pub fn prompt_text(slide: &Slide, e: &Element) -> String {
     })
 }
 
-/// Text box `e`, which has no words yet, as the editor shows it: a dimmed
-/// prompt for its words.
 fn prompt_for(slide: &Slide, e: &Element) -> Element {
     let mut prompt = e.clone();
     prompt.text = prompt_text(slide, e);
@@ -236,7 +213,6 @@ fn draw_decor(
     s: f64,
 ) {
     use crate::model::Background;
-    // Footer hairline on content (surface) slides.
     if slide.background == Background::Surface {
         let y = dest.y0 + 660.0 * s;
         let line = Line::new(
@@ -321,9 +297,6 @@ fn draw_element(ctx: &mut PaintCtx<'_>, assets: DeckAssets<'_>, e: &Element, des
     }
 }
 
-/// Paint an image element: the real decoded picture (object-fit *cover*,
-/// clipped to the element's rounded rect) once it has loaded, or a light
-/// loading / broken-file state until then.
 fn draw_image_element(
     ctx: &mut PaintCtx<'_>,
     assets: DeckAssets<'_>,
@@ -399,8 +372,6 @@ fn draw_image_element(
     }
 }
 
-/// One line centred in an image element that has no picture to show, set at
-/// the slide's own scale like the rest of its content.
 fn draw_placeholder_line(
     tr: &mut ui::text_render::TextRenderer,
     scene: &mut Scene,
@@ -428,13 +399,9 @@ fn draw_placeholder_line(
 }
 
 thread_local! {
-    /// Each text element's words, laid out once at the slide's size and
-    /// drawn scaled wherever the slide is painted (the canvas, a thumbnail,
-    /// the presentation), so all of them wrap exactly alike.
     static TEXT_VIEWS: RefCell<HashMap<String, LaidText>> = RefCell::new(HashMap::new());
 }
 
-/// A text element's words as last laid out, and how tall they came to.
 struct LaidText {
     view: RichTextView,
     /// In slide units.
@@ -460,9 +427,6 @@ pub fn shown_text_height(e: &Element, tr: &mut ui::text_render::TextRenderer) ->
     e.h.max(words)
 }
 
-/// Every text box's shown height ([`shown_text_height`]) across `deck`, by
-/// element id: the frame a file written from the deck gives each box, so
-/// another app shows the box as tall as Slides does.
 pub fn shown_text_heights(deck: &crate::model::Deck) -> HashMap<String, f64> {
     let mut tr = ui::text_render::TextRenderer::new();
     deck.slides
@@ -484,7 +448,6 @@ pub fn words_presence_key(block: &str) -> ui::presence::PresenceKey {
         .0
 }
 
-/// The most text boxes whose layout is kept between frames.
 const KEPT_TEXT_VIEWS: usize = 4_096;
 
 /// The block editor a text box is laid out with, for its words: the same
@@ -500,7 +463,6 @@ pub fn text_box_editor(e: &Element) -> BlockEditor {
         .with_text_align(text_align(e.align))
 }
 
-/// A text box's alignment as the toolkit draws it.
 pub fn text_align(align: TextAlign) -> ui::TextAlign {
     match align {
         TextAlign::Left => ui::TextAlign::Left,
@@ -510,9 +472,6 @@ pub fn text_align(align: TextAlign) -> ui::TextAlign {
     }
 }
 
-/// Where a text box laid out at the slide's size is drawn: into `dest` at
-/// scale `s`, its `content_h` of words centred vertically in the box (or
-/// from its top when they overflow it).
 pub fn text_box_transform(dest: Rect, s: f64, e: &Element, content_h: f64) -> Affine {
     let dy = ((e.h - content_h) / 2.0).max(0.0);
     Affine::translate((dest.x0, dest.y0)) * Affine::scale(s) * Affine::translate((0.0, dy))
@@ -523,8 +482,6 @@ pub fn text_box_rect(e: &Element) -> Rect {
     Rect::new(e.x, e.y, e.x + e.w.max(1.0), e.y)
 }
 
-/// Paint text element `e` in `color`, with the collaborators' carets and
-/// selections `presence` places in its words.
 fn draw_text_element(
     ctx: &mut PaintCtx<'_>,
     (color, presence): (Color, Option<&ui::presence::PresenceCtx>),

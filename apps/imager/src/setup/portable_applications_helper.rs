@@ -1,4 +1,5 @@
 //! Rootless application continuation; secret input is bounded raw stdin.
+
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, OpenOptions, OpenOptionsExt};
 use imager_backend::{
@@ -175,12 +176,6 @@ fn verify_home(
     )?;
     Ok(Some(review))
 }
-/// Review or restore the exact application package declared by authenticated setup.
-/// No apps are launched and identity custody is never activated.
-///
-/// # Errors
-/// Refuses unsafe grants, changed declarations, incomplete Home adoption and
-/// failed native verification. Partial operations retain honest retry receipts.
 pub fn run(
     args: impl IntoIterator<Item = OsString>,
     input: &mut impl Read,

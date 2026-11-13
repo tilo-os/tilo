@@ -8,7 +8,6 @@
     reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
 )]
 
-use ed25519_dalek::Signer as _;
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{Answer, Grant, KindSet, Subject, roles, roles::governance};
 use tilo_actions::InvocationId;
@@ -18,10 +17,10 @@ use tilo_actions::remote::{
     WORKSPACE_GOVERNANCE_PROVIDER,
 };
 use tilo_peer_state::join::MemberRole;
-use tilo_relay_protocol::workspaces::{JoinReply, JoinStep, join_proof_digest};
+use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
 
-use super::{CANCEL_INVITATION, GovernedPlane, HostWorkspaceActions, INVITATIONS};
+use super::{CANCEL_INVITATION, GovernedPlane, HostWorkspaceActions, INVITATIONS, MEMBERS};
 use crate::app_serving::AppServingPlane as _;
 use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::workspaces::{PreAdmitRequest, SetMemberRoleRequest, Workspaces};
@@ -70,24 +69,14 @@ pub(super) async fn admit_device(
         .await
         .unwrap();
     let (key, cert) = guest_device();
-    let JoinReply::Challenge { challenge } = workspaces
-        .page_join(JoinStep::Ask {
-            invitation: issued.signed_invitation,
-            device_cert: cert.clone(),
-            request_id: rand::random(),
-        })
-        .await
-    else {
-        panic!("no challenge");
-    };
-    let signature = key.sign(&join_proof_digest(&challenge)).to_bytes();
     let reply = workspaces
-        .page_join(JoinStep::ProvePreAdmitted {
-            challenge,
-            signature,
-            name: format!("Person {seed}"),
-            token: token.to_vec(),
-        })
+        .admit_proven(
+            issued.signed_invitation,
+            cert.clone(),
+            rand::random(),
+            &format!("Person {seed}"),
+            Some(token.as_slice()),
+        )
         .await;
     assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
     (key, cert)
@@ -180,7 +169,7 @@ async fn invoke(
     }
 }
 
-const INVITE_FAMILY: [&str; 3] = [governance::INVITE, INVITATIONS, CANCEL_INVITATION];
+const INVITE_FAMILY: [&str; 4] = [governance::INVITE, INVITATIONS, CANCEL_INVITATION, MEMBERS];
 
 #[tokio::test]
 async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
@@ -465,7 +454,7 @@ async fn destructive_governance_waits_for_the_person() {
     ban.confirmation = Some(Confirmation::Confirmed);
     assert_eq!(
         invoke(&host, workspace_id, &caller(&bo), ban).await,
-        Err(ActionHostError::ConfirmationRequired)
+        Err(ActionHostError::confirmation_required())
     );
     let remove = request(
         &workspace,
@@ -474,7 +463,7 @@ async fn destructive_governance_waits_for_the_person() {
     );
     assert_eq!(
         invoke(&host, workspace_id, &caller(&bo), remove).await,
-        Err(ActionHostError::ConfirmationRequired)
+        Err(ActionHostError::confirmation_required())
     );
     let end = request(
         &workspace,
@@ -483,7 +472,7 @@ async fn destructive_governance_waits_for_the_person() {
     );
     assert_eq!(
         invoke(&host, workspace_id, &caller(&owner), end).await,
-        Err(ActionHostError::ConfirmationRequired)
+        Err(ActionHostError::confirmation_required())
     );
     let members = workspaces.summary(&workspace).await.unwrap().members;
     assert!(

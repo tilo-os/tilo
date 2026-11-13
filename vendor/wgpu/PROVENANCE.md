@@ -15,7 +15,9 @@ device instead of panicking, so the compositor survives a GPU reset
 on the WebGPU backend is `createComputePipelineAsync`, so a browser compiles
 vello's pipelines off its GPU process's main thread (`src/api/device.rs`,
 `src/backend/webgpu.rs`; other backends create the pipeline synchronously);
-lint allowances for `wasm32-unknown-unknown` under `-D warnings`
+a range the browser refuses for a buffer of a lost device is written to
+memory of its own instead of panicking (`src/backend/webgpu.rs`); lint
+allowances for `wasm32-unknown-unknown` under `-D warnings`
 (`src/lib.rs`); the two SPIR-V test fixtures are stored as `.hex` text and
 decoded by `build.rs` (`fixture_build.rs`, `src/macros/mod.rs`). The
 archive's `Cargo.lock` is omitted. `TILO-PATCH.md` has the details of the

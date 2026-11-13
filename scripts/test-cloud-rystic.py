@@ -47,12 +47,15 @@ def run_provider(provider, contracts, volume=False, changes_only=False):
         subprocess.run(["rystic", "update", "-no-self", product], check=True, timeout=120)
     # Build every selected target before starting the metered simulator.
     executables = [compile_test(package, target, contracts or changes_only)]
+    filters = [[]]
     if volume and provider == "gdrive":
-        executables.append(compile_test("tilo-fs", "gdrive-rystic-volume", False))
+        # The volume's suite is a module of `tilo-fs`'s one test binary: the run names it.
+        executables.append(compile_test("tilo-fs", "it", False))
+        filters.append(["gdrive_rystic_volume::"])
     test_filter = ["change"] if changes_only else []
-    for executable in executables:
+    for executable, name_filter in zip(executables, filters):
         listed = subprocess.run(
-            [str(executable), *test_filter, "--list"], cwd=ROOT,
+            [str(executable), *name_filter, *test_filter, "--list"], cwd=ROOT,
             text=True, stdout=subprocess.PIPE, check=True, timeout=30,
         )
         count = sum(line.endswith(": test") for line in listed.stdout.splitlines())
@@ -67,10 +70,10 @@ def run_provider(provider, contracts, volume=False, changes_only=False):
         url = json.loads(result.stdout)["data"]["url"]
         env = dict(os.environ, **{variable: url})
         failed = False
-        for executable in executables:
+        for executable, name_filter in zip(executables, filters):
             try:
                 result = subprocess.run(
-                    [str(executable), "--nocapture", "--test-threads=1", *test_filter],
+                    [str(executable), *name_filter, "--nocapture", "--test-threads=1", *test_filter],
                     cwd=ROOT, env=env, timeout=240,
                 )
                 failed |= result.returncode != 0

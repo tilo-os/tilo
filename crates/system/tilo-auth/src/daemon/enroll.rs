@@ -1,10 +1,6 @@
 //! Moving people off the old password database, transparently: the first
 //! time someone's old password is accepted, the secret they just typed wraps
 //! a new user key and becomes the only way their secret is checked.
-//!
-//! Nothing here deletes or rewrites a keyslot, a token or user data it did
-//! not create, or changes a uid. The old disk passphrase is neither asked
-//! for nor removed.
 
 use super::volume::{self, SystemVolume};
 use super::{Daemon, Work};
@@ -278,7 +274,6 @@ impl Daemon {
         .map(Some)
     }
 
-    /// Keep the person's `tilo-signin` token in step with their record.
     pub(super) fn mirror(&self, work: &Work, record: &Record) {
         let Some(slot) = record.system_keyslot else {
             return;

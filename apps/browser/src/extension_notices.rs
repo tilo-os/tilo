@@ -1,13 +1,11 @@
-//! Extensions' notifications (`chrome.notifications`), shown by Tilo's
-//! notification service.
+//! Extensions' notifications (`chrome.notifications`), shown by Tilo's notification
+//! service.
 //!
-//! The engine keeps what each extension shows and tells the window the
-//! person used last of every change (`WebViewEvent::ExtensionNotification`);
-//! this shows it as the Browser's notification, named for the extension,
-//! with its buttons. Choosing it, or one of its buttons, goes back to the
-//! engine (`WebViewCommand::ExtensionNotificationChosen`), which tells the
-//! extension. Its tag is the same in every Browser process, so whichever
-//! window is told of a change replaces or takes away what another showed.
+//! The engine keeps what each extension shows and tells the window the person used last
+//! of every change; this shows it as the Browser's notification, named for the extension,
+//! with its buttons. Choosing it goes back to the engine, which tells the extension. Its
+//! tag is the same in every Browser process, so one window replaces or takes away what
+//! another showed.
 
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, Weak};
@@ -15,11 +13,10 @@ use std::sync::{Arc, Mutex, Weak};
 use ui::notify::{Notification, Notifier};
 use ui::webview::{ExtensionNotice, SharedEngine, WebViewCommand, WebViewEngine};
 
-/// The scheme of a notification's activation: the Browser's choices alone.
 pub const SCHEME: &str = "tilo-browser-extension";
 
-/// The tag the notification `notification` of the extension `extension` is
-/// shown under: 15 characters, the same in every process.
+/// The tag `notification` of `extension` is shown under: 15 characters, the same in every
+/// process.
 pub fn tag(extension: &str, notification: &str) -> String {
     // FNV-1a over both, apart: stable across processes and builds.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -30,7 +27,6 @@ pub fn tag(extension: &str, notification: &str) -> String {
     format!("x{:014x}", hash >> 8)
 }
 
-/// What choosing the notification, or its button at `button`, hands back.
 pub fn activation(extension: &str, notification: &str, button: Option<u8>) -> String {
     let part = button.map_or_else(|| "body".to_owned(), |button| button.to_string());
     let mut encoded = String::with_capacity(notification.len());
@@ -45,11 +41,8 @@ pub fn activation(extension: &str, notification: &str, button: Option<u8>) -> St
     format!("{SCHEME}:notice/{extension}/{part}/{encoded}")
 }
 
-/// What the person chose: the extension, its notification, and the button,
-/// if a button.
 pub type Choice = (String, String, Option<u8>);
 
-/// The extension, notification and button an activation names.
 pub fn chosen(uri: &str) -> Option<Choice> {
     let rest = uri.strip_prefix(SCHEME)?.strip_prefix(":notice/")?;
     let (extension, rest) = rest.split_once('/')?;
@@ -75,8 +68,6 @@ pub fn chosen(uri: &str) -> Option<Choice> {
     Some((extension.to_owned(), String::from_utf8(bytes).ok()?, button))
 }
 
-/// The notification the person sees: the extension's title, its message,
-/// items, context and how far along it is, then which extension it is from.
 pub fn notification(
     name: &str,
     extension: &str,
@@ -111,8 +102,8 @@ pub fn notification(
         shown = shown.quietly();
     }
     for (index, label) in notice.buttons.iter().enumerate() {
-        // A button's name is one line: a control character in it (a line
-        // break, a tab) would have the whole notification refused.
+        // A button's name is one line: a control character in it would have the whole
+        // notification refused.
         let label = label
             .split(char::is_control)
             .filter(|part| !part.trim().is_empty())
@@ -128,15 +119,13 @@ pub fn notification(
     shown
 }
 
-/// The engine a choice goes back to: the one that told of a notification
-/// last, while its window lives. Any of the profile's engines reaches the
-/// extensions.
+/// The engine a choice goes back to: the one that told of a notification last, while its
+/// window lives.
 fn engine() -> &'static Mutex<Option<Weak<dyn WebViewEngine>>> {
     static ENGINE: Mutex<Option<Weak<dyn WebViewEngine>>> = Mutex::new(None);
     &ENGINE
 }
 
-/// Hand the engine the person's choice of a notification carrying `uri`.
 fn choose(uri: &str) {
     let Some((id, notification, button)) = chosen(uri) else {
         return;
@@ -155,8 +144,8 @@ fn choose(uri: &str) {
     }
 }
 
-/// Show, change or take away the extension's notification, as the engine
-/// told `from` of it. `name` is the extension's, as installed.
+/// Show, change or take away the extension's notification, as the engine told `from` of
+/// it. `name` is the extension's, as installed.
 pub fn announce(
     notifier: &dyn Notifier,
     from: &SharedEngine,
@@ -245,7 +234,6 @@ mod tests {
                 ("Stop", Some((ID.into(), "copy".into(), Some(1)))),
             ]
         );
-        // Without a title it is named for the extension.
         let untitled = notification("Copier", ID, "copy", &ExtensionNotice::default());
         assert_eq!(untitled.title, "Copier");
         assert!(!shown.silent);
@@ -253,10 +241,7 @@ mod tests {
 
     #[test]
     fn a_change_shows_quietly_and_a_button_name_on_two_lines_still_shows() {
-        // Not through `announce`: that sets the engine a choice goes back
-        // to, which another test here relies on.
         let notifier = Recording::default();
-        // `notifications.update` of a progress: the engine marks it quiet.
         let notice = ExtensionNotice {
             title: "Copying".into(),
             buttons: vec!["\t".into(), "Stop\nnow\t".into()],
@@ -295,7 +280,6 @@ mod tests {
         assert_eq!(notifier.shown().len(), 1);
         assert_eq!(notifier.shown()[0].tag, tag(ID, "hi"));
         assert_eq!(notifier.withdrawn(), [tag(ID, "hi")]);
-        // The person chooses its second button: the engine is told.
         choose(&activation(ID, "hi", Some(1)));
         assert!(
             window

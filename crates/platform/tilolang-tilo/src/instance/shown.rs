@@ -48,7 +48,7 @@ impl Instance {
     /// theirs, and what they have seen — so the frame runs the views that read it rather than
     /// waiting for a change of the person's here.
     pub(super) fn views_stale(&self) -> bool {
-        self.shown().any(|shown| shown.view.borrow().is_stale())
+        self.shown().any(|shown| shown.view.borrow_mut().is_stale())
     }
 }
 

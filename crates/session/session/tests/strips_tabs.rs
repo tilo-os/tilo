@@ -18,16 +18,14 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
 use tilo_session::{Options, Session};
 
-use common::window::press_key;
-use common::{HEIGHT, PERSON, TITLES, WIDTH, notebook as notes, on_screen, until};
+use crate::common::window::press_key;
+use crate::common::{HEIGHT, PERSON, TITLES, WIDTH, notebook as notes, on_screen, until};
 
 /// The right arrow, evdev.
 const KEY_RIGHT: u32 = 106;
@@ -84,7 +82,7 @@ fn keep(session: &mut Session, name: &str) {
 /// (`place_here` in `shell_screen` places the same way, and the arrangement's own `place` reads
 /// them from the surface when the call names none).
 fn place(session: &mut Session, resource: &str) -> (u64, u64) {
-    let before: Vec<String> = common::places(session)
+    let before: Vec<String> = crate::common::places(session)
         .into_iter()
         .map(|place| place.key)
         .collect();
@@ -101,39 +99,39 @@ fn place(session: &mut Session, resource: &str) -> (u64, u64) {
     session
         .invoke("shell:arrangement", "place", &arguments)
         .unwrap_or_else(|error| panic!("place {resource}: {error:?}"));
-    let made = common::wait_for(session, "the place is in the record", |session| {
-        common::places(session)
+    let made = crate::common::wait_for(session, "the place is in the record", |session| {
+        crate::common::places(session)
             .into_iter()
             .find(|place| !before.contains(&place.key))
     });
-    let id = common::number(&made.key);
-    (id, common::number(&made.strip))
+    let id = crate::common::number(&made.key);
+    (id, crate::common::number(&made.strip))
 }
 
 /// The strip the place `place` stands in, by the record's ids.
 fn strip_of(session: &Session, place: u64) -> Option<u64> {
-    common::strip_of(session, place).map(|strip| common::number(&strip.key))
+    crate::common::strip_of(session, place).map(|strip| crate::common::number(&strip.key))
 }
 
 /// The places of the strip `strip`, in the record's order.
 fn places_of(session: &Session, strip: u64) -> Vec<u64> {
     let key = strip.to_string();
-    common::places(session)
+    crate::common::places(session)
         .into_iter()
         .filter(|place| place.strip == key)
-        .map(|place| common::number(&place.key))
+        .map(|place| crate::common::number(&place.key))
         .collect()
 }
 
 /// The place in front of the strip `strip`, by the record's ids.
 fn front_of(session: &Session, strip: u64) -> Option<u64> {
-    common::strip(session, strip).map(|strip| strip.active.parse().expect("a place id"))
+    crate::common::strip(session, strip).map(|strip| strip.active.parse().expect("a place id"))
 }
 
 /// The name the shell shows the place under `title` by, as the session resolved it: what the
 /// window's bar and its tab read.
 fn shown_as(session: &Session, title: &str) -> String {
-    common::arrangement(session)
+    crate::common::arrangement(session)
         .places
         .into_iter()
         .find(|place| place.title == title)
@@ -146,7 +144,9 @@ fn shown_as(session: &Session, title: &str) -> String {
 /// Tab the place `place` into the strip `strip`, as letting its window's bar go over that
 /// window's bar does: the arrangement's published `move` with the strip it becomes a tab of.
 fn tab_into(session: &mut Session, place: u64, strip: u64) {
-    let row = common::strip(session, strip).expect("the strip reads").row;
+    let row = crate::common::strip(session, strip)
+        .expect("the strip reads")
+        .row;
     let arguments: Map<String, Value> = json!({
         "row": format!("shell:row:{row}"),
         "strip": format!("shell:strip:{strip}"),
@@ -222,11 +222,11 @@ fn choosing_a_tab_shows_its_place() {
     let first_name = shown_as(&session, TITLES[0]);
     let second_name = shown_as(&session, TITLES[1]);
 
-    common::press(&mut session, &first_name);
+    crate::common::press(&mut session, &first_name);
     until(&mut session, "the first tab in front", |session| {
         front_of(session, strip) == Some(first)
     });
-    common::press(&mut session, &second_name);
+    crate::common::press(&mut session, &second_name);
     until(&mut session, "the second tab in front", |session| {
         front_of(session, strip) == Some(second)
     });
@@ -242,7 +242,7 @@ fn the_arrow_keys_walk_a_windows_tabs() {
     let (first, second, strip) = two_tabs(&mut session, &notes);
     let second_name = shown_as(&session, TITLES[1]);
     // The second tab is in front; a press on its pill puts the keyboard in the tab list.
-    common::press(&mut session, &second_name);
+    crate::common::press(&mut session, &second_name);
     session.step(Duration::from_millis(16)).expect("step");
     // Right walks the tabs on: the list wraps to the first, and the strip follows it.
     press_key(&mut session, KEY_RIGHT, true);
@@ -268,7 +268,7 @@ fn closing_a_tab_takes_its_place_out() {
     // The tab in front's close chip closes it. The window's own Close closes the place in front,
     // which is the tab that came in.
     let chip = format!("Close {}", shown_as(&session, TITLES[1]));
-    common::press(&mut session, &chip);
+    crate::common::press(&mut session, &chip);
     until(&mut session, "the tab closed", |session| {
         places_of(session, strip) == [first]
     });
@@ -295,7 +295,7 @@ fn drag(session: &mut Session, from: (f64, f64), to: (f64, f64)) {
         session
             .compositor()
             .input(InputEvent::PointerButton {
-                button: common::BTN_LEFT,
+                button: crate::common::BTN_LEFT,
                 pressed,
             })
             .expect("the button");
@@ -324,12 +324,12 @@ fn dragging_a_tab_out_gives_it_its_own_window() {
     let (first, second, strip) = two_tabs(&mut session, &notes);
     let second_name = shown_as(&session, TITLES[1]);
     let at = |rect: (f64, f64, f64, f64)| (rect.0 + rect.2 / 2.0, rect.1 + rect.3 / 2.0);
-    let pill = at(common::wait_for(
+    let pill = at(crate::common::wait_for(
         &mut session,
         "the tab's pill",
         |session| on_screen(session, &second_name),
     ));
-    let window = at(common::wait_for(
+    let window = at(crate::common::wait_for(
         &mut session,
         "the window's body",
         |session| on_screen(session, &shown_as(session, TITLES[0])),
@@ -377,15 +377,16 @@ fn dragging_a_windows_bar_onto_another_tabs_it_in() {
     let first_name = shown_as(&session, TITLES[0]);
     let second_name = shown_as(&session, TITLES[1]);
     // Both windows' bars stand on the desk: the first place's window and the second's.
-    let from = common::wait_for(&mut session, "the first window's bar", |session| {
+    let from = crate::common::wait_for(&mut session, "the first window's bar", |session| {
         on_screen(session, &first_name)
     });
-    let to = common::wait_for(&mut session, "the second window's bar", |session| {
+    let to = crate::common::wait_for(&mut session, "the second window's bar", |session| {
         on_screen(session, &second_name)
     });
-    // The bar's ground is under its title: a point on the title's pill, not on a control. Press
-    // there, travel to the other window's bar, and let go.
-    let at = |rect: (f64, f64, f64, f64)| (rect.0 + rect.2 / 2.0, rect.1 + rect.3 / 2.0);
+    // What a window's name names is its whole frame, the bar along its top: a point in the bar's
+    // middle, under the title and on no control. Press there, travel to the other window's bar,
+    // and let go.
+    let at = |rect: (f64, f64, f64, f64)| (rect.0 + rect.2 / 2.0, rect.1 + 14.0);
     drag(&mut session, at(from), at(to));
     // The dragged window's place becomes a tab of the window it was let go over.
     until(

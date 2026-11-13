@@ -19,6 +19,10 @@
 //!
 //! `reader` also hands a pointer into its own blob to `checksum`, a start
 //! module function.
+//!
+//! `later` has no split point: its exports `later_mix` and `later_sum` are
+//! named in the `tilo_split_exports` section, and `reader_peek` adds an
+//! export to `reader`'s module the same way.
 
 #![no_std]
 
@@ -181,6 +185,35 @@ pub extern "C" fn start_read(i: u32) -> u32 {
         | u32::from(listed[at % listed.len()]) << 8
         | (checksum(&START_BLOB[at..end]) & 0xff) << 16
         | (core::hint::black_box(OPS[(i % 2) as usize])(i) & 0xff) << 24
+}
+
+#[unsafe(link_section = "tilo_split_exports")]
+#[used]
+static LAZY_EXPORTS: [u8; 33] = *b"later later_*\nreader reader_peek\n";
+
+/// `later`'s own method, which only its exports reach.
+#[inline(never)]
+fn later_step(x: u32) -> u32 {
+    x.rotate_left(7) ^ 0x5bd1_e995
+}
+
+/// A lazy export of `later`: `checksum` of the start module's blob, mixed.
+#[unsafe(no_mangle)]
+pub extern "C" fn later_mix(i: u32) -> u32 {
+    let at = offset(i);
+    later_step(checksum(&START_BLOB[at..(at + 16).min(LEN)]))
+}
+
+/// Another of `later`'s exports.
+#[unsafe(no_mangle)]
+pub extern "C" fn later_sum(i: u32) -> u32 {
+    later_step(i).wrapping_add(later_step(i ^ 1))
+}
+
+/// A lazy export of `reader`'s module: a byte of its blob.
+#[unsafe(no_mangle)]
+pub extern "C" fn reader_peek(i: u32) -> u32 {
+    u32::from(READER_BLOB[offset(i)])
 }
 
 /// The entry wasm-bindgen would export; the splitter anchors the start

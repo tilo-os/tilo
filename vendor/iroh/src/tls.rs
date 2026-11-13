@@ -16,6 +16,9 @@ use self::resolver::ResolveRawPublicKeyCert;
 pub(crate) mod misc;
 pub(crate) mod name;
 mod resolver;
+// TILO PATCH: the default trust is the system store (`TILO-PATCH.md`).
+#[cfg(not(wasm_browser))]
+pub(crate) mod system_store;
 mod verifier;
 
 #[allow(deprecated)] // Re-export of backwards-compatibility item

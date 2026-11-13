@@ -79,8 +79,8 @@ impl UserSid {
         }
     }
     fn ptr(&self) -> PSID {
-        // SAFETY: GetTokenInformation initialized an aligned TOKEN_USER and
-        // its SID inside this retained allocation.
+        // SAFETY: GetTokenInformation initialized an aligned TOKEN_USER and its SID inside this
+        // retained allocation.
         unsafe { (*self.0.as_ptr().cast::<TOKEN_USER>()).User.Sid }
     }
     fn descriptor(&self) -> io::Result<LocalAllocation> {
@@ -99,8 +99,8 @@ impl UserSid {
             }
             let sid = String::from_utf16(std::slice::from_raw_parts(sid_string, length))
                 .map_err(|_| io::Error::other("invalid account SID"))?;
-            // Explicit owner, protected DACL, only this account gets access.
-            // OI/CI make descendants private from the moment they are created.
+            // Explicit owner, a protected DACL, and only this account gets access; OI/CI make
+            // descendants private from the moment they are made.
             let sddl: Vec<_> = format!("O:{sid}D:P(A;OICI;FA;;;{sid})")
                 .encode_utf16()
                 .chain(Some(0))
@@ -152,8 +152,8 @@ fn validate(file: &File, user: &UserSid, directory: bool, check_acl: bool) -> io
     let mut owner = std::ptr::null_mut();
     let mut dacl = std::ptr::null_mut();
     let mut descriptor = std::ptr::null_mut();
-    // SAFETY: live handle and initialized output pointers. The returned
-    // owner/DACL/ACE pointers live inside the guarded security descriptor.
+    // SAFETY: live handle and initialized output pointers. The returned owner/DACL/ACE pointers live
+    // inside the guarded security descriptor.
     unsafe {
         let result = GetSecurityInfo(
             file.as_raw_handle(),
@@ -184,8 +184,8 @@ fn validate(file: &File, user: &UserSid, directory: bool, check_acl: bool) -> io
                 return Err(io::Error::last_os_error());
             }
             let header = &*ace.cast::<ACE_HEADER>();
-            // Standard deny ACEs add no authority; unknown/object/callback
-            // ACE types fail closed rather than being interpreted partially.
+            // Standard deny ACEs add no authority; unknown/object/callback ACE types fail closed
+            // rather than being interpreted partially.
             if header.AceType == 1 {
                 continue;
             }
@@ -197,8 +197,8 @@ fn validate(file: &File, user: &UserSid, directory: bool, check_acl: bool) -> io
             let available = usize::from(header.AceSize)
                 .checked_sub(sid_offset)
                 .ok_or_else(denied)?;
-            // SID's fixed header is eight bytes, followed by SubAuthorityCount
-            // u32s. Bound the whole SID inside its ACE before any SID API reads it.
+            // SID's fixed header is eight bytes, followed by SubAuthorityCount u32s. Bound the whole
+            // SID inside its ACE before any SID API reads it.
             if available < 8 {
                 return Err(denied());
             }
@@ -301,8 +301,8 @@ pub(super) fn open(path: &Path, write: bool, create: bool, exclusive: bool) -> i
     } else {
         OPEN_EXISTING
     };
-    // SAFETY: all pointers reference live buffers; success transfers the
-    // returned owned handle into File. Reparse points are never followed.
+    // SAFETY: all pointers reference live buffers; success transfers the returned owned handle into
+    // File. Reparse points are never followed.
     unsafe {
         let raw = CreateFileW(
             name.as_ptr(),

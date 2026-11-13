@@ -11,13 +11,11 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use std::time::Duration;
 
 use tilo_compositor::{KeyRepeat, OutputConfig};
 use tilo_session::{Options, Session};
-use tilo_surface_host::DeskReading;
+use tilo_session_core::shell::DeskReading;
 use tilo_surface_host::shell_part::DESK_RESOURCE;
 
 const WIDTH: i32 = 1280;
@@ -92,23 +90,23 @@ fn style_action(
 #[test]
 fn make_it_mine_copies_strips_into_a_selectable_style() {
     let _settled = ui::motion::testing::settled();
-    common::app_store();
+    crate::common::app_store();
     let _ = workspace();
     // A session whose agent door a REPL reaches: the door is how the switch runs its own action
     // (`shell.show_style`), as a press in the bar's menu does.
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let program = std::env::current_exe().expect("this test's program");
     let questions = tilo_service::Questions::new();
-    let mut session = common::headless(Options {
+    let mut session = crate::common::headless(Options {
         collab: false,
         action_plane: tilo_session::ActionPlane::At(root.path().join("plane.sock")),
         agent_door: Some(root.path().join("agent.sock")),
         admit_repl: vec![program],
-        services: vec![Box::new(common::seeded_apps())],
+        services: vec![Box::new(crate::common::seeded_apps())],
         questions: Some(questions),
         ..options()
     });
-    common::until(&mut session, "the shell draws its bar", |session| {
+    crate::common::until(&mut session, "the shell draws its bar", |session| {
         session
             .accessible_labels()
             .iter()
@@ -116,7 +114,7 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     });
     // The door, connected before the build runs, so its state is up: the copy is switched to by
     // the shell's own action, as a press in the bar's menu runs it.
-    let mut repl = common::Repl::connect(&root.path().join("agent.sock"));
+    let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
     // The copy is made and installed, answering the package it went in as.
     let answer = style_action(
@@ -143,7 +141,7 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     );
     // The store moved, so the session reads it again: the copy's style is offered and loads.
     let copy = format!("{}:strips", tilo_session::style_packages::COPY_ID);
-    common::until(&mut session, "the copy is offered", |session| {
+    crate::common::until(&mut session, "the copy is offered", |session| {
         style_state(session, &copy).is_some()
     });
     assert_eq!(
@@ -162,8 +160,8 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
         &format!("shell.show_style(shell.viewing, shown: \"{copy}\")"),
     );
     assert!(!failed, "the desk shows the copy: {answer}");
-    common::until(&mut session, "the copy draws the desk", |session| {
-        common::on_screen(session, "No window here yet").is_some()
+    crate::common::until(&mut session, "the copy draws the desk", |session| {
+        crate::common::on_screen(session, "No window here yet").is_some()
     });
     assert!(
         style_state(&session, "so.tilo.shell:strips").is_some(),
@@ -201,13 +199,13 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     // The copy the person chose is now the edited one, drawn without the shell's chrome: the
     // bar's style switch, which only `shell.desk_style` draws, is gone from the screen, and the
     // copy's places still stand. The reinstall redraws it where it stands: no switch needed.
-    common::until(&mut session, "the edited copy draws", |session| {
-        common::on_screen(session, "No window here yet").is_some()
-            && common::preset_menu(session).is_none()
+    crate::common::until(&mut session, "the edited copy draws", |session| {
+        crate::common::on_screen(session, "No window here yet").is_some()
+            && crate::common::preset_menu(session).is_none()
     });
     // The switch lists the edited copy by its new name, and it loads: a reinstall clears a
     // failure, as `desk_styles::a_fixed_style_package_brings_the_style_back_live` holds.
-    common::until(
+    crate::common::until(
         &mut session,
         "the switch names the edited copy",
         |session| {
@@ -224,7 +222,7 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
 #[test]
 fn a_broken_copy_is_a_diagnostic_and_never_installs() {
     let _settled = ui::motion::testing::settled();
-    common::app_store();
+    crate::common::app_store();
     let dir = workspace().join("mine.broken");
     std::fs::create_dir_all(&dir).expect("a directory for the broken copy");
     std::fs::write(dir.join("app.ids"), "").expect("an ids lock");
@@ -235,7 +233,7 @@ fn a_broken_copy_is_a_diagnostic_and_never_installs() {
     )
     .expect("the broken source");
     let mut session = session();
-    common::until(&mut session, "the shell draws", |session| {
+    crate::common::until(&mut session, "the shell draws", |session| {
         !session.shell_parts().is_empty()
     });
     let checked = style_action(
@@ -268,12 +266,12 @@ fn a_broken_copy_is_a_diagnostic_and_never_installs() {
 #[test]
 fn the_repl_makes_a_style_with_the_same_call() {
     let _settled = ui::motion::testing::settled();
-    common::app_store();
+    crate::common::app_store();
     let _ = workspace();
     // The session whose door this REPL reaches, admitting it to act as the person.
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let questions = tilo_service::Questions::new();
-    let apps = common::seeded_apps();
+    let apps = crate::common::seeded_apps();
     let program = std::env::current_exe().expect("this test's program");
     let mut session = tilo_session::Session::headless(
         Options {
@@ -291,10 +289,10 @@ fn the_repl_makes_a_style_with_the_same_call() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    common::until(&mut session, "the shell draws", |session| {
+    crate::common::until(&mut session, "the shell draws", |session| {
         !session.shell_parts().is_empty()
     });
-    let mut repl = common::Repl::connect(&root.path().join("agent.sock"));
+    let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
     // The command as a person types it: one call on the session's own resource.
     let (answer, failed) = repl.call(
@@ -307,7 +305,7 @@ fn the_repl_makes_a_style_with_the_same_call() {
     assert!(!failed, "the REPL made the style: {answer}");
     let copy = format!("{}:strips", tilo_session::style_packages::COPY_ID);
     // The copy is offered by the switch, as it is from the person's own press.
-    common::until(&mut session, "the copy is offered", |session| {
+    crate::common::until(&mut session, "the copy is offered", |session| {
         desk(session).styles.iter().any(|style| style.style == copy)
     });
     // The REPL switches to it by the same door, and the desk draws the copy.
@@ -316,7 +314,7 @@ fn the_repl_makes_a_style_with_the_same_call() {
         &format!("shell.show_style(shell.viewing, shown: \"{copy}\")"),
     );
     assert!(!failed, "the REPL switches to the copy: {answer}");
-    common::until(&mut session, "the copy draws the desk", |session| {
-        common::on_screen(session, "No window here yet").is_some()
+    crate::common::until(&mut session, "the copy draws the desk", |session| {
+        crate::common::on_screen(session, "No window here yet").is_some()
     });
 }

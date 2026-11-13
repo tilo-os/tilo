@@ -37,7 +37,6 @@ pub(super) const STAGE_FILE_PREFIX: &str = "stage-";
 /// One inode's stage, shared by every FUSE worker that touches the inode.
 pub(super) type SharedStage = Arc<Stage>;
 
-/// One inode's [`WriteStage`] behind its own lock.
 pub struct Stage {
     inner: Mutex<WriteStage>,
     /// The stage's length, readable while a commit holds the lock, so
@@ -67,9 +66,7 @@ impl Stage {
 pub struct WriteStage {
     backing: Backing,
     len: u64,
-    /// Bytes of `backing` that hold the file's content.
     valid: RangeSet,
-    /// The committed content the stage was opened over.
     base: Option<Hash>,
 }
 

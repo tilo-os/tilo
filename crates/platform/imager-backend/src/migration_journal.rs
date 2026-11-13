@@ -19,9 +19,8 @@ use std::{
     time::SystemTime,
 };
 
-// The journal bounds each frame, never the complete operation. Checksums
-// detect corruption, not malicious edits; receipts still confer no overwrite
-// authority.
+// The journal bounds each frame, never the whole operation. Checksums detect corruption, not
+// malicious edits; a receipt still confers no overwrite authority.
 const MAGIC: &[u8; 8] = b"TILOJL2\n";
 
 #[derive(Serialize, Deserialize)]
@@ -48,8 +47,8 @@ enum Record {
 }
 
 use super::migration_journal_log::{read_record, write_record};
-/// Internal classification travels with I/O errors; callers never infer
-/// persistence state from an error message or ordinary per-file conflicts.
+/// Internal classification travels with I/O errors; callers never infer persistence state from an
+/// error message or an ordinary per-file conflict.
 #[derive(Clone, Copy, Debug)]
 pub enum PersistenceBoundary {
     JournalUnavailable,
@@ -332,8 +331,8 @@ struct Document {
     receipts: Vec<Receipt>,
     outcome: Option<Outcome>,
 }
-/// In-memory owner of one exclusively created, versioned private journal.
-/// All persisted paths are native code units; no permissions or grants are serialized.
+/// In-memory owner of one exclusively created, versioned private journal; no permissions or grants
+/// are serialized.
 pub struct MigrationJournal {
     document: Document,
     index: BTreeMap<PathBuf, usize>,
@@ -511,7 +510,6 @@ impl MigrationJournal {
         result.load_reviewed_inventory()?;
         if end != result.file.metadata()?.len() {
             result.validate_recovery_location()?;
-            // Revalidate before repairing only the uncommitted final tail.
             #[cfg(test)]
             persistence_injection::fail_at("before_recover_tail")?;
             super::migration_journal_log::repair(&mut result.file, end, || Ok(()))?;
@@ -558,7 +556,6 @@ impl MigrationJournal {
             Record::Receipt { receipt } => {
                 let path = receipt.path().decode()?;
                 if let Some(position) = index.get(&path) {
-                    // Only directory completion can update a receipt.
                     match (
                         &*document
                             .receipts
@@ -638,8 +635,6 @@ impl MigrationJournal {
         Ok(())
     }
 
-    // Repair/conversion writes are permitted only outside both copied trees,
-    // after root identity revalidation. Bad locations remain byte-for-byte intact.
     fn validate_recovery_location(&self) -> io::Result<()> {
         let source = PinnedDirectory::open_absolute(&absolute(&self.document.source)?)?;
         let destination_path = absolute(&self.document.destination)?;
@@ -1109,10 +1104,9 @@ impl MigrationJournal {
     }
 }
 
-/// Start a fresh durable operation. The caller supplies a private application-data
-/// journal directory outside both copied trees. Existing journal/output names
-/// are conflicts. Windows currently refuses before creating any files because
-/// unprivileged directory-entry persistence is not yet established.
+/// Starts a fresh durable operation in a private application-data directory outside both copied
+/// trees; existing names are conflicts. Windows refuses before creating files because unprivileged
+/// directory-entry persistence is not established yet.
 pub fn copy_folder_with_journal(
     source: &Path,
     destination: &Path,
@@ -1130,9 +1124,8 @@ pub fn copy_folder_with_journal(
         MigrationJournal::create(source, destination, journal_path).map_err(|e| e.to_string())?;
     migration::copy_folder_internal(source, destination, cancelled, progress, Some(journal))
 }
-/// Same engine, with reviewed identities checked on the actual pinned roots
-/// before the fresh journal is published. Resume also compares the existing
-/// receipt identities, so an old journal can never waive the reviewed binding.
+/// Reviewed identities are checked on the actual pinned roots before the journal is published;
+/// resume also compares the existing receipt identities, so an old journal cannot waive the binding.
 pub fn copy_reviewed(
     source: &Path,
     destination: &Path,
@@ -1160,9 +1153,8 @@ pub fn copy_reviewed(
     migration::copy_folder_internal(source, destination, cancelled, progress, Some(journal))
 }
 
-/// Reopen a private journal and revalidate native roots, source facts and output
-/// bytes. Changed or unrecorded output is retained as a conflict requiring review.
-/// Linux without a persistent filesystem UUID is restricted to the same boot.
+/// Reopens a private journal and revalidates roots, source facts and output bytes. Changed or
+/// unrecorded output stays a conflict requiring review.
 pub fn resume_folder(
     journal_path: &Path,
     cancelled: &AtomicBool,
@@ -1186,8 +1178,8 @@ mod tests {
         serde_json::from_value(serde_json::to_value(journal.document).unwrap()).unwrap()
     }
 
-    /// Rewrite a journal from an edited document in the framed on-disk format,
-    /// so tests reach the validation behind the header, not the format check.
+    /// Rewrites a journal from an edited document in the framed on-disk format, so tests reach the
+    /// validation behind the header.
     fn write_journal(path: &Path, mut document: serde_json::Value) {
         let receipts = document["receipts"].take();
         document["receipts"] = serde_json::json!([]);
@@ -1305,15 +1297,13 @@ mod tests {
         );
     }
 
-    /// Receipt checkpoints, restart, names, directories and timestamps.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn journal_restart_resumes_from_the_durable_prefix_losslessly() {
-        // Phase `receipt_checkpoint_preserves_the_durable_prefix`.
-        // A receipt must append bounded bytes, not rewrite all prior checkpoints.
+        // A receipt appends bounded bytes rather than rewriting prior checkpoints.
         isolated("receipt_checkpoint_preserves_the_durable_prefix", || {
             let (_temp, source, output, journal) = fixture();
             let cancel = AtomicBool::new(false);
@@ -1357,7 +1347,7 @@ mod tests {
             },
         );
 
-        // Phase `unix_non_utf8_names_survive_restart_losslessly`.
+        // Non-UTF-8 names must survive a restart losslessly.
         #[cfg(target_os = "linux")]
         isolated("unix_non_utf8_names_survive_restart_losslessly", || {
             use std::os::unix::ffi::OsStringExt;
@@ -1383,7 +1373,6 @@ mod tests {
             assert_eq!(fs::read(output.join(&name)).unwrap(), b"native");
         });
 
-        // Phase `resumed_files_and_directories_retain_original_timestamps`.
         // Revalidation reads must not destroy the timestamp preservation contract.
         isolated(
             "resumed_files_and_directories_retain_original_timestamps",
@@ -1408,8 +1397,8 @@ mod tests {
                     .unwrap()
                     .complete()
                 );
-                // Simulate atime advancement caused by enumeration/content rereads on
-                // mounts where access-time updates are enabled (APFS may suppress it).
+                // Simulate atime advancement from enumeration rereads on mounts that update access
+                // times (APFS may suppress it).
                 for p in [&source, &source.join("empty"), &output.join("a")] {
                     File::open(p)
                         .unwrap()
@@ -1510,14 +1499,12 @@ mod tests {
         );
         f
     }
-    /// Modified sources/destinations, missing sources and replaced roots or journals.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn journal_conflicts_and_replacements_never_authorize_overwrite() {
-        // Phase `modified_destination_remains_a_conflict`.
         // A receipt must not conceal an edit or replacement of either version.
         isolated("modified_destination_remains_a_conflict", || {
             let (_temp, source, output, journal) = completed_fixture();
@@ -1661,7 +1648,6 @@ mod tests {
         );
         f
     }
-    /// Crashes around publication and receipt replacement, cancelled start.
     #[test]
     fn crash_boundaries_keep_valid_journals_and_revalidate_output() {
         isolated(
@@ -1728,7 +1714,6 @@ mod tests {
             assert!(!output.exists());
         });
     }
-    /// Journal permissions, identity mismatch, moved journals, digests and FIFO swaps.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1843,7 +1828,6 @@ mod tests {
         assert!(!report.complete());
         fs::write(base.join("fifo-rejected"), b"checked").unwrap();
     }
-    /// File, directory, outcome, root and post-publication receipt failures.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -2068,7 +2052,7 @@ mod tests {
 pub mod crash_injection {
     use std::cell::Cell;
     thread_local! { static COUNT: Cell<usize> = const { Cell::new(0) }; }
-    // Intentional abrupt child exit exercises process-crash recovery boundaries.
+    // An abrupt child exit exercises process-crash recovery boundaries.
     #[allow(
         clippy::exit,
         reason = "Crash-recovery tests deliberately exit the child at a selected journal boundary without running destructors."

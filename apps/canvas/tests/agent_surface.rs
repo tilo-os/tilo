@@ -3,7 +3,7 @@
 //! vocabulary shows up here as a diff to review, with its size in context.
 //!
 //! Update after an intended change:
-//! `TILO_UPDATE_GOLDEN=1 cargo test -p canvas --test agent_surface`.
+//! `TILO_UPDATE_GOLDEN=1 cargo test -p canvas --test it agent_surface::`.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

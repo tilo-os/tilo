@@ -26,8 +26,6 @@ pub const APP_READABLE_SECTIONS: &[&str] = &[
     "accessibility",
     "appearance",
     crate::appearance::DEVICE_SECTION,
-    // The colour the person wears, so every app paints their caret, their
-    // peers and their part of a presence list the same.
     crate::identity::SECTION,
 ];
 
@@ -41,8 +39,6 @@ pub const OWNED_SHARED_KEYS: &[(&str, &str, &[&str])] = &[(
     &["theme", "custom_theme", "studio"],
 )];
 
-/// The capability an app's manifest declares to edit the whole settings
-/// document as the device's settings app (`[capabilities]`).
 pub const SYSTEM_SETTINGS_CAPABILITY: &str = "settings.system";
 
 /// The packages the image lets edit the whole document, whatever a manifest
@@ -52,17 +48,13 @@ pub const SYSTEM_SETTINGS_CAPABILITY: &str = "settings.system";
 /// reaches only its own entries.
 pub const SYSTEM_SETTINGS_APPS: &[&str] = &["so.tilo.settings"];
 
-/// What an app reaches of the document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reach {
-    /// Its own entries, and the shared sections to read.
     App,
-    /// Every section, to read and write: the device's settings app.
     System,
 }
 
 impl Reach {
-    /// The reach of `app_id` when its manifest declares `capabilities`.
     #[must_use]
     pub fn of(app_id: &str, capabilities: &[impl AsRef<str>]) -> Self {
         let declared = capabilities
@@ -76,7 +68,6 @@ impl Reach {
     }
 }
 
-/// [`app_view`] at `reach`: the whole document for the system's settings app.
 #[must_use]
 pub fn view_at(document: &Map<String, Value>, app_id: &str, reach: Reach) -> Map<String, Value> {
     match reach {
@@ -107,11 +98,8 @@ pub fn update_at(
     }
 }
 
-/// The most one write of an app's device-local entry may carry.
 pub const MAX_DEVICE_LOCAL_VALUE_BYTES: usize = 256 * 1024;
 
-/// The part of `document` app `app_id` sees: its own entries and the
-/// shared sections.
 #[must_use]
 pub fn app_view(document: &Map<String, Value>, app_id: &str) -> Map<String, Value> {
     let mut view = Map::new();
@@ -150,11 +138,6 @@ pub fn update_for_app(
     update_for_app_by(source, app_id, section, values, &ChangeOrigin::default())
 }
 
-/// [`update_for_app`], recording `origin` with each leaf the write changes.
-///
-/// # Errors
-///
-/// As [`update_for_app`].
 pub fn update_for_app_by(
     source: &dyn SettingsSource,
     app_id: &str,
@@ -218,8 +201,6 @@ pub fn update_for_app_by(
     source.update_section_by(section, entry, origin)
 }
 
-/// Merge `values` into the shared `section` for the app that owns the keys
-/// it names.
 fn update_owned_keys(
     source: &dyn SettingsSource,
     app_id: &str,

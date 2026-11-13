@@ -1341,3 +1341,79 @@ fn one_objects(doc: &Doc, field: &ObjId, ids: &[String]) -> usize {
         })
         .sum()
 }
+
+/// What a body reads as, block by block: kind, text, marks and attributes.
+fn body_views(replica: &Replica<RichText>) -> Vec<(String, String, String, String)> {
+    let c = replica.state().unwrap().containers().clone();
+    model::materialize(replica.doc(), &c)
+        .blocks
+        .into_iter()
+        .map(|block| {
+            (
+                block.kind,
+                block.text,
+                format!("{:?}", block.marks),
+                format!("{:?}", block.attrs),
+            )
+        })
+        .collect()
+}
+
+/// A file staged where it is opened writes, on every replica, what reading
+/// it there writes, its picture named by the reference it is kept under;
+/// replaying the action reads no file and mints the same blocks.
+#[test]
+fn a_staged_import_writes_on_every_replica_what_reading_the_file_writes() {
+    let file = br#"<h1>Report</h1><p>Some <b>bold</b> and <a href="https://tilo.so">linked</a> words.</p><p><img src="data:image/png;base64,QUJDREVGR0g=" alt="pic"></p>"#;
+    let staged = crate::action::stage_import(crate::action::ImportFormat::Html, file).unwrap();
+    let [(address, _)] = staged.inputs().iter().collect::<Vec<_>>()[..] else {
+        panic!("one picture");
+    };
+    let address = address.to_owned();
+    let store = tilo_content::ContentStore::memory().sealing();
+    let kept = store.put_inputs(staged.inputs()).unwrap();
+    let reference = kept[&address].clone();
+    assert!(tilo_content::is_sealed(&reference));
+    let action = staged.action(kept);
+
+    let mut origin = document(2);
+    let mut peer = origin.fork();
+    let mut read_there = origin.fork();
+    origin.apply_action(&action).unwrap();
+    peer.replay(origin.log().last().unwrap()).unwrap();
+    read_there
+        .apply_action(&RichTextAction::ReplaceFormatted {
+            format: crate::action::ImportFormat::Html,
+            bytes: file.to_vec(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        body_ids(&origin.state().unwrap()),
+        body_ids(&peer.state().unwrap())
+    );
+    assert_eq!(body_views(&origin), body_views(&peer));
+    let named = body_views(&origin)
+        .into_iter()
+        .map(|(kind, text, marks, attrs)| (kind, text, marks, attrs.replace(&reference, &address)))
+        .collect::<Vec<_>>();
+    assert_eq!(named, body_views(&read_there));
+    assert!(
+        body_views(&origin)
+            .iter()
+            .any(|(kind, _, _, attrs)| kind == "image" && attrs.contains(&reference))
+    );
+    let blobs = |replica: &Replica<RichText>| {
+        model::referenced_content(replica.doc(), replica.state().unwrap().containers())
+    };
+    assert!(blobs(&origin).contains(&reference));
+    assert!(
+        !blobs(&origin).contains(&address),
+        "named by its reference alone"
+    );
+    assert_eq!(
+        origin.state().unwrap().file_digest(),
+        Some(tilo_content::hash_bytes(file).as_str())
+    );
+    assert!(!origin.state().unwrap().unsaved());
+}

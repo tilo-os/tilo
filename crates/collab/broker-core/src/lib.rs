@@ -6,17 +6,29 @@
 //! ([`steps`]) — and admits each one as an [`actor`]. Which process or module carries a step out,
 //! and over which socket an app is asked, is that host's own: a Linux desktop's broker over its
 //! app sockets, the page over the apps it runs in-process. The session's roles name only what is
-//! here.
+//! here: [`services`] is what a role installs and reads, [`access`] what an app declared.
 
+pub mod access;
 pub mod actor;
+pub mod collab_core;
+pub mod collab_history;
+pub mod custody;
 pub mod published;
 pub mod route;
+pub mod services;
 pub mod steps;
 
 pub use actor::{BrokerActor, RunFacts, principal_id_for_root};
-pub use published::{PublishedAction, PublishedInput, PublishedSurface};
+pub use published::{
+    PublishedAction, PublishedInput, PublishedSurface, validate_published_surface,
+};
 pub use route::CrdtRoute;
 pub use steps::{
     ContinuationServices, HostStepOutcome, HostStepRequest, HostStepServices, LiveRead, LiveView,
     TaskRun,
 };
+
+// Workspace records are decoded in automerge worker processes started from this test binary;
+// this serves them.
+#[cfg(test)]
+tilo_automerge_isolate::test_worker!();

@@ -1,20 +1,12 @@
-//! Pure data model for the PDF viewer.
-//!
-//! Nothing here touches the CRDT, taffy, vello or winit — it's the
-//! plain-Rust core: the page model, the annotation / comment / signature
-//! value types, the tool enum, and the pure search routine. Everything is
-//! unit-testable in isolation.
-//!
-//! Page geometry is in PDF points (1pt = 1px at 100% zoom); a page's pixels
-//! and text come from the PDF engine.
+//! The reader's plain data: the page model, the annotation, comment and signature
+//! values, the tool enum and the search routine. Page geometry is in PDF points.
+//! Nothing here touches the document, the layout or the window.
 
 use ui::tilo_resource::{self, JsonSchema, Model};
 use uuid::Uuid;
 
-/// US-Letter page geometry, in PDF points.
 pub const PAGE_W: f64 = 612.0;
 pub const PAGE_H: f64 = 792.0;
-/// Inner text margin on every page edge.
 pub const MARGIN: f64 = 64.0;
 
 #[derive(Clone, Debug)]
@@ -27,7 +19,7 @@ pub struct Page {
 pub struct OutlineItem {
     pub title: String,
     pub page: usize,
-    /// 0 = section, 1 = sub-section (controls indent in the drawer).
+    /// 0 = section, 1 = sub-section.
     pub level: u8,
 }
 
@@ -38,10 +30,7 @@ pub struct Document {
     pub subject: String,
     pub pages: Vec<Page>,
     pub outline: Vec<OutlineItem>,
-    /// Uniform page geometry, in PDF points. For a loaded PDF this is the
-    /// first page's media box.
-    /// Pages stack uniformly against this card size (the common case where a
-    /// document has one page size throughout).
+    /// Uniform page geometry, in PDF points: a loaded PDF's first page's media box.
     pub page_w: f64,
     pub page_h: f64,
 }
@@ -51,13 +40,10 @@ impl Document {
         self.pages.len()
     }
 
-    /// Borrow a page by 1-based number.
     pub fn page(&self, number: usize) -> Option<&Page> {
         self.pages.iter().find(|p| p.number == number)
     }
 
-    /// A document of `count` pages of the given size, whose pixels and text
-    /// the PDF engine supplies.
     pub fn blank_pages(title: &str, author: &str, count: usize, page_w: f64, page_h: f64) -> Self {
         let count = count.max(1);
         let pages = (1..=count).map(|number| Page { number }).collect();
@@ -73,12 +59,6 @@ impl Document {
     }
 }
 
-// ----------------------------------------------------------------------
-// Tools
-// ----------------------------------------------------------------------
-
-/// What a press on the page does: select text, or author one kind of
-/// markup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Tool {
@@ -86,7 +66,6 @@ pub enum Tool {
     Highlight,
     Ink,
     Note,
-    /// Free text: a text box placed directly on the page.
     Text,
     Sign,
 }
@@ -101,18 +80,17 @@ impl Tool {
         Tool::Sign,
     ];
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Tool::Select => "Select",
-            Tool::Highlight => "Highlight",
-            Tool::Ink => "Draw",
-            Tool::Note => "Note",
-            Tool::Text => "Text",
-            Tool::Sign => "Sign",
-        }
+    pub fn label(self) -> String {
+        crate::t(match self {
+            Tool::Select => "pdf-tool-select",
+            Tool::Highlight => "pdf-tool-highlight",
+            Tool::Ink => "pdf-tool-draw",
+            Tool::Note => "pdf-tool-note",
+            Tool::Text => "pdf-tool-text",
+            Tool::Sign => "pdf-tool-sign",
+        })
     }
 
-    /// One-key shortcut hint shown in the tooltip / status bar.
     pub fn hotkey(self) -> char {
         match self {
             Tool::Select => '1',
@@ -124,24 +102,39 @@ impl Tool {
         }
     }
 
-    /// Tools that author markup on the page (and so show the colour
-    /// swatches).
     pub fn annotates(self) -> bool {
         matches!(self, Tool::Highlight | Tool::Ink | Tool::Note | Tool::Text)
     }
 }
 
-// ----------------------------------------------------------------------
-// Annotation colour swatches (resolved against the OS theme at draw time)
-// ----------------------------------------------------------------------
-
 pub use tilo_document::annotation::HighlightColor;
 
-// ----------------------------------------------------------------------
-// Geometry
-// ----------------------------------------------------------------------
+pub fn annotation_label(kind: &AnnoKind) -> String {
+    crate::t(match kind {
+        AnnoKind::Markup { style, .. } => match style {
+            MarkupStyle::Highlight => "pdf-annotation-highlight",
+            MarkupStyle::Underline => "pdf-annotation-underline",
+            MarkupStyle::StrikeOut => "pdf-annotation-strikeout",
+            MarkupStyle::Squiggly => "pdf-annotation-squiggly",
+        },
+        AnnoKind::Ink { .. } => "pdf-annotation-drawing",
+        AnnoKind::Note { .. } => "pdf-annotation-note",
+        AnnoKind::FreeText { .. } => "pdf-annotation-text",
+    })
+}
 
-/// A rectangle in page-point space (origin top-left of the page).
+pub fn colour_label(colour: HighlightColor) -> String {
+    crate::t(match colour {
+        HighlightColor::Yellow => "pdf-colour-yellow",
+        HighlightColor::Green => "pdf-colour-green",
+        HighlightColor::Pink => "pdf-colour-pink",
+        HighlightColor::Blue => "pdf-colour-blue",
+        HighlightColor::Purple => "pdf-colour-purple",
+        // A colour a file brought along is named by its own value; no menu offers one.
+        HighlightColor::Custom(rgb) => return format!("#{:06x}", rgb & 0x00ff_ffff),
+    })
+}
+
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, JsonSchema,
 )]
@@ -157,7 +150,6 @@ impl PtRect {
         Self { x, y, w, h }
     }
 
-    /// Build a normalised rect from two corner points (any order).
     pub fn from_corners(ax: f64, ay: f64, bx: f64, by: f64) -> Self {
         let x = ax.min(bx);
         let y = ay.min(by);
@@ -178,18 +170,13 @@ impl PtRect {
     }
 }
 
-// ----------------------------------------------------------------------
-// Annotations
-// ----------------------------------------------------------------------
-
-/// How text markup is drawn and exported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MarkupStyle {
     Highlight,
     Underline,
     StrikeOut,
-    /// A wavy underline (from PDFs that use it; drawn as an underline).
+    /// A wavy underline, drawn as an underline.
     Squiggly,
 }
 
@@ -214,13 +201,8 @@ impl MarkupStyle {
     }
 }
 
-/// Default font size of new free text, in points.
 pub const FREE_TEXT_SIZE: f64 = 14.0; // a PDF font size, not UI spacing
 
-/// A generous estimate of the box height `text` needs at `size` points when
-/// wrapped to `width`: explicit lines, each wrapped by an average advance
-/// (half the size for alphabetic text, the full size for ideographs), plus
-/// the box's inner padding.
 pub fn free_text_height(text: &str, size: f64, width: f64) -> f64 {
     let inner = (width - 4.0).max(size);
     let lines: f64 = text
@@ -242,23 +224,20 @@ pub fn free_text_height(text: &str, size: f64, width: f64) -> f64 {
     lines * size * 1.2 + 4.0
 }
 
-/// What an annotation marks: its kind and its geometry.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum AnnoKind {
-    /// Text markup (highlight, underline, strike-through) over one band per
-    /// line it covers.
     Markup {
         style: MarkupStyle,
         quads: Vec<PtRect>,
     },
-    /// Freehand ink: one or more polylines.
-    Ink { strokes: Vec<Vec<(f64, f64)>> },
-    /// A sticky note anchored at a point. The body text is mirrored into
-    /// the linked top-level comment so the comments rail can thread it.
-    Note { x: f64, y: f64 },
-    /// Text written on the page inside `rect`, wrapped to its width, at
-    /// `size` points, in the annotation's colour.
+    Ink {
+        strokes: Vec<Vec<(f64, f64)>>,
+    },
+    Note {
+        x: f64,
+        y: f64,
+    },
     FreeText {
         rect: PtRect,
         text: String,
@@ -267,7 +246,6 @@ pub enum AnnoKind {
 }
 
 impl AnnoKind {
-    /// A highlight over a single band.
     pub fn highlight(rect: PtRect) -> Self {
         AnnoKind::Markup {
             style: MarkupStyle::Highlight,
@@ -284,28 +262,23 @@ impl AnnoKind {
         }
     }
 
-    /// One freehand stroke.
     pub fn ink(points: Vec<(f64, f64)>) -> Self {
         AnnoKind::Ink {
             strokes: vec![points],
         }
     }
 
-    /// Whether `(x, y)` lies on one of the markup's bands.
     pub fn markup_contains(&self, x: f64, y: f64) -> bool {
         matches!(self, AnnoKind::Markup { quads, .. } if quads.iter().any(|q| q.contains(x, y)))
     }
 
-    /// Whether `(x, y)` lies inside a free text box.
     pub fn free_text_contains(&self, x: f64, y: f64) -> bool {
         matches!(self, AnnoKind::FreeText { rect, .. } if rect.contains(x, y))
     }
 }
 
-/// Which space an annotation's geometry is in. Records store PDF user space
-/// (exact however the page is displayed); records written before that stored
-/// the reader's page-point space. Everything the reader holds for drawing is
-/// in page-point space.
+/// Which space an annotation's geometry is in: records store PDF user space, drawing
+/// is in page-point space, and older records stored page points.
 #[derive(
     Clone,
     Copy,
@@ -325,8 +298,6 @@ pub enum GeomSpace {
     User,
 }
 
-/// One annotation: text markup, ink, a note or free text, stored under its
-/// id on a page occurrence.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 #[model(check = Annotation::valid)]
 pub struct Annotation {
@@ -337,7 +308,6 @@ pub struct Annotation {
     pub page_id: String,
     /// The page it is shown as, 1-based, resolved from `page_id` when it is
     /// listed; 0 while its page is deleted. Not stored: page numbers change
-    /// whenever the plan does.
     #[model(skip)]
     pub page: usize,
     /// Mark: what it marks, and where.
@@ -369,14 +339,12 @@ impl tilo_resource::Identified for Annotation {
         tilo_resource::Id::from_raw(self.id.clone())
     }
 
-    /// In the order they were made.
     fn order(&self, other: &Self) -> std::cmp::Ordering {
         self.created_ms.cmp(&other.created_ms)
     }
 }
 
 impl Annotation {
-    /// An annotation on page `page` in page-point space with no text anchor.
     pub fn new(
         page: usize,
         kind: AnnoKind,
@@ -415,8 +383,6 @@ impl Annotation {
         Ok(())
     }
 
-    /// The anchor point (page-point space) used to position the comment
-    /// connector and selection chrome.
     pub fn anchor(&self) -> (f64, f64) {
         match &self.kind {
             AnnoKind::Markup { quads, .. } => quads.first().map_or((0.0, 0.0), |r| (r.x, r.y)),
@@ -430,16 +396,9 @@ impl Annotation {
     }
 }
 
-// ----------------------------------------------------------------------
-// Comments (threaded)
-// ----------------------------------------------------------------------
-
-/// A comment thread: free on a page, or pinned to an annotation.
 pub type Comment = tilo_document::annotation::Comment<PdfAnchor>;
 pub use tilo_document::annotation::Reply;
 
-/// What a comment thread is about: the page occurrence it is on and,
-/// when it is pinned to one, the annotation there.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct PdfAnchor {
     /// The page occurrence it is on.
@@ -451,14 +410,11 @@ pub struct PdfAnchor {
 }
 
 impl PdfAnchor {
-    /// The annotation it is pinned to.
     pub fn pinned(&self) -> Option<&str> {
         (!self.annotation.is_empty()).then_some(self.annotation.as_str())
     }
 }
 
-/// A comment thread as the reader lists it: the stored thread, the id it
-/// is stored under and the page it is shown as now.
 #[derive(Clone, Debug, Default)]
 pub struct Thread {
     pub id: String,
@@ -467,12 +423,10 @@ pub struct Thread {
 }
 
 impl Thread {
-    /// The annotation it is pinned to.
     pub fn pinned(&self) -> Option<&str> {
         self.comment.anchor.pinned()
     }
 
-    /// The answers, each under its id, in the order they were written.
     pub fn replies(&self) -> impl Iterator<Item = (&str, &Reply)> {
         self.comment
             .replies
@@ -480,18 +434,15 @@ impl Thread {
             .map(|(id, reply)| (id.as_str(), reply))
     }
 
-    /// The comment's paragraphs as the editor shows them.
     pub fn blocks(&self) -> Vec<ui::widget::BlockContent> {
         blocks_of(&self.comment.text, &self.comment.body)
     }
 }
 
-/// A reply's paragraphs as the editor shows them.
 pub fn reply_blocks(reply: &Reply) -> Vec<ui::widget::BlockContent> {
     blocks_of(&reply.text, &reply.body)
 }
 
-/// Paragraphs as the editor shows them: as written, or the plain text.
 fn blocks_of(text: &str, rich: &[tilo_document::ClipBlock]) -> Vec<ui::widget::BlockContent> {
     if rich.is_empty() {
         tilo_rich_text::plain_blocks(text)
@@ -500,31 +451,23 @@ fn blocks_of(text: &str, rich: &[tilo_document::ClipBlock]) -> Vec<ui::widget::B
     }
 }
 
-/// A fresh id for an annotation, comment, reply or signature.
 pub fn new_id() -> String {
     Uuid::new_v4().to_string()
 }
 
-// ----------------------------------------------------------------------
-// Signatures
-// ----------------------------------------------------------------------
-
-/// The visible content of a placed signature: either the signer's typed name
-/// (rendered in a signature script) or freehand strokes, normalised into the
-/// field's `0..1` box so it scales to any placement size.
+/// A placed signature's content: the signer's typed name, or their strokes normalised
+/// into the field's `0..1` box so it scales to any placement size.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, JsonSchema)]
 #[serde(tag = "ink", rename_all = "lowercase")]
 pub enum SignatureInk {
     #[default]
-    /// Render the signer's name as a script-style typed signature.
     Typed,
-    /// The signer drew this by hand: one or more polylines in normalised
-    /// `[0,1]²` field space (origin top-left).
-    Drawn { strokes: Vec<Vec<(f64, f64)>> },
+    Drawn {
+        strokes: Vec<Vec<(f64, f64)>>,
+    },
 }
 
 impl SignatureInk {
-    /// A drawn signature with no ink is empty.
     pub fn is_empty(&self) -> bool {
         match self {
             SignatureInk::Typed => false,
@@ -540,16 +483,12 @@ pub struct Signature {
     pub rect: PtRect,
     pub signer: String,
     pub date: String,
-    /// The real signature content (typed name or drawn strokes).
     pub ink: SignatureInk,
-    /// Which space `rect` is in (see [`GeomSpace`]).
     pub space: GeomSpace,
 }
 
-/// The scale that fits a `w` × `h` page into a `card_w` × `card_h` slot.
-/// Pages fill the slot's width unless that would overflow its height by
-/// more than 1% (a rotated or differently shaped page), in which case they
-/// fit the height; the renderer and the page maps share this rule.
+/// The scale that fits a `w` × `h` page into a `card_w` × `card_h` slot: by width unless
+/// that would overflow the height by more than one percent.
 pub fn fit_scale(card_w: f64, card_h: f64, w: f64, h: f64) -> f64 {
     if !(w > 0.0 && h > 0.0 && card_w > 0.0 && card_h > 0.0) {
         return 1.0;
@@ -562,29 +501,18 @@ pub fn fit_scale(card_w: f64, card_h: f64, w: f64, h: f64) -> f64 {
     }
 }
 
-/// How one displayed page maps between the spaces the reader works in.
-///
-/// - *layer* space: the engine's display space for the source page (its own
-///   `/Rotate` applied) — where text-layer and form-widget boxes arrive;
-/// - PDF *user* space — where records store geometry;
-/// - *card* space: the page-point space of the page's slot in the reader's
-///   uniform page stack, after the page occurrence's recorded rotation and a
-///   centred fit into the slot. Everything drawn and hit-tested is in card
-///   space.
+/// How one displayed page maps between the spaces the reader works in: the engine's
+/// layer space, the PDF user space records store, and the card space everything is
+/// drawn and hit-tested in.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PageMap {
-    /// The source page's own geometry.
     pub own: tilo_pdf::PageGeometry,
-    /// `own` with the occurrence's recorded rotation added.
     pub effective: tilo_pdf::PageGeometry,
-    /// Fit of the effective page into the card: `card = display * scale + offset`.
     pub scale: f64,
     pub offset: (f64, f64),
 }
 
 impl PageMap {
-    /// The map for a page of geometry `own`, rotated by `rotation` degrees,
-    /// shown in a `card_w` × `card_h` slot.
     pub fn new(own: tilo_pdf::PageGeometry, rotation: i32, card_w: f64, card_h: f64) -> Self {
         let extra = tilo_pdf::Rotation::from_degrees(rotation).unwrap_or_default();
         let effective = tilo_pdf::PageGeometry {
@@ -594,8 +522,7 @@ impl PageMap {
         let size = effective.size();
         let (w, h) = (f64::from(size.width), f64::from(size.height));
         let scale = fit_scale(card_w, card_h, w, h);
-        // A page the size of its slot maps exactly; tiny float drift in page
-        // boxes must not blur every overlay.
+        // A page the size of its slot maps exactly; float drift in page boxes must not
         let scale = if (scale - 1.0).abs() < 1e-6 {
             1.0
         } else {
@@ -613,8 +540,6 @@ impl PageMap {
         }
     }
 
-    /// The map of a plain page exactly filling a `w` × `h` slot (a page
-    /// whose geometry is not known yet).
     pub fn identity(w: f64, h: f64) -> Self {
         let own = tilo_pdf::PageGeometry {
             user_box: tilo_pdf::Rect::from_xywh(0.0, 0.0, w as f32, h as f32),
@@ -676,8 +601,6 @@ impl PageMap {
         Self::map_rect(r, |p| self.layer_to_card(p))
     }
 
-    /// An annotation held in page (card) space, whichever space its record
-    /// uses.
     pub fn annotation_to_card(&self, a: &Annotation) -> Annotation {
         match a.space {
             GeomSpace::Page => a.clone(),
@@ -687,7 +610,6 @@ impl PageMap {
         }
     }
 
-    /// An annotation in user space, whichever space it is held in.
     pub fn annotation_to_user(&self, a: &Annotation) -> Annotation {
         match a.space {
             GeomSpace::User => a.clone(),
@@ -718,8 +640,7 @@ impl PageMap {
                 let (x, y) = f((*x, *y));
                 AnnoKind::Note { x, y }
             }
-            // The box keeps its text upright: its corners move, and the text
-            // size follows the fit.
+            // The box keeps its text upright: its corners move and the text follows the fit.
             AnnoKind::FreeText { rect, text, size } => AnnoKind::FreeText {
                 rect: Self::map_rect(rect, &f),
                 text: text.clone(),
@@ -756,8 +677,6 @@ impl PageMap {
     }
 }
 
-/// A form field value held in the document's record, keyed by the field's
-/// fully qualified name.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
 #[serde(tag = "kind", content = "value", rename_all = "lowercase")]
 pub enum FormEntry {
@@ -766,37 +685,68 @@ pub enum FormEntry {
     Choice(String),
 }
 
-/// An empty text value: what a field holds before anyone fills it.
 impl Default for FormEntry {
     fn default() -> Self {
         FormEntry::Text(String::new())
     }
 }
 
-// ----------------------------------------------------------------------
-// Search
-// ----------------------------------------------------------------------
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, JsonSchema)]
+pub struct PdfText {
+    pub file: String,
+    pub page_count: usize,
+    pub pages: Vec<PdfPageText>,
+    pub next: Option<usize>,
+}
 
-/// Standard find-bar toggles. Both default off, matching the historical
-/// case-insensitive substring behaviour.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, JsonSchema)]
+pub struct PdfPageText {
+    pub page: usize,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, JsonSchema)]
+pub struct FormFields {
+    pub file: String,
+    pub fields: Vec<FormFieldRow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, JsonSchema)]
+pub struct FormFieldRow {
+    pub name: String,
+    pub kind: FormFieldKind,
+    pub value: FormEntry,
+    pub path: Option<serde_json::Value>,
+    pub options: Vec<String>,
+    pub export: Option<String>,
+    pub page: Option<usize>,
+    pub read_only: bool,
+    pub required: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum FormFieldKind {
+    Text,
+    Checkbox,
+    Radio,
+    Choice,
+}
+
+/// The find bar's toggles, both off by default as the substring search always was.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SearchOptions {
-    /// Match only when the query is bounded by non-word characters on both
-    /// sides (so "ink" doesn't match inside "thinking").
+    /// Whole word: the query must be bounded by non-word characters, so "ink" misses
+    /// "thinking".
     pub whole_word: bool,
-    /// Match the query's letter case exactly.
     pub case_sensitive: bool,
 }
 
-/// Hard result budget of a find. The find UI and resource
-/// projection remain responsive even for adversarial documents containing a
-/// match at every character; users can refine the query to narrow it.
 pub const MAX_SEARCH_RESULTS: usize = 500;
 
-/// Find bounded, non-overlapping spans in the original UTF-8 text, with the
-/// system search normalization and Unicode word boundaries.
-/// Folding expansion or contraction (İ, K, a dropped accent) must never turn
-/// an index into normalized text into an index into the source document.
+/// Find non-overlapping spans in the original text, keeping source byte offsets: a
+/// folding match must never turn an index into normalized text into one into the
+/// document.
 pub(crate) fn search_text(
     text: &str,
     query: &str,
@@ -820,8 +770,7 @@ pub(crate) fn search_text(
     } else {
         Cow::Owned(ui::search::normalize_search_text(text))
     };
-    // Each pair marks one original scalar boundary in normalized/source byte
-    // space. ASCII and case-sensitive searches need no offset allocation.
+    // Each pair marks one original scalar boundary in normalized and source bytes.
     let boundaries = if !opts.case_sensitive && !text.is_ascii() {
         let mut pairs = vec![(0, 0)];
         let mut normalized_end = 0;
@@ -866,8 +815,8 @@ pub(crate) fn search_text(
                 fold_start == start && fold_end == end,
             )
         };
-        // A substring can cover one expanded scalar, but a whole-word match
-        // cannot end halfway through that scalar's normalized spelling.
+        // A substring can cover one expanded scalar; a whole-word match cannot end
+        // halfway through that scalar's spelling.
         if range.start < source_end
             || (opts.whole_word
                 && (!complete_scalars || inside_word(range.start) || inside_word(range.end)))
@@ -893,28 +842,23 @@ mod tests {
 
     #[test]
     fn page_map_fits_rotated_pages_and_round_trips_every_space() {
-        // A 600x800 page shown rotated by 90 degrees.
         let own = tilo_pdf::PageGeometry {
             user_box: tilo_pdf::Rect::from_xywh(0.0, 0.0, 600.0, 800.0),
             rotation: tilo_pdf::Rotation::None,
         };
         let map = PageMap::new(own, 90, 600.0, 800.0);
         assert!(!map.is_identity());
-        // 800x600 once rotated, fitted by width into the 600x800 card.
         assert!((map.scale - 0.75).abs() < 1e-9);
         assert!(close(map.offset, (0.0, 175.0)));
         assert!(close(map.user_to_card((0.0, 800.0)), (600.0, 175.0)));
         let p = (123.0, 456.0);
         assert!(close(map.card_to_user(map.user_to_card(p)), p));
         assert!(close(map.card_to_layer(map.layer_to_card(p)), p));
-        // Layer (display) space and user space agree through the map.
         let layer = map.own.to_display(tilo_pdf::Point::new(123.0, 456.0));
         let via_layer = map.layer_to_card((f64::from(layer.x), f64::from(layer.y)));
         assert!(close(via_layer, map.user_to_card(p)));
         assert!(PageMap::new(own, 0, 600.0, 800.0).is_identity());
 
-        // Annotations round-trip between card and user space on a page whose
-        // own rotation and the view rotation differ.
         let own = tilo_pdf::PageGeometry {
             user_box: tilo_pdf::Rect::from_xywh(0.0, 0.0, 612.0, 792.0),
             rotation: tilo_pdf::Rotation::Cw90,
@@ -982,14 +926,11 @@ mod tests {
         };
         let unicode = "İ test \u{212a} TEST";
         let words = "étest testé e\u{301}test test\u{301} test test_2 (test) İ";
-        // (case, text, query, options, expected hits as (byte start, matched source text))
         #[allow(
             clippy::type_complexity,
             reason = "one row per search case: name, text, query, options, expected hits"
         )]
         let cases: &[(&str, &str, &str, SearchOptions, Vec<(usize, &str)>)] = &[
-            // Guard against an infinite loop when a match could re-find at the
-            // same spot: "aaaa" matches at 0 and 2 (non-overlapping stepping).
             (
                 "overlapping progresses",
                 "aaaa",
@@ -1070,8 +1011,6 @@ mod tests {
                     (words.find("e\u{301}test").unwrap(), "e\u{301}test"),
                 ],
             ),
-            // İ folds to a dotless base like every other accented letter, so a
-            // plain "i" names the whole word.
             (
                 "plain i names the dotted capital as a whole word",
                 words,

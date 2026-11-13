@@ -37,7 +37,6 @@ chrono = { workspace = true, optional = true, features = ["alloc"] }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
-tilo-wake.workspace = true
 tilo-resource-macros = { version = "0.1.0", path = "../tilo-resource-macros" }
 
 [[test]]
@@ -53,3 +52,5 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 hex.workspace = true
+# The tests are a window: they register the store their code records in.
+tilo-wake.workspace = true

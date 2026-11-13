@@ -1,0 +1,153 @@
+<!doctype html>
+<!--
+  A visa application form for testing Browser's page actions end to end:
+  an agent fills it, captures it, stops before submitting, and submits once a
+  person approves. It is a test page, not any country's form. It loads
+  nothing from elsewhere and sends nothing anywhere: submitting shows a
+  receipt of what was entered, on the page itself, so it can be served from
+  any static host or opened from a file.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visa application (test form)</title>
+<style>
+  :root { color-scheme: light; --ink: #1d2433; --muted: #5b6475; --line: #cfd5e1; --accent: #2457c5; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.45 system-ui, sans-serif; color: var(--ink); background: #f4f6fa; }
+  header { background: var(--accent); color: #fff; padding: 14px 24px; }
+  header h1 { margin: 0; font-size: 20px; }
+  header p { margin: 2px 0 0; opacity: .85; font-size: 13px; }
+  main { max-width: 720px; margin: 24px auto; padding: 0 16px; }
+  form, #receipt { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 20px 24px; }
+  fieldset { border: 0; margin: 0 0 18px; padding: 0; }
+  legend { font-weight: 600; margin-bottom: 8px; }
+  label { display: block; margin: 10px 0 4px; }
+  input[type=text], input[type=email], input[type=date], select, textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; font: inherit;
+  }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .choice { display: flex; gap: 18px; }
+  .choice label, .check label { display: inline; margin: 0 0 0 4px; }
+  .hint { color: var(--muted); font-size: 13px; }
+  .error { color: #b3261e; font-size: 13px; min-height: 1em; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 10px 18px; font: inherit; cursor: pointer; }
+  #receipt { display: none; }
+  #receipt dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; }
+  #receipt dt { color: var(--muted); }
+  @media (max-width: 560px) { .row { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Visa application</h1>
+  <p>Test form. Nothing entered here leaves this page.</p>
+</header>
+<main>
+<form id="application" novalidate>
+  <fieldset>
+    <legend>Applicant</legend>
+    <div class="row">
+      <div><label for="given-name">Given names</label>
+        <input id="given-name" name="given_name" type="text" autocomplete="given-name" required></div>
+      <div><label for="family-name">Family name</label>
+        <input id="family-name" name="family_name" type="text" autocomplete="family-name" required></div>
+    </div>
+    <div class="row">
+      <div><label for="birth-date">Date of birth</label>
+        <input id="birth-date" name="birth_date" type="date" required></div>
+      <div><label for="nationality">Nationality</label>
+        <select id="nationality" name="nationality" required>
+          <option value="">Choose…</option>
+          <option value="AR">Argentina</option>
+          <option value="BR">Brazil</option>
+          <option value="CA">Canada</option>
+          <option value="DE">Germany</option>
+          <option value="IN">India</option>
+          <option value="JP">Japan</option>
+          <option value="NL">Netherlands</option>
+          <option value="NG">Nigeria</option>
+          <option value="US">United States</option>
+        </select></div>
+    </div>
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" autocomplete="email" required>
+  </fieldset>
+  <fieldset>
+    <legend>Passport</legend>
+    <div class="row">
+      <div><label for="passport-number">Passport number</label>
+        <input id="passport-number" name="passport_number" type="text" required pattern="[A-Z0-9]{6,9}">
+        <div class="hint">6 to 9 capital letters or digits.</div></div>
+      <div><label for="passport-expiry">Expires</label>
+        <input id="passport-expiry" name="passport_expiry" type="date" required></div>
+    </div>
+  </fieldset>
+  <fieldset>
+    <legend>Trip</legend>
+    <div class="row">
+      <div><label for="arrival">Arrival</label>
+        <input id="arrival" name="arrival" type="date" required></div>
+      <div><label for="departure">Departure</label>
+        <input id="departure" name="departure" type="date" required></div>
+    </div>
+    <label>Purpose</label>
+    <div class="choice" role="radiogroup">
+      <span><input id="purpose-business" name="purpose" type="radio" value="business" required><label for="purpose-business">Business</label></span>
+      <span><input id="purpose-tourism" name="purpose" type="radio" value="tourism"><label for="purpose-tourism">Tourism</label></span>
+      <span><input id="purpose-study" name="purpose" type="radio" value="study"><label for="purpose-study">Study</label></span>
+    </div>
+    <label for="host">Company or address you will visit</label>
+    <textarea id="host" name="host" rows="2"></textarea>
+  </fieldset>
+  <fieldset class="check">
+    <input id="declaration" name="declaration" type="checkbox" required>
+    <label for="declaration">I declare that the information above is true and complete.</label>
+  </fieldset>
+  <p class="error" id="error" role="alert"></p>
+  <button type="submit">Submit application</button>
+</form>
+<section id="receipt" aria-live="polite">
+  <h2>Application received</h2>
+  <p>Reference <strong id="reference"></strong></p>
+  <dl id="summary"></dl>
+</section>
+</main>
+<script>
+  const form = document.getElementById('application');
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const error = document.getElementById('error');
+    if (!form.checkValidity()) {
+      const bad = form.querySelector(':invalid');
+      const label = bad && (form.querySelector(`label[for="${bad.id}"]`) || bad.closest('fieldset').querySelector('legend'));
+      error.textContent = `Check ${label ? label.textContent.trim() : 'the form'}.`;
+      bad && bad.focus();
+      return;
+    }
+    if (form.departure.value <= form.arrival.value) {
+      error.textContent = 'Departure must be after arrival.';
+      form.departure.focus();
+      return;
+    }
+    error.textContent = '';
+    const data = new FormData(form);
+    const summary = document.getElementById('summary');
+    for (const [name, value] of data) {
+      const dt = document.createElement('dt');
+      dt.textContent = name.replace(/_/g, ' ');
+      const dd = document.createElement('dd');
+      dd.textContent = value === 'on' ? 'yes' : value;
+      summary.append(dt, dd);
+    }
+    let hash = 0;
+    for (const ch of data.get('passport_number') + data.get('arrival')) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+    document.getElementById('reference').textContent = 'TV-' + hash.toString(36).toUpperCase();
+    form.style.display = 'none';
+    document.getElementById('receipt').style.display = 'block';
+    document.title = 'Application received (test form)';
+  });
+</script>
+</body>
+</html>

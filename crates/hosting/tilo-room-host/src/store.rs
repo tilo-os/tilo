@@ -24,11 +24,14 @@
 pub(crate) use tilo_relay_store::bounded;
 #[doc(hidden)]
 pub mod compaction;
+pub(crate) mod governed_access;
 pub(crate) mod record_sync;
 pub(crate) mod replay;
 pub(crate) mod resume;
 #[doc(hidden)]
 pub mod retained;
+mod revocation_log;
+mod sealed;
 #[cfg(test)]
 pub(crate) use tilo_relay_store::test_barrier;
 #[cfg(any(test, feature = "test-support"))]
@@ -46,8 +49,6 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
-
 #[cfg(test)]
 pub(crate) use tilo_relay_store::thread_fsyncs;
 pub use tilo_relay_store::{StoreError, fsyncs};
@@ -57,80 +58,18 @@ pub(crate) use tilo_relay_store::{atomic_write, credit_fsyncs, fsync, helper_fsy
 /// workspace directory.
 pub const SNAPSHOT_FILE: &str = "snapshot.automerge";
 
-/// Durable device membership for offline store-and-forward.
-pub const MEMBERSHIP_FILE: &str = "membership.json";
-/// Atomic native-governance projection: exact workspace devices plus handshake roots.
-pub const GOVERNED_ACCESS_FILE: &str = "governed-access-v1.json";
+/// The workspace's membership: its access record's devices and handshake
+/// roots, the one projection a host keeps.
+pub use governed_access::GOVERNED_ACCESS_FILE;
 
 /// Retained bootstrap checkpoints and the incremental tails after them.
 pub const RETAINED_DIR: &str = "retained";
 
-/// Root-signed device revocations enforced during relay authentication.
-pub const REVOCATIONS_FILE: &str = "revocations.json";
+pub use revocation_log::{
+    REVOCATIONS_FILE, append_revocation, append_revocations, load_revocations, save_revocations,
+};
 /// The metrics snapshot file is read by clients as well as the daemon.
 pub use tilo_relay_protocol::metrics::{METRICS_FILE, load_metrics, save_metrics};
-
-/// Load root-signed revocation entries from the relay state root.
-///
-/// # Errors
-///
-/// Returns an error if the file exists but can't be read, or fails to
-/// decode as JSON.
-pub fn load_revocations(
-    state_root: &Path,
-) -> Result<Vec<tilo_user_identity::RevocationEntry>, StoreError> {
-    let path = state_root.join(REVOCATIONS_FILE);
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    serde_json::from_slice(&fs::read(path)?).map_err(|error| StoreError::Json(error.to_string()))
-}
-
-/// Atomically replace the relay's root-signed revocation entries.
-///
-/// # Errors
-///
-/// Returns an error if the state root can't be created, `entries`
-/// can't be JSON-encoded, or the atomic write fails.
-pub fn save_revocations(
-    state_root: &Path,
-    entries: &[tilo_user_identity::RevocationEntry],
-) -> Result<(), StoreError> {
-    fs::create_dir_all(state_root)?;
-    let bytes =
-        serde_json::to_vec_pretty(entries).map_err(|error| StoreError::Json(error.to_string()))?;
-    atomic_write(&state_root.join(REVOCATIONS_FILE), &bytes)?;
-    Ok(())
-}
-
-/// Add `entry` to the relay's revocation log unless the log already holds
-/// its root's revocation of its device as early. Whether the log changed.
-/// Each root's entries are its own: another root's entry naming the same key
-/// neither replaces nor is replaced by it.
-///
-/// # Errors
-///
-/// Returns an error if the log can't be read or replaced.
-pub fn append_revocation(
-    state_root: &Path,
-    entry: &tilo_user_identity::RevocationEntry,
-) -> Result<bool, StoreError> {
-    let mut entries = load_revocations(state_root)?;
-    let same = |known: &tilo_user_identity::RevocationEntry| {
-        (known.user_public_key, known.revoked_device_public_key)
-            == (entry.user_public_key, entry.revoked_device_public_key)
-    };
-    if entries
-        .iter()
-        .any(|known| same(known) && known.revoked_at_ns <= entry.revoked_at_ns)
-    {
-        return Ok(false);
-    }
-    entries.retain(|known| !same(known));
-    entries.push(entry.clone());
-    save_revocations(state_root, &entries)?;
-    Ok(true)
-}
 
 /// Directory entries the relay's workspace stores listed to commit retained
 /// history since this process started.
@@ -222,40 +161,22 @@ pub struct WorkspaceStore {
     capture_leases: Arc<replay::CaptureLeases>,
     /// Classifies retained co-edit bodies for checkpoint replacement.
     payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
+    /// What the governed access log holds, shared by every handle on
+    /// `root` this open made: a write appends the change without reading
+    /// the log back ([`governed_access`]).
+    governed_access: Arc<std::sync::Mutex<Option<governed_access::Held>>>,
 }
 
-/// One server-local projection of the native workspace governor. Both sets share a
-/// single atomic file so a crash cannot pair new roots with old devices (or the
-/// reverse).
+/// The workspace's members as its host keeps them: the devices it admits, the
+/// person roots its handshake admits, and whether governance owns that
+/// admission. Both sets share a single atomic file so a crash cannot pair new
+/// roots with old devices (or the reverse).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GovernedAccessRecord {
     pub(crate) member_devices: Vec<[u8; 32]>,
     pub(crate) member_user_roots: Vec<[u8; 32]>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GovernedAccessFile {
-    version: u8,
-    member_devices: Vec<String>,
-    member_user_roots: Vec<String>,
-}
-
-fn decode_public_keys(kind: &str, values: Vec<String>) -> Result<Vec<[u8; 32]>, StoreError> {
-    values
-        .into_iter()
-        .map(|value| {
-            let bytes = hex::decode(&value).map_err(|error| {
-                StoreError::Json(format!("invalid governed {kind} key {value:?}: {error}"))
-            })?;
-            bytes.try_into().map_err(|bytes: Vec<u8>| {
-                StoreError::Json(format!(
-                    "governed {kind} key must be 32 bytes, got {}",
-                    bytes.len()
-                ))
-            })
-        })
-        .collect()
+    /// Governance decides who joins: nothing is enrolled by a host's own rule.
+    pub(crate) governed: bool,
 }
 
 /// One durable queue entry loaded for delivery but not yet acknowledged.
@@ -264,25 +185,6 @@ pub struct PendingEntry {
     pub path: PathBuf,
     /// Complete framed relay envelope.
     pub bytes: Vec<u8>,
-}
-
-/// Older relays appended one JSON line per admitted delta to this file and
-/// never read it back, so it only grew (~170 B per keystroke). Nothing writes
-/// it any more; [`WorkspaceStore::open`] reclaims what an older relay left.
-const LEGACY_DELTA_LOG: &str = "log.jsonl";
-
-fn remove_legacy_delta_log(root: &Path) {
-    match fs::remove_file(root.join(LEGACY_DELTA_LOG)) {
-        Ok(()) => {
-            tracing::info!(root = %root.display(), "removed the legacy per-delta log");
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        // Best effort: the file is inert, and opening the store must not
-        // depend on reclaiming it.
-        Err(error) => {
-            tracing::warn!(root = %root.display(), %error, "legacy per-delta log not removed");
-        }
-    }
 }
 
 impl WorkspaceStore {
@@ -324,7 +226,6 @@ impl WorkspaceStore {
         fs::create_dir_all(&root)?;
         fs::create_dir_all(root.join("pending"))?;
         fs::create_dir_all(root.join(RETAINED_DIR))?;
-        remove_legacy_delta_log(&root);
         // The store's directory and its own entries are durable from here on.
         for directory in root.ancestors().take(3) {
             retained::sync_dir_once(directory)?;
@@ -336,6 +237,7 @@ impl WorkspaceStore {
             workspace_id,
             pinned,
             payloads,
+            governed_access: Arc::default(),
         })
     }
 
@@ -383,101 +285,33 @@ impl WorkspaceStore {
         Ok(())
     }
 
-    /// Load device public keys previously admitted to this workspace.
+    /// The device public keys the workspace's access record admits.
     ///
     /// # Errors
     ///
-    /// Returns an error if the file exists but can't be read, fails
-    /// to decode as JSON, or contains a device key that isn't valid
-    /// hex or isn't exactly 32 bytes.
+    /// Returns an error if the record exists but can't be read.
     pub fn load_membership(&self) -> Result<Vec<[u8; 32]>, StoreError> {
-        if let Some(access) = self.load_governed_access()? {
-            return Ok(access.member_devices);
-        }
-        let path = self.root.join(MEMBERSHIP_FILE);
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
-        let bytes = fs::read(path)?;
         #[cfg(test)]
         test_barrier::pause(&self.root, "membership-read");
-        let encoded: Vec<String> =
-            serde_json::from_slice(&bytes).map_err(|error| StoreError::Json(error.to_string()))?;
-        encoded
-            .into_iter()
-            .map(|value| {
-                let bytes = hex::decode(&value).map_err(|error| {
-                    StoreError::Json(format!("invalid membership device key {value:?}: {error}"))
-                })?;
-                bytes.try_into().map_err(|bytes: Vec<u8>| {
-                    StoreError::Json(format!(
-                        "membership device key must be 32 bytes, got {}",
-                        bytes.len()
-                    ))
-                })
-            })
-            .collect()
+        Ok(self
+            .load_governed_access()?
+            .map_or_else(Vec::new, |access| access.member_devices))
     }
 
-    /// Atomically replace the durable membership set.
+    /// Replace the device half of the workspace's access record, keeping the
+    /// handshake roots it admits and whether governance owns it as they are.
+    /// A workspace whose host keeps no record yet gets one that governance does
+    /// not own: its devices are the ones its host enrolled itself.
     ///
     /// # Errors
     ///
-    /// Returns an error if `devices` can't be JSON-encoded or the
-    /// atomic write fails.
+    /// Returns an error if the record can't be read or written.
     pub fn save_membership(&self, devices: &[[u8; 32]]) -> Result<(), StoreError> {
-        if let Some(mut access) = self.load_governed_access()? {
-            access.member_devices = devices.to_vec();
-            return self.save_governed_access(&access).map(drop);
-        }
-        let encoded: Vec<_> = devices.iter().map(hex::encode).collect();
-        let bytes = serde_json::to_vec_pretty(&encoded)
-            .map_err(|error| StoreError::Json(error.to_string()))?;
         #[cfg(test)]
         test_barrier::pause(&self.root, "membership-write");
-        atomic_write(&self.root.join(MEMBERSHIP_FILE), &bytes)?;
-        Ok(())
-    }
-
-    /// Load the atomic native-governance projection. Absence is an empty
-    /// handshake-root projection; device-only membership remains readable through
-    /// [`Self::load_membership`] but can never admit another user root.
-    pub(crate) fn load_governed_access(&self) -> Result<Option<GovernedAccessRecord>, StoreError> {
-        let path = self.root.join(GOVERNED_ACCESS_FILE);
-        let bytes = match fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        let encoded: GovernedAccessFile =
-            serde_json::from_slice(&bytes).map_err(|error| StoreError::Json(error.to_string()))?;
-        if encoded.version != 1 {
-            return Err(StoreError::Json(format!(
-                "unsupported governed access version {}",
-                encoded.version
-            )));
-        }
-        Ok(Some(GovernedAccessRecord {
-            member_devices: decode_public_keys("device", encoded.member_devices)?,
-            member_user_roots: decode_public_keys("user root", encoded.member_user_roots)?,
-        }))
-    }
-
-    /// Atomically replace exact workspace devices and global-handshake roots in one
-    /// crash-safe record.
-    pub(crate) fn save_governed_access(
-        &self,
-        access: &GovernedAccessRecord,
-    ) -> Result<Vec<u8>, StoreError> {
-        let encoded = GovernedAccessFile {
-            version: 1,
-            member_devices: access.member_devices.iter().map(hex::encode).collect(),
-            member_user_roots: access.member_user_roots.iter().map(hex::encode).collect(),
-        };
-        let bytes = serde_json::to_vec_pretty(&encoded)
-            .map_err(|error| StoreError::Json(error.to_string()))?;
-        atomic_write(&self.root.join(GOVERNED_ACCESS_FILE), &bytes)?;
-        Ok(bytes)
+        let mut access = self.load_governed_access()?.unwrap_or_default();
+        access.member_devices = devices.to_vec();
+        self.save_governed_access(&access).map(drop)
     }
 
     /// Enqueue a delta for later delivery to `device_pubkey`. Each
@@ -780,14 +614,6 @@ mod tests {
         }
         {
             let tmp = tempfile::tempdir().unwrap();
-            let root = tmp.path().join("workspaces").join("7");
-            fs::create_dir_all(&root).unwrap();
-            fs::write(root.join(LEGACY_DELTA_LOG), b"{\"workspace_id\":7}\n").unwrap();
-            let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
-            assert!(!store.root().join(LEGACY_DELTA_LOG).exists());
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
             let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
             let peer = [3u8; 32];
             store.enqueue_pending(&peer, 100, b"one").unwrap();
@@ -903,11 +729,11 @@ mod tests {
     fn governed_access_is_one_authoritative_device_and_root_record() {
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
-        store.save_membership(&[[9; 32]]).unwrap();
         store
             .save_governed_access(&GovernedAccessRecord {
                 member_devices: vec![[1; 32]],
                 member_user_roots: vec![[2; 32]],
+                governed: true,
             })
             .unwrap();
 
@@ -917,6 +743,7 @@ mod tests {
             GovernedAccessRecord {
                 member_devices: vec![[1; 32]],
                 member_user_roots: vec![[2; 32]],
+                governed: true,
             }
         );
         store.save_membership(&[[3; 32]]).unwrap();
@@ -925,6 +752,7 @@ mod tests {
             GovernedAccessRecord {
                 member_devices: vec![[3; 32]],
                 member_user_roots: vec![[2; 32]],
+                governed: true,
             },
             "device-only membership writers must preserve the governed root half"
         );

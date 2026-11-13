@@ -15,7 +15,6 @@
  * A workspace on a loopback `http:` origin (local review, `tilo-relay room
  * --web-plain`) is accepted: the page then needs no certificate exception.
  */
-import * as wasm from './pkg/tilo_browser_runtime.js';
 import * as host from './host.mjs';
 import {connectPeer} from './peer.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
@@ -38,9 +37,9 @@ export async function connectRelayPeer({
   // its own, with a namespace of its own.
   if (custody.slot) device = `${device}#${custody.slot}`;
   const peer = await connectPeer({
-    // The profile's storage opens through host.mjs, which loads the runtime
-    // once for this page before the peer calls into it.
-    origin, userPublicKey, workspace, label, profile, device, displayName, custody, runtime: wasm, desktop: host,
+    // The runtime, with the peer's code, and the profile's storage come
+    // through host.mjs, which loads them once for this page.
+    origin, userPublicKey, workspace, label, profile, device, displayName, custody, desktop: host,
     onPairingCode, onStatus, signal, fetch: fetcher, live,
   });
   return Object.create(peer, {

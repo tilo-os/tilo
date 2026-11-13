@@ -9,18 +9,83 @@ use super::{EPSILON, Kind, Problem, SHELL};
 /// the app's.
 const BAR: &str = "WindowBar";
 
-/// The slot of the strip's own control that opens another application.
-const NEW_TAB: &str = "new-tab";
+/// What is wrong with the window's columns as they stand at rest: a column whose header the app
+/// declares — the words that name what it shows and the buttons that act on it — that draws no
+/// header row at its top. A column's header is the app's own and stands at every time; a window
+/// that draws it only while its bar is out starts the column straight with its rows, and nothing
+/// names it or adds to it until the person reaches for the window's top edge.
+///
+/// `declared` names the columns (`sidebar`, `overview`, `content`) whose header the app declares;
+/// `frames` are the columns the window lays out. A column standing off the window (a pushed screen
+/// behind the one in front) is not on it, and a sidebar narrow enough to read as a rail of icons
+/// says what it holds by them: neither is judged.
+pub fn column_headers_at_rest(
+    declared: &[&str],
+    frames: &[ui::widget::ColumnFrame],
+    width: f64,
+) -> Vec<Problem> {
+    frames
+        .iter()
+        .filter(|frame| declared.contains(&frame.key) && !frame.rail)
+        .filter(|frame| frame.column.x1 > EPSILON && frame.column.x0 < width - EPSILON)
+        .filter(|frame| frame.header.height() <= EPSILON)
+        .map(|frame| Problem {
+            kind: Kind::HeaderOnReveal,
+            keys: Vec::new(),
+            widget: SHELL.to_owned(),
+            id: None,
+            detail: format!(
+                "the {} column's header row — the words that name what it shows and the buttons \
+                 that act on it — does not stand at rest: the {:.0}px wide column starts straight \
+                 with its rows, so nothing there says what it holds until the person reaches for \
+                 the window's top edge",
+                frame.key,
+                frame.column.width(),
+            ),
+        })
+        .collect()
+}
+
+/// What is wrong with the window's bar against the window's own header rows: an action the bar
+/// offers that a button standing in the window offers too, by the same name. A column's header
+/// row is where its actions stand, and the bar holds only what is the window's, so a person
+/// finds each action once.
+///
+/// `buttons` are the names of the buttons the window draws where the person reaches them.
+pub fn offered_twice(layout: &ui::window_toolbar::BarLayout, buttons: &[String]) -> Vec<Problem> {
+    layout
+        .controls
+        .iter()
+        // The app's own slots: the window's furniture, navigation and controls are the window's.
+        .filter(|control| {
+            !control.furniture
+                && matches!(control.slot, "leading" | "views" | "views-menu" | "action")
+                && !control.name.is_empty()
+        })
+        .filter(|control| buttons.contains(&control.name))
+        .map(|control| Problem {
+            kind: Kind::OfferedTwice,
+            keys: Vec::new(),
+            widget: BAR.to_owned(),
+            id: Some(control.id.clone()),
+            detail: format!(
+                "the bar offers \"{}\" and the window offers it again as a button of its own: a \
+                 column's actions stand in its header row, and the bar holds only what is the \
+                 window's",
+                control.name,
+            ),
+        })
+        .collect()
+}
 
 /// What is wrong with one window's bar as it lays itself out across the window: a control it
 /// shows twice, and an action that asks for its words standing as its icon alone while the bar
-/// has room for those words.
+/// has room for those words. Both read the app's actions: the window's own furniture wears a glyph
+/// everyone reads without words, so neither judges it.
 pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
     let mut out = Vec::new();
     for (index, control) in layout.controls.iter().enumerate() {
-        // The strip's own door to another application stands before the app's slots and says
-        // what it opens: it is no copy of an action of the app's, whatever glyph both wear.
-        if control.slot == NEW_TAB {
+        if control.furniture {
             continue;
         }
         let Some(later) = layout.controls.get(index.saturating_add(1)..) else {
@@ -28,7 +93,7 @@ pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
         };
         let Some(second) = later
             .iter()
-            .filter(|second| second.slot != NEW_TAB)
+            .filter(|second| !second.furniture)
             .find(|second| same_control(control, second))
         else {
             continue;
@@ -60,8 +125,13 @@ pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
     }
     for control in &layout.controls {
         // Drawn as its icon alone, narrower than the words it has, while the room stood empty
-        // beside it: a person cannot read what it does. The row's own "…" is a glyph by design.
-        if control.slot == "overflow" || control.icon.is_none() || control.words <= 0.0 {
+        // beside it — the room the window's place leaves over, which a label may take: a person
+        // cannot read what it does. The row's own "…" is a glyph by design.
+        if control.furniture
+            || control.slot == "overflow"
+            || control.icon.is_none()
+            || control.words <= 0.0
+        {
             continue;
         }
         let missing = control.words - control.rect[2];
@@ -74,7 +144,7 @@ pub fn bar(layout: &ui::window_toolbar::BarLayout) -> Vec<Problem> {
             widget: BAR.to_owned(),
             id: Some(control.id.clone()),
             detail: format!(
-                "the bar draws \"{}\" as its icon alone while {:.0}px of its location stand empty \
+                "the bar draws \"{}\" as its icon alone while its location has {:.0}px to give \
                  beside it, and the words need {:.0}px: a bar says what an action does where it \
                  has room for the words",
                 control.name, layout.spare, control.words,
@@ -115,4 +185,61 @@ fn same_control(a: &ui::window_toolbar::BarControl, b: &ui::window_toolbar::BarC
         return a.icon == b.icon;
     }
     !a.name.is_empty() && a.name == b.name
+}
+
+/// What is wrong with the window's bar against what its app declared: the one main action a
+/// view declares stands in the row as the primary button, so a person sees at once what the
+/// window is for, rather than as one more action or behind the bar's door.
+pub fn bar_primary(
+    toolbar: Option<&ui::window_toolbar::WindowToolbar>,
+    layout: &ui::window_toolbar::BarLayout,
+) -> Vec<Problem> {
+    let Some(toolbar) = toolbar else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for action in toolbar
+        .actions
+        .iter()
+        .chain(&toolbar.leading)
+        .filter(|action| action.primary)
+    {
+        let named = if action.name.is_empty() {
+            format!("\"{}\"", action.id)
+        } else {
+            format!("\"{}\"", action.name)
+        };
+        let control = layout
+            .controls
+            .iter()
+            .find(|control| control.id == action.id);
+        let detail = match control {
+            Some(control) if control.menu => format!(
+                "the window's main action {named} is only in the bar's menu, where nothing says \
+                 it is what the window is for: the primary button stands in the row"
+            ),
+            Some(control) if control.primary => continue,
+            Some(control) => format!(
+                "the window's main action {named} stands in the bar as every other action \
+                 does, {}, where the primary button says so on the accent",
+                if control.labelled {
+                    "its words"
+                } else {
+                    "its icon alone"
+                }
+            ),
+            None => format!(
+                "the window's main action {named} does not stand in its bar at all, so nothing \
+                 says what the window is for"
+            ),
+        };
+        out.push(Problem {
+            kind: Kind::UnmarkedBarPrimary,
+            keys: Vec::new(),
+            widget: BAR.to_owned(),
+            id: Some(action.id.clone()),
+            detail,
+        });
+    }
+    out
 }

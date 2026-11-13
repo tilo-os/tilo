@@ -37,7 +37,6 @@ fn an_early_seek_under_load_always_produces_a_picture() {
     // as on a busy machine while a shared one keeps its other cores.
     let cpus = confine_to_cpus(CONTENDED_CPUS);
 
-    // Encode the fixture before the load starts.
     let _ = fixture_path();
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -64,8 +63,6 @@ fn an_early_seek_under_load_always_produces_a_picture() {
                     e.open(fixture_source());
                     let target = if (w + open) % 2 == 0 { 5_000 } else { 1_000 };
                     if let Err(error) = e.seek_and_wait(target, PER_OPEN) {
-                        // Keep pumping the engine without asking again: a
-                        // second seek could unstick the very stall sought.
                         let deadline = std::time::Instant::now() + stall;
                         let mut late = false;
                         while std::time::Instant::now() < deadline {
@@ -113,8 +110,6 @@ fn an_early_seek_under_load_always_produces_a_picture() {
     );
 }
 
-/// Confines the calling thread, and every thread it starts from now on, to at
-/// most `count` of the CPUs it may run on; returns how many it got.
 #[cfg(all(feature = "decode", target_os = "linux"))]
 fn confine_to_cpus(count: usize) -> usize {
     let size = std::mem::size_of::<libc::cpu_set_t>();

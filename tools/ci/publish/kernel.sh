@@ -28,8 +28,6 @@
 #                               published references (each receipt's digest, which is an earlier
 #                               run's where the tag was published already) and the inputs they
 #                               were built from
-#   kernel.sh pin               write os/kernel-snapshot.env from stable's pins
-#                               (T_POINTER_KERNEL), when main builds the kernel from the same inputs
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 . "$(dirname -- "${BASH_SOURCE[0]}")/kernel-env.sh"
@@ -94,41 +92,13 @@ case ${1:-} in
     cat "$dir/pins.env"
     exit 0
     ;;
-  pin)
-    [[ -n ${T_POINTER_KERNEL:-} ]] || { echo 'stable has published no kernel yet'; exit 0; }
-    x86=$(sed -n 's/^KERNEL_RPMS_X86_64_REF=//p' <<<"$T_POINTER_KERNEL")
-    arm=$(sed -n 's/^KERNEL_RPMS_AARCH64_REF=//p' <<<"$T_POINTER_KERNEL")
-    built_from=$(sed -n 's/^INPUTS_SHA256=//p' <<<"$T_POINTER_KERNEL")
-    # Stable's kernels are pinned only where main would build the same ones: a change to the
-    # kernel's inputs on main waits for stable to publish it.
-    if [[ $built_from != "$(inputs_digest)" ]]; then
-      echo "stable's kernels were built from other inputs than main's; leaving the pins"
-      exit 0
-    fi
-    for ref in "$x86" "$arm"; do
-      [[ $ref =~ ^registry\.tilo\.so/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]] \
-        || die "not an immutable kernel reference: $ref"
-    done
-    [[ $x86 != "$arm" ]] || die 'native kernels unexpectedly share one manifest'
-    use_cosign
-    # As the OS build verifies them: the signature, and provenance naming a signed buildroot.
-    for ref in "$x86" "$arm"; do
-      arch=x86_64
-      [[ $ref == "$arm" ]] && arch=aarch64
-      bash os/dev/verify-kernel-provenance.sh "$ref" --architecture "$arch" >/dev/null
-    done
-    python3 os/dev/open-snapshot-pr.py pins kernel --x86-ref "$x86" --arm-ref "$arm" > os/kernel-snapshot.env
-    printf 'build(os): refresh native kernel snapshots\n' > .t-commit-message
-    cat os/kernel-snapshot.env
-    exit 0
-    ;;
   signer-crate)
     kernel_signer_crate "${2:?usage: kernel.sh signer-crate OUT}"
     exit 0
     ;;
 esac
 
-[[ ${1:-} == build ]] || die 'usage: kernel.sh build ARCH OUT [CACHE], signer-crate OUT, provenance|pins DIR, or pin'
+[[ ${1:-} == build ]] || die 'usage: kernel.sh build ARCH OUT [CACHE], signer-crate OUT, provenance|pins DIR'
 arch=${2:-}
 out=${3:-}
 [[ -n $arch && -n $out ]] || die 'usage: kernel.sh build ARCH OUT [CACHE]'

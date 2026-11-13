@@ -5,7 +5,6 @@ pub mod door;
 pub mod held;
 /// What a bot reads of an item: its stored shape, as every host reads it.
 pub use tilo_automerge::items as item_json;
-pub mod participant;
 
 use automerge::ChangeHash;
 use tilo_automation::dispatch::{self, RecordEvent};

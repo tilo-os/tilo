@@ -9,11 +9,15 @@ use std::sync::{Arc, Mutex};
 
 use settings_store::notification_policy::AppNotificationRule;
 use settings_store::system_sounds::{SystemSoundEvent, SystemSoundPrefs, should_play};
+use tilo_desktop_surface::notifications::{
+    DEFAULT_DISMISS_AFTER, NotificationSeverity, PERSISTENT_DISMISS,
+};
 use tilo_notifications_service::{Caller, ImageData, Occurrence, Taken};
 use tilo_power_mgmt::inhibit::INHIBIT_IDLE;
 use tilo_session_power::PowerLink;
 
 use super::*;
+use crate::platform::notice::OPEN_ACTION;
 
 /// What an app with a launcher-verified identity sent.
 fn from_app(
@@ -96,7 +100,7 @@ fn rig_at(history: Option<std::path::PathBuf>) -> Rig {
     let signals = Rc::new(NoticeSignals::default());
     let power = PowerLink::default();
     let bridge = Rc::new(RefCell::new(SessionNotifications::new(
-        Some(daemon.clone()),
+        daemon.clone(),
         desktop.clone(),
         Link::new(),
         Arc::clone(&policy),
@@ -159,6 +163,17 @@ impl Rig {
         self.desktop.log().active()[0].clone()
     }
 
+    /// The live banner saying `title` .
+    fn banner_titled(&self, title: &str) -> Notification {
+        self.desktop
+            .log()
+            .active()
+            .iter()
+            .find(|notification| notification.title == title)
+            .cloned()
+            .expect("it is up")
+    }
+
     fn history(&self) -> Vec<String> {
         self.desktop
             .log()
@@ -175,7 +190,7 @@ fn urgency_and_timeout_set_how_long_a_banner_stays() {
         let mut critical = sent(1);
         critical.urgency = 2;
         critical.expire_timeout = 1000;
-        shown(critical, 0)
+        shown(critical, 0, None)
     };
     assert_eq!(critical.severity, NotificationSeverity::Error);
     assert_eq!(critical.dismiss_after, PERSISTENT_DISMISS);
@@ -186,7 +201,7 @@ fn urgency_and_timeout_set_how_long_a_banner_stays() {
     ] {
         let mut normal = sent(1);
         normal.expire_timeout = timeout;
-        let normal = shown(normal, 0);
+        let normal = shown(normal, 0, None);
         assert_eq!(normal.severity, NotificationSeverity::Info);
         assert_eq!(normal.dismiss_after, stays, "timeout {timeout}");
     }
@@ -200,7 +215,7 @@ fn the_desktops_own_notice_is_the_systems_never_a_claim() {
     let mut notice = sent(8);
     notice.app_name = "Updates".into();
     notice.system = true;
-    let banner = shown(notice, 0);
+    let banner = shown(notice, 0, None);
     assert_eq!(banner.app_id, None, "no app is behind it");
     assert_eq!(
         banner.app_name.as_deref(),
@@ -213,7 +228,7 @@ fn the_desktops_own_notice_is_the_systems_never_a_claim() {
         "the system's mark, not a generic window"
     );
     assert_eq!(
-        shown(sent(9), 0).app_name,
+        shown(sent(9), 0, None).app_name,
         notifications::sender_claim("Mail"),
         "a program nobody attributed still says what it claims"
     );
@@ -221,7 +236,7 @@ fn the_desktops_own_notice_is_the_systems_never_a_claim() {
 
 #[test]
 fn only_an_attributed_app_is_named_and_a_person_needs_a_name() {
-    let unattributed = shown(sent(3), 0);
+    let unattributed = shown(sent(3), 0, None);
     assert_eq!(unattributed.sender_id, Some(3));
     assert_eq!(unattributed.app_id, None);
     let claim = unattributed.app_name.expect("the sender's claim");
@@ -237,7 +252,7 @@ fn only_an_attributed_app_is_named_and_a_person_needs_a_name() {
     });
     message.contact_endpoint = Some("mailto:ada@example.org".into());
     message.incoming_call = true;
-    let handle_only = shown(message.clone(), 0);
+    let handle_only = shown(message.clone(), 0, None);
     assert_eq!(
         handle_only.app_name.as_deref(),
         Some("Chat"),
@@ -245,19 +260,19 @@ fn only_an_attributed_app_is_named_and_a_person_needs_a_name() {
     );
     assert_eq!(handle_only.app_id.as_deref(), Some("so.tilo.chat"));
     assert_eq!(handle_only.from, None, "a handle alone names no one");
-    assert_eq!(handle_only.addressed, None, "a call needs its caller");
+    assert!(!handle_only.rings, "a call needs its caller");
 
     message.sender_name = Some("Ada".into());
-    let named = shown(message, 0);
+    let named = shown(message, 0, None);
     assert_eq!(
         named.from,
         Some(NotificationPerson {
             name: "Ada".into(),
             identity: "mailto:ada@example.org".into(),
+            agent: false,
         })
     );
-    assert_eq!(named.addressed, Some(Addressed::IncomingCall));
-    assert!(!named.bypass_dnd, "an app never pierces Do Not Disturb");
+    assert!(named.rings, "a call rings");
 }
 
 /// A program the session proved with no installed app behind it is named by the name it gives
@@ -267,7 +282,7 @@ fn only_an_attributed_app_is_named_and_a_person_needs_a_name() {
 fn a_program_is_named_by_itself_never_by_its_path() {
     let mut program = sent(6);
     program.app_name = "/usr/bin/notify-send".into();
-    let named = shown(from_app(program.clone(), "/usr/bin/notify-send"), 0);
+    let named = shown(from_app(program.clone(), "/usr/bin/notify-send"), 0, None);
     assert_eq!(
         named.app_name.as_deref(),
         Some("Notify Send"),
@@ -275,11 +290,26 @@ fn a_program_is_named_by_itself_never_by_its_path() {
     );
 
     program.app_name = "Notes".into();
-    let says = shown(from_app(program, "/usr/bin/notify-send"), 0);
+    let says = shown(from_app(program.clone(), "/usr/bin/notify-send"), 0, None);
     assert_eq!(
         says.app_name.as_deref(),
         Some("Notes"),
         "the program's own name is what the person reads"
+    );
+
+    // A command line program names itself by its file: the person reads where it came from, with
+    // the terminal's mark, never the program's file name beside a generic window.
+    program.app_name = "notify-send".into();
+    let command = shown(from_app(program, "/usr/bin/notify-send"), 0, None);
+    assert_eq!(
+        command.app_name.as_deref(),
+        Some("Terminal"),
+        "a command line sender is the terminal"
+    );
+    assert_eq!(
+        command.mark().icon,
+        Some(ui::icons::Icon::SquareTerminal),
+        "and leads with the terminal's mark"
     );
 }
 
@@ -287,12 +317,12 @@ fn a_program_is_named_by_itself_never_by_its_path() {
 fn the_senders_pixels_are_the_banners_artwork() {
     let mut with_image = sent(5);
     with_image.image_data = Some(pixels());
-    let image = shown(with_image, 7).app_image.expect("artwork");
+    let image = shown(with_image, 7, None).app_image.expect("artwork");
     assert_eq!(image.key(), "notification:5:7");
     let painted = image.pixels(64).expect("pixels");
     assert_eq!((painted.width, painted.height), (2, 1));
     assert_eq!(painted.data.data(), pixels().rgba.as_slice());
-    assert!(shown(sent(5), 7).app_image.is_none());
+    assert!(shown(sent(5), 7, None).app_image.is_none());
 }
 
 #[test]
@@ -303,7 +333,7 @@ fn actions_are_labelled_by_the_desktop_where_it_owns_the_words() {
         ("snooze".into(), "zzz".into()),
         ("archive".into(), "Archive".into()),
     ];
-    let plain = shown(alarm.clone(), 0);
+    let plain = shown(alarm.clone(), 0, None);
     assert_eq!(plain.actions[0].1, notifications::open_action_label());
     assert_eq!(plain.actions[1].1, "zzz", "only an alarm's are relabelled");
     alarm.scheduled = Some(Occurrence {
@@ -313,7 +343,7 @@ fn actions_are_labelled_by_the_desktop_where_it_owns_the_words() {
         calendar_alarm: true,
         uri: "tilo://clock".into(),
     });
-    let ringing = shown(alarm, 0);
+    let ringing = shown(alarm, 0, None);
     let snooze = notifications::alarm_action_labels()
         .into_iter()
         .find(|(key, _)| key == "snooze")
@@ -421,6 +451,113 @@ fn a_replacement_takes_the_banners_place_and_a_withdrawal_takes_it_away() {
     assert!(rig.history().is_empty(), "the app took it back");
 }
 
+/// A role's notice and the machine's own news are told the same way: the producer's words, urgency,
+/// choices and timing are what the banner shows, and choosing a notice that opens something hands
+/// its place to the role that told it.
+#[test]
+fn a_notice_is_told_as_its_producer_wrote_it_wherever_it_came_from() {
+    let rig = rig();
+    let role = RoleNotices::over(Rc::clone(&rig.bridge));
+    let place = Place {
+        app: "so.tilo.notes".into(),
+        record: "tab:00000000000000a1".into(),
+        resource: "notes.notebook/pages/p1".into(),
+    };
+    role.show(
+        &Notice::opens(
+            "Notes",
+            "Ada mentioned you",
+            "Ask about the date",
+            place.clone(),
+        )
+        .tagged(place.tag("u-bea"))
+        .choosing(vec![(OPEN_ACTION.to_owned(), "Open".to_owned())])
+        .staying(Some(Duration::from_secs(8))),
+    );
+    rig.step();
+    let banner = rig.banner();
+    assert_eq!(banner.title, "Ada mentioned you");
+    assert_eq!(banner.app_name.as_deref(), Some("Notes"));
+    assert_eq!(
+        banner.actions,
+        [(OPEN_ACTION.to_owned(), "Open".to_owned())]
+    );
+    assert_eq!(banner.dismiss_after, Duration::from_secs(8));
+
+    // The person chooses what it names: the place reaches the role, and the banner goes.
+    rig.desktop.invoke_action(banner.id, OPEN_ACTION);
+    rig.step();
+    assert_eq!(
+        role.take_chosen(),
+        vec![place.clone()],
+        "the place the notice named"
+    );
+    assert_eq!(
+        role.take_chosen_actions(),
+        [(place.tag("u-bea"), OPEN_ACTION.to_owned())],
+        "the action it offered, by the notice's tag"
+    );
+    assert!(rig.feed().banners.is_empty(), "a chosen notice leaves");
+
+    // The machine's own news keeps its own name and mark, and its own urgency decides the banner.
+    role.show(&crate::notices::battery_notice(4, true, true));
+    rig.step();
+    let news = rig.banner();
+    assert_eq!(news.app_name.as_deref(), Some("Power"));
+    assert_eq!(news.severity, NotificationSeverity::Error);
+    assert!(news.machine_wide, "the whole machine's news");
+
+    // A notice says what it is about, and the desk leads with that glyph.
+    role.show(
+        &Notice::new("", 1, "You joined Book club", "").about(NotificationIconKind::Workspace),
+    );
+    rig.step();
+    assert_eq!(
+        rig.banner_titled("You joined Book club").mark().icon,
+        Some(ui::icons::Icon::LayoutGrid),
+        "the workspace's own mark"
+    );
+
+    // An ask offers its answer and "Not now", under the part of the desktop that asks, and the
+    // answer comes back by the notice's tag: how a window's move is answered.
+    let action = tilo_desktop_surface::HostAction {
+        id: "keep-identity".into(),
+        title: "Keep with passkey".into(),
+        subtitle: None,
+        icon: None,
+        destructive: false,
+        unasked: false,
+        source: Some(tilo_desktop_surface::HostActionSource::Devices),
+    };
+    let ask = Notice::asks(&action, "Pair “Phone”?", "").tagged("ask");
+    role.show(&ask);
+    rig.step();
+    let banner = rig.banner_titled("Pair “Phone”?");
+    assert_eq!(banner.icon_kind, NotificationIconKind::Permission);
+    assert_eq!(
+        banner.dismiss_after, PERSISTENT_DISMISS,
+        "until the person answers"
+    );
+    rig.desktop.invoke_action(banner.id, "not-now");
+    rig.step();
+    assert!(
+        role.take_chosen_actions().is_empty(),
+        "put off, not answered"
+    );
+
+    role.show(&Notice::asks(&action, "Pair “Phone”?", "").tagged("pairing"));
+    rig.step();
+    let key = tilo_desktop_surface::host_action_key("keep-identity");
+    rig.desktop
+        .invoke_action(rig.banner_titled("Pair “Phone”?").id, &key);
+    rig.step();
+    assert_eq!(
+        role.take_chosen_actions(),
+        [("pairing".to_owned(), key)],
+        "the answer names the notice that asked"
+    );
+}
+
 #[test]
 fn a_transient_notification_leaves_no_trace_in_the_centre() {
     let rig = rig();
@@ -510,9 +647,11 @@ fn the_centre_opens_with_what_the_last_session_kept() {
     assert!(path.is_file(), "the centre was written");
 
     let reopened = DesktopNotifications::default();
-    super::restore_kept(&reopened, &path);
+    reopened
+        .restore_kept(&std::fs::read(&path).unwrap(), ui::time::SystemTime::now())
+        .unwrap();
     let next = SessionNotifications::new(
-        None,
+        Notifications::new(),
         reopened,
         Link::new(),
         Arc::clone(&rig.policy),
@@ -1004,9 +1143,9 @@ impl FakeFabric {
     }
 }
 
-impl tilo_device_fabric::link::FabricLink for FakeFabric {
-    fn device_fabric(&self) -> tilo_device_fabric::DeviceFabric {
-        tilo_device_fabric::DeviceFabric::default()
+impl crate::platform::fabric::FabricLink for FakeFabric {
+    fn device_fabric(&self) -> crate::platform::fabric::DeviceFabric {
+        crate::platform::fabric::DeviceFabric::default()
     }
 
     fn online_device_ids(&self) -> BTreeSet<DeviceId> {
@@ -1017,20 +1156,11 @@ impl tilo_device_fabric::link::FabricLink for FakeFabric {
         Some((self.local.clone(), "Desk".to_owned()))
     }
 
-    fn send_personal_fabric_action(
-        &self,
-        target: &DeviceId,
-        action: PersonalFabricAction,
-    ) -> Result<[u8; 16], String> {
-        self.sent.lock().unwrap().push((target.clone(), action));
-        Ok([7; 16])
-    }
-
     fn try_send_personal_fabric_action(
         &self,
         target: &DeviceId,
         action: PersonalFabricAction,
-    ) -> Result<[u8; 16], tilo_device_fabric::link::PersonalFabricSendError> {
+    ) -> Result<[u8; 16], crate::platform::fabric::PersonalFabricSendError> {
         self.sent.lock().unwrap().push((target.clone(), action));
         Ok([7; 16])
     }
@@ -1048,7 +1178,7 @@ impl tilo_device_fabric::link::FabricLink for FakeFabric {
 fn rig_on_fabric(permitted: bool) -> (Rig, Arc<FakeFabric>) {
     let rig = rig();
     let fabric = FakeFabric::new(permitted);
-    let link: tilo_device_fabric::link::SharedLink = fabric.clone();
+    let link: crate::platform::fabric::SharedLink = fabric.clone();
     rig.bridge.borrow().attach_fabric(link);
     (rig, fabric)
 }
@@ -1090,7 +1220,7 @@ fn the_desktops_own_notice_stays_on_this_machine() {
     };
     rig.bridge
         .borrow_mut()
-        .tell(crate::notices::version_mismatch_notice(
+        .tell(&crate::notices::version_mismatch_notice(
             &mismatch,
             Some("Framework 16"),
         ));
@@ -1408,7 +1538,7 @@ fn a_device_on_another_version_is_named_on_the_desk() {
     };
     rig.bridge
         .borrow_mut()
-        .tell(crate::notices::version_mismatch_notice(
+        .tell(&crate::notices::version_mismatch_notice(
             &mismatch,
             Some("Framework 16"),
         ));

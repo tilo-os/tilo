@@ -1,5 +1,5 @@
-//! The player's controls live in the window's bar: the library's toggle,
-//! the open video's title, Open and History.
+//! The player's controls in the window's bar: the library's toggle, the video's title, Open
+//! and History.
 
 use std::path::PathBuf;
 

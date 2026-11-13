@@ -65,18 +65,10 @@ pub enum AuthenticatedTransportError {
     InvalidFrameLimit,
     /// The peer announced or we encoded a frame beyond the configured bound.
     #[error("authentication frame is too large: {announced} bytes (maximum {maximum})")]
-    FrameTooLarge {
-        /// Encoded or announced payload length.
-        announced: usize,
-        /// Effective configured maximum.
-        maximum: usize,
-    },
+    FrameTooLarge { announced: usize, maximum: usize },
     /// A phase received a valid frame of the wrong kind.
     #[error("unexpected authentication frame; expected {expected}")]
-    UnexpectedFrame {
-        /// Human-readable expected phase.
-        expected: &'static str,
-    },
+    UnexpectedFrame { expected: &'static str },
     /// Postcard could not encode or decode the bounded frame.
     #[error("invalid authentication frame: {0}")]
     Codec(#[from] postcard::Error),
@@ -191,7 +183,7 @@ where
             credentials.cert().clone(),
             local_endpoint,
             remote_challenge,
-            credentials.signing_key(),
+            credentials.signer(),
         )?;
         let remote_frame = exchange_frame(
             reader,
@@ -610,7 +602,7 @@ mod tests {
                     attacker.credentials.cert().clone(),
                     attacker.endpoint,
                     local_challenge,
-                    attacker.credentials.signing_key(),
+                    attacker.credentials.signer(),
                 )
                 .unwrap();
                 proof.signature[0] ^= 1;

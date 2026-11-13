@@ -38,22 +38,17 @@ use seccompiler::{BackendError, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition
 
 use crate::worker::{REPLY_FD, REQUEST_FD};
 
-/// Syscalls allowed with any arguments.
 const UNCONDITIONAL: &[libc::c_long] = &[
-    // Allocation. `mremap` and `madvise` keep a mapping's protection.
     libc::SYS_brk,
     libc::SYS_munmap,
     libc::SYS_mremap,
     libc::SYS_madvise,
-    // Closing the pipes on the way out.
     libc::SYS_close,
-    // Locks and time.
     libc::SYS_futex,
     libc::SYS_sched_yield,
     libc::SYS_clock_gettime,
     libc::SYS_clock_getres,
     libc::SYS_gettimeofday,
-    // Hash-map seeds.
     libc::SYS_getrandom,
     // Signal state, used by `abort` and the stack-overflow handler.
     libc::SYS_rt_sigaction,
@@ -67,12 +62,8 @@ const UNCONDITIONAL: &[libc::c_long] = &[
     libc::SYS_exit_group,
 ];
 
-/// Syscalls refused with `EPERM` rather than killing the worker: libc calls
-/// them on paths it treats as optional.
 pub(crate) const REFUSED: &[libc::c_long] = &[libc::SYS_openat];
 
-/// Descriptors a worker may write: stdout and stderr (null and the caller's
-/// diagnostics) and the reply pipe.
 const WRITABLE_FDS: &[i32] = &[1, 2, REPLY_FD];
 
 /// The worker's allow-list. `pid` is the worker's own, the only process it
@@ -145,7 +136,6 @@ fn not_executable() -> Result<SeccompCondition, BackendError> {
     SeccompCondition::new(2, SeccompCmpArgLen::Dword, SeccompCmpOp::MaskedEq(exec), 0)
 }
 
-/// Confine the calling worker. Irreversible.
 pub(crate) fn confine() -> Result<(), String> {
     restrict_self(&RulesetSpec::deny_all(), |_, _| {}).map_err(|e| format!("landlock: {e}"))?;
     let pid = std::process::id();
@@ -156,8 +146,6 @@ pub(crate) fn confine() -> Result<(), String> {
         REFUSED.iter().map(|nr| (*nr, Vec::new())).collect(),
     )
     .map_err(|e| format!("seccomp: {e}"))?;
-    // The refusal first: installing a filter calls prctl and seccomp, which
-    // the allow-list does not permit.
     for program in [&refused, &allowed] {
         sandbox_core::seccomp::install(program).map_err(|e| format!("seccomp: {e}"))?;
     }

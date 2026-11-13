@@ -245,8 +245,20 @@ pub enum SettingsDocument {
 pub struct SettingsRevision(Option<u64>);
 
 impl SettingsDocument {
-    /// Where the document is kept.
+    /// Where the document is kept. A component's pass that reads the
+    /// document reads it again once its version moved
+    /// ([`crate::component_inputs`]).
     fn source(&self) -> Option<std::sync::Arc<dyn settings_store::SettingsSource>> {
+        let source = self.located();
+        let document = self.clone();
+        crate::component_inputs::read_versioned(
+            self,
+            Box::new(move || document.located().map(|source| source.revision())),
+        );
+        source
+    }
+
+    fn located(&self) -> Option<std::sync::Arc<dyn settings_store::SettingsSource>> {
         match self {
             Self::Session => settings_store::source(),
             Self::Profile(root) => Some(settings_store::profile(root)),

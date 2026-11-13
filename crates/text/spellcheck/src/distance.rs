@@ -1,24 +1,8 @@
 //! Bounded Damerau/Levenshtein edit distance.
 
-/// Compute the Damerau–Levenshtein distance between `a` and `b`, but stop early
-/// and return `None` as soon as the distance is known to exceed `max`.
-///
-/// This is the *optimal string alignment* variant: it counts insertions,
-/// deletions, substitutions, and transpositions of two adjacent characters,
-/// with the restriction that no substring is edited more than once. That
-/// restriction is irrelevant for the short single-word inputs a spell checker
-/// compares, and it keeps the algorithm to two rolling rows of state plus the
-/// one extra previous row needed for the transposition rule.
-///
-/// Returning early on the `max` bound is what makes a full dictionary scan
-/// affordable: most candidate words diverge in length or prefix immediately, so
-/// the inner loop bails after a couple of rows.
-///
-/// Comparison is done over `char`s, so the cost is in Unicode scalar values, not
-/// bytes — `"café"` vs `"cafe"` is distance 1, not 2.
+/// The Damerau-Levenshtein distance between `a` and `b` (optimal string alignment), or
+/// `None` once it is known to exceed `max`.
 pub fn damerau_levenshtein_within(a: &str, b: &str, max: usize) -> Option<usize> {
-    // Cheap length-difference lower bound: if the words differ in length by more
-    // than `max`, no sequence of <= max edits can align them.
     let a_chars: Vec<char> = a.chars().collect();
     let b_chars: Vec<char> = b.chars().collect();
     let (la, lb) = (a_chars.len(), b_chars.len());
@@ -44,10 +28,8 @@ pub fn damerau_levenshtein_within(a: &str, b: &str, max: usize) -> Option<usize>
     }
 
     for i in 1..=la {
-        // `i` ranges over 1..=la, so `i - 1` always lands inside `a_chars`; the
-        // `.get()` exists to satisfy the indexing lint, not because this can
-        // actually miss — `?` and the surrounding `Option<usize>` return type
-        // give the same "return None" behaviour as the old `let...else`.
+        // `i` ranges over 1..=la, so `i - 1` always lands inside `a_chars`; `.get()` exists to
+        // satisfy the indexing lint.
         let a_char = a_chars.get(i.saturating_sub(1)).copied()?;
 
         if let Some(cell) = curr.get_mut(0) {
@@ -72,7 +54,6 @@ pub fn damerau_levenshtein_within(a: &str, b: &str, max: usize) -> Option<usize>
                 .saturating_add(cost);
             let mut best = deletion.min(insertion).min(substitution);
 
-            // Transposition of two adjacent characters.
             if i > 1
                 && j > 1
                 && let (Some(&b_prev), Some(&a_prev)) = (
@@ -105,8 +86,6 @@ pub fn damerau_levenshtein_within(a: &str, b: &str, max: usize) -> Option<usize>
             return None;
         }
 
-        // Rotate rows: prev_prev <- prev <- curr, and reuse the old prev_prev as
-        // the next curr buffer to avoid reallocation.
         std::mem::swap(&mut prev_prev, &mut prev);
         std::mem::swap(&mut prev, &mut curr);
     }
@@ -115,19 +94,8 @@ pub fn damerau_levenshtein_within(a: &str, b: &str, max: usize) -> Option<usize>
     (dist <= max).then_some(dist)
 }
 
-/// A finer-grained alignment cost used only for *ranking* suggestions, never for
-/// the accept/reject bound.
-///
-/// It returns the same integer edit count as [`damerau_levenshtein_within`] in
-/// the high bits, but breaks ties between equally-distant candidates by charging
-/// a transposition slightly less (`0.9`) than a substitution or indel (`1.0`).
-/// Adjacent-character transpositions ("teh" -> "the") are the single most common
-/// human typo, so a candidate reachable by a transposition should outrank one
-/// reachable only by a substitution at the same integer distance.
-///
-/// Returns `f64::INFINITY` when the integer distance exceeds `max` (so callers
-/// can still bound the scan). Only called on candidates that already passed the
-/// integer bound, so the bound check here is a cheap safety net.
+/// A finer-grained alignment cost, used only for ranking suggestions and never for the
+// accept/reject bound.
 #[allow(
     clippy::cast_precision_loss,
     reason = "word lengths a spell checker compares fit comfortably inside f64's 53-bit exact integer range"

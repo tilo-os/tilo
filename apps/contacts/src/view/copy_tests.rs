@@ -41,7 +41,6 @@ impl AppSurface for Window {
     fn set_cursor(&self, _: winit::window::CursorIcon) {}
 }
 
-/// The pixels of a `size` window that `rects` cover, each counted once.
 fn covered(rects: &[Rect], size: winit::dpi::PhysicalSize<u32>) -> f64 {
     let window = Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
     let width = size.width as usize;
@@ -63,7 +62,6 @@ struct Run {
     whole: usize,
 }
 
-/// A book of [`ROWS`] people, one chosen, every fifth a favourite.
 fn book() -> Shared {
     let shared: Shared = Rc::new(RefCell::new(Bridge::default()));
     {
@@ -179,8 +177,6 @@ impl Host {
         );
     }
 
-    /// `frames` frames of `step` logical pixels each, every one checked
-    /// against a full render.
     fn scroll(&mut self, label: &str, (step, frames): (f64, usize)) -> Run {
         let mut run = Run::default();
         for frame in 0..frames {

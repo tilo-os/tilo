@@ -32,10 +32,9 @@ use crate::document::{self, ArtworkFile, ArtworkRecents, EXTENSION, Recent, Rece
 use crate::model::Artwork;
 use crate::panels::export::{self, Settings};
 use crate::tools::{FileRequest, Sheet, Tools, ViewRequest};
+use ui::widget::DrawChild;
 
-/// A chooser, or a write it led to, that has not answered yet.
 enum Pending {
-    /// The file to open, read by the host.
     Open(ContentsChannel),
     /// Where to save the artwork: keep working on it there (`follow`), or
     /// save a copy and keep working where it is.
@@ -50,8 +49,10 @@ enum Pending {
         announce: Option<String>,
         channel: SaveChannel,
     },
-    /// An exported picture being saved under `name`.
-    Export { name: String, channel: SaveChannel },
+    Export {
+        name: String,
+        channel: SaveChannel,
+    },
 }
 
 /// An export whose pictures are being rendered: the save chooser opens
@@ -62,13 +63,11 @@ struct Exporting {
     stem: String,
 }
 
-/// What an export waits for.
 enum Drawing {
     Raster(ui::offscreen::pixels::PixelsRequest),
     Svg(Box<export::SvgDrawing>),
 }
 
-/// The window's content with the file desk round it.
 pub struct FileDesk {
     content: Element,
     tools: Tools,
@@ -113,7 +112,7 @@ impl FileDesk {
     fn say(&self, id: &str, args: &[(&str, ui::i18n::ArgValue)]) {
         self.tools
             .notice
-            .set(Some(ui::i18n::I18nManager::format(id, args)));
+            .set(Some(crate::locales::CATALOG.t_args(id, args)));
     }
 
     fn name_of(path: &Path) -> String {
@@ -121,7 +120,6 @@ impl FileDesk {
             .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
     }
 
-    /// Carry out what was chosen from the artwork's menu.
     fn take_menu(&self) {
         let chosen = self.tools.menu.get();
         if chosen.is_empty() {
@@ -145,7 +143,6 @@ impl FileDesk {
         }
     }
 
-    /// Take a request the controls left, if any, and carry it out.
     fn take(&mut self) {
         self.take_menu();
         let Some(request) = self.tools.files.with(Clone::clone) else {
@@ -156,7 +153,7 @@ impl FileDesk {
             // One chooser at a time; the open one answers first.
             return;
         }
-        let lookup = ui::i18n::I18nManager::lookup_plain;
+        let lookup = |key: &str| crate::locales::CATALOG.t(key);
         let art = self.live.get();
         match request {
             FileRequest::Open => {
@@ -194,11 +191,11 @@ impl FileDesk {
     }
 
     fn choose_save(&mut self, art: &Artwork, follow: bool) {
-        let lookup = ui::i18n::I18nManager::lookup_plain;
+        let lookup = |key: &str| crate::locales::CATALOG.t(key);
         let title = if follow {
             art.title.clone()
         } else {
-            ui::i18n::I18nManager::format(
+            crate::locales::CATALOG.t_args(
                 "canvas-copy-of",
                 &[(
                     "title",
@@ -261,7 +258,6 @@ impl FileDesk {
         self.finish_export();
     }
 
-    /// Encode the export whose pixels came, and ask where it goes.
     fn finish_export(&mut self) {
         let ready = self
             .exporting
@@ -295,9 +291,8 @@ impl FileDesk {
         }
     }
 
-    /// Ask where the export's `bytes` go.
     fn choose_export(&mut self, stem: &str, settings: Settings, bytes: Vec<u8>) {
-        let lookup = ui::i18n::I18nManager::lookup_plain;
+        let lookup = |key: &str| crate::locales::CATALOG.t(key);
         let extension = settings.format.extension();
         let name = document::file_name(stem, extension);
         let request = PickRequest::save(
@@ -322,7 +317,6 @@ impl FileDesk {
         });
     }
 
-    /// Hear back from an open chooser, or a write it led to.
     fn poll(&mut self) {
         self.finish_export();
         // Once opened, the artwork takes the window with a view of its own;
@@ -340,7 +334,7 @@ impl FileDesk {
         let Some(pending) = self.chooser.take() else {
             return;
         };
-        let gone = || ui::i18n::I18nManager::lookup_plain("canvas-chooser-gone");
+        let gone = || crate::locales::CATALOG.t("canvas-chooser-gone");
         match pending {
             Pending::Open(channel) => match channel.try_recv() {
                 Err(TryRecvError::Empty) => self.chooser = Some(Pending::Open(channel)),
@@ -430,7 +424,6 @@ impl FileDesk {
         }
     }
 
-    /// Write the artwork to `destination`, which has no path here.
     fn write_to(
         &mut self,
         destination: &ui::portal::SaveDestination,
@@ -450,7 +443,6 @@ impl FileDesk {
         }
     }
 
-    /// Open the artwork or SVG at `path` in place of this one.
     fn open(&self, path: &Path) {
         let read =
             crate::resource::read_file(&path.display().to_string(), document::MAX_FILE_BYTES);
@@ -597,7 +589,7 @@ fn export_stem(art: &Artwork) -> String {
             matches!(mark.shape, crate::model::Shape::Image { .. }) && mark.name == art.title
         });
     if from_picture {
-        ui::i18n::I18nManager::format(
+        crate::locales::CATALOG.t_args(
             "canvas-export-edited",
             &[("title", art.title.clone().into())],
         )
@@ -676,7 +668,6 @@ pub fn window_key(
     true
 }
 
-/// `path`, ending in `.extension` (a chooser may answer the name as typed).
 fn with_extension(path: PathBuf, extension: &str) -> PathBuf {
     if path
         .extension()
@@ -756,7 +747,7 @@ impl ui::widget::Decorator for FileDesk {
         self.take();
         self.poll();
         self.content
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     /// The window's keys work wherever the focus is (a tool just clicked

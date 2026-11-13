@@ -187,7 +187,7 @@ fn a_filling_child_of_a_row_takes_the_room_beside_its_strip() {
                         .with_child(Box::new(Text::new("The whole page").with_id("content"))),
                 )),
         ));
-    let mut driver = FrameHarness::new(State::new(), Box::new(root), (520, 200));
+    let driver = FrameHarness::new(State::new(), Box::new(root), (520, 200));
     let targets = driver.targets();
     for (name, rect) in &targets {
         println!("{name}: {rect:?}");

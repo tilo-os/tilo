@@ -17,7 +17,7 @@ use tilolang_tilo::action::DynAction;
 use tilolang_tilo::host::argument_json;
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{
-    ActionTypes, PlanRequest, Planner, action_type, open_with_id, publish_record, reached,
+    ActionTypes, Moved, PlanRequest, Planner, action_type, open_with_id, publish_record,
 };
 use tilolang_tilo::surface::package_surfaces;
 
@@ -195,7 +195,7 @@ pub struct Shelf {
     pub name: String,
 }
 
-#[resource(kind = "test.shapes.shelf", label = "Shelf")]
+#[resource(kind = "test.shapes.shelf", catalogue = "tests/locales")]
 impl Shelf {
     /// Resize the shelf.
     #[action]
@@ -256,6 +256,34 @@ fn native_spec(id: &str) -> ActionSpec {
         .unwrap()
 }
 
+/// A caller at the door lists and calls a tilolang action by its name, as it does a native verb,
+/// with its typed parameters and its label; what is stored of it keeps its id.
+#[test]
+fn an_action_is_published_by_its_name() {
+    let meta = shapes();
+    for name in ["resize", "pin", "remove"] {
+        let ours = tilolang_spec(&meta, name);
+        let native = native_spec(name);
+        assert_eq!(ours.id, native.id, "{name}");
+        assert_eq!(
+            ours.params()
+                .iter()
+                .map(|param| (&param.name, &param.ty))
+                .collect::<Vec<_>>(),
+            native
+                .params()
+                .iter()
+                .map(|param| (&param.name, &param.ty))
+                .collect::<Vec<_>>(),
+            "{name}"
+        );
+        assert!(!ours.action_type().label.is_empty(), "{name}");
+        let declared = meta.action_published_as(name).unwrap();
+        assert_eq!(declared.name, name);
+        assert_ne!(declared.id, name, "stored by its id");
+    }
+}
+
 #[test]
 fn an_enum_parameter_is_published_as_its_cases() {
     let meta = shapes();
@@ -307,6 +335,16 @@ fn an_enum_argument_travels_as_the_name_of_its_case() {
     );
 }
 
+/// A parameter's schema without what it is called: the reader's words for it, which each
+/// catalogue gives its own and the surface, the same in every language, leaves out.
+fn untitled(param: &tilo_actions::ActionParam) -> Option<serde_json::Value> {
+    let mut schema = param.schema.as_deref().cloned();
+    if let Some(serde_json::Value::Object(schema)) = schema.as_mut() {
+        schema.remove("title");
+    }
+    schema
+}
+
 #[test]
 fn a_record_parameter_is_published_as_a_pick_of_its_kind() {
     let meta = shapes();
@@ -323,7 +361,7 @@ fn a_record_parameter_is_published_as_a_pick_of_its_kind() {
             })
         );
         assert_eq!(param.pick(), theirs.pick());
-        assert_eq!(param.schema, theirs.schema);
+        assert_eq!(untitled(param), untitled(theirs));
     }
 }
 
@@ -360,16 +398,15 @@ fn the_surface_says_what_the_published_spec_says() {
         .unwrap();
     let native = tilo_resource::surface::surface_of::<Shelf>();
     for name in ["resize", "pin", "remove"] {
-        let action = meta
+        // The generated surface names each verb by the action's id, as a change's claim does; a
+        // native app's verbs have no other id than the name it publishes them by.
+        let id = &meta
             .actions
             .iter()
             .find(|action| action.name == name)
-            .unwrap();
-        let verb = shelf
-            .verbs
-            .iter()
-            .find(|verb| verb.id == action.id)
-            .unwrap();
+            .unwrap()
+            .id;
+        let verb = shelf.verbs.iter().find(|verb| verb.id == *id).unwrap();
         let theirs = native.verbs.iter().find(|verb| verb.id == name).unwrap();
         assert_eq!(verb.destructive, theirs.destructive, "{name}");
         let spec = tilolang_spec(&meta, name);
@@ -377,7 +414,7 @@ fn the_surface_says_what_the_published_spec_says() {
         assert_eq!(verb.params[0].required, param.required, "{name}");
         assert_eq!(
             Some(&verb.params[0].schema),
-            param.schema.as_deref(),
+            untitled(param).as_ref(),
             "{name}"
         );
     }
@@ -461,7 +498,11 @@ fn a_resource_lists_the_views_that_show_it() {
     // A view and the action that opens it name each other: the default view through the
     // resource's own `open`, which shows it; another through an action of its own.
     assert_eq!(first.open_action, "open");
-    assert_eq!(second.open_action, open_with_id(&compact));
+    assert_eq!(
+        second.open_action,
+        open_with_id("compact"),
+        "by the view's name"
+    );
     let opens = shelf
         .actions
         .iter()
@@ -528,18 +569,34 @@ fn a_command_that_asks_for_an_argument_says_so_before_it_opens() {
 #[test]
 fn a_change_reaches_what_read_it() {
     let field = |resource: &str, field: &str| (resource.to_owned(), field.to_owned());
+    let reached = |(resource, changed): (String, String), read: &(String, String)| {
+        Moved::These(std::collections::BTreeMap::from([(
+            resource,
+            std::collections::BTreeSet::from([changed]),
+        )]))
+        .reaches(read)
+    };
     let list = "tl:tasks:task";
     let task = "tl:tasks:task/1";
     // A requirement that read a task's own field is read again when that field moves, or when the
     // task is replaced whole; another field of the same task leaves the answer standing.
-    assert!(reached(&field(task, "done"), &field(task, "done")));
-    assert!(reached(&field(task, "*"), &field(task, "done")));
-    assert!(reached(&field(task, "done"), &field(task, "*")));
-    assert!(!reached(&field(task, "title"), &field(task, "done")));
+    assert!(reached(field(task, "done"), &field(task, "done")));
+    assert!(reached(field(task, "*"), &field(task, "done")));
+    assert!(reached(field(task, "done"), &field(task, "*")));
+    assert!(!reached(field(task, "title"), &field(task, "done")));
     // A requirement that read the list of tasks read every task in it: a change to one task is
     // read again, while a change to one of the list's own fields is not a change to its tasks.
-    assert!(reached(&field(task, "done"), &field(list, "done")));
-    assert!(!reached(&field(list, "order"), &field(task, "title")));
+    assert!(reached(field(task, "done"), &field(list, "done")));
+    assert!(!reached(field(list, "order"), &field(task, "title")));
     // The list replaced whole is every task in it changed.
-    assert!(reached(&field(list, "*"), &field(task, "title")));
+    assert!(reached(field(list, "*"), &field(task, "title")));
+    // Another task, or a resource whose id only starts like the list's, is not under it.
+    assert!(!reached(
+        field("tl:tasks:task/2", "done"),
+        &field(task, "done")
+    ));
+    assert!(!reached(
+        field("tl:tasks:tasks/1", "done"),
+        &field(list, "done")
+    ));
 }

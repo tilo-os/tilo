@@ -168,13 +168,17 @@ fn semantic_read_render_and_refusal_are_retained_with_real_content() {
     assert!(image["height"].as_u64().unwrap() > 0);
     let address = image["content"].as_str().unwrap();
     assert_eq!(journal["entries"][1]["output"]["resources"][0], address);
-    let hash = tilo_actions::content_hash(address).unwrap();
+    let reference = tilo_actions::content_hash(address).unwrap();
     let bytes = app
         .content()
-        .read(hash)
+        .read(reference)
         .expect("actual returned content exists");
     assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
-    assert!(tilo_content::verify(hash, &bytes));
+    // The result names the reference the render kept, sealed: it opens the
+    // picture, and the picture's own address holds nothing in the clear.
+    assert!(tilo_content::is_sealed(reference), "{reference}");
+    assert!(tilo_content::names(reference, &bytes));
+    assert!(!app.content().has(&tilo_content::hash_bytes(&bytes)));
     assert_eq!(journal["entries"][2]["status"], "refused");
     assert_eq!(journal["entries"][2]["code"], "unknown_action");
     assert!(journal.get("retention_error").is_none());

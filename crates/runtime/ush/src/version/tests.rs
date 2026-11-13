@@ -139,7 +139,6 @@ fn a_line_this_command_cannot_read_is_refused_rather_than_guessed() {
         assert_eq!(parse(&line), Err(ErrorCode::Usage), "{line:?}");
     }
     assert_eq!(parse(&[]).unwrap(), None, "no verb prints the usage");
-    // `--json` is a flag this command has, wherever it is written.
     let invocation = parse(&words(&["log", "--json", "a"])).unwrap().unwrap();
     assert!(invocation.json);
     assert_eq!(
@@ -273,8 +272,6 @@ fn a_revision_line_says_what_changed_and_who_did_it() {
     );
     assert_eq!(line.parents, vec!["00000000000000000000000000000005"]);
 
-    // Without an attribution the line names nobody rather than guessing a
-    // person from the signing device.
     let plain = RevisionLine::of(&restore, &[]);
     assert_eq!(plain.agent, None);
 }

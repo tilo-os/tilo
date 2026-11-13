@@ -1,11 +1,6 @@
 //! Launcher smoke tests.
 //!
-//! These tests invoke the *library* surface of `tilo-launcher` against
-//! ad-hoc fixtures. Bubblewrap is part of the product security boundary, so
-//! absence is a broken build environment rather than a reason to skip.
-//! Landlock enforcement is covered by its policy tests; these smoke cases
-//! isolate process launch and service-resolution semantics so they also run
-//! on builder kernels older than Landlock ABI v5.
+//! These tests invoke the *library* surface of `tilo-launcher` against ad-hoc fixtures.
 
 #![allow(
     clippy::unwrap_used,
@@ -33,8 +28,8 @@ fn runtime_dir_env(dir: &Path) -> ScopedEnv {
     env
 }
 
-// `with_glibc_binds` is gone: those loader paths are in the launcher's
-// system read profile now, so every app gets them without declaring.
+// `with_glibc_binds` is gone: those loader paths are in the launcher's system read profile now, so
+// every app gets them without declaring.
 
 fn service_req(raw: &str) -> ServiceReq {
     ServiceReq::parse("", raw).expect("valid service requirement")
@@ -50,7 +45,6 @@ fn hello_manifest(services: BTreeMap<String, ServiceReq>) -> ManifestView {
 
 #[test]
 fn manifest_errors_fail_before_exec_and_manifests_round_trip() {
-    // Phase `manifest_malformed_fails_before_exec`.
     {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("manifest.toml");
@@ -62,11 +56,9 @@ fn manifest_errors_fail_before_exec_and_manifests_round_trip() {
             other => panic!("expected ManifestError, got {other:?}"),
         }
     }
-    // Phase `manifest_declared_runtime_missing_bundle_fails`.
     {
-        // Manifest points at a runtime whose bundle doesn't exist anywhere on
-        // the search path: expect a RuntimeBundleMissing error naming the
-        // paths looked at.
+        // Manifest points at a runtime whose bundle doesn't exist anywhere on the search path: expect
+        // a RuntimeBundleMissing error naming the paths looked at.
         let home = runtime_home();
         let mut m = hello_manifest(BTreeMap::new());
         m.runtime = Some("tilo-runtime/nope-9.9.9".to_string());
@@ -85,7 +77,6 @@ fn manifest_errors_fail_before_exec_and_manifests_round_trip() {
             "error text must name runtime: {msg}"
         );
     }
-    // Phase `read_manifest_round_trips`.
     {
         // Smoke: write a manifest, read it back, assert key fields.
         let dir = tempfile::tempdir().unwrap();
@@ -133,7 +124,6 @@ fn manifest_errors_fail_before_exec_and_manifests_round_trip() {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn apps_launch_unless_a_required_service_is_missing() {
-    // Phase `required_service_missing_fails`.
     {
         // Manifest says `collab = "required@1"` but no socket exists.
         let dir = tempfile::tempdir().unwrap();
@@ -152,11 +142,8 @@ fn apps_launch_unless_a_required_service_is_missing() {
         let msg = format!("{err}");
         assert!(msg.contains("collab"), "error must name service: {msg}");
     }
-    // Phase `no_services_flag_skips_required_resolution`.
     {
-        // Same manifest, but --no-services: required failure becomes a skip +
-        // warn. Can't exec without bwrap, so this just asserts the resolution
-        // step succeeds; the spawn step is exercised by the live tests.
+        // Same manifest, but --no-services: required failure becomes a skip + warn.
         let _dir = tempfile::tempdir().unwrap();
         let mut svcs = BTreeMap::new();
         svcs.insert("collab".to_string(), service_req("required@1"));
@@ -164,7 +151,6 @@ fn apps_launch_unless_a_required_service_is_missing() {
             launcher::services::resolve_service_binds(&svcs, true).expect("no-services infallible");
         assert!(resolved.is_empty());
     }
-    // Phase `no_services_flag_skips_required`.
     {
         let bwrap = bwrap();
         let payload = hello_payload();
@@ -176,7 +162,6 @@ fn apps_launch_unless_a_required_service_is_missing() {
         let status = run_with(&m, payload, &opts).expect("launch");
         assert!(status.success());
     }
-    // Phase `optional_service_missing_warns_and_runs`.
     {
         let bwrap = bwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -191,7 +176,6 @@ fn apps_launch_unless_a_required_service_is_missing() {
         let status = run_with(&m, payload, &opts).expect("launch");
         assert!(status.success(), "optional missing should still run");
     }
-    // Phase `hello_world_runs`.
     {
         let bwrap = bwrap();
         let payload = hello_payload();
@@ -207,11 +191,6 @@ fn apps_launch_unless_a_required_service_is_missing() {
             "expected 'hello' in stdout, got {stdout:?}"
         );
     }
-    // Phase `an_installed_package_launches_from_the_package_store`.
-    // The production path from package to process: pack the hello payload,
-    // install it into a package store (payload blobs in the content store, the
-    // tree materialised read-only from there), resolve it through the catalogue
-    // the desktop reads, and launch it from the materialised tree.
     {
         let bwrap = bwrap();
         let identity = tilo_app_package::SigningIdentity::generate();
@@ -272,13 +251,11 @@ fn apps_launch_unless_a_required_service_is_missing() {
     }
 }
 
-// Superseded by `tests/workspace_confinement.rs`, which starts the real
-// thing under bwrap and has it try the reads/writes — the assertion is
-// on a syscall's answer, not an argv or an exit code that was never at
-// risk.
+// Superseded by `tests/workspace_confinement.rs`, which starts the real thing under bwrap and has it
+// try the reads/writes — the assertion is on a syscall's answer, not an argv or an exit code that was
+// never at risk.
 
-/// Options that resolve without services and without enforcing the
-/// sandbox.
+/// Options that resolve without services and without enforcing the sandbox.
 fn offline_options() -> RunOptions {
     RunOptions {
         no_services: true,
@@ -287,8 +264,8 @@ fn offline_options() -> RunOptions {
     }
 }
 
-/// Options for a GUI launch confined with `bwrap` in `dir`, with the
-/// sandbox not enforced and `shim` naming the launcher's own shim.
+/// Options for a GUI launch confined with `bwrap` in `dir`, with the sandbox not enforced and `shim`
+/// naming the launcher's own shim.
 fn gui_options(
     dir: &std::path::Path,
     bwrap: std::path::PathBuf,
@@ -307,11 +284,9 @@ fn gui_options(
     }
 }
 
-/// A fresh home for the runtime-bundle lookup, which is resolved from the
-/// environment: `$XDG_DATA_HOME/tilo-runtime` unless
-/// [`runtime_bundle::RUNTIME_DIR_ENV`] names another root, and a trust list
-/// named by `TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE`. Both overrides are
-/// cleared so the developer's own settings never decide a result.
+/// A fresh home for the runtime-bundle lookup, which is resolved from the environment:
+/// `$XDG_DATA_HOME/tilo-runtime` unless [`runtime_bundle::RUNTIME_DIR_ENV`] names another root, and a
+/// trust list named by `TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE`.
 fn runtime_home() -> TestHome {
     let mut home = TestHome::new().unwrap();
     home.env()
@@ -320,8 +295,8 @@ fn runtime_home() -> TestHome {
     home
 }
 
-/// Build a valid unsigned runtime bundle under `<xdg_data_home>/tilo-runtime/<version>/`
-/// from a fake host rootfs and return its resolved path.
+/// Build a valid unsigned runtime bundle under `<xdg_data_home>/tilo-runtime/<version>/` from a fake
+/// host rootfs and return its resolved path.
 fn install_unsigned_bundle(xdg_data_home: &Path, version: &str) -> PathBuf {
     let host = tempfile::tempdir().unwrap();
     for rel in ["lib64/ld-linux-x86-64.so.2", "lib64/libc.so.6"] {
@@ -382,23 +357,17 @@ fn install_signed_bundle(
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
-    // Phase `runtime_bundle_wins_over_minimal_libs_in_argv`.
-    // When an app manifest declares a runtime bundle, the launcher's argv
-    // should: bind the bundle at /run/tilo-runtime/<v>/, set
-    // `LD_LIBRARY_PATH` to <mount>/lib, and NOT include the --minimal-libs
-    // loader binds even if the flag is on.
     {
         use launcher::sandbox::build_bwrap_argv;
 
-        // Set up a real signed bundle so resolve_runtime + its integrity
-        // check are happy.
+        // Set up a real signed bundle so resolve_runtime + its integrity check are happy.
         let home = runtime_home();
         let (bundle_dir, _identity) = install_signed_bundle(home.data(), "smoke-1.0.0");
 
         let mut m = manifest("com.example.hello", "bin/hello", "off");
         m.runtime = Some("tilo-runtime/smoke-1.0.0".to_string());
-        // Assert the sandbox argv contains the runtime bind + LD_LIBRARY_PATH
-        // for a manually-supplied runtime tuple (the pure-function surface).
+        // Assert the sandbox argv contains the runtime bind + LD_LIBRARY_PATH for a manually-supplied
+        // runtime tuple (the pure-function surface).
         let argv = build_bwrap_argv(
             &m,
             Path::new("/host/payload"),
@@ -421,9 +390,9 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             "LD_LIBRARY_PATH setenv not in argv: {argv:?}"
         );
 
-        // And when both minimal-libs and a resolvable runtime bundle are
-        // requested, resolve_runtime picks the bundle — exercised directly
-        // since argv isn't readable from `run_with` without spawning bwrap.
+        // And when both minimal-libs and a resolvable runtime bundle are requested, resolve_runtime
+        // picks the bundle — exercised directly since argv isn't readable from `run_with` without
+        // spawning bwrap.
         let opts = RunOptions {
             minimal_libs: true,
             ..offline_options()
@@ -440,20 +409,13 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             launcher::run::resolve_runtime_test_helper(&m, &opts).expect("no runtime = ok");
         assert!(resolved.is_none());
     }
-    // Phase `thin_app_bundle_exposes_shared_libs_on_ld_library_path`.
-    // A {libstd, libruntime} runtime bundle mounts so a thin
-    // (`-C prefer-dynamic`) app resolves its shared SDK + std libraries
-    // from the bundle: the shared `.so`s live at the TOP of `<bundle>/lib`
-    // and the launcher sets `LD_LIBRARY_PATH=<mount>/lib`, so the loader
-    // finds them by soname. Signature integrity is enforced along the way.
     {
         use launcher::sandbox::build_bwrap_argv;
 
         let home = runtime_home();
 
-        // Build a signed bundle folding in stand-ins for the two shared
-        // objects a thin app links (Rust std + Tilo runtime dylib), exercising
-        // the same `extra_libs` path the real bake uses.
+        // Build a signed bundle folding in stand-ins for the two shared objects a thin app links (Rust
+        // std + Tilo runtime dylib), exercising the same `extra_libs` path the real bake uses.
         let version = "thin-smoke-1";
         let host = tempfile::tempdir().unwrap();
         for rel in ["lib64/ld-linux-x86-64.so.2", "lib64/libc.so.6"] {
@@ -483,8 +445,8 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         )
         .expect("build thin bundle");
 
-        // The shared libs the thin app links live at the top of the bundle's
-        // lib/ — exactly the dir the launcher turns into LD_LIBRARY_PATH.
+        // The shared libs the thin app links live at the top of the bundle's lib/ — exactly the dir
+        // the launcher turns into LD_LIBRARY_PATH.
         assert!(bundle_dir.join("lib/libstd-abc123.so").exists());
         assert!(bundle_dir.join("lib/libruntime_dylib.so").exists());
 
@@ -494,8 +456,8 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         m.entrypoint.r#type = launcher::manifest::EntrypointType::Cli;
         m.cli_commands = vec!["thin".to_string()];
 
-        // The manifest's `runtime` field resolves to the signed bundle
-        // (signature verified inside resolve_runtime).
+        // The manifest's `runtime` field resolves to the signed bundle (signature verified inside
+        // resolve_runtime).
         let opts = offline_options();
         let (resolved_path, resolved_ver) = launcher::run::resolve_runtime_test_helper(&m, &opts)
             .expect("resolve ok")
@@ -503,8 +465,8 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         assert_eq!(resolved_ver, version);
         assert_eq!(resolved_path, bundle_dir);
 
-        // The argv mounts the bundle and points LD_LIBRARY_PATH at the dir
-        // holding libstd + libruntime — so the thin app finds them by soname.
+        // The argv mounts the bundle and points LD_LIBRARY_PATH at the dir holding libstd + libruntime
+        // — so the thin app finds them by soname.
         let argv = build_bwrap_argv(
             &m,
             Path::new("/host/payload"),
@@ -528,11 +490,6 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             "LD_LIBRARY_PATH not pointed at the shared-lib dir: {argv:?}"
         );
 
-        // Phase `an_app_built_for_another_runtime_is_refused_before_bwrap`.
-        // The same app rebuilt against a different libstd: the installed
-        // bundle carries `libstd-abc123.so`, the app needs another hash. The
-        // launch fails with the library named instead of dying in the loader
-        // inside the sandbox with only a stderr line to show for it.
         let payload = tempfile::tempdir().unwrap();
         let entry = payload.path().join("bin/thin");
         std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
@@ -584,7 +541,6 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             "one stderr line for the shell: {message}"
         );
     }
-    // Phase `configured_runtime_root_wins_over_the_installed_fallback`.
     {
         let mut home = runtime_home();
         let overlay = tempfile::tempdir().unwrap();
@@ -620,20 +576,11 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             launcher::run::resolve_runtime_test_helper(&manifest, &RunOptions::default());
         assert_eq!(resolved.unwrap().unwrap().0, bundle);
     }
-    // Phase `dbus_proxy_wires_up_when_manifest_declares_via_host_portal`.
-    // End-to-end: a manifest with `[sandbox.portals] notifications =
-    // "via-host"` and a working `xdg-dbus-proxy` (mocked) results in the
-    // launcher spawning the proxy, binding the *proxy* socket (not the
-    // raw bus), and reaping the proxy on teardown. argv isn't observable
-    // from `run_with` directly, so this drives `resolve_dbus_bind` via the
-    // same entry path and asserts on the resulting plan + guard.
     {
         use launcher::dbus_proxy::PROXY_BIN_ENV;
         use launcher::sandbox::build_bwrap_argv;
 
-        // Point the launcher's proxy binary at a checked-in mock. It is
-        // executed directly, so it is not written by the test: a script this
-        // process had just written could fail to exec with `ETXTBSY`.
+        // Point the launcher's proxy binary at a checked-in mock.
         let tmp = tempfile::tempdir().unwrap();
         let mock = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock-xdg-dbus-proxy");
         let mut env = ScopedEnv::new();
@@ -646,14 +593,11 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             launcher::manifest::PortalPolicy::ViaHost,
         );
 
-        // Drive the proxy path via the launcher's public helper. In-test uid
-        // is fictitious (1234), so use a tempdir socket instead of the
-        // canonical /run/user/1234/... path a real launch would use.
+        // Drive the proxy path via the launcher's public helper.
         let sock = tmp.path().join("proxy.sock");
         let bin = launcher::dbus_proxy::find_proxy_binary().expect("PROXY_BIN_ENV was set above");
-        // The launch's own readiness bound is sized for the real proxy on an
-        // idle machine; this asserts the wiring, not the startup latency of a
-        // shell script on a loaded test host.
+        // The launch's own readiness bound is sized for the real proxy on an idle machine; this
+        // asserts the wiring, not the startup latency of a shell script on a loaded test host.
         let guard = launcher::dbus_proxy::spawn_dbus_proxy_within(
             &bin,
             "unix:path=/run/user/1234/bus",
@@ -670,8 +614,8 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         let pid = guard.pid().expect("proxy pid");
         assert!(std::path::Path::new(&format!("/proc/{pid}")).exists());
 
-        // The bwrap argv binds the proxy socket at /run/user/1234/bus,
-        // NOT the raw session bus address.
+        // The bwrap argv binds the proxy socket at /run/user/1234/bus, NOT the raw session bus
+        // address.
         let argv = build_bwrap_argv(
             &m,
             std::path::Path::new("/host/pkg"),
@@ -724,7 +668,6 @@ fn required_runtimes_mount_when_installed_and_trusted_and_refuse_the_launch_othe
         .set("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust_file);
     let opts = offline_options();
 
-    // Phase `an_installed_trusted_bundle_is_mounted_read_only_before_the_entry`.
     let (argv, mounts) = launcher::run::required_runtimes_test_helper(&m, &opts).unwrap();
     assert_eq!(
         argv,
@@ -737,7 +680,6 @@ fn required_runtimes_mount_when_installed_and_trusted_and_refuse_the_launch_othe
     );
     assert_eq!(mounts, ["/run/tilo-runtime/2026.10.0-engine"]);
 
-    // Phase `a_missing_bundle_refuses_the_launch`.
     m.required_runtimes
         .push("tilo-runtime/2026.10.0-missing".to_string());
     let refused = launcher::run::required_runtimes_test_helper(&m, &opts).unwrap_err();
@@ -747,11 +689,9 @@ fn required_runtimes_mount_when_installed_and_trusted_and_refuse_the_launch_othe
         "{refused}"
     );
 
-    // Phase `an_unsigned_bundle_refuses_the_launch`.
     m.required_runtimes = vec!["tilo-runtime/2026.10.0-unsigned".to_string()];
     launcher::run::required_runtimes_test_helper(&m, &opts).unwrap_err();
 
-    // Phase `a_bundle_from_another_publisher_refuses_the_launch`.
     m.required_runtimes = vec!["tilo-runtime/2026.10.0-engine".to_string()];
     let other = runtime_bundle::Identity::generate();
     std::fs::write(&trust_file, format!("{}\n", other.public_key_hex())).unwrap();
@@ -764,7 +704,6 @@ fn required_runtimes_mount_when_installed_and_trusted_and_refuse_the_launch_othe
         "{refused}"
     );
 
-    // Phase `a_version_that_is_not_one_path_component_is_refused`.
     m.required_runtimes = vec!["tilo-runtime/../2026.07".to_string()];
     let refused = launcher::run::required_runtimes_test_helper(&m, &opts).unwrap_err();
     assert!(
@@ -789,7 +728,6 @@ fn an_entrypoint_runtime_is_mounted_and_required() {
         .set("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust_file);
     let opts = offline_options();
 
-    // Phase `the_entrypoint_runtime_is_mounted_like_every_required_one`.
     let (argv, mounts) = launcher::run::required_runtimes_test_helper(&m, &opts).unwrap();
     assert_eq!(
         argv,
@@ -802,7 +740,6 @@ fn an_entrypoint_runtime_is_mounted_and_required() {
     );
     assert_eq!(mounts, ["/run/tilo-runtime/0.1.0-tilolang"]);
 
-    // Phase `a_missing_entrypoint_runtime_refuses_the_launch`.
     m.required_runtimes = vec!["tilolang/0.2.0-missing".to_string()];
     m.entrypoint.runtime = Some("tilolang/0.2.0-missing".to_string());
     let refused = launcher::run::required_runtimes_test_helper(&m, &opts).unwrap_err();
@@ -812,7 +749,6 @@ fn an_entrypoint_runtime_is_mounted_and_required() {
         "{refused}"
     );
 
-    // Phase `an_untrusted_entrypoint_runtime_refuses_the_launch`.
     m.required_runtimes = vec!["tilolang/0.1.0-tilolang".to_string()];
     m.entrypoint.runtime = Some("tilolang/0.1.0-tilolang".to_string());
     let other = runtime_bundle::Identity::generate();
@@ -829,9 +765,6 @@ fn an_entrypoint_runtime_is_mounted_and_required() {
 
 #[test]
 fn bundle_signatures_gate_the_runtime_mount() {
-    // Phase `unsigned_bundle_is_refused_unless_opted_in`.
-    // A runtime bundle that exists but is unsigned is refused by default;
-    // --allow-unsigned-runtime makes the resolve succeed.
     {
         let home = runtime_home();
         let _bundle = install_unsigned_bundle(home.data(), "sig-refuse-1");
@@ -855,10 +788,6 @@ fn bundle_signatures_gate_the_runtime_mount() {
         let (_p, v) = resolved.expect("bundle resolves");
         assert_eq!(v, "sig-refuse-1");
     }
-    // Phase `trusted_publisher_file_gates_mount`.
-    // The trusted-publisher file pins which signing keys are acceptable
-    // for runtime bundles at mount time: missing means any signed
-    // publisher works; a matching key accepts; a mismatched key refuses.
     {
         let mut home = runtime_home();
         let (_bundle, identity) = install_signed_bundle(home.data(), "trust-file-1");
@@ -867,7 +796,7 @@ fn bundle_signatures_gate_the_runtime_mount() {
         m.runtime = Some("tilo-runtime/trust-file-1".to_string());
         let opts = offline_options();
 
-        // 1. Trust file lists this publisher: accepted.
+        // 1.
         let trust_file = home.root().join("trust.txt");
         std::fs::write(
             &trust_file,
@@ -881,7 +810,7 @@ fn bundle_signatures_gate_the_runtime_mount() {
             .set("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust_file);
         launcher::run::resolve_runtime_test_helper(&m, &opts).expect("trusted pubkey ok");
 
-        // 2. Trust file lists a different publisher only: refused.
+        // 2.
         let other = runtime_bundle::Identity::generate();
         std::fs::write(&trust_file, format!("{}\n", other.public_key_hex())).unwrap();
         let err = launcher::run::resolve_runtime_test_helper(&m, &opts).unwrap_err();
@@ -891,8 +820,7 @@ fn bundle_signatures_gate_the_runtime_mount() {
             other => panic!("expected RuntimeBundleSignature, got {other:?}"),
         }
 
-        // 3. Trust file lists BOTH the actual publisher and a random extra —
-        //    the multi-entry branch of enforce_bundle_policy.
+        // 3.
         std::fs::write(
             &trust_file,
             format!(
@@ -904,14 +832,10 @@ fn bundle_signatures_gate_the_runtime_mount() {
         .unwrap();
         launcher::run::resolve_runtime_test_helper(&m, &opts).expect("multi-entry list accepts");
 
-        // 4. No trust file: any signed publisher works (verifies the env
-        //    override above, since the default /etc file isn't readable here).
+        // 4.
         home.env().remove("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE");
         launcher::run::resolve_runtime_test_helper(&m, &opts).expect("no trust file = any signed");
     }
-    // Phase `signed_bundle_publisher_pin_enforced`.
-    // A signed bundle is accepted by default. Pinning the publisher to
-    // its actual key still accepts; pinning to a different key refuses.
     {
         let home = runtime_home();
         let (_bundle, identity) = install_signed_bundle(home.data(), "sig-pin-1");
@@ -948,10 +872,6 @@ fn bundle_signatures_gate_the_runtime_mount() {
 
 #[test]
 fn capability_files_on_disk_become_binds_or_nothing() {
-    // Phase `a_capability_file_on_disk_becomes_a_bind_in_the_argv`.
-    // A capability file on disk becomes a bind in the argv, through the
-    // exact pair `run_with` uses: `resolve_capabilities` reads it,
-    // `build_bwrap_argv` renders the result.
     {
         use collab_types::caps::{Access, CapOverride, Scope, Subject};
 
@@ -963,8 +883,8 @@ fn capability_files_on_disk_become_binds_or_nothing() {
                 Scope::FsPath("/var/workspace/books".to_string()),
                 Access::Read,
             ),
-            // Addressed to a different app: must not survive the crossing,
-            // even though it sits in the same file.
+            // Addressed to a different app: must not survive the crossing, even though it sits in the
+            // same file.
             CapOverride::grant(
                 Subject::app("com.example.other"),
                 Scope::FsPath("/var/workspace/secrets".to_string()),
@@ -1008,10 +928,6 @@ fn capability_files_on_disk_become_binds_or_nothing() {
             "another app's grant in the same file must not be bound: {argv:?}"
         );
     }
-    // Phase `an_unparseable_or_absent_capability_file_grants_nothing`.
-    // Deny by default at the file boundary: an unparseable capability file
-    // grants nothing, same as no file at all — neither is a launch
-    // failure, both are just the manifest's sandbox.
     {
         let dir = tempfile::tempdir().unwrap();
         let m = hello_manifest(BTreeMap::new());

@@ -1,19 +1,4 @@
-//! Driven scrolling tests for the file list + grid.
-//!
-//! The list is the framework's table, which scrolls itself; the grid scrolls
-//! under a `Scrollable`.
-//!
-//! A directory with far more entries than fit on screen must scroll. These
-//! tests build the *real* composed widget tree, lay it out at a fixed
-//! viewport, then drive scrolling through the genuine winit event path
-//! (mouse wheel + a scrollbar-thumb drag) and assert that
-//!  * the list actually moves (the content offset changes), and
-//!  * entries that were below the fold become visible above the reserved
-//!    status-bubble lane once scrolled to the end.
-//!
-//! Geometry is read only through the public `Widget` trait (`name`,
-//! `get_rect`, `children`) so the assertions ride the production layout — no
-//! private hooks, no re-created widgets.
+//! Driven scrolling tests for the file list and the grid.
 
 #![allow(
     clippy::unwrap_used,
@@ -30,8 +15,6 @@ use ui::widget::Widget;
 use vello::kurbo::Rect;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
-/// A temp dir with `n` uniformly-named files (sorted, so index maps to a
-/// predictable row).
 fn dir_with_files(n: usize) -> tempfile::TempDir {
     let d = tempfile::tempdir().unwrap();
     for i in 0..n {
@@ -40,8 +23,6 @@ fn dir_with_files(n: usize) -> tempfile::TempDir {
     d
 }
 
-/// The production host: mount the widget tree at `w`×`h` and run its frames,
-/// so the caller can drive events and re-run the frame after a scroll.
 struct Harness {
     widget: Framed<FileExplorerWidget>,
 }
@@ -66,16 +47,10 @@ impl Harness {
         }
     }
 
-    /// Run the next frame. The scroll offset lives in the Scrollable and is
-    /// applied to descendants there; with no structural change the host only
-    /// re-applies the retained layout, the exact pass the App re-runs after a
-    /// wheel/drag flags the layout dirty.
     fn relayout(&mut self) {
         Framed::harness_mut(&mut self.widget).relayout();
     }
 
-    /// Render the current frame to a PNG — the same offscreen path `--shots`
-    /// uses, so the image is what a live window would show.
     fn shot(&self, out: &std::path::Path) {
         Framed::harness(&self.widget).render_png(out);
     }
@@ -85,8 +60,6 @@ impl Harness {
     }
 
     fn wheel(&mut self, notches_down: f32) {
-        // winit y-positive = scroll up; the Scrollable negates, so a negative
-        // y scrolls DOWN (reveals content below).
         let ev = ui::synthetic_input::mouse_wheel(0.0, -notches_down);
         self.dispatch(&ev, Modifiers::default());
     }
@@ -101,8 +74,6 @@ impl Harness {
         self.dispatch(&ev, Modifiers::default())
     }
 
-    /// Rect of the first descendant whose `name()` matches, searched over the
-    /// live widget tree (the production composition).
     fn rect_of(&self, name: &str) -> Rect {
         fn find(w: &dyn Widget, name: &str) -> Option<Rect> {
             if w.name() == name {
@@ -119,9 +90,6 @@ impl Harness {
     }
 }
 
-/// The lowest row index the list's table has mounted: it grows as the list
-/// scrolls. Read through the file view's accessibility export, the same
-/// semantics an assistive technology sees.
 fn first_mounted_row(h: &Harness) -> u64 {
     fn find(w: &dyn Widget) -> Option<u64> {
         if w.name() == "FileView" {
@@ -138,8 +106,6 @@ fn first_mounted_row(h: &Harness) -> u64 {
     find(&*h.widget).expect("the file view exposes its rows")
 }
 
-/// The offset the Scrollable has applied to its content = how far the content's
-/// top sits above the viewport's top.
 fn applied_offset(h: &Harness) -> f64 {
     let viewport = h.rect_of("Scrollable");
     let content = h.rect_of("FileView");
@@ -168,8 +134,6 @@ fn assert_scrolls_via_wheel(mode: ViewMode) {
     let viewport = h.rect_of("Scrollable");
     let content_before = h.rect_of("FileView");
 
-    // Precondition: the directory genuinely overflows the viewport, and its
-    // bottom is well below the fold (there ARE entries you can't see).
     assert!(
         content_before.height() > viewport.height() + 50.0,
         "{mode:?}: content ({}) must overflow the viewport ({})",
@@ -191,7 +155,6 @@ fn assert_scrolls_via_wheel(mode: ViewMode) {
     // viewport first, exactly as the window host does before a user wheels.
     h.cursor(viewport.center().x, viewport.center().y);
 
-    // One wheel notch down must move the list.
     h.wheel(3.0);
     h.relayout();
     let one_notch = applied_offset(&h);
@@ -200,8 +163,6 @@ fn assert_scrolls_via_wheel(mode: ViewMode) {
         "{mode:?}: a wheel-down must scroll the list; offset stayed {one_notch}",
     );
 
-    // Fling to the bottom: the content's bottom edge reaches the viewport's,
-    // so the last entries remain visible.
     h.wheel(1000.0);
     h.relayout();
     let content_after = h.rect_of("FileView");
@@ -224,8 +185,6 @@ fn assert_scrolls_via_wheel(mode: ViewMode) {
     );
 }
 
-/// List and grid wheel scrolling, the list thumb drag, and the opt-in
-/// (`SCROLL_SHOT_DIR`) before/after renders — each phase on a fresh directory.
 #[test]
 fn long_directories_scroll_by_wheel_and_thumb_with_optional_shots() {
     list_scrolls_with_the_mouse_wheel();
@@ -242,10 +201,6 @@ fn grid_scrolls_with_the_mouse_wheel() {
     assert_scrolls_via_wheel(ViewMode::Grid);
 }
 
-/// Visual before/after evidence: render a long directory unscrolled, then
-/// scrolled to the bottom, into two PNGs. Opt-in via `SCROLL_SHOT_DIR` (needs
-/// a GPU/software-wgpu path) so the standard `cargo test` run stays fast and
-/// display-free; the driven-scroll asserts above are the always-on proof.
 fn scroll_before_after_shots() {
     let Ok(dir_out) = std::env::var("SCROLL_SHOT_DIR") else {
         return;
@@ -262,7 +217,6 @@ fn scroll_before_after_shots() {
         h.relayout();
         h.shot(&out.join(format!("{tag}-after.png")));
 
-        // The two frames must genuinely differ (the list moved).
         let moved = match mode {
             ViewMode::List => first_mounted_row(&h) > 50,
             ViewMode::Grid => applied_offset(&h) > 50.0,
@@ -276,13 +230,9 @@ fn list_scrolls_by_dragging_the_scrollbar_thumb() {
     let mut h = Harness::new(dir.path(), ViewMode::List, 1000.0, 600.0);
 
     let table = h.rect_of("FileView");
-    // The vertical bar hugs the table's right edge; its thumb starts below
-    // the header band.
     let bar_x = table.x1 - 6.0;
     let start_y = table.y0 + 64.0;
 
-    // Hover the thumb, press it (begins a drag), drag down, release — all
-    // through the real event routing.
     h.cursor(bar_x, start_y);
     assert!(
         h.mouse(ElementState::Pressed),

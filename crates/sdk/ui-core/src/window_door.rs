@@ -135,6 +135,11 @@ pub fn requested_instance() -> Option<u64> {
 /// a window door request cannot reach a window that is already being built.
 pub const REVEAL_ENV: &str = crate::host::REVEAL_ENV;
 
+/// The variable the session sets on a launch it makes with no window: the
+/// app answers its actions and its door, and its first window is the first
+/// one the shell asks for here.
+pub const WINDOWLESS_ENV: &str = crate::host::WINDOWLESS_ENV;
+
 /// The item the window being built opens on: what the shell's request named
 /// for a window of a process already running, or, for the process's first
 /// window, the item its launch named it.

@@ -151,20 +151,18 @@ pub fn place_of(desktop: &DesktopTree, participant_id: &str) -> Option<Place> {
         .chain(&desktop.collaborators)
         .find(|participant| participant.id == participant_id)?
         .active_tab?;
-    workspace.strips.iter().find_map(|strip| {
+    workspace.strips.iter().enumerate().find_map(|(at, strip)| {
         let tab = strip
             .window_groups
             .iter()
             .flat_map(|group| &group.tabs)
             .find(|tab| tab.id == tab_id)?;
         let place = Place {
-            strip: Some(strip.name.trim())
-                .filter(|name| !name.is_empty())
-                .map(str::to_owned),
+            strip: Some(tilo_desktop_surface::names::strip_named(&strip.name, at)),
             window: Some(tab.title.trim())
                 .filter(|title| !title.is_empty())
                 .map(str::to_owned),
         };
-        (place.strip.is_some() || place.window.is_some()).then_some(place)
+        place.window.is_some().then_some(place)
     })
 }

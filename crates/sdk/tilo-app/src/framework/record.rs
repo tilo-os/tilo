@@ -47,6 +47,7 @@ pub(crate) struct RecordAction {
 
 type Apply<P> = Box<dyn Fn(&<P as Resource>::Action, &ActionInvoker) -> Result<(), ActionError>>;
 type Sync<P> = Box<dyn Fn(&Live<P>)>;
+type Read = Box<dyn Fn(&[u8]) -> Result<serde_json::Value, String>>;
 
 /// A record held for the views that edit it: its state as they read it and
 /// how an action applies to it.
@@ -57,6 +58,9 @@ pub struct Held<P: Resource> {
     live: Live<P>,
     sync: Sync<P>,
     apply: Apply<P>,
+    /// How a `read` of the record is answered, where its document is held
+    /// here ([`Self::reading`]): it is offered then, when `P` reads itself.
+    read: Option<Read>,
     /// The last publication, at the record's revision and loads and the
     /// locale's revision it was built at: published again only when one
     /// moved.
@@ -83,8 +87,24 @@ impl<P: Resource> Held<P> {
             live,
             sync: Box::new(sync),
             apply: Box::new(apply),
+            read: None,
             published: RefCell::new(None),
         }
+    }
+
+    /// The record, whose committed document `document` lends, read as every
+    /// record an app publishes is: the record that holds it offers `read`
+    /// when `P` reads itself.
+    pub(crate) fn reading(
+        mut self,
+        document: impl Fn(&mut dyn FnMut(&ui_core::automerge::AutoCommit)) + 'static,
+    ) -> Self {
+        self.read = Some(Box::new(move |payload| {
+            let mut answered = Err("the record cannot be read".to_owned());
+            document(&mut |doc| answered = read_record::<P>(doc, payload));
+            answered
+        }));
+        self
     }
 
     pub(crate) fn id(&self) -> &str {
@@ -155,7 +175,14 @@ impl<P: Resource> Held<P> {
                 .map_or_else(|| "the record does not read".to_owned(), |why| why.reason);
             tilo_resource::resource::unreadable_parts::<P>(&self.id, &self.label, &why)
         };
-        let published = route(published, &self.id, self.editable);
+        let mut published = route(published, &self.id, self.editable);
+        // Read whether it is changed here or not: whoever may act on it
+        // reads what it holds.
+        if P::READABLE && self.read.is_some() && self.live.unreadable().is_none() {
+            published
+                .actions
+                .push(tilo_resource::read::record_spec(&self.id));
+        }
         *self.published.borrow_mut() = Some((revision, published.clone()));
         published
     }
@@ -241,6 +268,15 @@ pub(crate) trait RecordDoor {
         let _ = live;
         self.apply_answering(action, invoker)
     }
+
+    /// What a read of this door's record answers, asked as `payload`: a
+    /// record reads what it holds ([`tilo_resource::read::TYPE`]), a chain
+    /// of parts what its parts hold ([`super::chain::CHAIN_READ_TYPE`]). A
+    /// record that answers no reads says so.
+    fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {
+        let _ = payload;
+        Err(format!("`{}` answers no reads of its parts", self.id()))
+    }
 }
 
 impl<P: Resource> RecordDoor for Held<P> {
@@ -261,6 +297,14 @@ impl<P: Resource> RecordDoor for Held<P> {
         Held::publish(self)
     }
 
+    fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {
+        let read = self
+            .read
+            .as_ref()
+            .ok_or_else(|| format!("{} answers no reads here", self.label))?;
+        read(payload)
+    }
+
     fn apply_encoded(&self, action: &EncodedAction, invoker: &ActionInvoker) -> Result<(), String> {
         if action.type_id != P::ACTION_TYPE {
             return Err(format!(
@@ -273,6 +317,15 @@ impl<P: Resource> RecordDoor for Held<P> {
         self.apply(&action, invoker)
             .map_err(|error| error.to_string())
     }
+}
+
+/// Who a change made now is by: the invoker the host delivered the
+/// invocation being carried out for (an agent, a Shortcut, an app, or a
+/// person over the broker), else `me`, the person at this window. Every write
+/// path reads it, so an agent's change is the agent's in whichever record
+/// it lands, and names the person it acts for.
+pub(crate) fn acting(me: &str) -> ActionInvoker {
+    ui_core::invocation_scope::current_invoker().unwrap_or_else(|| ActionInvoker::actor(me))
 }
 
 /// Answer one published action of a record: apply it to the record it
@@ -289,8 +342,7 @@ pub(crate) fn answer(
         .find(|door| door.id() == request.record)
         .ok_or_else(|| format!("no record `{}` is open here", request.record))?;
     let me = me.ok_or("this window changes no record of anyone's")?;
-    let invoker =
-        ui_core::invocation_scope::current_invoker().unwrap_or_else(|| ActionInvoker::actor(me));
+    let invoker = acting(me);
     let theirs = invoker.actor == me || invoker.on_behalf_of.as_deref() == Some(me);
     if !theirs {
         return Err(format!(
@@ -300,6 +352,19 @@ pub(crate) fn answer(
     }
     door.apply_encoded(&request.action, &invoker)?;
     Ok(tilo_actions::ActionOutput::default())
+}
+
+/// A `read` of the record `P` whose committed document is `doc`, asked as
+/// `payload`: what it holds through its own read, or from its model tables.
+fn read_record<P: Resource>(
+    doc: &ui_core::automerge::AutoCommit,
+    payload: &[u8],
+) -> Result<serde_json::Value, String> {
+    let kind = tilo_resource::ResourceKind::of::<P>();
+    let content = |doc: &ui_core::automerge::AutoCommit, item: Option<&str>| {
+        kind.content(doc, item).map_err(|error| error.to_string())
+    };
+    super::root::answer_read(doc, payload, |item| content(doc, item), content)
 }
 
 /// A record other than the app's own that views and surfaces edit: the
@@ -509,9 +574,15 @@ impl<'a> Records<'a> {
         self
     }
 
-    /// The app's record of `P` ([`RecordEnv::person`](super::RecordEnv::person)).
+    /// The app's own record of `P` ([`RecordEnv::person`](super::RecordEnv::person)): one per
+    /// kind in the workspace it is open in, each member's own there, opened with the window and
+    /// declared where the app declares its records, so a host that reads it without the window
+    /// ([`super::record_index`]) reads it by its kind.
     pub fn person<P: Resource>(&mut self) -> &mut Self {
         let Some(storage) = self.storage else {
+            // Declared, not opened: a host that reads the record without the
+            // window ([`super::record_index`]) reads it by its kind.
+            self.chains.push(tilo_resource::ResourceKind::of::<P>());
             return self;
         };
         let _ = storage.person::<P>();
@@ -709,6 +780,6 @@ fn record_dispatch<R: Resource, P: Resource>(
         let me = me
             .as_deref()
             .ok_or_else(|| ActionError::Refused("nobody edits a past version".into()))?;
-        held.apply(action, &ActionInvoker::actor(me))
+        held.apply(action, &acting(me))
     })
 }

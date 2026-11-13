@@ -25,7 +25,7 @@ struct SlowContent {
 }
 
 impl SearchProvider for SlowContent {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Calendar"
     }
     fn search(&self, _: &str) -> Vec<SearchResult> {
@@ -38,7 +38,7 @@ impl SearchProvider for SlowContent {
         _: usize,
         _: usize,
     ) -> SearchPage {
-        self.asked.set(self.asked.get() + 1);
+        self.asked.set(self.asked.get().saturating_add(1));
         if !self.released.load(Ordering::SeqCst) {
             let mut page = SearchPage::empty();
             page.pending = Some(PendingToken::new(1));
@@ -130,7 +130,8 @@ fn titles(search: &DesktopSearch) -> Vec<String> {
 
 /// Frames until the desk shows `title`, or the deadline passes.
 fn frames_until(search: &mut DesktopSearch, title: &str) {
-    let deadline = ui::time::now() + Duration::from_secs(10);
+    let now = ui::time::now();
+    let deadline = now.checked_add(Duration::from_secs(10)).unwrap_or(now);
     while !titles(search).iter().any(|shown| shown == title) && ui::time::now() < deadline {
         frame(search);
         std::thread::sleep(Duration::from_millis(1));
@@ -209,4 +210,36 @@ fn a_content_source_that_takes_seconds_does_not_keep_the_ready_rows_searching() 
         !search.palette().is_searching(),
         "the card is not searching"
     );
+}
+
+/// Rows that answer an earlier query are not the search's answer to what is typed now: the
+/// search says it is still searching until the field's own text is answered. A page that waits
+/// for the search to settle before Enter otherwise pressed it on the earlier rows, and the
+/// palette rightly held the key for the typed query's answer, a frame later.
+#[test]
+fn rows_of_an_earlier_query_are_not_the_answer_to_the_one_typed() {
+    let (mut search, released, _asked) = with_slow_content();
+    released.store(true, Ordering::SeqCst);
+    search.set_query("cal");
+    frames_until(&mut search, "Calendar");
+    let deadline = ui::time::now() + Duration::from_secs(10);
+    while !search.settled() && ui::time::now() < deadline {
+        frame(&mut search);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(search.settled(), "\"cal\" is answered");
+    // A key more, typed into the field as a key event types it: the rows follow in the desk's
+    // next pass, and until then the rows on screen are still "cal"'s.
+    search.palette_mut().set_query("cale");
+    assert!(
+        !search.settled(),
+        "the rows shown answer \"cal\", not \"cale\": {:?}",
+        titles(&search)
+    );
+    let deadline = ui::time::now() + Duration::from_secs(10);
+    while !search.settled() && ui::time::now() < deadline {
+        frame(&mut search);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(search.settled(), "\"cale\" is answered in its turn");
 }

@@ -1,5 +1,6 @@
-//! Private cooperative cache. Linux check-then-unlink/rename cannot confine
-//! arbitrary hostile same-UID or privileged mutation. No support activation.
+//! Private cooperative cache: its check-then-unlink cannot confine a hostile same-UID
+//! or privileged mutation.
+
 fn raw_components(path: &[u8]) -> Result<Vec<&[u8]>, String> {
     if path.len() > 4096 || path.first() != Some(&b'/') || path.contains(&0) {
         return Err("Unsupported absolute cache path".into());
@@ -157,9 +158,6 @@ mod native {
                     "Unsupported ACL entry",
                 )?;
             }
-            // On the explicitly supported Linux filesystems, mode group bits
-            // are the POSIX ACL effective mask. Safe named/default ACLs remain
-            // supported; private create mode constrains inherited effective grants.
             hash.update((bytes.len() as u64).to_le_bytes());
             hash.update(bytes);
         }
@@ -262,7 +260,6 @@ mod native {
         held.check(Some(parent))?;
         Ok(held)
     }
-    // A fresh open of "." gives each enumeration its own directory offset.
     fn entries(parent: &File) -> Result<Vec<Vec<u8>>> {
         let dot = c".";
         // SAFETY: live descriptor and static path.
@@ -354,7 +351,6 @@ mod native {
             )
         }
     }
-    /// The per-user cache directory that holds `tilo-internal-install`.
     pub(in crate::setup) fn cache_base() -> Result<std::path::PathBuf> {
         if let Some(cache) = tilo_paths::env_dir("XDG_CACHE_HOME") {
             Ok(cache)
@@ -398,7 +394,6 @@ mod native {
                 ancestry.push(directory(parent, leaf, true, true)?);
             }
             let root = &ancestry.last().unwrap().file;
-            // Classify before creating. The permanent lock is never unlinked.
             let known = [
                 b"ownership.lock".as_slice(),
                 b"payload",
@@ -429,8 +424,6 @@ mod native {
                 lock.file.metadata().map_err(io)?.len() == 0,
                 "Unknown lock contents",
             )?;
-            // Nonblocking cooperative exclusive lease, held through a duplicate
-            // of the lock descriptor that releases it explicitly when dropped.
             let exclusive = match FileLock::try_exclusive(lock.file.try_clone().map_err(io)?) {
                 Ok(exclusive) => exclusive,
                 Err(std::fs::TryLockError::WouldBlock) => return Err("Cache Busy".into()),
@@ -681,7 +674,6 @@ mod native {
                 "Cache selection changed",
             )?;
             self.lease.check()?;
-            // Finals authenticate first, independently of stale partial records.
             let mut finals = [
                 final_handle(self.lease.clone(), selected, 0, cancel)?,
                 final_handle(self.lease.clone(), selected, 1, cancel)?,
@@ -956,8 +948,6 @@ mod native {
                 )?;
                 let leaf = format!("record-{generation:010}");
                 let parent = &self.lease.journals[self.index].file;
-                // Exclusive record leaf is the publication. Any later failure is
-                // uncertain; torn/unknown records survive for conservative recovery.
                 self.uncertain = true;
                 let file = open(
                     parent,
@@ -1068,7 +1058,6 @@ mod native {
                     .unwrap()
                     .filename;
                 let target = name(final_name.as_bytes())?;
-                // Actual support is required. ENOSYS/EINVAL/EXDEV never fall back.
                 let rc = unsafe {
                     libc::renameat2(
                         parent.as_raw_fd(),
@@ -1106,8 +1095,6 @@ mod native {
                 parent.sync_all().map_err(io)?;
                 #[cfg(test)]
                 super::tests::boundary("final-durable")?;
-                // A failure/cancellation after rename leaves independently recoverable
-                // final bytes and old journal evidence; never roll back publication.
                 stop(cancel)?;
                 self.provider.retain(&[])?;
                 let readonly = open(parent, final_name.as_bytes(), libc::O_RDONLY).map_err(io)?;
@@ -1158,8 +1145,6 @@ mod native {
             stop(cancel)?;
             let own = self.provider.own.clone();
             self.provider.verify(&self.file, &own)?;
-            // Delete payload before journal; a crash cannot leave an unowned
-            // nonempty payload which looks eligible for fresh acquisition.
             unlink(&self.provider.lease.payload.file, &self.provider.payload)?;
             self.provider.lease.payload.file.sync_all().map_err(io)?;
             self.provider.retain(&[])
@@ -1170,8 +1155,6 @@ mod native {
             self.residue
         }
 
-        /// Verify once at actual consumption, then retain native guards through
-        /// the callback, including its error path. Restore the original cursor.
         #[cfg_attr(
             test,
             expect(
@@ -1191,8 +1174,6 @@ mod native {
                 self.held.file.rewind().map_err(io)?;
                 consume(&mut self.held.file)
             })();
-            // Run every postcheck even on callback/verification failure. Do not
-            // short circuit away restoration or the final cancellation check.
             let restored = self
                 .held
                 .file
@@ -1214,11 +1195,6 @@ mod native {
     }
     #[cfg(test)]
     pub(super) fn fixture_acquire(path: &Path, selected: &SelectedManifest) -> Result<CacheRoot> {
-        // CI runs inside an overlay-root container while the workspace itself
-        // is a qualified host filesystem. Start the native fixture's held
-        // ancestry at that explicitly provisioned directory so the tests
-        // still exercise every security invariant below the cache boundary.
-        // Production acquisition continues to authenticate from `/`.
         raw_components(path.as_os_str().as_bytes())?;
         let root = File::open(path).map_err(io)?;
         CacheRoot::acquire_below(vec![Held::new(root, b"", true, false)?], selected)

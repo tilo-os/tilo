@@ -22,15 +22,10 @@ use ui::widget::{
     SegmentedFace, ToggleGroup,
 };
 
-/// What a measured width belongs to: a button face (with or without a
-/// leading icon) or a field.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(super) enum Measure {
-    /// A `Regular` button face.
     Button { icon: bool },
-    /// The font-size field.
     FontInput,
-    /// One segment of a segmented strip: its strong label and padding.
     Segment,
 }
 
@@ -46,11 +41,8 @@ pub(super) struct ChromeMetrics {
     pub(super) s3: f64,
     pub(super) s4: f64,
     pub(super) s6: f64,
-    /// The inspector's heading row.
     pub(super) header_h: f64,
-    /// A `Regular` control.
     pub(super) control_h: f64,
-    /// A `Small` control: swatches.
     pub(super) small_h: f64,
     /// The square an icon-only control occupies.
     pub(super) target: f64,
@@ -58,16 +50,12 @@ pub(super) struct ChromeMetrics {
     pub(super) lh_subheading: f64,
     pub(super) lh_body: f64,
     pub(super) lh_label: f64,
-    /// How much text-sized widths grow at the current text scale.
     pub(super) growth: f64,
-    /// One wheel notch follows the host's scrolling metric.
     pub(super) wheel_line: f64,
-    /// Height of the drop-to-delete zone at the foot of the sidebar.
     pub(super) drop_zone_h: f64,
 }
 
 impl ChromeMetrics {
-    /// Everything but the measured widths, from `theme`.
     pub(super) fn of(theme: &Theme) -> Self {
         let sp = &theme.tokens.spacing;
         let metrics = &theme.tokens.metrics;
@@ -98,7 +86,6 @@ impl ChromeMetrics {
         }
     }
 
-    /// Measure every `(label, measure)` the chrome lays out against `tr`.
     pub(super) fn resolve(
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -125,18 +112,14 @@ impl ChromeMetrics {
         metrics
     }
 
-    /// The stock measures used before the first draw has a renderer.
     pub(super) fn fallback() -> Self {
         Self::of(&Theme::dark())
     }
 
-    /// The measured width of `label`, or an estimate before it was measured.
     pub(super) fn width(&self, label: &str, measure: Measure) -> f64 {
         if let Some(width) = self.widths.get(&(label.to_owned(), measure)) {
             return *width;
         }
-        // A generous per-glyph estimate; replaced by the measured width at
-        // the next draw.
         let glyphs = label.chars().count() as f64;
         match measure {
             Measure::Button { icon } => {
@@ -150,22 +133,17 @@ impl ChromeMetrics {
     }
 }
 
-/// A line of chrome text.
 #[derive(Clone)]
 pub(super) struct Label {
     pub(super) pos: Point,
     pub(super) text: String,
     pub(super) role: TextRole,
-    /// Secondary ink.
     pub(super) dim: bool,
-    /// When set, the painter elides `text` to this many pixels.
     pub(super) max_w: Option<f64>,
 }
 
-/// What a chrome control is; the toolkit face that paints it follows.
 #[derive(Clone)]
 pub(super) enum ButtonKind {
-    /// A labelled command, optionally with a leading icon.
     Command {
         label: String,
         icon: Option<Icon>,
@@ -178,22 +156,21 @@ pub(super) enum ButtonKind {
         name: String,
         active: bool,
     },
-    /// One segment of a segmented strip. Consecutive segments of one
-    /// `group` on one row paint as one strip. An icon segment shows its
-    /// icon, and `label` is its accessible name.
     Segment {
         label: String,
         icon: Option<Icon>,
         active: bool,
         group: u8,
     },
-    /// A fill or stroke colour role.
-    Swatch { role: String, selected: bool },
-    /// A deck colour theme.
-    Theme { kind: PaletteKind, selected: bool },
-    /// The speaker-notes field (painted by its text field).
+    Swatch {
+        role: String,
+        selected: bool,
+    },
+    Theme {
+        kind: PaletteKind,
+        selected: bool,
+    },
     Notes,
-    /// The slide layout picker (painted by its dropdown).
     LayoutPicker,
 }
 
@@ -204,8 +181,6 @@ pub(super) struct UiButton {
     pub(super) hit: Hit,
 }
 
-/// Segment groups of the inspector.
-/// One choice of a segmented strip in the inspector.
 struct SegmentItem {
     label: String,
     icon: Option<Icon>,
@@ -213,7 +188,6 @@ struct SegmentItem {
     hit: Hit,
 }
 
-/// The glyph of a text alignment.
 fn align_icon(align: TextAlign) -> Icon {
     match align {
         TextAlign::Left => Icon::AlignLeft,
@@ -227,20 +201,13 @@ const SEG_ALIGN: u8 = 0;
 const SEG_BACKGROUND: u8 = 1;
 const SEG_LOOK: u8 = 2;
 
-/// Which column of the window a control or a label belongs to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Zone {
-    /// The slide sidebar.
     Rail,
     Inspector,
-    /// Under the slide: its speaker notes, while the inspector is hidden
-    /// and the column has room below the slide.
     Content,
 }
 
-/// Where each column's controls and labels start in [`Chrome::buttons`]
-/// and [`Chrome::labels`]: the sidebar's, then the inspector's, then those
-/// under the slide.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct ZoneStarts {
     inspector_buttons: usize,
@@ -249,42 +216,33 @@ pub(super) struct ZoneStarts {
     content_labels: usize,
 }
 
-/// The editor chrome resolved for one frame.
 pub(super) struct Chrome {
-    /// The slide sidebar: a docked column or a floating drawer.
     pub(super) rail: Rect,
-    /// The inspector: a docked column or a floating drawer.
     pub(super) inspector: Rect,
-    /// The inspector's scrolling body, under its header.
     pub(super) inspector_body: Rect,
-    /// Unscrolled height of the inspector body's content.
     pub(super) inspector_content_h: f64,
     pub(super) slide_dest: Rect,
     pub(super) scale: f64,
     pub(super) thumbs: Vec<(usize, Rect)>,
     pub(super) buttons: Vec<UiButton>,
     pub(super) labels: Vec<Label>,
-    /// The thumbnail list, between the sidebar's header and its footer.
     pub(super) rail_viewport: Rect,
     pub(super) notes_box: Option<Rect>,
     pub(super) font_input_rect: Option<Rect>,
     pub(super) fill_picker_rect: Option<Rect>,
     pub(super) layout: SplitLayout,
     pub(super) inspector_layout: SplitLayout,
-    /// Dims the window behind an open floating drawer.
     pub(super) scrim: Rect,
     zones: ZoneStarts,
 }
 
 impl Chrome {
-    /// Where the layout picker sits this frame, if the inspector shows it.
     pub(super) fn layout_picker_rect(&self) -> Option<Rect> {
         self.zone_buttons(Zone::Inspector)
             .find(|b| matches!(b.kind, ButtonKind::LayoutPicker))
             .map(|b| b.rect)
     }
 
-    /// The column the button at `index` belongs to.
     pub(super) fn button_zone(&self, index: usize) -> Zone {
         if index >= self.zones.content_buttons {
             Zone::Content
@@ -295,7 +253,6 @@ impl Chrome {
         }
     }
 
-    /// The column the label at `index` belongs to.
     pub(super) fn label_zone(&self, index: usize) -> Zone {
         if index >= self.zones.content_labels {
             Zone::Content
@@ -306,7 +263,6 @@ impl Chrome {
         }
     }
 
-    /// The buttons of one column, with their indices.
     pub(super) fn zone_buttons(&self, zone: Zone) -> impl Iterator<Item = &UiButton> {
         self.buttons
             .iter()
@@ -332,8 +288,6 @@ pub(super) fn insert_tools() -> [(String, Icon, ElementKind); 5] {
     ]
 }
 
-/// The display name of a colour role, for its swatch's tooltip and
-/// accessible name.
 pub(super) fn role_name(role: &str) -> String {
     match role {
         "none" => tr("slides-colour-none"),
@@ -352,7 +306,6 @@ pub(super) fn role_name(role: &str) -> String {
 }
 
 impl SlidesApp {
-    /// Every label the chrome reserves a measured slot for this frame.
     pub(super) fn chrome_label_set(&self) -> Vec<(String, Measure)> {
         let button = |s: String| (s, Measure::Button { icon: false });
         let command = |s: String| (s, Measure::Button { icon: true });
@@ -384,8 +337,6 @@ impl SlidesApp {
         set
     }
 
-    /// Re-resolve the chrome metrics against the theme and renderer about
-    /// to paint.
     pub(super) fn refresh_chrome_metrics(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         let font_input_w = self.font_input.preferred_width(theme, tr);
         let set = self.chrome_label_set();
@@ -399,14 +350,11 @@ impl SlidesApp {
         self.drawer_theme_scale(theme);
     }
 
-    /// The breakpoint below which both side panels become drawers: a slide
-    /// sidebar, an inspector and a content column that still reads.
     fn panel_breakpoint() -> f64 {
         let base = ui::tokens::Metrics::BASE;
         f64::from(base.sidebar_min_width + base.inspector_width + base.content_min_width)
     }
 
-    /// Fresh slide sidebar and inspector drawers at the shell's metrics.
     pub(super) fn new_drawers() -> (SidebarDrawer, SidebarDrawer) {
         let base = ui::tokens::Metrics::BASE;
         let breakpoint = Self::panel_breakpoint();
@@ -421,25 +369,21 @@ impl SlidesApp {
         )
     }
 
-    /// Hand both drawers the theme's scale.
     fn drawer_theme_scale(&mut self, theme: &Theme) {
         self.rail_drawer.scale_for(theme);
         self.inspector_drawer.scale_for(theme);
     }
 
-    /// Resolve both drawers against the window.
     pub(super) fn resolve_drawers(&mut self) {
         let r = self.rect;
         self.rail_drawer.resolve(r);
         self.inspector_drawer.resolve(r);
     }
 
-    /// The editor chrome for this frame.
     pub(super) fn compute_chrome(&self) -> Chrome {
         let r = self.rect;
         let layout = self.rail_layout();
         let inspector_layout = self.inspector_layout();
-        // A drawer slid fully out of the window shows nothing.
         let shown = |panel: Rect| {
             if r.intersect(panel).width() > 1.0 {
                 panel
@@ -533,8 +477,6 @@ impl SlidesApp {
         }
     }
 
-    /// The swatch for `role` in `rect`, in its colour as it reads on the
-    /// current slide; "no colour" is the toolkit's none swatch.
     pub(super) fn swatch_face(&self, pal: &Palette, rect: Rect, role: &str) -> ColorSwatchFace {
         let on_slide = self.slide().map_or(*pal, |slide| pal.on(slide.background));
         match on_slide.resolve_role(role) {
@@ -564,19 +506,10 @@ impl SlidesApp {
         Some((canvas, area))
     }
 
-    /// Fit the 16:9 slide inside `canvas` with the content gutter round it,
-    /// or place it at the zoom the person chose, moved by however far they
-    /// have panned. Returns the destination rect and the slide→pixel scale
-    /// factor.
-    ///
-    /// A zoomed slide is centred on the pane and may be larger than it: the
-    /// pane clips it, and the wheel moves it, so every part stays reachable.
     pub(super) fn fit_slide(&self, canvas: Rect) -> (Rect, f64) {
         let pad = self.chrome_metrics.s6;
         let avail_w = (canvas.width() - 2.0 * pad).max(1.0);
         let avail_h = (canvas.height() - 2.0 * pad).max(1.0);
-        // What the pan is clamped to, for the keys and the wheel, which run
-        // between frames.
         self.slide_pane.set((avail_w, avail_h));
         let fit = (avail_w / SLIDE_W).min(avail_h / SLIDE_H);
         let s = match self.slide_zoom {
@@ -609,11 +542,8 @@ impl SlidesApp {
         )
     }
 
-    /// The slide sidebar: the footer actions and, above them, the
-    /// thumbnail list's viewport, which the shared [`PageSidebar`] owns.
     fn build_rail_chrome(&self, rail: Rect, buttons: &mut Vec<UiButton>) -> Rect {
         let m = &self.chrome_metrics;
-        // Footer: add, duplicate and delete the current slide.
         let footer_y = rail.y1 - m.s3 - m.target;
         let mut x = rail.x0 + m.s3;
         for (icon, name, hit) in [
@@ -643,17 +573,12 @@ impl SlidesApp {
         Rect::new(rail.x0, rail.y0, rail.x1, (footer_y - m.s3).max(rail.y0))
     }
 
-    /// The drop-to-delete zone that takes the place of the sidebar's
-    /// footer while a thumbnail is dragged.
     pub(super) fn slide_delete_zone(&self, rail: Rect) -> Rect {
         let m = &self.chrome_metrics;
         let top = (rail.y1 - m.s3 - m.drop_zone_h).max(rail.y0);
         Rect::new(rail.x0 + m.s3, top, rail.x1 - m.s3, rail.y1 - m.s3)
     }
 
-    /// The thumbnail list's viewport inside `rail` (see
-    /// [`Self::build_rail_chrome`]): above the footer, or above the
-    /// drop-to-delete zone while a thumbnail is dragged.
     pub(super) fn rail_viewport_of(&self, rail: Rect) -> Rect {
         let m = &self.chrome_metrics;
         let top = rail.y0;
@@ -665,9 +590,6 @@ impl SlidesApp {
         Rect::new(rail.x0, top, rail.x1, foot.max(top))
     }
 
-    /// The fill colour popover: beside the inspector's fill section,
-    /// towards the canvas, and kept inside the window. `None` while it is
-    /// closed.
     fn fill_picker_popover_rect(&self, inspector: Rect, r: Rect) -> Option<Rect> {
         if !self.fill_picker_open {
             return None;
@@ -687,14 +609,11 @@ impl SlidesApp {
         Some(Rect::new(x, y, x + w, y + h))
     }
 
-    /// How far the popover panel extends beyond the picker above (its
-    /// title row) and below.
     pub(super) fn fill_picker_panel_insets(&self) -> (f64, f64) {
         let m = &self.chrome_metrics;
         (m.s4 + m.lh_subheading + m.s3, m.s4)
     }
 
-    /// The popover panel round the fill picker at `picker`.
     pub(super) fn fill_picker_panel_rect(&self, picker: Rect) -> Rect {
         let (top, bottom) = self.fill_picker_panel_insets();
         let side = self.chrome_metrics.s4;
@@ -706,9 +625,6 @@ impl SlidesApp {
         )
     }
 
-    /// The inspector: its heading (what is selected) and its scrolling body of sections, ending in the speaker
-    /// notes. Returns the body viewport, the body's unscrolled content
-    /// height, the notes field and the font-size field.
     fn build_inspector(
         &self,
         inspector: Rect,
@@ -751,8 +667,6 @@ impl SlidesApp {
             y = self.build_inspector_slide(x0, x1, y, buttons, labels);
         }
 
-        // The speaker notes follow the last section and fill the rest of
-        // the panel; a short panel scrolls rather than squeezing them.
         Self::push_section_label(m, labels, x0, &mut y, &tr("slides-speaker-notes"));
         let notes_min = 4.0 * m.lh_body + 2.0 * m.s3;
         let mut notes = Rect::new(x0, y, x1, y + notes_min);
@@ -762,9 +676,6 @@ impl SlidesApp {
             hit: Hit::EditNotes,
         });
 
-        // Scroll the body once its sections outgrow it: every body item is
-        // shifted by the scroll model's offset, and what then lies outside
-        // the viewport is dropped, so paint, pointer and accessibility agree.
         let content_h = notes.y1 + m.s4 - body.y0;
         let max_offset = (content_h - body.height()).max(0.0);
         let offset = f64::from(self.inspector_scroll.offset_y()).clamp(0.0, max_offset);
@@ -809,7 +720,6 @@ impl SlidesApp {
         (body, content_h, Some(notes), font_input)
     }
 
-    /// A section label ("Fill") at `x0, *y`, advancing `*y` past it.
     fn push_section_label(
         m: &ChromeMetrics,
         labels: &mut Vec<Label>,
@@ -827,8 +737,6 @@ impl SlidesApp {
         *y += m.lh_subheading + m.s2;
     }
 
-    /// The sections for a selected element: fill, stroke, (for text) font
-    /// and alignment, and arrange. Returns the y under the last section.
     fn build_inspector_element(
         &self,
         el: &Element,
@@ -843,7 +751,6 @@ impl SlidesApp {
         let mut y = y;
 
         Self::push_section_label(m, labels, x0, &mut y, &tr("slides-fill"));
-        // A shape may be left unfilled; text always has its colour.
         let mut fills: Vec<&str> = Vec::with_capacity(FILL_ROLES.len() + 1);
         if el.kind != ElementKind::Text {
             fills.push("none");
@@ -875,8 +782,6 @@ impl SlidesApp {
             Self::push_section_label(m, labels, x0, &mut y, &tr("slides-font"));
             let field_w = m.width("", Measure::FontInput).min(x1 - x0);
             *font_input = Some(Rect::new(x0, y, x0 + field_w, y + m.control_h));
-            // Bold, italic and the two lists are square glyph toggles,
-            // beside the size field when they fit, under it otherwise.
             let toggles = [
                 (
                     Icon::Bold,
@@ -903,8 +808,6 @@ impl SlidesApp {
                     Hit::ToggleList(true),
                 ),
             ];
-            // Beside the field they are squares at the row's end; under it
-            // they share the whole row, as the alignment strip does.
             let square = m.control_h;
             let count = toggles.len() as f64;
             let toggles_w = square * count + m.s1 * (count - 1.0);
@@ -991,9 +894,6 @@ impl SlidesApp {
         y + rows * m.control_h + (rows - 1.0) * m.s2 + m.s6
     }
 
-    /// The sections for the current slide when nothing is selected: its
-    /// layout, its background and the deck's colour theme. Returns the y
-    /// under the last section.
     fn build_inspector_slide(
         &self,
         x0: f64,
@@ -1064,8 +964,6 @@ impl SlidesApp {
         y + rows as f64 * (m.control_h + m.s2) - m.s2 + m.s6
     }
 
-    /// A segmented strip across `x0..x1`: one row while every label fits
-    /// its share, otherwise rows of two. Returns the y under it.
     fn segment_rows(
         &self,
         buttons: &mut Vec<UiButton>,
@@ -1077,7 +975,6 @@ impl SlidesApp {
     ) -> f64 {
         let m = &self.chrome_metrics;
         let n = items.len().max(1);
-        // An icon segment wants a pointer target; a labelled one its label.
         let widest = items
             .iter()
             .map(|item| {
@@ -1115,8 +1012,6 @@ impl SlidesApp {
         y + rows * m.control_h + (rows - 1.0) * m.s2
     }
 
-    /// The fill or stroke swatches, four to a row. Returns the y under the
-    /// last row.
     fn swatch_grid(
         &self,
         buttons: &mut Vec<UiButton>,
@@ -1158,8 +1053,6 @@ impl SlidesApp {
         chrome.inspector.width() > 1.0 && chrome.inspector.contains(p)
     }
 
-    /// The whole editor: the docked panels' regions, the canvas, the
-    /// panels' contents, and any open drawer over its scrim.
     pub(super) fn draw_editor(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -1202,7 +1095,6 @@ impl SlidesApp {
             self.draw_inspector_contents(scene, t, tr, &local, chrome, &pal);
         }
 
-        // An open drawer floats over everything.
         let rail_floating = !rail_docked && chrome.rail.width() > 1.0;
         let inspector_floating = !inspector_docked && chrome.inspector.width() > 1.0;
         if rail_floating {
@@ -1215,8 +1107,6 @@ impl SlidesApp {
         }
     }
 
-    /// The theme the inspector's contents are drawn with: its region's, or
-    /// the floating drawer's.
     pub(super) fn inspector_theme(&self, theme: &Theme) -> Theme {
         if self.inspector_drawer.is_overlay() {
             theme.on_ground(ui::chrome::panel_ground(theme))
@@ -1286,8 +1176,6 @@ impl SlidesApp {
             Zone::Inspector,
             in_header,
         );
-        // The body is clipped to its viewport: a scrolled section is cut at
-        // the header rather than running under it.
         let body = chrome.inspector_body;
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &body);
         let in_body = |p: Point| body.contains(p);

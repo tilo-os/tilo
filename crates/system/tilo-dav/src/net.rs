@@ -1,15 +1,13 @@
 //! Async `WebDAV` client on `tilo_net`, for Linux, macOS and the web.
 //!
-//! The same requests as the blocking [`client`](crate::client) — method,
-//! headers, credentials, conditional `ETag`s — and the same bounded bodies,
-//! as futures an app runs on its app runtime. Statuses are not interpreted
-//! here either; [`DavResponse`] hands them back.
+//! The same requests as the blocking [`client`](crate::client) and the same bounded
+//! bodies, as futures an app runs on its app runtime. Statuses are not interpreted here
+//! either; [`DavResponse`] hands them back.
 //!
 //! In a page the server must allow the page's origin (CORS), including the
-//! `PROPFIND`/`REPORT` methods and the `Depth`, `If-Match` and
-//! `Authorization` headers; most `CalDAV` servers do not, so a page reaches
-//! them only through the host's fetch proxy when the caller opts in with
-//! [`DavClient::with_fetch_proxy`].
+//! `PROPFIND`/`REPORT` methods and the `Depth`, `If-Match` and `Authorization` headers;
+//! most `CalDAV` servers do not, so a page reaches them only through the host's fetch
+//! proxy when the caller opts in with [`DavClient::with_fetch_proxy`].
 
 use std::fmt;
 use std::sync::Arc;
@@ -29,15 +27,12 @@ pub use crate::request::{Credentials, Depth, Options, Precondition, Redirects};
 /// across crates polls it here rather than compiling it again.
 pub type DavFuture<'a, T> = std::pin::Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// Transport and bounded-read failures. HTTP statuses are not errors.
 #[derive(Debug)]
 pub enum Error {
     /// The request could not be built or sent, the response headers did not
     /// arrive, or the body failed while streaming.
     Transport(NetError),
-    /// The body is larger than the caller's limit.
     TooLarge,
-    /// The body is not an acceptable multistatus document.
     Xml(XmlError),
 }
 
@@ -70,7 +65,6 @@ pub struct DavClient {
 }
 
 impl DavClient {
-    /// A client for `options`, fetching directly.
     pub fn new(options: &Options) -> Result<Self, Error> {
         Self::with_fetch_proxy(options, ProxyUse::Never)
     }
@@ -97,7 +91,6 @@ impl DavClient {
         })
     }
 
-    /// The same transport, authenticating every request with `credentials`.
     #[must_use]
     pub fn with_credentials(&self, credentials: Credentials) -> Self {
         Self {
@@ -106,7 +99,6 @@ impl DavClient {
         }
     }
 
-    /// `PROPFIND` for `props` at `depth`.
     pub async fn propfind(
         &self,
         url: &str,
@@ -121,7 +113,6 @@ impl DavClient {
         send(request).await
     }
 
-    /// `REPORT` with an XML `body` (see [`crate::body`]).
     pub async fn report(
         &self,
         url: &str,
@@ -136,7 +127,6 @@ impl DavClient {
         send(request).await
     }
 
-    /// `GET`.
     pub async fn get(&self, url: &str) -> Result<DavResponse, Error> {
         send(self.request(Method::GET, url)).await
     }
@@ -156,7 +146,6 @@ impl DavClient {
         send(apply(request, precondition)).await
     }
 
-    /// `DELETE` under `precondition`.
     pub async fn delete(
         &self,
         url: &str,
@@ -165,7 +154,6 @@ impl DavClient {
         send(apply(self.request(Method::DELETE, url), precondition)).await
     }
 
-    /// `MKCOL`.
     pub async fn mkcol(&self, url: &str) -> Result<DavResponse, Error> {
         send(self.request(method(b"MKCOL"), url)).await
     }
@@ -200,7 +188,6 @@ impl DavClient {
     }
 }
 
-/// A response whose body has not been read yet.
 #[derive(Debug)]
 pub struct DavResponse {
     inner: tilo_net::Response,
@@ -211,7 +198,6 @@ impl DavResponse {
         self.inner.status()
     }
 
-    /// The `ETag` header, if present and visible ASCII.
     pub fn etag(&self) -> Option<String> {
         self.inner
             .headers()
@@ -220,9 +206,8 @@ impl DavResponse {
             .map(ToOwned::to_owned)
     }
 
-    /// Read at most `limit` bytes. A server that declares or streams more is
-    /// refused without buffering past the limit, whether or not it sent a
-    /// `Content-Length`.
+    /// Read at most `limit` bytes. A server that declares or streams more is refused
+    /// without buffering past the limit, whether or not it sent a `Content-Length`.
     ///
     /// # Errors
     /// [`Error::TooLarge`] past the limit, [`Error::Transport`] on failure.

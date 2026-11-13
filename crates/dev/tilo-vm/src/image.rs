@@ -1,10 +1,6 @@
-//! Local disk files for `vm create`: what an `--image` or `--boot-esp` file
-//! is, and the one-time import of an image that lives on a network path.
-//!
-//! A local image is either a qcow2 dev disk (what CI publishes) or a raw disk
-//! with a GPT (what `os/dev/disk-image.sh --raw` and `os/dev/make-boot-esp.sh`
-//! write). The VM's own disk is a qcow2 child of it, so the image is never
-//! written.
+//! Local disk files for `vm create`: what an `--image` or `--boot-esp` file is,
+//! and the one-time import of an image that lives on a network path. The VM's
+//! own disk is a qcow2 child of the image, so the image is never written.
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -13,7 +9,6 @@ use sha2::{Digest, Sha256};
 
 use crate::hypervisor::CommandLine;
 
-/// The on-disk format of a local image, as `qemu-img` names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Qcow2,
@@ -46,8 +41,6 @@ const GPT_SIGNATURE: &[u8] = b"EFI PART";
 /// The primary GPT header's signature: LBA 1 of a 512-byte-sector disk.
 const GPT_AT: std::ops::Range<usize> = 512..520;
 
-/// The format of a disk from its first bytes: a qcow2 header, or a raw disk
-/// whose LBA 1 holds a GPT header.
 pub fn detect(head: &[u8]) -> Result<Format, String> {
     if head.starts_with(QCOW2_MAGIC) {
         return Ok(Format::Qcow2);
@@ -65,7 +58,6 @@ pub fn detect(head: &[u8]) -> Result<Format, String> {
     }
 }
 
-/// [`detect`] on a file.
 pub fn format_of(path: &Path) -> Result<Format, String> {
     let mut head = Vec::with_capacity(GPT_AT.end);
     std::fs::File::open(path)
@@ -74,9 +66,6 @@ pub fn format_of(path: &Path) -> Result<Format, String> {
     detect(&head)
 }
 
-/// Is `path` on another machine (a Windows UNC path such as
-/// `\\wsl.localhost\Fedora\home\me\disk.raw` or `\\server\share\disk.raw`)?
-/// `\\?\C:\` and `\\.\` name local files and devices.
 #[must_use]
 pub fn is_network_path(path: &str) -> bool {
     let unc = path.replace('/', "\\");
@@ -107,7 +96,6 @@ pub fn import_path(cache: &Path, source: &str, len: u64, modified_nanos: u128) -
         .join(format!("{}.qcow2", key.get(..16).unwrap_or(&key)))
 }
 
-/// The partial file an import writes before it is verified.
 #[must_use]
 pub fn import_part(dest: &Path) -> PathBuf {
     let mut part = dest.as_os_str().to_owned();
@@ -115,10 +103,6 @@ pub fn import_part(dest: &Path) -> PathBuf {
     PathBuf::from(part)
 }
 
-/// Copy `source` into a local qcow2 at `part`, then compare every
-/// guest-visible byte with the source. QEMU on Windows reads a disk behind a
-/// UNC path unreliably as a backing file (whole ranges come back as zeros),
-/// so a VM never runs on one: it runs on this verified local copy.
 #[must_use]
 pub fn import_commands(
     qemu_img: &str,
@@ -151,11 +135,8 @@ mod tests {
         disk
     }
 
-    /// Formats are told apart by their first bytes; entries without a format are qcow2; UNC paths are
-    /// network paths; an import is keyed by source, size and time and converts then compares every byte.
     #[test]
     fn disk_images_are_identified_and_imported_byte_exactly() {
-        // Phase: formats_are_told_apart_by_their_first_bytes.
         {
             assert_eq!(detect(b"QFI\xfb\0\0\0\x03"), Ok(Format::Qcow2));
             assert_eq!(detect(&raw_with_gpt()), Ok(Format::Raw));
@@ -171,14 +152,12 @@ mod tests {
             assert!(format_of(&dir.path().join("missing")).is_err());
         }
 
-        // Phase: entries_without_a_format_are_qcow2.
         {
             assert_eq!(Format::from_entry(None), Format::Qcow2);
             assert_eq!(Format::from_entry(Some("qcow2")), Format::Qcow2);
             assert_eq!(Format::from_entry(Some("raw")), Format::Raw);
         }
 
-        // Phase: unc_paths_are_network_paths.
         {
             assert!(is_network_path(
                 r"\\wsl.localhost\FedoraLinux-42\home\me\disk.raw"
@@ -193,7 +172,6 @@ mod tests {
             assert!(!is_network_path("/home/me/disk.raw"));
         }
 
-        // Phase: an_import_is_keyed_by_source_size_and_time.
         {
             let cache = Path::new("/cache");
             let a = import_path(cache, r"\\wsl.localhost\F\disk.raw", 10, 1);
@@ -209,7 +187,6 @@ mod tests {
             );
         }
 
-        // Phase: an_import_converts_then_compares_every_byte.
         {
             let commands = import_commands(
                 "qemu-img.exe",

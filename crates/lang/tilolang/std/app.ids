@@ -1,9 +1,10 @@
 # tilolang ids: generated, commit it. Edit only through `tilolang ids --rename`.
 add_entry = mpazezbv
 add_entry.typed = 3e5q2ijn
+after_body = aymgcjsx
 body = gfmzi3qr
 browse = 2rsewtyl
-browse.order = w6jnsz53
+browse.found = 54zjutwq
 browse.query = 3rpkbiem
 browse_rows = x3tunq4c
 composer = q2up7uqm
@@ -22,18 +23,26 @@ place = i4wlhd7i
 places = jt4au2t2
 quote = 33wxlq7h
 reply_banner = pjkvdmwk
-sorts = nap6tnmn
+service_banner = 4fscvi5n
+service_mark = rxt7clph
 suggestions = e3tczbcu
 thread_chip = zitymayc
 transcript = wxxxvca4
+tree = km7gwrux
+tree.found = mjnz4ash
+tree.open_item = eexoaua2
+tree_rows = amhv6uws
 version_changes = m2ye55z2
 version_notes = dmuyso4s
 version_said = 33tyunh6
 
 # retired
+browse.order = w6jnsz53
 history_step = ni4lcmis
 list.query = upzs3qkn
 rows = pkrsaacd
 rows_list = kxi5h2rb
+sorts = nap6tnmn
 summary = 26osm2dq
+tree_node = qod6ucwy
 version_sentence = k3lu4ge3

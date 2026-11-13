@@ -20,11 +20,14 @@ fn guild() -> Guild {
     g
 }
 
-fn chat() -> Value {
-    json!({
-        "messages": [{"id": "m1", "value": {"channel": "c1", "author": "u_ada", "text": "hello", "parent": null}}],
-        "people": [{"id": "u_ada", "name": "Ada", "agent": false}]
-    })
+fn chat() -> crate::tilo::ChatRead {
+    crate::tilo::ChatRead::new(
+        json!({"people": {"u_ada": {"id": "u_ada", "name": "Ada", "agent": false}}}),
+        vec![(
+            "m1".into(),
+            json!({"channel": "c1", "author": "u_ada", "text": "hello", "parent": null}),
+        )],
+    )
 }
 
 fn verb(name: &str) -> Value {
@@ -73,7 +76,6 @@ fn discord(source: &str, payload: &Value) -> Value {
 fn a_chat_post_is_routed_to_its_message_and_sent_once() {
     let event =
         json!({"kind": CHAT_KIND, "did": verb("post"), "item": {"kind": "messages", "id": "m1"}});
-    assert_eq!(route(&guild(), &event), "m1");
     let plan = planned(&guild(), &event);
     assert_eq!(plan.sends.len(), 1);
     assert_eq!(plan.sends[0]["op"]["webhook"], "wh1");
@@ -91,7 +93,6 @@ fn a_post_entry_names_its_channel_and_the_plan_finds_the_message_it_made() {
         "actor": {"id": "u_ada"},
         "arguments": {"channel": "c1", "text": "hello"},
     });
-    assert_eq!(route_channel(&event), "c1");
     let plan = planned(&guild(), &event);
     assert_eq!(plan.sends.len(), 1, "{:?}", plan.sends);
     assert_eq!(plan.sends[0]["op"]["tilo"], "m1");
@@ -114,7 +115,6 @@ fn sharing_posts_and_stopping_a_share_edits_its_copy() {
         "actor": {"id": "u_ada"},
         "arguments": {"channel": "c1"},
     });
-    assert_eq!(route_channel(&shared), "c1");
     let plan = planned(&guild(), &shared);
     assert_eq!(plan.sends.len(), 1, "{:?}", plan.sends);
     assert_eq!(plan.sends[0]["op"]["tilo"], "m1");
@@ -295,10 +295,14 @@ fn a_tilo_reaction_is_routed_to_its_message_and_becomes_the_bots() {
     let mut g = guild();
     g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
     let event = json!({"kind": MESSAGES_KIND, "did": {"did": "group", "members": [reaction_edit("react", "m1", "👍")]}});
-    assert_eq!(route(&g, &event), "m1");
-    let chat = json!({"messages": [{"id": "m1", "value": {"channel": "c1", "author": "u_ada", "text": "hello",
-        "reactions": [{"emoji": "👍", "by": "u_bo", "at": 1}]}}]});
-    let read = |chat: &Value, event: &Value| {
+    let chat = crate::tilo::ChatRead::new(
+        serde_json::Value::Null,
+        vec![(
+            "m1".into(),
+            json!({"channel": "c1", "author": "u_ada", "text": "hello", "reactions": [{"emoji": "👍", "by": "u_bo", "at": 1}]}),
+        )],
+    );
+    let read = |chat: &crate::tilo::ChatRead, event: &Value| {
         plan(
             Reading {
                 guild: &g,
@@ -318,7 +322,13 @@ fn a_tilo_reaction_is_routed_to_its_message_and_becomes_the_bots() {
     assert!(planned.apply_channels.is_empty() && !planned.again);
 
     let taken = json!({"kind": MESSAGES_KIND, "did": reaction_edit("unreact", "m1", "👍")});
-    let none = json!({"messages": [{"id": "m1", "value": {"channel": "c1", "author": "u_ada", "text": "hello", "reactions": []}}]});
+    let none = crate::tilo::ChatRead::new(
+        serde_json::Value::Null,
+        vec![(
+            "m1".into(),
+            json!({"channel": "c1", "author": "u_ada", "text": "hello", "reactions": []}),
+        )],
+    );
     assert_eq!(
         read(&none, &taken).unreacts,
         [json!({"channel": "d1", "message": "dm1", "emoji": "👍"})]
@@ -338,7 +348,6 @@ fn a_discord_reaction_is_the_members_own_reaction_on_the_mapped_message() {
         &json!({"guild_id": "1", "channel_id": "d1", "message_id": "dm1", "user_id": "d7",
                 "user_name": "Dee", "emoji": ":party:", "emoji_id": "77", "animated": true}),
     );
-    assert_eq!(route(&g, &event), "m1", "read with the message it is on");
     let planned = planned(&g, &event);
     assert_eq!(planned.chat_reacts.len(), 1, "{planned:?}");
     let react = &planned.chat_reacts[0];
@@ -354,18 +363,16 @@ fn a_discord_reaction_is_the_members_own_reaction_on_the_mapped_message() {
     assert_eq!(planned_in(&g, &Value::Null, &echo), BridgePlan::default());
 }
 
-/// The chat as `read-workspace` answers it with a filed report's message: its
+/// The chat as the record door reads it with a filed report's message: its
 /// text read out of the report, its picture as an image, a reaction on it.
-fn with_report() -> Value {
-    json!({
-        "messages": [{"id": "m_feedback_r1", "value": {
-            "channel": "c1", "author": "u_ada",
-            "text": "Saving does nothing\n1. Files: Save (button)",
-            "attachments": [{"$variant": "image", "name": "report.png", "blob": "ab", "w": 320, "h": 200}],
-            "reactions": [{"emoji": "👍", "by": "u_bo", "at": 1}]
-        }}],
-        "people": [{"id": "u_ada", "name": "Ada", "agent": false}]
-    })
+fn with_report() -> crate::tilo::ChatRead {
+    crate::tilo::ChatRead::new(
+        json!({"people": {"u_ada": {"id": "u_ada", "name": "Ada", "agent": false}}}),
+        vec![(
+            "m_feedback_r1".into(),
+            json!({"channel": "c1", "author": "u_ada", "text": "Saving does nothing\n1. Files: Save (button)", "attachments": [{"$variant": "image", "name": "report.png", "blob": "ab", "w": 320, "h": 200}], "reactions": [{"emoji": "👍", "by": "u_bo", "at": 1}]}),
+        )],
+    )
 }
 
 fn read_with_report(guild: &Guild, event: &Value) -> BridgePlan {
@@ -391,7 +398,6 @@ fn a_filed_report_goes_across_as_its_message_with_its_picture() {
         "actor": {"id": "u_ada"},
         "arguments": {"channel": "c1", "submission": {"id": "r1"}},
     });
-    assert_eq!(route(&guild(), &event), "m_feedback_r1");
     let planned = read_with_report(&guild(), &event);
     assert_eq!(planned.sends.len(), 1, "{planned:?}");
     let op = &planned.sends[0]["op"];
@@ -426,7 +432,6 @@ fn a_reaction_to_a_filed_report_goes_across_on_its_message() {
     let edit = json!({"did": "edit", "op": "react", "new": "👍",
         "path": [{"field": "feedback"}, {"item": "r1"}, {"field": "reactions"}]});
     let event = json!({"kind": CHAT_KIND, "did": edit});
-    assert_eq!(route(&g, &event), "m_feedback_r1");
     assert_eq!(
         read_with_report(&g, &event).reacts,
         [json!({"channel": "d1", "message": "dm9", "emoji": "👍"})]
@@ -489,16 +494,27 @@ fn observed(g: &mut Guild, positions: &[(&str, i64)]) {
 }
 
 /// The workspace's chat with "talk" listing `channels` in this order.
-fn talk(channels: &[&str]) -> Value {
-    json!({
-        "categories": [{"id": "k_talk", "value": {"name": "talk"}}],
-        "channels": channels.iter().map(|id| json!({"id": id, "value": {
-            "category": "k_talk", "name": id.trim_start_matches("c_"), "topic": "",
-            "kind": "text", "archived": false}})).collect::<Vec<_>>(),
-    })
+fn talk(channels: &[&str]) -> crate::tilo::ChatRead {
+    let listed: serde_json::Map<String, Value> = channels
+        .iter()
+        .enumerate()
+        .map(|(order, id)| {
+            let channel = json!({"k": format!("{order:03}"), "v": {
+                "category": "k_talk", "name": id.trim_start_matches("c_"), "topic": "",
+                "kind": "text", "archived": false}});
+            ((*id).to_owned(), channel)
+        })
+        .collect();
+    crate::tilo::ChatRead::new(
+        json!({
+            "categories": {"k_talk": {"k": "a", "v": {"name": "talk"}}},
+            "channels": listed,
+        }),
+        Vec::new(),
+    )
 }
 
-fn planned_on(guild: &Guild, chat: &Value, event: &Value) -> BridgePlan {
+fn planned_on(guild: &Guild, chat: &crate::tilo::ChatRead, event: &Value) -> BridgePlan {
     plan(
         Reading {
             guild,

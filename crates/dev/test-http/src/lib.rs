@@ -6,12 +6,17 @@
 //! of [`Reply`]s, one per connection, and records every [`Request`] it saw so
 //! the test can assert on methods, headers and bodies.
 //!
-//! Every reply closes its connection, so a client never reuses a socket across
-//! scripted replies and the request order is exactly the reply order.
+//! Every scripted reply closes its connection, so a client never reuses a
+//! socket across scripted replies and the request order is exactly the reply
+//! order.
 //!
 //! [`Responder::handle`] answers with a function instead of a script, for
-//! tests that need a stateful fake server (a `WebDAV` store, say). Each
-//! connection is served on its own thread, so concurrent clients work.
+//! tests that need a stateful fake server (a `WebDAV` store, say).
+//! [`Responder::serve`] hands the function the whole [`Peer`] connection, for
+//! a reply that is written in pieces while the test watches the client, for a
+//! client that keeps its connection across requests, or for a test that needs
+//! to see the client hang up. Each connection is served on its own thread, so
+//! concurrent clients work.
 
 use std::fmt::Write as _;
 use std::io::{Read, Write};
@@ -34,6 +39,7 @@ pub struct Reply {
     headers: Vec<(String, String)>,
     body: Vec<u8>,
     content_length: bool,
+    close: bool,
 }
 
 impl Reply {
@@ -44,7 +50,16 @@ impl Reply {
             headers: Vec::new(),
             body: Vec::new(),
             content_length: true,
+            close: true,
         }
+    }
+
+    /// Leave the connection open after the reply, so the client sends its
+    /// next request on the same socket (see [`Peer::next_request`]).
+    #[must_use]
+    pub fn keep_alive(mut self) -> Self {
+        self.close = false;
+        self
     }
 
     /// Add a response header.
@@ -95,13 +110,19 @@ impl Reply {
             207 => "Multi-Status",
             301 => "Moved Permanently",
             302 => "Found",
+            400 => "Bad Request",
             401 => "Unauthorized",
+            402 => "Payment Required",
             403 => "Forbidden",
             404 => "Not Found",
             405 => "Method Not Allowed",
             409 => "Conflict",
             412 => "Precondition Failed",
             416 => "Range Not Satisfiable",
+            429 => "Too Many Requests",
+            500 => "Internal Server Error",
+            502 => "Bad Gateway",
+            503 => "Service Unavailable",
             507 => "Insufficient Storage",
             _ => "Response",
         }
@@ -112,7 +133,9 @@ impl Reply {
         if self.content_length {
             let _ = write!(head, "Content-Length: {}\r\n", self.body.len());
         }
-        head.push_str("Connection: close\r\n");
+        if self.close {
+            head.push_str("Connection: close\r\n");
+        }
         for (name, value) in &self.headers {
             let _ = write!(head, "{name}: {value}\r\n");
         }
@@ -190,13 +213,32 @@ impl Responder {
     ///
     /// # Panics
     /// If the loopback listener cannot be created.
+    pub fn handle<F>(handler: F) -> Self
+    where
+        F: Fn(&Request) -> Option<Reply> + Send + Sync + 'static,
+    {
+        Self::serve(move |peer| {
+            let reply = handler(peer.request());
+            if let Some(reply) = reply {
+                peer.reply(&reply);
+            }
+        })
+    }
+
+    /// Answer every connection with `handler`, which writes what the client
+    /// sees through [`Peer`]: a whole [`Reply`], raw bytes in as many pieces
+    /// as the test wants, the client's next request on the same connection,
+    /// or the wait for the client to hang up.
+    ///
+    /// # Panics
+    /// If the loopback listener cannot be created.
     #[allow(
         clippy::expect_used,
         reason = "a test fixture that cannot bind loopback has no meaningful fallback"
     )]
-    pub fn handle<F>(handler: F) -> Self
+    pub fn serve<F>(handler: F) -> Self
     where
-        F: Fn(&Request) -> Option<Reply> + Send + Sync + 'static,
+        F: Fn(&mut Peer) + Send + Sync + 'static,
     {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback responder");
         let port = listener.local_addr().expect("responder address").port();
@@ -217,11 +259,12 @@ impl Responder {
                     let Some(request) = read_request(&mut stream) else {
                         return;
                     };
-                    let reply = handler(&request);
-                    let _ = sender.send(request);
-                    if let Some(reply) = reply {
-                        let _ = reply.write_to(&mut stream);
-                    }
+                    let _ = sender.send(request.clone());
+                    handler(&mut Peer {
+                        stream: &mut stream,
+                        request,
+                        recorded: sender,
+                    });
                 });
             }
         });
@@ -279,6 +322,61 @@ impl Responder {
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
             Ok(_) => panic!("a client connected to a responder that must stay untouched"),
             Err(error) => panic!("responder listener failed: {error}"),
+        }
+    }
+}
+
+/// One connection a [`Responder`] is answering, handed to a
+/// [`Responder::serve`] handler.
+pub struct Peer<'a> {
+    stream: &'a mut TcpStream,
+    request: Request,
+    recorded: Sender<Request>,
+}
+
+impl Peer<'_> {
+    /// The request that opened this connection.
+    pub fn request(&self) -> &Request {
+        &self.request
+    }
+
+    /// Write a whole reply.
+    pub fn reply(&mut self, reply: &Reply) {
+        let _ = reply.write_to(self.stream);
+    }
+
+    /// Write `bytes` exactly as given, without a head, so a reply can arrive
+    /// in pieces or be malformed on purpose. `false` once the client has gone
+    /// away, which is how a test stops writing to a socket nobody reads.
+    #[must_use]
+    pub fn write(&mut self, bytes: &[u8]) -> bool {
+        self.stream.write_all(bytes).is_ok() && self.stream.flush().is_ok()
+    }
+
+    /// The client's next request on this connection, or `None` when it closed
+    /// instead of asking again.
+    pub fn next_request(&mut self) -> Option<Request> {
+        let request = read_request(self.stream)?;
+        let _ = self.recorded.send(request.clone());
+        Some(request)
+    }
+
+    /// Wait for the client to hang up. `true` once it has, `false` if it sent
+    /// more instead or the wait ran out.
+    pub fn wait_for_close(&mut self) -> bool {
+        if self.stream.set_read_timeout(Some(REQUEST_WAIT)).is_err() {
+            return false;
+        }
+        let mut buffer = [0_u8; 1024];
+        match self.stream.read(&mut buffer) {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(error) => matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::UnexpectedEof
+            ),
         }
     }
 }
@@ -483,6 +581,45 @@ mod tests {
         {
             Responder::silent().assert_untouched();
         }
+    }
+
+    /// A served connection carries a second request, its reply arrives in the pieces the handler
+    /// writes, and the handler sees the client hang up.
+    #[test]
+    fn a_served_connection_streams_keeps_alive_and_reports_the_client_leaving() {
+        let responder = Responder::serve(|peer| {
+            assert_eq!(peer.request().target, "/first");
+            peer.reply(&Reply::status(200).body("one").keep_alive());
+            let next = peer
+                .next_request()
+                .expect("the client asks again on the same connection");
+            assert_eq!(next.target, "/second");
+            let _ = peer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n");
+            let _ = peer.write(b"tw");
+            let _ = peer.write(b"o!");
+            peer.wait_for_close();
+        });
+        let mut stream = TcpStream::connect(("127.0.0.1", responder.port())).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        stream.write_all(b"GET /first HTTP/1.1\r\n\r\n").unwrap();
+        let mut first = [0_u8; 128];
+        let read = stream.read(&mut first).unwrap();
+        let first = String::from_utf8_lossy(first.get(..read).unwrap()).into_owned();
+        assert!(first.starts_with("HTTP/1.1 200 OK\r\n"), "{first}");
+        assert!(first.ends_with("\r\n\r\none"), "{first}");
+        stream.write_all(b"GET /second HTTP/1.1\r\n\r\n").unwrap();
+        let mut second = String::new();
+        while !second.ends_with("two!") {
+            let mut buffer = [0_u8; 128];
+            let read = stream.read(&mut buffer).unwrap();
+            assert!(read > 0, "the responder closed early: {second}");
+            second.push_str(&String::from_utf8_lossy(buffer.get(..read).unwrap()));
+        }
+        assert!(second.starts_with("HTTP/1.1 200 OK\r\n"), "{second}");
+        drop(stream);
+        assert_eq!(responder.drain_requests().len(), 2);
     }
 
     #[test]

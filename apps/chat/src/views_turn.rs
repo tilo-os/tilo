@@ -80,15 +80,6 @@ impl Turn {
             ty: <Channel as ViewResource>::KIND.to_owned(),
         }
     }
-
-    /// The channel's page context the turn's rows are drawn in: its id and the people in it.
-    fn page(&self) -> Channel {
-        Channel {
-            id: self.channel.clone(),
-            people: self.people.clone(),
-            ..Channel::default()
-        }
-    }
 }
 
 /// The kind a turn is published as (`chat.workspace.turns:<message>`).
@@ -106,7 +97,6 @@ impl ViewResource for Turn {
 /// whole conversation opens from its foot.
 #[view(default)]
 pub(super) fn turn(t: &Turn, cx: &ViewCx) -> Node {
-    let page = t.page();
     let mut column: Vec<Node> = vec![
         ui::TextBuilder::new(&cx.key("asked"), t.question.text.trim())
             .role(ui::TextRole::Label)
@@ -138,7 +128,7 @@ pub(super) fn turn(t: &Turn, cx: &ViewCx) -> Node {
         if let Some(work) = &reply.work
             && work.failed()
         {
-            column.push(failed_row(&page, reply, work, cx));
+            column.push(failed_row(reply, work, cx));
         }
     }
     if t.replies.is_empty() {

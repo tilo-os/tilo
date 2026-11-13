@@ -328,6 +328,7 @@ impl BudgetTracker {
     /// Grow to cover `used`, within what this viewport may reserve, the
     /// device can bind and the total limit.
     /// Growth is bounded by the viewport last rendered into.
+    #[cfg(test)]
     fn grow(&mut self, used: &BumpAllocators) -> bool {
         self.grow_in(used, self.n_tiles)
     }
@@ -401,6 +402,7 @@ impl BudgetTracker {
     }
 
     /// Whether adaptive sizing needs counters from a render.
+    #[cfg(test)]
     pub(crate) fn wants_measurement(&self) -> bool {
         !self.pinned
     }
@@ -561,20 +563,6 @@ impl BudgetTracker {
         }
         engine.recycle_bump_download(pending.proxy);
         Ok((changed, overflowed))
-    }
-
-    /// Grow from counters the caller has already read back itself.
-    ///
-    /// The async render path awaits them between the coarse and fine
-    /// stages, so it has no use for the deferred machinery above.
-    pub(crate) fn observe_now(&mut self, used: &BumpAllocators) -> bool {
-        self.frame += 1;
-        let in_effect = self.effective();
-        let changed = !self.pinned && self.grow(used);
-        if self.log {
-            self.report(used, &in_effect, changed);
-        }
-        changed
     }
 
     /// Start a readback of the bump counters written by this frame.

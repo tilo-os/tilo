@@ -1,10 +1,6 @@
-//! Monitor preferences.
-//!
-//! The sampling cadence and kernel-thread visibility are the person's: they
-//! follow them to every device as [`MonitorPreferences`], a personal
-//! settings section, never the shared document. Stopping or killing a
-//! process always asks for confirmation: the effect declares it. Whether this window is sampling right now
-//! ([`Prefs::auto_refresh`]) belongs to the window alone.
+//! Monitor's preferences: the sampling cadence and kernel-thread visibility follow
+//! the person to every device as a personal settings section, never the shared
+//! document. Whether this window is sampling belongs to the window alone.
 
 use serde::{Deserialize, Serialize};
 use ui::storage::{Scope, SettingsSchema};
@@ -13,11 +9,8 @@ use ui::storage::{Scope, SettingsSchema};
 pub struct Prefs {
     /// Sampler cadence in milliseconds, one of the window bar menu's choices.
     pub interval_ms: u64,
-    /// Whether periodic sampling is running. Manual Refresh remains available
-    /// while paused, making pause a low-power inspection mode rather than a
-    /// dead-end state.
+    /// Whether periodic sampling runs; Refresh still works while paused.
     pub auto_refresh: bool,
-    /// Whether the process table lists Linux kernel worker threads.
     pub show_kernel_threads: bool,
 }
 

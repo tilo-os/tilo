@@ -13,7 +13,7 @@ use super::{Checker, Ctx, Ex};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind, UiCall, UiKind, UiStmt};
 use crate::diag::Span;
-use crate::ir::{LocalId, Stmt};
+use crate::ir::{Ek, LocalId, Stmt};
 use crate::prims;
 use crate::toolkit::{self, Description, Type};
 use crate::types::Ty;
@@ -218,8 +218,9 @@ impl Checker<'_> {
                 );
             }
         }
-        // A rich input's `@` drawer offers the conversation's people however it is written.
-        if d.name == "RichInput" && !given.contains("speakers") && !given.contains("people") {
+        // A rich input's `@` drawer offers who can read what a mention names, however it is
+        // written; the conversation's own people it offers are the view's to give.
+        if d.name == "RichInput" && !given.contains("people") {
             self.drawer_props(n);
         }
         if let Some(block) = &c.block {
@@ -707,6 +708,17 @@ impl Checker<'_> {
                 if v.ty.is_error() {
                     return;
                 }
+                // A list of records the view names is handed the collection itself, which the
+                // component offers record by record; every other list is a value of its own.
+                if let Ty::Collection(item) = &v.ty
+                    && let Type::List(listed) | Type::Set(listed) = ty
+                    && fits(listed, item)
+                {
+                    let item = (**item).clone();
+                    let list = self.list_from(v, item);
+                    self.arg_prop(node, name, list);
+                    return;
+                }
                 if matches!(v.ty, Ty::Collection(_)) {
                     // Not copied whole on every change, and not yet followed by the host
                     // item by item: a view takes it live instead.
@@ -742,6 +754,29 @@ impl Checker<'_> {
                 }
             }
         }
+    }
+
+    /// The collection `v`'s items as one list: what a prop of many takes, built item by item so
+    /// a collection is never copied where it stands.
+    fn list_from(&mut self, v: Ex, item: Ty) -> Ex {
+        let ty = Ty::List(Box::new(item.clone()));
+        let out = self.fresh(ty.clone());
+        let mut run = self.new_for(v, &item);
+        run.body.push(Stmt::Eval(Ex::host(
+            Imp::ListPushH,
+            vec![Ex::local(out, ty.clone()), Ex::local(run.item_local, item)],
+            Ty::Unit,
+        )));
+        Ex::new(
+            Ek::Seq(
+                vec![
+                    Stmt::Set(out, Ex::host(Imp::ListNew, Vec::new(), ty.clone())),
+                    Stmt::ForList(Box::new(run)),
+                ],
+                Box::new(Ex::local(out, ty.clone())),
+            ),
+            ty,
+        )
     }
 
     /// The value of an identity prop, when it is a filter: `selected: place`, `ui.NavItem(Task.today)`.
@@ -929,9 +964,12 @@ impl Checker<'_> {
         span: Span,
     ) {
         let mut content: Vec<UiStmt> = Vec::new();
+        let mut opens = false;
         for s in block {
             match &s.kind {
-                UiKind::Slot { node, name, body } => self.slot_content(n, d, *node, name, body),
+                UiKind::Slot { node, name, body } => {
+                    opens |= self.slot_content(n, d, *node, name, body);
+                }
                 UiKind::On {
                     event,
                     param,
@@ -957,6 +995,18 @@ impl Checker<'_> {
             return;
         };
         self.slot_accepts(d, slot, &content);
+        // A component whose block gives a slot that only shows while the row stands open says so
+        // where it stands: the row offers to open into its document, which comes when it does.
+        if opens {
+            self.emit(host(
+                Imp::UiPropI,
+                vec![
+                    Ex::local(n, Ty::View),
+                    Ex::str(crate::toolkit::OPENS_PROP),
+                    Ex::int(1),
+                ],
+            ));
+        }
         // A list inside a card is the card's summary of its resource: it shows the first rows.
         let outer = self.st.ui.in_card;
         self.st.ui.in_card |= d.name == "Card";
@@ -1073,22 +1123,29 @@ impl Checker<'_> {
                 return Ex::error();
             }
             // A scalar is boxed until the event puts it in place, as view state read at the
-            // event is (`Self::arg_at_press`).
+            // event is (`Self::arg_at_press`): the placeholder stands inside the box, so what
+            // the event carries lands where the box holds it and a slot that keeps it keeps it
+            // as it is read (`set(linking, open)` on a `Bool` state).
             let scalar = ty.is_scalar();
             let ty = if scalar { Ty::Option(Box::new(ty)) } else { ty };
             let local = self.declare(&p.name.name, ty.clone());
             if scalar {
                 self.st.event_scalars.insert(local);
             }
-            let value = if parts {
+            let placeholder = if parts {
                 let part = i32::try_from(i).unwrap_or(0);
                 Ex::host(
                     Imp::EventPart,
                     vec![Ex::new(crate::ir::Ek::I32(part), Ty::Bool)],
-                    ty,
+                    ty.clone(),
                 )
             } else {
-                Ex::host(Imp::EventValue, Vec::new(), ty)
+                Ex::host(Imp::EventValue, Vec::new(), ty.clone())
+            };
+            let value = if scalar {
+                Ex::host(Imp::SomeH, vec![placeholder], ty)
+            } else {
+                placeholder
             };
             self.emit(Stmt::Set(local, value));
         }
@@ -1145,7 +1202,8 @@ impl Checker<'_> {
         Some(ty)
     }
 
-    /// `name: { ... }`: a `slot` node of `n`, named, holding the content.
+    /// `name: { ... }`: a `slot` node of `n`, named, holding the content. Whether the slot holds
+    /// the document a row opens into where it stands, which is rendered only while that row does.
     fn slot_content(
         &mut self,
         n: LocalId,
@@ -1153,7 +1211,7 @@ impl Checker<'_> {
         node: ast::NodeId,
         name: &ast::Ident,
         body: &[UiStmt],
-    ) {
+    ) -> bool {
         let Some(slot) = d.slot(&name.name) else {
             self.err(
                 "E063",
@@ -1169,7 +1227,7 @@ impl Checker<'_> {
                     )
                 ),
             );
-            return;
+            return false;
         };
         self.slot_accepts(d, slot, body);
         let key = self.stmt_key(node);
@@ -1179,8 +1237,22 @@ impl Checker<'_> {
             Imp::UiPropH,
             vec![s_ex.clone(), Ex::str("name"), Ex::str(&slot.name)],
         ));
-        self.child_block_of("slot", body, s, true);
+        if slot.when_open {
+            // The document a row opens into is the row's only while it stands open: a closed
+            // row runs none of it, so a list of rows on screen costs the rows, not a page each.
+            self.push_sink();
+            self.child_block_of("slot", body, s, true);
+            let document = self.pop_sink();
+            self.emit(Stmt::If(
+                Ex::host(Imp::RowOpen, Vec::new(), Ty::Bool),
+                document,
+                Vec::new(),
+            ));
+        } else {
+            self.child_block_of("slot", body, s, true);
+        }
         self.emit(host(Imp::UiChild, vec![Ex::local(n, Ty::View), s_ex]));
+        slot.when_open
     }
 
     /// Check that `body` fits the slot: only the component it accepts, and one at most where
@@ -1464,8 +1536,9 @@ fn lang_type(ty: &Type) -> Ty {
         Type::Action => super::platform::host_ty("Action"),
         // A `Cases` set is the `ui` package's enum of that name (components.md §4.1).
         Type::Cases { name } => Ty::Enum(toolkit::key(name)),
-        // A case is whichever enum the bound field declares, which a description does not name.
-        Type::Resource | Type::Icon | Type::Choice { .. } | Type::Enum => Ty::Error,
+        // A case is whichever enum the bound field declares, which a description does not name;
+        // a record is any of the app's types, which a description does not name either.
+        Type::Resource | Type::Link | Type::Icon | Type::Choice { .. } | Type::Enum => Ty::Error,
     }
 }
 
@@ -1494,7 +1567,7 @@ fn fits(ty: &Type, found: &Ty) -> bool {
                 | (Type::RichText, Ty::RichText)
                 | (Type::Float, Ty::Float | Ty::Int)
                 | (Type::Picture, Ty::Text)
-                | (Type::Resource, Ty::Record(_))
+                | (Type::Resource | Type::Link, Ty::Record(_))
         ),
     }
 }

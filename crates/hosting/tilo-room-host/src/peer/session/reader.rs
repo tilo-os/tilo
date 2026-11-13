@@ -5,10 +5,10 @@
 
 use crate::peer::{
     AccessAudit, Arc, Envelope, EnvelopeV2, PeerError, RETENTION_PREFIX_BYTE_CAP,
-    RETENTION_PREFIX_FRAME_CAP, ReplayWrite, SessionCtx, SessionReader, StateDelivery,
-    audit_subscriber_access, buffered_retention_prefix, commit_run_key, eligible_checkpoint_prefix,
-    handle_commit_run, handle_delta_prefix, handle_envelope, mpsc, resume_record,
-    trace_native_publication, unserved_private,
+    RETENTION_PREFIX_FRAME_CAP, ReplayWrite, SessionCtx, SessionReader, StateDelivery, Subscribed,
+    Subscription, answered_as_replay, audit_subscriber_access, buffered_retention_prefix,
+    commit_run_key, eligible_checkpoint_prefix, handle_commit_run, handle_delta_prefix,
+    handle_envelope, mpsc, resume_record, subscribe, trace_native_publication, unserved_private,
 };
 use std::collections::VecDeque;
 
@@ -26,6 +26,20 @@ const SLOW_STATE_FRAME: std::time::Duration = std::time::Duration::from_secs(2);
 /// Most commits one run queues before the first is answered
 /// ([`SessionReaderLoop::handle_commit_run`]).
 const COMMIT_RUN: usize = READ_AHEAD;
+
+/// Most subscriptions to different workspaces one run admits and captures
+/// side by side ([`SessionReaderLoop::handle_subscribe_run`]).
+const SUBSCRIBE_RUN: usize = 16;
+
+/// The workspace a `Subscribe` or `SubscribeFrom` asks for.
+const fn subscription_target(env: &Envelope) -> Option<u64> {
+    match env {
+        Envelope::Subscribe { workspace_id } | Envelope::SubscribeFrom { workspace_id, .. } => {
+            Some(*workspace_id)
+        }
+        _ => None,
+    }
+}
 
 /// The delivery budget an inbound frame holds while it waits.
 type Budget = Arc<tokio::sync::OwnedSemaphorePermit>;
@@ -286,7 +300,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                 EnvelopeV2::State(Envelope::Ping) => cx.heartbeats.owe(),
                 EnvelopeV2::State(env) => {
                     let kind = env.kind();
-                    let started = std::time::Instant::now();
+                    let started = tilo_clock::now();
                     self.handle_state_frame(env, inbound_budget, cx).await?;
                     let held = started.elapsed();
                     if held >= SLOW_STATE_FRAME {
@@ -363,12 +377,18 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
         if matches!(env, Envelope::Commit { .. }) {
             return self.handle_commit_run(env, inbound_budget, cx).await;
         }
+        if subscription_target(&env).is_some()
+            && self
+                .inbound
+                .backlog
+                .front()
+                .is_some_and(|(frame, _)| matches!(frame, EnvelopeV2::State(next) if subscription_target(next).is_some()))
+        {
+            return self.handle_subscribe_run(env, inbound_budget, cx).await;
+        }
         let (mut prefix, prefix_budgets) = self.inbound.checkpoint_prefix(env, inbound_budget)?;
         let env = prefix.remove(0);
-        let replaying = matches!(
-            env,
-            Envelope::Subscribe { .. } | Envelope::SubscribeFrom { .. }
-        );
+        let replaying = answered_as_replay(&env);
         if let Envelope::Unsubscribe { .. } = &env {
             // A replay handed to the writer still checks its subscription
             // until its Ready; unsubscribing under it would end the whole
@@ -383,12 +403,14 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
         let mut ticket = None;
+        let mut answer = Vec::new();
         let reply = {
             let subscribed = &mut *self.subscribed;
             let ticket = &mut ticket;
+            let answer = &mut answer;
             let operation = Box::pin(async move {
                 if prefix.is_empty() {
-                    handle_envelope(cx.peer, env, cx.session, subscribed, ticket).await
+                    handle_envelope(cx.peer, env, cx.session, subscribed, ticket, answer).await
                 } else {
                     let mut envelopes = Vec::with_capacity(prefix.len().saturating_add(1));
                     envelopes.push(env);
@@ -406,6 +428,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                     self.replies,
                     ReplayWrite {
                         ticket,
+                        answer,
                         reply,
                         replaying,
                     },
@@ -414,6 +437,107 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                 .await?;
         }
         Ok(())
+    }
+
+    /// Handle `env`, a `Subscribe`, with the subscriptions to other
+    /// workspaces read ahead behind it: a device entering many workspaces at
+    /// once (a backend working in a workspace per customer) waits for the
+    /// slowest admission and capture, not for their sum. Each replay goes to
+    /// the writer as soon as its capture is ready; what the device sent after
+    /// the run is handled after it, so nothing overtakes a subscription to
+    /// its workspace.
+    async fn handle_subscribe_run(
+        &mut self,
+        env: Envelope,
+        inbound_budget: Option<Budget>,
+        cx: SessionLoop<'_, '_>,
+    ) -> Result<(), PeerError> {
+        use n0_future::StreamExt as _;
+        let mut run = vec![env];
+        let mut budgets = vec![inbound_budget];
+        while run.len() < SUBSCRIBE_RUN {
+            let Some((EnvelopeV2::State(next), _)) = self.inbound.backlog.front() else {
+                break;
+            };
+            let Some(target) = subscription_target(next) else {
+                break;
+            };
+            if run
+                .iter()
+                .any(|env| subscription_target(env) == Some(target))
+            {
+                break;
+            }
+            let Some((EnvelopeV2::State(next), budget)) = self.inbound.backlog.pop_front() else {
+                break;
+            };
+            trace_native_publication("server_received", &next, None);
+            run.push(next);
+            budgets.push(Some(budget));
+        }
+        cx.pending_replays
+            .fetch_add(run.len(), std::sync::atomic::Ordering::SeqCst);
+        let mut entered = Vec::with_capacity(run.len());
+        let outcome = {
+            let subscribed = &*self.subscribed;
+            let mut running: n0_future::FuturesUnordered<_> = run
+                .into_iter()
+                .filter_map(|env| {
+                    let (workspace_id, resume) = match env {
+                        Envelope::Subscribe { workspace_id } => (workspace_id, Subscription::Whole),
+                        Envelope::SubscribeFrom {
+                            workspace_id,
+                            position,
+                        } => (workspace_id, Subscription::From(position)),
+                        _ => return None,
+                    };
+                    Some(async move {
+                        subscribe(cx.peer, cx.session, subscribed, workspace_id, resume).await
+                    })
+                })
+                .collect();
+            loop {
+                let next = Box::pin(async { Ok(running.next().await) });
+                let Some(subscribed) = self.inbound.overtake_while(next, cx).await? else {
+                    break Ok(());
+                };
+                let (ticket, reply) = match subscribed {
+                    Ok(Subscribed::Replaying(slot)) => {
+                        entered.push(slot.0);
+                        (Some(slot), None)
+                    }
+                    Ok(Subscribed::Refused(refusal)) => (None, Some(refusal)),
+                    Err(error) => {
+                        // The session ends; what the rest of the run
+                        // entered meanwhile is still left with it.
+                        while let Some(rest) = running.next().await {
+                            if let Ok(Subscribed::Replaying(slot)) = rest {
+                                entered.push(slot.0);
+                            }
+                        }
+                        break Err(error);
+                    }
+                };
+                let batch = ReplayWrite {
+                    ticket,
+                    answer: Vec::new(),
+                    reply,
+                    replaying: true,
+                };
+                if let Err(error) = self.inbound.hand_off_reply(self.replies, batch, cx).await {
+                    break Err(error);
+                }
+            }
+        };
+        drop(budgets);
+        // Every workspace the run entered is the connection's, even when
+        // another of the run ended it: its teardown leaves them all.
+        for workspace_id in entered {
+            if !self.subscribed.contains(&workspace_id) {
+                self.subscribed.push(workspace_id);
+            }
+        }
+        outcome
     }
 
     /// Handle `env`, a `Commit`, with the commits read ahead behind it:
@@ -457,6 +581,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                     self.replies,
                     ReplayWrite {
                         ticket: None,
+                        answer: Vec::new(),
                         reply: Some(reply),
                         replaying: false,
                     },

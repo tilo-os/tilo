@@ -63,6 +63,11 @@ impl RecordReads {
         person: Option<&str>,
         source: Rc<dyn RecordSource>,
     ) -> Self {
+        // The ids the session believes each app had before are the ones a task honours: a
+        // package's own `previously:` is a claim the installed catalogue decides on.
+        for (app, under) in &records_under {
+            crate::schema::register_previously(app, std::slice::from_ref(under));
+        }
         Self {
             person: person.map(str::to_owned),
             bundles: bundles
@@ -162,11 +167,15 @@ impl RecordReads {
             .and_then(|id| id.strip_prefix(&prefix));
         let empty = serde_json::Map::new();
         let args = call["arguments"].as_object().unwrap_or(&empty);
+        let published = call["resource"].as_str().unwrap_or_default();
         self.with_host(app, |host| {
+            let action = host
+                .published_action(published, action)
+                .ok_or_else(|| format!("{app} publishes no action {action}"))?;
             let planned = host.plan(&crate::publish::PlanRequest {
                 app,
                 kind: "",
-                action_id: action,
+                action_id: &action.id,
                 resource,
                 args,
                 caller: Some(caller),

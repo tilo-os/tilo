@@ -219,6 +219,14 @@ test('the screen says each change once to screen readers, and holds Try now whil
   await new Promise(resolve => setImmediate(resolve));
   assert.match(copied[0], /Last error: TypeError: Failed to fetch[\s\S]*Host: https:\/\/lounge.example/);
   assert.equal(element('arrival-reconnect-copy').textContent, 'Copied');
+  assert.equal(element('arrival-reconnect-host').hidden, true, 'a public host is not suspected of its certificate');
+  // A host on a machine's own address may be one whose certificate this
+  // browser refuses, which waiting never fixes: the screen says so and opens it.
+  view.show({...state, waiting: 'counting', origin: 'https://127.0.0.1:24100'});
+  assert.match(element('arrival-reconnect-body').textContent, /^127\.0\.0\.1:24100 may be restarting, or this browser doesn’t trust its certificate/);
+  assert.equal(element('arrival-reconnect-host').hidden, false);
+  assert.equal(element('arrival-reconnect-host').href, 'https://127.0.0.1:24100');
+  assert.equal(element('arrival-reconnect-host').textContent, 'Open 127.0.0.1:24100');
   view.hide();
   assert.equal(document.documentElement.dataset.reconnect, undefined);
 });

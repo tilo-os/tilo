@@ -32,6 +32,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{Element, Widget};
@@ -1256,9 +1257,7 @@ impl Widget for DocumentViewport {
         self.state.set_rect(self.rect);
         self.dirty = true;
         let theme = self.layout_theme.clone();
-        crate::text_render::with_layout_renderer(theme.text_scale, |tr| {
-            self.place_child(&theme, tr)
-        });
+        crate::text_render::with_layout_renderer(&theme, |tr| self.place_child(&theme, tr));
         // A toolbar's request is solved once the rect it fits into, and how
         // big the content really is, are both known.
         self.apply_requested_zoom();
@@ -1302,7 +1301,7 @@ impl Widget for DocumentViewport {
         let rect = self.rect;
         let content = &mut self.content;
         let mut draw_content = |scene: &mut Scene, at: Affine| match content {
-            Content::Widget(c) => c.draw(scene, at, text_renderer, theme, presence),
+            Content::Widget(c) => c.draw_child(scene, at, text_renderer, theme, presence),
             Content::Draw(draw) => draw(scene, at, text_renderer, theme, rect),
         };
         let canvas_xf = compose(transform, self.state.content_to_canvas());

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {callIdOf, createVoiceControls, createMediaPump, endedIssue, rostersOf, revisionOf, speakingOf} from './voice-controls.mjs';
+import {runtimeFake} from './runtime-surface.mjs';
 const CALL = 'c'.repeat(64);
 function fixture() {
   const operations = [];
@@ -85,7 +86,7 @@ test('an active call polls the retained controls even when the canvas stops redr
   let polls = 0;
   const clock = {setTimeout: next => {scheduled = next; return 1;}, clearTimeout: () => {cleared = true;}};
   const pump = createMediaPump({voice: f.voice, workspace: 'room-1', id: 1n, active: () => true, clock,
-    runtime: {take_media_requests: () => {polls++; return '[]';}}});
+    runtime: runtimeFake({take_media_requests: () => {polls++; return '[]';}})});
   pump.pump();
   assert.equal(polls, 1);
   assert.equal(typeof scheduled, 'function', 'live calls keep receiving shared UI status');
@@ -106,7 +107,7 @@ test('a page with no call still has its lane served: Chat watches the rosters th
   let looks = 0;
   f.voice.call.subscribe = () => () => {};
   const pump = createMediaPump({voice: f.voice, workspace: 'room-1', id: 1n, active: () => true, clock,
-    runtime: {take_media_requests: () => {looks++; return '[]';}}});
+    runtime: runtimeFake({take_media_requests: () => {looks++; return '[]';}})});
   pump.pump();
   assert.equal(looks, 1);
   assert.equal(typeof scheduled, 'function', 'a call starting elsewhere is heard with no call here');
@@ -164,7 +165,7 @@ test('the mounted pump releases a retired component inside a still-open desktop'
   const request = {...f.request({op: 'join', channel_id: 'standup'}), ticket: 1, owner: 'retained-chat'};
   let batch = [request];
   const clock = {setTimeout: () => 1, clearTimeout() {}};
-  const runtime = {take_media_requests() {const result = batch; batch = []; return JSON.stringify(result);}, complete_media_request() {return true;}};
+  const runtime = runtimeFake({take_media_requests() {const result = batch; batch = []; return JSON.stringify(result);}, complete_media_request() {return true;}});
   const pump = createMediaPump({voice: f.voice, workspace: 'room-1', id: 1n, active: () => true, clock, runtime});
   pump.pump();
   for (let i = 0; i < 10; i++) await Promise.resolve();

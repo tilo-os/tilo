@@ -390,9 +390,24 @@ impl ComponentNodes {
     fn insert_node(&mut self, node: SemanticNode, order: &mut Vec<SemanticId>) -> SemanticId {
         let id = node.id.clone();
         order.push(id.clone());
-        if self.nodes.insert(id.clone(), node).is_some() {
+        if self.nodes.contains_key(&id) {
+            // Two resources of one node id: the first keeps the node, and the pair is reported
+            // ([`Self::duplicate_ids`]) rather than one silently replacing the other. A node id
+            // is unique per window, so a repeat here is a defect, never a state to read past.
+            debug_assert!(
+                false,
+                "component node {id:?} published twice under {:?}",
+                self.prefix
+            );
+            tracing::error!(
+                node = ?id,
+                prefix = ?self.prefix,
+                "a component published one node id twice; keeping the first"
+            );
             self.duplicate_ids.push(id.clone());
+            return id;
         }
+        self.nodes.insert(id.clone(), node);
         id
     }
 
@@ -460,10 +475,15 @@ fn id_prefix(binding: &CallbackBinding) -> String {
 
 /// The node id of resource `id` published by `binding`'s component.
 pub(super) fn bound_resource_id(binding: &CallbackBinding, id: &str) -> SemanticId {
-    SemanticId(format!(
-        "ri:{}:{}:{}",
-        binding.instance_id, binding.lifetime_id, id
-    ))
+    SemanticId(format!("{}{id}", id_prefix(binding)))
+}
+
+/// The resource a component's node `id` stands for ([`bound_resource_id`]),
+/// or `None` when `id` is no component's resource node.
+pub(crate) fn component_record(id: &SemanticId) -> Option<&str> {
+    let mut parts = id.as_str().strip_prefix("ri:")?.splitn(3, ':');
+    let (_instance, _lifetime) = (parts.next()?, parts.next()?);
+    parts.next()
 }
 
 /// The affordances of `resource`'s own actions on node `id`, recording each

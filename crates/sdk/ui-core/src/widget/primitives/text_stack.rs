@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
@@ -383,6 +383,8 @@ pub struct TextStack {
     secondary_tone: Tone,
     rect: Rect,
     dirty: bool,
+    /// What it says changed its size since the layout pass last placed it.
+    layout_dirty: bool,
     /// The theme the last layout was built with, for measuring.
     layout_theme: Theme,
 }
@@ -398,6 +400,7 @@ impl TextStack {
             secondary_tone: Tone::Neutral,
             rect: Rect::ZERO,
             dirty: true,
+            layout_dirty: true,
             layout_theme: Theme::dark(),
         }
     }
@@ -427,6 +430,7 @@ impl TextStack {
             secondary.clone_into(&mut self.secondary);
             tertiary.clone_into(&mut self.tertiary);
             self.dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -463,6 +467,7 @@ impl Widget for TextStack {
         if self.layout_theme != *theme {
             self.layout_theme = theme.clone();
             self.dirty = true;
+            self.layout_dirty = true;
         }
         let style = Style {
             size: Size::auto(),
@@ -497,9 +502,7 @@ impl Widget for TextStack {
         }
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!(measured);
 
     fn draw(
         &mut self,
@@ -517,15 +520,6 @@ impl Widget for TextStack {
     }
 
     crate::redraw_flag!();
-
-    // Its size changes only with its lines or the theme, which mark it.
-    fn is_layout_dirty(&self) -> bool {
-        self.dirty
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
 
     fn name(&self) -> &'static str {
         "TextStack"

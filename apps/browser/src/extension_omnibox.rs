@@ -1,12 +1,9 @@
-//! The address's keyword for extensions (`chrome.omnibox`). An extension's
-//! manifest names a keyword; typed in the Browser's address and followed by
-//! a space, what comes after it is the extension's, as in Chrome. The
-//! extension hears of the person starting, of each change, of Enter and of
-//! their leaving, and suggests rows for the list under the address.
+//! The address's keyword for extensions (`chrome.omnibox`): a manifest's keyword, typed
+//! in the address and followed by a space, makes what follows the extension's, as in
+//! Chrome. The extension hears of the person starting, each change, Enter and their
+//! leaving, and suggests rows for the list under the address.
 //!
-//! This is the bookkeeping alone: what to tell the engine as the typed text
-//! changes, which suggestions still answer what is typed, and the rows they
-//! make. Nothing here waits: the extension's answers arrive as engine events.
+//! This is the bookkeeping alone; the extension's answers arrive as engine events.
 
 use std::collections::HashMap;
 
@@ -17,7 +14,6 @@ const MAX_KEYWORD_CHARS: usize = 64;
 /// Requests count up to the largest the engine carries, then start again.
 const MAX_REQUEST: u32 = 0x7fff_ffff;
 
-/// An extension the address's keyword reaches.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Keyword {
     pub id: String,
@@ -25,8 +21,8 @@ pub struct Keyword {
     pub keyword: String,
 }
 
-/// The manifest's `omnibox.keyword`, when it is one a person can type: one
-/// word, without spaces.
+/// The manifest's `omnibox.keyword`, when it is one a person can type: one word, without
+/// spaces.
 pub fn manifest_keyword(manifest: &serde_json::Value) -> Option<String> {
     let keyword = manifest.get("omnibox")?.get("keyword")?.as_str()?;
     (!keyword.is_empty()
@@ -35,10 +31,9 @@ pub fn manifest_keyword(manifest: &serde_json::Value) -> Option<String> {
     .then(|| keyword.to_owned())
 }
 
-/// `typed` addressed to the extension whose keyword it starts with, then a
-/// space: the keyword's index in `keywords` and what follows, without the
-/// spaces before it, as Chrome takes it. A keyword matches whatever its
-/// case.
+/// `typed` addressed to the extension whose keyword it starts with, then a space: the
+/// keyword's index in `keywords` and what follows without the spaces before it, as Chrome
+/// takes it. A keyword matches whatever its case.
 pub fn split<'a, 'k>(
     typed: &'a str,
     keywords: impl IntoIterator<Item = &'k str>,
@@ -54,16 +49,15 @@ pub fn split<'a, 'k>(
     Some((index, rest.trim_start()))
 }
 
-/// A suggestion as the address lists it: what it says, plain, and what
-/// choosing it enters.
+/// A suggestion as the address lists it: what it says, plain, and what choosing it enters.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OmniboxRow {
     pub title: String,
     pub content: String,
 }
 
-/// What an extension's description says without Chrome's markup: the text
-/// of `<match>`, `<dim>` and `<url>`, entities read, on one line.
+/// What an extension's description says without Chrome's markup: the text of `<match>`,
+/// `<dim>` and `<url>`, entities read, on one line.
 pub fn plain_description(description: &str) -> String {
     let mut text = String::with_capacity(description.len());
     let mut chars = description.chars();
@@ -123,30 +117,25 @@ fn entity(name: &str) -> Option<char> {
 
 struct Session {
     keyword: Keyword,
-    /// What follows the keyword, as last told.
     text: String,
-    /// The request the extension's suggestions must answer.
     request: u32,
     suggestions: Vec<OmniboxSuggestion>,
 }
 
-/// The extension the person is typing to, if any, and what it said.
 #[derive(Default)]
 pub struct ExtensionOmnibox {
     session: Option<Session>,
     request: u32,
-    /// Each extension's default suggestion, as it last told it.
     defaults: HashMap<String, String>,
-    /// What was typed when Enter went to an extension: until it changes, no
-    /// new keyword session starts from it.
+    /// What was typed when Enter went to an extension: until it changes, no new session
+    /// starts from it.
     entered: Option<String>,
 }
 
 impl ExtensionOmnibox {
-    /// What is typed in the address now: `addressed` when it follows an
-    /// extension's keyword (the extension and what follows), `typed` being
-    /// all of it. Tells the extension what changed; returns whether the rows
-    /// did.
+    /// What is typed in the address now: `addressed` when it follows an extension's
+    /// keyword (the extension and what follows), `typed` being all of it. Tells the
+    /// extension what changed; whether the rows did.
     pub fn typed(
         &mut self,
         typed: &str,
@@ -185,7 +174,6 @@ impl ExtensionOmnibox {
             }
         });
         if changed || session.text != text {
-            // Within the range the engine carries.
             self.request = if self.request >= MAX_REQUEST {
                 1
             } else {
@@ -205,8 +193,8 @@ impl ExtensionOmnibox {
         changed
     }
 
-    /// The person left the keyword without Enter: the extension hears of it.
-    /// Returns whether there were rows.
+    /// The person left the keyword without Enter: the extension hears of it. Whether there
+    /// were rows.
     pub fn leave(&mut self, engine: &SharedEngine) -> bool {
         let Some(session) = self.session.take() else {
             return false;
@@ -218,15 +206,12 @@ impl ExtensionOmnibox {
         true
     }
 
-    /// Enter went to an extension with `typed` in the address: its session
-    /// ends there, without being left.
     pub fn entered(&mut self, typed: &str) {
         self.session = None;
         self.entered = Some(typed.to_owned());
     }
 
-    /// What an extension said for the address. Returns whether the rows
-    /// changed.
+    /// What an extension said for the address. Whether the rows changed.
     pub fn on_engine_event(&mut self, event: &WebViewEvent) -> bool {
         match event {
             WebViewEvent::ExtensionOmniboxSuggestions {
@@ -257,16 +242,14 @@ impl ExtensionOmnibox {
         }
     }
 
-    /// The extension typed to and its rows: first what Enter does (its
-    /// default suggestion with `%s` for what is typed, else what is typed),
-    /// then its suggestions for what is typed.
+    /// The extension typed to and its rows: first what Enter does (its default suggestion
+    /// with `%s` for what is typed, else what is typed), then its suggestions.
     pub fn rows(&self) -> Option<(&Keyword, Vec<OmniboxRow>)> {
         let session = self.session.as_ref()?;
         let text = &session.text;
         let title = match self.defaults.get(&session.keyword.id) {
-            // As in Chrome: the description is read without its markup
-            // first, then its first `%s` stands for what is typed, word for
-            // word, so typed `<` or `&amp;` is not taken for markup.
+            // As in Chrome: the description is read without its markup first, then its
+            // first `%s` stands for what is typed, so typed `<` is not taken for markup.
             Some(description) => plain_description(description).replacen("%s", text, 1),
             None => text.clone(),
         };
@@ -324,7 +307,6 @@ mod tests {
             Some((0, "cats and dogs"))
         );
         assert_eq!(split("wiki ", keywords), Some((1, "")));
-        // The keyword alone, a longer word, or the keyword inside the text.
         for typed in ["kw", "kws cats", "cats kw", ""] {
             assert_eq!(split(typed, keywords), None, "{typed}");
         }
@@ -355,9 +337,7 @@ mod tests {
 
         assert!(omnibox.typed("kw ", Some((&kw, "")), &shared));
         assert!(omnibox.typed("kw c", Some((&kw, "c")), &shared));
-        // The same text again tells nothing.
         assert!(!omnibox.typed("kw c", Some((&kw, "c")), &shared));
-        // Another extension's keyword: the first is left.
         assert!(omnibox.typed("wk d", Some((&other, "d")), &shared));
         assert!(omnibox.typed("w", None, &shared));
         assert!(!omnibox.typed("", None, &shared));
@@ -420,10 +400,8 @@ mod tests {
         let pair = |title: &str, content: &str| (title.to_owned(), content.to_owned());
         assert_eq!(rows(&omnibox), None);
         omnibox.typed("kw ", Some((&kw, "")), &shared);
-        // Nothing typed and no default: the extension's name.
         assert_eq!(rows(&omnibox), Some(vec![pair("kw finder", "")]));
         omnibox.typed("kw ca", Some((&kw, "ca")), &shared);
-        // An answer to a request since overtaken is not shown.
         assert!(!omnibox.on_engine_event(&suggestions(1, &["old"])));
         assert!(omnibox.on_engine_event(&suggestions(2, &["cat", "ca"])));
         assert!(
@@ -436,7 +414,6 @@ mod tests {
             rows(&omnibox),
             Some(vec![pair("Look up ca", "ca"), pair("cat & more", "cat"),])
         );
-        // Another extension's answer changes nothing here.
         assert!(
             !omnibox.on_engine_event(&WebViewEvent::ExtensionOmniboxSuggestions {
                 id: "b".repeat(32),
@@ -444,8 +421,6 @@ mod tests {
                 suggestions: Vec::new(),
             })
         );
-        // Enter ends it without leaving it, and the same text starts no
-        // session again; new typing does.
         omnibox.entered("kw ca");
         assert_eq!(rows(&omnibox), None);
         let before = told(&engine).len();

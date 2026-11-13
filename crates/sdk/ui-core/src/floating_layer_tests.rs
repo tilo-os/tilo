@@ -17,6 +17,7 @@ fn screen(width: f64, height: f64) -> Placement {
         bar: Rect::new(work.x0, work.y0 - 32.0, work.x1, work.y0),
         banners: None,
         readout: None,
+        caret: None,
     }
 }
 
@@ -100,6 +101,12 @@ fn assert_layer(placement: &Placement, corner: Corner, held: &[Card], layer: &La
                 "{corner:?} {at}: {rect:?} never in the readout's band {readout:?}"
             );
         }
+        if let Some(caret) = placement.caret {
+            assert!(
+                !intersects(rect, caret.inflate(0.0, FIELD_REACH)),
+                "{corner:?} {at}: {rect:?} never over the field typed in at {caret:?}"
+            );
+        }
         for (other_at, other) in layer.cards.iter().enumerate().skip(at + 1) {
             if was_loose(other, held) {
                 continue;
@@ -158,6 +165,14 @@ fn placements() -> Vec<Placement> {
             readout: Some(readout),
             ..plain
         });
+        // A person typing at the bottom of a window, as in a conversation's composer, and at the
+        // top, as in a list's filter.
+        for y in [work.y1 - 60.0, work.y0 + 70.0] {
+            screens.push(Placement {
+                caret: Some(Rect::new(work.x1 - 200.0, y, work.x1 - 199.0, y + 18.0)),
+                ..plain
+            });
+        }
         // A banner and the readout at the top, with the work area under it.
         screens.push(Placement {
             banners: Some(banner),

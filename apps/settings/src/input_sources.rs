@@ -1,10 +1,4 @@
 //! Installed XKB input-source catalogue.
-//!
-//! `/usr/share/X11/xkb/rules/evdev.xml` is the authority for layouts and
-//! variants supported by this image. Settings reads it as untrusted data,
-//! validates every resulting id through the shared compositor contract and
-//! falls back to a small useful set only when the standard catalogue is not
-//! installed. No layout is applied here; the per-user compositor owns that.
 
 use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
@@ -42,8 +36,6 @@ pub(crate) fn read_installed() -> (Vec<CatalogEntry>, Option<String>) {
     (entries, error)
 }
 
-/// Input-method engines (Rime, Anthy, Hangul) the image ships, listed with
-/// the layouts: they are chosen, ordered and switched exactly like them.
 fn input_method_entries(installed: impl Fn(InputMethodEngine) -> bool) -> Vec<CatalogEntry> {
     InputMethodEngine::ALL
         .into_iter()
@@ -114,10 +106,6 @@ fn catalog_from_path(path: &Path) -> Result<Vec<CatalogEntry>, String> {
     parse_catalog(&mut Reader::from_reader(BufReader::new(file)))
 }
 
-/// The character an entity or character reference stands for. quick-xml reports
-/// `&amp;`/`&#x2019;` as events of their own rather than inside the text around
-/// them. An undeclared name has no character (the catalogue declares no DTD
-/// entities) and is dropped, keeping the text on either side.
 fn resolve_reference(reference: &quick_xml::events::BytesRef<'_>) -> Option<char> {
     if let Ok(Some(c)) = reference.resolve_char_ref() {
         return Some(c);
@@ -266,12 +254,8 @@ fn fallback_catalog() -> Vec<CatalogEntry> {
 mod tests {
     use super::*;
 
-    /// The xkb catalogue parser yields base layouts and `layout:variant`
-    /// entries, resolving entity and character references in descriptions;
-    /// the installed catalogue contains a real US layout.
     #[test]
     fn input_source_catalog_parses_layouts_variants_and_references() {
-        // (case, registry xml, base label, variant label)
         let cases: [(&str, &[u8], &str, &str); 2] = [
             (
                 "standard shape",

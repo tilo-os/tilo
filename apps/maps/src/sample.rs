@@ -1,10 +1,6 @@
-//! Bundled offline data so the app is fully populated without a network:
-//! a procedurally-generated stylised vector basemap (a believable downtown
-//! street grid with a river and parks), sample places, a sample driving
-//! route with turn-by-turn steps, and sample public-transport itineraries.
-//!
-//! A capture has no network, so this is what the screenshot scenarios and
-//! tests render. The live app fetches real OSM/OSRM/transit data instead.
+//! Bundled offline data, so a capture and the tests are populated without a network: a generated
+//! vector basemap, places, a driving route with steps, and transit itineraries. The live app
+//! fetches real OSM, OSRM and transit data instead.
 
 pub use crate::basemap::{Area, AreaKind, Basemap, Road, RoadClass};
 use crate::geo::polyline_length_m;
@@ -13,8 +9,7 @@ use crate::model::{
     TransitJourney, TransitLeg, TransitMode, TravelMode,
 };
 
-/// Tiny deterministic PRNG so the generated map is identical every run
-/// (stable screenshots).
+/// A tiny deterministic PRNG, so the generated map is identical every time.
 struct Rng(u64);
 impl Rng {
     fn f(&mut self) -> f64 {
@@ -46,16 +41,13 @@ fn cell(nx: f64, ny: f64) -> LatLon {
 pub const DEMO_CLOCK_BASE_MIN: i64 =
     ui::clock::CAPTURE_LOCAL_TIME.3 as i64 * 60 + ui::clock::CAPTURE_LOCAL_TIME.4 as i64;
 
-/// Walk the integer grid lines strictly between `a` and `b` in the travel
-/// direction, then land exactly on `b`. Empty when `a == b`. The building block
-/// for [`grid_path`].
+/// The integer grid lines strictly between `a` and `b`, then exactly `b`; empty when `a == b`. Used
+/// by [`grid_path`].
 fn axis_steps(a: f64, b: f64) -> Vec<f64> {
     let mut out = Vec::new();
     if (b - a).abs() < 1e-9 {
         return out;
     }
-    // Bounded by the grid span (+2) rather than a float `while`, so a
-    // pathological input can't spin forever on rounding.
     let bound = (b - a).abs().ceil() as u32 + 2;
     if b > a {
         let mut n = a.floor() + 1.0;
@@ -80,12 +72,9 @@ fn axis_steps(a: f64, b: f64) -> Vec<f64> {
     out
 }
 
-/// A polyline between two grid-cell coordinates that follows the street grid —
-/// horizontally along the start row, then vertically along the destination
-/// column — instead of cutting a diagonal across the blocks. This keeps the
-/// sample transit legs sitting on the drawn roads (the only routing graph the
-/// offline basemap has), mirroring how [`sample_route`] walks the grid. Live
-/// data supplies real `legGeometry`; this is only the offline stand-in.
+/// A polyline along the street grid, the start row then the destination column, rather than a
+/// diagonal across the blocks, so sample legs sit on the drawn roads. Live data brings real
+/// `legGeometry`.
 fn grid_path(from: (f64, f64), to: (f64, f64)) -> Vec<LatLon> {
     let (x0, y0) = from;
     let (x1, y1) = to;
@@ -99,7 +88,6 @@ fn grid_path(from: (f64, f64), to: (f64, f64)) -> Vec<LatLon> {
     pts
 }
 
-/// Build the stylised basemap.
 #[allow(
     clippy::too_many_lines,
     reason = "one deterministic generation pass per layer (river, parks, buildings, roads); \
@@ -116,7 +104,6 @@ pub fn basemap() -> Basemap {
     let mut areas: Vec<Area> = Vec::new();
     let mut roads: Vec<Road> = Vec::new();
 
-    // --- River: a wavy north-south centre-line, slightly east of centre.
     let mut river = Vec::new();
     let base_x = 8.5;
     for i in -NY..=NY {
@@ -125,7 +112,6 @@ pub fn basemap() -> Basemap {
         river.push(cell(base_x + wobble, t));
     }
 
-    // --- Parks: a couple of irregular green polygons.
     areas.push(Area {
         kind: AreaKind::Park,
         ring: blob(&mut rng, cell(1.5, 5.5), 2.4, 2.0, 10),
@@ -139,13 +125,11 @@ pub fn basemap() -> Basemap {
         ring: blob(&mut rng, cell(5.5, -6.5), 1.3, 1.1, 8),
     });
 
-    // --- A small lake inside the first park.
     areas.push(Area {
         kind: AreaKind::Water,
         ring: blob(&mut rng, cell(1.8, 6.2), 0.7, 0.5, 9),
     });
 
-    // Helper: is a grid cell occupied by a park/water (skip buildings there)?
     let park_centers = [
         (1.5_f64, 5.5_f64, 2.6_f64),
         (-6.0, -3.5, 1.8),
@@ -158,7 +142,6 @@ pub fn basemap() -> Basemap {
     };
     let near_river = |nx: f64, ny: f64| (nx - (base_x + (ny * 0.55).sin() * 1.4)).abs() < 1.1;
 
-    // --- Building fills: a subset of grid cells get a raised block.
     for ix in -NX..NX {
         for iy in -NY..NY {
             let cx = f64::from(ix) + 0.5;
@@ -183,7 +166,6 @@ pub fn basemap() -> Basemap {
         }
     }
 
-    // --- Street grid: residential roads on every grid line.
     for ix in -NX..=NX {
         let x = f64::from(ix);
         let mut pts = Vec::new();
@@ -209,7 +191,6 @@ pub fn basemap() -> Basemap {
         });
     }
 
-    // --- A few primary avenues (thicker) crossing the grid.
     roads.push(Road {
         class: RoadClass::Primary,
         pts: (-NX..=NX).map(|ix| cell(f64::from(ix), 0.0)).collect(),
@@ -218,14 +199,12 @@ pub fn basemap() -> Basemap {
         class: RoadClass::Primary,
         pts: (-NY..=NY).map(|iy| cell(0.0, f64::from(iy))).collect(),
     });
-    // A diagonal secondary boulevard.
     roads.push(Road {
         class: RoadClass::Secondary,
         pts: (-NY..=NY)
             .map(|iy| cell(f64::from(iy) * 0.8 - 3.0, f64::from(iy)))
             .collect(),
     });
-    // A ring-ish secondary.
     roads.push(Road {
         class: RoadClass::Secondary,
         pts: vec![
@@ -249,7 +228,6 @@ pub fn basemap() -> Basemap {
     }
 }
 
-/// An irregular closed polygon ("blob") around `c`, radii in grid units.
 fn blob(rng: &mut Rng, c: LatLon, rx: f64, ry: f64, n: usize) -> Vec<LatLon> {
     let mut pts = Vec::with_capacity(n);
     for i in 0..n {
@@ -262,7 +240,6 @@ fn blob(rng: &mut Rng, c: LatLon, rx: f64, ry: f64, n: usize) -> Vec<LatLon> {
     pts
 }
 
-/// The bundled places (POIs).
 pub fn places() -> Vec<Place> {
     vec![
         Place::new(
@@ -338,14 +315,12 @@ pub fn places() -> Vec<Place> {
     ]
 }
 
-/// Origin point for directions ("your location").
 pub fn origin() -> LatLon {
     cell(-6.5, -6.0)
 }
 
-/// A couple of bundled "downloaded areas" so the offline-maps overlay's
-/// managed-region list renders in `--shots`/tests without any real download.
-/// The live app builds these from real viewport downloads instead.
+/// Bundled "downloaded areas", so the offline panel's list renders in a capture without a real
+/// download.
 pub fn regions() -> Vec<DownloadedRegion> {
     vec![
         DownloadedRegion {
@@ -369,9 +344,6 @@ pub fn regions() -> Vec<DownloadedRegion> {
     ]
 }
 
-/// Bundled viewport POIs with rich tags, standing in for a live Overpass reply
-/// so the offline `--shots`/tests can render the themed POI marker layer and an
-/// open info card without a network round-trip.
 pub fn pois() -> Vec<Poi> {
     let mk = |id: &str, name: &str, cat: Category, nx: f64, ny: f64| Poi {
         id: id.to_string(),
@@ -470,15 +442,10 @@ pub fn pois() -> Vec<Poi> {
     ]
 }
 
-/// A sample driving route from the origin to Marienplatz that follows the
-/// street grid (east, then north), with believable steps.
 pub fn sample_route() -> Route {
     let o = origin();
-    // East along the ny ≈ -6 row to nx = 0, then north along nx = 0 col.
     let mut geometry = Vec::new();
     let row_y = -6.0;
-    // Bounded rather than a float `while`; the grid span here is a small
-    // compile-time-known constant, so 64 steps is generous headroom.
     let mut nx = -6.5;
     for _ in 0..64 {
         if nx > 0.0 {
@@ -553,18 +520,12 @@ pub fn sample_route() -> Route {
     }
 }
 
-/// Sample public-transport itineraries for the Transit panel. Each leg carries
-/// a plausible on-grid `geometry` polyline so the offline `--shots` map and the
-/// hermetic tests exercise the real on-map itinerary rendering (the live app
-/// gets these from the planner's `legGeometry`).
 #[allow(
     clippy::too_many_lines,
     reason = "one block per bundled sample itinerary; splitting it would only relocate the \
               fixture data, not shrink what a reader must trace for one journey"
 )]
 pub fn sample_transit() -> Vec<TransitJourney> {
-    // All departure/arrival clocks derive from the one shared demo base so the
-    // Transit departures stay consistent with the Drive summary's clock.
     let clk = |off: i64| -> String {
         let m = u32::try_from((DEMO_CLOCK_BASE_MIN + off).rem_euclid(24 * 60)).unwrap_or(0);
         ui::clock::hour_minute(m / 60, m % 60)
@@ -742,8 +703,6 @@ pub fn sample_transit() -> Vec<TransitJourney> {
     ]
 }
 
-/// Sample geocoded region candidates for the offline download-by-place test
-/// (no network): real Munich bounding boxes.
 #[cfg(test)]
 pub fn download_regions() -> Vec<crate::net::RegionHit> {
     use crate::net::RegionHit;
@@ -772,14 +731,11 @@ pub fn download_regions() -> Vec<crate::net::RegionHit> {
     ]
 }
 
-/// Assemble the fully-populated default model used by `--shots` and as the
-/// initial state of a fresh live session.
 pub fn default_model() -> MapModel {
     let mut m = MapModel {
         places: places(),
         ..Default::default()
     };
-    // Pre-save a couple of favourites so the Explore list is populated.
     for id in ["hofgarten", "cafe-glueck"] {
         m.toggle_saved(id);
     }
@@ -820,8 +776,6 @@ pub fn default_model() -> MapModel {
 mod tests {
     use super::*;
 
-    /// The sample world: populated basemap, default route and transit, monotonic route
-    /// length, grid-following axis-aligned transit legs, and demo-base clocks.
     #[test]
     fn sample_world_is_populated_and_geometrically_sound() {
         {
@@ -852,11 +806,6 @@ mod tests {
             assert_eq!(r.steps.last().unwrap().maneuver, Maneuver::Arrive);
         }
 
-        // Phase `transit_legs_follow_grid_not_diagonal`.
-        // Every drawn transit leg follows the street grid: each segment runs along
-        // a grid line (constant lat OR constant lon), never a crow-flies diagonal
-        // across the blocks, and a ride leg bends at least once (so it is provably
-        // not a 2-point straight line). This guards the old fake-diagonal route.
         {
             let journeys = sample_transit();
             assert!(!journeys.is_empty());
@@ -890,9 +839,6 @@ mod tests {
             );
         }
 
-        // Phase `grid_path_is_axis_aligned_and_keeps_endpoints`.
-        // `grid_path` never emits a diagonal segment and keeps the exact endpoints
-        // as the first/last vertex (the transfer pucks anchor on them).
         {
             let p = grid_path((-5.0, -5.0), (0.0, 0.0));
             assert_eq!(p.first().copied(), Some(cell(-5.0, -5.0)));
@@ -905,9 +851,6 @@ mod tests {
             }
         }
 
-        // Phase `transit_clocks_lie_ahead_of_the_capture_time`.
-        // The sample departures derive from the time a capture shows, so every
-        // journey leaves after "now" in a screenshot and arrives after it leaves.
         {
             let now = format!(
                 "{:02}:{:02}",

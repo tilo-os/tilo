@@ -1,12 +1,7 @@
 //! Offscreen shots for `TextInput`'s **multiline** mode (soft-wrapped rows,
 //! cross-line selection, and caret) and **secret** mode (masked bullets, a
 //! revealed variant, and keyboard focus on the built-in show/hide control).
-//!
-//! The shots use the normal five-pass pipeline. `set_selection` only prepares
-//! the public selection state for the still frame.
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- textinput_ext_shots`
-//! Out:  `$TEXTINPUT_EXT_SHOTS_OUT` (default `target/textinput_ext_shots`)
 
 use std::path::PathBuf;
 
@@ -17,6 +12,7 @@ use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use tilo_ui::theme::Theme;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::{TextInput, TextInputKind, Widget};
 
 fn label(scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, s: &str, x: f64, y: f64) {
@@ -57,7 +53,7 @@ pub fn run(_args: &[String]) {
     // A first draw builds the wrapped visual-line layout the selection reads.
     {
         let mut s = Scene::new();
-        ml.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
+        ml.draw_child(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
     // Select from the first line through into the second — spans a wrap and the
     // hard newline, so the highlight paints as a stack of per-row bands.
@@ -72,7 +68,7 @@ pub fn run(_args: &[String]) {
         30.0,
         20.0,
     );
-    ml.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    ml.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     let mut r = OffscreenRenderer::new(500, 230);
     let out_ml = dir.join("multiline.png");
@@ -108,7 +104,7 @@ pub fn run(_args: &[String]) {
         30.0,
         30.0,
     );
-    masked.draw(&mut scene2, Affine::IDENTITY, &mut tr, &theme, &presence);
+    masked.draw_child(&mut scene2, Affine::IDENTITY, &mut tr, &theme, &presence);
     label(
         &mut scene2,
         &mut tr,
@@ -117,7 +113,7 @@ pub fn run(_args: &[String]) {
         30.0,
         118.0,
     );
-    revealed.draw(&mut scene2, Affine::IDENTITY, &mut tr, &theme, &presence);
+    revealed.draw_child(&mut scene2, Affine::IDENTITY, &mut tr, &theme, &presence);
     label(
         &mut scene2,
         &mut tr,
@@ -126,7 +122,7 @@ pub fn run(_args: &[String]) {
         30.0,
         206.0,
     );
-    eye_focused.draw(&mut scene2, Affine::IDENTITY, &mut tr, &theme, &presence);
+    eye_focused.draw_child(&mut scene2, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     let mut r2 = OffscreenRenderer::new(500, 296);
     let out_secret = dir.join("secret.png");
@@ -147,7 +143,7 @@ pub fn run(_args: &[String]) {
     // open the same menu used by right-click / keyboard menu invocation.
     {
         let mut s = Scene::new();
-        assisted.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
+        assisted.draw_child(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
     assisted.set_selection(12, 15);
     assisted.open_text_menu_at([386.0, 118.0]);
@@ -177,7 +173,7 @@ pub fn run(_args: &[String]) {
         Affine::translate((32.0, 57.0)),
         None,
     );
-    assisted.draw(&mut scene3, Affine::IDENTITY, &mut tr, &theme, &presence);
+    assisted.draw_child(&mut scene3, Affine::IDENTITY, &mut tr, &theme, &presence);
     Widget::draw_overlay(
         &mut assisted,
         &mut scene3,
@@ -240,7 +236,7 @@ pub fn run(_args: &[String]) {
         let y = 88.0 + f64::from(u32::try_from(index).unwrap_or(u32::MAX)) * 72.0;
         label(&mut scene4, &mut tr, &theme, caption, 32.0, y);
         input.apply_layout_external(Rect::new(180.0, y - 12.0, 646.0, y + 30.0));
-        input.draw(&mut scene4, Affine::IDENTITY, &mut tr, &theme, &presence);
+        input.draw_child(&mut scene4, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
     let mut r4 = OffscreenRenderer::new(680, 336);
     let out_structured = dir.join("structured-fields.png");

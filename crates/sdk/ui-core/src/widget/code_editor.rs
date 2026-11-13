@@ -29,6 +29,7 @@ use winit::event::WindowEvent;
 use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, TextInputKind, Widget};
 
@@ -491,7 +492,7 @@ impl CodeEditor {
     ) {
         let presence = PresenceCtx::default();
         self.inner
-            .draw(scene, transform, text_renderer, theme, &presence);
+            .draw_child(scene, transform, text_renderer, theme, &presence);
         self.draw_diagnostics(scene, transform, theme);
     }
 
@@ -632,7 +633,7 @@ impl Widget for CodeEditor {
         presence: &PresenceCtx,
     ) {
         self.inner
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.draw_diagnostics(scene, transform, theme);
     }
 
@@ -913,6 +914,22 @@ impl crate::undo::UndoPoints for CodeEditor {
 impl crate::presence::capability::PublishesPresence for CodeEditor {
     fn presence_key(&self) -> Option<PresenceKey> {
         self.inner.presence_key()
+    }
+
+    /// The code's own caret and band geometry, as the field it wraps draws
+    /// them.
+    fn presence_range_rects(
+        &self,
+        theme: &crate::theme::Theme,
+        key: &PresenceKey,
+        range: crate::presence::SelectionRange,
+    ) -> Vec<vello::kurbo::Rect> {
+        crate::presence::capability::PublishesPresence::presence_range_rects(
+            &self.inner,
+            theme,
+            key,
+            range,
+        )
     }
 }
 

@@ -14,13 +14,9 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
-/// The folders a server has, named and marked as one provider does.
 #[derive(Clone, Copy, Debug)]
 pub enum Layout {
-    /// Gmail: `[Gmail]/…` folders marked with their use; archiving is
-    /// "All Mail".
     Gmail,
-    /// Outlook: plain names, no marks.
     Outlook,
 }
 
@@ -47,7 +43,6 @@ impl Layout {
     }
 }
 
-/// One message in a folder.
 #[derive(Clone, Debug)]
 pub struct Stored {
     pub uid: u32,
@@ -77,22 +72,15 @@ impl State {
     }
 }
 
-/// A running server: where it listens, and the mailboxes it serves.
 #[derive(Clone)]
 pub struct FakeImap {
     pub port: u16,
     state: Arc<Mutex<State>>,
-    /// How many times the mailbox changed: a connection hears every change
-    /// its own receiver has not seen yet, so one made while it was between
-    /// commands is answered all the same.
     changed: Arc<tokio::sync::watch::Sender<usize>>,
-    /// How many connections are waiting in IDLE now.
     idling: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl FakeImap {
-    /// Serve `layout`'s folders, empty, on a loopback port, on the current
-    /// tokio runtime.
     pub async fn start(layout: Layout, tls: Arc<rustls::ServerConfig>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -132,13 +120,10 @@ impl FakeImap {
         server
     }
 
-    /// The mailbox changed as another client would have changed it.
     fn announce(&self) {
         self.changed.send_modify(|changes| *changes += 1);
     }
 
-    /// Put a message into `folder` as another client or a delivery would,
-    /// and tell idling connections. Its UID.
     pub fn append(&self, folder: &str, raw: &str, flags: &[&str]) -> u32 {
         let uid = {
             let mut state = self.state.lock().unwrap();
@@ -157,7 +142,6 @@ impl FakeImap {
         uid
     }
 
-    /// Set `flag` on a message, as another client would.
     pub fn flag(&self, folder: &str, uid: u32, flag: &str) {
         {
             let mut state = self.state.lock().unwrap();
@@ -173,7 +157,6 @@ impl FakeImap {
         self.announce();
     }
 
-    /// How many connections wait in IDLE for news of the mailbox.
     pub fn idling(&self) -> usize {
         self.idling.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -273,8 +256,6 @@ impl FakeImap {
         }
     }
 
-    /// Keep what a client appended (`APPEND "box" (flags) {n}`) in its
-    /// folder, and answer as a server with UIDPLUS does.
     fn appended(&self, tag: &str, command: &str, raw: Vec<u8>) -> String {
         let head = command.rsplit_once('{').map_or(command, |(head, _)| head);
         let rest = head.trim_start()["APPEND ".len()..].trim();
@@ -308,7 +289,6 @@ impl FakeImap {
         format!("{tag} OK [APPENDUID {validity} {uid}] APPEND completed\r\n")
     }
 
-    /// The whole answer to one command but IDLE and LOGOUT.
     #[expect(
         clippy::too_many_lines,
         clippy::significant_drop_tightening,
@@ -460,9 +440,6 @@ impl FakeImap {
     }
 }
 
-/// The literal an `APPEND` carries (`{n}` at its end): asked for, read and
-/// its line ended. `Err(Some(why))` refuses the command; `Err(None)` is a
-/// connection that closed.
 async fn receive_literal<R, W>(
     reader: &mut BufReader<R>,
     write: &mut W,
@@ -490,8 +467,6 @@ where
     Ok(raw)
 }
 
-/// One FETCH answer: the UID always, the flags unless only the UID was
-/// asked for, and the whole message when it was.
 fn fetch_line(position: usize, message: &Stored, asked: &str) -> String {
     let mut items = format!("UID {}", message.uid);
     if asked.contains("FLAGS") {
@@ -509,7 +484,6 @@ fn fetch_line(position: usize, message: &Stored, asked: &str) -> String {
     format!("* {position} FETCH ({items})\r\n")
 }
 
-/// The positions a sequence set names in a folder of `count` messages.
 fn sequence(set: &str, count: usize) -> Vec<usize> {
     let mut positions = Vec::new();
     for part in set.split(',') {
@@ -528,8 +502,6 @@ fn sequence(set: &str, count: usize) -> Vec<usize> {
     positions
 }
 
-/// The UIDs a UID set names among `messages`; `n:*` always takes the
-/// newest message, as RFC 3501 has it.
 fn uid_set(set: &str, messages: &[Stored]) -> Vec<u32> {
     let newest = messages.iter().map(|m| m.uid).max().unwrap_or(0);
     let mut wanted = Vec::new();

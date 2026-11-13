@@ -15,11 +15,9 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::time::Duration;
 
-use common::window::{Client, window_of};
+use crate::common::window::{Client, window_of};
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, InputEvent, OutputConfig};
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, DISPLAY_KIND, WINDOW_KIND};

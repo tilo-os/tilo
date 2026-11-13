@@ -11,7 +11,8 @@
 #                                      x86_64 Linux node: aarch64 cross-builds with the Zig
 #                                      toolchain the check's setup installs), aarch64-apple-darwin
 #                                      or x86_64-apple-darwin (on a Mac), packed as OUT/tilo-<os>-
-#                                      <arch>.tar.gz; holds no credentials
+#                                      <arch>.tar.gz; holds no credentials. Built for a tag, the
+#                                      program says that release as `tilo --version`
 #   cli-release.sh pack PROGRAM ARCHIVE  PROGRAM packed as the archive ARCHIVE, as build packs it
 #   cli-release.sh sums OUT DIR...     the archives of each DIR together in OUT, with SHA256SUMS;
 #                                      both Linux archives are required
@@ -24,9 +25,11 @@
 #                                      tilo-cli/<version>/<file>, and as tilo-cli/latest/<file>
 #                                      for a final version newer than latest's; tilo.sh serves
 #                                      both at /releases/ (the web entry's Caddyfile)
-#   cli-release.sh rehearse DIR        sign (a throwaway key) and publish (into DIR/registry)
-#                                      the release in DIR as a tag would, then install it with
-#                                      the installer from there and run what it installed
+#   cli-release.sh rehearse DIR        sign (a throwaway key) and publish the release in DIR as
+#                                      a tag would, serve it at a local site laid out as tilo.sh
+#                                      serves it, and install it from there the way a person
+#                                      does, `curl -fsSL https://<site>/ | sh`, then run what
+#                                      was installed; nothing here reaches the live site
 #
 # With TILO_PUBLISH_DRY_RUN set to a directory, `sign` signs with a throwaway key made here
 # (its public half kept as DIR/dry-run.pub) and `publish` writes DIR/releases/<version>/ and
@@ -73,8 +76,51 @@ with open(archive, "wb") as out, gzip.GzipFile(filename="", mode="wb", fileobj=o
 PY
 }
 
+# The otool that reads a Mach-O here: a Mac's own, or llvm's on the Linux node that builds one.
+macho_otool() {
+  if command -v otool >/dev/null; then
+    printf 'otool'
+    return
+  fi
+  command -v llvm-otool >/dev/null \
+    || die 'no otool or llvm-otool to read a Mach-O with (the cli-macos-cross-ARCH check installs llvm)'
+  printf 'llvm-otool'
+}
+
+# The libraries a Mach-O names, one path per line, as dyld looks them up.
+macho_dylibs() {
+  "$(macho_otool)" -L "$1" | tail -n +2 | awk '{print $1}'
+}
+
+# What is checked of a program that cannot run here, read out of the Mach-O it is: the
+# architecture it was built for, the oldest macOS it runs on, that every library it names is one
+# every Mac carries -- a framework's stub names it the way the framework is installed -- and that
+# an arm64 program still carries the ad-hoc signature its build signs it with, without which an
+# arm64 Mac refuses to run it.
+verify_macho() {
+  local program=$1 arch=$2 otool load_commands cpu minos foreign
+  otool=$(macho_otool)
+  cpu=$("$otool" -hv "$program" | awk '$1 == "MH_MAGIC_64" { print $2 }')
+  case $arch in
+    aarch64) [[ $cpu == ARM64 ]] || die "$program is a Mach-O of $cpu, not of the ARM64 $arch needs" ;;
+    x86_64) [[ $cpu == X86_64 ]] || die "$program is a Mach-O of $cpu, not of the X86_64 $arch needs" ;;
+  esac
+  # Read once, and out of a file: a reader that stops at its first match closes the pipe under
+  # otool, and this script's `set -e` fails on that SIGPIPE.
+  load_commands=$("$otool" -l "$program")
+  minos=$(awk '$1 == "minos" && !found++ { print $2 }' <<< "$load_commands")
+  [[ $minos == 11.0 ]] \
+    || die "$program was built for macOS ${minos:-no version at all}, not for the 11.0 the build asks for"
+  foreign=$(macho_dylibs "$program" | grep -Ev '^(/usr/lib/|/System/Library/)' || true)
+  [[ -z $foreign ]] || die "$program names libraries a Mac does not carry: $foreign"
+  if [[ $arch == aarch64 ]]; then
+    grep 'cmd LC_CODE_SIGNATURE' <<< "$load_commands" >/dev/null \
+      || die "$program carries no code signature, which an arm64 Mac needs to run it"
+  fi
+}
+
 cmd_build() {
-  local target=${1:?$usage} out=${2:?$usage} os arch flags cross
+  local target=${1:?$usage} out=${2:?$usage} os arch flags cross stubs
   case $target in
     x86_64-unknown-linux-musl) os=linux arch=x86_64 ;;
     aarch64-unknown-linux-musl) os=linux arch=aarch64 ;;
@@ -113,10 +159,37 @@ cmd_build() {
     fi
     flags="$flags -C target-feature=+crt-static -C relro-level=full -C link-arg=-Wl,-z,noexecstack"
   else
-    [[ $(uname -s) == Darwin ]] || die "$target is built on a Mac, not on $(uname -s)"
-    rustup target add "$target" >/dev/null
     # The oldest macOS the program runs on, for Rust and the C cc-rs compiles alike.
     export MACOSX_DEPLOYMENT_TARGET=11.0
+    case $(uname -s) in
+      Darwin) rustup target add "$target" >/dev/null ;;
+      Linux)
+        # No Mac is a build node: Zig builds the program here, for either Mac architecture. It
+        # carries Darwin's C library headers, which is what the C the program links (ring, SQLite,
+        # zstd) is compiled against, and the framework stubs the check's setup writes stand in for
+        # the frameworks' headers and libraries (tools/ci/macos-frameworks.py). No Apple SDK is
+        # involved: it is Apple's to license on Apple hardware, and nothing here is a copy of it.
+        command -v zig >/dev/null \
+          || die "no zig, which cross-builds $target: install it (the cli-macos-cross-$arch check sets it up)"
+        stubs=$scratch/macos-frameworks
+        rm -rf "$stubs"
+        python3 -I "$repo_root/tools/ci/macos-frameworks.py" "$stubs" "$target"
+        cross=$repo_root/tools/ci/zig-cc.sh
+        export TILO_ZIG_TARGET=$arch-macos.11.0
+        export "CC_${target//-/_}=$cross"
+        # Zig's caches belong to this build, not to the node: a later one starts from none of it.
+        export ZIG_GLOBAL_CACHE_DIR=$scratch/zig-cache ZIG_LOCAL_CACHE_DIR=$scratch/zig-cache
+        flags="$flags -C linker=$cross -C link-arg=-F$stubs -C link-arg=-L$stubs"
+        ;;
+      *) die "$target is built on Linux or a Mac, not on $(uname -s)" ;;
+    esac
+  fi
+  # The release's version, so `tilo --version` names the release this program is from. A build
+  # that releases nothing (a branch's, a working tree's) keeps the crate's own version.
+  local released
+  if [[ ${T_REF:-} == tag:* || -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
+    released=$(version)
+    export TILO_CLI_VERSION=${released#v}
   fi
   RUSTFLAGS=$flags CARGO_PROFILE_RELEASE_STRIP=symbols CARGO_INCREMENTAL=0 \
     cargo build --locked --release --target "$target" -p tilo-cli --bin tilo
@@ -130,21 +203,26 @@ cmd_build() {
     if LC_ALL=C readelf -dW "$program" | grep -q '(NEEDED)'; then
       die "$program needs shared libraries: $(readelf -dW "$program" | grep '(NEEDED)')"
     fi
+    # The program runs here when it is this machine's architecture, and under qemu's user-mode
+    # emulator when it is the other one, which the cli-aarch64 check's setup installs. Without the
+    # emulator a cross-built archive is checked only by its ELF, above.
+    if [[ $arch == $(uname -m) ]]; then
+      "$program" --help >/dev/null || die "$program --help failed"
+      if [[ -n ${TILO_CLI_VERSION:-} ]]; then
+        [[ $("$program" --version) == "tilo $TILO_CLI_VERSION" ]] \
+          || die "$program --version does not name the release $TILO_CLI_VERSION it was built for"
+      fi
+    elif command -v "qemu-$arch-static" >/dev/null; then
+      "qemu-$arch-static" "$program" --help >/dev/null \
+        || die "$program --help failed under qemu-$arch-static"
+    fi
   else
-    # Only what every Mac has: the system library and Apple's frameworks.
-    local foreign
-    foreign=$(otool -L "$program" | tail -n +2 | awk '{print $1}' | grep -Ev '^(/usr/lib/|/System/Library/)' || true)
-    [[ -z $foreign ]] || die "$program links libraries a Mac does not carry: $foreign"
-  fi
-  # The architecture it runs on is this one (a Mac runs x86_64 under Rosetta, when installed), or
-  # an emulated one: qemu's user-mode emulator, which the cli-aarch64 check's setup installs, runs
-  # a cross-built program here too. Without it a cross-built archive is checked only by its ELF,
-  # above.
-  if [[ $arch == $(uname -m) || ( $os == macos && $arch == aarch64 && $(uname -m) == arm64 ) ]]; then
-    "$program" --help >/dev/null || die "$program --help failed"
-  elif command -v "qemu-$arch-static" >/dev/null; then
-    "qemu-$arch-static" "$program" --help >/dev/null \
-      || die "$program --help failed under qemu-$arch-static"
+    # A Mac's program does not run on a node of this fleet: what is checked of it is the file it
+    # is. A Mac checks it by running it too, when the program is the architecture the Mac is.
+    verify_macho "$program" "$arch"
+    if [[ $(uname -s) == Darwin && $arch == $(uname -m) ]]; then
+      "$program" --help >/dev/null || die "$program --help failed"
+    fi
   fi
   rm -rf "$out"
   mkdir -p "$out"
@@ -280,44 +358,137 @@ cmd_publish() {
   echo "$package/latest/ is $v"
 }
 
+# The files a site serves: the installer at / (what `curl -fsSL https://tilo.sh | sh` gets) and at
+# /install.sh, beside the release ROOT already holds at /releases/<version>/ and
+# /releases/latest/, as the web entry's Caddyfile maps them onto the package registry.
+site_root() {
+  local root=$1
+  cp "$repo_root/dist/install/tilo.sh" "$root/index.html"
+  cp "$repo_root/dist/install/tilo.sh" "$root/install.sh"
+}
+
+# Serve ROOT with CERT and KEY as the site's at https://127.0.0.1:$port, the port the kernel picks:
+# the installer fetches over https alone, so a rehearsal's site is https too, and curl is told to
+# trust this certificate. The site writes the port it bound to $5 as soon as it listens.
+serve() {
+  local root=$1 cert=$2 key=$3 log=$4 portfile=$5
+  python3 - "$root" "$cert" "$key" "$portfile" >"$log" 2>&1 <<'PY' &
+import functools, http.server, ssl, sys
+root, cert, key, portfile = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+site = http.server.HTTPServer(("127.0.0.1", 0), functools.partial(http.server.SimpleHTTPRequestHandler, directory=root))
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain(cert, key)
+site.socket = context.wrap_socket(site.socket, server_side=True)
+with open(portfile, "w") as written:
+  written.write(f"{site.server_address[1]}\n")
+site.serve_forever()
+PY
+}
+
+# The port the site serving beside $1 wrote there, once it listens.
+site_port() {
+  local portfile=$1 waited=0
+  while (( waited < 300 )); do
+    if [[ -s $portfile ]]; then
+      cat "$portfile"
+      return 0
+    fi
+    sleep 0.1
+    (( waited += 1 ))
+  done
+  return 1
+}
+
+# Install the release the site at $1 serves, as a person does: the installer is what `curl` gets
+# from that site's root, piped into `sh`, and everything it runs with is the environment `$2`
+# gives. The site's certificate is trusted through CURL_CA_BUNDLE, which the installer's own
+# `curl` reads; $3 picks a release other than latest.
+install_from_site() {
+  local site=$1 path=$2 ref=$3 home=$4 dir=$5
+  curl -fsSL --cacert "$dir/site.pem" "$site/" \
+    | env -i PATH="$path" HOME="$home" CURL_CA_BUNDLE="$dir/site.pem" \
+        TILO_RELEASES="$site/releases" TILO_VERSION="$ref" TILO_RELEASE_KEY="$dir/dry-run.pub" sh
+}
+
 cmd_rehearse() {
-  local release=${1:?$usage} dir registry home installed
-  registry=$scratch/cli-rehearsal
+  local release=${1:?$usage} installed ref machine command
+  # Not `local`: the EXIT trap below runs after this function has returned.
+  server=
+  site=$scratch/cli-rehearsal-site
   dir=$scratch/cli-rehearsal-release
-  rm -rf "$registry" "$dir"
-  mkdir -p "$registry"
+  rm -rf "$site" "$dir"
+  mkdir -p "$site"
   cp -r "$release" "$dir"
-  export TILO_PUBLISH_DRY_RUN=$registry
+  export TILO_PUBLISH_DRY_RUN=$site
   cmd_sign "$dir"
   cmd_publish "$dir"
-  local machine
+  site_root "$site"
+  # The site's certificate, made here: the name it answers to is this machine's loopback.
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
+    -subj /CN=cli-rehearsal -addext subjectAltName=IP:127.0.0.1 \
+    -keyout "$dir/site.key" -out "$dir/site.pem" >/dev/null 2>&1 \
+    || die 'could not make the rehearsal site a certificate'
+  site_port_file=$scratch/cli-rehearsal-site.port
+  rm -f "$site_port_file"
+  serve "$site" "$dir/site.pem" "$dir/site.key" "$scratch/cli-rehearsal-site.log" "$site_port_file"
+  server=$!
+  trail() {
+    kill "$server" 2>/dev/null || true
+    rm -rf "$site" "$dir" "$scratch/cli-rehearsal-home" "$scratch/cli-rehearsal-tools" \
+      "$scratch/cli-rehearsal-site.log" "$site_port_file"
+  }
+  trap trail EXIT
+  port=$(site_port "$site_port_file") \
+    || die "the rehearsal's site did not come up: $(cat "$scratch/cli-rehearsal-site.log" 2>/dev/null)"
+  local url=https://127.0.0.1:$port
+  curl -fsS --retry 30 --retry-connrefused --retry-delay 1 --cacert "$dir/site.pem" -o /dev/null "$url/install.sh" \
+    || die "the rehearsal's site did not come up: $(cat "$scratch/cli-rehearsal-site.log" 2>/dev/null)"
   case $(uname -m) in x86_64) machine=x86_64 ;; aarch64) machine=aarch64 ;; *) die "no release for $(uname -m)" ;; esac
   local refs=("$(version)")
   if [[ -n $(final "$(version)") ]]; then refs+=(latest); fi
+  home=$scratch/cli-rehearsal-home
   for ref in "${refs[@]}"; do
-    home=$scratch/cli-rehearsal-home
     rm -rf "$home"
     mkdir -p "$home"
-    # The installer as tilo.sh serves it, from the published layout, with the throwaway key as
+    # The installer as tilo.sh serves it, from the site's own layout, with the throwaway key as
     # the mirror's: it checks the signature and the archive's sum, then installs.
-    env -i PATH=/usr/bin:/bin HOME="$home" TILO_RELEASES="file://$registry/releases" \
-      TILO_VERSION="$ref" TILO_RELEASE_KEY="$dir/dry-run.pub" sh dist/install/tilo.sh \
+    install_from_site "$url" /usr/bin:/bin "$ref" "$home" "$dir" \
       || die "the installer refused the rehearsed release at $ref"
     installed=$home/.local/bin/tilo
-    cmp --silent "$installed" <(tar -xzOf "$dir/tilo-linux-$machine.tar.gz" tilo) \
+    cmp --silent "$installed" <(tar -xzOf "$site/releases/$ref/tilo-linux-$machine.tar.gz" tilo) \
       || die "the installer installed something other than tilo-linux-$machine.tar.gz's program"
     HOME=$home "$installed" --help >/dev/null || die "the installed tilo does not run"
   done
-  # Without the mirror's key only the release key is trusted, which did not sign this.
-  home=$scratch/cli-rehearsal-home
-  rm -rf "$home" && mkdir -p "$home"
-  if env -i PATH=/usr/bin:/bin HOME="$home" TILO_RELEASES="file://$registry/releases" \
-    sh dist/install/tilo.sh 2>/dev/null; then
+  # Stock systems (Fedora) come without openssl, so the installer must install there too, on the
+  # archive's sum against SHA256SUMS alone: only what the installer itself runs is on PATH.
+  tools=$scratch/cli-rehearsal-tools
+  rm -rf "$tools"
+  mkdir -p "$tools"
+  for command in sh uname tar gzip curl sha256sum mktemp awk mkdir cp chmod mv rm cut cat; do
+    ln -s "$(command -v "$command")" "$tools/$command" || die "no $command to give the installer a PATH without openssl"
+  done
+  PATH=$tools command -v openssl >/dev/null && die 'openssl is on the PATH the rehearsal calls empty of it'
+  rm -rf "$home"
+  mkdir -p "$home"
+  install_from_site "$url" "$tools" latest "$home" "$dir" \
+    || die 'without openssl the installer refused the release'
+  cmp --silent "$home/.local/bin/tilo" <(tar -xzOf "$site/releases/latest/tilo-linux-$machine.tar.gz" tilo) \
+    || die 'without openssl the installer installed something other than the release'
+  # The site's files decide: one that does not match its sums, and a release the release key did
+  # not sign, both install nothing.
+  printf 'x' >> "$site/releases/latest/tilo-linux-$machine.tar.gz"
+  rm -rf "$home"
+  mkdir -p "$home"
+  if install_from_site "$url" /usr/bin:/bin latest "$home" "$dir" 2>/dev/null; then
+    die 'the installer accepted an archive that does not match the release SHA256SUMS'
+  fi
+  [[ ! -e $home/.local/bin/tilo ]] || die 'the installer wrote a program it refused'
+  rm -f "$site/releases/latest/SHA256SUMS.sig"
+  if install_from_site "$url" /usr/bin:/bin latest "$home" "$dir" 2>/dev/null; then
     die 'the installer accepted a release the release key did not sign'
   fi
   [[ ! -e $home/.local/bin/tilo ]] || die 'the installer wrote a program it refused'
-  rm -rf "$home" "$registry" "$dir"
-  echo "the installer installs the rehearsed release $(version) and refuses it unsigned by the release key"
+  echo "the installer installs the rehearsed release $(version) from the rehearsal's own site, with and without openssl, and refuses a release its sums or the release key do not match"
 }
 
 case ${1:-} in

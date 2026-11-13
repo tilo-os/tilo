@@ -67,8 +67,23 @@ type BindList<R> = Vec<(Weak<()>, Bind<R>)>;
 
 /// The edits views bound to their local state
 /// ([`ViewCx::bind_declarations`]), each tied to the view scope that bound
-/// it.
-pub(crate) struct Bindings<R: Resource>(Rc<RefCell<BindList<R>>>);
+/// it, with a count of how many times that list changed: what a publication
+/// reads to know whether the edits it built are still the whole list.
+pub(crate) struct Bindings<R: Resource>(Rc<RefCell<Bound<R>>>);
+
+struct Bound<R: Resource> {
+    list: BindList<R>,
+    generation: u64,
+}
+
+impl<R: Resource> Default for Bound<R> {
+    fn default() -> Self {
+        Self {
+            list: Vec::new(),
+            generation: 0,
+        }
+    }
+}
 
 impl<R: Resource> Clone for Bindings<R> {
     fn clone(&self) -> Self {
@@ -81,11 +96,33 @@ impl<R: Resource> Bindings<R> {
         Self(Rc::default())
     }
 
+    /// How many bound edits the views hold, and how many times that list
+    /// changed: a publication that read the same generation reads the same
+    /// views.
+    pub(crate) fn generation(&self) -> u64 {
+        self.0.borrow().generation
+    }
+
+    /// Register the edit `bind` a view published.
+    pub(crate) fn push(&self, alive: Weak<()>, bind: Bind<R>) {
+        let mut bound = self.0.borrow_mut();
+        bound.list.push((alive, bind));
+        bound.generation = bound.generation.wrapping_add(1);
+    }
+
     /// Every live view's bound edits over `state`.
     pub(crate) fn declarations(&self, state: &R::State) -> Vec<ActionDecl<R>> {
-        let mut bindings = self.0.borrow_mut();
-        bindings.retain(|(alive, _)| alive.strong_count() > 0);
-        bindings.iter().flat_map(|(_, bind)| bind(state)).collect()
+        let mut bounds = self.0.borrow_mut();
+        let before = bounds.list.len();
+        bounds.list.retain(|(alive, _)| alive.strong_count() > 0);
+        if bounds.list.len() != before {
+            bounds.generation = bounds.generation.wrapping_add(1);
+        }
+        bounds
+            .list
+            .iter()
+            .flat_map(|(_, bind)| bind(state))
+            .collect()
     }
 }
 
@@ -497,15 +534,26 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.forms.get::<P>()
     }
 
-    /// A text field for the text at `field`: a path into the record, whose
-    /// committed edits replace it ([`Path::replace`]; the keystrokes of one
-    /// word are one undo step), or into a form ([`Self::form`]).
+    /// A text field for the text at `field`: a path into the record, or
+    /// into a form ([`Self::form`]).
+    ///
+    /// A record's field shows its text as the document holds it, so who
+    /// wrote each run shows in their colour, a collaborator's edit lands
+    /// under the caret as they make it, and an invocation writing there
+    /// draws its writer's caret where the write ends. Each edit is a splice
+    /// of it ([`Path::splice`]); the keystrokes of one word are one undo step.
     pub fn input<M>(&self, field: impl Bindable<R, String, M>) -> TextInput {
-        match field.attach(self, Path::replace) {
-            Attached::Record { id, state, binding } => {
-                let input = TextInput::from_state(&state).with_id(&id);
+        match field.attach(self, super::text::edit_at) {
+            Attached::Record {
+                id,
+                state,
+                binding,
+                path,
+            } => {
+                let input =
+                    super::text::bound_field(TextInput::from_state(&state), path).with_id(&id);
                 match binding {
-                    Some(binding) => input.on_action(*binding),
+                    Some(binding) => input.on_text_edit(*binding),
                     None => input.disabled(true),
                 }
             }
@@ -522,7 +570,9 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     ) -> Checkbox {
         let label: LabelKey = label.into();
         match field.attach(self, Path::set) {
-            Attached::Record { id, state, binding } => {
+            Attached::Record {
+                id, state, binding, ..
+            } => {
                 let checkbox = Checkbox::from_state(&state).with_id(&id).with_label(label);
                 match binding {
                     Some(binding) => checkbox.on_action(*binding),
@@ -573,10 +623,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         if let Some(gate) = &self.gate {
             gate.read_while_unmounted();
         }
-        self.bindings
-            .0
-            .borrow_mut()
-            .push((self.alive.clone(), Box::new(bind)));
+        self.bindings.push(self.alive.clone(), Box::new(bind));
     }
 
     /// The resource's published actions, for binding controls built outside
@@ -1127,11 +1174,11 @@ where
 /// verb's parameters. `M` tells the two apart and is always inferred.
 pub trait Bindable<R: Resource, V, M>: Sized {
     #[doc(hidden)]
-    fn attach<T: 'static>(
+    fn attach<T: 'static, I: 'static>(
         self,
         cx: &ViewCx<R, T>,
-        edit: fn(&Path<R, V>, V) -> Edit<R>,
-    ) -> Attached<V>;
+        edit: fn(&Path<R, V>, I) -> Edit<R>,
+    ) -> Attached<V, I>;
 }
 
 impl<R, V> Bindable<R, V, RecordField> for Path<R, V>
@@ -1139,15 +1186,24 @@ where
     R: Resource<State = R> + Model,
     V: PartialEq + Default + Clone + Send + Sync + 'static,
 {
-    fn attach<T: 'static>(
+    fn attach<T: 'static, I: 'static>(
         self,
         cx: &ViewCx<R, T>,
-        edit: fn(&Path<R, V>, V) -> Edit<R>,
-    ) -> Attached<V> {
+        edit: fn(&Path<R, V>, I) -> Edit<R>,
+    ) -> Attached<V, I> {
         let id = cx.path_control_id(&self);
         let state = cx.value_at(&self);
-        let binding = cx.actions().edit_binding(self, edit).map(Box::new);
-        Attached::Record { id, state, binding }
+        let path = self.segments().to_vec();
+        let binding = cx
+            .actions()
+            .edit_binding_with(self, move |path, input| Ok(edit(path, input)))
+            .map(Box::new);
+        Attached::Record {
+            id,
+            state,
+            binding,
+            path,
+        }
     }
 }
 
@@ -1157,11 +1213,11 @@ where
     P: Params<Resource = R>,
     V: serde::Serialize + Default + Send + Sync + 'static,
 {
-    fn attach<T: 'static>(
+    fn attach<T: 'static, I: 'static>(
         self,
         cx: &ViewCx<R, T>,
-        _edit: fn(&Path<R, V>, V) -> Edit<R>,
-    ) -> Attached<V> {
+        _edit: fn(&Path<R, V>, I) -> Edit<R>,
+    ) -> Attached<V, I> {
         let state = cx.form::<P>().field(&self);
         let id = std::iter::once(P::ACTION.id.to_owned())
             .chain(self.segments().iter().map(ToString::to_string))

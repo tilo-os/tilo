@@ -38,6 +38,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::floating_list::{FloatingList, FloatingMetrics, FloatingRow, RowState};
 #[path = "autocomplete_component.rs"]
@@ -123,10 +124,10 @@ impl Suggestion {
 /// Who a [`Suggestion`] names, for its leading avatar.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SuggestionPerson {
-    /// Their stable id, which also picks the avatar's hue.
+    /// Their stable id.
     pub identity: String,
-    /// The colour the workspace gives them.
-    pub color: (u8, u8, u8),
+    /// The presence hue the workspace gives them.
+    pub hue: crate::tokens::PresenceHue,
     /// Software acting in the workspace rather than a person.
     pub agent: bool,
 }
@@ -378,7 +379,7 @@ fn paint_item(
             x + side,
             row.center().y + side / 2.0,
         );
-        let colour = theme.tokens.colors.presence.of_rgb(person.color);
+        let colour = theme.tokens.colors.presence.hue(person.hue);
         if person.agent {
             crate::agent_identity::draw_agent_identity_mark(
                 scene,
@@ -1151,7 +1152,7 @@ impl Widget for Autocomplete {
         // The field itself; the suggestion list floats in `draw_overlay`.
         self.input.apply_layout_external(self.rect);
         self.input
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn draw_overlay(

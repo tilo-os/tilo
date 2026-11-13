@@ -52,9 +52,7 @@ impl Entropy for OsEntropy {
             {
                 return u64::from_le_bytes(buf);
             }
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos() as u64);
+            let nanos = tilo_clock::unix_now_ns();
             self.fallback = Some(SeededEntropy(nanos ^ u64::from(std::process::id())));
         }
         self.fallback.as_mut().map_or(0, Entropy::next_u64)

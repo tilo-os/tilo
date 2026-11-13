@@ -31,6 +31,9 @@ pub enum Kind {
     DoubleSelection,
     /// A screen made for a narrow window holds its content nearer than a gutter to the edge.
     CrampedGutter,
+    /// A chevron folding a tree's row stands off the line of the row it folds: the words, the
+    /// leading control and the chevron of one row read as two lines.
+    ChevronOffLine,
     /// One screen offers the same way to add something several times: two add affordances in one
     /// list, or the same add label on two controls.
     SeveralAdds,
@@ -106,53 +109,100 @@ pub enum Kind {
     /// inside it keeps a scrollbar of its own and cuts the rows it holds at its edge.
     NestedScroller,
     /// A row's title written a second time in the item the row opened into: the row became the
-    /// item, its title standing once, in the field that edits it.
+    /// item, its title standing once, in the field that edits it. The words a box is announced by
+    /// are not written, so a row named after its item's own title is no second title on screen.
     RepeatedRowTitle,
     /// A page given a column of its own inside another page: the gutter is counted twice, so
     /// what it holds stands inset from the rows beside it and narrower than them.
     PageInPage,
+    /// A window whose view declares one main action that does not stand in its bar as the
+    /// primary button: the thing a person is most likely to do looks like every other control,
+    /// or is not in the row at all.
+    UnmarkedBarPrimary,
+    /// Two words painted in one place: labels whose ink stands on each other, neither on a
+    /// surface of its own. Whatever draws them — a widget or the bar itself — a person reads one
+    /// string of letters, not two.
+    TextOnText,
+    /// A bar docked at the foot of a column standing wider than the column the content above it
+    /// is read at: an entry that adds to a list spans the window beside the list it adds to.
+    DockedColumn,
+    /// A surface with rounded corners standing against the edge of the column or window it is
+    /// in: the curve is cut by the edge, or the surface reads as part of the frame rather than
+    /// as a card inside it. A rounded surface keeps a gutter on every side.
+    RoundedOnEdge,
+    /// A card or a notice standing closer to the sibling above or below it than the toolkit's
+    /// section gap: the two read as one block, and a list pressed against a notice says the
+    /// notice is a row of it.
+    CrampedCard,
+    /// A sidebar standing beside content narrower than a column: the pane beside it is a phone's
+    /// screen, so the sidebar folds behind the bar's toggle there and the content takes the
+    /// window.
+    ContentBesideSidebar,
+    /// One item shown twice: the document of a row standing open lists an item that stands in
+    /// the list again. An item stands in one place — a row of its list, or in the document of
+    /// the row it is under, never both.
+    ItemShownTwice,
+    /// A group heading taking more room over its first row than one heading band, and a finger's
+    /// target where the window is held in the hand: the room a heading needs stands over its
+    /// line, so what it names stands as close to it at every width.
+    HeadingRoom,
+    /// A row indented under nothing: the first row a group's heading heads stands a nesting step
+    /// in from the level its list starts at, so the row it stands under is no row of its group.
+    /// An item the grouping put in another group stands at the group's first level and names the
+    /// item it belongs to instead.
+    OrphanedRow,
+    /// A section's heading with no more room over it than under it: nothing tells it from the
+    /// block it follows, so a person reads it as that block's last line rather than as the title
+    /// of what comes next.
+    CrowdedHeading,
+    /// A list standing beside the page it opens that highlights another row than the one the page
+    /// shows: the tree says where the person is, and the page says it somewhere else.
+    DetailRowNotChosen,
+    /// A column whose header row — the words that name what it shows and the buttons that act on
+    /// it — stands only while the window's bar is out: at rest the column starts straight with
+    /// its rows, so what names it and acts on it is off the window until the person reaches for
+    /// the bar. A column's header is the app's own and stands at every time.
+    HeaderOnReveal,
+    /// A name tag presence draws — who is there, what an agent is doing — over a word of the
+    /// window, or a second tag for one actor: the word is lost, and one actor reads as two.
+    PresenceTag,
+    /// A field holding one line of text, standing it above the middle of the control a person
+    /// types into: the band around the line grew (a phone's target) while the line stayed at the
+    /// top, so the words float over empty room instead of standing where the field puts the
+    /// caret. One line stands in the middle of a field that tall; text that wraps, a box given
+    /// lines of its own and a document's page start at their inset.
+    LineOffCentre,
+    /// A page's own sections — what links here, the discussion, its history — standing straight
+    /// under the writing the page holds, with no rule between them: a section's heading is set
+    /// like the writing's own headings and stands no further from it than they stand from each
+    /// other, so what the page says of itself is read as another line of what was written.
+    UnruledBody,
+    /// An action the window's bar offers that a button in the window offers again: a column's
+    /// actions stand in its header row, and the bar holds only what is the window's.
+    OfferedTwice,
+    /// A page's body standing a leading control's width in from the page's gutter while the
+    /// column it is read in is a phone's screen: the indent stands under the text a heading's
+    /// control leads to, and takes the control's cell out of every line the body has, where a
+    /// screen that narrow starts its body on the gutter and keeps the control beside the title.
+    IndentedBody,
+    /// A list's one group heading saying what the title over the list already says: the same
+    /// words, counting the same rows left to do. The title names where the person is and how
+    /// much stands there, so a heading that says it again over the first row says nothing twice.
+    RepeatedGroupTitle,
+    /// A row's trailing day fact naming the day the heading over it names: the group, card or
+    /// section above the rows says the day, so the row that says it again adds neither a day
+    /// the person did not know nor one they can act on. A row keeps the time of day it is due,
+    /// and says nothing where it names no time.
+    RepeatedDayFact,
+    /// The first band a list that heads its rows draws — the heading over its first run, or the
+    /// first row where the list leaves that heading out — standing against the box over the list,
+    /// with less than a column's content gutter above it: where a page's first block stands. A
+    /// band that hugs the edge reads as part of the block over it rather than as one of the
+    /// list's own.
+    HuggingRow,
 }
 
 impl Kind {
-    pub const ALL: [Self; 36] = [
-        Self::Overflow,
-        Self::ClippedText,
-        Self::Overlap,
-        Self::SmallHitTarget,
-        Self::ScrollsSideways,
-        Self::LostContent,
-        Self::OffPixel,
-        Self::BareRow,
-        Self::RaggedColumns,
-        Self::DoubleSelection,
-        Self::CrampedGutter,
-        Self::SeveralAdds,
-        Self::CodedName,
-        Self::UnsharedVerb,
-        Self::NestedCard,
-        Self::LoneDoor,
-        Self::EmptyHeading,
-        Self::ZeroCount,
-        Self::RepeatedCount,
-        Self::PastWindow,
-        Self::TitleClippedWithRoom,
-        Self::MixedLanguage,
-        Self::OpenOutsideList,
-        Self::EmptySurface,
-        Self::RepeatedPageTitle,
-        Self::DoubleNavigation,
-        Self::FirstLevelIndent,
-        Self::DuplicateBarControl,
-        Self::IconOnlyBarAction,
-        Self::PlaceholderPane,
-        Self::SelectionBleed,
-        Self::StackedHeaderRows,
-        Self::UnchosenPlace,
-        Self::NestedScroller,
-        Self::RepeatedRowTitle,
-        Self::PageInPage,
-    ];
-
     pub fn name(self) -> &'static str {
         match self {
             Self::Overflow => "overflow",
@@ -166,6 +216,7 @@ impl Kind {
             Self::RaggedColumns => "ragged-columns",
             Self::DoubleSelection => "double-selection",
             Self::CrampedGutter => "cramped-gutter",
+            Self::ChevronOffLine => "chevron-off-line",
             Self::SeveralAdds => "several-adds",
             Self::CodedName => "coded-name",
             Self::UnsharedVerb => "unshared-verb",
@@ -191,6 +242,26 @@ impl Kind {
             Self::NestedScroller => "nested-scroller",
             Self::RepeatedRowTitle => "repeated-row-title",
             Self::PageInPage => "page-in-page",
+            Self::UnmarkedBarPrimary => "unmarked-bar-primary",
+            Self::TextOnText => "text-on-text",
+            Self::DockedColumn => "docked-column",
+            Self::RoundedOnEdge => "rounded-on-edge",
+            Self::CrampedCard => "cramped-card",
+            Self::ContentBesideSidebar => "content-beside-sidebar",
+            Self::ItemShownTwice => "item-shown-twice",
+            Self::HeadingRoom => "heading-room",
+            Self::OrphanedRow => "orphaned-row",
+            Self::CrowdedHeading => "crowded-heading",
+            Self::DetailRowNotChosen => "detail-row-not-chosen",
+            Self::HeaderOnReveal => "header-on-reveal",
+            Self::PresenceTag => "presence-tag",
+            Self::LineOffCentre => "line-off-centre",
+            Self::UnruledBody => "unruled-body",
+            Self::OfferedTwice => "offered-twice",
+            Self::IndentedBody => "indented-body",
+            Self::RepeatedGroupTitle => "repeated-group-title",
+            Self::RepeatedDayFact => "repeated-day-fact",
+            Self::HuggingRow => "hugging-row",
         }
     }
 }

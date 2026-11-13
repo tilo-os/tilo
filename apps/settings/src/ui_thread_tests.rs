@@ -1,24 +1,10 @@
 //! No pane makes the window wait on the device.
-//!
-//! Settings reads and changes the device through commands, D-Bus calls and
-//! walks of large trees, which take seconds on a slow or wedged service.
-//! Every such call marks itself ([`crate::device_read::off_ui_thread`]),
-//! which panics on a UI thread in a test build. This test runs the window
-//! on a thread marked as the UI thread, reading as a live window does, and
-//! opens every pane from the sidebar and changes a control on each: a pane
-//! or a control that reaches the device on the UI thread fails it, and each
-//! open and each change must be answered and its frame drawn. How long each
-//! took is logged: a debug build on a loaded test machine spends up to a few
-//! seconds of its own computing on some, so the device calls, not the time,
-//! are what this asserts on. Each area's stalled-device test asserts that a
-//! device that does not answer holds nothing.
 
 use crate::{SettingsShell, categories::Category};
 use ui::framework::testing::TestApp;
 use ui::vello::kurbo::Rect;
 use ui::widget::Widget;
 
-/// The first toggle or choice in the content pane, right of the sidebar.
 fn first_control(w: &dyn Widget, content: Rect) -> Option<(String, Rect)> {
     if matches!(w.name(), "Toggle" | "Dropdown") {
         let r = w.get_rect();
@@ -31,7 +17,6 @@ fn first_control(w: &dyn Widget, content: Rect) -> Option<(String, Rect)> {
         .find_map(|child| first_control(child, content))
 }
 
-/// Run `step` and draw the next frame; how long the window was held.
 fn held(
     app: &mut TestApp<SettingsShell>,
     step: impl FnOnce(&mut TestApp<SettingsShell>),
@@ -61,7 +46,6 @@ fn every_pane_opens_and_takes_a_change_without_waiting_on_the_device() {
     for &category in Category::ALL {
         let opened = held(&mut app, |app| crate::effects::show_pane(app, category));
         eprintln!("{category:?}: opened in {opened:?}");
-        // What the pane reads lands off the UI thread, and the pane fills in.
         assert!(
             app.harness()
                 .wait_until(tilo_test_env::hang_bound(), |harness| harness
@@ -86,7 +70,6 @@ fn every_pane_opens_and_takes_a_change_without_waiting_on_the_device() {
         });
         eprintln!("{category:?}: changed its first {name} in {changed:?}");
         app.settle();
-        // A dropdown left open would take the next pane's first click.
         app.harness().key("Escape");
     }
 }

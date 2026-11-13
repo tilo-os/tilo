@@ -8,7 +8,6 @@ use crate::{
     Collected, ContentBackend, ContentError, ContentLimits, ContentReader, Stored, hash_bytes,
 };
 
-/// Content that lives as long as the backend.
 pub struct MemoryBackend {
     limits: ContentLimits,
     inner: RwLock<State>,
@@ -81,6 +80,20 @@ impl ContentBackend for MemoryBackend {
     }
 
     fn collect_unreferenced(&self, live: &BTreeSet<String>) -> Result<Collected, ContentError> {
+        self.remove_where(|hash| !live.contains(hash))
+    }
+
+    fn release(&self, hash: &str) -> Result<Collected, ContentError> {
+        self.remove_where(|kept| kept == hash)
+    }
+
+    fn max_item_bytes(&self) -> usize {
+        self.limits.max_item_bytes
+    }
+}
+
+impl MemoryBackend {
+    fn remove_where(&self, gone: impl Fn(&str) -> bool) -> Result<Collected, ContentError> {
         let mut state = self
             .inner
             .write()
@@ -88,7 +101,7 @@ impl ContentBackend for MemoryBackend {
         let unreferenced: Vec<String> = state
             .entries
             .keys()
-            .filter(|hash| !live.contains(*hash))
+            .filter(|hash| gone(hash))
             .cloned()
             .collect();
         let mut collected = Collected::default();

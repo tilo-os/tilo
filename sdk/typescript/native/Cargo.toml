@@ -1,0 +1,25 @@
+[package]
+name = "tilo-sdk-node-native"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+description = "The TypeScript SDK's native part: Tilo's API in process as a key the program holds, reaching a Tilo host directly as a device of the person (the npm package tilo-sdk-native)."
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "3", default-features = false, features = ["napi8", "async", "serde-json"] }
+napi-derive = "3"
+serde_json.workspace = true
+tilo-api = { path = "../../../crates/hosting/tilo-api" }
+# Its workers, which start as the `tilo-automerge-worker` program shipped beside this library.
+tilo-automerge-isolate = { path = "../../../crates/doc/tilo-automerge-isolate" }
+workspace-hack = { version = "0.1" }
+
+[build-dependencies]
+napi-build = "2"
+
+[lints]
+workspace = true

@@ -13,6 +13,7 @@
     reason = "a test tool: a failure ends it, and its output is its stdout"
 )]
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use collaboration::{CollabEvent, CollabRequest, CollaborationManager, PeerTransport, RouteSpec};
@@ -101,17 +102,13 @@ fn main() {
     let kept = host.kept(&app).unwrap();
     let (ours, theirs) = Channel::pair().unwrap();
     let hosted = Hosted::with_record(
-        Spec {
-            app,
-            workspace: route.cluster_id.to_string(),
-            instance: 1,
-            person: "person".to_owned(),
-        },
+        Spec::new(app, route.cluster_id.to_string(), 1, "person"),
         record,
         Arc::new(bundle),
         &kept,
         Box::new(ChannelTransport::new(ours).unwrap()),
-        &Phrases::new("en-US"),
+        &Rc::new(Phrases::new("en-US")),
+        host.formats(),
         wake,
     );
     host.add(hosted, None);

@@ -1,7 +1,8 @@
 //! Where someone's windows are on their screen, as their live presence says
 //! (`tilo_relay_protocol::live::LiveLayout`): what a mini view of their screen is drawn from. Each
 //! window is named by its app and a short digest of its record only, which a viewer matches against
-//! the records it holds itself; nothing of the window's content travels.
+//! the records it holds itself; nothing of the window's content travels. A viewer that holds the
+//! record names the window with what it shows there, and every other window with its app's name.
 
 use collab_types::presence::{ShownLayout as MemberLayout, ShownWindow as MemberWindow};
 use vello::kurbo::Rect;
@@ -31,6 +32,9 @@ pub struct ScreenWindow {
     pub rect: Rect,
     /// The window they are in.
     pub focused: bool,
+    /// What the window is called where it is read: what it shows when that record is held here,
+    /// else the app's name. `None` until a host names it.
+    pub name: Option<String>,
 }
 
 impl Screen {
@@ -38,6 +42,16 @@ impl Screen {
     /// none.
     #[must_use]
     pub fn from_layout(layout: &MemberLayout) -> Option<Self> {
+        Self::of(layout, |_, _| None)
+    }
+
+    /// The screen `layout` describes, each window named by `name_of` from its app and its record's
+    /// 16-hex digest: what a viewer that holds some of those records calls them.
+    #[must_use]
+    pub fn of(
+        layout: &MemberLayout,
+        name_of: impl Fn(&str, &str) -> Option<String>,
+    ) -> Option<Self> {
         let [width, height] = layout.size;
         if width == 0 || height == 0 {
             return None;
@@ -45,7 +59,7 @@ impl Screen {
         let windows = layout
             .windows
             .iter()
-            .filter_map(ScreenWindow::from_member)
+            .filter_map(|window| ScreenWindow::from_member(window, &name_of))
             .take(MAX_WINDOWS)
             .collect();
         Some(Self {
@@ -56,7 +70,10 @@ impl Screen {
 }
 
 impl ScreenWindow {
-    fn from_member(window: &MemberWindow) -> Option<Self> {
+    fn from_member(
+        window: &MemberWindow,
+        name_of: &impl Fn(&str, &str) -> Option<String>,
+    ) -> Option<Self> {
         let record = <[u8; 8]>::try_from(hex::decode(&window.record).ok()?).ok()?;
         let [x0, y0, x1, y1] = window.rect.map(f64::from);
         if window.app.is_empty() || x0 > x1 || y0 > y1 || x1 > UNITS || y1 > UNITS {
@@ -67,6 +84,7 @@ impl ScreenWindow {
             record,
             rect: Rect::new(x0 / UNITS, y0 / UNITS, x1 / UNITS, y1 / UNITS),
             focused: window.focused,
+            name: name_of(&window.app, &window.record),
         })
     }
 }
@@ -110,15 +128,45 @@ mod tests {
                     record: [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef],
                     rect: Rect::new(0.0, 0.0, 0.5, 1.0),
                     focused: true,
+                    name: None,
                 },
                 ScreenWindow {
                     app: "so.tilo.chat".into(),
                     record: [0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10],
                     rect: Rect::new(0.5, 0.25, 1.0, 0.75),
                     focused: false,
+                    name: None,
                 },
             ]
         );
+    }
+
+    /// A viewer names the windows whose records it holds, and every other window by its app.
+    #[test]
+    fn a_screen_is_named_by_the_records_the_viewer_holds() {
+        let layout = MemberLayout {
+            size: [1440, 852],
+            windows: vec![
+                window("so.tilo.notes", "0123456789abcdef", [0, 0, 5000, 10_000]),
+                window(
+                    "so.tilo.chat",
+                    "fedcba9876543210",
+                    [5000, 0, 10_000, 10_000],
+                ),
+            ],
+        };
+        let screen = Screen::of(&layout, |app, record| {
+            (record == "0123456789abcdef")
+                .then(|| "Plans".to_owned())
+                .or_else(|| Some(app.to_owned()))
+        })
+        .unwrap();
+        let names: Vec<&str> = screen
+            .windows
+            .iter()
+            .filter_map(|window| window.name.as_deref())
+            .collect();
+        assert_eq!(names, vec!["Plans", "so.tilo.chat"]);
     }
 
     #[test]

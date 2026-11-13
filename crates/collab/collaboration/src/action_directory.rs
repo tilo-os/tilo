@@ -353,7 +353,7 @@ impl PublishedDirectory {
                 if !reply.is_closed() {
                     let mut page = self.page(&query);
                     for row in &mut page.rows {
-                        refresh(row);
+                        refreshed(row, &mut refresh);
                     }
                     let _ = reply.send(page);
                 }
@@ -366,11 +366,21 @@ impl PublishedDirectory {
             } => {
                 let mut resolution = self.resolve(&revision, &resource, &action);
                 if let ActionDirectoryResolution::Found { row, .. } = &mut resolution {
-                    refresh(row);
+                    refreshed(row, &mut refresh);
                 }
                 let _ = reply.send(resolution);
             }
         }
+    }
+}
+
+/// `row` after `refresh`, its visibility still the contract of the action it
+/// carries: what an action can run for is part of its contract, and the
+/// broker refuses a row whose visibility names another.
+fn refreshed(row: &mut ActionDirectoryRow, refresh: &mut impl FnMut(&mut ActionDirectoryRow)) {
+    refresh(row);
+    if let (Some(descriptor), Some(visibility)) = (&row.descriptor, &mut row.visibility) {
+        visibility.contract.clone_from(&descriptor.contract);
     }
 }
 

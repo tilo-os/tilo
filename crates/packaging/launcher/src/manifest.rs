@@ -1,18 +1,7 @@
 //! The launcher's side of the package manifest.
 //!
-//! Decoding lives in [`tilo_app_package::view`]: one decoder, built on the
-//! canonical schema, whose identity is the signed `[package].id`. This
-//! module re-exports that view under the names the sandbox code uses and
-//! adds what only the launcher decides — which manifests it refuses to
-//! sandbox.
-//!
-//! ### `[sandbox.fs]` is not part of the vocabulary
-//!
-//! `[sandbox.fs]` is rejected rather than interpreted: filesystem writes use
-//! [`crate::appdir`], system reads use [`crate::profile`], and other access
-//! requires an explicit [`crate::capabilities`] grant. This prevents a package
-//! from defining the boundary meant to contain it; rejecting the field also
-//! avoids silently running an app with less access than its manifest requested.
+//! Decoding lives in [`tilo_app_package::view`]: one decoder, built on the canonical
+//! schema, whose identity is the signed `[package].id`.
 
 pub use tilo_app_package::continuity_schema;
 pub use tilo_app_package::view::{
@@ -21,9 +10,7 @@ pub use tilo_app_package::view::{
     ServiceReq, read_manifest,
 };
 
-/// A manifest asking for filesystem access it is not allowed to ask
-/// for. One variant per field so the message can say what to do
-/// instead — the two cases have different answers.
+/// A manifest asking for filesystem access it is not allowed to ask for.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FsPolicyViolation {
     #[error(
@@ -53,24 +40,9 @@ pub enum FsPolicyViolation {
 }
 
 /// Refuse a manifest that names filesystem paths.
-///
-/// Called at launch and at install: an install-time check alone would
-/// be bypassed by `tilo-launcher run --manifest` or a package installed
-/// before this rule existed.
-///
-/// **No first-party exception.** Every manifest in the tree asked for
-/// something plausible — that is how the original hole stayed
-/// invisible. A bypass for OS-shipped packages would make this a rule
-/// about strangers, not a boundary.
-///
-/// # Errors
-///
-/// Returns [`FsPolicyViolation::Write`] or [`FsPolicyViolation::Read`] if
-/// `manifest`'s `[sandbox.fs]` names any path at all — the vocabulary was
-/// removed; naming one is refused, not silently dropped.
 pub fn enforce_fs_policy(manifest: &ManifestView) -> Result<(), FsPolicyViolation> {
-    // Writes first: a package asking for `/` is the more alarming of the
-    // two and should be the line the user reads.
+    // Writes first: a package asking for `/` is the more alarming of the two and should be the line
+    // the user reads.
     if let Some(entry) = manifest.sandbox.fs.write.first() {
         return Err(FsPolicyViolation::Write {
             package: manifest.package_id.clone(),
@@ -93,9 +65,8 @@ pub(crate) fn service_req(raw: &str) -> ServiceReq {
     ServiceReq::parse("", raw).expect("valid service requirement")
 }
 
-/// A canonical manifest for tests: `package` is the body of `[package]`,
-/// `tail` the tables after the sandbox. `[sandbox.net]` is `off` unless
-/// `tail` sets it.
+/// A canonical manifest for tests: `package` is the body of `[package]`, `tail` the tables after the
+/// sandbox.
 #[cfg(test)]
 pub(crate) fn test_manifest(package: &str, tail: &str) -> ManifestView {
     let net = if tail.contains("[sandbox.net]") {
@@ -219,11 +190,6 @@ bin = "bin/app"
                 vec![ContinuityFacet::Presentation, ContinuityFacet::Semantic]
             );
         }
-        // Phase `shipped_settings_does_not_require_model_services_to_open`.
-        // Settings is the recovery surface for networking, accounts, displays,
-        // and the rest of the OS.  A device without the optional local-model
-        // stack must still be able to open it; the Agent Models pane handles an
-        // unavailable backend in-app.
         {
             let manifest = read_manifest(&repo().join("apps/settings/tilo-app.toml"))
                 .expect("shipped Settings manifest parses through installed-app schema");
@@ -257,9 +223,6 @@ bin = "bin/app"
 
     #[test]
     fn manifests_may_name_no_filesystem_path() {
-        // Phase `every_path_a_package_could_name_is_refused`.
-        // The six shapes the original hole made possible, each refused by
-        // naming the package and entry.
         {
             for entry in [
                 "~",
@@ -280,9 +243,6 @@ bin = "bin/app"
                 );
             }
         }
-        // Phase `a_declared_read_is_refused_whether_or_not_the_profile_covers_it`.
-        // A read is refused on the same terms — the read profile isn't a
-        // filter to add to, an entry it already covers is refused too.
         {
             for entry in ["/etc/shadow", "/var/workspace", "/usr/share/fonts"] {
                 let m = manifest_with(&format!("[sandbox.fs]\nread = [{entry:?}]\n"));
@@ -295,9 +255,6 @@ bin = "bin/app"
                 );
             }
         }
-        // Phase `a_manifest_that_names_no_path_passes`.
-        // A manifest with no `[sandbox.fs]` block is the normal case and must
-        // stay silent — an empty list is not a declaration.
         {
             let m = manifest_with("");
             assert!(enforce_fs_policy(&m).is_ok());
@@ -307,9 +264,6 @@ bin = "bin/app"
                 "an explicitly empty block declares nothing"
             );
         }
-        // Phase `no_shipped_manifest_names_a_path`.
-        // Every manifest the OS ships goes through the same check as a
-        // stranger's — no exemption.
         {
             let mut checked = 0usize;
             for entry in std::fs::read_dir(repo().join("apps")).expect("apps/ is readable") {

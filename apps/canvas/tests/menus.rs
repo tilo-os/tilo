@@ -63,8 +63,8 @@ fn a_right_click_on_a_mark_picks_it_and_the_menu_duplicates_it() {
         app.harness().key("ArrowDown");
     }
     app.harness().key("Enter");
-    // The menu presses the canvas's own keys for it; a frame carries them out.
-    let _ = app.harness().targets();
+    // The menu presses the canvas's own keys for it; the frame this very key
+    // asked for carries them out.
     assert_eq!(app.state().marks.len(), 2, "a copy of the sun");
 }
 

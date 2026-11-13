@@ -19,6 +19,15 @@ pub const APPLICATION_RESOURCE_KIND: &str = "applications.app";
 /// Action id that opens an application into a workspace.
 pub const APPLICATION_OPEN_ACTION: &str = "open";
 
+/// Action id that starts an application in a workspace without showing it:
+/// an instance with no window where the host runs one, ready for the
+/// actions of the app that show nothing. It answers with that instance.
+pub const APPLICATION_START_ACTION: &str = "start";
+
+/// Action id of a resource's link: a URL that opens it for the workspace's
+/// members, carrying no secret. A record's root always offers it.
+pub const SHARE_LINK_ACTION: &str = "share-link";
+
 /// Prefix of the provider token of one record of a workspace, served by a
 /// device that holds it whoever has it open: `record:<app id>:<record id>`
 /// (a host serving its workspaces' records answers under these). Such a

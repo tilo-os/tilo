@@ -52,7 +52,6 @@ pub struct OutlineEntry {
 }
 
 impl OutlineEntry {
-    /// Depth-first flattening as `(depth, entry)` pairs.
     #[must_use]
     pub fn flatten(entries: &[Self]) -> Vec<(usize, &Self)> {
         let mut out = Vec::new();
@@ -171,7 +170,6 @@ pub struct AnnotationInfo {
 }
 
 impl AnnotationInfo {
-    /// Whether `/F` hides the annotation (Hidden or `NoView`).
     #[must_use]
     pub fn is_hidden(&self) -> bool {
         self.flags & (ANNOT_FLAG_HIDDEN | ANNOT_FLAG_NOVIEW) != 0

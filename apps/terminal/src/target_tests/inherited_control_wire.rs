@@ -10,9 +10,6 @@ struct ServiceChild {
 }
 
 impl ServiceChild {
-    /// The terminal ended this session: its lease reads end-of-file. When
-    /// the terminal has already moved on (`already`), the end must be there
-    /// at once; otherwise wait for it within the hang bound.
     fn assert_cancelled(&mut self, already: bool) {
         if already {
             self.lease.set_nonblocking(true).unwrap();
@@ -59,10 +56,6 @@ fn serve_native_sessions(mut control: UnixStream) {
         } else {
             "host"
         };
-        // The terminal ends its old session before it says hello for the
-        // next one, so once the hello is here the old lease has ended. Waiting
-        // for the hello first keeps the check free of how long the terminal
-        // took between switches.
         let hello = read_json(&mut reader);
         assert_eq!(hello["op"], "hello");
         assert_eq!(hello["protocol"], 2);
@@ -71,8 +64,6 @@ fn serve_native_sessions(mut control: UnixStream) {
             .unwrap();
         let request = read_json(&mut reader);
         if request["op"] == "create-environment" {
-            // Asked between two sessions over the same connection, which keeps
-            // serving: the session open stays open.
             assert!(!created, "one environment made");
             assert_eq!(request["name"], "Agent one");
             control
@@ -140,7 +131,6 @@ fn native_mounted_terminal_switches_default_host_default_on_one_inherited_connec
     let (terminal, supervisor) = UnixStream::pair().unwrap();
     let peer = std::thread::spawn(move || serve_native_sessions(supervisor));
     let mut environment = tilo_test_env::ScopedEnv::new();
-    // Ownership transfers exactly once through the actual standalone service path.
     environment.set(
         crate::inner::USH_SERVICE_FD_ENV,
         terminal.into_raw_fd().to_string(),
@@ -156,8 +146,6 @@ fn native_mounted_terminal_switches_default_host_default_on_one_inherited_connec
         OpenState::Open
     );
     assert_eq!(recorded(&app), Some(SessionTarget::default()));
-    // A Terminal in a process of its own makes environments, as one the shell
-    // hosts does: over the connection the launcher opened for it.
     on_tab(&mut app, |terminal| {
         terminal.perform(crate::resource::TerminalEffect::CreateEnvironment {
             name: "Agent one".into(),
@@ -259,8 +247,6 @@ fn an_invalid_session_reply_closes_both_received_rights() {
         assert_eq!(read_json(&mut reader)["op"], "open-session");
         let (mut master_peer, master) = UnixStream::pair().unwrap();
         let (mut lease_peer, lease) = UnixStream::pair().unwrap();
-        // Before the rights leave: macOS refuses to set a timeout on a
-        // socket whose peer has already closed.
         for peer in [&master_peer, &lease_peer] {
             peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();

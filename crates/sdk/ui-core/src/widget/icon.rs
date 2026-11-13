@@ -72,9 +72,13 @@ pub struct IconWidget {
     size: IconSize,
     tint: Tint,
     stroke_px: f64,
+    /// What the glyph means, where it says something on its own: its tooltip.
+    description: Option<String>,
     rect: Rect,
     /// What it shows changed since the last frame drew it.
     dirty: bool,
+    /// What it holds changed its size since the layout pass last placed it.
+    layout_dirty: bool,
 }
 
 impl IconWidget {
@@ -86,8 +90,26 @@ impl IconWidget {
             size: IconSize::Regular,
             tint: Tint::Primary,
             stroke_px: LUCIDE_DEFAULT_STROKE_PX,
+            description: None,
             rect: Rect::ZERO,
             dirty: true,
+            layout_dirty: true,
+        }
+    }
+
+    /// What the glyph means, where it says something on its own ("Mail: the server could not
+    /// be reached"): read on hover, as a control's tooltip is.
+    #[must_use]
+    pub fn describing(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    /// [`Self::describing`] where it stands.
+    fn set_description(&mut self, description: Option<String>) {
+        if self.description != description {
+            self.description = description;
+            self.dirty = true;
         }
     }
 
@@ -101,6 +123,7 @@ impl IconWidget {
         self.size = size;
         self.tint = tint;
         self.dirty = true;
+        self.layout_dirty = true;
     }
 
     /// Take one of the theme's icon sizes.
@@ -179,7 +202,7 @@ impl Widget for IconWidget {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    crate::rect_geometry!(measured);
 
     fn draw(
         &mut self,
@@ -212,10 +235,11 @@ impl Widget for IconWidget {
         "IconWidget"
     }
 
-    /// A leaf sized by the theme: layout is settled once the first
-    /// non-zero rect lands.
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO || self.dirty
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.description
+            .as_deref()
+            .filter(|it| !it.is_empty())
+            .map(std::borrow::Cow::Borrowed)
     }
 
     crate::redraw_flag!();
@@ -292,5 +316,26 @@ mod tests {
         icon_widget_sizes_follow_the_theme();
         icon_widget_zero_rect_is_noop();
         icon_widget_color_resolution();
+    }
+
+    /// A glyph standing on its own says what it means where it stands, read on hover; one with
+    /// nothing to say is no tooltip target at all.
+    #[test]
+    fn an_icon_says_what_it_means_on_hover() {
+        let mut w = IconWidget::new(Icon::WifiOff).describing("Mail: no route to host");
+        w.rect = Rect::new(0.0, 0.0, 20.0, 20.0);
+        assert_eq!(w.tooltip().as_deref(), Some("Mail: no route to host"));
+        assert_eq!(
+            w.tooltip_target_at(vello::kurbo::Point::new(10.0, 10.0)),
+            Some((w.rect, "Mail: no route to host".to_owned()))
+        );
+
+        let mut plain = IconWidget::new(Icon::WifiOff);
+        plain.rect = Rect::new(0.0, 0.0, 20.0, 20.0);
+        assert_eq!(plain.tooltip(), None);
+        assert_eq!(
+            plain.tooltip_target_at(vello::kurbo::Point::new(10.0, 10.0)),
+            None
+        );
     }
 }

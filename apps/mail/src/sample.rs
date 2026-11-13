@@ -15,8 +15,6 @@ use crate::transport::parse_eml;
 const OWNER_NAME: &str = "Sam Rivera";
 const OWNER_EMAIL: &str = "sam@rivera.example";
 
-/// What a screenshot shows in place of the person's mail: a mailbox, the
-/// accounts beside it and the clock it is read at. Never the person's own.
 #[derive(Clone)]
 pub struct MailFixture {
     pub mailbox: Mailbox,
@@ -25,7 +23,6 @@ pub struct MailFixture {
 }
 
 impl MailFixture {
-    /// The bundled sample mailbox and two sample accounts.
     pub fn bundled() -> Self {
         Self {
             mailbox: sample_mailbox(),
@@ -34,7 +31,6 @@ impl MailFixture {
         }
     }
 
-    /// Nobody has added an account yet.
     pub fn without_accounts() -> Self {
         Self {
             mailbox: Mailbox::new(AccountConfig::default()),
@@ -43,7 +39,6 @@ impl MailFixture {
         }
     }
 
-    /// A configured account before any message has arrived.
     pub fn before_first_fetch() -> Self {
         let accounts = sample_account_store();
         Self {
@@ -54,9 +49,6 @@ impl MailFixture {
     }
 }
 
-/// Real-world HTML mail, as it arrives: a newsletter laid out in tables, a
-/// code-review notification, a receipt, a mail with a dark form, one with
-/// inline images, and a plain-text one with addresses in it.
 const GALLERY: &[&[u8]] = &[
     include_bytes!("../tests/fixtures/html/newsletter.eml"),
     include_bytes!("../tests/fixtures/html/github.eml"),
@@ -67,7 +59,6 @@ const GALLERY: &[&[u8]] = &[
 ];
 
 impl MailFixture {
-    /// The bundled mailbox with the HTML gallery on top of its inbox.
     pub fn html_gallery() -> Self {
         let mut fixture = Self::bundled();
         for (age, raw) in (0_i64..).zip(GALLERY) {
@@ -80,22 +71,16 @@ impl MailFixture {
     }
 }
 
-/// Deterministic "now" for the sample corpus so relative timestamps render
-/// identically every run. 2026-06-30 14:05 UTC.
 pub const SAMPLE_NOW_MIN: i64 = {
     // Equals util::minutes_of(2026, 6, 30, 14, 5); pinned by a test so the
     // literal can never silently drift from the civil-date math.
     29_713_805
 };
 
-/// The clock of the hermetic sample corpus.
 pub fn sample_now_min() -> i64 {
     SAMPLE_NOW_MIN
 }
 
-/// A metadata-only (projected, not yet downloaded) sample attachment. Its
-/// bytes aren't present, so the reader shows it but a save requires
-/// hydration, as a live IMAP fetch lists an attachment before fetching it.
 fn att(filename: &str, mime: &str, size: u64) -> Attachment {
     Attachment::projected(filename, mime, size)
 }
@@ -141,9 +126,7 @@ impl SampleMessage<'_> {
     }
 }
 
-/// One hour, in minutes: the unit the sample timestamps are expressed in.
 const HOUR_MIN: i64 = 60;
-/// One day, in minutes.
 const DAY_MIN: i64 = 24 * HOUR_MIN;
 
 struct People {
@@ -166,7 +149,6 @@ impl People {
     }
 }
 
-/// The owner's account settings, so the account sheet has real values.
 fn owner_config() -> AccountConfig {
     AccountConfig {
         display_name: OWNER_NAME.into(),
@@ -184,13 +166,10 @@ fn owner_config() -> AccountConfig {
     }
 }
 
-/// Build the bundled mailbox, its times relative to the clock.
 pub fn sample_mailbox() -> Mailbox {
     sample_mailbox_at(sample_now_min())
 }
 
-/// Build the bundled mailbox with `now` (minutes since the epoch) as the
-/// present.
 pub fn sample_mailbox_at(now: i64) -> Mailbox {
     let mut mb = Mailbox::new(owner_config());
     let people = People::new();
@@ -210,7 +189,6 @@ pub fn sample_mailbox_at(now: i64) -> Mailbox {
         m.read = true;
         mb.insert(m);
     }
-    // The newsletter carries a remote tracking image the reader blocks.
     if let Some(mut m) = parse_eml(RAW_HTML.as_bytes(), now - 52, Folder::Inbox) {
         m.read = false;
         m.starred = true;
@@ -219,8 +197,6 @@ pub fn sample_mailbox_at(now: i64) -> Mailbox {
     mb
 }
 
-/// The one conversation of several messages, so the list's threading and its
-/// unread newest message have something to group.
 fn insert_launch_plan_thread(mb: &mut Mailbox, people: &People, now: i64) {
     let root_id = "sample-launch-plan-root@northwind.example";
     let mut root = SampleMessage {
@@ -273,8 +249,6 @@ revised timeline. Sam, could you review the press section before Friday?",
     mb.insert(latest);
 }
 
-/// The messages that stand alone: a quick question, a budget, an invitation,
-/// a neighbourhood list and a delivery notice.
 fn insert_standalone_inbox_items(mb: &mut Mailbox, people: &People, now: i64) {
     mb.insert(
         SampleMessage {
@@ -353,7 +327,6 @@ Thursday. You can follow the delivery from your account page.",
     );
 }
 
-/// The Sent, Archive and Junk folders of the bundled corpus.
 fn insert_sent_archive_and_junk(mb: &mut Mailbox, people: &People, now: i64) {
     mb.insert(
         SampleMessage {
@@ -416,9 +389,6 @@ me anything in your first weeks.",
     );
 }
 
-/// A bundled store of two accounts so the sidebar shows more than one
-/// account offline. The first owns the sample [`Mailbox`]; the second is a
-/// work account.
 pub fn sample_account_store() -> AccountStore {
     let work = AccountConfig {
         display_name: OWNER_NAME.into(),
@@ -445,7 +415,6 @@ pub fn sample_account_store() -> AccountStore {
     }
 }
 
-/// A plain text/plain message, parsed live by mail-parser.
 const RAW_PLAIN: &str = "From: Lena Fischer <lena@fischer.example>\r\n\
 To: sam@rivera.example\r\n\
 Subject: Photos from the weekend\r\n\
@@ -457,7 +426,6 @@ Content-Type: text/plain; charset=utf-8\r\n\
 The photos from the lake are in the shared album now. The one of the boat at \
 sunset came out really well. Shall we print a few for your parents?\r\n";
 
-/// A multipart/mixed message with a PDF attachment, parsed live.
 const RAW_WITH_PDF: &str = "From: Lumen Energy <billing@lumen-energy.example>\r\n\
 To: sam@rivera.example\r\n\
 Subject: Your June invoice\r\n\
@@ -479,9 +447,6 @@ Content-Transfer-Encoding: base64\r\n\
 JVBERi0xLjQgZmFrZSBwZGYgYm9keSBmb3IgdGhlIHNhbXBsZSBtYWlsYm94Lg==\r\n\
 --=_sample_boundary_=--\r\n";
 
-/// A multipart/alternative message with a plain-text part and a rich HTML
-/// part (including a **remote** image the reader must block by default),
-/// parsed live.
 const RAW_HTML: &str = "From: Field Notes <hello@fieldnotes.example>\r\n\
 To: sam@rivera.example\r\n\
 Subject: Field Notes 27: gardens on the roof\r\n\
@@ -541,7 +506,6 @@ mod tests {
                 .values()
                 .any(|m| m.from.email == "lena@fischer.example")
         );
-        // A hand-built attachment is projected: metadata, no bytes yet.
         let timeline = mb
             .messages
             .values()
@@ -550,7 +514,6 @@ mod tests {
             .expect("projected attachment");
         assert!(!timeline.is_downloadable());
 
-        // The launch thread's three messages collapse into one row.
         let threads = mb.threads_in(Folder::Inbox);
         let launch = threads
             .iter()

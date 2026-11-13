@@ -53,6 +53,14 @@ pub struct Options {
     pub feedback_reviewer: Option<Arc<dyn FeedbackReviewer>>,
     /// Where the host runs its workspaces' Terminal sessions.
     pub shell: Option<Arc<tilo_relay::agents::HostShells>>,
+    /// The Browser this host places for its workspaces.
+    pub browsers: Option<Arc<tilo_relay::hosted_browser::HostedBrowsers>>,
+    /// Serve the web routes as plain HTTP on loopback too, as a client that
+    /// trusts no development certificate reaches them.
+    pub plain: bool,
+    /// The per-person change and content budgets of a host whose workspaces
+    /// admit the public; `None` limits nobody.
+    pub member_limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
 }
 
 impl Default for Options {
@@ -64,6 +72,9 @@ impl Default for Options {
             allowed_origins: Vec::new(),
             feedback_reviewer: None,
             shell: None,
+            browsers: None,
+            plain: false,
+            member_limits: None,
         }
     }
 }
@@ -94,6 +105,10 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
     let cfg = tilo_relay::RelayConfig {
         state_root: state.join("relay"),
         web_entry: options.web_entry,
+        member_limits: options.member_limits,
+        // The host's own packet relay, on this machine: devices reach it here, as
+        // the test's devices do, and no test depends on the public relays.
+        packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
         ..Default::default()
     };
     let (relay, agents) = tilo_relay::agents::start(
@@ -110,6 +125,7 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
             catalogue: options.catalogue,
             feedback_reviewer: options.feedback_reviewer,
             shell: options.shell,
+            browsers: options.browsers,
         },
     )
     .await
@@ -122,9 +138,11 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
                 store: Some(state.join("web-dev-identity")),
             },
             allowed_origins: options.allowed_origins,
-            plain_listen: None,
+            plain_listen: options.plain.then(|| "127.0.0.1:0".parse().unwrap()),
             public_origin: None,
             fetch_proxy: None,
+            door: None,
+            link: None,
         })
         .await
         .unwrap();

@@ -23,6 +23,16 @@
 pub mod lines;
 pub mod questions;
 mod worker;
+/// What a resource of a kind this crate publishes from outside a document is
+/// called, in the person's language: the kind's entry in the catalogue beside
+/// this crate, read the way a declaration's words are.
+mod i18n {
+    tilo_resource::declared_catalogue!(CATALOGUE);
+
+    pub(crate) fn name(kind: &str, source: &str) -> String {
+        tilo_resource::label::localized(kind, source, Some(&CATALOGUE))
+    }
+}
 
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
@@ -35,13 +45,37 @@ pub use questions::{
 pub use worker::{Jobs, LoopWake, Wake, Worker};
 
 /// What an invocation started.
-#[derive(Clone, Debug, PartialEq)]
 pub enum Started {
     /// It finished on return, with this output.
     Done(ActionOutput),
     /// It was taken and runs on the device; its result lands in the
     /// service's reading.
     Accepted,
+    /// Its work is async (a signature, a commit into a workspace's record)
+    /// and runs off the loop: the asker hears this answer when it lands,
+    /// as it hears [`Self::Done`]'s at once.
+    Later(tilo_actions::remote::Pending<Result<ActionOutput, DoorError>>),
+}
+
+impl std::fmt::Debug for Started {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Done(output) => f.debug_tuple("Done").field(output).finish(),
+            Self::Accepted => f.write_str("Accepted"),
+            Self::Later(_) => f.write_str("Later"),
+        }
+    }
+}
+
+/// Two answers still to come are never known to be the same.
+impl PartialEq for Started {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Done(one), Self::Done(other)) => one == other,
+            (Self::Accepted, Self::Accepted) => true,
+            _ => false,
+        }
+    }
 }
 
 /// A place an invocation asked the session to open: the resource, and the view it is shown
@@ -107,6 +141,24 @@ pub trait Service {
         self.invoke(resource, action, arguments)
     }
 
+    /// [`Self::invoke_as`] as a step of the run `run` (an agent's run, a task's): what the change
+    /// makes is that run's, which History groups and an undo of the run takes back whole. The
+    /// default runs it as [`Self::invoke_as`], for a service that keeps no history of its own.
+    ///
+    /// # Errors
+    /// The door's refusal.
+    fn invoke_in_run(
+        &mut self,
+        invoker: &tilo_actions::ActionInvoker,
+        run: &tilo_actions::WorkGroup,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, DoorError> {
+        let _ = run;
+        self.invoke_as(invoker, resource, action, arguments)
+    }
+
     /// Take in what landed from the device since the last call. Whether a
     /// reading changed.
     fn poll(&mut self) -> bool {
@@ -138,24 +190,6 @@ pub trait Service {
         None
     }
 
-    /// The resource address this service publishes the app `app`'s record at,
-    /// when it runs that app's model: the session's document host serves the
-    /// app, so a launch it makes names the address and the app's process opens
-    /// no record of its own (`docs/architecture/apps.md` §8 step 2,
-    /// `one-app-model.md` §4). `None` for a service that runs no such model.
-    fn hosted(&self, _app: &str) -> Option<String> {
-        None
-    }
-
-    /// Every app whose model this service runs, by the app, with the resource address it publishes
-    /// its record at: what [`Self::hosted`] answers, for a host that asks about them all at once —
-    /// the session tells its launches which apps it serves, so a plain `open` of one places that
-    /// resource instead of awaiting a window process that never publishes
-    /// (`docs/designs/app-language/one-app-model.md` §3).
-    fn served(&self) -> Vec<(String, String)> {
-        Vec::new()
-    }
-
     /// The places [`Self::invoke`] and [`Self::invoke_as`] were asked to open since this was last
     /// taken, each with the actor that asked: an invocation of a resource's `open` changes nothing
     /// of the record, and opening is the system's ([`Open`], shell.md §8, "The canvas composes
@@ -173,11 +207,10 @@ pub trait Service {
     /// place has nothing to note.
     fn note_beside(&mut self, _beside: &str) {}
 
-    /// The record of the app `app` this service keeps: what a connection the session admits — a
-    /// REPL, an agent's task — reads and changes by the app, as it does Notes'. A service that
-    /// keeps the session's one record of every tilolang app answers each app's (the shell's
-    /// records service, which runs the apps the session hosts); `None` for a service that keeps
-    /// no record, or none of that app.
+    /// The record of the app `app` this service keeps, when the session runs the app's package
+    /// itself (the shell) and its records are the person's as any app's: what a connection the
+    /// session admits — a REPL, an agent's task — reads and changes by the app, as it does
+    /// Notes'. `None` for a service that keeps no record, or none of that app.
     fn record(&self, _app: &str) -> Option<Record> {
         None
     }
@@ -185,6 +218,14 @@ pub trait Service {
     /// Every record [`Self::record`] answers, each with the app it is of: what a connection the
     /// session admits reads by the app.
     fn records(&self) -> Vec<Record> {
+        Vec::new()
+    }
+
+    /// The records this service keeps, as the workspace's activity reads them: each app's record
+    /// with the document it lives in. A record no app's process holds still shows its steps in
+    /// History and takes one of its runs back through its own history, so the activity lists and
+    /// undoes those runs as it does a running app's.
+    fn history_records(&self) -> Vec<HistoryRecord> {
         Vec::new()
     }
 
@@ -271,6 +312,22 @@ pub struct Record {
     /// embedded: what a task's host loads to run a program that reads the record by the app's
     /// own package.
     pub packages: Vec<std::sync::Arc<[u8]>>,
+}
+
+/// One record a service keeps, as the workspace's activity reads its history: the app whose
+/// record it is, the kind it is, and the document it lives in.
+///
+/// One document may hold several apps' records (the session's own workspace record holds a root
+/// per package it runs), so `kind` says which of them this entry is: the activity keeps the steps
+/// whose resource is of that kind, and none of the others.
+pub struct HistoryRecord {
+    /// The app whose record it is, as its package names it (`so.tilo.lang.notes`).
+    pub app: String,
+    /// The record's kind, as its app publishes it (`tl.so.tilo.lang.notes.Notebook`): what tells
+    /// this app's steps in a document from another's.
+    pub kind: String,
+    /// The document, as it stands: what the activity's history reads.
+    pub document: tilo_resource::Doc,
 }
 
 /// `resource` offering every action of the vocabulary `E`.
@@ -399,23 +456,6 @@ impl Services {
         self.started.iter().find_map(|service| service.module(app))
     }
 
-    /// The resource address a service publishes the app `app`'s record at,
-    /// when it runs that app's model; see [`Service::hosted`].
-    #[must_use]
-    pub fn hosted(&self, app: &str) -> Option<String> {
-        self.started.iter().find_map(|service| service.hosted(app))
-    }
-
-    /// Every app whose model one of the services runs, by the app, with the resource address it
-    /// publishes its record at; see [`Service::served`].
-    #[must_use]
-    pub fn served(&self) -> Vec<(String, String)> {
-        self.started
-            .iter()
-            .flat_map(|service| service.served())
-            .collect()
-    }
-
     /// The places the services were asked to open since this was last taken, each with the actor
     /// that asked; see [`Service::take_open`].
     #[must_use]
@@ -444,6 +484,16 @@ impl Services {
         self.started
             .iter()
             .flat_map(|service| service.records())
+            .collect()
+    }
+
+    /// Every record the services keep, as the activity's history reads it; see
+    /// [`Service::history_records`].
+    #[must_use]
+    pub fn history_records(&self) -> Vec<HistoryRecord> {
+        self.started
+            .iter()
+            .flat_map(|service| service.history_records())
             .collect()
     }
 
@@ -477,18 +527,20 @@ impl Services {
     }
 
     /// [`Self::invoke`] as `invoker` (an agent, a script): what the change it makes is
-    /// attributed to. The service's own door decides whether the caller may.
+    /// attributed to, as a step of the run `run` when it is one of a run's
+    /// ([`Service::invoke_in_run`]). The service's own door decides whether the caller may.
     ///
     /// # Errors
     /// The service's refusal.
     pub fn invoke_as(
         &mut self,
         invoker: &tilo_actions::ActionInvoker,
+        run: Option<&tilo_actions::WorkGroup>,
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, DoorError> {
-        self.invoke_as_beside(invoker, resource, action, arguments, "")
+        self.invoke_as_beside(invoker, run, resource, action, arguments, "")
     }
 
     /// [`Self::invoke_as`] with the place the ask is in named: the resource the place shows — the
@@ -500,6 +552,7 @@ impl Services {
     pub fn invoke_as_beside(
         &mut self,
         invoker: &tilo_actions::ActionInvoker,
+        run: Option<&tilo_actions::WorkGroup>,
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
@@ -518,7 +571,10 @@ impl Services {
             .get_mut(index)
             .ok_or_else(|| DoorError::Unknown(address.clone()))?;
         service.note_beside(beside);
-        let started = service.invoke_as(invoker, resource, action, arguments);
+        let started = match run {
+            Some(run) => service.invoke_in_run(invoker, run, resource, action, arguments),
+            None => service.invoke_as(invoker, resource, action, arguments),
+        };
         if let Some(stirred) = self.stirred.get_mut(index) {
             *stirred = true;
         }
@@ -559,6 +615,15 @@ impl Services {
         self.started
             .iter()
             .find_map(|service| service.read(resource))
+    }
+
+    /// The reading of `resource`, as what its service publishes; `None` when no service publishes
+    /// it or it does not read back.
+    #[must_use]
+    pub fn published<T: serde::de::DeserializeOwned>(&self, resource: &str) -> Option<T> {
+        serde_json::from_value(self.read(resource)?)
+            .inspect_err(|error| tracing::warn!(%error, resource, "a reading does not read back"))
+            .ok()
     }
 
     /// Invoke `action` of `resource` on the service publishing it; `None`
@@ -704,14 +769,6 @@ impl Service for Services {
 
     fn module(&self, app: &str) -> Option<std::sync::Arc<[u8]>> {
         Self::module(self, app)
-    }
-
-    fn hosted(&self, app: &str) -> Option<String> {
-        Self::hosted(self, app)
-    }
-
-    fn served(&self) -> Vec<(String, String)> {
-        Self::served(self)
     }
 
     #[cfg(unix)]

@@ -1,7 +1,3 @@
-//! Text selection driven the way a person drives it: pointer presses,
-//! drags, multi-clicks, Shift, keys, the context menu and a finger, through
-//! the window's own event path over a real PDF.
-
 use std::time::Duration;
 
 use serial_test::serial;
@@ -17,12 +13,10 @@ mod in_the_desktop;
 
 const LINES: usize = 40;
 
-/// The words of line `line` on page `page` of [`text_pdf`].
 fn line_text(page: usize, line: usize) -> String {
     format!("Page {page} line {line}: the quick brown fox jumps over the lazy dog")
 }
 
-/// A PDF of `pages` pages of plain text lines, in reading order.
 pub(super) fn text_pdf(dir: &std::path::Path, pages: usize) -> std::path::PathBuf {
     use std::fmt::Write as _;
     let mut objects: Vec<String> = Vec::new();
@@ -70,8 +64,6 @@ pub(super) fn text_pdf(dir: &std::path::Path, pages: usize) -> std::path::PathBu
     path
 }
 
-/// The reader on a `pages`-page text PDF in a window, every visible page
-/// drawn.
 fn reader(pages: usize, theme: Theme) -> Option<(tempfile::TempDir, Framed<PdfApp>)> {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = text_pdf(dir.path(), pages);
@@ -86,8 +78,6 @@ fn reader(pages: usize, theme: Theme) -> Option<(tempfile::TempDir, Framed<PdfAp
     Some((dir, app))
 }
 
-/// Run the window's frames until `done` holds, as they run while the PDF
-/// worker answers.
 fn settle(app: &mut Framed<PdfApp>, mut done: impl FnMut(&PdfApp) -> bool) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
@@ -104,8 +94,6 @@ fn settle(app: &mut Framed<PdfApp>, mut done: impl FnMut(&PdfApp) -> bool) {
     }
 }
 
-/// Rest the pointer on displayed page `page` until its text is here, as a
-/// pointer resting on a page reads it ahead of the press.
 fn hover_until_read(app: &mut Framed<PdfApp>, page: usize) {
     let origin = app.page_origins()[page - 1];
     let canvas = app.canvas_rect;
@@ -124,13 +112,10 @@ fn move_to(app: &mut Framed<PdfApp>, at: Point) {
     });
 }
 
-/// A screen point over the leading half of glyph `nth` of the first
-/// `needle` on displayed page `page`, whose text is here: a caret before it.
 fn glyph_at(app: &PdfApp, page: usize, needle: &str, nth: usize) -> Point {
     glyph_point(app, page, needle, nth, 0.3)
 }
 
-/// A screen point over the trailing half of that glyph: a caret after it.
 fn past(app: &PdfApp, page: usize, needle: &str, nth: usize) -> Point {
     glyph_point(app, page, needle, nth, 0.7)
 }
@@ -184,7 +169,6 @@ fn dragging_selects_across_lines_and_pages_in_reading_order() {
     );
 
     eprintln!("phase a_drag_past_the_page_end_continues_on_the_next_page");
-    // The end of page 1 and the top of page 2 on screen together.
     let unit = app.stack_unit() * app.zoom();
     app.viewport.set_scroll(0.0, unit - 300.0);
     settle(&mut app, |app| !app.pending_visuals);
@@ -249,7 +233,6 @@ fn shift_click_extends_the_selection() {
     let to = past(&app, 1, "Page 1 line 1:", 5);
     drag(&mut app, from, to);
     assert_eq!(selected(&app), "Page 1");
-    // Well below the selection, clear of its menu.
     let further = past(&app, 1, "Page 1 line 12:", 5);
     let harness = Framed::harness_mut(&mut app);
     harness.set_modifiers(&["shift".to_owned()]);
@@ -263,8 +246,6 @@ fn shift_click_extends_the_selection() {
     assert!(text.contains(&line_text(1, 7)), "{text:?}");
 }
 
-// One lock for both: two stacked locks taken in different orders by
-// different tests deadlock.
 #[serial(clipboard, pdfium)]
 #[test]
 fn select_all_then_copy_puts_the_whole_document_on_the_clipboard() {
@@ -277,7 +258,6 @@ fn select_all_then_copy_puts_the_whole_document_on_the_clipboard() {
     harness.key("a");
     harness.key("c");
     harness.set_modifiers(&[]);
-    // Pages off screen are read on the worker; the copy lands with them.
     settle(&mut app, |app| {
         app.status_note
             .as_deref()
@@ -285,7 +265,6 @@ fn select_all_then_copy_puts_the_whole_document_on_the_clipboard() {
     });
     let copied = ui::clipboard_paste().unwrap_or_default();
     if copied == "before" {
-        // No clipboard in this session: what would have been copied.
         eprintln!("no clipboard in this session; checking the selection");
     }
     let text = if copied == "before" {
@@ -311,7 +290,6 @@ fn a_press_before_the_page_text_arrives_selects_once_it_does() {
     hover_until_read(&mut app, 1);
     let from = glyph_at(&app, 1, "Page 1 line 6:", 0);
     let to = past(&app, 1, "Page 1 line 6:", 10);
-    // The layer goes, as on a page the pointer never rested on.
     app.raster_text.clear();
     app.text_hover = None;
     app.raster_text_batch.clear();
@@ -326,7 +304,6 @@ fn a_press_before_the_page_text_arrives_selects_once_it_does() {
     );
 }
 
-/// Press the right button at `at`, as a right-click does.
 fn right_click(app: &mut Framed<PdfApp>, at: Point) {
     move_to(app, at);
     for state in [ElementState::Pressed, ElementState::Released] {
@@ -338,7 +315,6 @@ fn right_click(app: &mut Framed<PdfApp>, at: Point) {
     }
 }
 
-/// The selection menu's `action`, once it shows: its button's middle.
 fn menu_button(app: &mut Framed<PdfApp>, action: ui::HudAction) -> Point {
     settle(app, |app| app.sel_hud.is_some());
     let hud = app.sel_hud.as_ref().expect("the selection menu shows");
@@ -351,15 +327,12 @@ fn menu_button(app: &mut Framed<PdfApp>, action: ui::HudAction) -> Point {
         )
 }
 
-/// The actions the selection menu offers.
 fn menu_actions(app: &mut Framed<PdfApp>) -> Vec<ui::HudAction> {
     settle(app, |app| app.sel_hud.is_some());
     let hud = app.sel_hud.as_ref().expect("the selection menu shows");
     hud.buttons().iter().map(|(_, a)| *a).collect()
 }
 
-// One lock for both: two stacked locks taken in different orders by
-// different tests deadlock.
 #[serial(clipboard, pdfium)]
 #[test]
 fn a_right_click_selects_the_word_and_the_selection_menu_copies_and_selects_all() {
@@ -387,7 +360,6 @@ fn a_right_click_selects_the_word_and_the_selection_menu_copies_and_selects_all(
     );
 
     eprintln!("phase a_right_click_on_the_selection_keeps_it");
-    // Clear of the menu under the word.
     let from = glyph_at(&app, 1, "Page 1 line 12:", 0);
     let to = past(&app, 1, "Page 1 line 13:", 5);
     drag(&mut app, from, to);
@@ -408,7 +380,6 @@ fn a_right_click_selects_the_word_and_the_selection_menu_copies_and_selects_all(
 #[serial(pdfium)]
 #[test]
 fn a_held_finger_selects_a_word_and_its_grips_move_the_ends() {
-    // Two pages, so the document is taller than the window and scrolls.
     let Some((_dir, mut app)) = reader(2, Theme::dark()) else {
         return;
     };
@@ -481,8 +452,6 @@ fn a_held_finger_selects_a_word_and_its_grips_move_the_ends() {
     );
 }
 
-// One lock for both: two stacked locks taken in different orders by
-// different tests deadlock.
 #[serial(clipboard, pdfium)]
 #[test]
 fn agents_select_and_copy_text_through_actions() {
@@ -544,9 +513,6 @@ fn agents_select_and_copy_text_through_actions() {
     assert!(text.contains(&line_text(1, 0)) && text.contains(&line_text(3, LINES - 1)));
 }
 
-/// Screenshots of a selection across lines, with the selection menu, in
-/// dark and light, rendered as the desktop renders without a GPU: written
-/// where `PDF_SELECTION_SHOTS` names.
 #[serial(pdfium)]
 #[test]
 fn shoot_selection() {
@@ -569,7 +535,6 @@ fn shoot_selection() {
         Framed::harness_mut(&mut app)
             .set_interaction_environment(ui::interaction::InteractionEnvironment::TOUCH);
         Framed::harness_mut(&mut app).touch_hold_at(quick.x, quick.y);
-        // The menu's opening finishes.
         let opened = ui::time::now();
         settle(&mut app, |app| {
             !app.pending_visuals && opened.elapsed() > Duration::from_millis(600)
@@ -616,9 +581,6 @@ fn a_drag_held_at_the_canvas_edge_scrolls_and_keeps_selecting() {
     let edge = Point::new(from.x, canvas.y1 - 4.0);
     move_to(&mut app, edge);
     let before = app.scroll_y();
-    // The hold lasts a fixed number of 60 Hz frames on the frame clock, so
-    // how far it scrolls is the same on a loaded machine: far enough to
-    // bring the third page, whose text is not read yet, under the pointer.
     let mut frame_clock = ui::time::now();
     for _ in 0..HELD_FRAMES {
         frame_clock += FRAME;
@@ -629,8 +591,6 @@ fn a_drag_held_at_the_canvas_edge_scrolls_and_keeps_selecting() {
     let scrolled = app.scroll_y() - before;
     let at_bottom = app.page_near(edge).unwrap();
     assert_eq!(at_bottom, 3, "the hold scrolled the third page under it");
-    // Still held, with the clock still, until that page's text is read:
-    // the selection reaches it as it arrives.
     tilo_test_env::wait_until(format_args!("page {at_bottom}'s text"), || {
         if app.raster_text.contains_key(&at_bottom) {
             return true;
@@ -660,10 +620,6 @@ fn a_drag_held_at_the_canvas_edge_scrolls_and_keeps_selecting() {
     assert!(selected(&app).starts_with(&line_text(1, 2)));
 }
 
-/// A frame of a 60 Hz host.
 const FRAME: Duration = Duration::from_micros(16_667);
 
-/// How many frames [`a_drag_held_at_the_canvas_edge_scrolls_and_keeps_selecting`]
-/// holds at the edge: 0.8 s, well past where the third page comes under
-/// the pointer (about 0.5 s at the edge's speed).
 const HELD_FRAMES: usize = 48;

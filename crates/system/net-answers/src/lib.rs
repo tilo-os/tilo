@@ -1,14 +1,8 @@
 //! Answers search gets from the network, and their wire format.
 //!
-//! The compositor never opens a socket. When search needs something only
-//! the network knows (today: exchange rates), it runs the `tilo-net-answers`
-//! helper, which confines itself before it fetches anything (it may read
-//! the trust bundle and the resolver's files and connect to HTTPS, nothing
-//! else), and prints one [`Answer`] as JSON on stdout. The shell keeps the
-//! last answer, with when it was fetched, and answers from it offline.
-//!
-//! Each kind of answer is a [`Source`]; adding one is a variant, its URL and
-//! its parser.
+//! The compositor never opens a socket: it runs the `tilo-net-answers` helper,
+//! which confines itself before it fetches anything, and keeps the last answer to
+//! answer from offline.
 
 use std::collections::BTreeMap;
 
@@ -17,13 +11,11 @@ use serde::{Deserialize, Serialize};
 /// What the helper can fetch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
-    /// Euro reference exchange rates, published each working day by the
-    /// European Central Bank.
+    /// Euro reference exchange rates, published each working day by the ECB.
     Rates,
 }
 
 impl Source {
-    /// The name the helper is asked for it by.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -36,7 +28,6 @@ impl Source {
         (name == Self::Rates.name()).then_some(Self::Rates)
     }
 
-    /// Where it is published.
     #[must_use]
     pub const fn url(self) -> &'static str {
         match self {
@@ -44,7 +35,6 @@ impl Source {
         }
     }
 
-    /// The answer in a fetched `body`.
     pub fn parse(self, body: &str) -> Result<Answer, String> {
         match self {
             Self::Rates => parse_ecb_rates(body).map(Answer::Rates),
@@ -52,26 +42,23 @@ impl Source {
     }
 }
 
-/// One fetched answer, as the helper prints it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum Answer {
     Rates(Rates),
 }
 
-/// Exchange rates: how many of each currency one `base` buys, on `date`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Rates {
-    /// ISO 4217 code of the currency every rate is against.
     pub base: String,
-    /// The day the rates are for, `YYYY-MM-DD`, as published.
+    /// The day the rates are for, `YYYY-MM-DD`.
     pub date: String,
     /// ISO 4217 code → units of it per one `base`.
     pub rates: BTreeMap<String, f64>,
 }
 
 impl Rates {
-    /// `amount` of currency `from` in currency `to`, if both are known.
+    /// `None` if either currency is unknown.
     #[must_use]
     pub fn convert(&self, amount: f64, from: &str, to: &str) -> Option<f64> {
         let per_base = |code: &str| {
@@ -86,7 +73,6 @@ impl Rates {
     }
 }
 
-/// The value of `name='…'` (or `name="…"`) in `element`.
 fn attribute<'a>(element: &'a str, name: &str) -> Option<&'a str> {
     let at = element.find(&format!("{name}="))?;
     let rest = element.get(at.checked_add(name.len())?.checked_add(1)?..)?;
@@ -95,8 +81,8 @@ fn attribute<'a>(element: &'a str, name: &str) -> Option<&'a str> {
     value.get(..value.find(quote)?)
 }
 
-/// The ECB's daily reference rates: `<Cube time='…'>` holding one
-/// `<Cube currency='USD' rate='1.0812'/>` per currency, against the euro.
+/// The ECB's daily rates: `<Cube time>` holding one `<Cube currency rate>` per
+/// currency, against the euro.
 fn parse_ecb_rates(body: &str) -> Result<Rates, String> {
     let mut date = None;
     let mut rates = BTreeMap::new();

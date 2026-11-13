@@ -184,11 +184,11 @@ impl SignedDeviceAction {
     pub fn sign(
         action: &DeviceAction,
         issued_at_ns: u64,
-        device: &ed25519_dalek::SigningKey,
+        device: &dyn collab_types::signer::DeviceSigner,
     ) -> Result<Self, ActionSignatureError> {
-        let (encoded, message) =
-            statement(action, issued_at_ns, &device.verifying_key().to_bytes())?;
-        let signature = ed25519_dalek::Signer::sign(device, &message).to_bytes();
+        let (encoded, message) = statement(action, issued_at_ns, &device.device_public_key())?;
+        let signature = collab_types::signer::sign_now(device, message)
+            .map_err(|_| ActionSignatureError::Signer)?;
         Ok(Self {
             action: action.clone(),
             encoded,

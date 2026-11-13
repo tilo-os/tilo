@@ -102,6 +102,9 @@ pub struct QrWidget {
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
     dirty: bool,
+    /// A new payload or module width changed the room a code drawn at a named module size
+    /// takes, since the layout pass last placed it.
+    layout_dirty: bool,
 }
 
 impl QrWidget {
@@ -110,6 +113,7 @@ impl QrWidget {
     pub fn new(payload: impl Into<Vec<u8>>) -> Self {
         let mut w = Self {
             dirty: true,
+            layout_dirty: true,
             rect: Rect::ZERO,
             test_id: "qr_widget".to_owned(),
             alt: "QR code".to_owned(),
@@ -168,6 +172,7 @@ impl QrWidget {
     #[must_use]
     pub fn with_module_px(mut self, px: u32) -> Self {
         self.dirty = true;
+        self.layout_dirty = true;
         self.module_px = Some(px.max(1));
         self
     }
@@ -203,6 +208,7 @@ impl QrWidget {
     /// chosen EC level) is stored in `self.error` for inline display.
     pub fn set_payload(&mut self, payload: impl Into<Vec<u8>>) {
         self.dirty = true;
+        self.layout_dirty = true;
         self.payload = Zeroizing::new(payload.into());
         if self.payload.is_empty() {
             self.matrix = Zeroizing::new(Vec::new());
@@ -292,7 +298,7 @@ impl Widget for QrWidget {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    crate::rect_geometry!(measured);
 
     // The QR spec caps `matrix_size` at 177 (version 40) and `quiet_modules`
     // is a small widget-construction constant, so every `usize -> f64` cast
@@ -383,11 +389,6 @@ impl Widget for QrWidget {
     fn needs_redraw(&self) -> bool {
         crate::widget::redraw_or_children(self.dirty, self)
     }
-    /// A code drawn at a named module size takes the room its payload needs,
-    /// so a new payload lays it out again as well as paints it.
-    fn is_layout_dirty(&self) -> bool {
-        self.dirty && self.module_px.is_some()
-    }
     fn mark_drawn(&mut self) {
         self.dirty = false;
         crate::widget::Widget::mark_children_drawn(self);
@@ -407,7 +408,10 @@ impl Widget for QrWidget {
         let mut node = AccessNode::new(Role::Image).with_name(self.alt.clone());
         node.state = node.state.protected(self.secret);
         if let Some(error) = &self.error {
-            node = node.with_description(format!("QR encoding failed: {error}"));
+            node = node.with_description(crate::i18n::widget_format(
+                "widget-qr-failed",
+                &[("error", error.clone().into())],
+            ));
         }
         Some(node)
     }
@@ -601,10 +605,14 @@ mod tests {
             let node = Widget::accessibility(&w).expect("failed output remains inspectable");
             assert_eq!(node.role, Role::Image);
             assert_eq!(node.name.as_deref(), Some("QR code"));
-            assert!(
-                node.description
-                    .as_deref()
-                    .is_some_and(|description| description.starts_with("QR encoding failed:"))
+            let why = w.error().expect("the widget recorded why").to_owned();
+            assert_eq!(
+                node.description.as_deref(),
+                Some(
+                    crate::i18n::widget_format("widget-qr-failed", &[("error", why.into())])
+                        .as_str()
+                ),
+                "the description names the failure that kept the code from being drawn"
             );
         }
     }

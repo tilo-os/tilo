@@ -92,7 +92,6 @@ pub(crate) fn devices(kind: DeviceKind) -> Vec<Device> {
         .collect()
 }
 
-/// A page capture, and the callback its status changes call while it runs.
 struct Video(TiloCaptureVideo, Option<Closure<dyn Fn()>>);
 
 impl VideoSource for Video {

@@ -1,11 +1,10 @@
-//! Who may use which capture device: the person's decision per app, per
-//! workspace and per device, kept by the host that brokers capture, and the
+//! Who may use which capture device: the person's decision per app, per workspace
+//! and per device, kept by the host that brokers capture, and the
 //! [`crate::broker::Policy`] that applies it.
 //!
-//! A decision is recorded the first time an app that declares a device asks
-//! for it, and holds until it is revoked; a revoked device is asked about
-//! again. The file is the truth: a revocation written by any process stops
-//! a capture already running as soon as its host sees the file change.
+//! A decision is recorded the first time an app that declares a device asks for it,
+//! and holds until it is revoked. The file is the truth: a revocation written by any
+//! process stops a running capture as soon as its host sees the file change.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -17,7 +16,6 @@ use crate::DeviceKind;
 use crate::broker::Policy;
 use tilo_lock::MutexRecover as _;
 
-/// What the person decided.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decision {
     Allow,
@@ -26,7 +24,6 @@ pub enum Decision {
 
 type Key = (String, String, &'static str);
 
-/// One recorded decision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grant {
     pub workspace: String,
@@ -35,21 +32,17 @@ pub struct Grant {
     pub decision: Decision,
 }
 
-/// Every decision, persisted in one file of the host's profile.
 pub struct DeviceGrants {
     path: PathBuf,
     loaded: Mutex<Loaded>,
 }
 
-/// The decisions as last read, and which version of the file they came from.
 struct Loaded {
     modified: Option<Version>,
     decisions: BTreeMap<Key, Decision>,
 }
 
 impl DeviceKind {
-    /// The device's name in capability grants (`Scope::Device`) and
-    /// manifests.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -58,7 +51,6 @@ impl DeviceKind {
         }
     }
 
-    /// The device named `name`.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
@@ -78,7 +70,6 @@ fn invalid(what: &str) -> io::Error {
 }
 
 impl DeviceGrants {
-    /// The decisions kept at `path`; none when it does not exist yet.
     pub fn open(path: &Path) -> io::Result<Self> {
         Ok(Self {
             path: path.to_path_buf(),
@@ -86,8 +77,6 @@ impl DeviceGrants {
         })
     }
 
-    /// The decisions as the file holds them now: read again when another
-    /// process changed it; none when it no longer reads.
     fn current(&self) -> std::sync::MutexGuard<'_, Loaded> {
         let mut loaded = self.loaded.lock_recover();
         if modified(&self.path) != loaded.modified {
@@ -99,9 +88,6 @@ impl DeviceGrants {
         loaded
     }
 
-    /// What was decided for `app` in `workspace` about `device`, if anything. A
-    /// file changed by another process is read again first; one that no
-    /// longer reads holds no decisions.
     pub fn decision(&self, workspace: &str, app: &str, device: DeviceKind) -> Option<Decision> {
         let loaded = self.current();
         let decision = loaded
@@ -112,8 +98,6 @@ impl DeviceGrants {
         decision
     }
 
-    /// Every decision, in workspace, app and device order, as the file holds
-    /// it now.
     pub fn list(&self) -> Vec<Grant> {
         let loaded = self.current();
         let grants = loaded
@@ -136,8 +120,8 @@ impl DeviceGrants {
     ///
     /// # Errors
     ///
-    /// An id is empty or has control characters, or the file cannot be
-    /// written; nothing is recorded then.
+    /// An empty id or one with control characters, or a file that cannot be written;
+    /// nothing is recorded then.
     pub fn record(
         &self,
         workspace: &str,
@@ -158,8 +142,8 @@ impl DeviceGrants {
         })
     }
 
-    /// Forget the decision, so the person is asked again, and stop any
-    /// capture it allowed. `false` when there was none.
+    /// Forget the decision, so the person is asked again, and stop any capture it
+    /// allowed; `false` when there was none.
     ///
     /// # Errors
     ///
@@ -204,9 +188,9 @@ impl DeviceGrants {
     }
 }
 
-/// Which write of the file is on disk: every write replaces it with a new
-/// inode, so the inode tells two writes apart even when both land within one
-/// tick of the filesystem's modification-time clock.
+/// Which write of the file is on disk: every write replaces it with a new inode, so
+/// the inode tells two writes apart even within one tick of the modification-time
+/// clock.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Version {
     device: u64,
@@ -260,9 +244,6 @@ fn read(path: &Path) -> io::Result<Loaded> {
     })
 }
 
-/// The [`Policy`] of one app in one workspace: a device it did not declare is
-/// refused without asking anyone; a declared one follows the person's
-/// recorded decision, and `consent` asks them when there is none.
 pub struct GrantPolicy<C> {
     pub grants: std::sync::Arc<DeviceGrants>,
     pub workspace: String,
@@ -412,7 +393,6 @@ mod tests {
         assert_eq!(asked.load(Ordering::SeqCst), 1, "asked twice");
         assert!(policy.allows(DeviceKind::Camera));
 
-        // Revoked by another process: another handle on the same file.
         let elsewhere = DeviceGrants::open(&dir.path().join("grants")).unwrap();
         elsewhere
             .revoke("r", "so.tilo.video", DeviceKind::Camera)

@@ -15,6 +15,7 @@ REPO = Path(__file__).resolve().parents[2]
 BUILD_INTERCEPTED = 73
 KERNEL_PIN = "registry.tilo.so/tilo/tilo-kernel@sha256:" + "1" * 64
 RPMS_PIN = "registry.tilo.so/tilo/rpms@sha256:" + "2" * 64
+ENV_RUNTIME_PIN = "registry.tilo.so/tilo/env-runtime@sha256:" + "3" * 64
 TARGET_REF = "code.tilo.so/tilo/tilo:board-fixture"
 
 
@@ -70,6 +71,11 @@ TILO_PODMAN_BUILD_FLAGS=()
             executable=True,
         )
         self.write(
+            "os/dev/resolve-env-runtime.sh",
+            f"#!/bin/bash\nprintf '%s\\n' '{ENV_RUNTIME_PIN}'\n",
+            executable=True,
+        )
+        self.write(
             "os/kernel-snapshot.env",
             f"KERNEL_RPMS_X86_64_REF={KERNEL_PIN}\n"
             f"KERNEL_RPMS_AARCH64_REF={KERNEL_PIN}\n",
@@ -87,7 +93,20 @@ printf '%s\\0' "$@" > "$TILO_TEST_PODMAN_LOG"
 exit {BUILD_INTERCEPTED}
 """, executable=True)
         self.write("bin/cosign", "#!/bin/sh\nexit 0\n", executable=True)
-        self.write("bin/skopeo", "#!/bin/sh\nprintf '%s\\n' '{}'\n", executable=True)
+        # The frozen RPM snapshot is resolved per architecture, and the build checks the
+        # published image is the one it builds for: its config names that architecture.
+        self.write("bin/skopeo", """\
+#!/bin/sh
+case "$*" in
+  *--config*)
+    case "$TILO_TEST_ARCH" in
+      x86_64) printf '%s\\n' '{"os":"linux","architecture":"amd64"}' ;;
+      aarch64) printf '%s\\n' '{"os":"linux","architecture":"arm64"}' ;;
+      *) exit 1 ;;
+    esac ;;
+  *) printf '%s\\n' '{}' ;;
+esac
+""", executable=True)
         self.write("bin/jq", """\
 #!/bin/sh
 # Drain the producer before returning fixture output. The production script
@@ -96,7 +115,7 @@ exit {BUILD_INTERCEPTED}
 cat >/dev/null
 case "$*" in
   *sort_by*) printf '%s\\n' '[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]' ;;
-  *Architecture*)
+  *Architecture* | *.architecture*)
     case "$TILO_TEST_ARCH" in
       x86_64) printf '%s\\n' amd64 ;;
       aarch64) printf '%s\\n' arm64 ;;

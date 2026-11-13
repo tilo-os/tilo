@@ -21,13 +21,14 @@ use tilo_actions::remote::{
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
-use tilo_browser_peer::session_actions::SessionActions;
 use tilo_desktop_surface::session::DesktopSession;
 use tilo_lock::MutexRecover as _;
+use tilo_session_core::remote::SessionActions;
 
-/// The grants the person took back here, for the page to sign: device keys,
-/// as hex.
-pub(crate) type Revoked = Arc<Mutex<Vec<String>>>;
+/// The keys the person took back here, for the page's root to sign.
+pub(crate) type Revoked = Arc<Mutex<Vec<Revoking>>>;
+
+pub(crate) use crate::shell::Revoking;
 
 /// The agent door as the page's desktop asks it.
 struct PageDoor {
@@ -64,7 +65,10 @@ impl PageDoor {
         if hex::decode(&grant.grant).map_or(true, |key| key.len() != 32) {
             return Err(invalid("a grant is named by its device's key"));
         }
-        self.revoked.lock_recover().push(grant.grant);
+        self.revoked.lock_recover().push(Revoking {
+            key: grant.grant,
+            reason: "retired".to_owned(),
+        });
         self.woken.store(true, Ordering::Release);
         Ok(InvocationReceipt {
             invocation: request.invocation,
@@ -92,8 +96,9 @@ impl PageDoor {
 }
 
 /// Carry the agent-door asks of the desktop `session` serves, for the
-/// workspace `workspace`, to the host the page's peer `peer` is with; the
-/// grants the person takes back there, for the page to sign. A page with no
+/// workspace `workspace`, to the host the page's peer `peer` is with, and the
+/// asks of the person's devices there too ([`crate::identity_door`]); the
+/// keys the person takes back at either, for the page to sign. A page with no
 /// peer has no door: its asks say none answers.
 pub(crate) fn serve(
     session: &DesktopSession,
@@ -103,15 +108,21 @@ pub(crate) fn serve(
     woken: &Arc<AtomicBool>,
 ) -> Revoked {
     let revoked = Revoked::default();
-    if let Some((peer, host)) = peer.and_then(crate::peer_presence::host_of)
-        && let Ok(workspace) = crate::peer::workspace_number(workspace)
+    if let (Some(peer), Ok(workspace)) = (peer, crate::peer::workspace_number(workspace))
+        && let Some(door) = crate::peer_sync::actions_of(peer, workspace)
     {
-        session.serve_agent_door(Arc::new(PageDoor::new(
-            SessionActions::new(&peer, workspace, host),
-            endpoint,
-            Arc::clone(&revoked),
-            Arc::clone(woken),
-        )));
+        session.serve_person_door(
+            agent_door::PROVIDER,
+            Arc::new(PageDoor::new(
+                door.clone(),
+                endpoint,
+                Arc::clone(&revoked),
+                Arc::clone(woken),
+            )),
+        );
+        if let Some(own) = crate::peer_sync::device_of(peer) {
+            crate::identity_door::serve(session, door, own, &revoked, woken);
+        }
     }
     revoked
 }

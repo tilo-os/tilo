@@ -14,7 +14,7 @@
 //! it is no longer anyone's own, and whoever writes there closes or moves
 //! it as their own, so a window of someone gone never stays stuck on
 //! everyone's desktop. Who is still in the workspace is its governance's member
-//! list ([`crate::projection::workspace_members`]).
+//! list (`tilo_peer_state::members::people`).
 //!
 //! [`foreign_acts`] names what one desktop value did to another's strips
 //! and windows that its writer did not make. A relay decides every write of
@@ -42,6 +42,22 @@ pub const DESKTOP_KIND: &str = "tilo.desktop";
 /// or tab id, as person ids.
 pub type Authors = BTreeMap<u64, String>;
 
+/// The agent run that opened a window on a person's behalf: what a desk says
+/// beside the window, so everyone sees whose agent put it there and in which
+/// run. The window stays the person's ([`Authors`]): the run is who opened it,
+/// not who may close it.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct OpenedBy {
+    /// The run's id, as History groups the run's changes (`agent-run:…`).
+    pub run: String,
+    /// What the run is called: the agent's name.
+    pub label: String,
+    /// What the run was asked to do, as History names it ("Fill Jane Doe's
+    /// visa application"); empty when the agent said nothing of it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+}
+
 /// A shared desktop as a workspace holds it: the tree and who made what.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct SharedDesktop {
@@ -52,6 +68,11 @@ pub struct SharedDesktop {
     pub records: Vec<(TabId, String)>,
     #[serde(default)]
     pub authors: Authors,
+    /// The agent run that opened each window an agent opened, by tab.
+    /// Written once with the window and kept until the window closes: a
+    /// writer that knows nothing of it leaves it as it is.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub opened_by: BTreeMap<TabId, OpenedBy>,
 }
 
 impl SharedDesktop {
@@ -425,6 +446,7 @@ mod tests {
             tree,
             authors,
             records: Vec::new(),
+            opened_by: std::collections::BTreeMap::new(),
         }
     }
 

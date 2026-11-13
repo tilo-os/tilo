@@ -20,6 +20,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::TileContent;
 use crate::widget::{
@@ -37,7 +38,7 @@ pub use hint_places::HintPlaces;
 mod canvas;
 #[path = "group_row_floats.rs"]
 mod floats;
-pub use floats::{FLOAT_CARD_ROOM, FLOAT_SIZE, FloatAsk};
+pub use floats::{FLOAT_CARD_ROOM, FLOAT_CARD_SIZE, FLOAT_SIZE, FloatAsk, keep_float_inside};
 #[path = "group_row_scroll.rs"]
 mod scroll;
 pub use canvas::{CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView};
@@ -265,17 +266,9 @@ pub struct GroupRow {
     /// Transient fullscreen override (not persisted), set by the shell from compositor state: the
     /// row collapses to that group, or to [`Self::hidden`] when it belongs to another strip.
     fullscreen_group: Option<u64>,
-    /// Transient: the promoted group leaves its lane's leading gutter clear,
-    /// as a user maximize does; a client fullscreen covers it.
-    promotion_keeps_gutter: bool,
-    /// A maximize can cover the gutter without hiding its Restore controls.
-    promotion_keeps_controls: bool,
     /// Transient (not persisted): true on every strip that doesn't own
     /// the current fullscreen group; collapses the row via `Display::None`.
     hidden: bool,
-    /// Transient: the display another strip's fullscreen covers. This lane collapses there and its
-    /// lanes elsewhere stay; a row with no lanes spans every display and collapses whole.
-    covered_output: Option<u32>,
     /// In-flight whole-group reorder drag (distinct from a tab-detach
     /// drag inside a child `TabBar`, and from an edge resize).
     group_drag: Option<GroupDrag>,
@@ -316,9 +309,6 @@ pub struct GroupRow {
     /// Each moved group's drawn offset from its laid-out x, springing to 0 on `WindowMotion::MOVE`;
     /// all start in the layout that moved them.
     moves: Vec<(u64, crate::motion::MotionValue<f64>)>,
-    /// Groups another surface draws for now as one shared element (the overview flying a window's
-    /// picture); not painted here meanwhile, so a window is never on screen twice.
-    shown_elsewhere: Vec<u64>,
     /// Capture-harness pose for every move: how far into its run it is
     /// drawn ([`Self::hold_shift_at`]); always `None` in a running shell.
     shift_hold: Option<Duration>,
@@ -397,6 +387,9 @@ pub struct GroupRow {
     /// Windows floating above the desk at a rect of their own, by group id,
     /// in the surface's coordinates ([`floats`]).
     floats: HashMap<u64, Rect>,
+    /// The floating cards the desk has folded to their header, by group id
+    /// ([`Self::set_collapsed`]).
+    collapsed_cards: std::collections::HashSet<u64>,
     /// The rect a floating window was at when its drag began.
     float_drag_from: Option<Rect>,
     /// Where a float the person moved or snapped goes, for the host to keep
@@ -529,6 +522,9 @@ struct ApartDrawing {
     /// What of the group the drawing culled nothing in, across, from the group's left edge; `None`
     /// when nothing was culled. A replay must show no more of the group.
     seen: Option<(f64, f64)>,
+    /// The peers' carets, selections and name tags the drawing noted: a reader is told them where
+    /// the frame shows the window, so a replay notes them again moved with it.
+    notes: crate::presence::DrawnNotes,
     /// Nothing changed in the group since the drawing was made; a drawing replayed through a frame
     /// that may have changed it is not current, and is never shown.
     current: bool,
@@ -570,6 +566,9 @@ pub struct Pan {
     viewport: Rect,
     /// Canvas-x gutter before the first group (the strip-edge gutter).
     inset: f64,
+    /// How much of the viewport's trailing edge the cards floating over the desk take: a window
+    /// brought into view stands clear of them where it fits beside them ([`GroupRow::set_trailing_clear`]).
+    clear: f64,
     /// Horizontal scroll offset (px): each child renders at `-scroll_x`; at rest it is bounded by
     /// `pan_max_scroll_x`, and a direct gesture may hold a resisted value just outside.
     scroll_x: f64,
@@ -623,18 +622,21 @@ impl Pan {
 
     /// [`Self::max_scroll_x`] once the windows are `content_w` wide.
     fn max_scroll_x_of(&self, content_w: f64) -> f64 {
+        // The strip ends past its last window by its gutter, and by the cards floating over the
+        // desk there: its last window can stand clear of them.
         let gutter = if content_w > self.inset {
-            self.inset
+            self.inset + self.clear
         } else {
             0.0
         };
         (content_w + gutter - self.viewport.width()).max(0.0)
     }
 
-    /// The leading inset again after the last group, once there is one.
+    /// The leading inset again after the last group, once there is one, and the room the cards
+    /// floating over the desk take there.
     fn trailing_gutter(&self) -> f64 {
         if self.content_w > self.inset {
-            self.inset
+            self.inset + self.clear
         } else {
             0.0
         }
@@ -698,14 +700,17 @@ impl Pan {
     }
 
     /// Whether a frame at `now` would show a direct pan elsewhere than the strip is: fingers down
-    /// and the resampled path not yet where the last frame put it. Resting fingers ask for nothing.
+    /// and the resampled path not yet where the last frame put it, or read ahead of the fingers'
+    /// newest report, which a frame brings back to it once they rest. Resting fingers ask for
+    /// nothing.
     fn direct_pan_moving(&self, now: Instant) -> bool {
         let Some(origin) = self.strip_pan_origin else {
             return false;
         };
-        self.resampled_travel(now).is_some_and(|travel| {
-            (self.rubber_banded(origin + travel) - self.scroll_x).abs() > f64::EPSILON
-        })
+        self.finger_path.predicting(now)
+            || self.resampled_travel(now).is_some_and(|travel| {
+                (self.rubber_banded(origin + travel) - self.scroll_x).abs() > f64::EPSILON
+            })
     }
 
     /// Record the fingers' total `travel` at `at`: the strip shows it at once, and the next frame
@@ -796,6 +801,12 @@ impl Pan {
         let margin = HANDLE_SLOT_PX.min(slack / 2.0);
         let left_bound = self.viewport.x0 + margin;
         let right_bound = self.viewport.x1 - margin;
+        // A window that fits beside the cards over the desk stands clear of them.
+        let right_bound = if gr.width() <= right_bound - self.clear - left_bound {
+            right_bound - self.clear
+        } else {
+            right_bound
+        };
         let mut sx = self.scroll_x;
         // An oversized group cannot fit, so reveal its start consistently; checking the original
         // rect after a right-edge correction would right-align it.
@@ -1163,10 +1174,7 @@ impl GroupRow {
             scroll_dirty: false,
             leading_inset: 0.0,
             fullscreen_group: None,
-            promotion_keeps_gutter: false,
-            promotion_keeps_controls: false,
             hidden: false,
-            covered_output: None,
             group_drag: None,
             edge_hover: None,
             edge_drag: None,
@@ -1180,7 +1188,6 @@ impl GroupRow {
             output_spans: Vec::new(),
             last_laid_x: HashMap::new(),
             shift_armed: false,
-            shown_elsewhere: Vec::new(),
             moves: Vec::new(),
             shift_hold: None,
             reduce_motion: false,
@@ -1210,6 +1217,7 @@ impl GroupRow {
             canvas_drag_from: None,
             pending_canvas_move: None,
             floats: HashMap::new(),
+            collapsed_cards: std::collections::HashSet::new(),
             float_drag_from: None,
             pending_float: None,
             float_fade: HashMap::new(),
@@ -1404,39 +1412,17 @@ impl GroupRow {
         self.fullscreen_idx().is_some()
     }
 
-    /// Collapse this strip's lane on `output`, where another strip's fullscreen covers it, keeping
-    /// its lanes on other displays; `None` shows every lane again.
-    pub fn set_covered_output(&mut self, output: Option<u32>) {
-        if self.covered_output != output {
-            self.covered_output = output;
-            self.structure_dirty = true;
-        }
-    }
-
-    /// The lane collapsed under another strip's fullscreen, if this row
-    /// has one on the covered display.
-    fn covered_lane(&self) -> Option<usize> {
-        let output = self.covered_output?;
-        self.lanes
-            .iter()
-            .position(|lane| lane.spec.output == output)
-    }
-
-    /// Whether the promoted group stops at its lane's leading gutter (a maximize) or covers it (a
-    /// client fullscreen).
-    pub fn set_promotion_keeps_gutter(&mut self, keeps: bool) {
-        if self.promotion_keeps_gutter != keeps {
-            self.promotion_keeps_gutter = keeps;
-            self.structure_dirty = true;
-        }
-    }
-
-    /// Keep the maximized system controls even when the promoted group
-    /// covers its gutter. Client fullscreen leaves this off.
-    pub fn set_promotion_keeps_controls(&mut self, keeps: bool) {
-        if self.promotion_keeps_controls != keeps {
-            self.promotion_keeps_controls = keeps;
-            self.structure_dirty = true;
+    /// How much of this strip's top edge something overlays now (the desktop's top bar while it
+    /// shows over the windows under an auto-hiding one): every window in the strip moves down by
+    /// it, whole, so its own bar stands below the overlay instead of under it.
+    ///
+    /// The window covering its display is the exception: it keeps the whole display, the bar's
+    /// band included, and the bar paints over it while it shows. Moved down, it would hang off the
+    /// display's bottom edge and jump each time the bar came and went.
+    pub fn set_top_overlay_inset(&mut self, inset: f64) {
+        let covering = self.fullscreen_idx();
+        for (index, group) in self.groups.iter_mut().enumerate() {
+            group.set_top_overlay_inset(if covering == Some(index) { 0.0 } else { inset });
         }
     }
 
@@ -1451,6 +1437,16 @@ impl GroupRow {
 
     pub fn leading_inset(&self) -> f64 {
         self.leading_inset
+    }
+
+    /// Keep `px` of the viewport's trailing edge clear for the cards floating over the desk there:
+    /// a window brought into view from now on stands clear of them where it fits beside them.
+    pub fn set_trailing_clear(&mut self, px: f64) {
+        let px = px.max(0.0);
+        self.pan.clear = px;
+        for lane in &mut self.lanes {
+            lane.pan.clear = px;
+        }
     }
 
     pub fn set_leading_inset(&mut self, px: f64) {
@@ -2050,6 +2046,13 @@ impl GroupRow {
         else {
             return false;
         };
+        // A window floated from beside it leaves the window alone in its run of the strip: it is
+        // so before it takes its share, so standing alone beside the card gives back no width it
+        // had before and the card stands clear of it.
+        let alone = !(0..self.groups.len()).any(|i| i != idx && i != neighbour && beside(i));
+        if alone && let Some(g) = self.groups.get_mut(neighbour) {
+            g.set_alone(true);
+        }
         for (i, width) in [(neighbour, neighbour_width), (idx, card_width)] {
             let Some(g) = self.groups.get_mut(i) else {
                 continue;
@@ -2210,16 +2213,6 @@ impl GroupRow {
         true
     }
 
-    /// Say which groups another surface is drawing for now (the overview's
-    /// flight carries their pictures); the row leaves them out until they
-    /// are handed back with a set that no longer names them.
-    pub fn set_shown_elsewhere(&mut self, ids: Vec<u64>) {
-        if self.shown_elsewhere != ids {
-            self.shown_elsewhere = ids;
-            self.scroll_dirty = true;
-        }
-    }
-
     pub fn remove_group_by_id(&mut self, id: u64) -> bool {
         let before = self.groups.len();
         if let Some(group) = self.groups.iter_mut().find(|g| g.id == id) {
@@ -2354,55 +2347,6 @@ impl GroupRow {
             self.scroll_dirty = true;
         }
         changed
-    }
-
-    /// Carry peer-local viewport presentation through a retained hierarchy
-    /// rebuild. The next layout still validates/clamps against its new geometry.
-    pub fn inherit_viewport(&mut self, previous: &Self) {
-        self.rect = previous.rect;
-        self.pan = previous.pan.clone();
-        if self.lanes.is_empty() {
-            self.lanes.clone_from(&previous.lanes);
-            self.group_lanes.clone_from(&previous.group_lanes);
-            self.focus_lane = previous.focus_lane;
-        } else {
-            for lane in &mut self.lanes {
-                if let Some(old) = previous
-                    .lanes
-                    .iter()
-                    .find(|old| old.spec.output == lane.spec.output)
-                {
-                    lane.pan = old.pan.clone();
-                }
-            }
-        }
-        self.output_spans.clone_from(&previous.output_spans);
-    }
-
-    /// Resolve an admitted keyboard owner through its actual layout ancestry.
-    /// Stored layout identities prevent stale child indices after a splice.
-    pub fn group_for_focus_target(&self, mut target: NodeId, tree: &TaffyTree<()>) -> Option<u64> {
-        loop {
-            if let Some(index) = self.node_ids.iter().position(|node| *node == target) {
-                let id = *self.laid_group_ids.get(index)?;
-                return self
-                    .groups
-                    .iter()
-                    .any(|group| group.id == id && !group.is_closing())
-                    .then_some(id);
-            }
-            target = tree.parent(target)?;
-        }
-    }
-
-    /// Whether the stored geometry still belongs to the current group order.
-    /// A splice/reorder must complete layout before a host frames its selection.
-    pub fn group_layout_is_current(&self) -> bool {
-        self.laid_group_ids
-            .iter()
-            .copied()
-            .eq(self.groups.iter().map(|group| group.id))
-            && self.width_basis_is_current()
     }
 
     fn width_basis_is_current(&self) -> bool {
@@ -4003,23 +3947,18 @@ impl FloatingSurfaceProvider for GroupRow {
     }
 }
 
-/// Where a row's windows go in its layout: the lane each is in, the window
-/// a lane collapses to, and the lane a fullscreen surface covers.
+/// Where a row's windows go in its layout: the lane each is in and the window a lane collapses
+/// to.
 struct RowPlan {
     lane_of: Vec<usize>,
     maximized_in: Vec<Option<usize>>,
-    covered_lane: Option<usize>,
 }
 
 impl RowPlan {
-    /// Whether each of `lanes` lanes collapses to one window or under a
-    /// fullscreen surface.
+    /// Whether each of `lanes` lanes collapses to one window.
     fn collapsed(&self, lanes: usize) -> Vec<bool> {
         (0..lanes)
-            .map(|lane| {
-                self.maximized_in.get(lane).copied().flatten().is_some()
-                    || self.covered_lane == Some(lane)
-            })
+            .map(|lane| self.maximized_in.get(lane).copied().flatten().is_some())
             .collect()
     }
 }
@@ -4085,11 +4024,7 @@ impl GroupRow {
     fn present_groups(&mut self) {
         self.set_width_bases();
         for group in &mut self.groups {
-            group.set_fullscreen_presentation(
-                self.fullscreen_group == Some(group.id)
-                    && !self.promotion_keeps_gutter
-                    && !self.promotion_keeps_controls,
-            );
+            group.set_fullscreen_presentation(self.fullscreen_group == Some(group.id));
         }
     }
 
@@ -4132,7 +4067,6 @@ impl GroupRow {
             return RowPlan {
                 lane_of,
                 maximized_in,
-                covered_lane: None,
             };
         }
         if let Some(fs) = self.fullscreen_idx()
@@ -4153,7 +4087,6 @@ impl GroupRow {
         RowPlan {
             lane_of,
             maximized_in,
-            covered_lane: self.covered_lane(),
         }
     }
 
@@ -4183,22 +4116,13 @@ impl GroupRow {
         let mut style = own;
         style.flex_shrink = 0.0;
         let lane = plan.lane_of.get(i).copied().unwrap_or(0);
-        if plan.covered_lane == Some(lane) {
-            style.display = Display::None;
-        } else if let Some(max_i) = plan.maximized_in.get(lane).copied().flatten() {
+        if let Some(max_i) = plan.maximized_in.get(lane).copied().flatten() {
             if i == max_i {
                 // `maximized` already carries this grow style from
                 // `WindowGroup::own_style`; a fullscreen-promoted group
                 // doesn't, so set it here too.
                 style.size.width = Dimension::auto();
                 style = crate::widget::layout::filling(style, 1.0e6);
-                if self.promotion_keeps_gutter
-                    && self.fullscreen_group.is_some()
-                    && self.fullscreen_idx() == Some(i)
-                {
-                    style.margin.left =
-                        LengthPercentageAuto::length(f32_of_f64(self.pan_of_lane(lane).inset));
-                }
             } else {
                 style.display = Display::None;
             }
@@ -4238,8 +4162,7 @@ impl GroupRow {
         // A strip owning no part of the current fullscreen surface
         // collapses away entirely, so the promoted group in another strip
         // is the only thing painted.
-        let row_display = if self.hidden || (self.covered_output.is_some() && self.lanes.is_empty())
-        {
+        let row_display = if self.hidden {
             Display::None
         } else {
             Display::Flex
@@ -4617,6 +4540,7 @@ impl Widget for GroupRow {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         // A floating window is laid out at its own rect, never in the flow
         // of a lane or canvas: what the strip measures stays its own.
+        self.mark_floating();
         let floating = self.floating_flags();
         // Portable hosts learn their width here. Rebuild provisional widths
         // in the same bounded settlement, including a same-viewport root swap.
@@ -4959,11 +4883,7 @@ impl Widget for GroupRow {
             );
             // A window this draw left off screen keeps the picture it had,
             // which no longer follows it: shown as it last looked.
-            crate::window_pictures::unseen(
-                self.culled_groups
-                    .iter()
-                    .filter(|id| !self.shown_elsewhere.contains(id)),
-            );
+            crate::window_pictures::unseen(self.culled_groups.iter());
             crate::window_pictures::settled(self.groups.iter().map(|group| &group.id));
             self.draw_handles(
                 scene,
@@ -5089,7 +5009,12 @@ impl Widget for GroupRow {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
 
-        Some(AccessNode::new(Role::Group).with_name("Hosted applications"))
+        Some(
+            AccessNode::new(Role::Group).with_name(crate::i18n::widget_format(
+                "widget-hosted-applications",
+                &[],
+            )),
+        )
     }
 
     fn get_rect(&self) -> Rect {
@@ -5509,7 +5434,6 @@ impl GroupRow {
                     if i == max_i
                         || !in_run.get(i).copied().unwrap_or(false)
                         || self.floats.contains_key(&sibling.id)
-                        || self.shown_elsewhere.contains(&sibling.id)
                     {
                         continue;
                     }
@@ -5521,16 +5445,12 @@ impl GroupRow {
                         transform,
                         &rect.inflate(16.0, 16.0),
                     );
-                    sibling.draw(scene, transform, tr, theme, presence);
+                    sibling.draw_child(scene, transform, tr, theme, presence);
                     scene.pop_layer();
                 }
             }
-            if let Some(id) = self.groups.get(max_i).map(|g| g.id) {
-                if self.shown_elsewhere.contains(&id) {
-                    self.culled_groups.push(id);
-                } else {
-                    self.draw_group_plain(max_i, scene, transform, (tr, theme, presence));
-                }
+            if max_i < self.groups.len() {
+                self.draw_group_plain(max_i, scene, transform, (tr, theme, presence));
             }
             return;
         }
@@ -5561,7 +5481,7 @@ impl GroupRow {
             // flattens, bins and tiles everything encoded under the clip:
             // a strip of dozens of apps would size the GPU's bump buffers
             // for all of them.
-            if !self.paints_within_row(rect, dx) || self.shown_elsewhere.contains(&id) {
+            if !self.paints_within_row(rect, dx) {
                 self.culled_groups.push(id);
                 continue;
             }
@@ -5730,6 +5650,9 @@ impl GroupRow {
             && (!on_screen || (at_rest && drawing.current && covers(drawing.seen, shows)))
         {
             drawing.current &= only_moved;
+            // The carets and tags inside the drawing are where it shows it, which in canvas
+            // coordinates is where it drew them.
+            presence.note_notes_moved(&drawing.notes, Affine::IDENTITY);
             crate::scene_parts::part(scene, key, bounds, |scene| {
                 crate::scene_parts::append(
                     scene,
@@ -5773,7 +5696,7 @@ impl GroupRow {
         (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
     ) {
         if !crate::window_pictures::wanted(self.groups[i].id) {
-            self.groups[i].draw(scene, transform, tr, theme, presence);
+            self.groups[i].draw_child(scene, transform, tr, theme, presence);
             return;
         }
         let drawing = self.record_group(i, Scene::new(), transform, (tr, theme, presence));
@@ -5796,8 +5719,9 @@ impl GroupRow {
         let secrets = crate::secret_paint::SecretPaint::begin();
         let group = &mut self.groups[i];
         let (id, rect) = (group.id, group.get_rect());
+        let boundary = presence.notes_boundary();
         let ((), parts) = crate::scene_parts::record(&mut local, |local| {
-            group.draw(local, transform, tr, theme, presence);
+            group.draw_child(local, transform, tr, theme, presence);
         });
         GroupDrawing(ApartDrawing {
             id,
@@ -5807,6 +5731,7 @@ impl GroupRow {
             parts,
             shows_secret: secrets.finish(),
             seen: seen_across(presence, rect),
+            notes: presence.notes_since(boundary),
             current: true,
         })
     }
@@ -5870,6 +5795,9 @@ impl GroupRow {
             let dx = rect.x0 - drawing.rect.x0;
             let moved =
                 Affine::translate(transform * Point::new(dx, 0.0) - transform * Point::ORIGIN);
+            // A reader is told the carets the drawing painted where it shows them now, not where
+            // the pan it was drawn at had them.
+            presence.note_notes_moved(&drawing.notes, moved);
             crate::scene_parts::append(scene, &drawing.scene, drawing.parts.as_ref(), Some(moved));
             if drawing.shows_secret {
                 crate::secret_paint::note_secret_painted();
@@ -6014,7 +5942,7 @@ impl GroupRow {
             } else {
                 transform
             };
-            h.draw(scene, t, tr, theme, presence);
+            h.draw_child(scene, t, tr, theme, presence);
         }
     }
 
@@ -6156,7 +6084,10 @@ impl GroupRow {
                     .enumerate()
                     .position(|(i, group)| !self.layout_hides_group(i) && test(group))
             };
-            let owner = first_shown(|group| super::context_menu_area::focus_within(group))
+            // A field in a window's bar (a tab being named, its location edited) has what is
+            // typed before any window's app.
+            let owner = first_shown(WindowGroup::takes_typing)
+                .or_else(|| first_shown(|group| super::context_menu_area::focus_within(group)))
                 .or_else(|| first_shown(WindowGroup::focused));
             if let Some(i) = owner
                 && let Some(&node_id) = self.node_ids.get(i)
@@ -7481,6 +7412,7 @@ mod tests {
                 parts: None,
                 shows_secret: true,
                 seen: None,
+                notes: crate::presence::DrawnNotes::default(),
                 current: true,
             };
             secret.offer_picture();
@@ -10891,6 +10823,34 @@ mod tests {
         hidden_row_collapses_and_restores();
     }
 
+    /// The desktop's bar shown over the desk moves every window down by its height, but the window
+    /// covering its display keeps the whole display: the bar paints over it.
+    #[test]
+    fn the_bar_shown_over_the_desk_leaves_the_covering_window_where_it_stands() {
+        let (mut row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        row.set_fullscreen(Some(200), false);
+        row.set_top_overlay_inset(32.0);
+        let insets: Vec<f64> = row
+            .groups
+            .iter()
+            .map(WindowGroup::top_overlay_inset)
+            .collect();
+        assert_eq!(
+            insets,
+            [32.0, 0.0, 32.0],
+            "only the windows that do not cover the display move down"
+        );
+        // Given the display back, the window moves down under the bar like the rest.
+        row.set_fullscreen(None, false);
+        row.set_top_overlay_inset(32.0);
+        assert!(
+            row.groups
+                .iter()
+                .all(|group| (group.top_overlay_inset() - 32.0).abs() < f64::EPSILON),
+            "every window moves down once none covers the display"
+        );
+    }
+
     #[test]
     fn maximize_fades_siblings_on_the_fast_curve_and_keeps_velocity() {
         // Fresh curves are read in the instant they start: a descheduled
@@ -11175,6 +11135,9 @@ mod lane_tests;
 #[cfg(test)]
 #[path = "group_row_pacing_tests.rs"]
 mod pacing_tests;
+#[cfg(test)]
+#[path = "group_row_presence_tests.rs"]
+mod presence_tests;
 #[cfg(test)]
 #[path = "group_row_sharing_tests.rs"]
 mod sharing_tests;

@@ -26,6 +26,7 @@ use ui::tilo_actions::remote::{
 };
 use ui::tilo_actions::{ActionOutput, InvocationUpdate};
 use ui::tilo_resource::NonBlank;
+use ui::widget::BannerNotice;
 use ui::widget::Decorator;
 use ui::{Arrival, CatalogueCall, InvocationCall, LocalState, RemoteActions};
 
@@ -123,14 +124,6 @@ pub struct RunRecord {
     pub started: String,
 }
 
-/// The outcome of the last save or delete, for the person to read.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Notice {
-    Saved(String),
-    Deleted(String),
-    Failed(String),
-}
-
 /// The shortcut an agent answered with, or why it answered nothing.
 fn answer_of(answer: &Result<Option<ActionOutput>, String>) -> Result<Value, String> {
     answer
@@ -187,7 +180,8 @@ pub struct DoorState {
     pub catalogue: Arrival<ActionCatalog>,
     pub library: Arrival<Vec<Shortcut>>,
     pub runs: Vec<RunRecord>,
-    pub notice: Option<Notice>,
+    /// Above the items: what the last save or delete came to.
+    pub notice: Option<BannerNotice>,
     /// The last draft asked of the agent.
     pub drafted: Option<Drafting>,
     /// The repeated work worth a shortcut, when there is any.
@@ -195,6 +189,12 @@ pub struct DoorState {
     /// The comment the person is writing about the last run, and what came
     /// of the one before it.
     pub feedback: String,
+}
+
+/// A save or delete that did not happen, in the person's words: what came of
+/// it, and the reason under it.
+pub(crate) fn not_finished(reason: &str) -> BannerNotice {
+    BannerNotice::error(crate::locales::CATALOG.t("shortcuts-not-finished")).message(reason)
 }
 
 impl DoorState {
@@ -611,8 +611,8 @@ impl DoorCore {
             }
             (Purpose::Save { name }, result) => {
                 let notice = match result {
-                    Ok(_) => Notice::Saved(name.clone()),
-                    Err(reason) => Notice::Failed(reason.clone()),
+                    Ok(_) => BannerNotice::success(format!("Saved “{name}”")),
+                    Err(reason) => not_finished(reason),
                 };
                 self.state.update(|state| state.notice = Some(notice));
                 if result.is_ok() {
@@ -621,8 +621,11 @@ impl DoorCore {
             }
             (Purpose::Delete { name }, result) => {
                 let notice = match result {
-                    Ok(_) => Notice::Deleted(name.clone()),
-                    Err(reason) => Notice::Failed(reason.clone()),
+                    Ok(_) => BannerNotice::info(
+                        crate::locales::CATALOG
+                            .t_args("shortcuts-deleted", &[("name", name.clone().into())]),
+                    ),
+                    Err(reason) => not_finished(reason),
                 };
                 self.state.update(|state| state.notice = Some(notice));
                 if result.is_ok() {

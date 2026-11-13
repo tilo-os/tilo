@@ -1,26 +1,28 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "shortcuts.workbench"
 label = "Shortcuts"
 version = 4
 fields = [
-  { path = "drafts", type = "Collection<Draft>", stored = "collection" },
-  { path = "drafts.*.name", type = "String", label = true },
-  { path = "drafts.*.shortcut_id", type = "String" },
-  { path = "drafts.*.inputs", type = "Collection<ActionParam>", stored = "collection" },
-  { path = "drafts.*.steps", type = "Collection<StepNode>", stored = "collection" },
-  { path = "drafts.*.steps.*.parent", type = "Atom" },
-  { path = "drafts.*.steps.*.branch", type = "Atom" },
-  { path = "drafts.*.steps.*.id", type = "Atom" },
-  { path = "drafts.*.steps.*.head", type = "Option<Head>" },
-  { path = "drafts.*.steps.*.args", type = "BTreeMap<String, Binding>" },
-  { path = "drafts.*.steps.*.on_error", type = "StepPolicy" },
-  { path = "drafts.*.output", type = "Option<Binding>" },
-  { path = "drafts.*.triggers", type = "Vec<TriggerSpec>" },
-  { path = "drafts.*.step_timeout_secs", type = "Option<u64>" },
+  { path = "drafts", type = { collection = { named = "Draft" } }, stored = "collection" },
+  { path = "drafts.*.name", type = "text", label = true },
+  { path = "drafts.*.shortcut_id", type = "text" },
+  { path = "drafts.*.inputs", type = { collection = "any" }, stored = "collection" },
+  { path = "drafts.*.steps", type = { collection = { named = "StepNode" } }, stored = "collection" },
+  { path = "drafts.*.steps.*.parent", type = "text" },
+  { path = "drafts.*.steps.*.branch", type = "text" },
+  { path = "drafts.*.steps.*.id", type = "text" },
+  { path = "drafts.*.steps.*.head", type = { option = { named = "Head" } } },
+  { path = "drafts.*.steps.*.args", type = { map = "any" } },
+  { path = "drafts.*.steps.*.on_error", type = "any" },
+  { path = "drafts.*.output", type = { option = "any" } },
+  { path = "drafts.*.triggers", type = { list = "any" } },
+  { path = "drafts.*.step_timeout_secs", type = { option = "int" } },
   { path = "drafts.*.replaces_saved", type = "bool" },
-  { path = "ignored", type = "Vec<String>" },
+  { path = "ignored", type = { list = "text" } },
 ]
 
 [[resources.verbs]]
@@ -34,28 +36,28 @@ params = [
 id = "ignore-proposal"
 kind = "undoable"
 params = [
-  { name = "key", required = true, schema = { type = "string" } },
+  { name = "key", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "allow-proposal"
 kind = "undoable"
 params = [
-  { name = "key", required = true, schema = { type = "string" } },
+  { name = "key", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "new-draft"
 kind = "undoable"
 params = [
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "duplicate-draft"
 kind = "undoable"
 params = [
-  { name = "draft", required = true, schema = { type = "string" } },
+  { name = "draft", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -83,25 +85,25 @@ params = [
 id = "set-schedule"
 kind = "undoable"
 params = [
-  { name = "draft", required = true, schema = { type = "string" } },
-  { name = "enabled", required = true, schema = { type = "boolean" } },
-  { name = "hour", required = true, schema = { type = "integer" } },
-  { name = "minute", required = true, schema = { type = "integer" } },
+  { name = "draft", type = "text", required = true, schema = { type = "string" } },
+  { name = "enabled", type = "bool", required = true, schema = { type = "boolean" } },
+  { name = "hour", type = "int", required = true, schema = { type = "integer" } },
+  { name = "minute", type = "int", required = true, schema = { type = "integer" } },
 ]
 
 [[resources.verbs]]
 id = "discard"
 kind = "undoable"
 params = [
-  { name = "draft", required = true, schema = { type = "string" } },
+  { name = "draft", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "add-step"
 kind = "undoable"
 params = [
-  { name = "draft", required = true, schema = { type = "string" } },
-  { name = "block", required = true, schema = { type = "string" } },
+  { name = "draft", type = "text", required = true, schema = { type = "string" } },
+  { name = "block", type = "text", required = true, schema = { type = "string" } },
   { name = "step", required = true, schema = {} },
 ]
 
@@ -109,8 +111,8 @@ params = [
 id = "replace-step"
 kind = "undoable"
 params = [
-  { name = "draft", required = true, schema = { type = "string" } },
-  { name = "path", required = true, schema = { type = "string" } },
+  { name = "draft", type = "text", required = true, schema = { type = "string" } },
+  { name = "path", type = "text", required = true, schema = { type = "string" } },
   { name = "step", required = true, schema = {} },
 ]
 
@@ -118,70 +120,107 @@ params = [
 id = "bind-argument"
 kind = "undoable"
 params = [
-  { name = "draft", required = true, schema = { type = "string" } },
-  { name = "path", required = true, schema = { type = "string" } },
-  { name = "param", required = true, schema = { type = "string" } },
-  { name = "binding", required = true, schema = { type = "string" } },
+  { name = "draft", type = "text", required = true, schema = { type = "string" } },
+  { name = "path", type = "text", required = true, schema = { type = "string" } },
+  { name = "param", type = "text", required = true, schema = { type = "string" } },
+  { name = "binding", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "remove-step"
 kind = "undoable"
 params = [
-  { name = "draft", required = true, schema = { type = "string" } },
-  { name = "path", required = true, schema = { type = "string" } },
+  { name = "draft", type = "text", required = true, schema = { type = "string" } },
+  { name = "path", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "move-step"
 kind = "undoable"
 params = [
-  { name = "draft", required = true, schema = { type = "string" } },
-  { name = "path", required = true, schema = { type = "string" } },
-  { name = "earlier", required = true, schema = { type = "boolean" } },
+  { name = "draft", type = "text", required = true, schema = { type = "string" } },
+  { name = "path", type = "text", required = true, schema = { type = "string" } },
+  { name = "earlier", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]
 id = "set-step-policy"
 kind = "undoable"
 params = [
-  { name = "draft", required = true, schema = { type = "string" } },
-  { name = "path", required = true, schema = { type = "string" } },
-  { name = "policy", required = true, schema = { type = "string" } },
+  { name = "draft", type = "text", required = true, schema = { type = "string" } },
+  { name = "path", type = "text", required = true, schema = { type = "string" } },
+  { name = "policy", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "set-nested"
 kind = "undoable"
 params = [
-  { name = "draft", required = true, schema = { type = "string" } },
-  { name = "path", required = true, schema = { type = "string" } },
-  { name = "block", required = true, schema = { type = "string" } },
-  { name = "index", required = true, schema = { type = "integer" } },
+  { name = "draft", type = "text", required = true, schema = { type = "string" } },
+  { name = "path", type = "text", required = true, schema = { type = "string" } },
+  { name = "block", type = "text", required = true, schema = { type = "string" } },
+  { name = "index", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
 ]
 
 [[resources.verbs]]
 id = "set-output"
 kind = "undoable"
 params = [
-  { name = "draft", required = true, schema = { type = "string" } },
-  { name = "binding", required = true, schema = { type = "string" } },
+  { name = "draft", type = "text", required = true, schema = { type = "string" } },
+  { name = "binding", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "add-input"
 kind = "undoable"
 params = [
-  { name = "draft", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string" } },
-  { name = "kind", required = true, schema = { type = "string" } },
+  { name = "draft", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "kind", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "remove-input"
 kind = "undoable"
 params = [
-  { name = "draft", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "draft", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "Draft"
+fields = [
+  { name = "name", type = "text" },
+  { name = "shortcut_id", type = "text" },
+  { name = "inputs", type = { collection = "any" } },
+  { name = "steps", type = { collection = { named = "StepNode" } } },
+  { name = "output", type = { option = "any" } },
+  { name = "triggers", type = { list = "any" } },
+  { name = "step_timeout_secs", type = { option = "int" } },
+  { name = "replaces_saved", type = "bool" },
+]
+
+[[resources.types]]
+name = "Head"
+cases = [
+  { name = "invoke", fields = [{ name = "action", type = "any" }, { name = "resource", type = "any" }, { name = "appearance", type = { option = "any" } }] },
+  { name = "if", fields = [{ name = "cond", type = "any" }] },
+  { name = "for_each", fields = [{ name = "items", type = "any" }, { name = "item", type = "text" }] },
+  { name = "set_var", fields = [{ name = "name", type = "text" }, { name = "value", type = "any" }] },
+  { name = "ask", fields = [{ name = "param", type = "any" }] },
+  { name = "ai", fields = [{ name = "prompt", type = "text" }, { name = "input", type = { option = "any" } }, { name = "output", type = { option = "any" } }] },
+  { name = "task", fields = [{ name = "instruction", type = "text" }, { name = "allow", type = { list = "any" } }, { name = "output", type = { option = "any" } }] },
+  { name = "read", fields = [{ name = "app", type = "text" }, { name = "record", type = "text" }, { name = "joined", type = "bool" }] },
+]
+
+[[resources.types]]
+name = "StepNode"
+fields = [
+  { name = "parent", type = "text" },
+  { name = "branch", type = "text" },
+  { name = "id", type = "text" },
+  { name = "head", type = { option = { named = "Head" } } },
+  { name = "args", type = { map = "any" } },
+  { name = "on_error", type = "any" },
 ]
 

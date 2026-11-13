@@ -356,11 +356,13 @@ pub(super) fn bootstrap() -> DesktopTree {
     let mut ids = IdMinter::default();
     let workspace = WorkspaceSlot(ids.mint());
     let strip = StripId(ids.mint());
+    // A desk nobody has named keeps no name: the desk that shows it names the workspace and the
+    // strip it comes with in the language of whoever reads it.
     let home = {
-        let mut workspace = Workspace::new(workspace, "Home");
+        let mut workspace = Workspace::new(workspace, "");
         workspace.strips = vec![Strip {
             id: strip,
-            name: "Main".into(),
+            name: String::new(),
             window_groups: Vec::new(),
         }];
         workspace

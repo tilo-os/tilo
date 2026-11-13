@@ -1,13 +1,7 @@
 //! Every secret Network needs is asked with the window's password prompt
-//! (`crate::secrets`): a network's password to join it, a hidden network's
-//! name and password, an enterprise network's password, a saved network's
-//! new password, the hotspot's password and a `WireGuard` private key. The
-//! pane draws no password field of its own.
-//!
-//! One prompt is open at a time. Its answer starts the same change the
-//! effect starts with the secret given; while the change runs the prompt
-//! says so, and it closes when the change lands or says why it was refused
-//! and asks again.
+//! (`crate::secrets`): a network's password to join it, a hidden network's name
+//! and password, an enterprise network's password, a saved network's new
+//! password, the hotspot's password and a `WireGuard` private key.
 
 use ui::icons::Icon;
 use ui::widget::{FieldSpec, PromptOutcome, SecretAnswer, SecretKind, SecretPrompt};
@@ -15,33 +9,28 @@ use ui::widget::{FieldSpec, PromptOutcome, SecretAnswer, SecretKind, SecretPromp
 use super::{Begun, EnterpriseGiven, NetworkChange, NetworkModel};
 use crate::i18n::{t, t_args};
 
-/// What Network asks its prompts under.
 const KEY: &str = "network";
 
-/// What the open prompt is for.
 pub(super) enum Asked {
-    /// The password of `ssid`, in range, to join it.
     Join(String),
-    /// A network that hides its name: its name, and its password if any.
     Hidden,
-    /// The password of the enterprise network being set up.
     Enterprise(Box<EnterpriseGiven>),
-    /// A saved network's new password.
-    NewPassword { uuid: String, name: String },
+    NewPassword {
+        uuid: String,
+        name: String,
+    },
     /// The hotspot's password, kept until the hotspot starts.
     Hotspot,
     /// A `WireGuard` tunnel's private key, kept until it is created.
     PrivateKey,
 }
 
-/// The open prompt, and whether a change it started is running.
 pub(super) struct Asking {
     pub(super) what: Asked,
     busy: bool,
 }
 
 impl NetworkModel {
-    /// Ask with `prompt` for `what`.
     fn ask(&mut self, what: Asked, prompt: SecretPrompt) {
         self.reach
             .secrets
@@ -50,7 +39,6 @@ impl NetworkModel {
         self.changed = true;
     }
 
-    /// Whether the prompt asks for the password of `ssid`.
     pub(super) fn asking_to_join(&self, ssid: &str) -> bool {
         self.asking
             .as_ref()
@@ -72,7 +60,6 @@ impl NetworkModel {
         self.ask(Asked::Join(ssid.to_owned()), prompt);
     }
 
-    /// Ask for a hidden network's name and password.
     pub(super) fn ask_hidden(&mut self) {
         let prompt = SecretPrompt::with_fields(vec![
             FieldSpec::text(t("net-ssid")),
@@ -85,7 +72,6 @@ impl NetworkModel {
         self.ask(Asked::Hidden, prompt);
     }
 
-    /// Ask for the password of the enterprise network `given` sets up.
     pub(super) fn ask_enterprise(&mut self, given: EnterpriseGiven, ssid: &str, identity: &str) {
         let prompt = SecretPrompt::new(SecretKind::Secret)
             .with_icon(Icon::Landmark)
@@ -95,7 +81,6 @@ impl NetworkModel {
         self.ask(Asked::Enterprise(Box::new(given)), prompt);
     }
 
-    /// Ask for a saved network's new password.
     pub(super) fn ask_new_password(&mut self, uuid: String, name: String) {
         let prompt = SecretPrompt::new(SecretKind::Secret)
             .with_icon(Icon::Wifi)
@@ -108,7 +93,6 @@ impl NetworkModel {
         self.ask(Asked::NewPassword { uuid, name }, prompt);
     }
 
-    /// Ask for the hotspot's password.
     pub(super) fn ask_hotspot_password(&mut self) {
         let prompt = SecretPrompt::new(SecretKind::Secret)
             .with_icon(Icon::Wifi)
@@ -118,7 +102,6 @@ impl NetworkModel {
         self.ask(Asked::Hotspot, prompt);
     }
 
-    /// Ask for a `WireGuard` tunnel's private key.
     pub(super) fn ask_private_key(&mut self) {
         let prompt = SecretPrompt::new(SecretKind::Secret)
             .with_icon(Icon::Shield)
@@ -129,7 +112,6 @@ impl NetworkModel {
         self.ask(Asked::PrivateKey, prompt);
     }
 
-    /// Close the prompt, whatever it asked.
     pub(super) fn close_prompt(&mut self) {
         if self.asking.take().is_some() {
             self.reach.secrets.close(KEY);
@@ -157,7 +139,6 @@ impl NetworkModel {
         }
     }
 
-    /// Take in what the person answered, and start what it asks for.
     pub(super) fn poll_prompt(&mut self) {
         let Some(outcome) = self.reach.secrets.take_answer(KEY) else {
             return;
@@ -176,7 +157,6 @@ impl NetworkModel {
         }
     }
 
-    /// Start what the prompt asked for with `answer`.
     fn answered(&mut self, answer: SecretAnswer) -> Result<Option<Begun>, String> {
         let Some(asking) = self.asking.as_mut() else {
             return Ok(None);
@@ -246,7 +226,6 @@ impl NetworkModel {
     }
 }
 
-/// Keep `secret` in `buffer`, zeroing what it held.
 fn keep(buffer: &std::sync::Mutex<String>, secret: &str) {
     if let Ok(mut held) = buffer.lock() {
         zeroize::Zeroize::zeroize(&mut *held);

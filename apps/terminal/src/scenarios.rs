@@ -1,13 +1,9 @@
-//! Screenshot scenarios: the output a scenario's process printed, and the
-//! view state shown over it. A capture runs no process, so every scene is the
-//! same canned VT byte stream on every machine, parsed by the production
-//! emulator exactly as PTY output would be.
+//! Screenshot scenarios: the output a scenario's process printed, and the view state shown over it.
 
 use std::fmt::Write as _;
 
 use crate::target::{EnvironmentSummary, SessionTarget};
 
-/// Every scenario `--shots --scenario` knows.
 pub(crate) const SCENARIOS: &[&str] = &[
     "shell",
     "shell-select",
@@ -24,8 +20,6 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "held",
 ];
 
-/// Where the target scenarios' session runs, and the environments the
-/// picker lists: shown before the output, so the header is laid out with it.
 pub(crate) fn target(name: &str) -> Option<(SessionTarget, Vec<EnvironmentSummary>)> {
     match name {
         "host" => Some((SessionTarget::Host, environments())),
@@ -34,9 +28,6 @@ pub(crate) fn target(name: &str) -> Option<(SessionTarget, Vec<EnvironmentSummar
     }
 }
 
-/// What a hosted workspace's shell printed for a command its host holds until the person adds a
-/// card: the command's start, the host's hold with its typed refusal, and what ush says of it, the
-/// marks keyed with the session's `key` as ush writes them.
 pub(crate) fn held(key: &str) -> Vec<u8> {
     use base64::Engine as _;
     use ui::tilo_actions::remote::host_account::{NextStep, NextStepKind, Reason, Refusal};
@@ -66,7 +57,6 @@ pub(crate) fn held(key: &str) -> Vec<u8> {
     .into_bytes()
 }
 
-/// What the scenario's process printed.
 pub(crate) fn output(name: &str) -> Vec<u8> {
     match name {
         "shell" | "shell-select" => shell(),
@@ -77,8 +67,6 @@ pub(crate) fn output(name: &str) -> Vec<u8> {
                 "\x1b[38;5;250m{i:>4}\x1b[0m  log entry {i:03}: the quick brown fox jumps over the lazy dog"
             )
         }),
-        // A terminal LF preserves the current column; the shell's CRLF output
-        // models a readable transcript.
         "find" => numbered_log(|i| format!("{i:>4}  build step {i:03}: compiling terminal search")),
         "host" => b"you@laptop:~$ podman ps\r\nCONTAINER ID  IMAGE  COMMAND  CREATED  STATUS\r\nyou@laptop:~$ "
             .to_vec(),
@@ -89,8 +77,6 @@ pub(crate) fn output(name: &str) -> Vec<u8> {
     }
 }
 
-/// A short session at a login shell's prompt: a command, its output, and a
-/// green `done`, so the shot shows prompt colours and SGR-coloured output.
 fn shell() -> Vec<u8> {
     let prompt = "\x1b[1;32myou@tilo\x1b[0m:\x1b[1;34m~\x1b[0m$ ";
     let mut s = String::new();
@@ -107,8 +93,6 @@ fn shell() -> Vec<u8> {
     s.into_bytes()
 }
 
-/// A palette of SGR effects: 16 ANSI colors, a 256-cube strip, a truecolor
-/// gradient, and the style bits.
 fn colors() -> Vec<u8> {
     let mut s = String::new();
     s.push_str("\x1b[1mTilo terminal — SGR palette\x1b[0m\r\n\r\n");
@@ -140,7 +124,6 @@ fn colors() -> Vec<u8> {
     s.into_bytes()
 }
 
-/// A full-screen alternate-screen redraw resembling a text editor.
 fn tui() -> Vec<u8> {
     let mut s = String::new();
     s.push_str("\x1b[?1049h\x1b[2J\x1b[H");
@@ -160,7 +143,6 @@ fn tui() -> Vec<u8> {
         "}",
     ];
     for (i, line) in lines.iter().enumerate() {
-        // Line-number gutter in a dim color, then source text.
         let _ = write!(
             s,
             "\x1b[{};1H\x1b[38;5;240m{:>3} \x1b[0m{}",
@@ -169,13 +151,11 @@ fn tui() -> Vec<u8> {
             line
         );
     }
-    // A status line near the bottom in reverse video.
     s.push_str("\x1b[23;1H\x1b[7m NORMAL                                              3,17          Top \x1b[0m");
     s.push_str("\x1b[24;1H:wq");
     s.into_bytes()
 }
 
-/// Eighty numbered lines, enough to scroll back through.
 fn numbered_log(line: impl Fn(usize) -> String) -> Vec<u8> {
     let mut s = String::new();
     for i in 0..80 {
@@ -185,7 +165,6 @@ fn numbered_log(line: impl Fn(usize) -> String) -> Vec<u8> {
     s.into_bytes()
 }
 
-/// The environments the target shots show.
 fn environments() -> Vec<EnvironmentSummary> {
     vec![
         EnvironmentSummary {

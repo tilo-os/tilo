@@ -1,7 +1,6 @@
-//! Language packs: one locale's catalogues, a signed package installed on
-//! the path apps and runtimes take, into the person's language packs where
-//! the runtime reads them. A new version replaces the locale's catalogues
-//! whole, and a pack carries nothing but its locale's catalogues.
+//! Language packs: one locale's catalogues as a signed package, installed like any other into where
+//! the runtime reads language packs. A new version replaces the locale's catalogues whole, and a
+//! pack carries nothing but them.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -121,9 +120,7 @@ fn a_language_pack_installs_where_the_runtime_reads_it_and_updates_whole() {
         "settings-title = Einstellungen\n"
     );
 
-    // The next version comes by the update path every package takes, and
-    // replaces the catalogues whole: one it no longer carries is gone. The
-    // same version again is already current.
+    // The next version replaces the catalogues whole: one it no longer carries is gone.
     let second = pack_of(
         home.path(),
         &key,
@@ -171,8 +168,7 @@ fn a_language_pack_installs_where_the_runtime_reads_it_and_updates_whole() {
     );
 }
 
-/// A pack is its locale's catalogues and nothing else: one carrying another
-/// locale or a program does not pack.
+/// A pack carries its locale's catalogues and nothing else.
 #[test]
 fn a_language_pack_carries_only_its_locales_catalogues() {
     let home = tempfile::tempdir().unwrap();

@@ -119,7 +119,6 @@ impl WindowApp {
         match tile {
             TileContent::Foreign { app_id, .. }
             | TileContent::LocalApp { app_id, .. }
-            | TileContent::PeerWindow { app_id, .. }
             | TileContent::HostedWindow { app_id, .. } => Self {
                 key: format!("app:{app_id}"),
                 kind,

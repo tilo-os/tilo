@@ -463,7 +463,6 @@ mod registry {
             );
         }
 
-        /// The owner approves the key's application, on the server.
         pub fn approve(&self, public_key: &str) {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

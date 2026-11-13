@@ -208,25 +208,10 @@ impl WorkspaceActivityPane {
         key: &str,
         evidence: Option<&(ui::HistoryResourceTarget, SystemTime)>,
     ) -> String {
-        if self.scope != WorkspaceScope::ThisWorkspace || evidence.is_none() {
-            return self.morning_source_label(evidence);
-        }
-        let payload = self
-            .chosen_morning_sources()
-            .iter()
-            .find(|source| source.key() == key)
-            .and_then(|source| self.host.morning_payload(&self.workspace, source));
-        if let (Some(_), Some((target, time))) = (payload, evidence) {
-            t_args(
-                "activity-morning-recorded",
-                &[
-                    ("source", morning_source_name(target).into()),
-                    ("time", format_relative_time(*time, self.now()).into()),
-                ],
-            )
-        } else {
-            self.morning_source_label(evidence)
-        }
+        let _ = key;
+        // The label names the source and when it last did something, whether or not this device
+        // holds a summary of it: what the summary says is the payload's own text.
+        self.morning_source_label(evidence)
     }
     pub(super) fn morning_payload_text(&self, key: &str) -> String {
         let Some(source) = self

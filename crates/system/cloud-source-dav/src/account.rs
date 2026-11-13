@@ -1,9 +1,4 @@
 //! From a Settings account to a [`DavConfig`].
-//!
-//! Settings stores `WebDAV` and Nextcloud accounts as opaque JSON
-//! (`server_url`, `username`, Nextcloud's `use_files`); the password lives
-//! in the vault. This is the one place that JSON becomes a mount
-//! configuration, so Files, the daemon and the tests agree on it.
 
 use tilo_dav::Url;
 
@@ -15,7 +10,6 @@ pub const NEXTCLOUD_TYPE: &str = "nextcloud";
 /// Why an account cannot be mounted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccountError {
-    /// Not a file account (another type, or Nextcloud with files off).
     NotFiles,
     /// The stored configuration is unusable (no URL, not HTTPS, userinfo
     /// or a query in the URL, no Nextcloud user).

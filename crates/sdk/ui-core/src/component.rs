@@ -355,11 +355,42 @@ impl PropType for Icon {
     }
 }
 
-/// A participant, as a component shows one: their identity and what the workspace calls them.
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+/// A participant, as a component shows one: their identity, what the workspace calls them, and the
+/// presence hue they wear.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Person {
     pub identity: String,
     pub name: String,
+    /// The hue their chip and avatar wear. A value names an identity and a name only, so a person
+    /// read from one wears the hue their identity derives ([`PresenceHue::of_identity`]); one a
+    /// host knows more of is given the hue the member list announced.
+    pub hue: crate::tokens::PresenceHue,
+}
+
+impl Default for Person {
+    fn default() -> Self {
+        Self {
+            identity: String::new(),
+            name: String::new(),
+            hue: crate::tokens::PresenceHue::from_slot(0),
+        }
+    }
+}
+
+impl PartialOrd for Person {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Person {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.identity.as_str(), self.name.as_str(), self.hue.slot()).cmp(&(
+            other.identity.as_str(),
+            other.name.as_str(),
+            other.hue.slot(),
+        ))
+    }
 }
 
 impl PropType for Person {
@@ -370,6 +401,7 @@ impl PropType for Person {
     fn from_value(value: &Value) -> Result<Self, String> {
         match value {
             Value::Principal { identity, name } => Ok(Self {
+                hue: crate::tokens::PresenceHue::of_identity(identity),
                 identity: identity.clone(),
                 name: name.clone(),
             }),
@@ -447,6 +479,33 @@ impl PropType for ResourceId {
     fn from_value(value: &Value) -> Result<Self, String> {
         match value {
             Value::Resource(id) => Ok(Self(id.clone())),
+            other => Err(wrong(&Self::ty(), other)),
+        }
+    }
+}
+
+/// A record a view names, as a component offers it: what refers to it, and how it reads for the
+/// person now. What the component writes of it names the record, never the text, so a record
+/// renamed later reads by its new title wherever it was linked.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Link {
+    /// What refers to it: the catalogue's reference, the value a `mention` mark carries.
+    pub reference: String,
+    /// How it reads for the person now: its title, or the phrase for one they cannot read.
+    pub title: String,
+}
+
+impl PropType for Link {
+    fn ty() -> Type {
+        Type::Link
+    }
+
+    fn from_value(value: &Value) -> Result<Self, String> {
+        match value {
+            Value::Link { reference, title } => Ok(Self {
+                reference: reference.clone(),
+                title: title.clone(),
+            }),
             other => Err(wrong(&Self::ty(), other)),
         }
     }
@@ -911,6 +970,11 @@ pub trait Source {
         Vec::new()
     }
 
+    /// Whether the slot `slot` holds anything: a view or a component, built or not.
+    fn holds(&mut self, slot: &str) -> bool {
+        !self.slot_kinds(slot).is_empty()
+    }
+
     /// The rows of the slot `slot` when its host renders them only as they are shown (a loop
     /// over a collection of any length): the widget reads them from there rather than from
     /// [`Self::components`].
@@ -939,7 +1003,14 @@ pub trait RowSource {
     fn index_of(&self, key: &str) -> Option<usize>;
 
     /// Render the rows of `range` not rendered yet, and forget those rendered outside it.
-    fn request_range(&mut self, range: std::ops::Range<usize>);
+    /// Render the rows of `range` as they are shown, and the document of the row `open` — the
+    /// row standing open into its item where it stands, when one does.
+    fn request_range(&mut self, range: std::ops::Range<usize>, open: Option<String>);
+
+    /// Whether the row `key` is rendered now, its content there to read: a row named but not
+    /// rendered yet is on its way, and the list shows a placeholder in its slot until it
+    /// arrives ([`crate::widget::virtual_list::ListModel::row_state`]).
+    fn rendered(&self, key: &str) -> bool;
 
     /// Read the rendered row `key` as an instance of a component: `Ok(false)` when it is not
     /// rendered.
@@ -951,6 +1022,21 @@ pub trait RowSource {
         key: &str,
         read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
     ) -> Result<bool, String>;
+
+    /// Read the rendered row `key` for its own props and what its slots hold, building none of
+    /// its views: what a list reads of a row beside building it (its group, its place in a
+    /// tree, the item it shows), which it asks for every row it holds on every pass. `Ok(false)`
+    /// when it is not rendered.
+    ///
+    /// # Errors
+    /// What `read` returned.
+    fn read_props(
+        &mut self,
+        key: &str,
+        read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        self.read(key, read)
+    }
 
     /// The key of the row showing the resource `id`, rendered or not.
     fn key_presenting(&self, id: &str) -> Option<String>;
@@ -1105,7 +1191,13 @@ pub fn entry<W: Described>() -> Entry {
     fn build<W: Described>(source: &mut dyn Source) -> Result<Element, Error> {
         let key = source.key().to_owned();
         let props = W::Props::from_source(source)?;
-        Ok(Box::new(W::from_props(&key, props)))
+        let mut widget = W::from_props(&key, props);
+        // A widget just built owes the host no structure change: its props are read before the
+        // host builds its layout, so the build realises what they set. A flag left over from
+        // building it would rebuild the host's whole layout tree — a row's document opening
+        // into its list, a note opened beside its tree, mounted where it stands.
+        widget.take_structure_dirty();
+        Ok(Box::new(widget))
     }
     fn update<W: Described>(widget: &mut Element, source: &mut dyn Source) -> Result<bool, Error> {
         let Some(widget) = widget.as_any_mut().and_then(|any| any.downcast_mut::<W>()) else {

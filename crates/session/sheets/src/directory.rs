@@ -37,7 +37,7 @@ const FACES_SHOWN: usize = 4;
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct WorkspaceDirectory {}
 
-#[resource(kind = "workspace-directory.listing", label = "Public workspaces")]
+#[resource(kind = "workspace-directory.listing")]
 impl WorkspaceDirectory {}
 
 /// What the sheet asks of the shell.
@@ -214,6 +214,25 @@ impl DirectorySeat {
     pub fn take_asked(&self) -> Vec<DirectoryEffect> {
         std::mem::take(&mut *self.asked.borrow_mut())
     }
+
+    /// The sheet as a host that draws it itself shows it: what it lists now, with the search kept
+    /// in the seat and every press asked of it. Built again when the listing or
+    /// [`Self::query_revision`] moved.
+    pub fn sheet(&self) -> Element {
+        let query = self
+            .query
+            .borrow_mut()
+            .get_or_insert_with(|| LocalState::new(String::new()))
+            .clone();
+        let asked = Rc::clone(&self.asked);
+        let ask: Ask = Rc::new(move |effect| asked.borrow_mut().push(effect));
+        sheet(&self.directory(), &query, &ask, None)
+    }
+
+    /// How far the search moved since the seat was made.
+    pub fn query_revision(&self) -> u64 {
+        self.query.borrow().as_ref().map_or(0, LocalState::revision)
+    }
 }
 
 /// How the sheet asks its host for something: an effect the person pressed,
@@ -365,11 +384,22 @@ fn sample_directory() -> Directory {
         about: about.to_owned(),
         host: "tilo.sh".to_owned(),
         tag: None,
-        activity: format!("{here} here now"),
+        activity: crate::t_args(
+            "sheets-room-activity",
+            &[("people", ui::i18n::ArgValue::Text(here.to_string()))],
+        ),
         members: (here > 0).then(|| format!("{} members", here.saturating_mul(4))),
         joins_as: "You join as an editor".to_owned(),
         here: (0..here.min(FACES_SHOWN))
-            .map(|n| (format!("Person {n}"), format!("person-{n}")))
+            .map(|n| {
+                (
+                    crate::t_args(
+                        "sheets-room-person",
+                        &[("number", ui::i18n::ArgValue::Text(n.to_string()))],
+                    ),
+                    format!("person-{n}"),
+                )
+            })
             .collect(),
         here_count: here,
         action: ListingAction::Join,

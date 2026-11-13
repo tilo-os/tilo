@@ -67,6 +67,47 @@ pub fn device_certificate(
     Ok(certificate)
 }
 
+/// What asking this device for the person's certificate answers while its identity settles.
+#[derive(Debug)]
+pub enum Readiness {
+    /// The identity registry names the person, and this device holds their certificate here.
+    Ready(tilo_user_identity::DeviceCert),
+    /// This device holds an identity the registry has not named the person through yet: a login
+    /// reads the identity directory as its files land, and the answer is a moment away.
+    Pending,
+    /// Nothing names this device's identity, so no wait changes the answer `why` says.
+    Refused(String),
+}
+
+/// [`device_certificate`], asked the way the seat asks it before it acts: whether this device's
+/// identity names the person yet.
+///
+/// A session started by a login reads its identity directory while that login is still writing
+/// it, so the first action of a person can arrive before the registry holds their record. That
+/// moment is [`Readiness::Pending`], never a refusal: the person's own authority is not in
+/// question. A device that holds no identity at all is [`Readiness::Refused`] instead, because
+/// nothing is on its way there.
+#[must_use]
+pub fn device_readiness(workspace: &str, person: &str) -> Readiness {
+    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+    if tilo_user_identity::persist::load_device_key(&paths).is_err()
+        || tilo_user_identity::persist::read_device_cert(&paths.device_cert).is_err()
+    {
+        return Readiness::Refused("this device holds no identity to sign in with".to_owned());
+    }
+    // What the registry names is read before the certificate is decided against it: the store
+    // hands a decision the registry its worker last reconciled, so a read that lands before that
+    // worker has the person's record is a wait, not a refusal — and the answer after it is the one
+    // that counts.
+    let named = tilo_identity_host::registry::identity_for_workspace(workspace)
+        .is_ok_and(|named| named.is_some());
+    match device_certificate(workspace, person) {
+        Ok(certificate) => Readiness::Ready(certificate),
+        Err(why) if named => Readiness::Refused(why),
+        Err(_) => Readiness::Pending,
+    }
+}
+
 /// The seat a session's own actions are taken under: an action the person at
 /// this device starts, without an app or a peer asking for it.
 ///
@@ -85,6 +126,35 @@ impl tilo_action_broker::services::LocalPersonServices for NativeLocalPerson {
         person: &str,
     ) -> Result<tilo_user_identity::DeviceCert, String> {
         device_certificate(workspace, person)
+    }
+
+    /// Waits while the identity registry has not named the person yet, and answers as
+    /// [`Self::certificate`] once it does.
+    fn certificate_when_named(
+        &self,
+        workspace: &str,
+        person: &str,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        let mut waiting = false;
+        loop {
+            match device_readiness(workspace, person) {
+                Readiness::Ready(certificate) => return Ok(certificate),
+                Readiness::Refused(why) => return Err(why),
+                Readiness::Pending => {
+                    if !waiting {
+                        waiting = true;
+                        tracing::info!(
+                            %workspace,
+                            "the identity registry has not named this device's person yet; the \
+                             action waits for it"
+                        );
+                    }
+                    // Woken by the identity landing, never by a clock: a wait nothing
+                    // announces is a wait nothing ends, so there is no timeout either.
+                    tilo_identity_host::policy_change::wait_for_a_change(None);
+                }
+            }
+        }
     }
 }
 
@@ -151,6 +221,7 @@ impl CertificateAuthority for NativeCertificates {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_action_broker::services::LocalPersonServices as _;
 
     /// The workspace the device certificates are asked about.
     const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
@@ -178,23 +249,135 @@ mod tests {
         certificate
     }
 
-    /// This test's login, with no identity provisioned in it: the store's
-    /// refusals are its own, never the developer's identity.
-    struct Unprovisioned {
+    /// This test's login: its environment, the identity directory a login writes, and this
+    /// device's certificate when an identity is provisioned in it.
+    struct Login {
+        identity_dir: std::path::PathBuf,
+        certificate: Option<tilo_user_identity::DeviceCert>,
         _env: tilo_test_env::ScopedEnv,
         _root: tempfile::TempDir,
     }
 
-    fn unprovisioned() -> Unprovisioned {
+    fn login(provision: bool) -> Login {
         let root = tempfile::tempdir().expect("a directory for the login");
+        let config = root.path().join("config");
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", root.path().join("config"))
+        env.set("XDG_CONFIG_HOME", &config)
             .set("TILO_IDENTITY_ROOT", root.path().join("system"))
             .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
-        Unprovisioned {
+        let identity_dir = config.join("tilo/identity");
+        let system = tilo_user_identity::IdentityPaths::under(root.path().join("system"));
+        let certificate = provision.then(|| {
+            tilo_identity_host::provisioning::ensure_collaboration_identity(
+                &identity_dir,
+                &system,
+                tilo_identity_host::provisioning::IdentityStorage::Files,
+            )
+            .expect("an identity for the login");
+            tilo_user_identity::persist::read_device_cert(&system.device_cert)
+                .expect("the device certificate")
+        });
+        Login {
+            identity_dir,
+            certificate,
             _env: env,
             _root: root,
         }
+    }
+
+    impl Login {
+        /// The person this login's identity names.
+        fn person(&self) -> String {
+            tilo_action_broker::collab_app_broker::principal_id_for_root(
+                self.certificate
+                    .as_ref()
+                    .expect("a provisioned login")
+                    .user_public_key,
+            )
+        }
+
+        /// The files the registry names the person through, as a login writes them: every identity
+        /// record the directory holds and the index of them.
+        fn naming(&self) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+            let mut files = Vec::new();
+            for entry in std::fs::read_dir(&self.identity_dir).expect("the identity directory") {
+                let path = entry.expect("an entry of the identity directory").path();
+                if path
+                    .extension()
+                    .is_some_and(|extension| extension == "json")
+                {
+                    files.push((path.clone(), std::fs::read(&path).expect("a file it wrote")));
+                }
+            }
+            assert!(!files.is_empty(), "the login holds a record and an index");
+            files.sort();
+            files
+        }
+    }
+
+    /// An action asked in the first moment of a login waits for the identity the login is still
+    /// writing, and is answered once the registry names its person: never refused, and never on a
+    /// clock of its own.
+    #[test]
+    fn the_first_action_of_a_login_waits_until_the_registry_names_its_person() {
+        let login = login(true);
+        let person = login.person();
+        assert!(
+            matches!(device_readiness(WORKSPACE, &person), Readiness::Ready(_)),
+            "the provisioned login names its person"
+        );
+        let naming = login.naming();
+        for (path, _) in &naming {
+            std::fs::remove_file(path).expect("the login has not written it yet");
+        }
+        assert!(
+            matches!(device_readiness(WORKSPACE, &person), Readiness::Pending),
+            "a device holding an identity the registry has not named is a moment away"
+        );
+        let waiting = std::thread::spawn(move || {
+            NativeLocalPerson
+                .certificate_when_named(WORKSPACE, &person)
+                .expect("the identity names its person")
+        });
+        // Nothing has named the person yet: the wait is not over, and nothing about it is timed.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            !waiting.is_finished(),
+            "an action does not answer before the identity names its person"
+        );
+        for (path, bytes) in naming {
+            // A record the login writes is private from its creation: the identity store refuses
+            // one the current user does not own at mode 0600.
+            let mut options = std::fs::OpenOptions::new();
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            let mut file = options
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .expect("the login writes the identity");
+            std::io::Write::write_all(&mut file, &bytes).expect("the record is written");
+        }
+        tilo_identity_host::policy_change::announce();
+        let certificate = waiting.join().expect("the waiting action answers");
+        let held = login.certificate.as_ref().expect("a provisioned login");
+        assert_eq!(
+            certificate.device_public_key, held.device_public_key,
+            "the action is taken under this device's certificate"
+        );
+    }
+
+    /// A device that holds no identity at all answers at once: nothing is on its way, and no
+    /// action waits on it.
+    #[test]
+    fn a_device_with_no_identity_answers_without_waiting() {
+        let _login = login(false);
+        let answered = NativeLocalPerson
+            .certificate_when_named(WORKSPACE, "nobody")
+            .expect_err("no identity names anybody");
+        assert!(
+            answered.contains("no identity to sign in with"),
+            "{answered}"
+        );
     }
 
     #[test]
@@ -264,7 +447,7 @@ mod tests {
     /// identity, so nothing is certified.
     #[test]
     fn a_device_the_identity_store_does_not_certify_acts_for_nobody() {
-        let _login = unprovisioned();
+        let _login = login(false);
         let authority = NativeCertificates::default();
         let refused = authority
             .authorize_join(workspace(), &certificate(81, 82))

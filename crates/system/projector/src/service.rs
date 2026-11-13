@@ -1,11 +1,4 @@
 //! `tilo-projector serve`: the control socket and the one session it runs.
-//!
-//! Each client connection is served on its own thread, in request order, and
-//! has a writer thread that delivers its replies and every session event. The
-//! service holds at most one session: a `Connect` stops the running one
-//! first, and when the last client disconnects (the shell exited or crashed)
-//! the session is stopped too, so nothing keeps streaming the desktop
-//! unsupervised.
 
 use std::io;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -31,7 +24,6 @@ use tilo_lock::MutexRecover as _;
 /// connection for an unbounded time.
 const MAX_DISCOVERY: Duration = Duration::from_secs(30);
 
-/// Every connected client and the channel its writer thread drains.
 #[derive(Default)]
 struct Clients {
     next: AtomicU64,
@@ -56,7 +48,6 @@ impl Clients {
         (id, tx, rx)
     }
 
-    /// Removes a client and returns how many remain.
     fn leave(&self, id: u64) -> usize {
         let mut senders = self.lock();
         senders.retain(|(client, _)| *client != id);
@@ -73,10 +64,8 @@ struct Session {
     thread: JoinHandle<()>,
 }
 
-/// How long a session may take to become ready and to stop.
 #[derive(Clone, Copy)]
 struct Bounds {
-    /// Overrides [`session::ready_timeout`] for every protocol.
     ready: Option<Duration>,
     stop: Duration,
 }
@@ -88,7 +77,6 @@ impl Bounds {
     }
 }
 
-/// The control service: its clients and the session it supervises.
 pub(crate) struct Service {
     paths: SessionPaths,
     helpers: Helpers,
@@ -164,7 +152,6 @@ impl Service {
         if self.clients.leave(id) == 0 {
             let _ = self.stop_session();
         }
-        // The writer ends once the last sender of its channel is gone.
         drop(reply);
         if let Ok(writer_thread) = writer_thread {
             let _ = writer_thread.join();
@@ -287,7 +274,6 @@ fn stop(slot: &mut Option<Session>, within: Duration) -> Result<(), ProjectorErr
         let _ = session.thread.join();
         Ok(())
     } else {
-        // Keep the handle: a later stop can still reap it.
         *slot = Some(session);
         Err(ProjectorError::Timeout(
             "projection session did not stop cleanly",

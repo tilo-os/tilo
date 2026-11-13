@@ -1,5 +1,5 @@
-//! The Windows support card on the Updates pane: the story the pane keeps
-//! for it, told in the card the person sees.
+//! The Windows support card on the Updates pane: the story the pane keeps for
+//! it, told in the card the person sees.
 
 use std::sync::Arc;
 
@@ -87,7 +87,6 @@ impl UpdatesModel {
         }
     }
 
-    /// (label, control id, action) of the buttons the card offers.
     pub(super) fn windows_buttons(&self) -> Vec<(String, &'static str, WindowsSupportAction)> {
         if self.windows_pending.is_some() {
             return Vec::new();

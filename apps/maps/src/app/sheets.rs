@@ -8,9 +8,6 @@ use super::{
 };
 
 impl MapsApp {
-    /// The Directions view: the From/To fields, the travel mode, the
-    /// departure time, then the route (or, in Transit, the departures).
-    /// Returns the y below the content.
     #[allow(
         clippy::too_many_lines,
         reason = "a single linear draw pass over this panel's fixed regions; splitting it would only \
@@ -27,7 +24,6 @@ impl MapsApp {
     ) -> f64 {
         let sp = &theme.tokens.spacing;
         let (s2, s3) = (f64::from(sp.s2), f64::from(sp.s3));
-        // Controls sit an `s2` in from the content edge, the rows' own inset.
         let inner = Rect::new(content.x0 + s2, content.y0, content.x1 - s2, content.y1);
         let x = inner.x0;
         let right = inner.x1;
@@ -47,8 +43,6 @@ impl MapsApp {
         let loc = Rect::new(right - field_h, frame.top, right, frame.top + field_h);
         y = self.endpoints.draw_fields(scene, t, tr, theme, &frame);
 
-        // Origin actions belong beside From; the swap action belongs beside
-        // To. This leaves room for the itinerary instead of a third field row.
         let small_h = ButtonFace::height(ControlSize::Small, theme);
         let (loc_label, loc_hit) = if self.locating {
             (failure::t("maps-locating"), None)
@@ -64,7 +58,6 @@ impl MapsApp {
             loc_hit,
         );
 
-        // Travel mode: the primary choice of the view.
         let seg_h = SegmentedFace::height(ControlSize::Regular, theme);
         let seg_w = (right - x) / TravelMode::ALL.len() as f64;
         let segs: Vec<Rect> = (0..TravelMode::ALL.len())
@@ -92,10 +85,8 @@ impl MapsApp {
         }
         y += seg_h + s3;
 
-        // Departure time: a quiet refinement under the mode.
         y = self.draw_time_picker(scene, t, tr, theme, inner, y);
 
-        // Transit plans a public-transport journey instead of a road route.
         if self.model.mode.is_transit() {
             return self.draw_departures(scene, t, tr, theme, content, y);
         }
@@ -114,14 +105,11 @@ impl MapsApp {
             return y + draw::line_h(ctx.text, &body) + s2;
         };
 
-        // The trip: how long it takes (the view's one hero number), how far,
-        // and when it arrives.
         let display = theme.text(TextRole::Display).numeric();
         let body_numeric = theme.text(TextRole::Body).numeric();
         let duration = geo::fmt_duration(route.duration_s);
         let display_h = draw::line_h(tr, &display);
         let distance = geo::fmt_distance(route.distance_m);
-        // The distance and Clear route stand on the duration's baseline.
         let baseline = y + draw::baseline(tr, &duration, &display);
         let clear_label = failure::t("maps-clear-route-button");
         let clear_face = ButtonFace::new(Rect::ZERO, &clear_label)
@@ -140,8 +128,6 @@ impl MapsApp {
             clear,
             Some(Hit::ClearRoute),
         );
-        // Another route, when the service offered one: the trip's own number
-        // says which of them is shown.
         if self.model.route_alternatives.len() > 1 {
             let shown = self
                 .model
@@ -214,7 +200,6 @@ impl MapsApp {
         );
         y += body_h + s3;
 
-        // Summary and steps are two groups: a derived rule, then the steps.
         ui::surface::separator(
             ctx.scene,
             t,
@@ -251,10 +236,6 @@ impl MapsApp {
         y + s3
     }
 
-    /// The planned departure and arrival clocks for a road trip of
-    /// `duration_s`, honouring the leave/arrive picker: "Leave" anchors the
-    /// departure (arrival = departure + duration); "Arrive" anchors the
-    /// arrival (departure = arrival − duration).
     pub(super) fn road_trip_clock(&self, duration_s: f64) -> (String, String) {
         let tt = self.model.transit_time;
         let dur = chrono::Duration::seconds(duration_s.max(0.0) as i64);
@@ -267,9 +248,6 @@ impl MapsApp {
         (clock_label(dep), clock_label(arr))
     }
 
-    /// The departure time: a quiet Leave/Arrive choice and a stepper that
-    /// moves the time in quarter hours, with "Now" to go back. Defaults to
-    /// leaving now. Returns the y below it.
     pub(super) fn draw_time_picker(
         &mut self,
         scene: &mut Scene,
@@ -286,7 +264,6 @@ impl MapsApp {
         let tt = self.model.transit_time;
         let row_h = SegmentedFace::height(ControlSize::Regular, theme);
 
-        // Leave / Arrive: quiet, so the travel mode above reads first.
         let labels = [failure::t("maps-leave"), failure::t("maps-arrive")];
         let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
         let toggle_w = SegmentedFace::intrinsic_width(&label_refs, ControlSize::Regular, tr, theme);
@@ -311,8 +288,6 @@ impl MapsApp {
         self.click_targets
             .push((segs[1], Hit::TransitTimeMode(TransitTimeMode::Arrive)));
 
-        // The time stepper: earlier, the time, later. Wide enough for any
-        // clock time, so stepping never moves it.
         let target = ui::clock::local_now() + chrono::Duration::minutes(i64::from(tt.offset_min));
         let label = if tt.is_now() {
             failure::t("maps-now")
@@ -343,7 +318,6 @@ impl MapsApp {
         self.click_targets.push((later, Hit::TransitTimeDelta(15)));
         let mut y = y + row_h;
 
-        // A way back to "now" appears only when the time is off it.
         if !tt.is_now() {
             y += s1;
             let small_h = ButtonFace::height(ControlSize::Small, theme);
@@ -366,9 +340,6 @@ impl MapsApp {
         y + s4
     }
 
-    /// The public-transport departures for Transit: one row per journey (its
-    /// times, length, changes and lines), the chosen one opened into its
-    /// legs, and where the times come from.
     #[allow(
         clippy::too_many_lines,
         reason = "a single linear draw pass over this panel's fixed regions; splitting it would only \
@@ -469,7 +440,6 @@ impl MapsApp {
                 &numeric,
                 theme.text_dim,
             );
-            // The journey's lines in their own colours, walks as plain text.
             let chips_y = ty + title_h + s1;
             let changes = if j.transfers == 0 {
                 failure::t("maps-direct")
@@ -544,8 +514,6 @@ impl MapsApp {
                         px += lead;
                     }
                     let pill = Rect::new(px, chips_y, px + w, chips_y + chip_h);
-                    // A line badge in the operator's own colour is content,
-                    // like a calendar's event colour.
                     draw::fill_round(
                         ctx.scene,
                         t,
@@ -567,7 +535,6 @@ impl MapsApp {
             self.mark_edge(row.y1);
             y = row.y1 + s1;
 
-            // The chosen journey opened into its legs.
             if selected {
                 let mut ctx = PaintCtx::new(scene, t, tr, theme);
                 for leg in &j.legs {
@@ -612,8 +579,6 @@ impl MapsApp {
                         .tags(if leg.realtime { &live } else { &[] });
                     let h = face.height(ctx.text, theme);
                     let rect = Rect::new(content.x0, y, content.x1, y + h);
-                    // The leg's line colour down its leading edge ties the
-                    // row to the line drawn on the map.
                     let stripe_x = rect.x0 + s1;
                     draw::line(
                         ctx.scene,
@@ -631,9 +596,8 @@ impl MapsApp {
             }
         }
 
-        // Where the times come from, and whether they are live: Transitous
-        // runs over the operators' aggregated GTFS(-RT) feeds; a leg flagged
-        // real-time is live, a schedule-only feed reads "Scheduled".
+        // Where the times come from: Transitous runs over the operators' aggregated GTFS(-RT)
+        // feeds, so a leg flagged real-time is live and a schedule-only feed reads "Scheduled".
         let agency = journeys
             .iter()
             .flat_map(|j| j.legs.iter())

@@ -19,6 +19,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{MotionSource, Rhythm};
+use crate::widget::DrawChild;
 use crate::widget::arrange::{At, Layers, Row};
 use crate::widget::context_menu_area::focus_within;
 use crate::widget::{Decorator, Element, EventCtx, Widget};
@@ -185,7 +186,8 @@ impl Decorator for HoverToolbar {
     ) {
         self.focused = focus_within(&self.layers);
         self.follow(Some(theme));
-        self.layers.draw(scene, transform, text, theme, presence);
+        self.layers
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -260,7 +262,7 @@ impl Decorator for ToolbarFace {
             return;
         }
         if openness >= 1.0 {
-            self.bar.draw(scene, transform, text, theme, presence);
+            self.bar.draw_child(scene, transform, text, theme, presence);
             return;
         }
         let rect = self.bar.get_rect();
@@ -275,7 +277,7 @@ impl Decorator for ToolbarFace {
             transform,
             &rect,
         );
-        self.bar.draw(scene, transform, text, theme, presence);
+        self.bar.draw_child(scene, transform, text, theme, presence);
         scene.pop_layer();
     }
 

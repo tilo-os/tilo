@@ -432,3 +432,37 @@ marks: every column as before, and the next writes give the same document
 as a copy that never saw them). Pinned by `tilolang-tilo`'s `budgets`
 test, which holds a send's allocations at 10,000 messages to those at
 1,000. Upstreamable.
+
+# Tilo patch: an apply does not check the whole document's op order
+
+`BatchApply::apply` ended with `debug_assert!(doc.ops.validate_op_order())`,
+a walk over every op of the document. Debug and test builds of everything
+that applies changes (the fork itself is optimised there, assertions on)
+paid it on every change: about 1 µs per card of a 2,000-card board per
+apply, more than the rest of taking the change in. The check now runs where
+the crate's other whole-document checks run: its own tests and
+`slow_path_assertions`. Release builds are unchanged. The marked spots are
+`TILO(apply-cost)` in `batch.rs` and `op.rs`. Upstreamable.
+
+# Tilo patch: a new actor renumbers only what it moves
+
+Automerge keeps a document's actors sorted and numbers each op's actor by
+its place, so an actor that sorts before others renumbers every op of
+theirs. Tilo commits each action as an actor of its own (`tilo-actions`'
+`ActionId`), so every change a replica takes in brings a new actor. Beside
+the op columns (renumbered run by run), `OpSet::rewrite_with_new_actor` and
+`remove_actor` rebuilt the whole object index, a hash map of every object
+the document holds, whatever the new actor's place: about 0.4 ms per
+change at 2,000 objects, twice per change taken in.
+
+Only the objects made by an actor at or above the new one change their
+key: those are taken out and put back renumbered, and the parents of the
+rest are renumbered in place. Removing the last actor (a rolled back
+transaction's, which holds no op) renumbers nothing. `tilo-actions` mints
+action ids ordered by time, so a new action's actor sorts after those
+before it and most changes renumber nothing; `Work::renumbered_objects`
+counts the objects that moved. The index, documents and patches are as
+before. The marked spots are `TILO(actor-renumber)`, `TILO(actor-at-end)`
+and `TILO(work-count)` in `op_set.rs` and `work.rs`. Pinned by
+`tilolang-tilo`'s `chunks` budget test, which holds what a card added to a
+board renumbers at 4,000 cards to what it does at 1,000. Upstreamable.

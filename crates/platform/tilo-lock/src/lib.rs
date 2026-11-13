@@ -14,6 +14,9 @@
 //! everywhere, where recovering keeps one failed test from cascading into
 //! every later lock of the same state.
 
+pub mod deferred;
+pub mod lazy;
+
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// [`Mutex::lock`], recovering the guard of a poisoned mutex.

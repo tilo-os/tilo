@@ -20,14 +20,12 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-mod common;
-
 use std::time::Duration;
 
 use tilo_compositor::InputEvent;
 use tilo_session::Session;
 
-use common::{
+use crate::common::{
     CANVAS, CANVAS_CARET, KEY_ESCAPE, click, drag, frame_and_say, key, on_screen, places,
     point_and_say, point_to, private_home, seeded_session, until, wait_for,
 };
@@ -194,7 +192,7 @@ fn a_dragged_rectangle_is_filled_by_what_is_found() {
         "the caret stands a step inside the rectangle's top left: {:?} for {from:?}",
         (cx, cy)
     );
-    common::say(&mut session, "my mails");
+    crate::common::say(&mut session, "my mails");
 
     let inbox = wait_for(&mut session, "the inbox placed", |session| {
         places(session)
@@ -218,17 +216,79 @@ fn a_dragged_rectangle_is_filled_by_what_is_found() {
     );
 }
 
+/// Every placed strip's canvas box, by the resource its place shows: `(x, y, w, h)` in canvas
+/// pixels, as the desk holds it.
+fn canvas_box(session: &Session, needle: &str) -> Option<(i64, i64, i64, i64)> {
+    places(session).iter().find_map(|place| {
+        let strip = crate::common::strip(session, crate::common::number(&place.strip))?;
+        (strip.placed && place.record.contains(needle)).then_some((
+            strip.canvas_x,
+            strip.canvas_y,
+            strip.canvas_width,
+            strip.canvas_height,
+        ))
+    })
+}
+
+/// Chat holding the person's ask as the turn `question` of `conversation`: what Chat's process
+/// does in a person's session, posting the message the ask sent it into its record, which the
+/// session reads the turn back from. Chat's process is not part of this session, so this stands
+/// in for that read; everything around it — the pointing, the send, where the turn stands and
+/// what the agent's steps in it fill — is the production path.
+fn chat_holds(session: &Session, conversation: &str, question: &str) {
+    let turn = format!("chat.workspace.turns:{question}");
+    let asked = tilo_session::arrangement::Asked {
+        conversation: conversation.to_owned(),
+        turn: turn.clone(),
+    };
+    // The turn as the session publishes it once Chat holds it: Chat's `turn` view of it.
+    let mut published = tilo_actions::ResourceSpec::new(turn, "chat.workspace.turns", "Asked")
+        .with_view(tilo_actions::ResourceViewSpec::new("turn", "Asked", "open"));
+    published.app_id = Some("chat".to_owned());
+    assert!(
+        session.arrangement().borrow().awaits_turns(),
+        "the ask waits for Chat to hold it"
+    );
+    let stood = session.arrangement().borrow_mut().stand_asked(
+        &|_, _| Some((asked.clone(), published.clone())),
+        tilo_session::arrangement::Busy::default(),
+    );
+    assert_eq!(stood, 1, "the ask waited for its turn");
+}
+
+/// The conversation the turns of these tests are in, as Chat publishes a channel.
+const CONVERSATION: &str = "chat.workspace/channels/c_ask";
+
 /// A question stands its turn at the caret: a place of the turn, through its `turn` view, where
-/// the person pointed — not the channel's page, and in no window frame.
+/// the person pointed — not the channel's page, and in no window frame. Until Chat holds the
+/// message, nothing stands.
 #[test]
 fn a_question_stands_its_turn_at_the_caret() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
-    let at = (x + w * 0.4, y + h * 0.3);
+    // What a found thing does where the person clicks: the canvas point the click names.
+    let found_at = (x + w * 0.05, y + h * 0.05);
+    point_and_say(&mut session, found_at, "my mails");
+    let (fx, fy, _, _) = wait_for(&mut session, "the inbox placed", |session| {
+        canvas_box(session, "so.tilo.lang.mail")
+    });
+    let at = (x + w * 0.65, y + h * 0.85);
 
     point_and_say(&mut session, at, "what is on my task list?");
+    until(&mut session, "the ask sent", |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|sent| sent.as_array().map(|sent| !sent.is_empty()))
+            .unwrap_or(false)
+    });
+    assert!(
+        canvas_box(&session, "chat.workspace.turns:").is_none(),
+        "nothing stands before Chat holds the message"
+    );
+    chat_holds(&session, CONVERSATION, "q1");
 
     let turn = wait_for(&mut session, "the turn placed", |session| {
         places(session)
@@ -242,28 +302,25 @@ fn a_question_stands_its_turn_at_the_caret() {
     assert!(
         !places(&session)
             .iter()
-            .any(|place| place.record.starts_with("chat.workspace.channels:")),
+            .any(|place| place.record.contains("channels")),
         "the channel's page is not placed: {:?}",
         places(&session)
     );
-    let (px, py, _, _) = wait_for(&mut session, "the turn on screen", |session| {
-        place_on_screen(session, &turn)
-    });
-    assert!(
-        near(px, at.0) && near(py, at.1),
-        "the turn stands where the person asked: {:?} at {at:?}",
-        (px, py)
+    let (tx, ty, tw, th) = canvas_box(&session, "chat.workspace.turns:").expect("the turn's box");
+    #[allow(clippy::cast_possible_truncation, reason = "screen pixels")]
+    let expected = (
+        fx + (at.0 - found_at.0).round() as i64,
+        fy + (at.1 - found_at.1).round() as i64,
     );
-    until(&mut session, "the person's words in the turn", |session| {
-        session
-            .shell_drawn_text_bounds("what is on my task list?")
-            .is_some()
-    });
     assert!(
-        session
-            .shell_drawn_text_bounds("what is on my task list?")
-            .is_some_and(|(_, ty, _, _)| ty >= py),
-        "the person's line stands in the turn, not in a title bar over it"
+        (tx - expected.0).abs() <= 2 && (ty - expected.1).abs() <= 2,
+        "the turn stands where the person asked: {:?} for {expected:?}",
+        (tx, ty)
+    );
+    assert_eq!(
+        (tw, th),
+        (520, 240),
+        "a clicked turn takes an answer's own measure"
     );
 }
 
@@ -279,56 +336,58 @@ fn an_agents_place_in_the_turn_fills_the_dragged_rectangle() {
     let to = (x + w * 0.8, y + h * 0.95);
 
     frame_and_say(&mut session, from, to, "what do my notes say?");
-    let turn = wait_for(&mut session, "the turn placed", |session| {
-        places(session)
-            .into_iter()
-            .find(|place| place.record.starts_with("chat.workspace.turns:"))
+    until(&mut session, "the ask sent", |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|sent| sent.as_array().map(|sent| !sent.is_empty()))
+            .unwrap_or(false)
     });
-    let (_, ty, _, th) = wait_for(&mut session, "the turn on screen", |session| {
-        place_on_screen(session, &turn)
+    chat_holds(&session, CONVERSATION, "q2");
+    let (tx, ty, tw, th) = wait_for(&mut session, "the turn placed", |session| {
+        canvas_box(session, "chat.workspace.turns:")
     });
-    let conversation = session
-        .service_resources()
-        .into_iter()
-        .map(|spec| spec.id.as_str().to_owned())
-        .find(|id| id.starts_with("chat.workspace.channels:"))
-        .expect("the conversation the ask made is published");
+    #[allow(clippy::cast_possible_truncation, reason = "screen pixels")]
+    let (rect_w, rect_h) = (
+        (to.0 - from.0).round() as i64,
+        (to.1 - from.1).round() as i64,
+    );
+    assert!(
+        (tw - rect_w).abs() <= 2,
+        "the turn spans the rectangle's width: {tw} for {rect_w}"
+    );
     let notes = session
-        .service_resources()
+        .resources()
         .into_iter()
         .map(|spec| spec.id.as_str().to_owned())
         .find(|id| id.starts_with("tl:so.tilo.lang.notes:root-"))
         .expect("the notes' root is published");
 
-    // The agent's step in the turn, as the broker invokes it: its `place` names no point, and the
-    // session fills in the turn's conversation as what it stands beside.
+    // The agent's step in the turn, as the broker invokes it: its `place` names no point, and
+    // stands beside the turn's conversation, as the agent door fills it in for a turn's step.
     session
         .invoke_with_actor(
             "agent:assistant",
             "shell:arrangement",
             "place",
-            &serde_json::json!({"resource": notes, "beside": conversation}),
+            &serde_json::json!({"resource": notes, "beside": CONVERSATION}),
         )
         .unwrap_or_else(|error| panic!("the agent's place runs: {error}"));
-    let shown = wait_for(&mut session, "the notes placed", |session| {
-        places(session)
-            .into_iter()
-            .find(|place| place.record == notes)
-    });
-    let (nx, ny, nw, nh) = wait_for(&mut session, "the notes on screen", |session| {
-        place_on_screen(session, &shown)
+    let (nx, ny, nw, nh) = wait_for(&mut session, "the notes placed", |session| {
+        canvas_box(session, "so.tilo.lang.notes")
     });
     assert!(
-        near(nx, from.0) && near(nw, to.0 - from.0),
-        "the notes fill the rectangle's width: {:?} for {from:?}..{to:?}",
-        (nx, nw)
+        nx == tx && nw == tw,
+        "the notes fill the rectangle's width: {:?} under the turn's {:?}",
+        (nx, nw),
+        (tx, tw)
     );
     assert!(
-        ny >= ty + th && near(ny + nh, to.1),
+        ny >= ty + th && (ny + nh - (ty + rect_h)).abs() <= 2,
         "the notes fill the rectangle under the turn: {:?} under {:?}, to {}",
         (ny, nh),
         (ty, th),
-        to.1
+        ty + rect_h
     );
 }
 
@@ -356,13 +415,13 @@ fn a_place_has_no_frame_and_its_handle_shows_on_hover() {
     for _ in 0..20 {
         session.step(Duration::from_millis(16)).unwrap();
     }
-    let rest = common::shot(&mut session, "canvas-place-at-rest");
+    let rest = crate::common::shot(&mut session, "canvas-place-at-rest");
     // The pointer over it: the handle comes over its top trailing corner.
     point_to(&mut session, (px + pw / 2.0, py + ph / 2.0));
     for _ in 0..20 {
         session.step(Duration::from_millis(16)).unwrap();
     }
-    let hovered = common::shot(&mut session, "canvas-place-hovered");
+    let hovered = crate::common::shot(&mut session, "canvas-place-hovered");
     let band = |shot: &tilo_compositor::Screenshot| -> Vec<u8> {
         let mut out = Vec::new();
         let top = (py - 24.0).max(0.0) as u32;
@@ -463,7 +522,7 @@ fn a_right_click_on_a_place_opens_its_actions() {
         (x + w * 0.7, y + h * 0.9),
     );
     let offered: Vec<String> = session
-        .service_resources()
+        .resources()
         .into_iter()
         .find(|spec| spec.id.as_str() == inbox.record)
         .map(|spec| spec.actions.iter().map(|a| a.label.clone()).collect())
@@ -500,7 +559,7 @@ fn a_right_click_on_a_place_opens_its_actions() {
         &mut session,
         (handle.0 + handle.2 / 2.0, handle.1 + handle.3 / 2.0),
     );
-    let opened = common::reached(&mut session, |session| offered_shown(session) > before);
+    let opened = crate::common::reached(&mut session, |session| offered_shown(session) > before);
     assert!(
         opened,
         "the place's menu lists its actions {offered:?}: {} of them stood before the right-click, \
@@ -526,7 +585,7 @@ fn dragging_a_places_corner_sizes_it() {
     );
     let corner = (px + pw + 3.0, py + ph + 3.0);
     drag(&mut session, corner, (corner.0 + 120.0, corner.1 + 80.0));
-    let resized = common::reached(&mut session, |session| {
+    let resized = crate::common::reached(&mut session, |session| {
         place_on_screen(session, &inbox).is_some_and(|(_, _, nw, _)| !near(nw, pw))
     });
     assert!(
@@ -535,7 +594,7 @@ fn dragging_a_places_corner_sizes_it() {
         (px, py, pw, ph),
         on_screen(&session, CANVAS),
         on_screen(&session, CANVAS_CARET),
-        common::strip(&session, common::number(&inbox.strip)),
+        crate::common::strip(&session, crate::common::number(&inbox.strip)),
         session.arrangement().borrow_mut().last_step(),
         session.shell_refusals()
     );
@@ -551,7 +610,10 @@ fn dragging_a_places_corner_sizes_it() {
         .borrow_mut()
         .last_step()
         .expect("a step");
-    assert_eq!((who.as_str(), verb.as_str()), (common::PERSON, "size"));
+    assert_eq!(
+        (who.as_str(), verb.as_str()),
+        (crate::common::PERSON, "size")
+    );
 }
 
 /// The rectangle the person dragged stays outlined while they type what fills it, and goes with
@@ -567,7 +629,7 @@ fn the_dragged_rectangle_stays_outlined_while_typing() {
     // The rectangle's bottom edge, half way along: clear of the caret at its top.
     let edge = ((from.0 + to.0) / 2.0, to.1);
     let pixel = |session: &mut Session| -> [u8; 4] {
-        let shot = common::shot(session, "canvas-outline");
+        let shot = crate::common::shot(session, "canvas-outline");
         let at = ((edge.1.round() as u32 * shot.width + edge.0.round() as u32) * 4) as usize;
         [
             shot.rgba[at],
@@ -579,7 +641,7 @@ fn the_dragged_rectangle_stays_outlined_while_typing() {
     let ground = pixel(&mut session);
     drag(&mut session, from, to);
     caret(&mut session);
-    common::type_text(&mut session, "my mails");
+    crate::common::type_text(&mut session, "my mails");
     for _ in 0..4 {
         session.step(Duration::from_millis(16)).unwrap();
     }
@@ -624,7 +686,8 @@ fn a_places_size_action_sizes_it() {
                 .expect("arguments"),
         )
         .unwrap_or_else(|error| panic!("the size runs: {error:?}"));
-    let strip = common::strip(&session, common::number(&inbox.strip)).expect("its strip");
+    let strip =
+        crate::common::strip(&session, crate::common::number(&inbox.strip)).expect("its strip");
     assert_eq!(
         (strip.canvas_width, strip.canvas_height),
         (600, 450),

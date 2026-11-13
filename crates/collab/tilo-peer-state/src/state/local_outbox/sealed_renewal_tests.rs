@@ -3,6 +3,7 @@ use super::*;
 use crate::{InputDisposition, TransportOrigin};
 use automerge::transaction::Transactable as _;
 use collab_types::{Ed25519PublicKey, EncryptionMetadata, OpKind, SignedOp};
+use ed25519_dalek::SigningKey;
 use std::collections::BTreeMap;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::Duration;
@@ -180,9 +181,7 @@ fn an_expired_sealed_write_renews_its_ciphertext_under_the_next_sequence_and_ret
     let author = fixture.key.verifying_key().to_bytes();
     let later = expired(fixture.now);
     let renewal = fixture
-        .member
-        .outbox_mut()
-        .renew_local_sealed(&fixture.write, &mut identical, &fixture.key, later)
+        .renew(&fixture.write.clone(), &mut identical, later)
         .unwrap()
         .expect("an expired unretired sealed write renews");
     let (original, renewed) = (envelope(&fixture.write), envelope(&renewal));
@@ -219,11 +218,7 @@ fn an_expired_sealed_write_renews_its_ciphertext_under_the_next_sequence_and_ret
     );
     assert_eq!(held(&fixture.member).last(), Some(renewed));
     assert_eq!(
-        fixture
-            .member
-            .outbox_mut()
-            .renew_local_sealed(&renewal, &mut identical, &fixture.key, later)
-            .unwrap(),
+        fixture.renew(&renewal, &mut identical, later).unwrap(),
         None,
         "a fresh renewal is not renewed again"
     );
@@ -248,9 +243,7 @@ fn an_expired_sealed_write_renews_its_ciphertext_under_the_next_sequence_and_ret
     }
     assert_eq!(
         fixture
-            .member
-            .outbox_mut()
-            .renew_local_sealed(&fixture.write, &mut identical, &fixture.key, later)
+            .renew(&fixture.write.clone(), &mut identical, later)
             .unwrap(),
         None,
         "a retired write is not renewed"
@@ -263,12 +256,9 @@ fn a_write_from_an_older_epoch_renews_with_what_the_key_holder_resealed() {
     let later = expired(fixture.now);
     let current = metadata(&fixture.member, 2);
     let renewal = fixture
-        .member
-        .outbox_mut()
-        .renew_local_sealed(
-            &fixture.write,
+        .renew(
+            &fixture.write.clone(),
             &mut |_| Ok((current, b"resealed under epoch 2".to_vec())),
-            &fixture.key,
             later,
         )
         .unwrap()
@@ -282,13 +272,10 @@ fn a_write_from_an_older_epoch_renews_with_what_the_key_holder_resealed() {
     foreign.channel = collab_types::ChannelId::new();
     assert!(
         fixture
-            .member
-            .outbox_mut()
-            .renew_local_sealed(
-                &fixture.write,
+            .renew(
+                &fixture.write.clone(),
                 &mut |_| Ok((foreign, b"another channel".to_vec())),
-                &fixture.key,
-                expired(later),
+                expired(later)
             )
             .is_err(),
         "a renewal cannot move to another channel"
@@ -300,19 +287,16 @@ fn a_write_from_an_older_epoch_renews_with_what_the_key_holder_resealed() {
 fn a_refused_reseal_or_a_fresh_write_changes_nothing() {
     let mut fixture = fixture();
     let before = fixture.member.durable().unwrap();
-    let mut asked = 0;
+    let (mut asked, write) = (0, fixture.write.clone());
     assert_eq!(
         fixture
-            .member
-            .outbox_mut()
-            .renew_local_sealed(
-                &fixture.write,
+            .renew(
+                &write,
                 &mut |_| {
                     asked += 1;
-                    identical(envelope(&fixture.write))
+                    identical(envelope(&write))
                 },
-                &fixture.key,
-                fixture.now,
+                fixture.now
             )
             .unwrap(),
         None,
@@ -321,13 +305,10 @@ fn a_refused_reseal_or_a_fresh_write_changes_nothing() {
     assert_eq!(asked, 0);
     assert!(
         fixture
-            .member
-            .outbox_mut()
-            .renew_local_sealed(
-                &fixture.write,
+            .renew(
+                &fixture.write.clone(),
                 &mut |_| Err("this device holds no current key".into()),
-                &fixture.key,
-                expired(fixture.now),
+                expired(fixture.now)
             )
             .is_err()
     );
@@ -367,16 +348,13 @@ fn a_revoked_author_renews_nothing() {
     let mut asked = 0;
     assert!(
         fixture
-            .member
-            .outbox_mut()
-            .renew_local_sealed(
-                &fixture.write,
+            .renew(
+                &fixture.write.clone(),
                 &mut |op| {
                     asked += 1;
                     identical(op)
                 },
-                &fixture.key,
-                later,
+                later
             )
             .is_err()
     );
@@ -389,12 +367,10 @@ fn a_renewal_survives_restart_as_exact_custody() {
     let mut fixture = fixture();
     let later = expired(fixture.now);
     let renewal = fixture
-        .member
-        .outbox_mut()
-        .renew_local_sealed(&fixture.write, &mut identical, &fixture.key, later)
+        .renew(&fixture.write.clone(), &mut identical, later)
         .unwrap()
         .unwrap();
-    let mut restored = StatePeer::restore(
+    let restored = StatePeer::restore(
         &fixture.member.durable().unwrap(),
         fixture.member.workspace_id(),
         fixture.member.owner_certificates()[0].clone(),
@@ -414,15 +390,12 @@ fn a_renewal_survives_restart_as_exact_custody() {
         );
     }
     assert_eq!(held(&restored), held(&fixture.member));
+    fixture.member = restored;
     assert_eq!(
-        restored
-            .outbox_mut()
-            .renew_local_sealed(&renewal, &mut identical, &fixture.key, later)
-            .unwrap(),
+        fixture.renew(&renewal, &mut identical, later).unwrap(),
         None,
         "the restored renewal is still fresh"
     );
-    fixture.member = restored;
     acknowledge(&mut fixture, renewal.clone(), later);
     assert!(
         fixture
@@ -431,4 +404,30 @@ fn a_renewal_survives_restart_as_exact_custody() {
             .retained_local_document_retired(&renewal, author)
             .unwrap()
     );
+}
+
+impl Fixture {
+    /// `original` renewed as its owner renews it: drafted, signed by its author and admitted.
+    fn renew(
+        &mut self,
+        original: &NeighbourMsg,
+        reseal: &mut crate::Reseal<'_>,
+        now: SystemTime,
+    ) -> Result<Option<NeighbourMsg>, String> {
+        let author = self.key.verifying_key().to_bytes();
+        let drafted = self.member.outbox().draft_sealed_renewals(
+            std::slice::from_ref(original),
+            reseal,
+            author,
+            now,
+        );
+        let Some(mut renewal) = drafted.into_iter().next().expect("one outcome")? else {
+            return Ok(None);
+        };
+        collab_types::sign_op(&mut renewal, &self.key).map_err(|error| error.to_string())?;
+        self.member
+            .outbox_mut()
+            .admit_sealed_renewal(original, renewal, now)
+            .map(Some)
+    }
 }

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license.workspace = true
-description = "Bounded reading of untrusted ZIP packages (zip-bomb and XXE defence) for Tilo's document formats"
+description = "Bounded ZIP for Tilo's document formats: reading untrusted packages (zip-bomb and XXE defence), and writing the archives an app exports"
 repository.workspace = true
 homepage.workspace = true
 

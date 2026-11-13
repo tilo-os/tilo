@@ -1,0 +1,10 @@
+Subject: Bestätige deine Adresse für die Warteliste von {{workspace}}
+
+Jemand, hoffentlich du, hat {{email}} auf die Warteliste von {{workspace}} gesetzt.
+
+Bestätige sie, um auf die Liste zu kommen:
+{{link}}
+
+Warst du das nicht? Dann ignoriere diese Mail. Eine Adresse, die niemand bestätigt, ist in zwei Tagen vergessen.
+
+Nimm mich von der Liste: {{remove_link}}

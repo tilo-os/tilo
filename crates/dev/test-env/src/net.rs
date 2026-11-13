@@ -1,11 +1,10 @@
-//! A network several devices share, whose delivery the test owns:
-//! [`FakeNet`], [`Peer`] and [`Converged`].
+//! A network several devices share, whose delivery the test owns: [`FakeNet`], [`Peer`] and
+//! [`Converged`].
 //!
-//! A collaboration bug needs two devices, and a collaboration test that runs on
-//! time — a socket, a sleep, a retry — reports a pass or a failure the machine's
-//! load chose. This module makes the network a value a test steps through: a
-//! device offers the messages it wrote when the test says so, and every device
-//! takes the bytes that reached it in on the next step. Routing, drops and
+//! A collaboration bug needs two devices, and a collaboration test that runs on time — a socket, a
+//! sleep, a retry — reports a pass or a failure the machine's load chose. This module makes the
+//! network a value a test steps through: a device offers the messages it wrote when the test says
+//! so, and every device takes the bytes that reached it in on the next step. Routing, drops and
 //! merges therefore happen in one order on every run, on any machine.
 //!
 //! ```
@@ -33,16 +32,15 @@
 //! assert_eq!(seen.len(), 2, "the net delivers what it held");
 //! ```
 //!
-//! [`FakeNet`] itself moves opaque bytes: a notebook's changes, a room's
-//! presence frames, an app's delta. [`document`] is the Automerge pairing on top
-//! of it — what to publish from a replica, and what it means for two devices to
-//! have converged — since that is the shape a collaboration scenario drives.
+//! [`FakeNet`] itself moves opaque bytes: a notebook's changes, a room's presence frames, an app's
+//! delta. [`document`] is the Automerge pairing on top of it — what to publish from a replica, and
+//! what it means for two devices to have converged — since that is the shape a collaboration
+//! scenario drives.
 //!
-//! A partition holds what was published while a device was cut instead of
-//! dropping it, so a healed device catches up rather than having to rebuild
-//! from the others' history. [`FakeNet::forget_held`] is the other network: one
-//! whose lost frames are lost, which is the case anti-entropy has to recover
-//! from.
+//! A partition holds what was published while a device was cut instead of dropping it, so a healed
+//! device catches up rather than having to rebuild from the others' history.
+//! [`FakeNet::forget_held`] is the other network: one whose lost frames are lost, which is the case
+//! anti-entropy has to recover from.
 
 #[cfg(feature = "document")]
 pub mod document;
@@ -50,18 +48,15 @@ pub mod document;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-/// A network several devices share. See the module docs.
 #[derive(Debug, Default)]
 pub struct FakeNet {
     peers: BTreeMap<String, PeerRecord>,
-    /// Devices off the network: what they publish reaches nobody, and what the
-    /// others publish is held for them rather than dropped.
+    /// Devices off the network: what they publish reaches nobody, and what the others publish is
+    /// held for them rather than dropped.
     cut: BTreeSet<String>,
-    /// What was published while a device was cut, kept for it. Cleared by
-    /// [`Self::forget_held`].
+    /// What was published while a device was cut, kept for it. Cleared by [`Self::forget_held`].
     held: Vec<(String, Vec<u8>)>,
-    /// Everything offered to the open net, in the order it happened: the
-    /// traffic a test asserts on.
+    /// Everything offered to the open net, in the order it happened: the traffic a test asserts on.
     log: Vec<(String, Vec<u8>)>,
     deliveries: u64,
 }
@@ -70,8 +65,8 @@ pub struct FakeNet {
 struct PeerRecord {
     /// The changes this device has offered the net.
     published: Vec<Vec<u8>>,
-    /// What reached this device that it has not taken in yet: what the next
-    /// [`FakeNet::deliver`] hands it.
+    /// What reached this device that it has not taken in yet: what the next [`FakeNet::deliver`]
+    /// hands it.
     inbox: Vec<(String, Vec<u8>)>,
 }
 
@@ -82,9 +77,9 @@ impl FakeNet {
         Self::default()
     }
 
-    /// A device on this net, under `name`. Asking for a name the net already
-    /// knows answers a handle on the same device, keeping what it published:
-    /// two windows of one device, or an app closed and opened again.
+    /// A device on this net, under `name`. Asking for a name the net already knows answers a handle
+    /// on the same device, keeping what it published: two windows of one device, or an app closed
+    /// and opened again.
     pub fn peer(&mut self, name: &str) -> Peer {
         self.peers.entry(name.to_owned()).or_default();
         Peer {
@@ -98,19 +93,19 @@ impl FakeNet {
         self.peers.keys().map(String::as_str).collect()
     }
 
-    /// Cut `devices` off from the net: what the others offer from now on does
-    /// not reach them, and what they offer reaches nobody.
+    /// Cut `devices` off from the net: what the others offer from now on does not reach them, and
+    /// what they offer reaches nobody.
     ///
-    /// What the net held for them arrives once it heals, as a device that
-    /// reconnects catches up on what it missed.
+    /// What the net held for them arrives once it heals, as a device that reconnects catches up on
+    /// what it missed.
     pub fn partition(&mut self, devices: &[&str]) {
         for name in devices {
             self.cut.insert((*name).to_owned());
         }
     }
 
-    /// Let `devices` back onto the net: the next [`Self::deliver`] hands them
-    /// what the net held for them.
+    /// Let `devices` back onto the net: the next [`Self::deliver`] hands them what the net held for
+    /// them.
     pub fn heal(&mut self, devices: &[&str]) {
         for name in devices {
             if !self.cut.remove(*name) {
@@ -127,14 +122,13 @@ impl FakeNet {
         }
     }
 
-    /// Lose what the net held for cut devices, rather than delivering it when
-    /// they heal: a network whose frames are dropped, where a device that comes
-    /// back has to be brought up to date from the others' history alone.
+    /// Lose what the net held for cut devices, rather than delivering it when they heal: a network
+    /// whose frames are dropped, where a device that comes back has to be brought up to date from
+    /// the others' history alone.
     pub fn forget_held(&mut self) {
         self.held.clear();
     }
 
-    /// Whether `device` is on the net now.
     #[must_use]
     pub fn is_connected(&self, device: &str) -> bool {
         self.peers.contains_key(device) && !self.cut.contains(device)
@@ -142,9 +136,8 @@ impl FakeNet {
 
     /// Offer `bytes` — what a device wrote — to the net, as that device.
     ///
-    /// Offering nothing offers nothing: a caller that hands over what the net
-    /// already carries sends no second message, which
-    /// [`document::FakeDocumentNet::publish`] does for a whole replica.
+    /// Offering nothing offers nothing: a caller that hands over what the net already carries sends
+    /// no second message, which [`document::FakeDocumentNet::publish`] does for a whole replica.
     pub fn publish(&mut self, device: &Peer, bytes: Vec<u8>) {
         if bytes.is_empty() {
             return;
@@ -173,31 +166,28 @@ impl FakeNet {
         }
     }
 
-    /// The traffic that reached the open net, in the order it was published:
-    /// `(author, bytes)`.
+    /// The traffic that reached the open net, in the order it was published: `(author, bytes)`.
     #[must_use]
     pub fn log(&self) -> &[(String, Vec<u8>)] {
         &self.log
     }
 
-    /// How many messages have been handed to a device so far.
     #[must_use]
     pub fn deliveries(&self) -> u64 {
         self.deliveries
     }
 
-    /// How many messages are waiting for a cut device, which a heal delivers.
     #[must_use]
     pub fn held(&self) -> usize {
         self.held.len()
     }
 
-    /// Hand `device` what reached it to `apply`, as it receives it, and forget
-    /// the message: a device takes each one in once.
+    /// Hand `device` what reached it to `apply`, as it receives it, and forget the message: a
+    /// device takes each one in once.
     ///
-    /// `apply` is `(author, bytes)`. A message the receiver drops is still
-    /// spent, as a frame a device ignored is not offered again. A cut device
-    /// receives nothing, and keeps what waits for it.
+    /// `apply` is `(author, bytes)`. A message the receiver drops is still spent, as a frame a
+    /// device ignored is not offered again. A cut device receives nothing, and keeps what waits for
+    /// it.
     pub fn deliver_to(&mut self, device: &str, mut apply: impl FnMut(&str, &[u8])) {
         if self.cut.contains(device) {
             return;
@@ -211,8 +201,8 @@ impl FakeNet {
         }
     }
 
-    /// Hand every connected device what reached it, in name order, as
-    /// [`Self::deliver_to`] does for one.
+    /// Hand every connected device what reached it, in name order, as [`Self::deliver_to`] does for
+    /// one.
     pub fn deliver(&mut self, mut apply: impl FnMut(&str, &[u8])) {
         let names: Vec<String> = self.peers.keys().cloned().collect();
         for name in names {
@@ -220,13 +210,11 @@ impl FakeNet {
         }
     }
 
-    /// What the net held for cut devices, as `(author, bytes)`.
     #[must_use]
     pub fn held_traffic(&self) -> Vec<(String, Vec<u8>)> {
         self.held.clone()
     }
 
-    /// Everything `name` offered the net.
     #[must_use]
     pub fn published_by(&self, name: &str) -> Vec<Vec<u8>> {
         self.peers
@@ -236,7 +224,6 @@ impl FakeNet {
     }
 }
 
-/// One device on a [`FakeNet`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Peer {
     name: String,
@@ -258,9 +245,9 @@ impl fmt::Display for Peer {
 
 /// What two devices disagree on, device by device and path by path.
 ///
-/// A `Converged` is what an assertion reports: [`Self::holds`] says whether the
-/// devices agree, [`Self::disagreements`] says what does not, and
-/// [`Self::assert_holds`] fails the calling test with each line.
+/// A `Converged` is what an assertion reports: [`Self::holds`] says whether the devices agree,
+/// [`Self::disagreements`] says what does not, and [`Self::assert_holds`] fails the calling test
+/// with each line.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Converged {
     disagreements: Vec<String>,
@@ -273,7 +260,6 @@ impl From<Vec<String>> for Converged {
 }
 
 impl Converged {
-    /// Whether there is nothing to disagree on.
     #[must_use]
     pub fn holds(&self) -> bool {
         self.disagreements.is_empty()
@@ -289,8 +275,8 @@ impl Converged {
     ///
     /// # Panics
     ///
-    /// Panics when a device holds something the other does not, or the two
-    /// differ at one of the paths the test named.
+    /// Panics when a device holds something the other does not, or the two differ at one of the
+    /// paths the test named.
     #[track_caller]
     pub fn assert_holds(&self) {
         assert!(
@@ -305,7 +291,6 @@ impl Converged {
 mod tests {
     use super::*;
 
-    /// Two devices on one net.
     fn two_devices() -> (FakeNet, Peer, Peer) {
         let mut net = FakeNet::new();
         let alice = net.peer("alice");

@@ -26,6 +26,7 @@ use ui::widget::{
 };
 
 use crate::i18n;
+use crate::i18n::CATALOG;
 use crate::model::PolicyField;
 use crate::model::{
     Catalog, DestKind, Destination, Filter, Health, MAX_KEPT, Retention, RetentionPolicy, Schedule,
@@ -136,12 +137,12 @@ pub enum JobKind {
 }
 
 impl JobKind {
-    /// What the job is, in the jobs band's words.
-    pub fn title(self) -> &'static str {
+    /// The catalogue message naming the job in the jobs band.
+    pub fn message(self) -> &'static str {
         match self {
-            JobKind::Backup => "Backing up",
-            JobKind::Verify => "Verifying",
-            JobKind::Restore => "Restoring",
+            JobKind::Backup => "backups-job-backing-up",
+            JobKind::Verify => "backups-job-verifying",
+            JobKind::Restore => "backups-job-restoring",
         }
     }
 
@@ -270,20 +271,35 @@ fn destination_icon(kind: DestKind) -> Icon {
 /// "Every day at 18:00".
 pub(crate) fn schedule_label(schedule: Schedule) -> String {
     match schedule {
-        Schedule::OnDemand => "When you back up".into(),
-        Schedule::Hourly { minute: 0 } => "Every hour, on the hour".into(),
-        Schedule::Hourly { minute } => format!("Every hour at {minute:02} past"),
-        Schedule::Daily { hour, minute } => {
-            format!("Every day at {}", ui::clock::hour_minute(hour, minute))
-        }
+        Schedule::OnDemand => i18n::t("backups-schedule-on-demand"),
+        Schedule::Hourly { minute: 0 } => i18n::t("backups-schedule-hourly"),
+        Schedule::Hourly { minute } => i18n::t_args(
+            "backups-schedule-hourly-at",
+            &[("minute", ui::i18n::ArgValue::Text(format!("{minute:02}")))],
+        ),
+        Schedule::Daily { hour, minute } => i18n::t_args(
+            "backups-schedule-daily",
+            &[(
+                "time",
+                ui::i18n::ArgValue::Text(ui::clock::hour_minute(hour, minute)),
+            )],
+        ),
         Schedule::Weekly {
             weekday,
             hour,
             minute,
-        } => format!(
-            "Every {} at {}",
-            ui::format::weekday_name(weekday),
-            ui::clock::hour_minute(hour, minute)
+        } => i18n::t_args(
+            "backups-schedule-weekly",
+            &[
+                (
+                    "weekday",
+                    ui::i18n::ArgValue::Text(ui::format::weekday_name(weekday)),
+                ),
+                (
+                    "time",
+                    ui::i18n::ArgValue::Text(ui::clock::hour_minute(hour, minute)),
+                ),
+            ],
         ),
     }
 }
@@ -312,7 +328,7 @@ fn snapshot_title(snapshot: &Snapshot, catalog: &Catalog) -> String {
     }
     catalog
         .source(&snapshot.source_id)
-        .map_or_else(|| "Snapshot".into(), |source| source.name.clone())
+        .map_or_else(|| i18n::t("backups-snapshot"), |source| source.name.clone())
 }
 
 /// What an unlabelled snapshot is, on a page that already names its source:
@@ -398,7 +414,7 @@ pub fn sidebar(catalog: &Catalog, page: &Page, intents: &Intents) -> NavList {
         NavSection::untitled("policy", vec![policy]),
     ])
     .selected(&page.nav_id())
-    .with_accessible_name("Backups")
+    .with_accessible_name(crate::i18n::t("backups-a11y-window"))
     .on_view("backups-places", move |id| {
         if let Some(page) = Page::from_nav_id(&id) {
             intents.push(Intent::Navigate(page));
@@ -409,14 +425,15 @@ pub fn sidebar(catalog: &Catalog, page: &Page, intents: &Intents) -> NavList {
 /// The content column's title.
 pub fn page_title(catalog: &Catalog, page: &Page) -> String {
     match page {
-        Page::All => "All backups".into(),
+        Page::All => crate::i18n::t("backups-page-all"),
         Page::Source(id) => catalog
             .source(id)
-            .map_or_else(|| "Source".into(), |s| s.name.clone()),
-        Page::Destination(id) => catalog
-            .destination(id)
-            .map_or_else(|| "Destination".into(), |d| d.name.clone()),
-        Page::Retention => "Retention".into(),
+            .map_or_else(|| crate::i18n::t("backups-source"), |s| s.name.clone()),
+        Page::Destination(id) => catalog.destination(id).map_or_else(
+            || crate::i18n::t("backups-page-destination"),
+            |d| d.name.clone(),
+        ),
+        Page::Retention => crate::i18n::t("backups-retention"),
     }
 }
 
@@ -427,12 +444,12 @@ fn timeline_heading(current: Order, order: Option<&ActionBinding<String>>) -> Ro
         &LocalState::new(current.label().to_owned()),
     )
     .with_id("backups-order")
-    .with_accessible_name("Order of snapshots")
+    .with_accessible_name(crate::i18n::t("backups-a11y-order"))
     .control_size(ControlSize::Small);
     Row::new()
         .no_wrap()
         .push(Box::new(
-            Text::new("Snapshots")
+            Text::new(&crate::i18n::t("backups-heading-snapshots"))
                 .with_role(TextRole::Heading)
                 .with_heading_level(2),
         ))
@@ -518,7 +535,7 @@ fn progress(job: &Job) -> Section {
             Row::new()
                 .no_wrap()
                 .push(Box::new(
-                    Text::new(job.kind.title())
+                    Text::new(&i18n::t(job.kind.message()))
                         .with_role(TextRole::Label)
                         .strong(),
                 ))
@@ -530,7 +547,7 @@ fn progress(job: &Job) -> Section {
                         .dimmed(),
                 )),
         ),
-        Box::new(ProgressBar::indeterminate().with_label(job.kind.title())),
+        Box::new(ProgressBar::indeterminate().with_label(i18n::t(job.kind.message()))),
     ])
 }
 
@@ -657,12 +674,16 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
 /// Where a source lives and when it runs.
 fn source_details(source: &Source) -> PropertyList {
     let mut facts = vec![
-        Property::new("Folder", source.path.clone()).with_kind(TextKind::Identifier),
-        Property::new("Kind", source.kind.label()),
-        Property::new("Schedule", schedule_label(source.schedule)),
+        Property::new(CATALOG.t("backups-folder"), source.path.clone())
+            .with_kind(TextKind::Identifier),
+        Property::new(CATALOG.t("backups-kind"), source.kind.label()),
+        Property::new(
+            CATALOG.t("backups-schedule"),
+            schedule_label(source.schedule),
+        ),
     ];
     if !source.enabled {
-        facts.push(Property::new("Status", "Paused"));
+        facts.push(Property::new(CATALOG.t("backups-status"), "Paused"));
     }
     PropertyList::new(facts)
 }
@@ -671,18 +692,24 @@ fn source_details(source: &Source) -> PropertyList {
 /// the destination reports a capacity; nothing is estimated.
 fn destination_summary(dest: &Destination, catalog: &Catalog, now: NaiveDateTime) -> Element {
     let mut facts = vec![
-        Property::new("Kind", dest.kind.label()),
-        Property::new("Used", size(dest.used_bytes)).with_kind(TextKind::Numeric),
+        Property::new(CATALOG.t("backups-kind"), dest.kind.label()),
+        Property::new(CATALOG.t("backups-used"), size(dest.used_bytes))
+            .with_kind(TextKind::Numeric),
     ];
     if let Some(total) = dest.total_bytes {
         facts.push(
-            Property::new("Free", size(total.saturating_sub(dest.used_bytes)))
-                .with_kind(TextKind::Numeric),
+            Property::new(
+                CATALOG.t("backups-free"),
+                size(total.saturating_sub(dest.used_bytes)),
+            )
+            .with_kind(TextKind::Numeric),
         );
-        facts.push(Property::new("Capacity", size(total)).with_kind(TextKind::Numeric));
+        facts.push(
+            Property::new(CATALOG.t("backups-capacity"), size(total)).with_kind(TextKind::Numeric),
+        );
     }
     facts.push(Property::new(
-        "Encryption",
+        CATALOG.t("backups-encryption"),
         if dest.encrypted {
             "Encrypted"
         } else {
@@ -690,11 +717,20 @@ fn destination_summary(dest: &Destination, catalog: &Catalog, now: NaiveDateTime
         },
     ));
     if let Some(last) = catalog.last_backup(Filter::Destination(&dest.id)) {
-        facts.push(Property::new("Last backup", when(last.taken, now)));
+        facts.push(Property::new(
+            CATALOG.t("backups-last-backup"),
+            when(last.taken, now),
+        ));
     }
     match dest.health {
-        Health::Warning => facts.push(Property::new("Status", "Last run failed")),
-        Health::Unknown => facts.push(Property::new("Status", "Not checked yet")),
+        Health::Warning => facts.push(Property::new(
+            CATALOG.t("backups-status"),
+            "Last run failed",
+        )),
+        Health::Unknown => facts.push(Property::new(
+            CATALOG.t("backups-status"),
+            "Not checked yet",
+        )),
         Health::Ok => {}
     }
     let facts = PropertyList::new(facts);
@@ -724,7 +760,7 @@ fn snapshot_list(model: &Model<'_>, intents: &Intents) -> Element {
         return Box::new(
             EmptyState::new("No snapshots yet")
                 .with_icon(Icon::History)
-                .with_message("Back up now to create the first one."),
+                .with_message(CATALOG.t("backups-empty-snapshots-hint")),
         );
     }
     if model.order == Order::OldestFirst {
@@ -781,10 +817,22 @@ fn snapshot_row(
         .map_or("its destination", |d| d.name.as_str());
     let secondary = match snapshot.status {
         SnapStatus::Complete => changed(snapshot),
-        SnapStatus::Verifying => format!("Verifying on {dest}"),
+        SnapStatus::Verifying => CATALOG.t_args(
+            "backups-verifying-on",
+            &[("destination", ui::i18n::ArgValue::Text(dest.to_owned()))],
+        ),
         SnapStatus::Failed => match &snapshot.failure {
-            Some(reason) => format!("Couldn’t copy to {dest}: {reason}"),
-            None => format!("Couldn’t copy to {dest} (no reason was recorded)"),
+            Some(reason) => CATALOG.t_args(
+                "backups-copy-failed",
+                &[
+                    ("destination", ui::i18n::ArgValue::Text(dest.to_owned())),
+                    ("reason", ui::i18n::ArgValue::Text(reason.clone())),
+                ],
+            ),
+            None => CATALOG.t_args(
+                "backups-copy-failed-unrecorded",
+                &[("destination", ui::i18n::ArgValue::Text(dest.to_owned()))],
+            ),
         },
     };
     let id = snapshot.id.clone();
@@ -825,14 +873,14 @@ fn retention_page(
     catalog: &Catalog,
     now: NaiveDateTime,
 ) -> Container {
-    let mut keep = FormSection::new("Snapshots to keep").grouped();
+    let mut keep = FormSection::new(CATALOG.t("backups-retention-heading")).grouped();
     for (field, state) in PolicyField::ALL.iter().zip(states) {
         keep = keep.field(Field::new(
-            format!("{} snapshots to keep", field.label()),
+            CATALOG.t(field.keep_label_key()),
             NumberInput::from_state(state)
                 .with_range(0.0, 999.0)
                 .with_id(&format!("backups-keep-{}", field.key()))
-                .with_accessible_name(format!("{} snapshots to keep", field.label())),
+                .with_accessible_name(CATALOG.t(field.keep_label_key())),
         ));
     }
     let counts = states.clone();
@@ -917,24 +965,35 @@ pub fn snapshot_details(
     let source = catalog.source(&snapshot.source_id);
     let dest = catalog.destination(&snapshot.dest_id);
     let mut facts = vec![
-        Property::new("Taken", when(snapshot.taken, now)),
-        Property::new("Status", snapshot.status.label()),
-        Property::new("Type", snapshot.kind.label()),
-        Property::new("Retention", snapshot.retention.label()),
-        Property::new("Size", size(snapshot.size_bytes)).with_kind(TextKind::Numeric),
-        Property::new("Changed", changed_size(snapshot)).with_kind(TextKind::Numeric),
+        Property::new(CATALOG.t("backups-taken"), when(snapshot.taken, now)),
+        Property::new(CATALOG.t("backups-status"), snapshot.status.label()),
+        Property::new(CATALOG.t("backups-type"), snapshot.kind.label()),
+        Property::new(CATALOG.t("backups-retention"), snapshot.retention.label()),
+        Property::new(CATALOG.t("backups-size"), size(snapshot.size_bytes))
+            .with_kind(TextKind::Numeric),
+        Property::new(CATALOG.t("backups-changed"), changed_size(snapshot))
+            .with_kind(TextKind::Numeric),
     ];
     if let Some(reason) = &snapshot.failure {
-        facts.push(Property::new("Failure", reason.clone()));
+        facts.push(Property::new(CATALOG.t("backups-failure"), reason.clone()));
     }
     if let Some(source) = source {
-        facts.push(Property::new("Source", source.name.clone()));
-        facts.push(Property::new("Folder", source.path.clone()).with_kind(TextKind::Identifier));
+        facts.push(Property::new(
+            CATALOG.t("backups-source"),
+            source.name.clone(),
+        ));
+        facts.push(
+            Property::new(CATALOG.t("backups-folder"), source.path.clone())
+                .with_kind(TextKind::Identifier),
+        );
     }
     if let Some(dest) = dest {
-        facts.push(Property::new("Stored on", dest.name.clone()));
         facts.push(Property::new(
-            "Encryption",
+            CATALOG.t("backups-stored-on"),
+            dest.name.clone(),
+        ));
+        facts.push(Property::new(
+            CATALOG.t("backups-encryption"),
             if dest.encrypted {
                 "Encrypted"
             } else {
@@ -945,13 +1004,13 @@ pub fn snapshot_details(
     let usable = can_act && snapshot.status != SnapStatus::Failed;
     let restore = {
         let intents = intents.clone();
-        Button::new("backups-restore", "Restore…")
+        Button::new("backups-restore", &CATALOG.t("backups-restore"))
             .with_enabled(usable)
             .on_view(move || intents.push(Intent::OpenRestore))
     };
     let verify = {
         let intents = intents.clone();
-        Button::new("backups-verify", "Verify files")
+        Button::new("backups-verify", &CATALOG.t("backups-verify"))
             .with_enabled(usable)
             .tooltip("Read every file and compare its checksum")
             .on_effect(move || intents.push(Intent::Verify))
@@ -986,37 +1045,48 @@ pub fn restore_dialog(
         .with_intrinsic_height()
         .with_no_padding()
         .push(Box::new(
-            Text::new(
-                "The whole snapshot is restored into a new or empty folder you choose, and \
-                 every file is checked. Nothing that already exists is replaced.",
-            )
-            .with_role(TextRole::Body),
+            Text::new(&crate::i18n::t("backups-restore-note")).with_role(TextRole::Body),
         ));
     let mut facts = vec![
-        Property::new("Taken", when(snapshot.taken, now)),
-        Property::new("Size", size(snapshot.size_bytes)).with_kind(TextKind::Numeric),
+        Property::new(CATALOG.t("backups-taken"), when(snapshot.taken, now)),
+        Property::new(CATALOG.t("backups-size"), size(snapshot.size_bytes))
+            .with_kind(TextKind::Numeric),
     ];
     if let Some(dest) = catalog.destination(&snapshot.dest_id) {
-        facts.push(Property::new("Stored on", dest.name.clone()));
+        facts.push(Property::new(
+            CATALOG.t("backups-stored-on"),
+            dest.name.clone(),
+        ));
     }
     body = body.push(Box::new(PropertyList::new(facts)));
     body = body.push(match file_tree(&snapshot.files) {
-        Some(tree) => {
-            Box::new(Section::new(vec![tree]).with_header(SectionHeader::group("Contents")))
-                as Element
-        }
+        Some(tree) => Box::new(
+            Section::new(vec![tree])
+                .with_header(SectionHeader::group(CATALOG.t("backups-section-contents"))),
+        ) as Element,
         None => Box::new(
-            Text::new("The file list for this snapshot isn’t available yet.")
+            Text::new(&crate::i18n::t("backups-file-list-pending"))
                 .with_role(TextRole::Body)
                 .dimmed(),
         ),
     });
     let title = match &snapshot.label {
-        Some(label) => format!("Restore “{label}”"),
-        None => format!(
-            "Restore {} from {}",
-            snapshot_title(snapshot, catalog),
-            when(snapshot.taken, now).to_lowercase()
+        Some(label) => CATALOG.t_args(
+            "backups-restore-labelled",
+            &[("snapshot", ui::i18n::ArgValue::Text(label.clone()))],
+        ),
+        None => CATALOG.t_args(
+            "backups-restore-from",
+            &[
+                (
+                    "snapshot",
+                    ui::i18n::ArgValue::Text(snapshot_title(snapshot, catalog)),
+                ),
+                (
+                    "when",
+                    ui::i18n::ArgValue::Text(when(snapshot.taken, now).to_lowercase()),
+                ),
+            ],
         ),
     };
     let choose = intents.clone();
@@ -1115,11 +1185,11 @@ pub fn setup(state: &Setup<'_>, intents: &Intents) -> Element {
     let state = match state {
         Setup::Start => EmptyState::new("Protect your important files")
             .with_icon(Icon::Archive)
-            .with_message("Choose a folder to keep a copy of every file in it, checked so you know it is intact.")
+            .with_message(CATALOG.t("backups-setup-start-hint"))
             .with_action("Choose folder…"),
         Setup::ChooseDestination => EmptyState::new("Choose where to keep backups")
             .with_icon(Icon::HardDrive)
-            .with_message("Pick a drive or a folder outside the one you are backing up.")
+            .with_message(CATALOG.t("backups-setup-destination-hint"))
             .with_action("Choose location…"),
         Setup::Running(status) => EmptyState::new("Creating your first backup")
             .with_icon(Icon::Archive)

@@ -9,6 +9,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use ui::tilo_resource::Bytes;
+
 use ui::lock::MutexRecover as _;
 
 /// Pictures read from the content store, by their `asset:` source. A digest
@@ -34,19 +36,22 @@ impl AssetReads {
         self.wake = wake;
     }
 
-    /// Read the pictures `digests` name. Returns the result at once where
-    /// this thread may wait on storage; otherwise starts a worker, replacing
-    /// a read under way, and returns `None`.
-    pub(super) fn start(&mut self, digests: Vec<String>) -> Option<Read> {
+    /// Read the pictures `wanted` names, by their digests, from the window's
+    /// store. Returns the result at once where this thread may wait on
+    /// storage; otherwise starts a worker, replacing a read under way, and
+    /// returns `None`.
+    pub(super) fn start(&mut self, wanted: Vec<(String, Bytes)>) -> Option<Read> {
+        // Taken here: a worker runs outside the window.
+        let content = crate::notebook::content();
         if !ui::storage::waiting::forbidden() {
             self.pending = None;
-            return Some(read(&digests));
+            return Some(read(&content, &wanted));
         }
         let slot = Arc::new(Mutex::new(None));
         let done = Arc::clone(&slot);
         let wake = self.wake.clone();
         let spawned = ui::background::Background::current().spawn("notebook pictures", move || {
-            *done.lock_recover() = Some(read(&digests));
+            *done.lock_recover() = Some(read(&content, &wanted));
             wake.wake();
         });
         match spawned {
@@ -105,7 +110,7 @@ impl super::NotesApp {
                     Some(bytes) => {
                         assets.insert(source, bytes.to_vec());
                     }
-                    None => missing.push(digest.clone()),
+                    None => missing.push((digest.clone(), stored.clone())),
                 }
             }
         }
@@ -156,16 +161,10 @@ impl super::NotesApp {
     }
 }
 
-fn read(digests: &[String]) -> Read {
-    let content = crate::notebook::content();
-    digests
+fn read(content: &tilo_content::ContentStore, wanted: &[(String, Bytes)]) -> Read {
+    wanted
         .iter()
-        .filter_map(|digest| {
-            let bytes = content
-                .read(digest)
-                .filter(|bytes| tilo_content::verify(digest, bytes))?;
-            Some((format!("asset:{digest}"), bytes))
-        })
+        .filter_map(|(digest, stored)| Some((format!("asset:{digest}"), stored.read(content)?)))
         .collect()
 }
 
@@ -176,14 +175,14 @@ mod tests {
     #[test]
     fn pictures_are_read_at_once_off_the_frame_loop_and_on_a_worker_there() {
         let mut reads = AssetReads::new();
-        let digest = tilo_content::hash_bytes(b"picture");
+        let wanted = vec![(tilo_content::hash_bytes(b"picture"), Bytes::of(&[7; 4096]))];
         assert!(
-            reads.start(vec![digest.clone()]).is_some(),
+            reads.start(wanted.clone()).is_some(),
             "a thread that may wait reads at once"
         );
         let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
         assert!(
-            reads.start(vec![digest]).is_none(),
+            reads.start(wanted).is_none(),
             "the frame loop never reads them itself"
         );
         tilo_test_env::wait_until("the worker to read the pictures", || reads.take().is_some());

@@ -1,12 +1,9 @@
 //! WebTransport in a page: the browser's `WebTransport`, reached through
 //! `Reflect` because web-sys only binds it behind its unstable-API flag.
 //!
-//! Beside the async methods the public [`Session`](crate::webtransport::Session)
-//! exposes, the types here implement `web_transport_trait::poll`, which is the
-//! surface a `MoQ` session runs a carrier on. A page has no futures executor
-//! underneath a poll loop, so each pending `poll_*` keeps its own browser
-//! promise in the handle it was started on: a clone of a session or stream
-//! starts its own operation, and dropping a handle abandons the one it held.
+//! The types here also implement `web_transport_trait::poll`. A page has no
+//! futures executor under a poll loop, so each pending `poll_*` keeps its own
+//! browser promise in the handle that started it.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -26,14 +23,12 @@ use super::{call_promise, get, global_get, message, promise, quietly};
 use crate::webtransport::Options;
 use crate::{Feature, NetError};
 
-/// A browser promise in flight, kept by the handle that started it.
 type Pending<T> = SendWrapper<Option<Pin<Box<dyn Future<Output = T> + Send>>>>;
 
 fn pending<T>() -> Pending<T> {
     SendWrapper::new(None)
 }
 
-/// Drive `slot`, starting it with `start` on the first poll.
 fn poll_pending<T, F>(slot: &mut Pending<T>, cx: &mut Context<'_>, start: F) -> Poll<T>
 where
     F: FnOnce() -> Pin<Box<dyn Future<Output = T> + Send>>,
@@ -61,7 +56,8 @@ pub(crate) struct Session {
     closed: Pending<NetError>,
 }
 
-// The shared readers and writers are one browser object each: a clone of the
+// The shared readers and writers are one browser object each, so each clone
+// issues its own operations and keeps its own pending state.
 /// session issues its own operations against them, so each clone's pending
 /// state stays its own.
 impl Clone for Session {
@@ -140,7 +136,6 @@ fn writer(stream: &JsValue) -> Result<WritableStreamDefaultWriter, NetError> {
         .map_err(|error| protocol_error(&error))
 }
 
-/// `{done, value}` from a reader: `None` when done.
 async fn read(reader: ReadableStreamDefaultReader) -> Result<Option<JsValue>, NetError> {
     let result = promise(reader.read()).await.map_err(|_| NetError::Closed)?;
     let done = get(&result, "done")
@@ -149,7 +144,6 @@ async fn read(reader: ReadableStreamDefaultReader) -> Result<Option<JsValue>, Ne
     Ok(if done { None } else { get(&result, "value") })
 }
 
-/// The `closed` promise of `object`, resolving however it settles.
 fn settled(object: &JsValue) -> Pin<Box<dyn Future<Output = Result<(), NetError>> + Send>> {
     let Some(closed) = get(object, "closed") else {
         return Box::pin(async { Err(NetError::Closed) });
@@ -438,9 +432,9 @@ impl web_transport_trait::poll::Session for Session {
         _cx: &mut Context<'_>,
         payload: &[u8],
     ) -> Poll<Result<(), NetError>> {
-        // The browser's datagram writer queues or refuses the payload right
-        // away; there is no capacity to wait for. A refusal is a dropped
-        // datagram, which the protocol allows.
+        // The browser's datagram writer queues or refuses the payload right away;
+        // there is no capacity to wait for. A refusal is a dropped datagram, which
+        // the protocol allows.
         write_now(&self.datagrams_out, payload);
         Poll::Ready(Ok(()))
     }
@@ -514,9 +508,9 @@ impl web_transport_trait::poll::SendStream for SendStream {
     }
 
     fn finish(&mut self) -> Result<(), NetError> {
-        // A stream the peer reset is already errored: closing it throws, and
-        // the close rejects when the peer resets it as the close lands. Both
-        // mean the stream is gone, which the caller reads elsewhere.
+        // A stream the peer reset is already errored: closing it throws, and the
+        // close rejects when the peer resets it as the close lands. Both mean the
+        // stream is gone, which the caller reads elsewhere.
         quietly((*self.writer).as_ref(), "close", &JsValue::UNDEFINED);
         Ok(())
     }
@@ -605,8 +599,8 @@ impl web_transport_trait::poll::RecvStream for RecvStream {
 }
 
 fn write_now(writer: &WritableStreamDefaultWriter, data: &[u8]) {
-    // A datagram the transport can no longer carry is dropped, as the
-    // protocol allows; its refusal is not a page error.
+    // A datagram the transport can no longer carry is dropped, as the protocol
+    // allows; its refusal is not a page error.
     quietly(writer.as_ref(), "write", &Uint8Array::from(data));
 }
 

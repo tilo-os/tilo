@@ -1,11 +1,4 @@
-//! The words of the hardware compatibility report, shared by both sides of
-//! the setup: the host's report of this or another computer and the live
-//! installer's report of the computer it runs on.
-//!
-//! The backend reports typed facts and outcomes. This module owns every
-//! sentence: component names, reasons, evidence and next steps are Fluent
-//! messages, while hardware names, driver names and versions are the values
-//! those messages carry.
+//! The words of the hardware compatibility report, shared by the report and the setup.
 
 use crate::setup::strings::{t, t_args};
 use imager_backend::support_report::{

@@ -379,7 +379,25 @@ async fn routes<'a>(workspace_id: &str, apps: impl Iterator<Item = &'a str>) -> 
             Ok(_) => "SIGN-LENT".to_owned(),
             Err(error) => format!("SIGN-REFUSED {error}"),
         };
-        let write = match handle.send(b"probe: not an operation").await {
+        // A well-formed change of the joined route, left unsigned: what the
+        // broker answers is whether this launch may change that route at all.
+        let unsigned = SignedOp::new_unsigned(
+            b"probe".to_vec(),
+            collab_types::document_artifact_id(app, workspace_id, ""),
+            Ed25519PublicKey::from_bytes(identity.signing_public_key()),
+            collab_types::document_attestation_id(app, workspace_id, ""),
+            OpKind::Change,
+            std::time::SystemTime::now(),
+            1,
+        );
+        let op = match postcard::to_stdvec(&unsigned) {
+            Ok(op) => op,
+            Err(error) => {
+                eprintln!("probe: FAIL the change would not encode: {error}");
+                return ExitCode::from(5);
+            }
+        };
+        let write = match handle.send(&op).await {
             Ok(()) => "WRITE-ADMITTED".to_owned(),
             Err(error) => format!("WRITE-REFUSED {error}"),
         };

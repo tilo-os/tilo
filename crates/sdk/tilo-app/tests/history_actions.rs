@@ -41,10 +41,8 @@ mod reviewed;
 
 #[resource(
     kind = "test.board",
-    label = "Board",
     read_content = read_board,
-    app = "so.tilo.test-board"
-)]
+    app = "so.tilo.test-board", catalogue = "tests/locales")]
 impl Board {
     /// Rename the board.
     #[action]

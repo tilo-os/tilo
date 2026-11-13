@@ -162,17 +162,112 @@ pub struct ResourceFields {
     pub semantic_identity: Option<ResourceSemanticIdentity>,
 }
 
+/// Starts a mark in a catalogue entry's text: [`LABEL_MARK`] after it stands
+/// for the resource's label, and a second one for itself.
+const MARK: char = '\u{1}';
+const LABEL_MARK: char = 'L';
+
+/// `text` with every `label` in it that stands as words of its own marked, so
+/// one entry serves every resource whose words differ only by its name
+/// ("Focus Chat", "Focus Notes").
+fn mark_label(text: &str, label: &str) -> String {
+    let escaped = text.replace(MARK, "\u{1}\u{1}");
+    if label.is_empty() || label.contains(MARK) {
+        return escaped;
+    }
+    let mut out = String::with_capacity(escaped.len());
+    let mut from = 0;
+    for (at, _) in escaped.match_indices(label) {
+        let end = at.saturating_add(label.len());
+        let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+        let before = escaped.get(..at).and_then(|text| text.chars().next_back());
+        let after = escaped.get(end..).and_then(|text| text.chars().next());
+        if word(before) || word(after) {
+            continue;
+        }
+        out.push_str(escaped.get(from..at).unwrap_or_default());
+        out.push(MARK);
+        out.push(LABEL_MARK);
+        from = end;
+    }
+    out.push_str(escaped.get(from..).unwrap_or_default());
+    out
+}
+
+/// [`mark_label`] undone for the resource labelled `label`.
+fn unmark_label(text: &str, label: &str) -> String {
+    if !text.contains(MARK) {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len().saturating_add(label.len()));
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != MARK {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some(LABEL_MARK) => out.push_str(label),
+            Some(other) => out.push(other),
+            None => {}
+        }
+    }
+    out
+}
+
 impl PublishedAction {
-    /// The catalogue entry of this action: everything but its resource's own
-    /// fields, which a [`ResourceFields`] carries.
+    /// The catalogue entry of this action, which every resource of its kind
+    /// shares: everything but its resource's own fields, which a
+    /// [`ResourceFields`] carries, with the resource's label in its words
+    /// marked, and without its live state, which a catalogue does not keep.
+    /// [`Self::on_resource`] gives the action back.
     #[must_use]
     pub fn shape(&self) -> Self {
-        Self {
+        let mut shape = Self {
             resource: String::new(),
             semantic_identity: None,
             resource_kind: String::new(),
             resource_label: String::new(),
+            state: crate::ActionState::default(),
             ..self.clone()
+        };
+        shape.map_words(|text| mark_label(text, &self.resource_label));
+        shape
+    }
+
+    /// The action `self`, a [`Self::shape`], is on the resource `resource`
+    /// with `fields`.
+    #[must_use]
+    pub fn on_resource(&self, resource: &str, fields: &ResourceFields) -> Self {
+        let mut action = Self {
+            resource: resource.to_owned(),
+            semantic_identity: fields.semantic_identity.clone(),
+            resource_kind: fields.resource_kind.clone(),
+            resource_label: fields.resource_label.clone(),
+            ..self.clone()
+        };
+        action.map_words(|text| unmark_label(text, &fields.resource_label));
+        action
+    }
+
+    /// Apply `map` to the words it shows: its label, description, input and
+    /// parameter descriptions.
+    fn map_words(&mut self, map: impl Fn(&str) -> String) {
+        self.action_label = map(&self.action_label);
+        if let Some(description) = &mut self.description {
+            *description = map(description);
+        }
+        if let PublishedInput::Text {
+            prompt,
+            placeholder,
+            ..
+        } = &mut self.input
+        {
+            *prompt = map(prompt);
+            *placeholder = map(placeholder);
+        }
+        for param in &mut self.params {
+            param.description = map(&param.description).into();
         }
     }
 

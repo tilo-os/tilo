@@ -28,11 +28,9 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_egress::{EgressError, EgressOptions, EgressPolicy, Netns, dns, spawn_egress};
 
-/// The address the fake world lives at, as the sandbox sees it.
 const WORLD: &str = "192.0.2.10";
 const PROBE_ENV: &str = "TILO_EGRESS_PROBE";
 
-/// A resolver on host loopback answering every A query with [`WORLD`].
 fn fake_resolver() -> SocketAddr {
     let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
     let addr = sock.local_addr().unwrap();
@@ -63,7 +61,6 @@ fn fake_resolver() -> SocketAddr {
     addr
 }
 
-/// A TCP server on host loopback that greets every connection.
 fn fake_server() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -99,8 +96,6 @@ fn unavailable() -> Option<String> {
     None
 }
 
-/// Run the probe inside `netns`: each step is `resolve:NAME` or
-/// `connect:IP:PORT`; one line of result per step.
 fn probe(netns: &Netns, steps: &[String]) -> Vec<String> {
     let mut cmd = Command::new(std::env::current_exe().unwrap());
     cmd.args(["--exact", "probe_inside_the_namespace", "--nocapture"])
@@ -207,8 +202,6 @@ fn a_granted_name_is_reachable_and_nothing_else_is() {
             "resolve:granted.test".into(),
             format!("connect:{world}"),
             "resolve:a.wild.test".into(),
-            // DNS straight to another server is refused even for an
-            // address that is now allowed.
             format!("connect:{WORLD}:53"),
         ],
     );
@@ -241,7 +234,6 @@ fn a_granted_name_is_reachable_and_nothing_else_is() {
         tilo_egress::Enforcement::Filtered(_)
     ));
 
-    // Taking the grant away empties the sets: the address is refused again.
     egress.update_policy(EgressPolicy::none()).unwrap();
     let got = probe(
         &netns,
@@ -312,8 +304,6 @@ fn without_the_filter_a_sandbox_with_grants_does_not_start() {
     let _: IpAddr = WORLD.parse().unwrap();
 }
 
-/// `pasta` goes when its supervisor does, even by `SIGKILL` — which is how a
-/// closed Terminal ends a served session.
 #[test]
 fn pasta_does_not_outlive_a_killed_supervisor() {
     use std::io::BufRead;

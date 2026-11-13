@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use tilo_app_id::InvalidAppId;
+
 /// A refused link. [`LinkError::code`] is stable and shared with the page
 /// and `tests/links.json`; the `Display` text is what a person reads.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,7 +40,29 @@ pub enum LinkError {
     BadProvider,
 }
 
+impl From<InvalidAppId> for LinkError {
+    fn from(_: InvalidAppId) -> Self {
+        Self::BadApp
+    }
+}
+
 impl LinkError {
+    /// Whether the rule broken is about what the link names inside its
+    /// workspace (its app, document, item or view), not the workspace itself.
+    #[must_use]
+    pub const fn is_inside_workspace(&self) -> bool {
+        matches!(
+            self,
+            Self::BadApp
+                | Self::BadRecord
+                | Self::BadResource
+                | Self::BadView
+                | Self::BadSpan
+                | Self::SpanWithoutResource
+                | Self::TooManySegments
+        )
+    }
+
     #[must_use]
     pub fn code(&self) -> &'static str {
         match self {

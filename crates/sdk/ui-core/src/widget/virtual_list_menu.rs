@@ -71,12 +71,29 @@ pub(super) enum RowMenus<M: ListModel> {
     /// The host opens its own menu where the list reports a row
     /// ([`VirtualList::with_row_menu_reporter`]).
     Reported(RowMenuReport<M::Key>),
+    /// A [`ContextMenuArea`](crate::widget::ContextMenuArea) around the list opens the menu
+    /// where a secondary click lands; the list says which rows offer one
+    /// ([`VirtualList::with_menu_around`]).
+    Around(RowOffersMenu<M>),
 }
+
+/// Whether the row of a key offers a menu, read off the model.
+pub(super) type RowOffersMenu<M> = Box<dyn Fn(&M, &<M as ListModel>::Key) -> bool>;
 
 impl<M: ListModel> RowMenus<M> {
     /// Whether a row offers a menu: the list owns one, or reports it to the host.
     pub(super) fn offers_row_menu(&self) -> bool {
-        !matches!(self, Self::None)
+        matches!(self, Self::Owned(_) | Self::Reported(_))
+    }
+
+    /// Whether the row `key` of `model` offers a menu, whoever opens it: assistive technology and
+    /// a tool may ask that row for it.
+    pub(super) fn row_offers(&self, model: &M, key: &M::Key) -> bool {
+        match self {
+            Self::None => false,
+            Self::Owned(_) | Self::Reported(_) => true,
+            Self::Around(offers) => offers(model, key),
+        }
     }
 
     /// The menu the list owns, while it owns one.
@@ -147,18 +164,19 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
+    /// Say which rows offer the menu a [`ContextMenuArea`](crate::widget::ContextMenuArea)
+    /// around the list opens: the list opens none itself, and a row's menu asked for by assistive
+    /// technology or a tool is a secondary click where the row stands, as a person's is.
+    #[must_use]
+    pub fn with_menu_around(mut self, offers: impl Fn(&M, &M::Key) -> bool + 'static) -> Self {
+        self.menus = RowMenus::Around(Box::new(offers));
+        self
+    }
+
     /// Whether the rows' menu is open.
     #[must_use]
     pub fn context_menu_is_open(&self) -> bool {
         self.menus.owned().is_some_and(|menu| menu.menu.is_open())
-    }
-
-    /// Whether the box that took the menu's place stands open.
-    #[must_use]
-    pub fn send_to_alone_open(&self) -> bool {
-        self.menus
-            .owned()
-            .is_some_and(|menu| menu.menu.send_to_alone_open())
     }
 
     /// Close the rows' menu, its chosen item unheard. A list that reports its row menus to the
@@ -246,7 +264,7 @@ impl<M: ListModel> VirtualList<M> {
         let Some(menu) = self.menus.owned_mut() else {
             return false;
         };
-        if !menu.menu.is_showing() {
+        if !menu.menu.is_open() {
             return false;
         }
         let mut consumed = false;
@@ -299,18 +317,18 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    /// Whether the open menu needs a frame: it arrives, leaves, or a key moved its highlight.
-    /// A closed menu paints nothing, so it asks for none.
+    /// Whether the open menu needs a frame: it arrives, leaves, a key moved its highlight, or
+    /// the box beside it changed. A closed menu paints nothing, so it asks for none.
     pub(super) fn menu_needs_redraw(&self) -> bool {
-        self.menus.owned().is_some_and(|menu| {
-            (menu.menu.is_open() && menu.menu.needs_redraw()) || menu.menu.send_to().is_drawn()
-        })
+        self.menus
+            .owned()
+            .is_some_and(|menu| menu.menu.is_open() && menu.menu.needs_redraw())
     }
 
     /// The open menu's semantics, its targets namespaced into the list's.
     pub(super) fn menu_node(&self) -> Option<AccessNode> {
         let menu = self.menus.owned()?;
-        if !menu.menu.is_open() && !menu.menu.send_to_alone_drawn() {
+        if !menu.menu.is_open() {
             return None;
         }
         let mut node = Widget::accessibility(&menu.menu)?;

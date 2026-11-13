@@ -1,23 +1,13 @@
-//! What the shared workspace stores: saved collections of requests,
-//! environments with their variables, the request in the builder and the
-//! history of what was sent.
-//!
-//! `#[derive(Model)]` is the whole storage contract. Names, URLs, bodies and
-//! row keys and values are text that merges character by character; rows,
-//! requests, collections, environments, variables and history entries are
-//! items with stable ids. A credential never enters the record: a request's
-//! token or password and a secret variable's value stay in the device's
-//! secret store, keyed by the record they belong to; [`Variable::valid`]
-//! refuses a secret variable that carries a value.
-//!
-//! The window works on the plain values of [`crate::model`]; the
-//! projections here turn the record into them.
+//! What the shared workspace stores: collections of requests, environments with their
+//! variables, the request in the builder, and the history of what was sent.
+//! `#[derive(Model)]` is the storage contract. A credential never enters the record: the
+//! document holds references into this device's secret store, keyed by the record they
+//! belong to.
 
 use ui::tilo_resource::{self, Atom, Collection, Id, Model, Refusal};
 
 use crate::model::{self, Auth, BodyMode, HttpMethod, KeyValue};
 
-/// A param, header or form row.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Row {
     /// Key
@@ -29,7 +19,6 @@ pub struct Row {
 }
 
 impl Row {
-    /// A row that is sent.
     pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
             key: key.into(),
@@ -57,7 +46,6 @@ impl Row {
     }
 }
 
-/// How a request authenticates.
 #[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AuthScheme {
     #[default]
@@ -68,7 +56,6 @@ pub enum AuthScheme {
 }
 
 impl AuthScheme {
-    /// Every scheme, in the order the Auth tab offers them.
     pub const ALL: [AuthScheme; 4] = [
         AuthScheme::None,
         AuthScheme::Bearer,
@@ -77,7 +64,6 @@ impl AuthScheme {
     ];
 }
 
-/// A request's authentication, without its credential.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Credentials {
     /// Scheme
@@ -86,12 +72,11 @@ pub struct Credentials {
     pub username: String,
     /// Key header, for an API key.
     pub header: String,
-    /// Immutable device-local credential key, published only after durable storage.
+    /// Immutable device-local credential key, published only once storage has it.
     pub reference: String,
 }
 
 impl Credentials {
-    /// The record of `auth`, without its credential.
     pub fn of(auth: &Auth) -> Self {
         match auth {
             Auth::SecretRef { id, scheme } => Self {
@@ -124,8 +109,7 @@ impl Credentials {
         }
     }
 
-    /// The scheme with an empty credential, for the window to fill from the
-    /// device.
+    /// The scheme with an empty credential, for the window to fill from the device.
     pub fn shown(&self) -> Auth {
         match self.scheme {
             AuthScheme::None => Auth::None,
@@ -144,7 +128,6 @@ impl Credentials {
     }
 }
 
-/// One HTTP request: saved in a collection, or in the builder.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct RequestRecord {
     /// Name
@@ -172,7 +155,6 @@ pub struct RequestRecord {
 }
 
 impl RequestRecord {
-    /// A new GET request named `name`.
     pub fn named(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -180,7 +162,6 @@ impl RequestRecord {
         }
     }
 
-    /// The record of `request`, without its credential. Rows keep their ids.
     pub fn of(request: &model::Request) -> Self {
         let rows = |rows: &[KeyValue]| {
             let mut out = Collection::new();
@@ -202,8 +183,7 @@ impl RequestRecord {
         }
     }
 
-    /// The request as the window works on it, as `id`, with an empty
-    /// credential.
+    /// The request as the window works on it, with an empty credential.
     pub fn shown(&self, id: &Id) -> model::Request {
         let rows = |rows: &Collection<Row>| -> Vec<KeyValue> {
             rows.iter().map(|(id, row)| row.shown(id)).collect()
@@ -223,7 +203,6 @@ impl RequestRecord {
     }
 }
 
-/// A named group of saved requests.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct SavedCollection {
     /// Name
@@ -233,7 +212,6 @@ pub struct SavedCollection {
     pub requests: Collection<RequestRecord>,
 }
 
-/// One `{{variable}}` of an environment.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 #[model(check = Variable::valid)]
 pub struct Variable {
@@ -244,14 +222,12 @@ pub struct Variable {
     pub value: String,
     /// Included
     pub enabled: bool,
-    /// Whether the value is a credential kept on each device. Set when the
-    /// variable is added.
+    /// Whether the value is a credential kept on each device.
     #[model(readonly)]
     pub secret: bool,
 }
 
 impl Variable {
-    /// A secret variable's value never enters the record.
     fn valid(&self) -> Result<(), Refusal> {
         if self.secret && !self.value.is_empty() {
             return Err(Refusal::new(
@@ -272,7 +248,6 @@ impl Variable {
     }
 }
 
-/// A set of `{{variable}}` substitutions.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Environment {
     /// Name
@@ -283,11 +258,10 @@ pub struct Environment {
     pub variables: Collection<Variable>,
 }
 
-/// A request that was sent: what went out and how it went.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Sent {
-    /// Route: the method and the URL without credentials, query values or
-    /// fragment, so it can name the entry anywhere.
+    /// The method and the URL without credentials, query values or fragment, so it can
+    /// name the entry anywhere.
     #[model(label)]
     pub route: Atom,
     /// Method
@@ -300,16 +274,13 @@ pub struct Sent {
     pub duration_ms: u64,
     /// When it completed, in milliseconds since the Unix epoch.
     pub at_ms: i64,
-    /// The request as it was authored when it was sent, as JSON: its
-    /// headers, body, parameters and the credential's *reference* (never the
-    /// credential), so re-opening the entry brings the whole request back
-    /// instead of a blank one with a method and a URL.
+    /// The request as it was authored when it was sent, as JSON, with the credential's
+    /// reference rather than the credential, so re-opening the entry brings the whole
+    /// request back.
     pub replay: Atom,
 }
 
 impl Sent {
-    /// What was sent, labelled by its safe route, with the request that
-    /// produced it.
     pub fn new(
         method: HttpMethod,
         url: &str,
@@ -333,8 +304,7 @@ impl Sent {
         }
     }
 
-    /// The request this entry sent, as it was authored, when the entry kept
-    /// it.
+    /// The request this entry sent, when it kept it.
     pub fn replay_of(&self) -> Option<model::RequestSnapshot> {
         (!self.replay.0.is_empty())
             .then(|| serde_json::from_str(&self.replay.0).ok())

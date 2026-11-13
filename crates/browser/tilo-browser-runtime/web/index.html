@@ -56,6 +56,26 @@ Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found)
 </script>
 <script>
 (()=>{
+// The entry pages' start of the runtime, inlined verbatim into each right
+// after the link scrubber, before any module loads. The runtime module is
+// most of a first visit's download. Left to the page's modules (host.mjs
+// calls init once they all loaded and ran), its compile starts only then;
+// streamed from here it compiles while it downloads and while the modules
+// load. host.mjs takes the compiled module; where this did not run or
+// failed, init fetches and compiles the module itself as before.
+try{
+ var hint=document.querySelector('link[rel="preload"][href$="tilo_browser_runtime_bg.wasm"]');
+ if(!hint||typeof WebAssembly!=='object'||typeof WebAssembly.compileStreaming!=='function')return;
+ // The preload's own request (cors, same-origin credentials), so this takes
+ // its response rather than downloading the module a second time.
+ var compiled=WebAssembly.compileStreaming(fetch(hint.href,{mode:'cors',credentials:'same-origin'}));
+ compiled.catch(function(){});
+ globalThis.__tiloStartModule=compiled;
+}catch(error){}
+})();
+</script>
+<script>
+(()=>{
 // The entry pages' way out while their modules load, inlined verbatim into
 // each after the link scrubber: before the arrival screen (arrival.mjs)
 // runs, nothing else on the page can say that loading stopped. A module
@@ -76,30 +96,109 @@ addEventListener('click',function(event){if(event.target&&event.target.id==='arr
 </script>
 <script>
 (()=>{
-// Whether the entry page opens on its first screen (first-run.mjs), inlined
-// verbatim after the link scrubber so the screen is there at the first
-// paint, before any module loads. Only a browser new here sees it: one that
-// keeps nothing from an earlier visit (no first screen seen, no host that
-// let it in, no workspace entered), opening the site itself rather than a
-// link (no secrets, no route, no workspace named) and not inside another
-// site. Without storage the page opens as it always did.
+// Whether the entry page opens on its first screen (first-run.mjs), and at
+// which step, inlined verbatim after the link scrubber so the screen is there
+// at the first paint, before any module loads. It is decided by the person's
+// setup this browser keeps (`tilo-setup`, first-run.mjs `SETUP`), and by
+// nothing else: a setup under way opens on its step whatever else the page
+// did meanwhile (joining the site's home workspace behind the screen, say),
+// and one that is done never shows the screen again. That holds whatever
+// workspace the address names: once the home workspace lets the page in it
+// writes its own link there, and a reload must not take that for a link the
+// person opened. A browser that keeps no setup sees the screen only when it
+// is new here (no host let it in, no workspace entered) and opens the site
+// itself (no route), and its setup starts now. A link with secrets (an
+// invitation, a pairing) and a page inside another site never show it.
+// A newcomer who arrives by an invitation joins that workspace first, with
+// nothing in their way: their own setup is kept for later (`later`), and
+// shows the next time they open the site itself, never over a workspace's
+// address (the workspace also offers it once they have used it a while,
+// identity-actions.mjs). Without storage the page opens as it always did.
 var root=document.documentElement,secrets=globalThis.__tiloLinkSecrets||{};
-if(Object.keys(secrets).length)return;
-if(location.hash.length>1&&location.hash!=='#/')return;
+var fresh=function(){
+ var kept=['tilo-host-memberships','tilo-entered-workspaces'];
+ for(var i=0;i<kept.length;i++)if(localStorage.getItem(kept[i]))return false;
+ return true;
+};
+var bare=!(location.hash.length>1&&location.hash!=='#/');
+if(Object.keys(secrets).length){
+ try{if(secrets.invite&&!localStorage.getItem('tilo-setup')&&fresh())localStorage.setItem('tilo-setup',JSON.stringify({step:'later',at:Date.now()}));}catch(e){}
+ return;
+}
 if(/[?&](embed|workspace|room|invite)(=|&|$)/.test(location.search))return;
+var setup=null;
 try{
- var kept=['tilo-first-run','tilo-host-memberships','tilo-entered-workspaces'];
- for(var i=0;i<kept.length;i++)if(localStorage.getItem(kept[i]))return;
+ setup=JSON.parse(localStorage.getItem('tilo-setup')||'null');
+ if(!setup||typeof setup!=='object'||typeof setup.step!=='string'){
+  setup=null;
+  if(!bare||!fresh())return;
+  setup={step:'start',at:Date.now()};
+  localStorage.setItem('tilo-setup',JSON.stringify(setup));
+ }else if(setup.step==='later'){
+  // Shown on the site itself, and kept for later still: until they take
+  // it up, a workspace's address opens the workspace.
+  if(!bare)return;
+  setup={step:'start',at:setup.at};
+ }
 }catch(e){return;}
-root.setAttribute('data-first-run','');
+if(setup.step==='done')return;
+var now=Date.now(),code=setup.code,offer=setup.offer,step=setup.step;
+// A code that ran out while nobody looked has run out now.
+if(step==='waiting'&&code&&!(setup.polled&&setup.polled.resolved)&&code.expiresAt<=now)step='expired';
+if(step!=='waiting'&&step!=='expired'&&step!=='connected'&&step!=='opening')step='';
+root.setAttribute('data-first-run',step==='opening'?'connected':step);
+// What the screen showed last, painted once its markup is parsed
+// (index.html calls this right after it), so a resumed setup shows its
+// step at the first frame; first-run.mjs takes over and asks the host.
+globalThis.__tiloSetupPaint=function(){
+ var $=function(id){return document.getElementById(id);},screen=$('first-run'),shown=setup.shown||{};
+ // The prompt breaks only between its words, as first-run.mjs `showPrompt` writes it.
+ var put=function(id,text){var at=$(id);at.textContent='';String(text||'').split(/( +)/).forEach(function(part){if(!part)return;if(/^ +$/.test(part)){at.appendChild(document.createTextNode(part));return;}var word=document.createElement('span');word.className='fr-word';word.textContent=part;at.appendChild(word);});};
+ if(!screen)return;
+ var fresh=offer&&offer.expiresAt-now>60000&&shown.offer?shown.offer:'';
+ screen.dataset.mode=shown.mode==='sign-in'?'sign-in':'setup';
+ if(step===''){if(fresh){put('first-run-offer',fresh);$('first-run-offer-note').textContent='';}return;}
+ if(step==='connected'||step==='opening'){
+  screen.dataset.skipped=String(!shown.heading);
+  $('first-run-connected').textContent=shown.heading||'Opening your workspace';
+  if(!shown.heading)$('first-run-done-lead').textContent='';
+  return;
+ }
+ screen.dataset.manual=String(setup.manual===true);
+ if(step==='expired'){put('first-run-prompt',fresh);return;}
+ put('first-run-prompt',shown.prompt);
+ screen.dataset.copied=String(setup.copied===true);
+ var lines=shown.lines||[],list=$('first-run-steps');
+ for(var i=0;i<lines.length;i++){
+  var line=lines[i],item=document.createElement('li');
+  item.className=line.done?'done':line.act?'act':line.wait?'wait':line.failed?'failed':'now';
+  item.textContent=line.text;list.appendChild(item);
+ }
+ if(code&&!(setup.polled&&setup.polled.resolved)){
+  var minutes=Math.max(1,Math.ceil((code.expiresAt-now)/60000));
+  $('first-run-left').textContent='Works once, for '+(minutes===1?'1 more minute':minutes+' more minutes')+'.';
+ }
+ $('first-run-net').textContent='Checking with '+location.host+'…';
+};
+// The screen is here before its module is: a press on one of its buttons
+// before then is kept, and the module presses it again once it can answer,
+// so a person who clicks at once is not ignored.
+var early=globalThis.__tiloFirstRunEarly=[];
+document.addEventListener('click',function(e){
+ if(globalThis.__tiloFirstRunReady)return;
+ var b=e.target&&e.target.closest&&e.target.closest('#first-run button[id]');
+ if(b)early.push(b.id);
+},true);
 })();
 </script>
 <script>
 // The page's first graphics adapter request starts the browser's GPU
 // process, which takes seconds. It is asked for here, while the modules
 // load, and the renderer check (webgpu-safety.mjs) takes the answer.
+// It asks for the GPU the renderer asks for first: the one driving the
+// display (src/gpu_recovery.rs).
 // ?unsafeWebKitGPU=0 asks for nothing: the check may refuse WebGPU then.
-if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis.__tiloAdapter=navigator.gpu.requestAdapter().catch(function(){return null;});
+if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis.__tiloAdapter=navigator.gpu.requestAdapter({powerPreference:'low-power'}).catch(function(){return null;});
 </script>
   <style>
     html, body { margin: 0; height: 100%; overscroll-behavior: none; background: #121214; color: #ddd; font: 14px system-ui, sans-serif; }
@@ -190,6 +289,10 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     /* Fading out, it no longer takes the pointer: a click on the desktop as it shows reaches it. */
     [data-arrival=done] #arrival { opacity: 0; visibility: hidden; pointer-events: none; }
     #arrival > p, #arrival-note, html:not([data-arrival=done]) #status { position: fixed; z-index: 2; left: 50%; top: calc(50% + 22px); transform: translateX(-50%); width: min(36em, calc(100% - 48px)); margin: 0; text-align: center; line-height: 1.5; color: #c4c4cc; }
+    /* Stopped before the page's modules ran (stall.inline.js): its words
+       grow upwards from just above Try again, so a sentence of any length
+       never runs under the button. */
+    [data-arrival=stopped] #status { top: auto; bottom: calc(50% - 64px); }
     #arrival > p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transition: opacity 240ms ease-out; }
     #arrival > p.shown { opacity: 1; }
     #arrival > p .label { color: #9b9ba3; margin-right: .5em; }
@@ -197,10 +300,10 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #arrival-bar > span { display: block; height: 100%; background: #6c6c76; transform-origin: left; transform: scaleX(var(--progress, 0)); transition: transform 200ms linear; }
     #arrival-retry, #arrival-own { display: none; position: fixed; z-index: 2; left: 50%; top: calc(50% + 80px); transform: translateX(-50%); font: inherit; padding: 8px 14px; border-radius: 8px; border: 0; background: #4a7dff; color: white; cursor: pointer; }
     #arrival-retry:focus-visible, #arrival-own:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
-    [data-arrival=stopped]:not([data-entry=refused]):not([data-entry=unsupported]) #arrival-retry { display: block; }
+    [data-arrival=stopped]:not([data-entry=refused]):not([data-entry=unsupported]):not([data-failure]) #arrival-retry { display: block; }
     /* A step that does not move on: Try again beside the wait (arrival.mjs, stall.inline.js). */
     [data-arrival-stalled]:not([data-arrival=done]):not([data-arrival=stopped]) body:not(:has(.tilo-entry-card)) #arrival-retry { display: block; }
-    [data-arrival=stopped][data-entry=refused][data-own-desktop] #arrival-own { display: block; }
+    [data-arrival=stopped][data-entry=refused][data-own-desktop]:not([data-failure]) #arrival-own { display: block; }
     /* Turned away for coming without an invitation: a door of its own
        (entry-page.mjs `offerDoor`). One calm group, its top fixed a little
        above the middle so nothing it reveals moves what is above: the mark,
@@ -276,6 +379,48 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     .tilo-entry-card { z-index: 3; }
     /* A workspace that turned this browser away for good: only its card shows. */
     [data-refusal] #surface, [data-refusal] #bar { visibility: hidden; }
+    /* Stopped (failure-screen.mjs): the one failure screen, in the
+       reconnect screen's language. What stopped the page as a heading,
+       its cause and what to do in one paragraph, the action that gets the
+       person in, their other workspaces as a quieter second choice, and
+       the technical details folded below. Nothing else of the arrival
+       screen shows under it, and no card over it; #status keeps its words
+       for screen readers. */
+    #arrival-failure { display: none; }
+    [data-failure] #arrival-failure { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: max(40px, calc(50vh - 190px)) 24px 32px; overflow-y: auto; text-align: center; background: #121214; }
+    [data-failure] :is(#arrival, #arrival-note, #arrival-retry, #arrival-own, #arrival-reconnect, .tilo-entry-card) { display: none; }
+    [data-failure] #status { position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .failure-main { display: flex; flex-direction: column; align-items: center; width: min(420px, 100%); }
+    .failure-main > svg { display: block; margin-bottom: 24px; }
+    #arrival-failure h1 { margin: 0 0 10px; font-size: 22px; font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; color: #ececf0; text-wrap: balance; overflow-wrap: anywhere; }
+    #arrival-failure-body { margin: 0 0 24px; font-size: 15px; line-height: 1.5; color: #a8a8b2; text-wrap: pretty; overflow-wrap: anywhere; }
+    .failure-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+    .failure-actions button { box-sizing: border-box; min-width: 136px; height: 40px; padding: 0 18px; font: inherit; font-size: 15px; font-weight: 500; border-radius: 8px; cursor: pointer; }
+    .failure-actions button[hidden] { display: none; }
+    .failure-actions .failure-primary { border: 0; background: #f2f2f4; color: #121214; }
+    .failure-actions .failure-primary:hover { background: #ffffff; }
+    .failure-actions .failure-secondary { border: 1px solid #34363d; background: transparent; color: #d4d4d8; }
+    .failure-actions .failure-secondary:hover { background: #26282e; }
+    .failure-actions button:focus-visible, #arrival-failure-others button:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
+    #arrival-failure-elsewhere { width: 100%; margin-top: 32px; padding-top: 20px; border-top: 1px solid #23252a; }
+    /* Nothing to try again: the other workspaces follow the words closely. */
+    .failure-actions:not(:has(button:not([hidden]))) { display: none; }
+    .failure-actions:not(:has(button:not([hidden]))) + #arrival-failure-elsewhere { margin-top: 8px; }
+    #arrival-failure-elsewhere[hidden] { display: none; }
+    #arrival-failure-others-heading { margin: 0 0 8px; font-size: 13px; line-height: 1.5; color: #8f8f99; }
+    #arrival-failure-others { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+    #arrival-failure-others button { width: 100%; box-sizing: border-box; padding: 10px 12px; font: inherit; font-size: 15px; text-align: left; border-radius: 8px; border: 1px solid #23252a; background: #17181c; color: #d4d4d8; cursor: pointer; overflow-wrap: anywhere; }
+    #arrival-failure-others .failure-note { display: block; font-size: 13px; color: #8f8f99; }
+    #arrival-failure-others button:hover { background: #1f2025; border-color: #34363d; }
+    #arrival-failure-details[hidden] { display: none; }
+    [data-failure] #arrival-failure-details { margin-top: 24px; }
+    #arrival-failure-elsewhere:not([hidden]) + #arrival-failure-details { border-top: 0; padding-top: 0; }
+    @media (max-width: 480px) {
+      [data-failure] #arrival-failure { padding-top: max(32px, calc(38vh - 190px)); }
+      #arrival-failure h1 { font-size: 20px; }
+      .failure-actions { flex-direction: column; align-self: stretch; }
+      .failure-actions button { width: 100%; }
+    }
     /* Not let in yet, and trying again (reconnect.mjs): one calm screen
        for every reason, in the door's language. What happened in plain
        words, a quiet countdown, Try now, and the technical details folded
@@ -297,14 +442,16 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     .reconnect-spinner { display: none; width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgb(18 18 20 / 25%); border-top-color: #121214; animation: tilo-spin 800ms linear infinite; }
     #arrival-reconnect-now[aria-busy=true] .reconnect-spinner { display: block; }
     @keyframes tilo-spin { to { transform: rotate(360deg); } }
-    #arrival-reconnect-details { width: 100%; margin-top: 32px; padding-top: 16px; border-top: 1px solid #23252a; }
-    #arrival-reconnect-details summary { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 2px; font-size: 13px; color: #8f8f99; cursor: pointer; list-style: none; }
-    #arrival-reconnect-details summary::-webkit-details-marker { display: none; }
-    #arrival-reconnect-details summary::before { content: ''; width: 5px; height: 5px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform 120ms ease-out; }
-    #arrival-reconnect-details[open] summary::before { transform: rotate(45deg); }
-    #arrival-reconnect-details summary:hover { color: #c4c4cc; }
-    #arrival-reconnect-details summary:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
-    #arrival-reconnect-text { margin: 12px 0 10px; padding: 10px 12px; border-radius: 8px; border: 1px solid #23252a; background: #17181c; color: #b4b4bd; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+    #arrival-reconnect-host { display: block; margin-top: 16px; font-size: 14px; }
+    #arrival-reconnect-host[hidden] { display: none; }
+    :is(#arrival-reconnect-details, #arrival-failure-details) { width: 100%; margin-top: 32px; padding-top: 16px; border-top: 1px solid #23252a; }
+    :is(#arrival-reconnect-details, #arrival-failure-details) summary { display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 2px; font-size: 13px; color: #8f8f99; cursor: pointer; list-style: none; }
+    :is(#arrival-reconnect-details, #arrival-failure-details) summary::-webkit-details-marker { display: none; }
+    :is(#arrival-reconnect-details, #arrival-failure-details) summary::before { content: ''; width: 5px; height: 5px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform 120ms ease-out; }
+    :is(#arrival-reconnect-details, #arrival-failure-details)[open] summary::before { transform: rotate(45deg); }
+    :is(#arrival-reconnect-details, #arrival-failure-details) summary:hover { color: #c4c4cc; }
+    :is(#arrival-reconnect-details, #arrival-failure-details) summary:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
+    :is(#arrival-reconnect-text, #arrival-failure-text) { margin: 12px 0 10px; padding: 10px 12px; border-radius: 8px; border: 1px solid #23252a; background: #17181c; color: #b4b4bd; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
     .reconnect-copy { font: inherit; font-size: 13px; padding: 0; border: 0; background: none; color: #c9d3ff; cursor: pointer; text-decoration: underline; text-decoration-color: rgb(201 211 255 / 35%); text-underline-offset: 3px; }
     .reconnect-copy:hover { color: #e4e9ff; text-decoration-color: currentColor; }
     .reconnect-copy:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 3px; border-radius: 2px; }
@@ -314,7 +461,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     }
     @media (prefers-reduced-motion: reduce) {
       .reconnect-main > svg, .reconnect-spinner { animation: none; }
-      #arrival-reconnect-details summary::before { transition: none; }
+      :is(#arrival-reconnect-details, #arrival-failure-details) summary::before { transition: none; }
     }
     @media (prefers-reduced-motion: reduce) {
       #arrival { transition: none; }
@@ -334,9 +481,13 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
       position: fixed; inset: 0; z-index: 20; display: flex; box-sizing: border-box; overflow-y: auto;
       padding: max(24px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
       background: var(--fr-ground); color: var(--fr-ink); font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
-      transition: opacity 260ms ease-out;
+      transition: opacity 260ms ease-out; color-scheme: dark;
+      /* Where the screen scrolls, its scrollbar is drawn in the screen's own tones, never the
+         browser's light default over a dark page. */
+      scrollbar-width: thin; scrollbar-color: var(--fr-edge) transparent;
     }
     @media (prefers-color-scheme: light) {
+      [data-first-run] #first-run { color-scheme: light; }
       [data-first-run] #first-run {
         --fr-ground: #f7f7f9; --fr-ink: #17181c; --fr-muted: #55565f; --fr-faint: #73747d; --fr-line: #e1e2e7; --fr-edge: #c9cad2;
         --fr-well: #ffffff; --fr-primary: #17181c; --fr-primary-ink: #ffffff; --fr-primary-hover: #000000;
@@ -345,7 +496,8 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     }
     #first-run[data-closing] { opacity: 0; pointer-events: none; }
     html[data-first-run]:not(:has(#first-run[data-closing])) #bar { visibility: hidden; }
-    .fr-page { display: grid; gap: 40px; width: min(880px, 100%); margin: auto; }
+    /* Anchored from the top, not centred: what changes under the prompt never moves what is above it. */
+    .fr-page { display: grid; gap: 40px; width: min(880px, 100%); margin: min(8vh, 72px) auto auto; }
     .fr-main, .fr-aside { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
     .fr-mark { display: block; margin-bottom: 28px; }
     .fr-mark .side { fill: var(--fr-side); } .fr-mark .core { fill: var(--fr-core); }
@@ -362,7 +514,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #first-run .fr-quiet { min-height: 44px; padding: 0 12px; border: 0; border-radius: 8px; background: none; color: var(--fr-muted); font-size: 15px; }
     #first-run .fr-quiet:hover, #first-run .fr-quiet[aria-expanded=true] { background: var(--fr-quiet-hover); color: var(--fr-ink); }
     #first-run .fr-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; width: 100%; min-height: 44px; padding: 0 16px; border: 1px solid var(--fr-edge); border-radius: 10px; background: var(--fr-well); font-weight: 500; }
-    #first-run .fr-secondary + .fr-secondary { margin-top: 10px; }
+    #first-run .fr-secondary ~ .fr-secondary { margin-top: 10px; }
     #first-run .fr-secondary:hover { border-color: var(--fr-faint); }
     .fr-aside { padding-top: 28px; border-top: 1px solid var(--fr-line); }
     .fr-eyebrow { margin: 0 0 4px; font-size: 13px; color: var(--fr-faint); }
@@ -378,18 +530,58 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     .fr-field code { flex: 1; min-width: 0; overflow-wrap: anywhere; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     #first-run .fr-copy { flex: none; min-height: 32px; padding: 0 12px; border: 0; border-radius: 8px; background: none; font-size: 13px; font-weight: 500; }
     #first-run .fr-copy:hover { background: var(--fr-quiet-hover); }
-    /* The wait: the prompt, then what the agent did so far. */
-    .fr-wait { display: none; width: 100%; }
-    [data-first-run=waiting] .fr-start, [data-first-run=expired] .fr-start, [data-first-run=failed] .fr-start, [data-first-run=connected] .fr-start { display: none; }
-    [data-first-run=waiting] .fr-wait, [data-first-run=expired] .fr-wait, [data-first-run=failed] .fr-wait { display: flex; flex-direction: column; align-items: flex-start; }
-    [data-first-run]:not([data-first-run='']) .fr-aside { display: none; }
-    [data-first-run]:not([data-first-run='']) .fr-page { width: min(560px, 100%); }
+    /* After a copy the same screen follows the code: the heading and lead
+       change in place, the prompt stays where it was, and what the agent
+       did so far shows under it. The aside's column stays, so nothing
+       moves sideways. */
+    html:not([data-first-run=waiting]):not([data-first-run=expired]):not([data-first-run=failed]) #first-run .fr-for-wait { display: none; }
+    html:is([data-first-run=waiting], [data-first-run=expired], [data-first-run=failed]) #first-run .fr-for-start { display: none; }
+    [data-first-run=connected] .fr-start { display: none; }
+    [data-first-run]:not([data-first-run='']) .fr-aside { visibility: hidden; }
+    /* Stacked under the main column (a phone), the hidden aside would only lengthen the page. */
+    @media (max-width: 759.98px) { [data-first-run]:not([data-first-run='']) .fr-aside { display: none; } }
+    /* A phone's prompt in a smaller mono size, so most of it fits without scrolling sideways. */
+    @media (max-width: 600px) { .fr-offer pre { font-size: 12px; } }
+    /* The headings, and the leads, take one place each, whichever shows. */
+    .fr-swap { display: grid; }
+    .fr-swap > * { grid-area: 1 / 1; }
+    #first-run .fr-swap > * { display: block !important; }
+    html:not([data-first-run=waiting]):not([data-first-run=expired]):not([data-first-run=failed]) #first-run .fr-swap > .fr-for-wait,
+    html:is([data-first-run=waiting], [data-first-run=expired], [data-first-run=failed]) #first-run .fr-swap > .fr-for-start,
+    #first-run[data-mode=setup] .fr-swap > .fr-for-sign-in, #first-run[data-mode=sign-in] .fr-swap > .fr-for-setup { visibility: hidden; }
     [data-mode=setup] .fr-for-sign-in, [data-mode=sign-in] .fr-for-setup { display: none; }
     .fr-well { display: flex; align-items: flex-start; box-sizing: border-box; width: 100%; margin: 0 0 24px; border: 1px solid var(--fr-line); border-radius: 12px; background: var(--fr-well); }
     .fr-well pre { flex: 1; min-width: 0; box-sizing: border-box; max-height: 168px; margin: 0; padding: 12px 4px 12px 16px; overflow: auto; font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--fr-ink); white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
-    .fr-well pre:empty::before { content: 'Preparing…'; color: var(--fr-faint); }
+    /* The prompt wraps only between its words: a flag or a URL stays whole, and one wider than the
+       box scrolls sideways rather than breaking (first-run.mjs `showPrompt`). */
+    .fr-offer pre { overflow-wrap: normal; }
+    .fr-offer .fr-word { white-space: nowrap; }
+    #first-run [hidden] { display: none !important; }
+    /* The prompt the primary button copies, there before the click; until
+       the page has its code, the well says what it waits for, or why there
+       is none, with a way to try again. */
+    .fr-start { align-self: stretch; }
+    .fr-offer { min-height: 66px; max-width: 520px; margin-bottom: 16px; }
+    #first-run-offer:empty, .fr-offer-note:empty { display: none; }
+    .fr-offer-note { flex: 1; margin: 0; padding: 12px 16px; font-size: 14px; color: var(--fr-faint); }
+    .fr-offer-note[data-problem=true] { color: var(--fr-problem); }
+    /* The prompt takes the box's whole width, so it wraps the same before and after the click; the
+       box's own Copy stands under it at the box's trailing edge, in line with its padding. */
+    .fr-offer { flex-direction: column; align-items: stretch; }
+    .fr-offer pre { padding: 12px 16px; }
+    #first-run .fr-offer .fr-copy { align-self: flex-end; margin: 0 6px 6px; }
+    /* The button that copies the prompt is as wide as the box it copies. */
+    #first-run .fr-start > .fr-primary { width: 100%; max-width: 520px; }
+    #first-run .fr-start > .fr-primary:disabled { opacity: 0.4; cursor: default; }
+    #first-run[data-setup=failed] .fr-start > .fr-caption { visibility: hidden; }
+    #first-run-sign-in-note { margin: 8px 0 0; font-size: 13px; color: var(--fr-muted); }
+    #first-run-sign-in-note:empty { display: none; }
+    #first-run-sign-in-note[data-problem=true] { color: var(--fr-problem); }
+    .fr-copied { display: none; margin: 4px 0 0; font-size: 13px; color: var(--fr-on); }
+    #first-run[data-copied=true] .fr-copied { display: block; }
+    html[data-first-run=expired] #first-run .fr-copied, html[data-first-run=failed] #first-run .fr-copied { display: none; }
     .fr-well-bar { flex: none; padding: 6px; }
-    [data-manual=true] .fr-wait .fr-well, [data-manual=true] .fr-wait .fr-lead { display: none; }
+    [data-manual=true] .fr-offer, [data-manual=true] .fr-lead, [data-manual=true] .fr-caption, [data-manual=true] .fr-copied { display: none; }
     #first-run-steps { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; font-size: 15px; }
     #first-run-steps li { display: flex; align-items: center; gap: 12px; }
     #first-run-steps li::before { content: ''; flex: none; box-sizing: border-box; width: 16px; height: 16px; border-radius: 50%; }
@@ -398,17 +590,33 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #first-run-steps .now::before, .fr-spinner { border: 2px solid var(--fr-line); border-top-color: var(--fr-ink); animation: tilo-spin 900ms linear infinite; }
     #first-run-steps .act { font-weight: 600; }
     #first-run-steps .act::before { border: 2px solid var(--fr-core); }
+    #first-run-steps .wait { color: var(--fr-muted); }
+    #first-run-steps .failed { color: var(--fr-problem); }
+    #first-run-steps .failed::before { border: 2px solid var(--fr-problem); }
+    /* Why nothing new shows: offline, a host not answering, an agent quiet for long. */
+    #first-run-net { margin: 10px 0 0 28px; font-size: 13px; color: var(--fr-muted); }
+    #first-run-net:empty { display: none; }
+    /* The agent stopped: a new prompt to try again, under its reason. */
+    #first-run[data-agent-failed=true] #first-run-retry { display: inline-flex; }
+    #first-run[data-agent-failed=true] .fr-copied { display: none; }
+    /* Opening after Skip: nothing succeeded, so no check, only the wait. */
+    #first-run .fr-opening { display: none; width: 28px; height: 28px; margin-bottom: 20px; border-width: 3px; }
+    #first-run[data-skipped=true] .fr-check { display: none; }
+    #first-run[data-skipped=true] .fr-opening { display: block; }
+    #first-run-done-lead:empty { display: none; }
+    #first-run-steps .wait::before { border: 2px solid var(--fr-edge); }
     .fr-spinner { flex: none; box-sizing: border-box; width: 14px; height: 14px; border-radius: 50%; }
     #first-run-left { margin: 6px 0 0 28px; font-size: 13px; color: var(--fr-faint); font-variant-numeric: tabular-nums; }
     #first-run-left:empty { display: none; }
-    #first-run-problem { margin: 0 0 12px; font-size: 14px; color: var(--fr-problem); }
+    #first-run-problem { margin: 12px 0 0; font-size: 14px; color: var(--fr-problem); }
     #first-run-problem:empty { display: none; }
     #first-run #first-run-retry { display: none; margin-top: 20px; }
     [data-first-run=expired] #first-run #first-run-retry, [data-first-run=failed] #first-run #first-run-retry { display: inline-flex; }
     [data-first-run=expired] #first-run-steps, [data-first-run=failed] #first-run-steps, [data-first-run=expired] #first-run-left, [data-first-run=failed] .fr-well { display: none; }
-    .fr-expired { display: none; margin: 0; font-size: 14px; color: var(--fr-muted); }
+    .fr-expired { display: none; margin: 12px 0 0; font-size: 14px; color: var(--fr-muted); }
     [data-first-run=expired] .fr-expired { display: block; }
-    .fr-wait .fr-links { margin-top: 28px; }
+    .fr-links.fr-for-wait { margin-top: 28px; }
+    #first-run-steps { margin-top: 20px; }
     /* Done: the agent is in, or this tab is signed in. */
     .fr-done { display: none; flex-direction: column; align-items: flex-start; }
     [data-first-run=connected] .fr-done { display: flex; }
@@ -417,7 +625,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     .fr-said { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     @media (min-width: 760px) {
       [data-first-run] #first-run { padding: 48px; }
-      [data-first-run=''] .fr-page { grid-template-columns: minmax(0, 1fr) 260px; gap: 72px; align-items: start; }
+      [data-first-run] .fr-page { grid-template-columns: minmax(0, 1fr) 260px; gap: 72px; align-items: start; }
       .fr-aside { padding: 0 0 0 40px; border-top: 0; border-left: 1px solid var(--fr-line); margin-top: 72px; }
       #first-run h1 { font-size: 32px; }
       .fr-lead { font-size: 16px; }
@@ -433,12 +641,24 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     <div class="fr-main">
       <svg class="fr-mark" aria-hidden="true" viewBox="0 0 100 100" width="40" height="40"><path class="side" d="M10.98 31.85Q10.98 27.97 14.4 26.12L20.26 22.97Q24.84 20.51 24.84 25.71L24.84 74.29Q24.84 79.49 20.26 77.03L14.4 73.88Q10.98 72.03 10.98 68.15Z"/><path class="side" d="M89.02 31.85Q89.02 27.97 85.6 26.12L79.74 22.97Q75.16 20.51 75.16 25.71L75.16 74.29Q75.16 79.49 79.74 77.03L85.6 73.88Q89.02 72.03 89.02 68.15Z"/><rect class="core" x="29" y="16" width="42" height="68" rx="6"/></svg>
       <div class="fr-start">
-        <h1 id="first-run-heading" tabindex="-1">Let your agent set up Tilo</h1>
-        <p class="fr-lead">Paste one line into Claude Code, Codex or any agent. It installs Tilo and signs in as you, and this tab becomes your workspace, with your agent in it.</p>
-        <button id="first-run-agent" class="fr-primary" type="button"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>Set up with your agent</button>
-        <p class="fr-caption">Copies the prompt. Its code works once, only for this tab.</p>
-        <div class="fr-links"><button id="first-run-manual-toggle" class="fr-quiet" type="button" aria-expanded="false" aria-controls="first-run-manual">Set up manually</button><button id="first-run-skip" class="fr-quiet" type="button">Skip for now</button></div>
-        <div id="first-run-manual" class="fr-manual">
+        <div class="fr-swap"><h1 id="first-run-heading" class="fr-for-start" tabindex="-1">Let your agent set up Tilo</h1>
+        <h1 id="first-run-heading-wait" class="fr-for-wait" tabindex="-1">Paste it into your agent</h1></div>
+        <div class="fr-leads"><p class="fr-lead fr-for-start">Paste this line into Claude Code, Codex or any agent. It installs Tilo and signs in as you, and this tab becomes your workspace, with your agent in it.</p>
+        <p class="fr-lead fr-for-wait fr-for-setup">Paste the prompt into Claude Code, Codex or any agent; this tab follows along.</p>
+        <p class="fr-lead fr-for-wait fr-for-sign-in">Paste the prompt into your agent on a computer where you use Tilo, and it signs this tab in as you.</p></div>
+        <div class="fr-well fr-offer"><pre id="first-run-offer" class="fr-for-start" aria-label="The prompt"></pre><pre id="first-run-prompt" class="fr-for-wait" aria-label="The prompt"></pre><p id="first-run-offer-note" class="fr-offer-note fr-for-start" data-problem="false">Getting your code…</p><button id="first-run-offer-retry" class="fr-copy fr-for-start" type="button" hidden>Try again</button><button id="first-run-again" class="fr-copy fr-for-wait" type="button">Copy</button></div>
+        <button id="first-run-agent" class="fr-primary fr-for-start" type="button"><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>Copy prompt</button>
+        <p class="fr-caption fr-for-start">The code in it works once, for 10 minutes, in this tab only.</p>
+        <p class="fr-copied fr-for-wait">Copied to your clipboard.</p>
+        <p id="first-run-problem" class="fr-for-wait"></p>
+        <ol id="first-run-steps" class="fr-for-wait" aria-label="What your agent did"></ol>
+        <p id="first-run-left" class="fr-for-wait"></p>
+        <p id="first-run-net" class="fr-for-wait"></p>
+        <p class="fr-expired">That prompt ran out before an agent used it. Here is a fresh one.</p>
+        <button id="first-run-retry" class="fr-primary" type="button">Copy a new prompt</button>
+        <div class="fr-links fr-for-start"><button id="first-run-manual-toggle" class="fr-quiet" type="button" aria-expanded="false" aria-controls="first-run-manual">Set up manually</button><button id="first-run-skip" class="fr-quiet" type="button">Skip for now</button></div>
+        <div class="fr-links fr-for-wait"><button id="first-run-back" class="fr-quiet" type="button">Back</button><button id="first-run-skip-wait" class="fr-quiet fr-for-setup" type="button">Skip for now</button></div>
+        <div id="first-run-manual" class="fr-manual fr-for-start">
           <p class="fr-label">Tilo’s MCP server, for any agent</p>
           <div class="fr-field"><code id="first-run-mcp">https://mcp.tilo.sh</code><button id="first-run-copy-mcp" class="fr-copy" type="button">Copy</button></div>
           <p class="fr-label">Or in a terminal</p>
@@ -446,29 +666,19 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
           <p id="first-run-manual-left" class="fr-caption"></p>
         </div>
       </div>
-      <div class="fr-wait">
-        <h1 id="first-run-heading-wait" tabindex="-1">Paste it into your agent</h1>
-        <p class="fr-lead fr-for-setup">The prompt is on your clipboard. Paste it into Claude Code, Codex or any agent; this tab follows along.</p>
-        <p class="fr-lead fr-for-sign-in">The prompt is on your clipboard. Paste it into your agent on a computer where you use Tilo, and it signs this tab in as you.</p>
-        <div class="fr-well"><pre id="first-run-prompt" aria-label="The prompt"></pre><div class="fr-well-bar"><button id="first-run-again" class="fr-copy" type="button">Copy</button></div></div>
-        <p id="first-run-problem"></p>
-        <ol id="first-run-steps" aria-label="What your agent did"></ol>
-        <p id="first-run-left"></p>
-        <p class="fr-expired">This prompt expired before an agent used it.</p>
-        <button id="first-run-retry" class="fr-primary" type="button">Copy a new prompt</button>
-        <div class="fr-links"><button id="first-run-back" class="fr-quiet" type="button">Back</button><button id="first-run-skip-wait" class="fr-quiet fr-for-setup" type="button">Skip for now</button></div>
-      </div>
-      <div class="fr-done"><span class="fr-check" aria-hidden="true"></span><h1 id="first-run-connected">Your agent is in your workspace</h1><p class="fr-lead">Opening your workspace…</p></div>
+      <div class="fr-done"><span class="fr-check" aria-hidden="true"></span><span class="fr-spinner fr-opening" aria-hidden="true"></span><h1 id="first-run-connected">Your agent is in your workspace</h1><p id="first-run-done-lead" class="fr-lead">Opening your workspace…</p></div>
     </div>
     <aside class="fr-aside" aria-labelledby="first-run-sign-in">
       <p class="fr-eyebrow">Returning?</p>
       <h2 id="first-run-sign-in">Sign in</h2>
       <button id="first-run-agent-sign-in" class="fr-secondary" type="button">Sign in with your agent</button>
+      <p id="first-run-sign-in-note" data-problem="false"></p>
       <button id="first-run-passkey" class="fr-secondary" type="button" aria-busy="false"><span class="fr-spinner fr-busy" aria-hidden="true"></span>Use a passkey</button>
       <p class="fr-note">Or open a pairing link from a device where you’re signed in.</p>
     </aside>
     <p id="first-run-status" class="fr-said" role="status"></p>
   </div></main>
+  <script>globalThis.__tiloSetupPaint&&globalThis.__tiloSetupPaint();</script>
   <!-- The first screen works as soon as this small module is in, not after
        the entry page's modules: `async` runs it the moment it arrives. -->
   <script type="module" async src="./first-run.mjs"></script>
@@ -478,7 +688,8 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
   <button id="arrival-retry" type="button">Try again</button>
   <button id="arrival-own" type="button">Open your own desktop</button>
   <section id="arrival-door" aria-labelledby="arrival-door-heading"><div class="door-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-door-heading"></h1><p id="arrival-door-body"></p><form id="arrival-wait" class="door-field" novalidate><input id="arrival-wait-email" name="email" type="email" inputmode="email" autocomplete="email" spellcheck="false" autocapitalize="off" maxlength="254" placeholder="you@example.com" aria-label="Email" aria-describedby="arrival-wait-note"><button type="submit">Join the wait list</button></form><p id="arrival-wait-done" role="status"></p><p id="arrival-wait-again-line" class="door-note" hidden><span id="arrival-wait-again-prompt"></span> <button id="arrival-wait-again" class="door-link" type="button"></button></p><p id="arrival-wait-off" class="door-note"><span id="arrival-wait-change"></span> <button id="arrival-wait-leave" class="door-link" type="button"></button></p><p id="arrival-wait-note" class="door-note"></p><p id="arrival-wait-contact" class="door-note"></p><div class="door-alt"><p id="arrival-sign-in"><span id="arrival-sign-in-ask">Already have a Tilo identity?</span> <button id="arrival-sign-in-button" class="door-link" type="button">Sign in</button></p><p id="arrival-sign-in-note" role="alert"></p><p><button id="arrival-invite-toggle" class="door-link" type="button" aria-expanded="false" aria-controls="arrival-invite">Have an invite link?</button></p><form id="arrival-invite" class="door-field" hidden><input id="arrival-invite-link" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste an invite link" aria-label="Invite link"><button type="submit">Open</button><p id="arrival-invite-error" role="alert"></p></form></div></div><div class="door-foot"></div></section>
-  <section id="arrival-reconnect" aria-labelledby="arrival-reconnect-heading"><div class="reconnect-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-reconnect-heading"></h1><p id="arrival-reconnect-body"></p><p id="arrival-reconnect-next" aria-hidden="true"></p><p id="arrival-reconnect-said" class="reconnect-said" role="status" aria-live="polite"></p><button id="arrival-reconnect-now" type="button" aria-busy="false"><span class="reconnect-spinner" aria-hidden="true"></span><span id="arrival-reconnect-now-label">Try now</span></button><details id="arrival-reconnect-details"><summary id="arrival-reconnect-summary">Technical details</summary><pre id="arrival-reconnect-text"></pre><button id="arrival-reconnect-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>
+  <section id="arrival-failure" aria-labelledby="arrival-failure-heading"><div class="failure-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-failure-heading"></h1><p id="arrival-failure-body"></p><div class="failure-actions"><button id="arrival-failure-host" type="button" hidden></button><button id="arrival-failure-retry" type="button" hidden>Try again</button></div><div id="arrival-failure-elsewhere" hidden><p id="arrival-failure-others-heading"></p><ul id="arrival-failure-others"></ul></div><details id="arrival-failure-details" hidden><summary id="arrival-failure-summary">Technical details</summary><pre id="arrival-failure-text"></pre><button id="arrival-failure-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>
+  <section id="arrival-reconnect" aria-labelledby="arrival-reconnect-heading"><div class="reconnect-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-reconnect-heading"></h1><p id="arrival-reconnect-body"></p><p id="arrival-reconnect-next" aria-hidden="true"></p><p id="arrival-reconnect-said" class="reconnect-said" role="status" aria-live="polite"></p><button id="arrival-reconnect-now" type="button" aria-busy="false"><span class="reconnect-spinner" aria-hidden="true"></span><span id="arrival-reconnect-now-label">Try now</span></button><a id="arrival-reconnect-host" class="reconnect-copy" target="_blank" rel="noopener" hidden></a><details id="arrival-reconnect-details"><summary id="arrival-reconnect-summary">Technical details</summary><pre id="arrival-reconnect-text"></pre><button id="arrival-reconnect-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>
   <div id="bar"><span id="status" role="status">Loading Tilo…</span></div>
   <script type="module">
     // A Tilo link under this entry: desktop mode. The route is in the

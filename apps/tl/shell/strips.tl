@@ -141,11 +141,7 @@ view strips_view(a: Arrangement, v: Viewing, lists: Bool) {
         // A desk the session has published no workspace of yet: it holds nothing to draw.
         scroll(axis: .both) {
             stack(gap: .group, fill) {
-                ui.EmptyState(
-                    "No window here yet",
-                    message: "Open something into this strip.",
-                    inline: true,
-                )
+                ui.EmptyState("No window here yet", inline: true)
             }
         }
     }
@@ -187,11 +183,7 @@ view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: B
             if let s = front {
                 strip_window(a, v, s, lists, fill(1))
             } else {
-                ui.EmptyState(
-                    "No window here yet",
-                    message: "Open something into this strip.",
-                    inline: true,
-                )
+                ui.EmptyState("No window here yet", inline: true)
             }
         } else {
             scroll(axis: .horizontal, fill) {
@@ -200,11 +192,7 @@ view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: B
                         row_window(a, v, s, lists)
                     }
                     if strips.is_empty() {
-                        ui.EmptyState(
-                            "No window here yet",
-                            message: "Open something into this strip.",
-                            inline: true,
-                        )
+                        ui.EmptyState("No window here yet", inline: true)
                     }
                 }
             }
@@ -249,7 +237,10 @@ view strip_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) 
             focused: in_front,
             lists_actions: lists_the_shown(shown),
             carries: window_record(shown),
+            fill,
         ) {
+            // The window fills the room the drop target around it is given: the target only
+            // takes what is dropped on it, and the window keeps the strip's whole height.
             controls: {
                 window_controls(a, v, s, shown, in_front, lists)
             }
@@ -270,11 +261,7 @@ view strip_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) 
                 if let p = shown {
                     place_content(p)
                 } else {
-                    ui.EmptyState(
-                        "Nothing here",
-                        message: "Open something into this strip.",
-                        inline: true,
-                    )
+                    ui.EmptyState("Nothing here", inline: true)
                 }
             }
         }

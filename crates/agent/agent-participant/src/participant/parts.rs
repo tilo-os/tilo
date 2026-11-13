@@ -9,6 +9,7 @@
 
 use collab_types::DocumentMutation;
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_session_client::Outbox;
 
 use super::AgentParticipant;
 
@@ -54,6 +55,11 @@ impl AgentParticipant {
                 Ok(()) => {
                     tracing::debug!(part = %route.record, "agent: merged a part");
                     self.beside.insert(route.clone(), holder.clone());
+                    // What waited for the part (a post made before the chain's
+                    // newest part was here) is written now: it goes out.
+                    if let Err(error) = self.publish_parts(&holder) {
+                        tracing::warn!(%error, "agent: a part's change could not be committed");
+                    }
                     return Some(holder);
                 }
                 Err(error) => {
@@ -101,15 +107,20 @@ impl AgentParticipant {
     }
 
     /// Publish what the record at `holder` changed of the parts it holds
-    /// beside it, each on the part's own route.
-    pub(super) fn publish_parts(&mut self, holder: &DocumentRoute) -> Result<(), String> {
+    /// beside it, each on the part's own route. Whether it published any.
+    pub(super) fn publish_parts(&mut self, holder: &DocumentRoute) -> Result<bool, String> {
         let Some(app) = self.apps.get(holder) else {
-            return Ok(());
+            return Ok(false);
         };
         let taken = app
             .take_record_mutations()
             .map_err(|error| error.to_string())?;
-        let known = self.peer.status().routes;
+        let known = self
+            .peer
+            .engine()
+            .records(&holder.cluster_id)
+            .unwrap_or_default();
+        let published = !taken.is_empty();
         for (record, mutation) in taken {
             let part = DocumentRoute {
                 app_id: holder.app_id.clone(),
@@ -122,16 +133,18 @@ impl AgentParticipant {
             // this one goes out as changes on top of it, which meet the
             // others' as two starts of one part do.
             let mutation = match mutation {
-                DocumentMutation::Snapshot(bytes) if known.contains_key(&part) => {
+                DocumentMutation::Snapshot(bytes)
+                    if known.contains(&(part.app_id.clone(), part.record.clone())) =>
+                {
                     DocumentMutation::Incremental(bytes)
                 }
                 mutation => mutation,
             };
             self.generation = self.generation.wrapping_add(1);
             tracing::debug!(part = %part.record, "agent: published a part");
-            self.peer.publish(part.clone(), &mutation)?;
+            self.peer.write(part.clone(), &mutation)?;
             self.beside.insert(part, holder.clone());
         }
-        Ok(())
+        Ok(published)
     }
 }

@@ -10,20 +10,6 @@
 //! The design system's gallery (`docs/design-language.md`, "Primitives"):
 //! every primitive in every state (rest, hover, pressed, focused, disabled,
 //! on, selected), dark and light, and the rows again at compact density.
-//!
-//! Pages, each `<page>-<theme>.png`:
-//!
-//! - `surfaces`: the five levels in place (ground, a window with a region,
-//!   raised wells and a floating menu) and the colour roles: accent, accent
-//!   ink, on state, neutral fill and the four status tones.
-//! - `controls`: buttons by role, icon buttons, bar controls, switch,
-//!   checkbox, radio, segmented, slider and chips, in every state.
-//! - `rows`: list rows (icon 16, avatar 24, avatar 40), text stacks, facts,
-//!   key hints, a property list and disclosure rows; `rows-compact` the
-//!   same at compact density.
-//! - `panels`: a floating panel with an embedded field, rows and a key-hint
-//!   footer; a menu; a banner and an empty state.
-//!
 //! Run: `cargo run -p ui-examples --example ui-shots -- design_gallery [OUT_DIR]`
 
 use std::collections::HashMap;
@@ -41,6 +27,7 @@ use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::{Density, TextRole};
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::toggle_group::SegmentedFace;
 use tilo_ui::widget::{
     AvatarFace, BannerContent, BannerKind, BarControlFace, Button, ButtonFace, ButtonRole,
@@ -590,7 +577,7 @@ fn stamp(p: &mut Page, mut widget: Box<dyn Widget>, area: Rect) -> f64 {
     );
     widget.apply_layout(&taffy, root, area.origin());
     let presence = PresenceCtx::default();
-    widget.draw(
+    widget.draw_child(
         &mut p.scene,
         Affine::IDENTITY,
         &mut p.tr,
@@ -951,7 +938,9 @@ fn panels(theme: &Theme, out: &Path) {
         illustration: None,
         title: "No projects yet",
         message: None,
+        documents: &[],
         action_label: Some("New project"),
+        hint: None,
         error: false,
     };
     let rect = Rect::new(MARGIN, p.y, MARGIN + 720.0, p.y + 220.0);

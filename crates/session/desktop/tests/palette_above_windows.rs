@@ -9,7 +9,6 @@
 )]
 use std::rc::Rc;
 
-use tilo_compositor::SurfaceHost as _;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
@@ -18,6 +17,7 @@ use tilo_desktop_model::{
     WorkspaceSlot,
 };
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
+use tilo_session_core::surface::SurfaceHost as _;
 use tilo_surface_host::{Placement, WidgetHost};
 use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState};

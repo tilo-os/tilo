@@ -19,7 +19,6 @@ mod socket;
 #[cfg(target_os = "linux")]
 pub use socket::Socket;
 
-/// Original producer field and selection. Deserializing this grants nothing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Lease {
@@ -256,9 +255,6 @@ fn take_lease(frame: &[u8]) -> io::Result<Lease> {
     })
 }
 
-/// The producer's half: decode one request as [`encode`] wrote it, with its
-/// request ID. The lease is taken as sent, for the producer to compare with
-/// its own; a zero transaction is the producer's to refuse as invalid.
 pub fn decode_request(frame: &[u8]) -> io::Result<(u64, Request)> {
     if frame.len() < HEADER_BYTES
         || frame.len() > FRAME_BYTES
@@ -311,11 +307,6 @@ pub fn decode_request(frame: &[u8]) -> io::Result<(u64, Request)> {
     Ok((request, operation))
 }
 
-/// The producer's half: encode a reply [`decode`] reads. A Ready reply
-/// carries the lease and the field's text; any other carries neither.
-/// # Errors
-/// Rejects a Ready reply without a valid lease, a lease or text on any
-/// other, selections off the text's scalar boundaries and control text.
 pub fn encode_reply(reply: &Reply) -> io::Result<Vec<u8>> {
     let ready = reply.status == Status::Ready;
     if ready != reply.lease.is_some()
@@ -397,8 +388,6 @@ mod tests {
         }
     }
 
-    /// What a client encodes, a producer decodes, and what a producer
-    /// answers, a client decodes.
     #[test]
     fn the_producers_half_reads_requests_and_writes_replies() {
         let replace = Request::Replace {

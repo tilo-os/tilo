@@ -85,19 +85,6 @@ impl DynRecord {
         self.fields.get_mut(id)
     }
 
-    /// Set a register field.
-    pub fn set_register(&mut self, id: &str, value: Json) -> Result<(), ModelError> {
-        match self.fields.get_mut(id) {
-            Some(DynValue::Register(slot)) => {
-                *slot = value;
-                Ok(())
-            }
-            _ => Err(ModelError::invalid(format!(
-                "`{id}` is not a register field"
-            ))),
-        }
-    }
-
     /// The resource `id` of `app` whole: every field, and each collection with the items placed
     /// in it ([`crate::items`]), each whole. Its fields are read in the chunk the manifest of
     /// `chunks` (the store's documents) places it in, and its items in the chunks their runs

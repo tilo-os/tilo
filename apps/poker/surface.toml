@@ -1,31 +1,33 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "so.tilo.poker.table"
 label = "Poker table"
 version = 1
 fields = [
-  { path = "players", type = "BTreeMap<String, Player>" },
-  { path = "hand", type = "Hand", stored = "record" },
-  { path = "hand.number", type = "u64" },
-  { path = "hand.street", type = "Street" },
-  { path = "hand.players", type = "Vec<InHand>" },
-  { path = "hand.button", type = "u32" },
-  { path = "hand.deck", type = "Vec<u8>" },
-  { path = "hand.board", type = "Vec<u8>" },
-  { path = "hand.to_act", type = "Option<u32>" },
-  { path = "hand.current_bet", type = "i64" },
-  { path = "hand.min_raise", type = "i64" },
-  { path = "hand.since_ms", type = "i64" },
-  { path = "hand.awards", type = "Vec<Award>" },
-  { path = "button_seat", type = "u8" },
+  { path = "players", type = { map = { named = "Player" } } },
+  { path = "hand", type = { named = "Hand" }, stored = "record" },
+  { path = "hand.number", type = "int" },
+  { path = "hand.street", type = { named = "Street" } },
+  { path = "hand.players", type = { list = { named = "InHand" } } },
+  { path = "hand.button", type = "int" },
+  { path = "hand.deck", type = { list = "int" } },
+  { path = "hand.board", type = { list = "int" } },
+  { path = "hand.to_act", type = { option = "int" } },
+  { path = "hand.current_bet", type = "int" },
+  { path = "hand.min_raise", type = "int" },
+  { path = "hand.since_ms", type = "int" },
+  { path = "hand.awards", type = { list = { named = "Award" } } },
+  { path = "button_seat", type = "int" },
 ]
 
 [[resources.verbs]]
 id = "sit"
 kind = "undoable"
 params = [
-  { name = "seat", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+  { name = "seat", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
 ]
 
 [[resources.verbs]]
@@ -48,7 +50,7 @@ kind = "undoable"
 id = "raise"
 kind = "undoable"
 params = [
-  { name = "to", required = true, schema = { type = "number" } },
+  { name = "to", type = "float", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]
@@ -66,4 +68,76 @@ kind = "undoable"
 [[resources.verbs]]
 id = "rebuy"
 kind = "undoable"
+
+[[resources.types]]
+name = "Award"
+fields = [
+  { name = "player", type = "text" },
+  { name = "amount", type = "int" },
+  { name = "category", type = "text" },
+]
+
+[[resources.types]]
+name = "Hand"
+fields = [
+  { name = "number", type = "int" },
+  { name = "street", type = { named = "Street" } },
+  { name = "players", type = { list = { named = "InHand" } } },
+  { name = "button", type = "int" },
+  { name = "deck", type = { list = "int" } },
+  { name = "board", type = { list = "int" } },
+  { name = "to_act", type = { option = "int" } },
+  { name = "current_bet", type = "int" },
+  { name = "min_raise", type = "int" },
+  { name = "since_ms", type = "int" },
+  { name = "awards", type = { list = { named = "Award" } } },
+]
+
+[[resources.types]]
+name = "InHand"
+fields = [
+  { name = "player", type = "text" },
+  { name = "seat", type = "int" },
+  { name = "stack", type = "int" },
+  { name = "bet", type = "int" },
+  { name = "committed", type = "int" },
+  { name = "cards", type = { list = "int" } },
+  { name = "folded", type = "bool" },
+  { name = "acted", type = "bool" },
+  { name = "shown", type = "bool" },
+  { name = "last", type = { named = "Move" } },
+]
+
+[[resources.types]]
+name = "Move"
+cases = [
+  { name = "none" },
+  { name = "small_blind" },
+  { name = "big_blind" },
+  { name = "check" },
+  { name = "call" },
+  { name = "bet" },
+  { name = "raise" },
+  { name = "all_in" },
+  { name = "fold" },
+]
+
+[[resources.types]]
+name = "Player"
+fields = [
+  { name = "seat", type = "int" },
+  { name = "chips", type = "int" },
+  { name = "joined_ms", type = "int" },
+]
+
+[[resources.types]]
+name = "Street"
+cases = [
+  { name = "idle" },
+  { name = "preflop" },
+  { name = "flop" },
+  { name = "turn" },
+  { name = "river" },
+  { name = "done" },
+]
 

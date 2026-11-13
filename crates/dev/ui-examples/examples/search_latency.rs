@@ -1,14 +1,4 @@
 //! Per-keystroke latency and memory of a retained search catalogue.
-//!
-//! Builds a [`SearchCatalog`] of file-like records at several corpus sizes,
-//! then replays queries one typed character at a time, the way the palette
-//! asks for a first page on every keystroke. Prints the median, 95th
-//! percentile and worst page latency per size, the build time, and the
-//! resident memory the catalogue added.
-//!
-//! ```sh
-//! cargo run --release -p ui-examples --no-default-features --example search-latency
-//! ```
 
 use std::time::{Duration, Instant};
 

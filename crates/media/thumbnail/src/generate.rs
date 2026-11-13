@@ -9,9 +9,8 @@ use std::path::Path;
 
 use crate::category::FileCategory;
 
-/// A decoded, downscaled preview: 8-bit RGBA, row-major, `width * height * 4`
-/// bytes. Deliberately GPU-toolkit-free — the UI layer wraps it in a
-/// `peniko::ImageData` at the edge.
+/// A decoded, downscaled preview: 8-bit RGBA, row-major, `width * height * 4` bytes,
+/// deliberately free of the GPU toolkit, which the UI layer wraps it in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RgbaThumb {
     pub rgba: Vec<u8>,
@@ -20,7 +19,6 @@ pub struct RgbaThumb {
 }
 
 impl RgbaThumb {
-    /// Whether the buffer length matches the declared dimensions.
     pub fn is_valid(&self) -> bool {
         self.width > 0
             && self.height > 0
@@ -30,7 +28,6 @@ impl RgbaThumb {
                     .saturating_mul(4)
     }
 
-    /// The longest edge in pixels.
     pub fn max_edge(&self) -> u32 {
         self.width.max(self.height)
     }
@@ -50,12 +47,10 @@ impl ThumbSize {
         Self { width, height }
     }
 
-    /// A square box: the longest edge is at most `edge`.
     pub const fn edge(edge: u32) -> Self {
         Self::new(edge, edge)
     }
 
-    /// The longest edge of the box.
     pub fn max_edge(self) -> u32 {
         self.width.max(self.height)
     }
@@ -98,24 +93,20 @@ impl Source<'_> {
     }
 }
 
-/// The default longest-edge target for generated thumbnails. Big enough to stay
-/// crisp on a 2x grid tile, small enough to fit an xattr and replicate
-/// cheaply.
+/// The default longest-edge target for generated thumbnails: crisp on a 2x grid tile,
+/// small enough to fit an xattr.
 pub const DEFAULT_EDGE: u32 = 256;
 
-/// No source is read whole past this just to make a thumbnail: a pathological
-/// file must not stall a worker (or the FUSE thread) or exhaust memory.
+// No source is read whole past this to make a thumbnail: a pathological file must not
+// stall a worker or exhaust memory.
 pub const MAX_SOURCE_BYTES: usize = 96 * 1024 * 1024;
 
-/// Encoded raster images past this are refused before a codec sees them.
 pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Raster images whose header declares more pixels than this are refused
 /// before any pixel is allocated. 32 Mpx covers phones and most cameras.
 pub const MAX_DECODE_PIXELS: u64 = 32 * 1024 * 1024;
 
-/// The decoder's own allocation ceiling: the full-size RGBA of the largest
-/// admitted image plus codec working memory.
 const MAX_DECODE_ALLOC: u64 = MAX_DECODE_PIXELS * 4 + 64 * 1024 * 1024;
 
 /// Read at most `limit` bytes. `None` when the reader holds more (one sentinel
@@ -127,9 +118,6 @@ pub fn read_bounded(reader: impl Read, limit: usize) -> Option<Vec<u8>> {
     (bytes.len() <= limit).then_some(bytes)
 }
 
-/// Rasterises the first page of a PDF (`pdf`) into straight-alpha RGBA that
-/// fits `width` x `height`: `(pixels, width, height)`, or `None` for a
-/// document it cannot read.
 pub type PdfRasteriser = fn(pdf: &[u8], width: u32, height: u32) -> Option<(Vec<u8>, u32, u32)>;
 
 static PDF_RASTERISER: std::sync::OnceLock<PdfRasteriser> = std::sync::OnceLock::new();
@@ -142,7 +130,6 @@ pub fn set_pdf_rasteriser(rasterise: PdfRasteriser) {
     let _ = PDF_RASTERISER.set(rasterise);
 }
 
-/// Whether PDFs get previews in this process ([`set_pdf_rasteriser`]).
 pub fn pdf_previews() -> bool {
     PDF_RASTERISER.get().is_some()
 }
@@ -187,7 +174,6 @@ pub fn image_thumb(bytes: &[u8], size: impl Into<ThumbSize>) -> Option<RgbaThumb
     image_thumb_with(bytes, size, DecodeLimits::default())
 }
 
-/// [`image_thumb`] under tighter source bounds than the default.
 pub fn image_thumb_with(
     bytes: &[u8],
     size: impl Into<ThumbSize>,
@@ -253,7 +239,6 @@ fn looks_like_svg(bytes: &[u8]) -> bool {
         .any(|window| window.eq_ignore_ascii_case(b"<svg"))
 }
 
-/// A rendered edge in whole pixels: at least one, at most a thumbnail's.
 fn edge_px(value: f64) -> Option<u32> {
     let rounded = value.round().max(1.0);
     #[allow(
@@ -264,13 +249,9 @@ fn edge_px(value: f64) -> Option<u32> {
     (rounded.is_finite() && rounded <= 16_384.0).then_some(rounded as u32)
 }
 
-/// What a raster source may declare before it is refused, checked against its
-/// header before any pixel is allocated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecodeLimits {
-    /// Largest declared width × height.
     pub max_pixels: u64,
-    /// Largest declared width or height.
     pub max_dimension: u32,
 }
 
@@ -355,7 +336,7 @@ pub fn fit_within(w: u32, h: u32, size: impl Into<ThumbSize>) -> (u32, u32) {
     (nw.min(w), nh.min(h))
 }
 
-/// Common tail: fit the box (only ever shrinking) and flatten to RGBA.
+// Common tail: fit the box (only ever shrinking) and flatten to RGBA.
 fn downscale_to_rgba(img: image::DynamicImage, size: ThumbSize) -> Option<RgbaThumb> {
     let (w, h) = (img.width(), img.height());
     if w == 0 || h == 0 {
@@ -377,8 +358,6 @@ fn downscale_to_rgba(img: image::DynamicImage, size: ThumbSize) -> Option<RgbaTh
     out.is_valid().then_some(out)
 }
 
-/// Wrap raw RGBA (a decoded PDF page, a video frame, a camera capture) into an
-/// [`RgbaThumb`] that fits `size`.
 pub fn rgba_to_thumb(
     rgba: Vec<u8>,
     w: u32,
@@ -407,7 +386,6 @@ pub fn encode_png(thumb: &RgbaThumb) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Decode a cached/transported PNG thumbnail back into RGBA.
 pub fn decode_png(bytes: &[u8]) -> Option<RgbaThumb> {
     let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Png).ok()?;
     let rgba = img.to_rgba8();
@@ -439,8 +417,6 @@ mod tests {
         assert_eq!((wide.width, wide.height), (160, 90));
     }
 
-    /// A header declaring more pixels than the budget is refused before the
-    /// decoder allocates them, even though the file itself is tiny.
     #[test]
     fn an_oversized_header_is_refused_before_decoding() {
         let mut png = solid_png(1, 1, [0, 0, 0]);
@@ -449,8 +425,6 @@ mod tests {
         assert!(decode_image(&png).is_none());
     }
 
-    /// A portrait phone JPEG is stored landscape with an EXIF rotation; its
-    /// preview must come out upright.
     #[test]
     fn exif_orientation_is_applied() {
         let mut jpeg = Vec::new();
@@ -484,17 +458,14 @@ mod tests {
 
     #[test]
     fn image_thumbnails_decode_cap_and_encode_or_decline() {
-        // Phase `image_thumb_decodes_and_caps_the_long_edge`.
         {
             let png = solid_png(800, 400, [12, 180, 90]);
             let t = image_thumb(&png, 256).expect("decodes");
             assert!(t.is_valid());
             assert_eq!(t.max_edge(), 256, "long edge capped to the target");
             assert_eq!((t.width, t.height), (256, 128), "aspect ratio preserved");
-            // A pixel is the source colour (downscale of a solid image is that colour).
             assert_eq!(&t.rgba[0..3], &[12, 180, 90]);
         }
-        // Phase `small_images_are_not_upscaled`.
         {
             let png = solid_png(40, 30, [255, 0, 0]);
             let t = image_thumb(&png, 256).expect("decodes");
@@ -504,7 +475,6 @@ mod tests {
                 "never enlarged past the source"
             );
         }
-        // Phase `png_round_trips_through_encode_decode`.
         {
             let png = solid_png(64, 48, [10, 20, 200]);
             let t = image_thumb(&png, 256).unwrap();
@@ -513,7 +483,6 @@ mod tests {
             assert_eq!((back.width, back.height), (t.width, t.height));
             assert_eq!(back.rgba, t.rgba, "PNG is lossless: exact round-trip");
         }
-        // Phase `an_svg_is_drawn_at_the_box_it_fits`.
         {
             let svg = br##"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="16" height="8" viewBox="0 0 16 8"><rect width="16" height="8" fill="#ff0000"/></svg>"##;
             let t = image_thumb(svg, 64).expect("renders");
@@ -521,12 +490,10 @@ mod tests {
             assert_eq!(&t.rgba[0..4], &[255, 0, 0, 255]);
             assert!(image_thumb(b"<svg broken", 64).is_none());
         }
-        // Phase `corrupt_bytes_decode_to_none`.
         {
             assert!(image_thumb(&[0xDE, 0xAD, 0xBE, 0xEF], 256).is_none());
             assert!(decode_png(b"not a png").is_none());
         }
-        // Phase `generate_dispatches_images_and_declines_badges`.
         {
             let png = solid_png(100, 100, [1, 2, 3]);
             assert!(generate(&Source::Bytes(&png), FileCategory::Image, 64).is_some());

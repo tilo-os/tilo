@@ -100,7 +100,6 @@ impl Bridge {
         self.flush.fetch_add(1, Ordering::AcqRel);
         self.pump_controls();
     }
-    /// Retire the previous source after its decoder has stopped. The next PCM opens a fresh generation.
     pub fn reset(&self) {
         self.reset.store(true, Ordering::Release);
         self.pump_controls();
@@ -125,9 +124,6 @@ impl Bridge {
             return Observation::default();
         }
         self.session.try_lock().map_or_else(
-            // A decoder may be waiting for host backpressure while holding the
-            // session. Preserve its last host acknowledgment, without waiting
-            // on that RPC or inventing progress from submitted samples.
             |_| {
                 self.observed
                     .lock()
@@ -179,7 +175,6 @@ impl Drop for Bridge {
     }
 }
 
-/// Build a pipeline-clocked S16LE/48 kHz/stereo sink for synchronized media.
 pub fn sink_bin(name: &str, gain_name: &str) -> Result<(gst::Bin, Arc<Bridge>), String> {
     build_sink_bin(name, gain_name, true)
 }

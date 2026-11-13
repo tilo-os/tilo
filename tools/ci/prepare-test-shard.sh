@@ -50,16 +50,6 @@ if (( ${#nested[@]} )) && ! bwrap --unshare-user --ro-bind / / true 2>/dev/null;
     echo "::warning::${nested[*]}: these tests start sandboxes of their own, and this runner refuses user namespaces (bwrap --unshare-user)"
 fi
 
-# Older/explicitly selected builders may predate the audio fixture. The
-# helper replaces only the conflicting audio daemon; other installed packages
-# retain their pinned versions.
-bash tools/ensure-headless-audio.sh
-
-# The Secret Service suite uses libsecret's session-bus client.
-if tests tilo-secret-service; then
-    bash tools/ci/ensure-session-bus-tools.sh
-fi
-
 # Pinned/older builders may predate native PDF capture coverage. Stage only
 # the verified runtime; leave Mesa, fonts and OS packages unchanged. Where the
 # runner's kernel can enforce Landlock, the PDF helper's sandbox is also
@@ -84,6 +74,7 @@ if tests imager; then
     root="${GITHUB_WORKSPACE:-$PWD}/target/ci/imager-test-fs"
     mkdir -p "$root"
     chmod 700 "$root"
+    bash tools/as-test-user.sh --own "$root"
     case "$(stat -f -c %T "$root")" in
         ext2/ext3|ext2/ext3/ext4|xfs|btrfs) ;;
         *) echo "workspace does not provide qualified imager semantics" >&2; exit 1 ;;

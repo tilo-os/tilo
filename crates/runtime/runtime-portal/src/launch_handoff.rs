@@ -14,8 +14,6 @@ use std::os::unix::net::UnixStream;
 
 use wire_frame::Framing;
 
-/// Length-prefixed launcher handoff consumed before the wire starts on a
-/// collaboration descriptor.
 pub const PROTOCOL_VERSION: u16 = 1;
 
 /// Prefix that separates an authenticated connection from a raw diagnostic
@@ -30,8 +28,6 @@ pub const MAGIC: [u8; 4] = *b"QCL1";
 /// still decides workspace membership and delegated-agent authority.
 pub const FRAMING: Framing = Framing::little_endian(1024).reject_empty();
 
-/// Name the app and room a collaboration connection is for, as the first
-/// thing on it: what the broker attests against the session's launch record.
 pub fn write(stream: &mut UnixStream, app_id: &str, workspace_id: &str) -> std::io::Result<()> {
     write_launch(
         stream,
@@ -64,11 +60,6 @@ pub fn write_window(
     )
 }
 
-/// Request exact executing-task custody on an existing collaboration
-/// connection: the handoff names the launch as [`write`] does, and the
-/// broker then binds the connection to the process executing the task
-/// ([`crate::process_binding`]). Hosts without the custody protocol take it
-/// as the plain handoff.
 pub fn write_executing(
     stream: &mut UnixStream,
     app_id: &str,

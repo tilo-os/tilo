@@ -1,7 +1,5 @@
-//! The editor's controls live in the window's bar: the media toggle, the
-//! project and its picker, Split, Export, the inspector's toggle, Import and
-//! History. The editor draws no header row and none of those controls; each
-//! bar control runs the editor's published action for it.
+//! Each bar control runs the editor's published action for it; the editor draws no header
+//! row of its own.
 
 use ui::framework::testing::TestApp;
 use ui::widget::{SplitLayout, Widget};
@@ -12,8 +10,6 @@ use crate::actions::VideoEditorEffect;
 use crate::app::VideoEditorApp;
 use crate::model::{Project, TrackKind};
 
-/// The sample project in an editor `w` wide, laid out as a host lays it out;
-/// file choosers answered by a recording host, never put on a screen.
 fn sample(w: f64) -> VideoEditorApp {
     ui::host::install_default(ui::host::HostServices::recording().0);
     let doc = crate::seed::sample_document();
@@ -100,9 +96,9 @@ fn the_bar_shows_and_hides_the_media_and_the_inspector() {
     assert_eq!(
         toggle.name,
         if open {
-            "Show inspector"
+            crate::resource::CATALOG.t("video-editor-show-inspector")
         } else {
-            "Hide inspector"
+            crate::resource::CATALOG.t("video-editor-hide-inspector")
         }
     );
 }
@@ -118,13 +114,23 @@ fn the_bar_splits_exports_and_imports_through_the_editors_handlers() {
     app.selection.clear();
     app.playhead = clip.start + clip.duration() / 2.0;
     assert!(
-        !bar_action(&app, "Split at playhead").enabled,
+        !bar_action(
+            &app,
+            &crate::resource::CATALOG.t("video-editor-shortcut-split")
+        )
+        .enabled,
         "with nothing selected, Split has nothing to cut"
     );
     app.selection.select_only(clip.id);
-    assert!(bar_action(&app, "Split at playhead").enabled);
+    assert!(
+        bar_action(
+            &app,
+            &crate::resource::CATALOG.t("video-editor-shortcut-split")
+        )
+        .enabled
+    );
     let before = app.project.clips.len();
-    app.press_bar("Split at playhead");
+    app.press_bar(&crate::resource::CATALOG.t("video-editor-shortcut-split"));
     assert!(
         app.project.clips.len() > before,
         "Split cut the selected clip at the playhead"
@@ -220,8 +226,6 @@ fn history_is_the_window_bars_control() {
     );
 }
 
-/// Press the notice's action `index` in a bar `width` wide, by pointer or
-/// through its semantic action.
 fn press_notice(app: &mut TestApp<crate::VideoEditor>, width: f64, index: usize, semantic: bool) {
     let harness = app.harness();
     let pressed = if semantic {
@@ -251,8 +255,7 @@ const WAYS: [(f64, bool); 4] = [
     (420.0, true),
 ];
 
-/// An import whose files were refused carries Choose media…, which opens
-/// the media chooser again.
+/// A refused import carries Choose media…, which opens the media chooser again.
 #[test]
 fn a_refused_imports_choose_media_opens_the_chooser() {
     for (width, semantic) in WAYS {
@@ -280,8 +283,7 @@ fn a_refused_imports_choose_media_opens_the_chooser() {
     }
 }
 
-/// An Open that replaced the timeline says Undo to go back, and carries
-/// Undo, which brings the timeline back.
+/// An Open that replaced the timeline carries Undo, which brings it back.
 #[test]
 fn an_opens_undo_brings_the_timeline_back() {
     for (width, semantic) in WAYS {
@@ -359,8 +361,6 @@ fn blank_at(width: u32) -> TestApp<crate::VideoEditor> {
     app
 }
 
-/// The empty timeline's button in the exported tree: its node and where
-/// it stands.
 fn timeline_empty_button(
     app: &mut TestApp<crate::VideoEditor>,
     label: &str,
@@ -373,7 +373,7 @@ fn timeline_empty_button(
     else {
         panic!("the empty timeline offers {label}");
     };
-    assert_eq!(action.label(), label);
+    assert_eq!(crate::resource::CATALOG.t(action.label_message()), label);
     app.harness()
         .a11y_nodes()
         .into_iter()
@@ -388,8 +388,6 @@ fn timeline_empty_button(
         .unwrap_or_else(|| panic!("{label} is in the tree where it is drawn"))
 }
 
-/// Fold the Media pane in or out, as its toggle in the bar does, and let
-/// it land.
 fn toggle_media_pane(app: &mut TestApp<crate::VideoEditor>) {
     let editor = app.surface_mut::<VideoEditorApp>();
     editor.toggle_bin();
@@ -398,8 +396,6 @@ fn toggle_media_pane(app: &mut TestApp<crate::VideoEditor>) {
     app.settle();
 }
 
-/// Whether the empty timeline offers its own button now, drawn and in the
-/// tree: a Button inside the timeline's empty state.
 fn timeline_offers_a_button(app: &mut TestApp<crate::VideoEditor>) -> bool {
     let (drawn, content) = app
         .with_surface::<VideoEditorApp, _>(|editor| {
@@ -423,11 +419,9 @@ fn timeline_offers_a_button(app: &mut TestApp<crate::VideoEditor>) -> bool {
     drawn
 }
 
-/// One button per job: while the Media pane is shown, its Import answers
-/// the empty timeline's words and the timeline carries no button of its
-/// own; hidden, at any width, the timeline carries Import media, which
-/// asks for files as the pane's Import does, by pointer and through its
-/// semantic action. The button comes and goes as the pane is toggled.
+/// One button per job: while the Media pane is shown its Import answers the empty timeline,
+/// and hidden the timeline carries Import media. The button comes and goes as the pane is
+/// toggled.
 #[test]
 fn the_empty_timelines_import_media_stands_in_for_a_hidden_media_pane() {
     let mut wide = blank_at(1280);
@@ -476,9 +470,7 @@ fn the_empty_timelines_import_media_stands_in_for_a_hidden_media_pane() {
     }
 }
 
-/// With media to drag but the Media pane folded away, the empty timeline
-/// carries Show media, which shows it; where the pane is in view it needs
-/// no button.
+/// With the Media pane folded away, the empty timeline carries Show media.
 #[test]
 fn the_empty_timeline_shows_the_media_it_asks_to_drag() {
     let mut compact = sample(420.0);
@@ -488,7 +480,10 @@ fn the_empty_timeline_shows_the_media_it_asks_to_drag() {
     let (_, action) = compact
         .timeline_empty_action_rect(&r)
         .expect("the empty timeline offers an action");
-    assert_eq!(action.label(), "Show media");
+    assert_eq!(
+        crate::resource::CATALOG.t(action.label_message()),
+        "Show media"
+    );
     let route = [
         ui::a11y::hash_key(&super::timeline_empty::TIMELINE_EMPTY_KEY),
         ui::a11y::hash_key(&super::timeline_empty::TIMELINE_EMPTY_ACTION_KEY),
@@ -509,9 +504,7 @@ fn the_empty_timeline_shows_the_media_it_asks_to_drag() {
     );
 }
 
-/// With clips the playhead crosses the ruler and the tracks and ends at
-/// the last one: it never runs through the add-track row under them, with
-/// one track or with more.
+/// The playhead never runs through the add-track row under the tracks.
 #[test]
 fn the_playhead_ends_at_the_last_track_clear_of_the_add_track_row() {
     for width in [420.0, 1280.0] {
@@ -546,9 +539,6 @@ fn the_playhead_ends_at_the_last_track_clear_of_the_add_track_row() {
     }
 }
 
-/// On an empty timeline the playhead stays in the ruler, clear of the
-/// add-track row and the empty state, which is centred on the tracks'
-/// content beside the header column; with a clip it crosses the tracks.
 #[test]
 fn an_empty_timelines_playhead_stays_in_the_ruler() {
     for width in [420.0, 1280.0] {
@@ -606,8 +596,6 @@ fn an_empty_timelines_playhead_stays_in_the_ruler() {
     }
 }
 
-/// The editor opened on the sample project `width` wide, its playhead
-/// parked past the last clip, where the preview has nothing to show.
 fn parked_between_clips(width: u32) -> TestApp<crate::VideoEditor> {
     let mut app = opened();
     app.harness()
@@ -619,8 +607,6 @@ fn parked_between_clips(width: u32) -> TestApp<crate::VideoEditor> {
     app
 }
 
-/// The preview shows a clip: one is under the playhead, and the hint and
-/// its button are gone.
 fn preview_shows_a_clip(app: &mut TestApp<crate::VideoEditor>) -> bool {
     app.with_surface::<VideoEditorApp, _>(|editor| {
         editor.project.top_video_clip_at(editor.playhead).is_some()
@@ -629,10 +615,8 @@ fn preview_shows_a_clip(app: &mut TestApp<crate::VideoEditor>) -> bool {
     .expect("the editor surface")
 }
 
-/// The preview's hint says to move the playhead over a clip, so it carries
-/// Go to clip, which lands the playhead on the nearest clip, by pointer and
-/// through its semantic action, compact and wide; the published action
-/// does the same.
+/// It carries Go to clip, by pointer and through its semantic action, compact and
+/// wide.
 #[test]
 fn go_to_clip_lands_the_playhead_on_a_clip_the_preview_shows() {
     for (width, semantic) in [(420, false), (420, true), (1280, false), (1280, true)] {
@@ -682,8 +666,7 @@ fn go_to_clip_lands_the_playhead_on_a_clip_the_preview_shows() {
     );
 }
 
-/// Go to clip takes the next clip after the playhead, and the previous one
-/// only where none follows.
+/// The next clip after the playhead, and the previous one only where none follows.
 #[test]
 fn go_to_clip_takes_the_next_clip_then_the_previous() {
     let mut app = sample(1280.0);
@@ -718,9 +701,8 @@ fn go_to_clip_takes_the_next_clip_then_the_previous() {
     assert_eq!(app.go_to_clip_target(), Some(last), "else the previous one");
 }
 
-/// A strip too narrow to draw Undo and Redo does not take them away: the
-/// bar's overflow menu carries them, named, disabled exactly when the strip's
-/// own pair would have been. A capability is never lost to a width.
+/// A strip too narrow for Undo and Redo does not take them away: the bar's overflow menu
+/// carries them, disabled exactly when the strip's own pair would have been.
 #[test]
 fn a_strip_too_narrow_for_undo_offers_it_in_the_bar() {
     // Wide enough for the transport's own pair: the bar does not repeat them.
@@ -753,9 +735,6 @@ fn a_strip_too_narrow_for_undo_offers_it_in_the_bar() {
         "offered exactly when the strip's pair would act"
     );
 
-    // And they act: the bar's press asks the host for the step, exactly as
-    // the strip's own button does (and, like it, raises nothing while the
-    // host says there is nothing to undo).
     let mut narrow = narrow;
     narrow.press_bar("Undo");
     assert_eq!(

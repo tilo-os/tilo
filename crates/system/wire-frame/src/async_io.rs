@@ -5,11 +5,6 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::{FrameError, Framing, PREFIX_BYTES, PrefixRead, classify_prefix_error, truncated};
 
 impl Framing {
-    /// Write one frame carrying `payload`. Does not flush.
-    ///
-    /// # Errors
-    ///
-    /// As [`write`](Self::write).
     pub async fn write_async<W: AsyncWrite + Unpin + ?Sized>(
         self,
         writer: &mut W,
@@ -23,11 +18,6 @@ impl Framing {
         Ok(())
     }
 
-    /// Read the next prefix, or `None` on a clean close before the frame.
-    ///
-    /// # Errors
-    ///
-    /// As [`read_len`](Self::read_len).
     pub async fn read_len_async<R: AsyncRead + Unpin + ?Sized>(
         self,
         reader: &mut R,
@@ -48,11 +38,6 @@ impl Framing {
         self.decode_prefix(prefix).map(Some)
     }
 
-    /// Read the next frame's payload, or `None` on a clean close before it.
-    ///
-    /// # Errors
-    ///
-    /// As [`read`](Self::read).
     pub async fn read_async<R: AsyncRead + Unpin + ?Sized>(
         self,
         reader: &mut R,
@@ -64,11 +49,6 @@ impl Framing {
             .then_some(payload))
     }
 
-    /// Read the next frame's payload into `buf`, reusing its allocation.
-    ///
-    /// # Errors
-    ///
-    /// As [`read_into`](Self::read_into).
     pub async fn read_into_async<R: AsyncRead + Unpin + ?Sized>(
         self,
         reader: &mut R,

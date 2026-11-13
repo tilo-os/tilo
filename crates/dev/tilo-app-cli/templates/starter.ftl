@@ -10,3 +10,9 @@ starter-clear = Clear
 
 generated-clear = Cleared the name
 generated-greeting-name = Edited the name
+
+## Actions: what the record and each of its actions are called, looked up as
+## <kind>-<action>, the kind with its dots as dashes.
+
+generated-greeting = Greeting
+generated-greeting-clear = Forget the name

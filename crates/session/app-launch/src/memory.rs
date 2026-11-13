@@ -36,9 +36,9 @@
 //! built in a test, without a user manager) there is nothing to move or to
 //! reclaim from, and the watch finds no apps.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use launcher::memory_pressure::{Psi, Unit, parse_psi};
 use launcher::priority::Tier;
@@ -54,6 +54,27 @@ pub(crate) type Ends = Arc<Mutex<BTreeMap<PathBuf, Cause>>>;
 
 fn recorded(ends: &Ends) -> MutexGuard<'_, BTreeMap<PathBuf, Cause>> {
     ends.lock_recover()
+}
+
+/// The cgroups whose tier the pass could not set, so a host that never lets
+/// it write (a job's read-only cgroup filesystem, a session with no user
+/// manager of its own) is reported once instead of on every pass: the pass
+/// runs once a frame, and one line per launch per frame is a log nobody can
+/// read a failure out of.
+fn unreported() -> &'static Mutex<BTreeSet<PathBuf>> {
+    static UNREPORTED: OnceLock<Mutex<BTreeSet<PathBuf>>> = OnceLock::new();
+    UNREPORTED.get_or_init(|| Mutex::new(BTreeSet::new()))
+}
+
+/// Whether this pass is the first to fail for `dir`: the failure is said
+/// once, and again after a later pass moved the cgroup.
+fn first_failure(dir: &Path) -> bool {
+    unreported().lock_recover().insert(dir.to_path_buf())
+}
+
+/// The cgroup `dir` moved to its tier: a failure after this is a new one.
+fn tier_set(dir: &Path) {
+    unreported().lock_recover().remove(dir);
 }
 
 /// The apps the spawner `apps` runs, by their cgroup directory and the app's
@@ -124,13 +145,20 @@ fn put_in_tiers(
         }
         let total = (own != Some(dir)).then_some(total).flatten();
         match launcher::app_cgroup::set_tier(dir, tier, total) {
-            Ok(()) => moved = moved.saturating_add(1),
-            Err(error) => tracing::warn!(
-                dir = %dir.display(),
-                ?tier,
-                %error,
-                "a launch keeps its tier"
-            ),
+            Ok(()) => {
+                moved = moved.saturating_add(1);
+                tier_set(dir);
+            }
+            Err(error) => {
+                if first_failure(dir) {
+                    tracing::warn!(
+                        dir = %dir.display(),
+                        ?tier,
+                        %error,
+                        "a launch keeps its tier"
+                    );
+                }
+            }
         }
     }
     moved

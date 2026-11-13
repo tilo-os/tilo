@@ -1,18 +1,11 @@
 //! `vm create` without `--image`: fetch the dev disk CI published to the
-//! forge's generic packages (`os/dev/publish-dev-disk.sh`), resume and
-//! verify the download, and cache it under the platform cache dir.
+//! forge's generic packages, resume and verify the download, and cache it under
+//! the platform cache dir.
 //!
 //! ```text
 //! <PACKAGES>/<tag>/tilo-vm-disk-<arch>.json   one architecture's manifest: its disks per format, sha256
 //! <PACKAGES>/<tag>/<file>                      one disk (qcow2 or vhdx)
 //! ```
-//!
-//! Each architecture's CI lane publishes on its own, so a tag can hold one
-//! architecture before, or without, the other; a tag is offered to a host
-//! once that host's manifest exists.
-//!
-//! HTTP goes through `curl`, present on every supported host; the token
-//! travels in a header file, never on the command line.
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -25,7 +18,6 @@ use crate::hypervisor::{CommandLine, Runner};
 
 pub const FORGE: &str = "code.tilo.so";
 pub const PACKAGES: &str = "https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk";
-/// Lists the package's published versions.
 pub const VERSIONS: &str =
     "https://code.tilo.so/api/v1/packages/tilo?type=generic&q=tilo-vm-disk&limit=50";
 
@@ -68,22 +60,16 @@ pub struct Disk {
     pub size: u64,
 }
 
-/// How many of the newest main or release tags `vm create` without `--tag`
-/// looks through for one that has this host's architecture.
 pub const TAGS_SEARCHED: usize = 8;
 
-/// The manifest `arch`'s lane publishes for `tag`.
 pub fn manifest_url(tag: &str, arch: &str) -> String {
     format!("{PACKAGES}/{tag}/tilo-vm-disk-{arch}.json")
 }
 
-/// Lists the files of one published tag.
 pub fn files_url(tag: &str) -> String {
     format!("https://code.tilo.so/api/v1/packages/tilo/generic/tilo-vm-disk/{tag}/files")
 }
 
-/// What a tag offers, as `<arch> <format>`, from its file listing: the disks
-/// of every architecture whose manifest (the commit point) exists.
 pub fn offered_in_files(tag: &str, files_json: &str) -> Vec<String> {
     #[derive(Deserialize)]
     struct File {
@@ -131,9 +117,6 @@ impl DiskManifest {
             .collect()
     }
 
-    /// Select only the bundle published in this disk manifest, with exact
-    /// package URLs and file names. A bundle from another tag or architecture
-    /// must never be paired with the selected disk.
     pub fn direct_boot_for(
         &self,
         tag: &str,
@@ -220,8 +203,6 @@ fn valid_sha256(value: &str) -> bool {
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
-/// Cache each small companion by the manifest's checksum and verify it on
-/// every use, including when a marker already exists.
 pub fn fetch_direct_boot(
     runner: &mut dyn Runner,
     cache_dir: &Path,
@@ -241,7 +222,6 @@ pub fn fetch_direct_boot(
         fetch(runner, &disk, &dest, auth)?;
         let actual = file_sha256(&dest)?;
         if actual != file.sha256 {
-            // Preserve the failure, but make the next attempt re-download it.
             let _ = std::fs::remove_file(&dest);
             return Err(CliError::ChecksumMismatch {
                 file: file.file.clone(),
@@ -253,14 +233,12 @@ pub fn fetch_direct_boot(
     Ok(cache_dir.join(&bundle.manifest))
 }
 
-/// A forge token and where it came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
     pub value: String,
     pub source: String,
 }
 
-/// `hosts.<host>.token` from an fgj `config.yaml`.
 pub fn fgj_token(text: &str, host: &str) -> Option<String> {
     let mut host_indent: Option<usize> = None;
     for line in text.lines() {
@@ -283,7 +261,6 @@ pub fn fgj_token(text: &str, host: &str) -> Option<String> {
     None
 }
 
-/// The `token` of the tea login whose `url` names `host`.
 pub fn tea_token(text: &str, host: &str) -> Option<String> {
     let mut url: Option<String> = None;
     let mut token: Option<String> = None;
@@ -360,14 +337,11 @@ pub fn find_token() -> Option<Token> {
     None
 }
 
-/// A header file holding the token, removed on drop.
 pub struct AuthHeader {
     file: Option<tempfile::NamedTempFile>,
 }
 
 impl AuthHeader {
-    /// # Errors
-    /// Temp file creation failures.
     pub fn new(token: Option<&Token>) -> Result<Self, CliError> {
         let Some(token) = token else {
             return Ok(Self { file: None });
@@ -407,7 +381,6 @@ pub fn get_command(url: &str, auth: &AuthHeader) -> CommandLine {
     .arg(url)
 }
 
-/// `curl` that resumes a download into `part`, with a progress bar.
 pub fn download_command(url: &str, part: &Path, auth: &AuthHeader) -> CommandLine {
     auth.add(CommandLine::new(
         "curl",
@@ -434,7 +407,6 @@ pub fn split_status(stdout: &str) -> (u16, &str) {
     }
 }
 
-/// GET `url`; returns status and body.
 pub fn get(
     runner: &mut dyn Runner,
     url: &str,
@@ -459,8 +431,6 @@ pub fn get(
     Ok((status, body.to_owned()))
 }
 
-/// The newest published tag of a main or release build, from the forge's
-/// package list (newest first by creation time).
 pub fn newest_tag(versions_json: &str) -> Option<String> {
     candidate_tags(versions_json).into_iter().next()
 }
@@ -488,7 +458,6 @@ pub fn candidate_tags(versions_json: &str) -> Vec<String> {
     chosen.into_iter().map(|v| v.version).collect()
 }
 
-/// Hex SHA-256 of a file.
 pub fn file_sha256(path: &Path) -> Result<String, CliError> {
     let mut file =
         std::fs::File::open(path).map_err(CliError::io(format!("read {}", path.display())))?;
@@ -506,7 +475,6 @@ pub fn file_sha256(path: &Path) -> Result<String, CliError> {
     Ok(hex::encode(hasher.finalize()))
 }
 
-/// Where a disk is cached: `<cache>/tilo-vm/disks/<tag>/<file>`.
 pub fn cache_path(tag: &str, file: &str) -> PathBuf {
     tilo_paths::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
@@ -529,8 +497,6 @@ pub fn cached(path: &Path, disk: &Disk) -> bool {
     size_ok && std::fs::read_to_string(marker).is_ok_and(|m| m.trim() == disk.sha256)
 }
 
-/// Download `disk` to `dest` (resuming a partial download), verify its
-/// checksum, and mark it verified.
 pub fn fetch(
     runner: &mut dyn Runner,
     disk: &Disk,
@@ -672,11 +638,8 @@ mod tests {
       ]
     }"#;
 
-    /// The published manifest parses and picks by arch and format; status is split from the body; the
-    /// newest channel tag wins; downloads are verified and cached.
     #[test]
     fn published_disks_are_picked_verified_and_cached() {
-        // Phase: the_published_manifest_parses_and_picks_by_arch_and_format.
         {
             let manifest: DiskManifest = serde_json::from_str(MANIFEST).unwrap();
             assert_eq!(manifest.tag, "main-1a2b3c4");
@@ -694,7 +657,6 @@ mod tests {
             );
         }
 
-        // Phase: a_tag_offers_only_architectures_whose_manifest_is_committed.
         {
             let files = r#"[
               {"name": "tilo-vm-main-1a2b3c4-ci-aarch64.qcow2"},
@@ -702,7 +664,6 @@ mod tests {
               {"name": "tilo-vm-disk-aarch64.json"},
               {"name": "tilo-vm-main-1a2b3c4-ci-x86_64.qcow2"}
             ]"#;
-            // x86_64's disk is uploaded but its lane has not committed it yet.
             assert_eq!(
                 offered_in_files("main-1a2b3c4-ci", files),
                 ["aarch64 qcow2"]
@@ -711,14 +672,12 @@ mod tests {
             assert!(offered_in_files("main-1a2b3c4-ci", "not json").is_empty());
         }
 
-        // Phase: status_is_split_from_the_body.
         {
             assert_eq!(split_status("{\"a\":1}\n200"), (200, "{\"a\":1}"));
             assert_eq!(split_status("\n404"), (404, ""));
             assert_eq!(split_status("garbage"), (0, ""));
         }
 
-        // Phase: newest_channel_tag_wins.
         {
             let versions = r#"[
               {"name": "tilo-vm-disk", "version": "feature-x-aaaaaaa", "created_at": "2026-09-22T10:00:00Z"},
@@ -735,7 +694,6 @@ mod tests {
             assert_eq!(candidate_tags(branches_only), ["feature-x-aaaaaaa-ci"]);
         }
 
-        // Phase: downloads_are_verified_and_cached.
         {
             struct Writes(Vec<u8>);
             impl Runner for Writes {
@@ -779,7 +737,6 @@ mod tests {
             );
             fetch(&mut Writes(b"abc".to_vec()), &good, &dest, &auth).unwrap();
             assert!(cached(&dest, &good));
-            // Cached: no second download (this runner would write wrong bytes).
             fetch(&mut Writes(b"zzz".to_vec()), &good, &dest, &auth).unwrap();
             assert_eq!(std::fs::read(&dest).unwrap(), b"abc");
         }
@@ -788,7 +745,6 @@ mod tests {
     /// Tokens are found in fgj and tea configs and never reach the command line.
     #[test]
     fn registry_tokens_are_found_but_never_reach_the_command_line() {
-        // Phase: tokens_are_found_in_fgj_and_tea_configs.
         {
             let fgj = "default_host: code.tilo.so\nhosts:\n    code.tilo.so:\n        hostname: code.tilo.so\n        token: abc123\n    other.example:\n        token: nope\n";
             assert_eq!(fgj_token(fgj, "code.tilo.so").as_deref(), Some("abc123"));
@@ -803,7 +759,6 @@ mod tests {
             assert_eq!(tea_token(tea, "missing.example"), None);
         }
 
-        // Phase: tokens_never_reach_the_command_line.
         {
             let token = Token {
                 value: "s3cret".into(),

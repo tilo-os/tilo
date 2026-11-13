@@ -1,18 +1,6 @@
 //! Offscreen render of the **profiling HUD** overlaid on a real app scene, so
 //! the HUD can be inspected without opening a window.
-//!
-//! `TILO_PROFILE=1` draws the HUD live, but the live path needs a display. This
-//! example reproduces exactly what `tilo_ui::App` does — run the real five passes,
-//! record each into a [`tilo_ui::profiling::FrameProfiler`], commit a per-frame
-//! sample — for a rolling window of frames, then composites the production
-//! [`FrameProfiler::draw_hud`] over the final frame and rasterises a PNG. The
-//! HUD you see here is pixel-for-pixel the one the live app paints; only the
-//! surface is offscreen.
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- perf_hud_shot`
-//! Out:  `$PERF_HUD_OUT` (default `/tmp/perf_hud/hud.png`)
-//!
-//! `PERF_HUD_FRAMES=N` sets how many real frames feed the rolling graph.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -30,6 +18,7 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
 
 use super::gallery_scene;
+use tilo_ui::widget::DrawChild;
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
@@ -97,7 +86,7 @@ pub fn run(_args: &[String]) {
 
         let t = tilo_ui::time::now();
         scene.reset();
-        root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        root.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         prof.record(Pass::Draw, t.elapsed());
 
         prof.commit_frame_summed();

@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 use super::{Backend, Caller, Service};
 use crate::protocol::{Envelope, MAX_LINE_BYTES, PROTOCOL_VERSION, Response};
 
-/// How long one client may take to send its request or read the answer.
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn answer(stream: &UnixStream, response: &Response, fd: Option<std::os::fd::BorrowedFd<'_>>) {
@@ -62,7 +61,6 @@ pub fn serve_one<B: Backend>(
         ),
     };
     answer(stream, &response, fd.as_ref().map(AsFd::as_fd));
-    // The descriptor drops here: the shell holds the only one now.
 }
 
 fn readable(listener: &UnixListener, timeout: Duration) -> bool {
@@ -76,10 +74,8 @@ fn readable(listener: &UnixListener, timeout: Duration) -> bool {
     unsafe { libc::poll(&raw mut poll, 1, millis) > 0 }
 }
 
-/// How the loop paces itself and when it ends.
 #[derive(Clone, Copy, Debug)]
 pub struct Pacing {
-    /// How often the helper checks that what it set up still has a reason.
     pub housekeeping: Duration,
     /// Return after this long without a request while nothing is open; the
     /// socket unit starts the helper again on the next connection.

@@ -63,8 +63,6 @@ impl InstallerKind {
     }
 }
 
-/// Host-generated identity and immutable digest for one portal-owned stream.
-/// It intentionally contains no host or guest path.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstallerPackage {
     package_id: String,
@@ -107,7 +105,6 @@ impl InstallerPackage {
     }
 }
 
-/// A package accepted into the guest's one-use, expiring staging area.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StagedInstaller {
     package_id: String,
@@ -126,7 +123,6 @@ impl StagedInstaller {
     }
 }
 
-/// Opaque handle for one installer process in the managed interactive session.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstallationOperationId(String);
 
@@ -146,15 +142,12 @@ impl InstallationOperationId {
     }
 }
 
-/// One accepted installer plus the explicit app-focused surface that makes its
-/// interactive UI visible. The desktop remains unavailable as a launch type.
 #[derive(Debug)]
 pub struct PreparedInstallation {
     pub operation_id: InstallationOperationId,
     pub(crate) presentation: GuestLaunch,
 }
 
-/// Opaque handle for one discovered Windows Installer removal operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UninstallationOperationId(String);
 
@@ -240,7 +233,6 @@ pub struct GuestBridgeConfig {
     pub endpoint: SocketAddr,
     pub bootstrap_secret: PathBuf,
     pub pin_directory: PathBuf,
-    /// Host presentation selected before the guest credential is minted.
     pub presentation: ApplicationPresentation,
 }
 
@@ -272,9 +264,6 @@ impl GuestBridgeConfig {
     }
 }
 
-/// Concrete [`GuestAgent`] used by the privileged Windows compatibility host.
-/// No shell is involved in HTTPS, certificate validation, HMAC generation, or
-/// JSON decoding.
 pub struct HttpsGuestBridge {
     config: GuestBridgeConfig,
     bootstrap_secret: Vec<u8>,

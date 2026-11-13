@@ -1,5 +1,4 @@
 //! Original-source output custody, never a completed-export receipt.
-//! Native mounting is a separate root-controller seam, not app-supplied authority.
 mod applications;
 pub mod bootstrap;
 mod export;
@@ -25,12 +24,9 @@ use std::{
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
 
-/// Root-controller mount ownership seam. Not implemented by app requests or
-/// MediaGrant. The implementation must retain raw disk/partition/mount lease,
-/// verify owned mount namespace and absence of foreign writable aliases, and
-/// create only a fresh fixed staging child through canonical private nofollow
-/// provisioning. It must not release that mount before supervised child exit.
-/// No caller path/UUID or deserialized token constructs this ownership.
+/// Root-controller mount ownership seam, never implemented by app requests or `MediaGrant`: the
+/// implementation retains the raw disk, partition and mount lease, verifies the namespace and creates
+/// only a fresh fixed staging child, and releases nothing before supervised child exit.
 pub(in crate::setup::home_capture) trait OwnedMediumOutput:
     ServiceAuthority
 {
@@ -39,8 +35,8 @@ pub(in crate::setup::home_capture) trait OwnedMediumOutput:
             "Original review needs admitted backed inventory storage",
         ))
     }
-    /// Defaults refuse: generic output directories do not promise paired
-    /// checkpoint, readonly-root projection or signed-helper custody.
+    /// Defaults refuse: generic output directories do not promise a paired checkpoint, read-only root
+    /// projection or signed-helper custody.
     fn admit_application_output(&self, _proof: &OriginalApplicationsOutput) -> io::Result<()> {
         Err(refused(
             "Original application output custody is unavailable",
@@ -120,8 +116,8 @@ pub struct OfflineOutputTransaction {
     medium: Arc<dyn OwnedMediumOutput>,
     binding: OriginalOutputBinding,
     cancellation: ServiceCancellation,
-    // ReadAdmission uses its existing AtomicBool cancellation API. This is
-    // never a new independent decision: check() first observes parent token.
+    // The existing `AtomicBool` cancellation API; `check()` first observes the parent token, so this
+    // is not an independent decision.
     cancelled: AtomicBool,
 }
 fn refused(message: &'static str) -> io::Error {
@@ -160,9 +156,8 @@ impl OfflineOutputTransaction {
         let cancelled = AtomicBool::new(false);
         read.revalidate(&cancelled)?;
         let plan = read.output_selection_declaration(&cancelled)?;
-        // Original read admission must retain the full root-protected
-        // selection plus every exact readonly system-root projection. Only the
-        // real paired medium implementation can accept this nonserializable proof.
+        // Original read admission must retain the full root-protected selection plus every exact
+        // read-only system-root projection; only the paired medium implementation accepts this proof.
         let applications = read.admit_application_output(&cancelled)?;
         if let Some(proof) = &applications {
             proof.validate_for(&read, &cancelled)?;
@@ -217,9 +212,10 @@ impl OfflineOutputTransaction {
             cancelled,
         });
         transaction.check()?;
-        // Establish working-space capacity before recording any worker launch.
         let _ = transaction.medium.inventory_scratch()?;
-        // Independent actual block/mount/UUID/overlap checks occur before
+        // Establish working-space capacity before recording a worker launch, and before any
+        // independent block, mount, UUID or overlap check returns authority: no writer exists yet, and
+        // incomplete intent alone cannot publish or complete an export.
         // returning authority. No writer exists and incomplete intent alone
         // cannot publish or complete an export.
         let _ = OriginalOutputAdmission::admit(transaction.clone())?;
@@ -233,8 +229,8 @@ impl OfflineOutputTransaction {
     ) -> io::Result<T> {
         self.check()?;
         let proof = OriginalOutputAdmission::admit(self.clone())?;
-        // Export and verification callers persist their distinct checkpoints
-        // before entering this shared output-capability wrapper.
+        // Export and verification callers persist their distinct checkpoints before entering this
+        // shared wrapper.
         let result =
             self.with_inventory_reader(runtime, publisher, |admission, request, digest| {
                 run(admission.with_original_output(proof)?, request, digest)
@@ -242,8 +238,8 @@ impl OfflineOutputTransaction {
         self.check()?;
         result
     }
-    /// Review uses the same admitted medium working space as export, retaining
-    /// its actual mount lease through supervision without granting output writes.
+    /// The same admitted working space as export, with its mount lease retained through supervision
+    /// and no output writes.
     pub fn with_inventory_reader<T>(
         self: &Arc<Self>,
         runtime: &Path,
@@ -304,8 +300,8 @@ impl ServiceAuthority for OfflineOutputTransaction {
                 "Original output authenticated medium binding differs",
             ));
         }
-        // Reattest the actual target FD and GPT from authenticated ReadAdmission,
-        // not a target UUID or filesystem directory chosen by the caller.
+        // Reattest the target FD and GPT from authenticated `ReadAdmission`, never a UUID or directory
+        // chosen by the caller.
         self.read
             .check_output_medium(&files.disk, &self.cancelled)?;
         validate_partition(&files, plan.media())?;
@@ -320,8 +316,8 @@ impl OriginalOutputCustody for OfflineOutputTransaction {
     fn held_files(&self) -> io::Result<OriginalOutputFiles> {
         self.check()?;
         let mut files = self.medium.files()?;
-        // A mount implementation must never choose the source: clone it only
-        // from the already authenticated protected original source custody.
+        // A mount implementation never chooses the source: clone it only from the already
+        // authenticated protected custody.
         files.source = self.read.output_original_home(&self.cancelled)?;
         Ok(files)
     }
@@ -341,8 +337,8 @@ fn number(file: &File) -> io::Result<String> {
         libc::minor(metadata.rdev())
     ))
 }
-/// Current supported topology: exact ordinary disk with a direct partition.
-/// Kernel-held identities and current bounded inventory must agree with GPT.
+/// An ordinary disk with a direct partition: kernel-held identities and the bounded inventory must
+/// agree with the GPT.
 fn validate_partition(
     files: &OriginalOutputFiles,
     expected: &MediaPartitionBinding,
@@ -398,7 +394,6 @@ fn validate_partition(
 
 fn binding_digest(binding: &OriginalOutputBinding) -> io::Result<[u8; 32]> {
     use sha2::Digest;
-    // Closed, bounded host facts; never a serializer for redeemable authority.
     let bytes = serde_json::to_vec(&(
         1u32,
         binding.read_claim_digest,

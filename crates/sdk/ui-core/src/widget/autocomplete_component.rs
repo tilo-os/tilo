@@ -86,7 +86,7 @@ impl From<SuggestionProps> for Suggestion {
         if let Some(who) = props.who {
             suggestion = suggestion.with_person(SuggestionPerson {
                 identity: who.identity,
-                color: (0, 0, 0),
+                hue: crate::tokens::PresenceHue::of_identity(&who.name),
                 agent: false,
             });
         }

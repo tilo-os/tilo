@@ -1,34 +1,17 @@
 //! The LUKS2 token that carries this machine's side of a sibling unlock.
-//!
-//! One token of type [`TOKEN_TYPE`] per volume, bound to the one key slot the
-//! sibling factor opens. It lives in the volume's own header, so it is on the
-//! disk exactly as long as the slot is (`systemd-cryptenroll --wipe-slot` and
-//! `tilo-sibling-unlock remove` take both away together), and early boot reads
-//! it without mounting anything.
-//!
-//! The header is readable by anyone holding the disk, like the boot
-//! partition. What it carries in the clear is public (the device, the boot
-//! key's public half and the siblings to ask) plus the [`crate::material`]
-//! blob: sealed to this machine's TPM where there is one, otherwise in the
-//! clear. That blob alone opens nothing; the sibling half is never stored here.
 
 use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use tilo_unlock_protocol::{BootKeyCert, SiblingContact};
 
-/// The LUKS2 token type. cryptsetup's own token handlers ignore it.
 pub const TOKEN_TYPE: &str = "tilo-sibling-unlock";
-/// Format of the fields below.
 pub const TOKEN_VERSION: u32 = 1;
 
-/// How [`Token::material`] is stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Sealing {
-    /// Sealed to this machine's TPM (`systemd-creds --with-key=tpm2`).
     Tpm2,
-    /// In the clear: the machine has no TPM Linux can use.
     Cleartext,
 }
 
@@ -36,7 +19,6 @@ pub enum Sealing {
 /// the enrolment recorded it ([`tilo_unlock_protocol::SiblingContact`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sibling {
-    /// The sibling's fleet key, hex. It answers challenges as this device.
     pub device: String,
     #[serde(default)]
     pub label: String,
@@ -56,19 +38,16 @@ impl From<&SiblingContact> for Sibling {
     }
 }
 
-/// The token as it is stored in the LUKS2 header.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Token {
     #[serde(rename = "type")]
     pub kind: String,
-    /// The key slot this token opens, as LUKS2 lists slots: decimal strings.
     pub keyslots: Vec<String>,
     pub tilo_version: u32,
     /// The boot key's certificate, base64 of its postcard encoding. Public:
     /// it names this device, the boot key and the slot, signed by the
     /// person's identity.
     pub cert: String,
-    /// Who to ask, in order of preference.
     pub siblings: Vec<Sibling>,
     pub sealing: Sealing,
     /// The secret material, base64: a `systemd-creds` blob for
@@ -78,7 +57,6 @@ pub struct Token {
 }
 
 impl Token {
-    /// The one key slot this token opens.
     pub fn keyslot(&self) -> Result<u32> {
         match self.keyslots.as_slice() {
             [slot] => slot
@@ -88,7 +66,6 @@ impl Token {
         }
     }
 
-    /// The boot key's certificate.
     pub fn cert(&self) -> Result<BootKeyCert> {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(&self.cert)
@@ -96,12 +73,10 @@ impl Token {
         postcard::from_bytes(&bytes).context("the boot key certificate is malformed")
     }
 
-    /// Encodes `cert` as the token stores it.
     pub fn encode_cert(cert: &BootKeyCert) -> Result<String> {
         Ok(base64::engine::general_purpose::STANDARD.encode(postcard::to_allocvec(cert)?))
     }
 
-    /// Checks the fields early boot depends on.
     pub fn validate(&self) -> Result<()> {
         if self.kind != TOKEN_TYPE {
             bail!("token type {:?} is not {TOKEN_TYPE}", self.kind);

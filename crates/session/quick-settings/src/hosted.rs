@@ -344,9 +344,6 @@ const TITLE_CHARS: usize = 120;
 pub fn clipboard_view(copies: &[ClipboardCopy], now_ms: u64) -> crate::ClipboardView {
     crate::ClipboardView {
         total: copies.len(),
-        // The section says what it is showing: how many, or what is
-        // searched for.
-        caption: String::new(),
         rows: copies
             .iter()
             .map(|copy| clipboard_row(copy, now_ms))

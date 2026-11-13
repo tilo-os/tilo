@@ -117,6 +117,7 @@ pub fn decode_peer(
         | PeerPresencePayload::Reaction { .. }
         | PeerPresencePayload::Wave { .. }
         | PeerPresencePayload::Person { .. }
+        | PeerPresencePayload::Profile { .. }
         | PeerPresencePayload::Shell(_) => return Ok(None),
     };
     Ok(Some((key, payload)))
@@ -154,6 +155,8 @@ mod tests {
                     id: "rename".into(),
                     label: "Rename".into(),
                     app: None,
+                    step: None,
+                    creates: None,
                 },
                 resource: tilo_actions::ActionResource {
                     id: "file:draft".into(),

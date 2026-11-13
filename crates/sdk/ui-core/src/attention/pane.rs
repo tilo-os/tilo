@@ -196,11 +196,10 @@ pub fn pane(presses: &Presses) -> Column {
     ))
 }
 
-/// An empty stack says so, and says what it is for.
+/// An empty stack says so.
 fn empty() -> Element {
     Box::new(
         EmptyState::new(crate::i18n::widget_format("attention-none", &[]))
-            .with_message(crate::i18n::widget_format("attention-none-message", &[]))
             .with_icon(Icon::Check)
             .with_id("attention-empty"),
     )

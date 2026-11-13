@@ -1,12 +1,6 @@
-//! The screenshot scenarios: the bundled sample city, staged.
-//!
-//! A capture never reaches the network. What the map draws that the resource
-//! does not hold — the stylised basemap standing in for raster imagery, the
-//! camera, the ranked results — is the scenario's [`Sample`] fixture. The
-//! places, searches, route and transit options are the resource's own, so a
-//! scenario writes them with the same actions a person's edits take. The view
-//! state a scenario shows (an open panel, a menu, a detached navigation card)
-//! is staged by the window once those actions are laid out.
+//! The screenshot scenarios: the bundled sample city, staged. A capture never reaches the network;
+//! places and plans are written with the same actions a person's edits take, and the view state is
+//! staged once they are laid out.
 
 use ui::framework::Fixture;
 use ui::tilo_resource::Invoke;
@@ -15,8 +9,8 @@ use crate::model::{TransitTime, TransitTimeMode, TravelMode};
 use crate::sample;
 use crate::workspace::{Workspace, workspace};
 
-/// Every named scenario `--shots --scenario NAME` captures; a `-narrow` one
-/// is a phone-sized window, where the panel is a drawer.
+/// Every named scenario `--shots --scenario NAME` captures; a `-narrow` one is a phone-sized
+/// window, where the panel is a drawer.
 pub(crate) const SCENARIOS: &[&str] = &[
     "directions",
     "explore",
@@ -49,7 +43,6 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "empty-narrow",
 ];
 
-/// A capture scenario by name; a plain `--shots` is the drive route.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Scenario {
     Directions,
@@ -65,10 +58,7 @@ pub(crate) enum Scenario {
     Attribution,
     Error,
     Collapsed,
-    /// The drive route with the turn card over the map, the panel closed
-    /// where it is a drawer.
     Navigation,
-    /// The turn card handed to the desktop, and on its way back.
     FloatingNavigation,
     Empty,
 }
@@ -96,7 +86,6 @@ impl Scenario {
         }
     }
 
-    /// Whether the scenario shows the sample drive route.
     pub(crate) fn has_route(self) -> bool {
         matches!(
             self,
@@ -109,18 +98,14 @@ impl Scenario {
         )
     }
 
-    /// Whether the scenario plans a public-transport journey.
     pub(crate) fn is_transit(self) -> bool {
         matches!(self, Self::Transit | Self::TransitArrive)
     }
 }
 
-/// What a capture's map shows in place of live imagery and a live session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Sample {
-    /// The bundled sample city: its basemap, camera and ranked results.
     City,
-    /// A first run: a plain themed basemap and nothing else.
     Empty,
 }
 
@@ -134,7 +119,6 @@ impl Sample {
     }
 }
 
-/// Prepare `fixture`'s sample before the view is built.
 pub(crate) fn prepare(fixture: &mut Fixture<Workspace>) {
     let sample = Sample::of(fixture.scenario());
     fixture.provide(sample);
@@ -147,10 +131,6 @@ pub(crate) fn viewport(scenario: Option<&str>) -> (u32, u32) {
     }
 }
 
-/// The actions that put `scenario`'s places, searches and plans in the
-/// resource: the sample city's places (two of them saved), its recent
-/// searches and travel settings, and — where the scenario shows one — the
-/// drive route or the transit journeys.
 pub(crate) fn actions(name: Option<&str>) -> Vec<Invoke<Workspace>> {
     if Sample::of(name) == Sample::Empty {
         return Vec::new();
@@ -158,8 +138,6 @@ pub(crate) fn actions(name: Option<&str>) -> Vec<Invoke<Workspace>> {
     let scenario = Scenario::of(name);
     let model = sample::default_model();
     let mut actions = vec![Workspace::ACCEPT_PLACES.with(model.places.clone())];
-    // Each committed search moves to the front of the history, so the
-    // oldest is committed first.
     actions.extend(
         model
             .recents

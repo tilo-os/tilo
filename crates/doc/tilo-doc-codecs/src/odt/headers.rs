@@ -6,15 +6,11 @@
 use super::plain_paragraphs;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+use std::fmt::Write as _;
 use tilo_doc::model::{DocMut, DocRef, Region, materialize_region};
 use tilo_doc::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
 use tilo_doc::snapshot::BlockView;
-// `write!` into a `String` cannot fail; the discarded `Result` is the
-// `fmt::Write` contract, not a swallowed error.
-use std::fmt::Write as _;
 
-/// Import the `style:header`/`style:footer` paragraphs from the first `style:master-page`.
-/// `<text:page-number/>` becomes a page-number field. No-op when neither region is present.
 pub(super) fn import_master_headers(styles_xml: &[u8], doc: &mut DocMut) {
     let Ok(s) = std::str::from_utf8(styles_xml) else {
         return;
@@ -23,10 +19,7 @@ pub(super) fn import_master_headers(styles_xml: &[u8], doc: &mut DocMut) {
     parse_region(s, "style:footer", Region::Footer, doc);
 }
 
-/// Walk a `style:header`/`style:footer` element into region blocks; text,
-/// `text:tab`/`text:line-break`/`text:s`, and `text:page-number` fields map onto the model.
 fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
-    // Pending field marks (block, start) applied after text is in place.
     let mut field_marks: Vec<(String, usize)> = Vec::new();
     plain_paragraphs::import(
         xml,
@@ -54,7 +47,6 @@ fn parse_region(xml: &str, tag: &str, region: Region, doc: &mut DocMut) {
     }
 }
 
-/// Whether character `i` of `b` is the start of a page-number field.
 fn page_number_field_at(b: &BlockView, i: usize) -> bool {
     b.marks.iter().any(|m| {
         m.name == MARK_FIELD
@@ -64,7 +56,6 @@ fn page_number_field_at(b: &BlockView, i: usize) -> bool {
     })
 }
 
-/// Render a region block, emitting `<text:page-number/>` for page-number fields.
 fn render_region_block(b: &BlockView) -> String {
     let chars: Vec<char> = b.text.chars().collect();
     plain_paragraphs::render_one(b, |i| {
@@ -78,7 +69,6 @@ fn render_region_block(b: &BlockView) -> String {
     })
 }
 
-/// The `style:header`/`style:footer` XML for a region's blocks, or `None` when empty.
 fn region_xml(blocks: &[BlockView], tag: &str) -> Option<String> {
     if blocks.is_empty() {
         return None;
@@ -126,7 +116,6 @@ pub(super) fn export_master_headers(doc: &DocRef, original: Option<&[u8]>) -> Op
     if header_xml.is_none() && footer_xml.is_none() {
         return None;
     }
-    // ODF orders `style:header` before `style:footer` inside a master-page.
     let mut regions = String::new();
     if let Some(h) = &header_xml {
         regions.push_str(h);
@@ -141,7 +130,6 @@ pub(super) fn export_master_headers(doc: &DocRef, original: Option<&[u8]>) -> Op
     }
 }
 
-/// Build a fresh minimal `styles.xml` carrying just the master-page header/footer.
 fn synth_styles(regions: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -154,7 +142,6 @@ fn synth_styles(regions: &str) -> String {
 fn splice_into_master(styles_xml: &[u8], regions: &str) -> Vec<u8> {
     let s = String::from_utf8_lossy(styles_xml).into_owned();
     if let Some((open_end, mp_inner_start, mp_inner_end)) = first_master_page_span(&s) {
-        // Drop existing header/footer from the master-page's inner content; keep everything else (page-layout refs etc.) verbatim.
         let inner = s.get(mp_inner_start..mp_inner_end).unwrap_or_default();
         let cleaned = strip_regions(inner);
         let mut out = String::with_capacity(s.len().saturating_add(regions.len()));
@@ -164,7 +151,6 @@ fn splice_into_master(styles_xml: &[u8], regions: &str) -> Vec<u8> {
         out.push_str(s.get(mp_inner_end..).unwrap_or_default());
         return out.into_bytes();
     }
-    // No master-page: inject a fresh master-styles section, preferring to place it before the document-styles close.
     let section = format!(
         r#"<office:master-styles><style:master-page style:name="Standard">{regions}</style:master-page></office:master-styles>"#
     );
@@ -194,7 +180,6 @@ fn first_master_page_span(s: &str) -> Option<(usize, usize, usize)> {
     Some((inner_start, inner_start, close))
 }
 
-/// Remove `style:header`/`style:footer` (and the rarely-used `*-left`/`*-first` variants) from a master-page's inner XML.
 fn strip_regions(inner: &str) -> String {
     let mut out = String::with_capacity(inner.len());
     let mut reader = Reader::from_str(inner);
@@ -239,8 +224,6 @@ fn strip_regions(inner: &str) -> String {
     out
 }
 
-/// The verbatim header (`headers`) or footer elements of a master-page's inner XML, the
-/// left/first-page variants included.
 fn region_elements(inner: &str, headers: bool) -> String {
     let wanted = |name: &[u8]| {
         is_region_tag(name)

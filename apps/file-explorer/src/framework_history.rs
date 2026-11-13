@@ -1,4 +1,5 @@
-//! Files supplies actual mounted-file custody and a pure immutable preview.
+//! The mounted file's history: custody of the open file, and the immutable
+//! versions agents sign.
 use fs_protocol::files::{
     CHECKED_HISTORY_RESTORE_XATTR, CHECKED_HISTORY_RESULT_XATTR_PREFIX,
     CHECKED_HISTORY_REVIEW_XATTR, CheckedHistoryOutcomeV1, CheckedHistoryRequestV1,
@@ -21,12 +22,6 @@ pub struct MountedFileHistory {
     file: File,
 }
 impl MountedFileHistory {
-    /// Opens a descriptor on the mounted file at `path`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error from opening `path`, or `Unsupported` on a host
-    /// without extended attributes, which cannot carry the projection.
     pub fn open(path: &Path) -> std::io::Result<Self> {
         if !attributes::SUPPORTED {
             return Err(std::io::Error::new(
@@ -117,8 +112,6 @@ impl FileHistoryTransport for MountedFileHistory {
                     review: request.review,
                 }
             }
-            // Still downloading after the wait: the same request, retried
-            // later, picks the download up where it is.
             Err(error) if ErrorCode::of(&error) == Some(ErrorCode::InProgress) => {
                 CheckedHistoryOutcomeV1::RecoveryPending {
                     intent_id: request.intent_id,
@@ -145,15 +138,8 @@ impl FileHistoryTransport for MountedFileHistory {
         response.outcome
     }
 }
-/// How long a history request waits for the filesystem to download the
-/// content it needs before it reports the request as still pending.
 pub(crate) const HYDRATION_WAIT: Duration = Duration::from_secs(10 * 60);
 
-/// Write a history request, repeating it while the filesystem answers that
-/// the content it needs is still downloading (`EINPROGRESS`). The filesystem
-/// downloads off its request path, so no FUSE worker waits meanwhile; the
-/// repeat is the same idempotent request, and it commits once the bytes are
-/// local. After `wait` the last `EINPROGRESS` is the answer.
 pub(crate) fn write_until_hydrated(
     wait: Duration,
     write: impl FnMut() -> std::io::Result<()>,
@@ -162,8 +148,6 @@ pub(crate) fn write_until_hydrated(
     repeat_while_hydrating(wait, || start.elapsed(), std::thread::sleep, write)
 }
 
-/// [`write_until_hydrated`] on a given clock: `elapsed` reads the time since
-/// the first write and `sleep` pauses between repeats.
 fn repeat_while_hydrating(
     wait: Duration,
     mut elapsed: impl FnMut() -> Duration,
@@ -199,10 +183,6 @@ fn outcome_error(error: &std::io::Error) -> CheckedHistoryOutcomeV1 {
         _ => CheckedHistoryOutcomeV1::Unavailable,
     }
 }
-/// The agent the version `version_id` of the file at `path` records as
-/// having caused it, as the version's own signing device recorded it; `None`
-/// for a version its person made themselves, or when the history cannot be
-/// read.
 pub(crate) fn version_attribution(
     path: &Path,
     version_id: fs_protocol::FileVersionId,
@@ -238,12 +218,6 @@ fn read_error(error: &std::io::Error) -> FileHistoryReadErrorV1 {
         _ => FileHistoryReadErrorV1::Unavailable,
     }
 }
-/// Builds a history target bound to the mounted file at `path`, whose
-/// versions `authors` names (people, and agents on their behalf).
-///
-/// # Errors
-///
-/// Returns the I/O error from opening `path` (see [`MountedFileHistory::open`]).
 pub fn target(
     path: &Path,
     record: fs_protocol::FileRecordId,
@@ -376,11 +350,8 @@ mod tests {
             frontier: [4; 32],
         }
     }
-    /// A request the filesystem answers with `EINPROGRESS` is repeated until it
-    /// settles, and the last `EINPROGRESS` is the answer once the wait is over.
     #[test]
     fn history_writes_repeat_while_content_hydrates() {
-        // A clock that moves only when the loop pauses.
         let clock = std::cell::Cell::new(Duration::ZERO);
         let repeat = |wait, write: &mut dyn FnMut() -> std::io::Result<()>| {
             clock.set(Duration::ZERO);
@@ -391,7 +362,6 @@ mod tests {
                 write,
             )
         };
-        // --- phase: repeats_until_the_content_is_local ---
         {
             let mut calls = 0_u32;
             let result = repeat(Duration::from_secs(30), &mut || {
@@ -410,7 +380,6 @@ mod tests {
                 "paused 20 then 40 ms"
             );
         }
-        // --- phase: other_answers_return_at_once ---
         {
             let mut calls = 0_u32;
             let result = repeat(Duration::from_secs(30), &mut || {
@@ -421,7 +390,6 @@ mod tests {
             assert_eq!(calls, 1);
             assert_eq!(clock.get(), Duration::ZERO);
         }
-        // --- phase: gives_up_after_the_wait ---
         {
             let mut calls = 0_u32;
             let result = repeat(Duration::from_millis(100), &mut || {
@@ -432,16 +400,12 @@ mod tests {
                 ErrorCode::of(&result.unwrap_err()),
                 Some(ErrorCode::InProgress)
             );
-            // Writes at 0, 20 and 60 ms pause 20, 40 and the remaining 40 ms;
-            // the write at 100 ms is the answer.
             assert_eq!(calls, 4);
             assert_eq!(clock.get(), Duration::from_millis(100));
         }
     }
-    /// Checked xattr success reads exact intent without claiming applied, and scoped preview names fit macOS with a descriptor that does not follow path replacement.
     #[test]
     fn checked_history_writes_read_exact_intent_through_a_stable_descriptor() {
-        // --- phase: checked_xattr_success_reads_exact_intent_and_does_not_claim_applied ---
         {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("record");
@@ -497,7 +461,6 @@ mod tests {
             );
         }
 
-        // --- phase: scoped_preview_name_fits_macos_and_descriptor_does_not_follow_path_replacement ---
         {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("record");

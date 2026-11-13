@@ -11,6 +11,8 @@
 //! This type owns no CRDT state and does no rendering — it holds the
 //! snapshot and formats the labels, which keeps it trivially unit-testable.
 
+use crate::metadata::CATALOG;
+
 /// Whether the notebook's changes are on disk, as the accessibility status says it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum SaveStatus {
@@ -76,7 +78,7 @@ impl StatusModel {
     }
 
     pub fn save_text(&self) -> String {
-        ui::i18n!(match self.state.save_status {
+        CATALOG.t(match self.state.save_status {
             SaveStatus::Saved => "notes-status-saved",
             SaveStatus::Saving => "notes-status-saving",
             SaveStatus::Failed => "notes-status-failed",
@@ -96,12 +98,12 @@ impl StatusModel {
     /// The save state with why it is not durable and what to do about it.
     pub fn save_detail(&self) -> String {
         match (self.state.save_status, self.state.save_problem.as_deref()) {
-            (SaveStatus::Failed, Some(reason)) => ui::i18n::I18nManager::format(
+            (SaveStatus::Failed, Some(reason)) => crate::metadata::CATALOG.t_args(
                 "notes-status-failed-because",
                 &[("reason", ui::i18n::ArgValue::from(reason.to_owned()))],
             ),
-            (SaveStatus::Failed, None) => ui::i18n!("notes-status-failed-detail"),
-            (SaveStatus::SessionOnly, _) => ui::i18n!("notes-status-no-storage"),
+            (SaveStatus::Failed, None) => CATALOG.t("notes-status-failed-detail"),
+            (SaveStatus::SessionOnly, _) => CATALOG.t("notes-status-no-storage"),
             _ => self.save_text(),
         }
     }
@@ -110,14 +112,14 @@ impl StatusModel {
     pub fn right_text(&self) -> String {
         let notes = self.state.page_count;
         match self.state.word_count {
-            Some(words) => ui::i18n::I18nManager::format(
+            Some(words) => crate::metadata::CATALOG.t_args(
                 "notes-status-counts",
                 &[
                     ("notes", ui::i18n::ArgValue::from(notes)),
                     ("words", ui::i18n::ArgValue::from(words)),
                 ],
             ),
-            None => ui::i18n::I18nManager::format(
+            None => crate::metadata::CATALOG.t_args(
                 "notes-status-note-count",
                 &[("notes", ui::i18n::ArgValue::from(notes))],
             ),

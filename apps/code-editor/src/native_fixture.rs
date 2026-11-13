@@ -23,7 +23,6 @@ pub(crate) fn hash(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-/// Write a new 2,000-line Rust file; refuse existing files and symlinks.
 pub fn seed(path: &Path) -> std::io::Result<Manifest> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)

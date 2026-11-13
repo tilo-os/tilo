@@ -8,11 +8,8 @@ use rustix::net::{
     SendAncillaryMessage, SendFlags,
 };
 
-/// The most descriptors one bundle carries: a session's PTY master, its
-/// private lease and, when negotiated, its editor capability.
 const MAX_BUNDLE: usize = 3;
 
-/// Send a payload with one borrowed descriptor.
 pub fn send_with_fd(sock: impl AsFd, payload: &[u8], fd: impl AsFd) -> io::Result<()> {
     send_with_fds(sock, payload, &[fd.as_fd()])
 }
@@ -67,7 +64,6 @@ pub fn recv_with_fds(sock: impl AsFd) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
     recv_bundle(sock, &mut [0u8; 4096], MAX_BUNDLE)
 }
 
-/// Receive bounded data, refusing and closing every ancillary descriptor.
 #[cfg(target_os = "linux")]
 pub(crate) fn recv_data(sock: impl AsFd, buffer: &mut [u8]) -> io::Result<usize> {
     if buffer.is_empty() || buffer.len() > 16384 {
@@ -91,7 +87,6 @@ fn recv_bundle(
     // https://github.com/apple-oss-distributions/xnu/blob/ac9718fb1af618d5ce8678d0dc6e8a58f252216f/bsd/kern/uipc_syscalls.c#L3284
     let mut space = [MaybeUninit::uninit(); 2048];
     let mut control = RecvAncillaryBuffer::new(&mut space);
-    // Linux can atomically set CLOEXEC at receipt. Darwin requires fcntl below.
     #[cfg(target_os = "linux")]
     let flags = RecvFlags::CMSG_CLOEXEC;
     #[cfg(not(target_os = "linux"))]
@@ -231,8 +226,6 @@ mod tests {
     }
 
     fn rejected_message_closes_descriptors(count: usize, bytes: usize) {
-        // No sibling test may have a child between its fork and its exec while
-        // this waits for the last copy of `writer` to close.
         let _quiet = crate::no_spawns();
         let (a, b) = UnixDatagram::pair().unwrap();
         let (mut reader, writer) = UnixStream::pair().unwrap();

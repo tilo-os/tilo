@@ -102,7 +102,6 @@ fn an_agent_changes_a_project_in_one_call_each_and_history_tells_what_it_did() {
         .as_deref(),
         Some("fn main() { run() }\n")
     );
-    // Undo takes a deletion back, so it runs at once.
     app.call_by(agent.clone(), &item, "delete", serde_json::json!({}))
         .expect("an undoable delete runs at once");
     assert_eq!(app.state().path_of(&main.as_str().into()), None);
@@ -138,9 +137,6 @@ fn an_agent_changes_a_project_in_one_call_each_and_history_tells_what_it_did() {
     );
 }
 
-/// History and agents read a project as it was through the generic `read`:
-/// its entries by path, and a file's text at that version, while the live
-/// project moved on.
 #[test]
 fn a_past_version_of_a_project_reads_as_its_paths_and_texts() {
     let mut app = TestApp::<CodeEditorShell>::new().unwrap();
@@ -202,8 +198,6 @@ fn a_past_version_of_a_project_reads_as_its_paths_and_texts() {
     );
 }
 
-/// The window bar's sidebar button flips the sidebar on every click, in a
-/// window wide enough to dock it and in a narrow one.
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
     ui::framework::testing::check_window_sidebar_button(

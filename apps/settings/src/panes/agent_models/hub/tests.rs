@@ -39,9 +39,6 @@ fn hub_offer() -> HubModelOffer {
     HubModelOffer::of(&info, &machine, |_| false, false).unwrap()
 }
 
-/// A shown model offers its variants with fit and licence; only a variant
-/// that fits, at the commit it was shown at, is downloaded, and the download
-/// is itself the acceptance of the licence shown.
 #[test]
 fn a_hub_model_downloads_only_a_fitting_variant_it_showed() {
     let control = mock(snapshot(None));
@@ -84,8 +81,6 @@ fn a_hub_model_downloads_only_a_fitting_variant_it_showed() {
     assert_eq!(actions("F32"), Some(0));
 }
 
-/// Without a signed runtime for its format, an installed model offers no
-/// Start and says why.
 #[test]
 fn a_model_without_a_signed_runtime_is_not_offered_start() {
     let mut stopped = snapshot(Some(LocalModelPhase::Ready {
@@ -105,8 +100,6 @@ fn a_model_without_a_signed_runtime_is_not_offered_start() {
     assert!(!names.iter().any(|name| name == "Start"), "{names:?}");
 }
 
-/// A file is added as the person chose it in the file chooser: the model
-/// store receives the open file and its name, never a path.
 #[test]
 fn a_model_file_is_handed_over_as_chosen() {
     let control = mock(snapshot(None));
@@ -121,8 +114,6 @@ fn a_model_file_is_handed_over_as_chosen() {
     );
 }
 
-/// Plays the system browser: records what it opened and follows the
-/// sign-in's redirects back to the loopback listener.
 struct Browser(Mutex<Vec<String>>);
 
 impl crate::panes::accounts::BrowserOpener for Browser {
@@ -202,7 +193,6 @@ fn a_hugging_face_sign_in_is_stored_where_a_token_goes_and_shows_who() {
     }
 }
 
-/// A sign-in that ended says so and offers signing in again.
 #[test]
 fn an_ended_sign_in_asks_to_sign_in_again() {
     let mut pane = model_over(mock(snapshot(None)));
@@ -220,11 +210,6 @@ fn an_ended_sign_in_asks_to_sign_in_again() {
     );
 }
 
-/// The pane draws no search field: the window bar's search is the only
-/// one, and on Agent Models what is typed there searches Hugging Face. The
-/// window's search drives the pane through the same driver the window bar
-/// runs, results land as rows, and closing the search returns the pane to
-/// what it showed before. Elsewhere the search still narrows the sidebar.
 #[test]
 fn the_window_bar_search_searches_hugging_face_on_agent_models() {
     use crate::categories::Category;
@@ -305,9 +290,6 @@ fn the_window_bar_search_searches_hugging_face_on_agent_models() {
     );
 }
 
-/// One search at a time, however fast the person types: typing while a
-/// search is on its way starts nothing, and its landing searches what is
-/// typed by then. Emptying the search shows what the pane showed before.
 #[test]
 fn typing_searches_once_at_a_time_and_lands_on_what_is_typed() {
     let mut pane = model_over(mock(snapshot(None)));
@@ -346,8 +328,6 @@ fn typing_searches_once_at_a_time_and_lands_on_what_is_typed() {
     assert_eq!(hub.follow_up("qwen", "safetensors"), None);
 }
 
-/// A result says its downloads and likes as facts of their own, never one
-/// string joined by a separator.
 #[test]
 fn a_result_states_downloads_and_likes_as_separate_facts() {
     let mut pane = model_over(mock(snapshot(None)));

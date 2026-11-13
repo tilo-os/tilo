@@ -24,6 +24,7 @@
 //! track per column, fixed row height); the widget paints the grid lines, header band, row
 //! banding and the insert, delete and resize affordances on top.
 
+use crate::i18n::widget_text;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
@@ -44,6 +45,7 @@ pub use crate::table_model::*;
 use crate::table_model::{DEFAULT_COL_W, MIN_COL_W, cell_key, cells_map, child_obj, col_width};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::{TextInput, Widget};
 
 // ---------------------------------------------------------------------------
@@ -456,7 +458,7 @@ impl Table {
                 &rect,
             );
             input.suppress_caret_paint(suppress_caret);
-            input.draw(scene, transform, tr, theme, presence);
+            input.draw_child(scene, transform, tr, theme, presence);
             input.suppress_caret_paint(false);
         }
     }
@@ -711,7 +713,7 @@ impl Table {
         let label_transform = transform * Affine::translate((c.x - 20.0, c.y - 9.0));
         text_renderer.draw_text(
             scene,
-            &crate::i18n!("block-table-add-cell"),
+            &widget_text("block-table-add-cell"),
             14.0,
             theme.text_primary,
             label_transform,
@@ -1237,7 +1239,7 @@ impl Widget for Table {
 
         // Cells (real TextInputs paint their own text + caret).
         for cell in &mut self.cells {
-            cell.draw(scene, transform, text_renderer, theme, presence);
+            cell.draw_child(scene, transform, text_renderer, theme, presence);
         }
 
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);

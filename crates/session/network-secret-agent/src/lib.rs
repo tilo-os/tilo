@@ -794,14 +794,14 @@ pub async fn request_secrets(
             // NetworkManager already turned these down: answering them again
             // fails the same way every time it connects on its own.
             Some(stored) if rejected.as_ref() == Some(&stored) => tracing::info!(
-                target: "shell::network_secrets",
+                target: "tilo_network_secrets",
                 connection = %request.connection_id,
                 setting = %request.setting_name,
                 "the remembered secrets were rejected before; not answering with them"
             ),
             Some(stored) => {
                 tracing::debug!(
-                    target: "shell::network_secrets",
+                    target: "tilo_network_secrets",
                     connection = %request.connection_id,
                     setting = %request.setting_name,
                     "answered from remembered secrets"
@@ -824,7 +824,7 @@ pub async fn request_secrets(
         .await?;
         if let Err(error) = marked {
             tracing::warn!(
-                target: "shell::network_secrets",
+                target: "tilo_network_secrets",
                 connection = %request.connection_id,
                 %error,
                 "could not remember that the secrets were rejected"
@@ -861,7 +861,7 @@ pub async fn request_secrets(
     .await?;
     if let Err(error) = outcome {
         tracing::warn!(
-            target: "shell::network_secrets",
+            target: "tilo_network_secrets",
             connection = %request.connection_id,
             setting = %request.setting_name,
             %error,

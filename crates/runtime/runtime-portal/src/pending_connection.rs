@@ -9,12 +9,10 @@ struct Lifetime {
     socket: Option<std::os::unix::net::UnixStream>,
 }
 
-/// Cancellation can precede discovery, request IO or descriptor handoff.
 #[derive(Clone, Default)]
 pub struct Cancellation(Arc<Mutex<Lifetime>>);
 
 impl Cancellation {
-    /// Register the request connection before sending anything on it.
     #[cfg(unix)]
     pub fn track(&self, socket: &std::os::unix::net::UnixStream) -> std::io::Result<()> {
         let mut guard = self
@@ -70,7 +68,6 @@ impl<T: Send + 'static> PendingResponse<T> {
         let worker = std::thread::Builder::new()
             .name(name.into())
             .spawn(move || {
-                // A dropped receiver disposes of late descriptors and capabilities.
                 let _ = send.send(work(worker_cancellation));
                 notify();
             })?;
@@ -102,8 +99,6 @@ impl<T> Drop for PendingResponse<T> {
     }
 }
 
-/// Owning this capability ends the accepted session when its UI closes.
-/// Shutdown also releases a supervisor blocked on a reader's socket clone.
 pub struct SessionLifetime {
     #[cfg(unix)]
     socket: std::os::unix::net::UnixStream,
@@ -212,18 +207,13 @@ impl ReaderLifetime {
     }
 }
 
-/// Where a lease stands for a reader, when its peer may say how the session
-/// ended before closing it (a relay session's `end_report`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LeaseState {
     Open,
     Closed,
-    /// The peer said how the session ended (one line, without its newline)
-    /// and closes the lease.
     Reported(Vec<u8>),
 }
 
-/// The longest end report a reader takes.
 #[cfg(unix)]
 const MAX_END_REPORT: usize = 4096;
 

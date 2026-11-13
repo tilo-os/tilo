@@ -189,12 +189,25 @@ impl App {
             WindowEvent::Focused(false) => {
                 self.input.keyboard_layout = None;
                 self.input.window_focused = false;
+                self.input.keyboard_entry_owed = false;
+                // The field the person left keeps its text and selection, and gives up the caret
+                // with the keyboard: the frame is drawn again where the caret stood.
+                if self.input.keyboard_held {
+                    self.input.keyboard_held = false;
+                    self.root_widget.release_scene_cache();
+                    window.request_redraw();
+                }
             }
             // A window that takes the keyboard hands it to the app's entry
             // when nothing in it holds it: what is typed after it opens, or
             // is brought forward, reaches the app.
             WindowEvent::Focused(true) => {
                 self.input.window_focused = true;
+                if !self.input.keyboard_held {
+                    self.input.keyboard_held = true;
+                    self.root_widget.release_scene_cache();
+                    window.request_redraw();
+                }
                 self.hand_keyboard_to_app();
             }
             _ => {}
@@ -684,7 +697,8 @@ impl App {
         app.broadcast_location_presence();
         app.broadcast_composing_presence();
         app.broadcast_view_presence();
-        if sync_follows {
+        // A publication an earlier input owes is the frame's already.
+        if sync_follows || app.actions.action_surface_owed {
             app.actions.action_surface_owed = true;
         } else {
             app.publish_action_surface();
@@ -991,7 +1005,19 @@ impl App {
     /// controls it shows now. Whether it rebuilt.
     fn build_tree_before_input(&mut self) -> bool {
         if self.layout.root_node.is_none() {
-            return false;
+            // Input can arrive before the app's first frame: a sheet opened
+            // and typed into in one step, a panel's first press. Build and
+            // lay out the tree it belongs to now, with the keyboard where
+            // the app puts it, so the input lands instead of dropping.
+            self.init_layout();
+            self.rebuild_structure();
+            if self.autofocus_first
+                && self.focused_node.is_none()
+                && let Some(id) = self.initial_live_focus_target()
+            {
+                self.set_focused_node(Some(id));
+            }
+            return true;
         }
         let changed = self.take_root_structure_dirty();
         self.layout.structure_dirty |= changed;

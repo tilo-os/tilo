@@ -1,50 +1,34 @@
-//! Install-time shim writer.
-//!
-//! The `[cli].commands` block from a manifest becomes one PATH
-//! shim per command under `~/.local/share/tilo-apps/bin/<cmd>`.
-//! Each shim is a copy of the `tilo-cli-shim` binary paired with
-//! a small TOML sidecar (`<cmd>.tilo-shim`) holding the package
-//! id + command name.
-//!
-//! Kept as its own module so the unit tests can drive it without
-//! spawning the full `tilo-install install` flow.
+//! The `[cli].commands` block becomes one PATH shim per command under
+//! `~/.local/share/tilo-apps/bin/<cmd>`: a copy of the `tilo-cli-shim` binary and a
+//! `<cmd>.tilo-shim` sidecar with the package id and command name.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use cli_shim::{Sidecar, sidecar_path_for};
 
-/// Options `write_shims` needs beyond the manifest data itself.
+/// What `write_shims` writes.
 #[derive(Debug, Clone)]
 pub struct ShimInstall<'a> {
     /// Reverse-DNS package id.
     pub package_id: &'a str,
     /// PATH-visible command names (`manifest.cli.commands`).
     pub commands: &'a [String],
-    /// Source path of the shim binary — the file we copy into
-    /// place under `bin/<cmd>`. The `install` main resolves this
-    /// via [`locate_shim_source`].
+    /// The `tilo-cli-shim` binary to copy; [`locate_shim_source`] finds it.
     pub shim_source: &'a Path,
-    /// Target `bin/` dir under the user's tilo-apps root.
+    /// The `bin/` directory under the user's tilo-apps root.
     pub bin_dir: &'a Path,
-    /// Optional launcher override — bakes a `launcher = "..."`
-    /// field into each sidecar. Used by integration tests + dev
-    /// installs. `None` = system launcher path (production).
+    /// Baked into each sidecar as `launcher`; `None` uses the system launcher path.
     pub launcher_override: Option<&'a Path>,
 }
 
-/// Install one shim per command. Returns the list of files
-/// written so the caller can persist them in the registry entry
-/// for later removal.
+/// Install one shim per command. Returns the files written, so the caller can record them in the
+/// registry entry and remove them later.
 ///
 /// # Errors
 ///
-/// Returns [`ShimError::BadCommandName`] if a command name isn't
-/// filesystem-safe; [`ShimError::CreateDir`] if `spec.bin_dir` can't
-/// be created; [`ShimError::CopyShim`] if the shim binary can't be
-/// copied into place or its executable bit can't be set;
-/// [`ShimError::EncodeSidecar`] if the sidecar TOML fails to encode;
-/// or [`ShimError::WriteSidecar`] if the sidecar file can't be written.
+/// When a command name is not filesystem-safe, or a directory, the shim or its sidecar cannot be
+/// written.
 pub fn write_shims(spec: &ShimInstall<'_>) -> Result<Vec<PathBuf>, ShimError> {
     fs::create_dir_all(spec.bin_dir).map_err(|e| ShimError::CreateDir {
         path: spec.bin_dir.to_path_buf(),
@@ -56,9 +40,7 @@ pub fn write_shims(spec: &ShimInstall<'_>) -> Result<Vec<PathBuf>, ShimError> {
         let shim_target = spec.bin_dir.join(cmd);
         let sidecar_target = sidecar_path_for(&shim_target);
 
-        // Overwrite semantics: the installer already treats the
-        // reverse-DNS id as the install slot, so an upgrade
-        // clobbers the old shims cleanly.
+        // Overwrite: an upgrade replaces the previous install's shims.
         let _ = fs::remove_file(&shim_target);
         let _ = fs::remove_file(&sidecar_target);
 
@@ -67,9 +49,6 @@ pub fn write_shims(spec: &ShimInstall<'_>) -> Result<Vec<PathBuf>, ShimError> {
             dst: shim_target.clone(),
             source: e,
         })?;
-        // Preserve executable bit. `fs::copy` on Unix already
-        // copies permissions, but we make it explicit for clarity
-        // and future portability.
         set_executable(&shim_target)?;
 
         let sidecar = Sidecar {
@@ -90,14 +69,13 @@ pub fn write_shims(spec: &ShimInstall<'_>) -> Result<Vec<PathBuf>, ShimError> {
     Ok(written)
 }
 
-/// Remove only shims whose sidecar still names this package and command.
-/// Another package may have replaced a shared command since installation.
-/// Best-effort: missing or unreadable sidecars are left alone.
+/// Remove only shims whose sidecar still names this package and command: another package may have
+/// replaced a shared command since installation. Missing or unreadable sidecars are left alone.
 ///
 /// # Errors
 ///
-/// Returns [`ShimError::BadCommandName`] for an unsafe command in a stale
-/// registry entry, without accessing a path outside the shim directory.
+/// [`ShimError::BadCommandName`] for an unsafe command in a stale registry entry, before any path
+/// outside the shim directory is touched.
 pub fn remove_shims(
     bin_dir: &Path,
     package_id: &str,
@@ -122,11 +100,8 @@ pub fn remove_shims(
     Ok(())
 }
 
-/// Locate the `tilo-cli-shim` binary at install time. Search:
-/// 1. `TILO_CLI_SHIM_PATH` env override (tests, dev-installs).
-/// 2. Sibling of this executable (`target/debug/tilo-cli-shim`).
-/// 3. `/usr/libexec/tilo-cli-shim` (production install).
-/// 4. `tilo-cli-shim` — falls back to PATH resolution at copy time.
+/// The `tilo-cli-shim` binary: `TILO_CLI_SHIM_PATH`, then a sibling of this executable, then
+/// `/usr/libexec/tilo-cli-shim`, else `PATH` at copy time.
 pub fn locate_shim_source() -> PathBuf {
     if let Some(over) = std::env::var_os("TILO_CLI_SHIM_PATH") {
         return PathBuf::from(over);
@@ -150,10 +125,8 @@ fn validate_command_name(name: &str) -> Result<(), ShimError> {
     if name.is_empty() {
         return Err(ShimError::BadCommandName("<empty>".into()));
     }
-    // Refuse anything that could escape the bin/ dir or shadow
-    // an unrelated file (path separators, leading dot for hidden
-    // files). The manifest schema is technically permissive here;
-    // the installer is where we draw the line.
+    // Keep the name inside `bin/` and visible: no separators, no leading dot. The manifest schema is
+    // permissive here; the installer draws the line.
     if name.contains('/') || name.contains('\\') || name.starts_with('.') {
         return Err(ShimError::BadCommandName(name.to_string()));
     }
@@ -353,8 +326,8 @@ mod tests {
                 launcher_override: None,
             })
             .unwrap();
-            // Second install with a different launcher override — must
-            // succeed and end with the second override baked in.
+            // A second install with a different launcher override must end with the second one
+            // baked in.
             let l2 = PathBuf::from("/tmp/other/tilo-launcher");
             write_shims(&ShimInstall {
                 package_id: "so.tilo.notes-cli",

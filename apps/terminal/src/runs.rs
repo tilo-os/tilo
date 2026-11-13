@@ -1,21 +1,11 @@
-//! The command runs of a session, as its shell marks them (docs/app-model/
-//! ush.md, "Command runs"): [`Marks`] takes the session's own OSC 133 marks
-//! out of the pty stream, and [`Runs`] keeps the run that is going — its
-//! command line, directory, start and raw output — until its end mark makes
-//! it a [`FinishedRun`].
+//! The command runs of a session, as its shell marks them (docs/app-model/ush.md, "Command runs").
 
 use base64::Engine as _;
 
-/// The most raw output a run keeps; it is `truncated` past this.
 pub const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
-/// The longest mark taken; anything longer is passed on as output.
 const MAX_MARK_BYTES: usize = 16 * 1024;
 
-/// The command lines `run` asked this device to run, handed from the view
-/// that carries out the session's outbox to the terminal that types them,
-/// with the reply each answers once its run ends. Shared, so the view's
-/// handler and the terminal hold one queue.
 #[derive(Clone, Default)]
 pub struct RunQueue {
     inner: std::rc::Rc<std::cell::RefCell<RunQueueState>>,
@@ -27,36 +17,27 @@ struct RunQueueState {
     pane: String,
 }
 
-/// One command line asked to run, and who waits for its run.
 pub struct Asked {
     pub request: ui::tilo_resource::Id,
     pub command: String,
-    /// Who asked: whom the run is attributed to.
     pub requested_by: String,
-    /// An agent asked: a shell that renders for agents does so for this
-    /// run.
     pub agent: bool,
     pub reply: ui::framework::EffectReply,
 }
 
 impl RunQueue {
-    /// Ask for a command line to run, answering its reply with the run.
     pub fn ask(&self, asked: Asked) {
         self.inner.borrow_mut().waiting.push(asked);
     }
 
-    /// What was asked since the last call.
     pub fn take(&self) -> Vec<Asked> {
         std::mem::take(&mut self.inner.borrow_mut().waiting)
     }
 
-    /// The pane of the process this device runs the session in: whose
-    /// outbox it carries out.
     pub fn set_pane(&self, pane: &str) {
         pane.clone_into(&mut self.inner.borrow_mut().pane);
     }
 
-    /// Whether this device runs the session whose pane is `pane`.
     #[must_use]
     pub fn runs(&self, pane: &str) -> bool {
         let own = &self.inner.borrow().pane;
@@ -64,56 +45,45 @@ impl RunQueue {
     }
 }
 
-/// A fresh key to mark a session's runs with: 32 letters and digits.
 #[must_use]
 pub fn new_key() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
-/// One mark of the session's shell.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mark {
-    /// The prompt is shown.
     Prompt,
-    /// A command line starts running in `cwd`. A shell that numbers its
-    /// runs also says where this one is in its history: the number the run
-    /// carries.
     Started {
         command: String,
         cwd: String,
         number: Option<u64>,
     },
-    /// The command ended with `status`, the one numbered `number` when the
-    /// shell numbers its runs.
-    Ended { status: i32, number: Option<u64> },
-    /// A background job started as run `number`: job `job` of the shell,
-    /// `command` in `cwd`. It runs beside whatever the shell runs next.
+    Ended {
+        status: i32,
+        number: Option<u64>,
+    },
     JobStarted {
         number: u64,
         job: u32,
         command: String,
         cwd: String,
     },
-    /// What follows is output of job run `number` (`open`), or no longer is.
-    JobOutput { number: u64, open: bool },
-    /// Job run `number` ended with `status`.
-    JobEnded { number: u64, status: i32 },
-    /// The shell asks for the person's history: the newest `limit` command
-    /// lines past the `skip` newest that contain `matching`.
+    JobOutput {
+        number: u64,
+        open: bool,
+    },
+    JobEnded {
+        number: u64,
+        status: i32,
+    },
     History(HistoryAsk),
-    /// The run going on waits on its host, which refused it for `refusal`
-    /// (a Linux machine without a card on file). `agent` says an agent
-    /// asked for the run: the shell is not waiting for it, and the refusal
-    /// is the agent's answer.
     Held {
         agent: bool,
         refusal: Box<ui::tilo_actions::remote::host_account::Refusal>,
     },
-    /// The hold is over: the host let the run through, or it was cancelled.
     Released,
 }
 
-/// A question of the shell's line editor to the person's history.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryAsk {
     pub skip: usize,
@@ -121,23 +91,16 @@ pub struct HistoryAsk {
     pub matching: String,
 }
 
-/// A piece of the pty stream: output, or one of the session's marks.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Piece {
     Output(Vec<u8>),
     Mark(Mark),
 }
 
-/// Splits the pty stream into output and the marks that carry the session's
-/// key, across reads. A mark without the key (a program printing one) stays
-/// output, which the emulator ignores like any OSC it does not know.
 #[derive(Debug)]
 pub struct Marks {
     key: String,
-    /// An `ESC ]` sequence still arriving.
     pending: Vec<u8>,
-    /// The shell said at its last prompt that it reads marks on its input
-    /// (`in=1`): a run asked for, an answer from the history.
     reads_input: bool,
 }
 
@@ -153,13 +116,11 @@ impl Marks {
         }
     }
 
-    /// The key the session's marks carry.
     #[must_use]
     pub fn key(&self) -> &str {
         &self.key
     }
 
-    /// Whether the shell reads Terminal's marks on its input.
     #[must_use]
     pub const fn reads_input(&self) -> bool {
         self.reads_input
@@ -231,7 +192,6 @@ impl Marks {
         pieces
     }
 
-    /// The mark `body` (what follows `133;`) names, when it carries the key.
     fn mark(&mut self, body: &[u8]) -> Option<Mark> {
         let body = std::str::from_utf8(body).ok()?;
         let mut fields = body.split(';');
@@ -318,25 +278,17 @@ fn decode(value: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-/// A run that ended, as the session marked it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FinishedRun {
     pub command: String,
     pub cwd: String,
-    /// The command's place in the shell's own history, when its shell
-    /// numbered it: the session record keeps runs by this, so a person
-    /// typing the same line as a request does not take its id.
     pub number: Option<u64>,
     pub started_ms: i64,
     pub ended_ms: i64,
     pub exit: i32,
     pub output: Vec<u8>,
     pub truncated: bool,
-    /// The shell's job number, for a background job's run: it is no line
-    /// the person or a request typed.
     pub job: Option<u32>,
-    /// Why its host held it, when it did: an agent's run ends with this as
-    /// its answer.
     pub refusal: Option<Box<ui::tilo_actions::remote::host_account::Refusal>>,
 }
 
@@ -352,19 +304,14 @@ impl FinishedRun {
     }
 }
 
-/// The run going on in a session, and the background jobs running beside
-/// it.
 #[derive(Debug, Default)]
 pub struct Runs {
     open: Option<FinishedRun>,
-    /// Job runs, by their number.
     jobs: std::collections::BTreeMap<u64, FinishedRun>,
-    /// The job run whose output is arriving now.
     job_output: Option<u64>,
 }
 
 impl Runs {
-    /// Follow `piece`, at `now_ms`; a run its end mark finishes comes back.
     pub fn follow(&mut self, piece: &Piece, now_ms: i64) -> Option<FinishedRun> {
         match piece {
             Piece::Output(bytes) => {
@@ -436,8 +383,6 @@ impl Runs {
                 let mut run = self.open.take()?;
                 run.ended_ms = now_ms;
                 run.exit = *status;
-                // The end says which command it was when both sides number
-                // their runs; a start that named none takes the end's.
                 run.number = run.number.or(*number);
                 Some(run)
             }
@@ -457,9 +402,6 @@ mod tests {
         base64::engine::general_purpose::STANDARD.encode(text)
     }
 
-    /// The marks a real session's rc file writes ([`ush::runs`]), split
-    /// across reads at every byte, make one run with its output; a mark
-    /// without the session's key is output.
     #[test]
     fn marks_split_anywhere_make_runs_and_forged_ones_stay_output() {
         let key = "0123456789abcdef0123456789abcdef";

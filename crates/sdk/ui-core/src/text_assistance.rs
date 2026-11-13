@@ -41,7 +41,7 @@ impl crate::storage::SettingsSchema for TextAssistancePrefs {
 }
 
 /// The section as a record the person edits by path.
-#[tilo_resource::resource(kind = "settings.text-assistance", label = "Spelling and text")]
+#[tilo_resource::resource(kind = "settings.text-assistance")]
 impl TextAssistancePrefs {}
 
 #[derive(Default)]

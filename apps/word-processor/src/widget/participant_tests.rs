@@ -1,7 +1,3 @@
-//! Participant isolation: several participants served
-//! by one widget keep independent views, trees and presence, and their views
-//! rebase under concurrent edits without touching the document.
-
 use super::participants::{
     MAX_FIND_QUERY_BYTES, MAX_PARTICIPANT_VIEWS, PARTICIPANT_VIEW_TTL, ParticipantViews,
 };
@@ -19,7 +15,6 @@ fn pid(name: &str) -> ParticipantId {
     ParticipantId::new(name).unwrap()
 }
 
-/// A synced widget over paragraphs `texts`, with the body block ids in order.
 fn widget_with(texts: &[&str]) -> (Editor, ui::State, Vec<String>) {
     let mut state = crate::initialized_state();
     let mut wp = Editor::detached();
@@ -71,7 +66,6 @@ fn two_participants_keep_independent_views_and_trees() {
     wp.set_participant_view(&agent, &selecting(&ids[0], 0, 5), &state.doc);
     wp.set_participant_view(&other, &caret(&ids[1], 3), &state.doc);
 
-    // Each participant reads back exactly its own view.
     assert_eq!(
         wp.participant_view(&agent, &state.doc),
         Some(selecting(&ids[0], 0, 5))
@@ -80,12 +74,9 @@ fn two_participants_keep_independent_views_and_trees() {
         wp.participant_view(&other, &state.doc),
         Some(caret(&ids[1], 3))
     );
-    // The local window is untouched by either.
     assert_eq!(wp.local_participant_view(), local_before);
     assert!(!wp.model().has_selection());
 
-    // Replacing the selection works only for the selecting participant; the
-    // other participant and the window have a caret only.
     let replaces = |participant: Option<&tilo_actions::ParticipantId>| -> bool {
         let view = match participant {
             Some(participant) => wp
@@ -105,7 +96,6 @@ fn two_participants_keep_independent_views_and_trees() {
     assert!(!replaces(Some(&other)));
     assert!(!replaces(None));
 
-    // Views are presentation state: the document bytes did not change.
     assert_eq!(state.doc.clone().save(), doc_before);
 }
 
@@ -158,8 +148,6 @@ fn local_view_projects_to_the_published_resource_context() {
     });
     wp.sync(&state.doc, &state.root);
     let view = wp.local_participant_view();
-    // `WpResourceCtx` has no `PartialEq`; its `Debug` form is what the
-    // resource memo keys on, so equal forms mean an equal published tree.
     let projected = view.ctx(&state.doc).expect("a bound caret projects");
     assert!(projected.selection.is_some());
     assert_eq!(
@@ -172,11 +160,9 @@ fn local_view_projects_to_the_published_resource_context() {
 fn views_rebase_under_concurrent_edits() {
     let (mut wp, mut state, ids) = widget_with(&["hello world", "tail"]);
     let (writer, reader) = (pid("writer"), pid("reader"));
-    // writer's caret sits after "hello"; reader selects "world".
     wp.set_participant_view(&writer, &caret(&ids[0], 5), &state.doc);
     wp.set_participant_view(&reader, &selecting(&ids[0], 6, 11), &state.doc);
 
-    // A remote peer inserts "Oh, " at the block start.
     let mut remote = state.doc.fork();
     {
         let containers = crate::model::open(&remote).unwrap();
@@ -216,7 +202,6 @@ fn views_rebase_under_concurrent_edits() {
         "world"
     );
 
-    // Deleting the text around a caret collapses it onto the next survivor.
     let mut remote = state.doc.fork();
     {
         let containers = crate::model::open(&remote).unwrap();
@@ -226,7 +211,6 @@ fn views_rebase_under_concurrent_edits() {
             c: &containers,
             ids: &mut id_gen,
         };
-        // "Oh, hello world" → "Oh, world": removes [4, 10), around writer's 9.
         dm.splice_text(&ids[0], 4, 6, "");
     }
     state.doc.merge_incoming(&mut remote).unwrap();
@@ -235,7 +219,6 @@ fn views_rebase_under_concurrent_edits() {
         Some(caret(&ids[0], 4))
     );
 
-    // The caret block disappears: park at the document end, no selection.
     wp.set_participant_view(&reader, &selecting(&ids[1], 0, 2), &state.doc);
     let mut remote = state.doc.fork();
     let containers = crate::model::open(&remote).unwrap();
@@ -277,8 +260,6 @@ fn a_participant_edit_advances_its_own_caret_but_not_the_windows_undo() {
         wp.participant_view(&agent, &state.doc),
         Some(caret(&ids[0], 11))
     );
-    // A second participant at the same point is pushed along by the insert
-    // (it was pinned to the text after it); the window's caret is untouched.
     assert_eq!(
         wp.participant_view(&human, &state.doc),
         Some(caret(&ids[0], 11))
@@ -317,9 +298,7 @@ fn participant_presence_uses_the_block_key_and_byte_offsets() {
     let typist_p = presence.iter().find(|p| p.participant == typist).unwrap();
     assert_eq!(typist_p.key, block_presence_key(&ids[0]));
     assert_eq!(typist_p.label.as_deref(), Some("Agent for Ada"));
-    // "hé" is 3 bytes.
     assert_eq!(typist_p.payload, ui::PresencePayload::Caret { pos: 3 });
-    // "héllo " is 7 bytes; "wörld" is 6.
     assert_eq!(
         selector_p.payload,
         ui::PresencePayload::Selection { start: 7, end: 13 }
@@ -372,15 +351,12 @@ fn the_view_map_is_bounded_expires_and_caps_find() {
     assert!(!views.is_empty());
 }
 
-// ---- keyboard ↔ action parity ---------------------------------------------
-
 enum Input {
     Char(char),
     Named(NamedKey),
     Ctrl(char),
 }
 
-/// Drive one real key press through `handle_event`.
 fn press(wp: &mut Editor, state: &mut ui::State, input: &Input) {
     use winit::keyboard::{ModifiersState, NativeKeyCode, PhysicalKey, SmolStr};
     let mut ev = ui::synthetic_input::key_event(
@@ -417,11 +393,6 @@ fn press(wp: &mut Editor, state: &mut ui::State, input: &Input) {
 
 type Step = Box<dyn Fn(&ParticipantView, &AutoCommit) -> crate::actions::editing::EditResult>;
 
-/// Apply `inputs` as key presses in one window, and the matching `steps` as
-/// published primitives invoked by another participant (in a second widget
-/// over an identical document) starting from the same view. Each keystroke's
-/// last envelope must be byte-identical to the step's last envelope, and the
-/// documents and resulting carets/selections must agree.
 fn assert_keyboard_action_parity(
     case: &str,
     texts: &[&str],
@@ -481,7 +452,6 @@ fn assert_keyboard_action_parity(
     );
 }
 
-/// Put the caret at `to` in `block`, anchored at `from`.
 fn select_in(wp: &mut Editor, block: &str, from: usize, to: usize) {
     wp.model_mut().set_caret(Caret {
         block: block.to_owned(),
@@ -502,8 +472,6 @@ fn typed(text: &'static str) -> Step {
 
 type Setup = fn(&mut Editor, &mut ui::State, &[String]);
 
-/// A named scenario: paragraphs, setup, the keystrokes, and the published
-/// primitives they must match.
 type Case = (
     &'static str,
     &'static [&'static str],
@@ -635,7 +603,6 @@ fn view_operations_move_only_the_invokers_view() {
         "word-processor.search-hit:"
     ));
 
-    // go-to on the agent's search hit selects it in the agent's view.
     let hit = &found.find.hits[0];
     wp.move_participant_view(
         &agent,
@@ -661,11 +628,9 @@ fn view_operations_move_only_the_invokers_view() {
         ViewPoint::new(&ids[1], 8)
     );
 
-    // None of this touched the window's view or the document.
     assert_eq!(wp.local_participant_view(), local_before);
     assert_eq!(state.doc.clone().save(), doc_before);
 
-    // The window's own view moves the same way.
     wp.apply_local_view_operation(
         &state.doc,
         &ViewMove::Operation(ViewOperation::MoveCaret {
@@ -677,8 +642,6 @@ fn view_operations_move_only_the_invokers_view() {
     assert_eq!(wp.model().caret().block, ids[0]);
 }
 
-/// A delivered invocation by a participant builds its edit at that
-/// participant's own caret, never this window's.
 #[test]
 fn a_delivered_invocation_builds_at_the_invokers_view() {
     let (mut wp, state, ids) = widget_with(&["first paragraph", "tail"]);
@@ -736,8 +699,6 @@ fn a_delivered_invocation_builds_at_the_invokers_view() {
     );
 }
 
-/// A certified job or a person's command carries an invoker without a
-/// participant: it builds against this window's own view.
 #[test]
 fn a_participantless_invocation_builds_at_the_windows_own_view() {
     let (mut wp, state, ids) = widget_with(&["first paragraph"]);
@@ -757,8 +718,6 @@ fn a_participantless_invocation_builds_at_the_windows_own_view() {
     ));
 }
 
-/// Invoke Writer's published `action` for one admitted execution of the
-/// rehearsal person, through the app's host door as the host delivers it.
 fn invoke_opening_action(
     app: &mut ui::framework::testing::TestApp<crate::framework::WordProcessorApp>,
     participant: &ParticipantId,
@@ -788,9 +747,6 @@ fn writer_view<O>(
         .expect("the app's view is Writer's widget")
 }
 
-/// The PNG `hash` holds sits as an image block, with its real size and the
-/// paragraph after it, right after the second of the opening's paragraphs
-/// `ids`; its bytes are referenced and described by the document.
 fn assert_png_placed_after(doc: &AutoCommit, ids: &[String], hash: &str, png: &[u8]) {
     let containers = crate::model::open(doc).unwrap();
     let blocks = tilo_doc::model::materialize(doc, &containers).blocks;
@@ -824,8 +780,6 @@ fn assert_png_placed_after(doc: &AutoCommit, ids: &[String], hash: &str, png: &[
     assert_eq!(meta.len, u64::try_from(png.len()).unwrap());
 }
 
-/// Synthetic opening proof only: two host-minted person executions drive actual
-/// Writer actions on one document. No Photos export or MCP transport is involved.
 #[test]
 fn two_person_executions_type_the_opening_and_place_real_png_independently() {
     let callers = [
@@ -896,7 +850,6 @@ fn two_person_executions_type_the_opening_and_place_real_png_independently() {
         local_before
     );
 
-    // Real PNG bytes in the content store, not a stand-in hash or image metadata.
     let png = ui::png::encode_rgba8(2, 1, &[255, 160, 40, 255, 30, 70, 180, 255]).unwrap();
     let content = writer_view(&mut app, |wp, _| wp.inner.content_store().clone());
     let hash = content.put(&png).unwrap();

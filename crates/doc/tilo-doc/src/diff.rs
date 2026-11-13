@@ -1,10 +1,7 @@
-//! Structural version diff between two states of the **same** document.
-//!
-//! A CRDT-native document has stable block identity — a paragraph keeps its id across every edit
-//! and save/load — so two versions align by id instead of fuzzy text matching.
-//! The diff includes added, removed, and changed blocks, plus run-level changes
-//! within changed blocks. Blocks align by id ([`tilo_resource::diff::align`])
-//! when the versions share any; otherwise they pair by position.
+//! Structural version diff between two states of the same document. A CRDT-native
+//! document has stable block identity, so the versions align by id
+//! ([`tilo_resource::diff::align`]) instead of fuzzy text matching, or by position
+//! when they share none.
 
 use crate::document::MarkSpan;
 use crate::snapshot::{AttrVal, BlockView, DocSnapshot};
@@ -14,30 +11,27 @@ pub use tilo_resource::diff::{RunOp, TextRun, text_runs};
 use tilo_resource::diff::{Step, align};
 use tilo_sort::CompactSort as _;
 
-/// The full structural diff of a document between two versions (`old` → `new`).
+/// The full structural diff between two versions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DocDiff {
-    /// Body-block changes, in reading order (new-version order for kept/added blocks; a removed block sits after the surviving block it followed).
+    /// Body-block changes in reading order (new-version order for kept and added blocks; a removed
+    /// block sits after the surviving block it followed).
     pub blocks: Vec<BlockDiff>,
-    /// Document-property changes (`title`/`author`/… → old/new), keyed by name; only properties that actually changed appear.
     pub properties: Vec<PropChange>,
-    /// A one-line tally for a header/summary line.
     pub summary: DiffSummary,
 }
 
 impl DocDiff {
-    /// Whether the two versions are structurally identical (no block or property changes).
     pub fn is_empty(&self) -> bool {
         self.blocks.iter().all(|b| b.op == BlockOp::Equal) && self.properties.is_empty()
     }
 
-    /// Only the blocks that actually changed (drops the `Equal` context blocks).
+    /// Only the blocks that actually changed.
     pub fn changed_blocks(&self) -> impl Iterator<Item = &BlockDiff> {
         self.blocks.iter().filter(|b| b.op != BlockOp::Equal)
     }
 }
 
-/// Counts for a quick summary line (e.g. "+3 −1 ~2").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct DiffSummary {
     pub added: usize,
@@ -46,7 +40,6 @@ pub struct DiffSummary {
     pub unchanged: usize,
 }
 
-/// One document property that changed between versions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PropChange {
     pub name: String,
@@ -54,7 +47,6 @@ pub struct PropChange {
     pub new: Option<String>,
 }
 
-/// How a block relates the old version to the new one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlockOp {
     Added,
@@ -64,38 +56,27 @@ pub enum BlockOp {
     Equal,
 }
 
-/// The diff for a single body block.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BlockDiff {
-    /// The block id (stable across versions when aligned by id).
     pub id: String,
     pub op: BlockOp,
-    /// The block kind in the new version (or the old version for a `Removed` block).
     pub kind: String,
-    /// Set on a `Changed` block whose kind changed (e.g. paragraph → heading): `(old_kind, new_kind)`.
     #[serde(default)]
     pub kind_change: Option<(String, String)>,
-    /// The old block text (`Removed`/`Changed`; `None` for `Added`).
     #[serde(default)]
     pub old_text: Option<String>,
-    /// The new block text (`Added`/`Changed`; `None` for `Removed`).
     #[serde(default)]
     pub new_text: Option<String>,
-    /// Character-level run diff of the text (only for `Changed`); for `Added`/`Removed` the whole text is implied by `new_text`/`old_text`.
     #[serde(default)]
     pub runs: Vec<TextRun>,
-    /// Inline marks (bold/italic/link/…) that were added going old → new.
     #[serde(default)]
     pub marks_added: Vec<MarkSpan>,
-    /// Inline marks that were removed going old → new.
     #[serde(default)]
     pub marks_removed: Vec<MarkSpan>,
-    /// Block attribute changes (`style`/`level`/`align`/… → old/new). Only attributes that changed appear.
     #[serde(default)]
     pub attr_changes: Vec<AttrChange>,
 }
 
-/// One block attribute that changed between versions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttrChange {
     pub key: String,
@@ -103,7 +84,6 @@ pub struct AttrChange {
     pub new: Option<AttrVal>,
 }
 
-/// Diff two whole-document snapshots (`old` → `new`). See the module docs for the alignment strategy.
 pub fn diff_snapshots(old: &DocSnapshot, new: &DocSnapshot) -> DocDiff {
     let blocks = diff_block_lists(&old.blocks, &new.blocks);
     let properties = diff_props(&old.properties, &new.properties);
@@ -123,7 +103,8 @@ pub fn diff_snapshots(old: &DocSnapshot, new: &DocSnapshot) -> DocDiff {
     }
 }
 
-/// Diff two ordered block lists. Public so a caller can diff header/footer/note block sequences with the same primitive.
+/// Diff two ordered block lists, so a caller can diff header, footer or note sequences with the
+/// same primitive.
 pub fn diff_block_lists(old: &[BlockView], new: &[BlockView]) -> Vec<BlockDiff> {
     let old_ids: Vec<&str> = old.iter().map(|b| b.id.as_str()).collect();
     let new_ids: Vec<&str> = new.iter().map(|b| b.id.as_str()).collect();
@@ -163,7 +144,7 @@ pub fn diff_block_lists(old: &[BlockView], new: &[BlockView]) -> Vec<BlockDiff> 
     out
 }
 
-/// Positional fallback: pair blocks by index (used when the two versions share no block ids). Extra blocks on either side are added/removed.
+/// Positional fallback: pair blocks by index, used when the versions share no block ids.
 fn diff_positional(old: &[BlockView], new: &[BlockView]) -> Vec<BlockDiff> {
     let mut out = Vec::new();
     let n = old.len().min(new.len());
@@ -227,7 +208,6 @@ fn removed_block(b: &BlockView) -> BlockDiff {
     }
 }
 
-/// Compare two blocks that align (same id, or same position in the fallback).
 fn compare_blocks(old: &BlockView, new: &BlockView) -> BlockDiff {
     let kind_change = (old.kind != new.kind).then(|| (old.kind.clone(), new.kind.clone()));
     let text_changed = old.text != new.text;
@@ -262,7 +242,8 @@ fn compare_blocks(old: &BlockView, new: &BlockView) -> BlockDiff {
     }
 }
 
-/// Marks present only in `new` (added) and only in `old` (removed). A mark's identity is its full `(start, end, name, value)` tuple.
+/// Marks present only in `new` and only in `old`; a mark's identity is its full `(start, end, name,
+/// value)` tuple.
 fn diff_marks(old: &[MarkSpan], new: &[MarkSpan]) -> (Vec<MarkSpan>, Vec<MarkSpan>) {
     let added = new.iter().filter(|m| !old.contains(m)).cloned().collect();
     let removed = old.iter().filter(|m| !new.contains(m)).cloned().collect();
@@ -437,15 +418,12 @@ mod tests {
         }
     }
 }
-// Spreadsheet (workbook) structural diff, appended here: same "stable identity → clean structural
-// diff" idea as the document diff — sheets align by their stable sheet id, cells by their A1 ref.
+// Spreadsheet diff: sheets align by their stable sheet id, cells by their A1 reference.
 
 use crate::sheet::snapshot::{CellView, SheetView, WorkbookSnapshot};
 
-/// The full structural diff of a workbook between two versions (`old` → `new`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SheetDiff {
-    /// Per-sheet changes, in new-version tab order (a removed sheet trails).
     pub sheets: Vec<SheetChange>,
     pub summary: SheetDiffSummary,
 }
@@ -504,7 +482,8 @@ pub struct CellChange {
     pub new: Option<CellView>,
 }
 
-/// Diff two workbook snapshots (`old` → `new`). Sheets align by their stable id; within a shared sheet, cells align by A1 reference.
+/// Diff two workbook snapshots; sheets align by their stable id, and within a shared sheet cells by
+/// A1 reference.
 pub fn diff_workbooks(old: &WorkbookSnapshot, new: &WorkbookSnapshot) -> SheetDiff {
     let mut summary = SheetDiffSummary::default();
     let mut out = Vec::new();
@@ -514,7 +493,6 @@ pub fn diff_workbooks(old: &WorkbookSnapshot, new: &WorkbookSnapshot) -> SheetDi
     let new_by_id: BTreeMap<&str, &SheetView> =
         new.sheets.iter().map(|s| (s.id.as_str(), s)).collect();
 
-    // New + shared sheets, in new tab order.
     for ns in &new.sheets {
         if let Some(os) = old_by_id.get(ns.id.as_str()) {
             let change = diff_sheet(os, ns);
@@ -555,7 +533,6 @@ pub fn diff_workbooks(old: &WorkbookSnapshot, new: &WorkbookSnapshot) -> SheetDi
             });
         }
     }
-    // Removed sheets (present only in old).
     for os in &old.sheets {
         if !new_by_id.contains_key(os.id.as_str()) {
             summary.sheets_removed = summary.sheets_removed.saturating_add(1);

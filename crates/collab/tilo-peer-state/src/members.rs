@@ -8,16 +8,11 @@
 //! keeps it, a device whose author had lost the grant it needed keeps it with
 //! no effect, and two devices holding the same operations hold the same
 //! membership.
-//!
-//! The document's own member rows remain, projected from the operations, so a
-//! store, an older build and anything that reads a workspace document without
-//! its operations still sees who is in it.
-pub mod legacy;
 pub mod op;
 pub(crate) mod replay;
 
 #[cfg(test)]
 mod tests;
 
-pub use op::{MEMBERS_KEY, Membership, MembershipOpCommand, OpId, SignedMembershipOp};
-pub use replay::{genesis, growth, heads, materialise, ops, replay, settle, starts, steps};
+pub use op::{MEMBERS_KEY, MembershipOpCommand, OpId, SignedMembershipOp, put_op};
+pub use replay::{HeldOps, growth, heads, heads_of, ops, people, refused, replay, replay_declared};

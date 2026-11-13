@@ -1,26 +1,18 @@
-//! The collapsible side panel every mode shares, and its header row.
-//!
-//! The panel heads itself with its title and its own actions; its show/hide
-//! button, the modes and the angle unit are the window bar's slots
-//! ([`crate::app`]). The panel is the toolkit's [`SidebarDrawer`]: docked
-//! beside the content in a wide window, a floating drawer over it in a
-//! narrow one.
+//! The collapsible side panel every mode shares, over the toolkit's
+//! [`SidebarDrawer`]: docked beside the content in a wide window, a floating
+//! drawer over it in a narrow one. The panel heads itself with its title and
+//! its actions; the modes and the angle unit are the window bar's.
 
 use ui::theme::Theme;
 use ui::widget::{SidebarDrawer, SidebarSide, text_control_height};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-/// The measurements of a panel's header row in one theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Header {
-    /// Height of the whole row.
     pub height: f64,
-    /// Inset of a column's controls from its edges.
     pub inset: f64,
-    /// Between neighbouring controls.
     pub gap: f64,
-    /// Side of an icon button.
     pub chip: f64,
 }
 
@@ -42,22 +34,17 @@ impl Header {
         }
     }
 
-    /// The header row of the column `col`.
     pub fn band(&self, col: Rect) -> Rect {
         Rect::new(col.x0, col.y0, col.x1, (col.y0 + self.height).min(col.y1))
     }
 }
 
-/// The narrowest the formulas shrink to before the panel stops docking.
-///
-/// A formula row is a math field between its visibility and delete targets,
-/// so the panel needs about this much before it is a row rather than a
-/// stack of buttons; below docked width plus the plot's it floats instead.
+/// The narrowest a formula row fits in; below docked width plus the plot's,
+/// the panel floats instead.
 // ratchet-allow(pixel_const): the width a formula row fits in, measured from its content, not spacing
 const PANEL_MIN_WIDTH: f64 = 340.0; // allow-breakpoint: the narrowest the panel may be, not a breakpoint
 
-/// A collapsible side panel: its geometry and its remembered state, both
-/// from the shared drawer. Its show/hide button is the window bar's.
+/// A collapsible side panel over the shared drawer's geometry and state.
 pub struct SidePanel {
     drawer: SidebarDrawer,
     column: Rect,
@@ -66,9 +53,8 @@ pub struct SidePanel {
 }
 
 impl SidePanel {
-    /// A panel at the leading edge (`leading`) or the trailing edge, `docked`
-    /// wide at 1× when it sits beside the content — a page of formulas beside
-    /// the result it calculates, as the shell's sidebar sits beside a page.
+    /// `leading` puts the panel at the leading edge; `docked` is its width at
+    /// 1× when it sits beside the content.
     pub fn new(leading: bool, docked: f64, kind: ui::widget::ContentKind) -> Self {
         let side = if leading {
             SidebarSide::Left
@@ -87,19 +73,17 @@ impl SidePanel {
         }
     }
 
-    /// Adopt the theme's scale and header measurements. Call from the layout
-    /// pass with the theme in hand.
+    /// Call from the layout pass.
     pub fn scale_for(&mut self, theme: &Theme) {
         self.drawer.scale_for(theme);
         self.header = Header::of(theme);
     }
 
-    /// Advance the eased reveal one frame (draw path only).
+    /// One frame of the reveal; draw path only.
     pub fn tick(&mut self, theme: &Theme) {
         self.drawer.tick(theme);
     }
 
-    /// Resolve the panel and the content column for the window `area`.
     pub fn layout(&mut self, area: Rect) {
         self.content = self.drawer.resolve(area);
         let visible = self.drawer.reveal() > 0.001 && self.drawer.sidebar_rect().width() > 0.5;
@@ -110,17 +94,17 @@ impl SidePanel {
         };
     }
 
-    /// The panel's rect (header row included), `Rect::ZERO` while hidden.
+    /// Header row included; empty while hidden.
     pub fn column(&self) -> Rect {
         self.column
     }
 
-    /// The area beside the panel (the whole window when it floats).
+    /// Beside the panel; the whole window when it floats.
     pub fn content(&self) -> Rect {
         self.content
     }
 
-    /// The panel's header row, `Rect::ZERO` while hidden.
+    /// Empty while hidden.
     pub fn header_band(&self) -> Rect {
         if self.column == Rect::ZERO {
             Rect::ZERO
@@ -129,12 +113,11 @@ impl SidePanel {
         }
     }
 
-    /// Height of the header row, in this theme.
     pub fn header_height(&self) -> f64 {
         self.header.height
     }
 
-    /// The panel below its header row, `Rect::ZERO` while hidden.
+    /// Empty while hidden.
     pub fn body(&self) -> Rect {
         if self.column == Rect::ZERO {
             Rect::ZERO
@@ -160,13 +143,11 @@ impl SidePanel {
         self.drawer.is_animating()
     }
 
-    /// Whether `p` is a press on the dismiss scrim of an open drawer.
     pub fn scrim_at(&self, p: Point) -> bool {
         self.drawer.scrim_contains(p)
     }
 
-    /// Whether the floating drawer covers `p` (so a press there must not
-    /// reach what is beneath it).
+    /// Whether the floating drawer covers `p` and blocks presses beneath.
     pub fn covers(&self, p: Point) -> bool {
         self.drawer.is_overlay() && self.drawer.sidebar_contains(p)
     }
@@ -179,12 +160,12 @@ impl SidePanel {
         self.drawer.close();
     }
 
-    /// Snap open or shut with no animation (captures and tests).
+    /// No animation; for captures and tests.
     pub fn snap(&mut self, open: bool) {
         self.drawer.snap(open);
     }
 
-    /// Paint the panel's ground and return the theme its contents draw with.
+    /// Returns the theme the panel's contents draw with.
     pub fn paint_panel(&self, scene: &mut Scene, transform: Affine, theme: &Theme) -> Theme {
         self.drawer.paint_panel(scene, transform, theme)
     }

@@ -1,5 +1,4 @@
 //! Root-only read-admission for authenticated pending original-source export.
-//! No source bytes, output capability, credentials or completion cross here.
 use super::store::original::SourceReadContext;
 use crate::setup::{
     migration, migration_handoff,
@@ -24,8 +23,6 @@ pub struct OfflineReadAdmission {
     target: TargetDrive,
     binding: MediaPartitionBinding,
     flatpak: Option<crate::setup::flatpak_transfer::offline_original::OriginalFlatpakSources>,
-    // Retain selection custody even when the authenticated selected system
-    // closure is empty. Home-contained user state is not missing selection.
     flatpak_inventory:
         Option<crate::setup::flatpak_transfer::offline_original::OriginalInventoryGrant>,
     original: SourceReadContext,
@@ -37,15 +34,11 @@ fn refused(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
 }
 impl OfflineReadAdmission {
-    /// Caller has confirmed actual namespace death and dropped every other
-    /// admission/proof lease. Observe source unmounts rather than delegating
-    /// successful cleanup to field Drop.
+    /// Observe source unmounts instead of delegating successful cleanup to `Drop`.
     pub(super) fn retire(self: Arc<Self>) -> io::Result<()> {
         let owned = match Arc::try_unwrap(self) {
             Ok(owned) => owned,
             Err(shared) => {
-                // Keep exact unresolved source custody; never let this error
-                // accidentally become a final Drop-based unmount acknowledgement.
                 std::mem::forget(shared);
                 return Err(refused("Original read admission still has custody leases"));
             }
@@ -93,9 +86,8 @@ impl OfflineReadAdmission {
         roots.push(Arc::new(original.into_retirement_source()));
         migration_handoff::ResolvedSource::retire_many(roots)
     }
-    /// The boot controller supplies its explicitly selected held medium. Never
-    /// discover another disk from declaration UUIDs or deserialize a media grant.
-    /// The setup has already been password-authenticated by the canonical parser.
+    /// The boot controller supplies its selected held medium; nothing is discovered from
+    /// declaration UUIDs.
     pub(in crate::setup) fn review(
         setup: Arc<PreparedSetupReview>,
         media: File,
@@ -116,9 +108,8 @@ impl OfflineReadAdmission {
                 "Pending export is bound to a different actual medium",
             ));
         }
-        // Exact operation/setup/identity/media metadata has authenticated before
-        // any source mount. The existing resolver rejects duplicates, writable
-        // aliases and unsupported layers; no request path replaces source facts.
+        // The canonical resolver rejects duplicates, writable aliases and unsupported layers; no
+        // request path replaces source facts.
         migration::check_cancel(cancel)?;
         let source = migration_handoff::mount_authenticated_read_only(declaration.source())?;
         let witness = declaration
@@ -179,8 +170,7 @@ impl OfflineReadAdmission {
         }
         Ok(admission)
     }
-    /// Retain the exact authenticated quarantine before the initial readonly
-    /// medium mount retires. No source or medium FD comes from public metadata.
+    /// Retains the authenticated quarantine before the initial read-only mount retires.
     pub(in crate::setup) fn review_boot_pending(
         pending: &crate::setup::media_setup::boot_review::PendingBootReview<'_>,
         media: File,
@@ -255,11 +245,8 @@ impl OfflineReadAdmission {
         pending.validate()?;
         Ok(pending.pending_expectation())
     }
-    /// Keep setup, selected raw medium, readonly source mount and protected
-    /// record alive through canonical namespace supervision, including an owned
-    /// service returned by the callback. No source
-    /// fd/path or groups are returned to a serialized frontend request.
-    /// This reader has NO output authority or completed-export transaction.
+    /// Keeps setup, medium, mount and record alive through supervision. No source fd, path or group
+    /// reaches a serialized request, and this reader has no output authority.
     fn with_reader<T>(
         self: &Arc<Self>,
         runtime: &std::path::Path,
@@ -289,8 +276,7 @@ impl OfflineReadAdmission {
         self.revalidate(cancel)?;
         Ok(result)
     }
-    /// Distinct read command is minted while the genuine original admission
-    /// stays held through supervision. It has no output or completion authority.
+    /// No output or completion authority.
     pub fn with_original_reader<T>(
         self: &Arc<Self>,
         runtime: &std::path::Path,
@@ -303,7 +289,6 @@ impl OfflineReadAdmission {
         ) -> io::Result<T>,
     ) -> io::Result<T> {
         let authority = self.mint_original_read_claim(cancel)?;
-        // Compiled pins and canonical selected sidecar, never a caller hint.
         if authority.is_applications_only() {
             let service = super::runtime::TrustedCaptureService::native_for_protocol(
                 authority.required_protocol(),
@@ -330,9 +315,7 @@ impl OfflineReadAdmission {
         self.revalidate(cancel)?;
         result
     }
-    /// Cleanup-only physical custody. Does not renew source/setup permission,
-    /// mint output or depend on a cancellation token. Allows owned unmount after
-    /// a cancelled/revoked worker is canonically confirmed quiescent.
+    /// Cleanup-only physical custody: no new permission, no output, no cancellation token.
     pub(super) fn check_output_medium_for_cleanup(&self, media: &File) -> io::Result<()> {
         use std::os::unix::fs::MetadataExt;
         let actual = media.metadata()?;
@@ -375,8 +358,7 @@ impl OfflineReadAdmission {
     pub(super) fn output_source_plans(&self, cancel: &AtomicBool) -> io::Result<Vec<Vec<u8>>> {
         self.revalidate(cancel)?;
         let mut home = self.declaration.source().clone();
-        // Geometry comes from the protected selection; marker bytes are not a
-        // source grant and need not be repeated in the collision checker.
+        // Geometry comes from the protected selection; marker bytes are not a source grant.
         home.flatpak_inventory = None;
         let mut plans = vec![home.bytes()?];
         if let Some(applications) = &self.flatpak {
@@ -421,9 +403,7 @@ impl OfflineReadAdmission {
         }
         self.revalidate(cancel)
     }
-    /// Reader and output proof share one minting path. Hold the record offset
-    /// lock through every reattestation, inode clone and omission translation;
-    /// neither can bind a partially renewed or differently observed claim.
+    /// Hold the record offset lock through reattestation, inode clone and omission translation.
     fn mint_original_read_claim(
         &self,
         cancel: &AtomicBool,
@@ -466,17 +446,15 @@ impl OfflineReadAdmission {
         self.original.clone_original_home()
     }
     pub fn revalidate(&self, cancel: &AtomicBool) -> io::Result<()> {
-        // Endpoints and supervision can check concurrently. SourceReadContext
-        // uses cloned descriptors sharing a file offset; serialize its checks.
+        // `SourceReadContext` clones share a file offset, so its checks serialize.
         let _validation = self
             .validation
             .lock()
             .map_err(|_| io::Error::other("Original read validation poisoned"))?;
         self.revalidate_locked(cancel)
     }
-    /// Mint output selection authority from the retained root-controlled record.
-    /// Public expectations, request JSON and password-authenticated metadata do
-    /// not construct this proof. The original read Arc owns every source lease.
+    /// Minted from the retained root-controlled record; request JSON and password-authenticated
+    /// metadata never construct it.
     pub(super) fn admit_application_output(
         self: &Arc<Self>,
         cancel: &AtomicBool,
@@ -497,8 +475,7 @@ impl OfflineReadAdmission {
         self.revalidate_locked(cancel)?;
         Ok(Some(proof))
     }
-    /// Caller retains `validation`. Exact selected system scopes must have
-    /// projected leases; verified empty selection is carried wholly by Home.
+    /// Caller retains `validation`; a verified empty selection is carried wholly by Home.
     fn check_application_selection_locked(&self) -> io::Result<()> {
         let selected = self.declaration.source().categories.flatpak;
         if selected != self.flatpak_inventory.is_some() {
@@ -571,8 +548,7 @@ impl OfflineReadAdmission {
         migration::check_cancel(cancel)
     }
 }
-/// Nonserializable proof tied to the exact retained original read admission.
-/// It is not an output capability; the actual native medium must admit it too.
+/// Not an output capability; the native medium must admit it too.
 pub struct OriginalApplicationsOutput {
     read: Arc<OfflineReadAdmission>,
     inventory_digest: [u8; 32],
@@ -605,9 +581,8 @@ impl OriginalApplicationsOutput {
         }
         read.revalidate_locked(cancel)
     }
-    /// Preflight the real signed archive/OpenPGP helper closure without launching
-    /// a worker or mutating the output. Missing signed tools cannot become a
-    /// successfully admitted application-output transaction.
+    /// Preflights the signed archive and OpenPGP helper closure; missing tools cannot become an
+    /// admitted output transaction.
     pub(in crate::setup::home_capture) fn verify_signed_capsule(&self) -> io::Result<()> {
         let service = super::runtime::TrustedCaptureService::native()?;
         self.read.with_original_reader(
@@ -618,9 +593,7 @@ impl OriginalApplicationsOutput {
         )
     }
 }
-// Native, private attachment: callback code cannot replace the exact context
-// with an unrelated ServiceAuthority. Canonical cancellation remains owned by
-// ServiceCancellation; this guard checks the retained read facts independently.
+// Native and private: callback code cannot swap in an unrelated `ServiceAuthority`.
 struct OriginalReadCustody {
     read: Arc<OfflineReadAdmission>,
     mounted_binding: Option<launcher::owned_service::OriginalMountedBinding>,
@@ -637,8 +610,7 @@ impl launcher::owned_service::ServiceAuthority for OriginalReadCustody {
     }
 }
 fn attest_medium(media: &File, target: &TargetDrive) -> io::Result<MediaPartitionBinding> {
-    // Read-only custody validation deliberately allows the booted medium to be
-    // the current system disk; it does not call writer prepare/unmount/format.
+    // Read-only custody may be the current system disk; it never prepares, unmounts or formats.
     crate::write::attest_target_descriptor(target, media)?;
     let stable = target
         .stable_id

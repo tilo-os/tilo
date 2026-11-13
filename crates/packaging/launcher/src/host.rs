@@ -1,61 +1,6 @@
 //! Launching an application Tilo did not package.
 //!
-//! Every other module in this crate exists to build a sandbox. This one
-//! exists because there are applications for which that is the wrong
-//! thing to do, and doing it anyway produces an app that does not start
-//! rather than an app that is safer.
-//!
-//! ## Why a host application is not sandboxed
-//!
-//! A `.desktop` entry is a text file naming a command line, not a
-//! package manifest: nothing in it says which paths, devices, services
-//! or network hosts the program needs. Tilo's sandbox is *derived* from
-//! those declarations — [`crate::sandbox`] turns a manifest into bind
-//! mounts, [`crate::seccomp`] into a syscall filter, [`crate::landlock`]
-//! into an FS ruleset. With no manifest there's nothing to derive, and a
-//! sandbox invented here would be a guess presented as policy.
-//!
-//! For a Flatpak specifically it's not even a guess that could work:
-//! `flatpak run` builds its own sandbox, needing `unshare(2)`,
-//! `mount(2)` and `pivot_root(2)`, all of which [`crate::seccomp`]'s
-//! baseline denies, plus `/usr/bin/flatpak`, its installation tree and
-//! system D-Bus (none of which Tilo's sandbox binds), plus a network
-//! namespace, which `--unshare-all` removes. Nesting the two doesn't
-//! double the confinement — it produces `bwrap: execvp flatpak: No such
-//! file or directory`, or a seccomp kill.
-//!
-//! ## What the user is therefore told
-//!
-//! A host application runs with the user's own identity, files and
-//! network, exactly as under any other desktop: no `TILO_WORKSPACE_ID`
-//! (no collaboration workspace, no per-workspace partition), no capability file
-//! (workspace grants describe what a *sandboxed* app may reach, and
-//! passing them here would assert a limit that doesn't exist), and no
-//! `TILO_APP_DIR` (it writes to the user's real `$HOME`).
-//!
-//! Those absences are why the desktop labels host applications
-//! separately and why this module prints a one-line notice naming the
-//! app it's about to run unconfined — the risk managed is not escape
-//! (there was never a sandbox to escape), it's a user who can't tell
-//! the two kinds of application apart.
-//!
-//! ## What *is* controlled
-//!
-//! The environment. See [`desktop_entry::launch`]: the child is spawned
-//! from an explicit allowlist plus the Wayland handoff and, when available,
-//! one authenticated rootless-Xwayland fallback, so the
-//! compositor's own `TILO_*` variables don't leak into a process not
-//! subject to them.
-//!
-//! And the lifetime. Like every packaged app, each launch runs in its own
-//! cgroup: the launcher moves itself into a transient
-//! `app-tilo-<id>-<pid>.scope` of the systemd user manager before it forks the
-//! program (see [`crate::scope`]), so this process and the program are in it
-//! together. A logout or a compositor crash stops the application and
-//! everything it forked, `cgroup.kill` ends it even when it left its process
-//! tree, and resource accounting and OOM handling see one app as one unit. A
-//! manager that is unreachable or refuses costs the cgroup, never the
-//! launch.
+//! Every other module in this crate exists to build a sandbox.
 
 use std::os::unix::process::CommandExt as _;
 use std::path::Path;
@@ -65,9 +10,9 @@ use std::time::Duration;
 use crate::scope;
 use desktop_entry::launch::{HostLaunch, HostLaunchError, LaunchEnv, plan_by_id, plan_file};
 
-/// The `Name[xx]` candidates of the person's interface language: the entry a
-/// host app starts from is named in it, so a German machine with English
-/// chosen says `Files` rather than `Dateien` in what it reports.
+/// The `Name[xx]` candidates of the person's interface language: the entry a host app starts from is
+/// named in it, so a German machine with English chosen says `Files` rather than `Dateien` in what it
+/// reports.
 #[must_use]
 pub fn locales() -> Vec<String> {
     desktop_entry::locale::language_candidates(
@@ -93,30 +38,15 @@ impl HostError {
     }
 }
 
-/// Resolve `desktop_id` on this system and run it, unconfined. Blocks
-/// until the application exits, relaying its exit status — the same
-/// shape as [`crate::run::run_with`], so the compositor's launch worker
-/// treats both kinds of launch identically.
-///
-/// # Errors
-///
-/// Returns [`HostError::Plan`] if `desktop_id` cannot be resolved, or
-/// [`HostError::Spawn`] if the resolved program cannot be spawned or waited
-/// on.
+/// Resolve `desktop_id` on this system and run it, unconfined.
 pub fn run_host(desktop_id: &str, env: &LaunchEnv) -> Result<ExitStatus, HostError> {
     let launch = plan_host(desktop_id, env, &locales())?;
     spawn(&launch)
 }
 
-/// Resolve `desktop_id` into the exact command line and environment a
-/// launch would use, without starting anything — so "what will this
-/// actually run, and with what?" is answerable before it runs, the
-/// question that matters most for a launch with no sandbox around it.
-///
-/// # Errors
-///
-/// Returns [`HostError::Plan`] if `desktop_id` does not resolve to an
-/// installed `.desktop` entry.
+/// Resolve `desktop_id` into the exact command line and environment a launch would use, without
+/// starting anything — so "what will this actually run, and with what?" is answerable before it runs,
+/// the question that matters most for a launch with no sandbox around it.
 pub fn plan_host(
     desktop_id: &str,
     env: &LaunchEnv,
@@ -126,10 +56,6 @@ pub fn plan_host(
 }
 
 /// [`plan_host`] for a desktop file named by path, such as an XDG autostart entry.
-///
-/// # Errors
-///
-/// Returns [`HostError::Plan`] if the file is unreadable or not a runnable entry.
 pub fn plan_host_file(
     path: &std::path::Path,
     env: &LaunchEnv,
@@ -138,37 +64,21 @@ pub fn plan_host_file(
     Ok(plan_file(path, env, locales)?)
 }
 
-/// [`plan_host`] for a program file run by itself, such as a downloaded
-/// `AppImage` opened in Files.
-///
-/// # Errors
-///
-/// Returns [`HostError::Plan`] if `path` is not absolute.
+/// [`plan_host`] for a program file run by itself, such as a downloaded `AppImage` opened in Files.
 pub fn plan_host_program(path: &Path, env: &LaunchEnv) -> Result<HostLaunch, HostError> {
     Ok(desktop_entry::launch::plan_program(path, env)?)
 }
 
 /// Make the program file at `path` runnable, as opening it does.
-///
-/// # Errors
-///
-/// Returns [`HostError::Plan`] if it is not a compiled program or its mode
-/// can't be changed.
 pub fn make_runnable(path: &Path) -> Result<(), HostError> {
     Ok(desktop_entry::launch::make_runnable(path)?)
 }
 
-/// Run an already-planned launch. Split out so a caller that built the
-/// plan itself doesn't have to resolve the entry twice.
-///
-/// # Errors
-///
-/// Returns [`HostError::Spawn`] if `launch`'s program cannot be spawned or
-/// waited on.
+/// Run an already-planned launch.
 pub fn spawn(launch: &HostLaunch) -> Result<ExitStatus, HostError> {
     crate::chromium_frame::prepare(launch);
-    // A launcher already inside an app's cgroup (an app running a program of
-    // its own) stays in it and asks the manager for nothing.
+    // A launcher already inside an app's cgroup (an app running a program of its own) stays in it and
+    // asks the manager for nothing.
     let busctl = Path::new(scope::BUSCTL);
     let ask_manager = busctl.is_file() && !crate::app_cgroup::current_is_app_cgroup();
     spawn_with(launch, ask_manager.then_some(busctl), scope::JOIN_TIMEOUT)
@@ -179,9 +89,8 @@ fn spawn_with(
     busctl: Option<&Path>,
     scope_join_timeout: Duration,
 ) -> Result<ExitStatus, HostError> {
-    // Deliberately on stderr and unconditional: a launch that skips the
-    // sandbox says so where the compositor's log, journal and a
-    // developer's terminal will all see it.
+    // Deliberately on stderr and unconditional: a launch that skips the sandbox says so where the
+    // compositor's log, journal and a developer's terminal will all see it.
     eprintln!(
         "tilo-launcher: running host application {} ({}) UNCONFINED — \
          no Tilo sandbox, no workspace, no per-workspace state. {} {}",
@@ -221,18 +130,9 @@ fn spawn_with(
     })
 }
 
-/// Put each host launch in its own session before its desktop entry is
-/// executed.  This gives Xwayland bridges a bounded, launch-scoped ancestry
-/// domain when applications such as Electron create renderer processes and
-/// process groups whose immediate environment no longer contains the startup
-/// token.
-///
-/// This is deliberately established by the production launcher, rather than
-/// inferred from the compositor's session: a host app must never share
-/// its correlation domain with an unrelated desktop process.
+/// Put each host launch in its own session before its desktop entry is executed.
 fn configure_host_launch_session(cmd: &mut Command) {
-    // SAFETY: `setsid()` is async-signal-safe and this closure captures
-    // no Rust state.  It runs in the child after fork and before exec.
+    // SAFETY: `setsid()` is async-signal-safe and this closure captures no Rust state.
     unsafe {
         cmd.pre_exec(|| {
             if libc::setsid() == -1 {
@@ -249,9 +149,8 @@ mod tests {
     use crate::run::{LaunchMode, RunError, RunOptions};
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    /// A perfectly valid package manifest — the refusal being tested has
-    /// to come from the launch *mode*, not from anything wrong with the
-    /// package.
+    /// A perfectly valid package manifest — the refusal being tested has to come from the launch
+    /// *mode*, not from anything wrong with the package.
     fn example_manifest() -> crate::manifest::ManifestView {
         crate::manifest::test_manifest(
             "id = \"so.tilo.example\"\nversion = \"1.0.0\"\nkind = \"app\"",
@@ -261,9 +160,6 @@ mod tests {
 
     #[test]
     fn host_launch_is_refused_before_anything_is_built() {
-        // Phase `run_with_refuses_a_host_launch_before_it_builds_anything`.
-        // The guard that keeps a host application out of the sandbox
-        // builder. Drives the real `run_with`, not a copy of its check.
         {
             let manifest = example_manifest();
             let opts = RunOptions {
@@ -297,9 +193,6 @@ mod tests {
             .expect_err("the second door into the sandbox builder is closed too");
             assert!(matches!(err, RunError::HostAppNotAPackage { .. }));
         }
-        // Phase `an_unknown_desktop_id_is_reported`.
-        // A launch of something that is not installed fails with a name,
-        // not a silent no-op.
         {
             let err = run_host(
                 "so.tilo.definitely-not-installed-anywhere",
@@ -340,9 +233,6 @@ mod tests {
                 .expect("make the stand-in executable");
             path
         };
-        // Phase `the_manager_is_asked_for_this_launchers_scope`.
-        // The stand-in accepts but never moves the process, like a manager
-        // whose start job fails after answering.
         {
             let busctl = stand_in("accepting-busctl", 0);
             let status = spawn_with(&launch, Some(&busctl), Duration::from_millis(20))
@@ -406,8 +296,7 @@ mod tests {
         configure_host_launch_session(&mut command);
         let child = ReapChild(command.spawn_locked().expect("spawn grouped host child"));
         let pid = i32::try_from(child.0.id()).expect("child pid fits i32");
-        // SAFETY: querying the session of our own still-running bounded child
-        // is read-only. `sleep 30` keeps the PID valid through the assertion.
+        // SAFETY: querying the session of our own still-running bounded child is read-only.
         assert_eq!(
             unsafe { libc::getsid(pid) },
             pid,

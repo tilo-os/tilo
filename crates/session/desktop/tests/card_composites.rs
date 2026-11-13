@@ -7,9 +7,10 @@
     clippy::indexing_slicing,
     reason = "in a test these are the assertion, not a hazard"
 )]
+use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_compositor::{Compositor, OutputConfig, StackPolicy, SurfaceHost as _};
+use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
@@ -18,6 +19,7 @@ use tilo_desktop_model::{
     WorkspaceSlot,
 };
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
+use tilo_session_core::surface::SurfaceHost as _;
 use tilo_surface_host::{Placement, WidgetHost};
 use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState};
@@ -143,7 +145,7 @@ fn assert_palette_shows(scale: f64, size: (u32, u32)) {
         let search = search.borrow();
         search.palette().unwrap().get_rect()
     };
-    compositor.add_host(Box::new(host));
+    compositor.add_host(Rc::new(RefCell::new(host)));
     let mut shot = None;
     for _ in 0..8 {
         compositor.draw_frame().unwrap();

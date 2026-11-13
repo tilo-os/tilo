@@ -26,18 +26,12 @@ struct Row {
 impl Row {
     fn of(issue: &Issue, people: &ui::framework::People) -> Option<Self> {
         let (_, last) = issue.comments.iter().last()?;
-        let speaker = if last.by_agent {
-            last.author.trim_start_matches("agent:").to_owned()
-        } else {
-            people.name(&last.author)
-        };
+        let speaker = people.actor(&last.author).name;
         Some(Self {
             number: issue.number,
             title: format!("{}  {}", reference(issue.number), issue.title),
-            subtitle: ui::i18n::I18nManager::format(
-                "tasks-thread-last-from",
-                &[("speaker", speaker.into())],
-            ),
+            subtitle: crate::locales::CATALOG
+                .t_args("tasks-thread-last-from", &[("speaker", speaker.into())]),
             said: one_line(&last.text),
         })
     }

@@ -15,18 +15,21 @@ use smithay::backend::renderer::Color32F;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
+use smithay::backend::renderer::element::texture::TextureRenderElement;
 use smithay::backend::renderer::element::utils::{CropRenderElement, RescaleRenderElement};
 use smithay::backend::renderer::element::{AsRenderElements, Element, Id, Kind};
 use smithay::backend::renderer::utils::CommitCounter;
-use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
+use smithay::backend::renderer::{ImportAll, ImportDma, ImportMem, Renderer};
 use smithay::desktop::Window;
 use smithay::output::Output;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
 
 use crate::a11y::{self, MagnifierView};
 use crate::effects::WindowEffect;
-use crate::host::HostLayer;
 use crate::state::State;
+use crate::uploads::{Placed, Uploads};
+
+use tilo_session_core::surface::HostLayer;
 
 /// The colour behind every window: the desktop's background before a wallpaper surface covers it.
 pub const BACKGROUND: [f32; 4] = [0.102, 0.106, 0.149, 1.0];
@@ -36,9 +39,15 @@ smithay::backend::renderer::element::render_elements! {
     pub OutputRenderElement<R> where R: ImportAll + ImportMem;
     /// A client surface.
     Surface=WaylandSurfaceRenderElement<R>,
-    /// A hosted surface's layer, or a client surface's HDR rendition where the surface itself would
-    /// be.
+    /// A hosted surface's layer drawn on the CPU, or a client surface's HDR rendition where the
+    /// surface itself would be.
     Memory=MemoryRenderBufferRenderElement<R>,
+    /// A hosted surface's layer drawn on the GPU, shown from the dma-buf it was drawn into.
+    Hosted=TextureRenderElement<R::TextureId>,
+    /// A hosted surface's layer drawn on the GPU, under the magnifier.
+    ZoomedGpuHosted=RescaleRenderElement<TextureRenderElement<R::TextureId>>,
+    /// A hosted surface's layer drawn on the GPU, inside the magnifier's lens.
+    LensHosted=CropRenderElement<RescaleRenderElement<TextureRenderElement<R::TextureId>>>,
     /// The idle dim over everything, where no backlight dims.
     Dim=SolidColorRenderElement,
     /// A client surface drawn scaled: under the magnifier, or as the lock screen filling a display
@@ -113,6 +122,9 @@ where
         OutputRenderElement::Memory(e) => {
             OutputRenderElement::ZoomedHosted(scaled(e, centre, zoom))
         }
+        OutputRenderElement::Hosted(e) => {
+            OutputRenderElement::ZoomedGpuHosted(scaled(e, centre, zoom))
+        }
         OutputRenderElement::Dim(e) => OutputRenderElement::ZoomedDim(scaled(e, centre, zoom)),
         OutputRenderElement::Transformed(e) => {
             OutputRenderElement::ZoomedTransformed(scaled(e, centre, zoom))
@@ -145,6 +157,9 @@ where
         )?)),
         // A memory buffer and a window's frame are drawn the same way: a crop of a scaled copy.
         OutputRenderElement::Memory(e) => Some(OutputRenderElement::Frame(cropped(
+            e, centre, zoom, crop, scale,
+        )?)),
+        OutputRenderElement::Hosted(e) => Some(OutputRenderElement::LensHosted(cropped(
             e, centre, zoom, crop, scale,
         )?)),
         OutputRenderElement::Frame(e) => Some(OutputRenderElement::LensFrame(cropped(
@@ -230,19 +245,24 @@ where
 }
 
 /// A hosted surface's layer, drawn at `scale` with the layer's top left corner at `location`
-/// (physical): the part of the frame it shows, at the pixel of the output the layer covers, so a
-/// layer the size of a display that paints a bar costs its bar rather than the display. `None` when
-/// the layer shows nothing there is to draw.
+/// (physical), in the pose the layer asks for: the part of the frame it shows, at the pixel of the
+/// output the layer covers, so a layer the size of a display that paints a bar costs its bar rather
+/// than the display. `None` when the layer shows nothing there is to draw.
 fn hosted_layer<R>(
     renderer: &mut R,
+    uploads: &Uploads,
     layer: &HostLayer,
     location: Point<f64, Physical>,
     scale: f64,
-) -> Result<Option<MemoryRenderBufferRenderElement<R>>, R::Error>
+) -> Result<Option<OutputRenderElement<R>>, R::Error>
 where
-    R: ImportMem,
+    R: Renderer + ImportAll + ImportMem + ImportDma,
     R::TextureId: Send + Clone + 'static,
 {
+    let pose = layer.pose;
+    if pose.opacity <= 0.0 || pose.scale <= 0.0 {
+        return Ok(None);
+    }
     let (width, height) = layer.frame.size();
     let Some(shown) = layer
         .frame
@@ -252,10 +272,14 @@ where
         return Ok(None);
     };
     let (width, height) = (f64::from(width), f64::from(height));
+    let size = (f64::from(layer.size.0), f64::from(layer.size.1));
+    // Where the pose draws the layer, from its own top left corner: scaled about its anchor and
+    // moved.
+    let (dx, dy, posed_width, posed_height) = pose.rect((0.0, 0.0, size.0, size.1));
     // The frame scaled to the rectangle the layer covers, so a layer drawn at the output's scale is
     // shown at the pixels it was drawn for.
-    let across = f64::from(layer.size.0) / width;
-    let down = f64::from(layer.size.1) / height;
+    let across = posed_width / width;
+    let down = posed_height / height;
     let src = Rectangle::new(
         Point::from((f64::from(shown.x), f64::from(shown.y))),
         Size::from((f64::from(shown.width), f64::from(shown.height))),
@@ -267,17 +291,21 @@ where
     .to_i32_round::<i32>();
     let dst = Size::from((drawn.w.max(1), drawn.h.max(1)));
     let at = location
-        + Point::from((f64::from(shown.x) * across, f64::from(shown.y) * down)).to_physical(scale);
-    MemoryRenderBufferRenderElement::from_buffer(
+        + Point::<f64, Logical>::from((
+            dx + f64::from(shown.x) * across,
+            dy + f64::from(shown.y) * down,
+        ))
+        .to_physical(scale);
+    uploads.element(
         renderer,
-        at,
-        layer.frame.buffer(),
-        None,
-        Some(src),
-        Some(dst),
-        Kind::Unspecified,
+        &layer.frame,
+        Placed {
+            at,
+            src: Some(src),
+            size: Some(dst),
+            alpha: (pose.opacity < 1.0).then_some(pose.opacity),
+        },
     )
-    .map(Some)
 }
 
 /// What lies below hosted surface `host` , front first: the hosts beneath it and the windows, drawn
@@ -292,7 +320,7 @@ pub(crate) fn below_host<R>(
     bounds: Rectangle<i32, Physical>,
 ) -> Vec<OutputRenderElement<R>>
 where
-    R: Renderer + ImportAll + ImportMem,
+    R: Renderer + ImportAll + ImportMem + ImportDma,
     R::TextureId: Clone + Send + 'static,
 {
     let mut elements = Vec::new();
@@ -303,8 +331,8 @@ where
         for layer in below.layers().into_iter().rev() {
             let location =
                 (Point::<i32, Logical>::from(layer.location).to_f64() - origin).to_physical(scale);
-            match hosted_layer(renderer, &layer, location, scale) {
-                Ok(Some(element)) => elements.push(OutputRenderElement::Memory(element)),
+            match hosted_layer(renderer, &state.uploads, &layer, location, scale) {
+                Ok(Some(element)) => elements.push(element),
                 Ok(None) => {}
                 Err(error) => tracing::warn!(?error, "hosted layer: buffer not imported"),
             }
@@ -509,7 +537,7 @@ fn scene_elements<R>(
     output: &Output,
 ) -> Vec<OutputRenderElement<R>>
 where
-    R: Renderer + ImportAll + ImportMem,
+    R: Renderer + ImportAll + ImportMem + ImportDma,
     R::TextureId: Clone + Send + 'static,
 {
     let Some(geometry) = state.space.output_geometry(output) else {
@@ -549,8 +577,14 @@ where
             for layer in host.layers().into_iter().rev() {
                 let location: Point<i32, Physical> =
                     (Point::from(layer.location) - geometry.loc).to_physical_precise_round(scale);
-                match hosted_layer(renderer, &layer, location.to_f64(), output_scale) {
-                    Ok(Some(element)) => elements.push(OutputRenderElement::Memory(element)),
+                match hosted_layer(
+                    renderer,
+                    &state.uploads,
+                    &layer,
+                    location.to_f64(),
+                    output_scale,
+                ) {
+                    Ok(Some(element)) => elements.push(element),
                     Ok(None) => {}
                     Err(error) => tracing::warn!(?error, "hosted layer: buffer not imported"),
                 }
@@ -596,7 +630,7 @@ pub(crate) fn output_elements<R>(
     output: &Output,
 ) -> Vec<OutputRenderElement<R>>
 where
-    R: Renderer + ImportAll + ImportMem,
+    R: Renderer + ImportAll + ImportMem + ImportDma,
     R::TextureId: Clone + Send + 'static,
 {
     let Some(geometry) = state.space.output_geometry(output) else {
@@ -654,8 +688,10 @@ where
     }
     // The visual alert lights the inside of the display's edge, over everything else: it stays
     // obvious without covering what is on screen or washing the whole display with a luminance
-    // change, which is a photosensitivity risk.
-    let alert = visual.flash_alpha(Instant::now());
+    // change, which is a photosensitivity risk. Its strength is the one the frame was begun for,
+    // so a frame that takes a while to compose shows the alert in full rather than one the clock
+    // faded while the clients drew.
+    let alert = visual.flash_alpha(visual.frame_at.unwrap_or_else(Instant::now));
     if alert > 0.0 {
         let width = alert_edge_width(scale.x);
         let colour = Color32F::new(ALERT_EDGE[0], ALERT_EDGE[1], ALERT_EDGE[2], alert);

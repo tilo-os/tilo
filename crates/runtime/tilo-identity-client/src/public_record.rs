@@ -29,8 +29,9 @@ struct PublicIdentity {
     share_index: u16,
 }
 
-/// Reads only public fields, without resolving a secret reference or decoding a share.
-/// The caller must independently authenticate the returned public key before authorizing it.
+/// Read only public fields: no secret reference is resolved and no share
+/// decoded. The caller authenticates the public key on its own before trusting
+/// it.
 pub fn load_metadata_from_bytes(bytes: &[u8]) -> Result<IdentityMetadata, NotAvailable> {
     if bytes.len() as u64 > MAX_RECORD_BYTES {
         return Err(invalid_record("identity record exceeds the size limit"));
@@ -54,15 +55,11 @@ pub fn load_metadata_from_bytes(bytes: &[u8]) -> Result<IdentityMetadata, NotAva
     })
 }
 
-/// Reads an explicitly supplied, private user-owned regular file without following a symlink.
-/// No environment, active selector, or secret provider is consulted.
 pub fn load_metadata_from_path(path: &Path) -> Result<IdentityMetadata, NotAvailable> {
     let bytes = read_private(path, MAX_RECORD_BYTES).map_err(NotAvailable::ConnectionFailed)?;
     load_metadata_from_bytes(&bytes)
 }
 
-/// Resolves a public presentation record in an explicitly supplied directory.
-/// An absent or invalid selector uses the legacy `primary.json`; selected symlinks are refused.
 pub fn resolve_active_identity(dir: &Path) -> Option<PathBuf> {
     let selector = read_private(&dir.join("active"), 128).ok();
     let id = selector

@@ -2,10 +2,6 @@
 //! that shares its connection is a "Through `<device>`" row of the VPN list,
 //! and this device shares its own connection with theirs by a switch, with a
 //! Stop for each device using it.
-//!
-//! Settings changes the person's choices only through their section's
-//! actions ([`DeviceVpnPrefs`]) and shows what the session publishes it is
-//! doing, read off the UI thread whenever the session's status file changes.
 
 use std::any::Any;
 use std::rc::{Rc, Weak};
@@ -31,29 +27,21 @@ use provider_settings_ui::widgets::{
     El, SettingsSection, block, card, rows, setting_row_described,
 };
 
-/// What the VPN list knows of the person's devices as exits.
 #[derive(Default)]
 pub(crate) struct DeviceVpnState {
-    /// What the session last published; `None` while no session publishes,
-    /// and the list then offers none of this.
     pub(crate) status: Option<DeviceVpnStatus>,
-    /// The watch on the session's status file while a pane follows it.
     following: Weak<Watched>,
-    /// The status being read.
     reading: Option<crate::channel::Receiver<Option<DeviceVpnStatus>>>,
-    /// The file changed again while it was being read.
     again: bool,
 }
 
 #[cfg(test)]
 impl DeviceVpnState {
-    /// Follow `watched` in place of the session's file.
     pub(crate) fn follow_by_hand(&mut self, watched: &Rc<Watched>) {
         self.following = Rc::downgrade(watched);
     }
 }
 
-/// "Through" and the device's name.
 fn through_name(label: &str) -> String {
     t_args(
         "net-device-vpn-through",
@@ -69,7 +57,6 @@ fn shown_label(label: &str) -> String {
     }
 }
 
-/// Where a route through a device stands, in words.
 fn state_words(state: Option<&ClientState>) -> String {
     t(match state {
         None => "net-vpn-off",
@@ -107,7 +94,6 @@ fn exit_user_row_id(device: &str) -> String {
 }
 
 impl NetworkModel {
-    /// Follow the session's status file, on a device.
     pub(crate) fn follow_device_vpn(&mut self) -> Option<Rc<dyn Any>> {
         if !self.reach.devices {
             return None;
@@ -118,7 +104,6 @@ impl NetworkModel {
         Some(watched)
     }
 
-    /// Take in a status read, and read it again when the file changed.
     pub(crate) fn poll_device_vpn(&mut self) {
         let devices = &mut self.vpn.devices;
         if let Some(receiver) = &devices.reading {
@@ -161,8 +146,6 @@ impl NetworkModel {
         }
     }
 
-    /// The rows of the person's devices: one per device to route through,
-    /// one per device using this one.
     pub(crate) fn device_vpn_rows(&self) -> Vec<LiveRow> {
         let Some(status) = &self.vpn.devices.status else {
             return Vec::new();
@@ -206,7 +189,6 @@ impl NetworkModel {
 }
 
 impl Page<'_> {
-    /// The VPN list's rows for the person's devices to route through.
     pub(super) fn through_lines(&self) -> Vec<El> {
         let Some(status) = &self.vpn.devices.status else {
             return Vec::new();
@@ -300,8 +282,6 @@ impl Page<'_> {
 }
 
 impl NetworkModel {
-    /// Route through `device`, keeping the options chosen before, or stop
-    /// routing through it.
     pub(super) fn route_through_device(&mut self, device: &str, on: bool) -> Result<Begun, String> {
         let status = self
             .vpn
@@ -371,8 +351,6 @@ impl NetworkModel {
         }))
     }
 
-    /// Stop routing everything through a device: a VPN that carries all
-    /// traffic turned on.
     pub(crate) fn leave_device_route(&mut self) {
         let document = self.reach.storage.settings_document();
         let Some(through) = THROUGH
@@ -386,8 +364,6 @@ impl NetworkModel {
         }
     }
 
-    /// Block this device's traffic while the tunnel to the device it routes
-    /// through is down, or let it go out directly.
     pub(super) fn set_device_kill_switch(&mut self, on: bool) -> Result<Begun, String> {
         let document = self.reach.storage.settings_document();
         let through = THROUGH
@@ -413,8 +389,6 @@ impl NetworkModel {
 }
 
 impl Page<'_> {
-    /// The route through a device in use, and whether its traffic is
-    /// blocked while the tunnel is down.
     pub(super) fn kill_switch_row(&self) -> Option<provider_settings_ui::widgets::Item> {
         let client = self.vpn.devices.status.as_ref()?.client.as_ref()?;
         let label = t("net-device-vpn-kill-switch");
@@ -454,7 +428,6 @@ impl NetworkModel {
         Ok(Begun::Done)
     }
 
-    /// Stop `device` using this one as a VPN.
     pub(super) fn stop_exit_user(&mut self, device: &str) -> Result<Begun, String> {
         let user = self
             .vpn

@@ -1,15 +1,8 @@
 //! The content-addressed thumbnail cache.
 //!
-//! A preview is keyed by the BLAKE3 hash of its **source** content plus the box
-//! it was fitted to ([`ThumbKey`]), the same content address the rest of Tilo
-//! uses end to end: a changed file gets a new key, identical content shares one
+//! A preview is keyed by the BLAKE3 hash of its source content plus the box it was fitted
+//! to ([`ThumbKey`]), so a changed file gets a new key and identical content shares one
 //! preview across paths and peers.
-//!
-//! The encoded PNGs live in a [`tilo_content::ContentStore`] — the system's one
-//! content store — addressed by their *own* hash, so identical previews are
-//! stored once and every read is verified. A small key index maps a
-//! [`ThumbKey`] to the PNG address, and a bounded LRU sits in front of both. The store handed to [`ThumbCache::with_store`] must be dedicated to
-//! previews: pruning collects everything the index no longer names.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -20,8 +13,8 @@ use tilo_content::{ContentStore, DirBackend};
 use crate::generate::ThumbSize;
 use tilo_lock::MutexRecover as _;
 
-/// A cache key: the source content's BLAKE3 hash plus the box the thumbnail
-/// was fitted to (so the same file cached at two sizes coexists).
+/// A cache key: the source content's BLAKE3 hash plus the box the thumbnail was fitted
+/// to, so the same file cached at two sizes coexists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ThumbKey {
     pub content: [u8; 32],
@@ -29,7 +22,6 @@ pub struct ThumbKey {
 }
 
 impl ThumbKey {
-    /// Key a thumbnail by the BLAKE3 hash of its source bytes.
     pub fn of_bytes(bytes: &[u8], size: impl Into<ThumbSize>) -> Self {
         Self {
             content: *blake3::hash(bytes).as_bytes(),
@@ -37,9 +29,6 @@ impl ThumbKey {
         }
     }
 
-    /// Key a thumbnail by an already-known content hash (the FUSE
-    /// filesystem's manifest hash, a content-store address). This is the fully
-    /// content-addressed path — a thumbnail is shared across paths and peers.
     pub fn of_hash(content: [u8; 32], size: impl Into<ThumbSize>) -> Self {
         Self {
             content,
@@ -74,8 +63,6 @@ impl ThumbKey {
         }
     }
 
-    /// The key for the frame at `at_ms` of the video this key names — one
-    /// filmstrip cell. Distinct per time, still content-addressed.
     #[must_use]
     pub fn at_frame(self, at_ms: u64) -> Self {
         let mut hasher = blake3::Hasher::new();
@@ -88,7 +75,6 @@ impl ThumbKey {
         }
     }
 
-    /// The index entry's filename: `<hex>-<w>x<h>`.
     fn index_name(&self) -> String {
         format!(
             "{}-{}x{}",
@@ -108,7 +94,6 @@ struct Cache {
     entries: Arc<Mutex<Entries>>,
 }
 
-/// Previews by key, each with the use tick it was last touched at.
 #[derive(Default)]
 struct Entries {
     tick: u64,
@@ -170,11 +155,9 @@ impl Cache {
     }
 }
 
-/// Content-addressed PNG-thumbnail store.
 #[derive(Clone)]
 pub struct ThumbCache {
     store: ContentStore,
-    /// The key index directory; `None` for a cache that lives in memory only.
     index: Option<PathBuf>,
     mem: Cache,
     /// Cap on the number of indexed previews; the least-recently-written are
@@ -183,9 +166,8 @@ pub struct ThumbCache {
 }
 
 impl ThumbCache {
-    /// Open (creating if needed) a cache rooted at `dir` with default bounds:
-    /// previews in a content store under `dir/content`, the key index under
-    /// `dir/index`.
+    /// Open (creating if needed) a cache rooted at `dir` with default bounds: previews in a
+    /// content store under `dir/content`, the key index beside it.
     pub fn open(dir: impl AsRef<Path>) -> std::io::Result<Self> {
         Self::with_limits(dir, 512, 4096)
     }
@@ -226,9 +208,8 @@ impl ThumbCache {
         })
     }
 
-    /// A cache that keeps up to `mem_capacity` previews in memory and nothing
-    /// on disk: hermetic samples and tests, which must not write the user's
-    /// cache.
+    /// A cache that keeps up to `mem_capacity` previews in memory and nothing on disk:
+    /// hermetic samples and tests, which must not write the user's cache.
     pub fn ephemeral(mem_capacity: u64) -> Self {
         Self {
             store: ContentStore::memory(),
@@ -242,7 +223,6 @@ impl ThumbCache {
         Some(self.index.as_ref()?.join(key.index_name()))
     }
 
-    /// The content address of `key`'s preview, if one is indexed.
     fn address(&self, key: &ThumbKey) -> Option<String> {
         let raw = std::fs::read_to_string(self.index_path(key)?).ok()?;
         let address = raw.trim();
@@ -265,7 +245,6 @@ impl ThumbCache {
         Some(arc)
     }
 
-    /// Whether `key` is present in memory or in the store.
     pub fn contains(&self, key: &ThumbKey) -> bool {
         self.mem.contains_key(key) || self.address(key).is_some_and(|a| self.store.has(&a))
     }
@@ -396,8 +375,6 @@ mod tests {
         assert!(cache.contains(&key));
     }
 
-    /// The preview bytes are in the content store, under their own address,
-    /// and identical previews for two sources are stored once.
     #[test]
     fn previews_live_in_the_content_store_once() {
         let dir = tmpdir();
@@ -423,8 +400,6 @@ mod tests {
             let cache = ThumbCache::open(dir.path()).unwrap();
             cache.put(&key, vec![9, 8, 7]);
         }
-        // A brand-new cache instance on the same directory finds it in the
-        // store — no in-memory state carried over.
         let reopened = ThumbCache::open(dir.path()).unwrap();
         assert_eq!(
             reopened.get(&key).unwrap().as_slice(),

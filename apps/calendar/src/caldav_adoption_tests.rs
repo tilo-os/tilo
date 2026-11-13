@@ -153,8 +153,6 @@ fn portable_google_selection_uses_production_report_and_etag_guards() {
         href: Some(resource.href.clone()),
         etag: resource.etag.clone(),
     };
-    // Expire canonical custody after constructing and using the client. The
-    // next request must refresh rather than reuse its earlier bearer token.
     custodian
         .seal_oauth(
             &id,

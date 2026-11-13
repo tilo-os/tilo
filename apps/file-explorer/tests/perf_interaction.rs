@@ -1,14 +1,10 @@
-//! What the interactions a person feels cost Files on the UI thread: a wheel
-//! notch, a keystroke, a view switch and a click on an item, each through
-//! the production host path on the app's capture fixture at the Yoga's
-//! logical size, with the frame passes and named scopes each step ran.
-//! Reports only: the numbers say where the frame goes.
-//!
-//! `cargo test -p file-explorer --profile fast --test it perf_interaction -- --nocapture`
 #![allow(
     clippy::expect_used,
     reason = "a measurement fails loudly when the app does not open"
 )]
+
+//! What the interactions a person feels cost Files on its UI thread: a wheel notch, a
+//! keystroke, a view switch, a click.
 
 #[test]
 fn interaction_costs() {
@@ -16,8 +12,6 @@ fn interaction_costs() {
         .expect("file-explorer opens its capture");
 }
 
-/// What opening file-explorer costs on the UI thread, warm (its record already on the
-/// profile): from the host preparing the launch to the first frame drawn.
 #[test]
 fn start_cost() {
     ui::framework::testing::perf::start::<file_explorer::FileExplorerShell>(8)
@@ -25,9 +19,6 @@ fn start_cost() {
         .print();
 }
 
-/// What launching file-explorer costs cold, one process per launch as on a device:
-/// from the process starting to its first frame drawn, fonts and every
-/// other per-process cache empty.
 #[test]
 fn cold_start() {
     ui::framework::testing::perf::cold_start(
@@ -38,9 +29,6 @@ fn cold_start() {
     .print();
 }
 
-/// Moving the pointer down the sidebar and back: each motion moves the
-/// hover from one row to the next, which repaints those two rows and
-/// nothing else, and costs no more than any other pointer motion.
 #[test]
 fn sidebar_hover() {
     let sweep = ui::framework::testing::perf::sidebar_sweep::<file_explorer::FileExplorerShell>(4)

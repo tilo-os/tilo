@@ -1,10 +1,5 @@
-//! The addresses currently admitted, and how long for.
-//!
-//! The kernel's sets carry each address with a timeout, so an address stops
-//! being reachable on its own when its answer has aged out. This mirror
-//! decides what to tell the kernel when another answer names an address:
-//! nothing (it is in the set for long enough already), add it, or refresh
-//! its timeout. Pure, so the arithmetic is tested without a kernel.
+//! The addresses currently admitted, and how long for: the kernel's sets carry
+//! each address with a timeout, so an address stops being reachable on its own.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -19,26 +14,19 @@ pub const MIN_TTL: Duration = Duration::from_secs(60);
 /// reachable for a day because its record said so.
 pub const MAX_TTL: Duration = Duration::from_secs(4 * 60 * 60);
 
-/// A refresh that would extend an entry by less than this is skipped: the
-/// common case is many lookups of one name inside its TTL.
 pub const REFRESH_SLACK: Duration = Duration::from_secs(15);
 
-/// A record TTL in seconds, clamped to [`MIN_TTL`]..=[`MAX_TTL`].
 pub fn clamp_ttl(ttl_secs: u32) -> Duration {
     Duration::from_secs(u64::from(ttl_secs)).clamp(MIN_TTL, MAX_TTL)
 }
 
-/// What an answer asks of the kernel for one address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Change {
     /// Not in the set (or aged out): add with this timeout.
     Add(Duration),
-    /// In the set but expiring sooner than the new answer says: replace
-    /// with this timeout.
     Refresh(Duration),
 }
 
-/// The addresses admitted, with when each ages out of the kernel's set.
 #[derive(Debug, Default, Clone)]
 pub struct AllowedAddrs {
     until: HashMap<IpAddr, Instant>,
@@ -83,7 +71,6 @@ impl AllowedAddrs {
         self.until.retain(|_, until| *until > now);
     }
 
-    /// Forget everything: the kernel's sets were flushed.
     pub fn clear(&mut self) {
         self.until.clear();
     }
@@ -123,13 +110,10 @@ mod tests {
             Some(Change::Add(Duration::from_secs(300)))
         );
         assert!(set.contains(ip("140.82.112.3"), t0));
-        // The same answer a few seconds later extends the entry by less than
-        // the slack: the kernel is left alone.
         assert_eq!(
             set.admit(ip("140.82.112.3"), 300, t0 + Duration::from_secs(5)),
             None
         );
-        // Much later, but before it ages out: a refresh.
         assert_eq!(
             set.admit(ip("140.82.112.3"), 300, t0 + Duration::from_secs(200)),
             Some(Change::Refresh(Duration::from_secs(300)))
@@ -139,7 +123,6 @@ mod tests {
             set.admit(ip("140.82.112.3"), 0, t0 + Duration::from_secs(201)),
             None
         );
-        // After it aged out it is new again.
         let later = t0 + Duration::from_secs(1_000);
         assert!(!set.contains(ip("140.82.112.3"), later));
         assert_eq!(

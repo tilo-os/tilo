@@ -1,21 +1,10 @@
 //! In-buffer find: the match model behind the toolkit's find bar.
 //!
-//! The bar itself is [`ui::widget::FindBar`]: the query field with its match
-//! counter, the Match case and Whole word chips, previous and next, and the
-//! replace row. This module is what the editor answers it with: every match
-//! of a query in the buffer, in the editor's own `(line, column)` character
-//! coordinates, and the same matches as byte ranges for the bar.
-//!
-//! Matching itself is [`crate::search::line_matches`], the same function the
-//! project-wide search uses, so "17 matches" in the bar and 17 rows in the
-//! search palette can never come from two different definitions of a match.
 
 use ui::widget::FindMatch;
 
 use crate::search::{Query, line_matches};
 
-/// One match in the active buffer, in the editor's own `(line, column)`
-/// character coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Match {
     pub line: usize,
@@ -23,7 +12,6 @@ pub struct Match {
     pub len: usize,
 }
 
-/// Every match of `query` in `text`, in document order.
 pub fn matches_in(text: &str, query: &Query) -> Vec<Match> {
     if query.is_empty() {
         return Vec::new();
@@ -41,7 +29,6 @@ pub fn matches_in(text: &str, query: &Query) -> Vec<Match> {
     out
 }
 
-/// `matches` as byte ranges of `text`, the form the find bar speaks.
 pub fn byte_ranges(text: &str, matches: &[Match]) -> Vec<FindMatch> {
     let mut line_starts = vec![0usize];
     for (at, ch) in text.char_indices() {
@@ -63,7 +50,6 @@ pub fn byte_ranges(text: &str, matches: &[Match]) -> Vec<FindMatch> {
                     .nth(m.col + m.len)
                     .map_or(line.len(), |(at, _)| at)
             };
-            // A line ends before its newline (and any carriage return).
             let end = end.min(line.find('\n').unwrap_or(line.len()));
             Some(FindMatch::new(start_of_line + start, start_of_line + end))
         })
@@ -120,7 +106,6 @@ mod tests {
             .map(|r| text.get(r.start..r.end).unwrap_or(""))
             .collect();
         assert_eq!(found, ["foo", "foo", "foo"]);
-        // The second `foo` of the file starts after a two-byte `é`.
         assert_eq!(ranges[0].start, "é ".len());
     }
 }

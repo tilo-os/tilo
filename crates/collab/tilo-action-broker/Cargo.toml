@@ -53,6 +53,8 @@ tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 tilo-actions = { path = "../actions" }
 # The broker's half every host runs: the step seam, the route, the receipts.
 tilo-broker-core = { path = "../broker-core" }
+# The channel engine every host runs: this broker enforces its channels' plaintext gates.
+tilo-channels = { path = "../channels" }
 # Shortcuts: checking, running and describing them at the action door.
 tilo-automation = { path = "../automation" }
 # The device keymap a shortcut's keyboard trigger is checked against.
@@ -72,6 +74,8 @@ uuid.workspace = true
 workspace-hack = { version = "0.1" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 [dev-dependencies]
+# The channel engine's tests read what its gates refuse through this broker.
+tilo-channels = { path = "../channels", features = ["test-support"] }
 runtime-identity-host = { package = "runtime-identity", path = "../../runtime/runtime-identity" }
 # The disclosure regression reaches the real verifier and durable registry store over HTTPS.
 registry-server = { path = "../../packaging/registry-server" }

@@ -144,7 +144,26 @@ pub struct WorkspaceEmoji {
     pub emoji: Map<Emoji>,
 }
 
-#[resource(kind = "tilo.workspace.emoji", label = "Workspace emoji")]
+impl WorkspaceEmoji {
+    /// What the record holds: the emoji the workspace keeps, by name: each one's picture and
+    /// who added it, and when.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "tilo.workspace.emoji",
+    read_content = WorkspaceEmoji::read_document
+)]
 impl WorkspaceEmoji {
     /// Add emoji.
     ///

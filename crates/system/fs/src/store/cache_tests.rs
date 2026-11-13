@@ -33,7 +33,6 @@ async fn the_blob_cache_is_bounded_by_bytes_and_keeps_small_hot_entries() {
             assert!(store.local(hash).await.is_some());
         }
     };
-    // The cache counts how often entries are read once it is half full.
     for seed in 0..per_budget / 2 {
         cold(seed).await;
     }
@@ -44,16 +43,12 @@ async fn the_blob_cache_is_bounded_by_bytes_and_keeps_small_hot_entries() {
         assert_eq!(store.local(hot).await.unwrap(), hot_bytes);
     }
 
-    // One blob above the per-entry cap is neither cached on ingest nor on read.
     let large = distinct(MAX_CACHED_BLOB + 1, u64::MAX);
     let large_hash = store.ingest(large.clone()).await.unwrap();
     assert!(!store.is_cached(large_hash));
     assert_eq!(store.local(large_hash).await.unwrap(), large);
     assert!(!store.is_cached(large_hash));
 
-    // Three times the budget of cold blobs at the cap, each read once, with
-    // the hot entry read only after more than a whole budget of them: a
-    // cache that kept the most recent bytes would have dropped it by then.
     let between = per_budget * 3 / 2;
     for seed in per_budget / 2..per_budget / 2 + 3 * per_budget {
         cold(seed).await;
@@ -106,9 +101,6 @@ async fn streamed_ingest_stores_whole_content_and_caches_none_of_it() {
 #[tokio::test]
 async fn an_abandoned_streamed_ingest_stores_nothing_and_leaves_no_spill() {
     let directory = tempfile::tempdir().unwrap();
-    // iroh-blobs forwards up to 32 chunks before its store consumes them.
-    // Cross that bound before abandoning: a three-chunk fixture can report
-    // its producer error before the store has created any spill to clean up.
     let content = vec![5_u8; 64 * 64 * 1024];
     {
         let store = ContentStore::open(directory.path()).await.unwrap();

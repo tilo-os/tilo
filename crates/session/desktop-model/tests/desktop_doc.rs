@@ -733,7 +733,13 @@ fn a_float_goes_when_the_window_is_snapped_back_or_closed() {
     );
     assert!(refused.is_err(), "a window not in the workspace");
     for float in [
-        FloatPlace::new(FloatCorner::TopLeft, 0, 0, 0, 480),
+        FloatPlace {
+            corner: FloatCorner::TopLeft,
+            dx: 0,
+            dy: 0,
+            width: 0,
+            height: 480,
+        },
         FloatPlace::new(FloatCorner::TopLeft, -1, 0, 640, 480),
     ] {
         let refused = apply_command(
@@ -747,6 +753,36 @@ fn a_float_goes_when_the_window_is_snapped_back_or_closed() {
         );
         assert!(refused.is_err(), "{float:?} is no size to show a window at");
     }
+}
+
+/// A float an agent or anyone asks for narrower than a window floats a window: the record never
+/// keeps a sliver every member would see as a stray line.
+#[test]
+fn a_float_asked_for_narrower_than_a_window_floats_a_window() {
+    let (mut tree, _doc) = seeded();
+    let mut no_ids = || Err::<u64, String>("no ids".into());
+    let mut no_records = |_: &str, _: u64| Err::<(String, TileContent), String>("none".into());
+    apply_command(
+        &mut tree.workspaces[0],
+        &DesktopCommand::FloatGroup {
+            group: 10,
+            float: Some(FloatPlace {
+                corner: FloatCorner::TopLeft,
+                dx: 0,
+                dy: 0,
+                width: 2,
+                height: 480,
+            }),
+        },
+        &mut no_ids,
+        &mut no_records,
+    )
+    .unwrap();
+    let kept = tree.workspaces[0].arrangement.float_of(10).unwrap();
+    assert_eq!(
+        (kept.width, kept.height),
+        (tilo_desktop_model::arrangement::WINDOW_MIN_WIDTH, 480)
+    );
 }
 
 /// [`tree`] plus workspace 2 ("Lab"): strip 3 holds group 30 [300].

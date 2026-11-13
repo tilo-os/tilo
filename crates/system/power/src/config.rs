@@ -1,29 +1,6 @@
-//! Reading the [`PowerPolicy`] from the person's settings.
-//!
-//! The Settings app owns the *write* side (its `PowerPrefs` serde struct);
-//! this module owns the compositor's *read* side. The contract between them
-//! is the `"power"` section's JSON shape, **not** a shared crate, exactly
-//! like the compositor's `load_display_scale`. Keeping the reader here (next
-//! to the policy it produces) means the compositor never re-implements the
-//! parse, and a cross-consistency test pins the two sides together.
-//!
-//! ```json
-//! "power": {
-//!   "auto_suspend": false,
-//!   "blank_minutes": 10,
-//!   "lock_minutes": 5,
-//!   "suspend_minutes": 15,
-//!   "lid_close_action": "suspend",
-//!   "power_key_action": "suspend",
-//!   "low_battery_percent": 15,
-//!   "critical_battery_percent": 5,
-//!   "critical_action": "suspend"
-//! }
-//! ```
-//!
-//! Every field is optional: a missing or malformed value falls back to the
-//! [`PowerPolicy`] / Settings default so a corrupt config can never leave the
-//! machine unmanaged (or, worse, wedge it into an aggressive suspend).
+//! Reading the [`PowerPolicy`] from the person's settings. The Settings app owns
+//! the write side; this module the compositor's read side, and the contract
+//! between them is the `"power"` section's JSON shape, not a shared crate.
 
 use std::time::Duration;
 
@@ -33,33 +10,26 @@ use crate::policy::{PowerAction, PowerPolicy};
 /// `auto_suspend` is on but no explicit `suspend_minutes` is written.
 pub const DEFAULT_SUSPEND_MINUTES: u32 = settings_store::power::DEFAULT_SUSPEND_MINUTES;
 
-/// The Settings default screen-blank timeout, in minutes. `0` is the
-/// persisted spelling of "Never".
+/// The Settings default screen-blank timeout, in minutes; `0` is the persisted
+/// spelling of "Never".
 pub const DEFAULT_BLANK_MINUTES: u32 = settings_store::power::DEFAULT_BLANK_MINUTES;
 
-/// The Settings default idle-lock timeout, in minutes. `0` is the persisted
+/// The Settings default idle-lock timeout, in minutes; `0` is the persisted
 /// spelling of "Never".
 pub const DEFAULT_LOCK_MINUTES: u32 = settings_store::power::DEFAULT_LOCK_MINUTES;
 
-/// The largest screen-blank timeout the Settings UI can express. Rejecting
-/// larger persisted values keeps corrupt/manual configuration from making the
-/// display effectively never blank while still accepting every UI choice.
+/// The largest screen-blank timeout the Settings UI can express. Larger
+/// persisted values are repaired to the default, so corrupt or manual
+/// configuration cannot make the display effectively never blank.
 pub const MAX_BLANK_MINUTES: u32 = 30;
 
 /// The largest idle-lock timeout exposed by Settings.
 pub const MAX_LOCK_MINUTES: u32 = 30;
 
-/// Load the policy from the session's settings for the power-profiles-daemon
-/// profile the power service last observed ([`crate::PowerBridge::active_profile`])
-/// and the power source it last saw ([`crate::PowerBridge::on_battery`]),
-/// falling back to the Settings defaults when there are none. Never asks the
-/// daemon itself: the compositor reloads this on its frame thread.
-///
-/// The document is read the way every other reader reads it
-/// ([`settings_store::load_section`]).
-///
-/// The result is already narrowed to this machine's duty: a host never
-/// suspends on its own.
+/// Load the policy from the session's settings for the profile and power source
+/// the power service last observed, falling back to the Settings defaults.
+/// Never asks the daemon itself: the compositor reloads this on its frame
+/// thread.
 pub fn load_policy_for_profile(active_profile: Option<&str>, on_battery: bool) -> PowerPolicy {
     let section =
         serde_json::Value::Object(settings_store::load_section(settings_store::power::SECTION));
@@ -67,10 +37,9 @@ pub fn load_policy_for_profile(active_profile: Option<&str>, on_battery: bool) -
         .for_duty(crate::policy::this_machine_duty())
 }
 
-/// The policy a freshly-installed machine runs (Settings defaults): idle
-/// blanks and locks the screen, but idle-suspend follows
-/// [`settings_store::power::DEFAULT_AUTO_SUSPEND`] (off), so nothing but the
-/// lid, the power key or a critical battery puts the machine to sleep until
+/// The policy a freshly installed machine runs: idle blanks and locks the
+/// screen, but idle-suspend follows the Settings default (off), so nothing but
+/// the lid, the power key or a critical battery puts the machine to sleep until
 /// the person turns "suspend when idle" on.
 pub fn default_policy() -> PowerPolicy {
     default_policy_from_installation(std::path::Path::new("/etc/tilo/install-purpose"))
@@ -80,8 +49,8 @@ fn default_policy_from_installation(path: &std::path::Path) -> PowerPolicy {
     default_policy_for_purpose(std::fs::read_to_string(path).ok().as_deref().map(str::trim))
 }
 
-/// Installation purpose changes only automatic idle sleep. Explicit power
-/// settings can override it; lid and critical-battery protection stay intact.
+/// Installation purpose changes only automatic idle sleep; explicit power
+/// settings can override it, and lid and critical-battery protection stay.
 pub fn default_policy_for_purpose(purpose: Option<&str>) -> PowerPolicy {
     PowerPolicy {
         idle_suspend: (purpose != Some("server") && settings_store::power::DEFAULT_AUTO_SUSPEND)
@@ -90,8 +59,8 @@ pub fn default_policy_for_purpose(purpose: Option<&str>) -> PowerPolicy {
     }
 }
 
-/// Parse a [`PowerPolicy`] from a full settings document with no
-/// active power profile. Never fails; unknown/missing fields take defaults.
+/// Parse a [`PowerPolicy`] from a full settings document with no active power
+/// profile. Never fails; unknown or missing fields take defaults.
 pub fn policy_from_settings_json(text: &str) -> PowerPolicy {
     policy_from_settings_json_for_profile(text, None, false)
 }
@@ -111,12 +80,9 @@ pub fn policy_from_settings_json_for_profile(
     policy_from_section_for_profile(section, active_profile, on_battery)
 }
 
-/// Resolve a policy for a power-profiles-daemon profile and a power source.
-///
-/// This separate entry point keeps parsing deterministic in tests and makes
-/// the Settings/compositor contract explicit. The idle-suspend timer is the
-/// power source's ([`settings_store::power::SuspendTimers::applying`]); a
-/// profile's own applies only where the stored profile timers truly differ.
+/// Resolve a policy for a power-profiles-daemon profile and a power source. The
+/// idle-suspend timer is the power source's; a profile's own applies only where
+/// the stored profile timers truly differ.
 pub fn policy_from_section_for_profile(
     section: &serde_json::Value,
     active_profile: Option<&str>,
@@ -142,9 +108,9 @@ pub fn policy_from_section_for_profile(
         None
     };
 
-    // `0` is the Settings value for "Never". Values beyond the UI's bounded
-    // range are treated as malformed and repaired to the safe Settings
-    // default, rather than becoming an invisible, unbounded timeout.
+    // `0` is the Settings value for "Never". Values beyond the UI's bounded range
+    // are treated as malformed and repaired to the safe default, rather than
+    // becoming an invisible, unbounded timeout.
     let blank_minutes = section
         .get("blank_minutes")
         .and_then(serde_json::Value::as_u64)
@@ -180,8 +146,8 @@ pub fn policy_from_section_for_profile(
         idle_blank,
         idle_lock,
         idle_suspend,
-        // Only an explicit `false` lets sleep leave the session unlocked: a
-        // missing or malformed value keeps the password.
+        // Only an explicit `false` lets sleep leave the session unlocked: a missing or
+        // malformed value keeps the password.
         lock_on_sleep: section
             .get(settings_store::power::LOCK_ON_SLEEP.name())
             .and_then(serde_json::Value::as_bool)
@@ -244,8 +210,8 @@ mod tests {
             );
         }
         {
-            // A suspend timeout is written by the pane even while the switch
-            // is off; it alone must not turn idle-suspend back on.
+            // A suspend timeout is written by the pane even while the switch is off; it
+            // alone must not turn idle-suspend back on.
             let p = policy_from_settings_json(r#"{"power":{"suspend_minutes":15}}"#);
             assert_eq!(p.idle_suspend, None);
             let p = policy_from_settings_json(
@@ -460,10 +426,9 @@ mod tests {
         }
     }
 
-    /// What can put this machine to sleep when "suspend when idle" is off
-    /// and the screen is set never to lock: idleness never, whatever the
-    /// profile, power source or stored timers; only the lid, the power key
-    /// and a critical battery, each as configured.
+    /// What can put this machine to sleep when "suspend when idle" is off and the
+    /// screen is set never to lock: only the lid, the power key and a critical
+    /// battery, each as configured.
     #[test]
     fn with_idle_suspend_off_only_the_lid_the_power_key_and_a_critical_battery_suspend() {
         let section: serde_json::Value = serde_json::from_str(

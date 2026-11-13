@@ -3,6 +3,12 @@
 //! `theme.tokens.metrics`. The app hands it columns and headers; the shell owns the geometry,
 //! the responsive layout (docked sidebar, push stack or floating drawer — never a modal one),
 //! motion and semantics. An app reads [`NavGeometry::size_class`], never a width.
+//!
+//! The sidebar stands beside the content only while the pane beside it keeps the width class its
+//! kind asks for there ([`ContentKind::beside_sidebar_class`]): a column of text is no phone's
+//! screen, so below a column the sidebar folds behind the bar's toggle (or floats over a
+//! content-primary app) and the content takes its room back. The window's own width decides it,
+//! never the display's, so a window in a strip, a tiled window and a phone follow one rule.
 
 use crate::num::f64_of_usize;
 use std::cell::RefCell;
@@ -36,7 +42,6 @@ use crate::widget::{
 
 mod back;
 mod band;
-mod bar_resources;
 mod header_parts;
 mod inspector;
 mod layout;
@@ -62,7 +67,7 @@ pub use layout::NavGeometry;
 use layout::{layout_of, stack_index};
 use sidebar_resize::AdaptiveSidebar;
 use window_toolbar::Requests;
-pub use window_toolbar::{WINDOW_BACK, WindowBarLink};
+pub use window_toolbar::{WINDOW_BACK, WINDOW_SIDEBAR, WindowBarLink};
 
 /// What the sidebar becomes when the window is too narrow to dock it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -113,6 +118,20 @@ impl ContentKind {
             Self::Reading | Self::Document => metrics.reading_min_width,
             Self::Page => metrics.page_min_width,
             Self::Grid | Self::Canvas => metrics.grid_min_width,
+        }
+    }
+
+    /// The width class content of this kind is in at the least beside a sidebar: a list, a page, a
+    /// reading column or a document is a column of text, so it is no phone's screen there; a grid
+    /// of tiles or a surface drawn on works narrower than a column, which is what its own minimum
+    /// states.
+    #[must_use]
+    pub fn beside_sidebar_class(self) -> crate::widget::arrange::WidthClass {
+        match self {
+            Self::List | Self::Reading | Self::Page | Self::Document => {
+                crate::widget::arrange::WidthClass::Medium
+            }
+            Self::Grid | Self::Canvas => crate::widget::arrange::WidthClass::Compact,
         }
     }
 
@@ -345,6 +364,10 @@ struct Metrics {
     scale: f64,
     /// One line of body text: the unit of a page column's width.
     body_line: f64,
+    /// One `rem` in logical pixels ([`crate::widget::arrange::rem_of`]): the unit the width
+    /// classes are measured in, so the content beside a sidebar keeps a column's width at every
+    /// text size.
+    rem: f32,
     /// The line a document's body runs to, past which the page centres it.
     reading_measure: f64,
     /// What a page scroller keeps free for its bar on its trailing edge.
@@ -354,6 +377,28 @@ struct Metrics {
 }
 
 impl Metrics {
+    /// The narrowest content of `kind` still works at.
+    fn content_min(&self, kind: ContentKind) -> f64 {
+        match kind {
+            ContentKind::List => self.list_min,
+            ContentKind::Reading | ContentKind::Document => self.reading_min,
+            ContentKind::Page => self.page_min,
+            ContentKind::Grid | ContentKind::Canvas => self.grid_min,
+        }
+    }
+
+    /// The narrowest content of `kind` stands at beside a sidebar: its own minimum, and never
+    /// below the width class it is in there ([`ContentKind::beside_sidebar_class`]). Narrower, the
+    /// pane is a phone's screen, so the sidebar folds behind the bar's toggle instead of squeezing
+    /// it (`layout.md`, "Responding to space").
+    fn beside_sidebar_min(&self, kind: ContentKind) -> f64 {
+        self.content_min(kind)
+            .max(f64::from(crate::widget::arrange::class_min_width(
+                kind.beside_sidebar_class(),
+                self.rem,
+            )))
+    }
+
     fn resolve(theme: &Theme) -> Self {
         let m = theme.tokens.metrics;
         let s = theme.tokens.spacing;
@@ -389,6 +434,7 @@ impl Metrics {
             pointer: f64::from(m.min_pointer_target),
             scale: theme.responsive_scale(),
             body_line: f64::from(theme.text(crate::TextRole::Body).line_height_px()),
+            rem: crate::widget::arrange::rem_of(theme),
             reading_measure: f64::from(m.reading_measure) * growth,
             scroll_gutter: f64::from(m.scrollbar_gutter),
             page_pad: f64::from(s.s6),
@@ -442,6 +488,9 @@ struct Inputs {
     page_lines: Option<f64>,
     metrics: Metrics,
     has_sidebar: bool,
+    /// The window floats over the desk as a card ([`crate::window_toolbar::floats`]): too narrow
+    /// to dock its sidebar, it shows its content alone.
+    floats: bool,
     has_overview: bool,
     /// The window shows a content column. A shell with nothing to show beside its overview gives
     /// the window to the overview until something is shown ([`NavShell::content_shown`]).
@@ -457,31 +506,23 @@ struct Inputs {
     /// Room for the window's controls at the trailing end of the row, while
     /// the host merged the window's bar into it (a maximized window).
     window_controls: Option<f64>,
-    /// The app put its header in the window's bar
-    /// ([`NavShell::with_header_in_window_bar`]).
-    header_in_bar: bool,
     /// The window's bar shows the sidebar toggle among the app's slots
     /// ([`NavShell::set_sidebar_toggle_in_window_bar`]).
     toggle_in_bar: bool,
     /// The app's toolbar is its window bar's slots
     /// ([`NavShell::with_window_toolbar`]): the shell draws no header row.
     toolbar_in_bar: bool,
-    /// The shell declares the window bar's slots from its headers
-    /// ([`window_toolbar::ShellBar`]): it draws no header row.
-    shell_bar: bool,
-    /// The person reached for the window's bar.
-    bar_revealed: bool,
     /// The host lists the window's actions where the person reaches them; actions that do not fit
     /// give way with no other door.
     actions_listed: bool,
-    /// How far down the window's top edge the bar stands: below the
-    /// desktop's top bar while that is shown over the window.
-    bar_top: f64,
     titled: [bool; 4],
     actions: [usize; 4],
     leading: [bool; 4],
     /// The app's own page stack can go back ([`NavShell::with_back`]).
     content_back: bool,
+    /// What the content would list is empty, so a whole-window empty state stands in its column
+    /// ([`NavShell::nothing_listed`]).
+    nothing_listed: bool,
     /// The docked sidebar width a person dragged to, authored at 1×.
     user_sidebar: Option<f64>,
     /// A navigation-list sidebar: rail while narrow, list while wide.
@@ -547,6 +588,7 @@ impl Default for Inputs {
             page_lines: None,
             metrics: Metrics::default(),
             has_sidebar: false,
+            floats: false,
             has_overview: false,
             has_content: true,
             has_rail: false,
@@ -555,17 +597,14 @@ impl Default for Inputs {
             has_controls: false,
             history: None,
             window_controls: None,
-            header_in_bar: false,
             toggle_in_bar: false,
-            bar_revealed: false,
             actions_listed: false,
-            bar_top: 0.0,
             titled: [false; 4],
             actions: [0; 4],
             leading: [false; 4],
             content_back: false,
+            nothing_listed: false,
             toolbar_in_bar: false,
-            shell_bar: false,
             user_sidebar: None,
             adaptive: None,
             sidebar: FlapState::open_when_docked(),
@@ -598,13 +637,25 @@ impl Inputs {
         if !self.has_content {
             return 0.0;
         }
-        let m = &self.metrics;
-        match self.kind {
-            ContentKind::List => m.list_min,
-            ContentKind::Reading | ContentKind::Document => m.reading_min,
-            ContentKind::Page => m.page_min,
-            ContentKind::Grid | ContentKind::Canvas => m.grid_min,
+        self.metrics.content_min(self.kind)
+    }
+
+    /// The narrowest the content stands at beside a sidebar: a column of the window's own where
+    /// the content is a column of text, never a phone's screen ([`Metrics::beside_sidebar_min`]).
+    fn content_beside_sidebar_min(&self) -> f64 {
+        if !self.has_content {
+            return 0.0;
         }
+        self.metrics.beside_sidebar_min(self.kind)
+    }
+
+    /// The width class the content beside a sidebar is in at the least
+    /// ([`ContentKind::beside_sidebar_class`]).
+    fn content_beside_sidebar_class(&self) -> crate::widget::arrange::WidthClass {
+        if !self.has_content {
+            return crate::widget::arrange::WidthClass::Compact;
+        }
+        self.kind.beside_sidebar_class()
     }
 
     /// The narrowest window the compact layout works at: one column at a time (or the content under
@@ -624,17 +675,6 @@ impl Inputs {
         self.titled.get(i).copied().unwrap_or(false)
             || self.actions.get(i).copied().unwrap_or(0) > 0
             || self.leading.get(i).copied().unwrap_or(false)
-    }
-
-    /// The header row lives in the window's bar now: it stands over the
-    /// content, and only while the person reaches for the bar.
-    fn header_in_window_bar(&self) -> bool {
-        self.header_in_bar && self.window_controls.is_some()
-    }
-
-    /// The window bar shows the shell's own buttons and the app's actions.
-    fn slots_in_bar(&self) -> bool {
-        self.toolbar_in_bar || self.shell_bar
     }
 }
 
@@ -777,7 +817,6 @@ pub struct NavShell {
     /// The window's bar presents search for the window, so the headers carry no button of their own
     /// that opens the app's search.
     window_search: bool,
-    shell_bar: window_toolbar::ShellBar,
     /// Header actions put away while the host may still hold their nodes,
     /// dropped when the next build replaces the row.
     retired_actions: Vec<Element>,
@@ -834,7 +873,7 @@ impl NavShell {
         let policy: Rc<crate::widget::manual::Policy> =
             Rc::new(move |ctx: &mut ManualContext<'_>| place_parts(&policy_inputs.borrow(), ctx));
         let toggle = Self::shell_button(
-            "nav-shell-sidebar",
+            WINDOW_SIDEBAR,
             Icon::PanelLeft,
             &crate::i18n::I18nManager::lookup_plain("window-toolbar-hide-sidebar"),
             {
@@ -843,7 +882,7 @@ impl NavShell {
             },
         );
         let back = Self::shell_button(
-            "nav-shell-back",
+            WINDOW_BACK,
             Icon::ChevronLeft,
             &crate::i18n::I18nManager::lookup_plain("window-toolbar-back"),
             {
@@ -915,7 +954,6 @@ impl NavShell {
             settling: false,
             built: false,
             window_search: false,
-            shell_bar: window_toolbar::ShellBar::default(),
             retired_actions: Vec::new(),
             structure_dirty: false,
             layout_dirty: true,
@@ -1102,6 +1140,23 @@ impl NavShell {
         self.inputs.borrow_mut().kind = kind;
         self.slots_changed();
         self
+    }
+
+    /// How wide the pane beside the sidebar stands: the window without the columns that dock
+    /// beside it (the sidebar's own and the inspector's).
+    fn beside_sidebar(&self) -> f64 {
+        let g = &self.geometry;
+        let docked = |placement: bool, width: f64| if placement { width } else { 0.0 };
+        (g.size.x
+            - docked(
+                g.sidebar == SidebarPlacement::Docked,
+                g.sidebar_column.width(),
+            )
+            - docked(
+                g.inspector == InspectorPlacement::Docked,
+                g.inspector_column.width(),
+            ))
+        .max(0.0)
     }
 
     /// The narrowest window this shell works at, in logical pixels: its
@@ -1499,10 +1554,8 @@ impl NavShell {
     /// Plan the parts from the slots, headers and columns as they are now (which columns and
     /// titles there are, how many actions each holds), marking nothing.
     fn refresh_slot_inputs(&self) {
-        let shell_bar = self.shell_bar_wanted();
         {
             let mut inputs = self.inputs.borrow_mut();
-            inputs.shell_bar = shell_bar;
             let has = |current: bool, pending: Option<&Staged>| match pending {
                 Some(next) => next.is_some(),
                 None => current,
@@ -1513,6 +1566,7 @@ impl NavShell {
             // A window with nothing to show beside its overview has no content column, unless
             // what it shows is one whole-window empty state there.
             inputs.has_content = self.content_shown || self.nothing_listed_shown();
+            inputs.nothing_listed = self.nothing_listed_shown();
             inputs.has_inspector = body(Column::Inspector);
             // The overview's rail and controls go with it.
             let listed = !self.nothing_listed_shown();
@@ -1523,7 +1577,7 @@ impl NavShell {
             // search, which narrows the list through the same field: the
             // field keeps no band of its own while the bar presents it.
             inputs.has_filter =
-                self.filter.is_some() && !(inputs.slots_in_bar() && self.window_search);
+                self.filter.is_some() && !(inputs.toolbar_in_bar && self.window_search);
             for column in Column::ALL {
                 let header = at(&self.headers, column);
                 *at_mut(&mut inputs.titled, column) = header.title.is_shown();
@@ -1610,6 +1664,12 @@ impl NavShell {
         self.inputs.borrow().has_overview
     }
 
+    /// Whether the window has a sidebar but shows its content alone: a card floating over the
+    /// desk, too narrow to dock it. It offers no toggle for it.
+    fn sidebar_folded(&self) -> bool {
+        self.built && self.has_sidebar() && self.geometry.sidebar == SidebarPlacement::None
+    }
+
     /// Whether the window shows a content column ([`Self::content_shown`]).
     pub fn has_content(&self) -> bool {
         self.content_shown || self.nothing_listed_shown()
@@ -1650,7 +1710,7 @@ impl NavShell {
     /// it goes back to it, and hiding it goes on to the screen the person
     /// left for it.
     pub fn toggle_sidebar(&mut self) {
-        if !self.has_sidebar() {
+        if !self.has_sidebar() || self.sidebar_folded() {
             return;
         }
         if self.geometry.sidebar == SidebarPlacement::Screen {
@@ -2373,19 +2433,15 @@ impl NavShell {
         self.place_sheet();
     }
 
-    /// The screen a new window opens on: the first list of items, which is
-    /// the overview where there is one, the content's own list where it is
-    /// one (a mail window on the inbox, a Files window on the folder; Back
-    /// goes to the mailboxes or places) or the empty state standing in for
-    /// the list, else the sidebar (Settings' list).
+    /// The screen a new window opens on, from [`opening_pane`](layout::opening_pane): the first
+    /// list of items — the overview where there is one, the content's own list where it is one (a
+    /// mail window on the inbox, a Files window on the folder) or the empty state standing in for
+    /// it — else the sidebar (Settings' list).
     fn opening_pane(&self, stack: &[NavPane]) -> NavPane {
-        if stack.contains(&NavPane::Overview) {
-            NavPane::Overview
-        } else if self.inputs.borrow().kind == ContentKind::List || self.nothing_listed_shown() {
-            NavPane::Content
-        } else {
-            stack.first().copied().unwrap_or(NavPane::Content)
-        }
+        stack
+            .get(layout::opening_pane(&self.inputs.borrow(), stack))
+            .copied()
+            .unwrap_or(NavPane::Content)
     }
 
     /// Note a change of size class: the sidebar's choice for the new class
@@ -2830,44 +2886,12 @@ impl NavShell {
                 f.draw(self.part_mut(part), &local);
             }
         }
-        self.paint_bar_ground(f, column, &local);
         for part in over {
             if self.built_has(part) && !self.part_hidden(part) {
                 f.draw(self.part_mut(part), &local);
             }
         }
         f.scene.pop_layer();
-    }
-
-    /// A header row in the window's bar stands over the column's content:
-    /// it brings its own ground, rule and a soft shadow on the content.
-    fn paint_bar_ground(&self, f: &mut Frame<'_>, column: Column, local: &Theme) {
-        let header = self.geometry.header(column);
-        if !self.inputs.borrow().header_in_window_bar()
-            || header.width() <= 0.0
-            || header.height() <= 0.0
-            || self.geometry.floating(column)
-        {
-            return;
-        }
-        crate::surface::shadow(
-            f.scene,
-            f.transform,
-            header,
-            0.0,
-            &local.tokens.elevation.floating,
-        );
-        let region = match column {
-            Column::Sidebar => crate::surface::Region::Sidebar,
-            Column::Inspector => crate::surface::Region::Inspector,
-            Column::Overview | Column::Content => crate::surface::Region::Content,
-        };
-        crate::surface::region(f.scene, f.transform, header, region, local);
-        crate::chrome::HeaderRowFace::in_row(header, self.inputs.borrow().metrics.row).paint_rule(
-            f.scene,
-            f.transform,
-            local,
-        );
     }
 
     fn paint_part(&mut self, f: &mut Frame<'_>, part: Part) {
@@ -2890,11 +2914,7 @@ impl NavShell {
     fn paint_rules(&self, scene: &mut Scene, transform: Affine, theme: &Theme, g: &NavGeometry) {
         for column in [Column::Overview, Column::Content, Column::Inspector] {
             let header = g.header(column);
-            // A row in the window's bar paints its rule with its ground.
-            if header == Rect::ZERO
-                || g.floating(column)
-                || self.inputs.borrow().header_in_window_bar()
-            {
+            if header == Rect::ZERO || g.floating(column) {
                 continue;
             }
             let local = self.column_theme(theme, Some(column));
@@ -2954,6 +2974,22 @@ impl Frame<'_> {
 }
 
 impl Widget for NavShell {
+    /// Its bar, sidebar and page, each where it lays them out, the sidebar
+    /// and the inspector on their surfaces.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        let g = &self.geometry;
+        if matches!(
+            g.sidebar,
+            SidebarPlacement::Docked | SidebarPlacement::Screen
+        ) {
+            cx.surface(g.sidebar_column, "sidebar");
+        }
+        if g.inspector == InspectorPlacement::Docked {
+            cx.surface(g.inspector_column, "inspector");
+        }
+        cx.children();
+    }
+
     fn on_nav_gesture(
         &mut self,
         dir: crate::gesture::NavDirection,
@@ -3047,15 +3083,12 @@ impl Widget for NavShell {
         self.follow_navigation();
         self.for_each_owned_mut(|child| child.sync(state, path));
         self.sync_filter();
-        self.sync_shell_bar();
         self.publish_notice();
     }
 
     fn settle(&mut self, edits: &mut super::Edits<'_>, path: &automerge::ObjId) {
-        self.run_shell_bar_events(edits, path);
         // A command chosen from a header's menu by assistive technology has no pointer event to
-        // carry it, so the settle pass runs it as it runs a header button pressed in the window
-        // bar.
+        // carry it, so the settle pass runs it.
         self.take_more_choices(edits, path);
         // Settling is the data pass: a column a narrow window put away
         // still takes its writes and feeds the column on screen.
@@ -3404,7 +3437,10 @@ impl Widget for NavShell {
     }
 
     /// Each column's header row as the last layout left it: what its title says against what the
-    /// row gave it, and what its actions kept of their labels and their place in the row.
+    /// row gave it, and what its actions kept of their labels and their place in the row. Beside
+    /// it, where the sidebar stood and how wide the pane beside it is: the shell stands a sidebar
+    /// beside content of a column's width, and folds it behind the bar's toggle where the content
+    /// would be a phone's screen.
     fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
         let inputs = self.inputs.borrow();
         let fit = inputs.fit.borrow();
@@ -3412,11 +3448,28 @@ impl Widget for NavShell {
         for (row, slot) in rows.iter_mut().zip(fit.iter()) {
             *row = slot.header;
         }
-        rows.iter()
-            .any(Option::is_some)
-            .then_some(crate::widget::LayoutInfo::Headers(
-                crate::widget::HeaderRows { rows },
-            ))
+        let m = inputs.metrics;
+        let beside = self.beside_sidebar();
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a window's width in logical pixels, far inside f32's range"
+        )]
+        let (beside_rem, beside_width) =
+            ((beside / f64::from(m.rem.max(1.0))) as f32, beside as f32);
+        Some(crate::widget::LayoutInfo::Shell(
+            crate::widget::ShellLayout {
+                sidebar: match self.geometry.sidebar {
+                    SidebarPlacement::None => crate::widget::SidebarStanding::None,
+                    SidebarPlacement::Docked => crate::widget::SidebarStanding::Docked,
+                    SidebarPlacement::Drawer => crate::widget::SidebarStanding::Over,
+                    SidebarPlacement::Screen => crate::widget::SidebarStanding::Alone,
+                },
+                beside: crate::widget::arrange::WidthClass::of(beside_rem),
+                needs: inputs.content_beside_sidebar_class(),
+                beside_width,
+                rows: crate::widget::HeaderRows { rows },
+            },
+        ))
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
@@ -3728,6 +3781,11 @@ fn is_app_search(action: &dyn Widget) -> bool {
 /// field does, so the page keeps the name a screen reader reads.
 fn page_title_shown(body: &dyn Widget, region: Rect) -> Option<TitleShown> {
     fn walk(widget: &dyn Widget, clip: Rect) -> Option<TitleShown> {
+        // An item opened in place among its list's rows titles that item, never the page: the
+        // column keeps its own title.
+        if widget.is_item_opened_in_place() {
+            return None;
+        }
         let clip = widget
             .child_clip_rect()
             .map_or(clip, |child_clip| clip.intersect(child_clip));
@@ -3777,6 +3835,12 @@ fn same_words(a: &str, b: &str) -> bool {
 /// Controls in a column the shell is not showing (a hidden sidebar, a closed drawer, a pushed-away
 /// screen) still belong to the window: custody, invocations and availability reach every part the
 /// shell owns.
+// The shell answers for itself: its content's own resources and operations are the content's,
+// reached as the tree is walked, never taken for the shell's.
+impl crate::resources::PublishesResources for NavShell {}
+
+impl crate::widget::ResourceOperations for NavShell {}
+
 impl crate::widget::controls::ActionControls for NavShell {
     fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         crate::widget::controls::children_action_control_bindings(self)
@@ -3946,12 +4010,9 @@ impl NavShell {
             }
         }
         if *key == Key::Named(NamedKey::Escape) {
-            if self.geometry.sidebar == SidebarPlacement::Drawer && self.is_sidebar_open() {
-                self.toggle_by_key(Column::Sidebar);
-                return true;
-            }
             // Escape goes back the way the bar's Back does, one step at a time: the inspector's
-            // sheet, the app's page stack, then a narrow window's push stack.
+            // sheet, a sidebar floating over the window, the app's page stack, then a narrow
+            // window's push stack.
             if self.back() {
                 return true;
             }
@@ -4060,19 +4121,6 @@ impl NavShell {
         }
         if pointer {
             let p = self.last_cursor;
-            // A header row in the window's bar stands over the content: over
-            // the row, the pointer is the header's, never the content's under it.
-            if self.inputs.borrow().header_in_window_bar()
-                && self.geometry.header_height > 0.0
-                && self.geometry.window_row.contains(p)
-            {
-                order.retain(|(part, _)| {
-                    !matches!(
-                        part,
-                        Part::Body(_) | Part::Rail | Part::Filter | Part::Controls
-                    )
-                });
-            }
             // Over an open drawer, the pointer is the drawer's alone: what
             // it does not take never falls through to the content under it.
             if let Some(column) = self.geometry.open_drawer()

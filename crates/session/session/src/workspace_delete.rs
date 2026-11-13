@@ -4,10 +4,11 @@
 //! ([`tilo_sheets::delete_workspace`]) wherever deleting was asked for — the workspace menu, the
 //! workspace settings, an agent's action through the desk. Only their yes takes the workspace off
 //! the desk, which is what the person's list follows, and then out of this device's record.
+//! A workspace its owner deleted somewhere else leaves this device the same way, and the person is
+//! told who deleted it ([`Shared::follow_owner_deletions`]).
 
 use serde_json::{Map, Value};
 use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
-use tilo_desktop_surface::notifications::{Notification, NotificationIconKind};
 use tilo_sheets::Seat as _;
 use tilo_sheets::delete_workspace::DeleteWorkspaceEffect;
 
@@ -83,19 +84,86 @@ impl Shared {
             seat.presentation().gone();
         }
         self.delete_workspace_ask.borrow_mut().take();
-        if let Some(engine) = &self.engine
-            && let Err(error) = engine.delete(workspace)
-        {
-            tracing::warn!(%error, %workspace, "a deleted workspace stays in this device's record");
-        }
-        let mut notice = Notification::new(
-            tilo_desktop_surface::i18n::t_args(
+        self.forget_deleted(workspace);
+        crate::directory::workspace_notice(
+            &*self.telling(),
+            (
                 "session-deleted-workspace",
-                &[("name", name.into())],
+                "session-deleted-workspace-body",
             ),
-            tilo_desktop_surface::i18n::t("session-deleted-workspace-body"),
+            name,
         );
-        notice.icon_kind = NotificationIconKind::Workspace;
-        self.notices.post(notice);
+    }
+
+    /// Take each workspace whose host said its owner deleted it off this desk and out of this
+    /// device's record, and tell the person: someone else deleted it, so it is news to them.
+    pub(crate) fn follow_owner_deletions(&self) {
+        let Some(sync) = &self.sync else {
+            return;
+        };
+        for workspace in sync.take_deleted() {
+            tracing::info!(%workspace, "a workspace its owner deleted leaves this device");
+            let name = self.handle.read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .find(|held| held.id() == workspace)
+                    .map(|held| held.name.clone())
+            });
+            // Told once: a word the host repeats finds nothing left to take away.
+            let gone = self.take_off_desk(workspace) | self.forget_deleted(workspace);
+            if gone && let Some(name) = name {
+                crate::directory::workspace_notice(
+                    &*self.telling(),
+                    (
+                        "session-owner-deleted-workspace",
+                        "session-owner-deleted-workspace-body",
+                    ),
+                    &name,
+                );
+            }
+        }
+    }
+
+    /// What is left of the deleted workspace `workspace` in this device's record goes; whether the
+    /// record held it.
+    fn forget_deleted(&self, workspace: WorkspaceId) -> bool {
+        let Some(engine) = &self.engine else {
+            return false;
+        };
+        engine.delete(workspace).unwrap_or_else(|error| {
+            tracing::warn!(%error, %workspace, "a deleted workspace stays in this device's record");
+            false
+        })
+    }
+
+    /// Take `workspace`, which is gone already, off the desk; whether it was taken. Nobody is asked
+    /// and nobody refuses: the person goes to the workspace beside it when they were in it, and
+    /// only a desk's one workspace stays, as the desk is never left with none.
+    fn take_off_desk(&self, workspace: WorkspaceId) -> bool {
+        let mut tree = self.handle.read(Clone::clone);
+        let Some(at) = tree
+            .workspaces
+            .iter()
+            .position(|held| held.id() == workspace)
+        else {
+            return false;
+        };
+        if tree.workspaces.len() == 1 {
+            return false;
+        }
+        let gone = tree.workspaces.remove(at);
+        if gone.slot == tree.active
+            && let Some(next) = tree
+                .workspaces
+                .get(at.min(tree.workspaces.len().saturating_sub(1)))
+        {
+            tree.active = next.slot;
+        }
+        tree.active_strip.remove(&gone.slot);
+        for strip in &gone.strips {
+            tree.active_group.remove(&strip.id);
+        }
+        self.handle.replace_tree(tree);
+        true
     }
 }

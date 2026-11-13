@@ -31,6 +31,7 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use tilo_model_gateway::host_backend::protocol::{Content, ModelRequest};
+pub use ui::tilo_resource::content::named as reference;
 
 /// The longest side of a picture a model is shown, in pixels.
 pub const MOST_PICTURE_SIDE: u32 = 1024;
@@ -106,7 +107,7 @@ pub fn read_picture(value: &serde_json::Value) -> Option<String> {
     if value.get("format")?.as_str()? != PICTURE_FORMAT {
         return None;
     }
-    content_hash(value.get("picture")?.as_str()?).map(|hash| content_address(&hash))
+    reference(value.get("picture")?.as_str()?).map(|reference| content_address(&reference))
 }
 
 /// What a read answered as a picture names it by: its file name and
@@ -132,7 +133,7 @@ pub fn is_picture(bytes: &[u8]) -> bool {
 /// A picture as a model is shown it: a PNG or a JPEG within the limits.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Picture {
-    /// The content address it is kept under (`tilo.content:<hash>`): what
+    /// The content address it is kept under (`tilo.content:<reference>`): what
     /// the model names it by. A shrunk picture keeps its source's address.
     pub content: String,
     /// `image/png` or `image/jpeg`.
@@ -309,32 +310,22 @@ pub fn picture_size(bytes: &[u8]) -> Option<(&'static str, u32, u32)> {
     None
 }
 
-/// The content hash `address` names (`tilo.content:<hash>`, or the bare
-/// hash), lowercase; `None` for anything else.
+/// The content address of `reference`.
 #[must_use]
-pub fn content_hash(address: &str) -> Option<String> {
-    let address = address.trim();
-    let hash = address.strip_prefix(CONTENT_PREFIX).unwrap_or(address);
-    (hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()))
-        .then(|| hash.to_ascii_lowercase())
+pub fn content_address(reference: &str) -> String {
+    format!("{CONTENT_PREFIX}{reference}")
 }
 
-/// The content address of `hash`.
-#[must_use]
-pub fn content_address(hash: &str) -> String {
-    format!("{CONTENT_PREFIX}{hash}")
-}
-
-/// The content hashes `text` names by address, in order.
-fn addresses(text: &str) -> impl Iterator<Item = String> + '_ {
+/// The content references `text` names by address, in order: a sealed one
+/// with its key, as the record that keeps it carries it.
+pub(crate) fn addresses(text: &str) -> impl Iterator<Item = String> + '_ {
     text.match_indices(CONTENT_PREFIX).filter_map(|(at, _)| {
-        let hash: String = text
-            .get(at.saturating_add(CONTENT_PREFIX.len())..)?
-            .chars()
-            .take_while(char::is_ascii_hexdigit)
-            .take(65)
-            .collect();
-        (hash.len() == 64).then(|| hash.to_ascii_lowercase())
+        let rest = text.get(at.saturating_add(CONTENT_PREFIX.len())..)?;
+        let end = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+            .unwrap_or(rest.len());
+        // A sentence's full stop is not part of the reference.
+        reference(rest.get(..end)?.trim_end_matches('.'))
     })
 }
 
@@ -344,8 +335,8 @@ fn addresses(text: &str) -> impl Iterator<Item = String> + '_ {
 /// worker, which also drops what a photo says about itself (where and when
 /// it was taken).
 pub fn prepare(content: &str, bytes: &[u8], rendered: bool) -> Result<Picture, String> {
-    let content = content_hash(content)
-        .map(|hash| content_address(&hash))
+    let content = reference(content)
+        .map(|reference| content_address(&reference))
         .ok_or_else(|| format!("{content} is not a content address"))?;
     match admit(bytes) {
         Admission::PassThrough {
@@ -387,7 +378,7 @@ pub fn prepare(content: &str, bytes: &[u8], rendered: bool) -> Result<Picture, S
 /// turn and plan have left.
 pub(crate) struct Eyes {
     sees: bool,
-    /// The content hashes the conversation's text named.
+    /// The content references the conversation's text named.
     shown: BTreeSet<String>,
     plan_left: usize,
     turn_left: usize,
@@ -416,7 +407,7 @@ impl Eyes {
 
     /// Whether the conversation was shown the content at `address`.
     pub(crate) fn was_shown(&self, address: &str) -> bool {
-        content_hash(address).is_some_and(|hash| self.shown.contains(&hash))
+        reference(address).is_some_and(|reference| self.shown.contains(&reference))
     }
 
     /// A new turn, with its own pictures.
@@ -688,6 +679,32 @@ pub(crate) mod tests {
         assert!(eyes.was_shown(&hash), "a bare hash names it too");
         assert!(!eyes.was_shown(&address('d')));
         assert!(!eyes.was_shown("tilo.content:latest"));
+    }
+
+    /// A sealed reference is named with its key, in a sentence or as a
+    /// kept value's stored form; a plain hash still names content.
+    #[test]
+    fn sealed_references_are_named_with_their_key() {
+        let store = tilo_content::ContentStore::memory().sealing();
+        let picture = png(4, 4);
+        let sealed = store.put(&picture).unwrap();
+        let mut eyes = Eyes::new(true);
+        eyes.show(&format!("Trace tilo.content:{sealed}. Then stop."));
+        assert!(eyes.was_shown(&content_address(&sealed)));
+        let address = tilo_content::content_address(&sealed).unwrap();
+        assert!(!eyes.was_shown(&address), "never without its key");
+        let stored = format!(
+            "blake3:{}:{}:{sealed}",
+            blake3::hash(&picture).to_hex(),
+            picture.len()
+        );
+        let read = serde_json::json!({"format": PICTURE_FORMAT, "picture": stored});
+        assert_eq!(read_picture(&read), Some(content_address(&sealed)));
+        assert_eq!(
+            store.read(&reference(&stored).unwrap()),
+            Some(picture),
+            "opened by the reference the record carries"
+        );
     }
 
     #[test]

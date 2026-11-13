@@ -17,7 +17,6 @@ pub const APP_TITLE: &str = "QR Code";
 
 pub mod locales;
 
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 
 /// What the code encodes. Stored, synced and undoable.
@@ -28,7 +27,7 @@ pub struct Code {
 
 /// The payload is edited at its path (`Code::paths().payload`); clearing it
 /// is a verb, so the palette and agents offer it by name.
-#[resource(kind = "example.qr-code", label = "QR code")]
+#[resource(kind = "example.qr-code")]
 impl Code {
     /// Clear the payload.
     #[action]
@@ -39,12 +38,9 @@ impl Code {
 
 fn code_view(payload: &str) -> Element {
     if payload.is_empty() {
-        return Box::new(
-            EmptyState::new(I18nManager::lookup_plain("qr-empty-title"))
-                .with_message(I18nManager::lookup_plain("qr-empty-message")),
-        );
+        return Box::new(EmptyState::new(crate::locales::CATALOG.t("qr-empty-title")));
     }
-    let alt = I18nManager::format("qr-output-alt", &[("payload", payload.into())]);
+    let alt = crate::locales::CATALOG.t_args("qr-output-alt", &[("payload", payload.into())]);
     Box::new(
         QrWidget::new(payload.as_bytes().to_vec())
             .with_id("qr-output")
@@ -81,13 +77,13 @@ impl ResourceApp for App {
         let input = cx
             .input(p.payload.clone())
             .with_id("qr-input")
-            .with_placeholder(crate::locales::keys::QR_INPUT_PLACEHOLDER);
+            .with_placeholder("qr-input-placeholder");
         let payload = cx.value_at(&p.payload);
         let output = ModelView::from_state(&payload, |payload| code_view(payload));
-        let clear = cx.button(crate::locales::keys::QR_CLEAR_BUTTON, Code::CLEAR.invoke());
+        let clear = cx.button("qr-clear-button", Code::CLEAR.invoke());
         Box::new(ui::column![
             Text::new("qr-title").with_role(TextRole::Title),
-            labeled_field(crate::locales::keys::QR_INPUT_LABEL, input),
+            labeled_field("qr-input-label", input),
             output,
             clear,
         ])

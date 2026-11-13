@@ -42,16 +42,7 @@ pub(super) fn bot_device(installer: &SigningKey, seed: u8) -> (SigningKey, Devic
         user_public_key: installer.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),
         device_label: "Bot: Discord Bridge".into(),
-        capabilities: DeviceCapabilities {
-            can_own_workspaces: false,
-            can_admit_devices: false,
-            can_act_as_host: false,
-            can_read_all_workspaces: false,
-            foreign: false,
-            can_administer_devices: false,
-            agent: None,
-            stand_in: false,
-        },
+        capabilities: DeviceCapabilities::nothing(),
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
@@ -244,7 +235,9 @@ fn governance_grant(peer: &StatePeer, id: &str, action: &str) -> tilo_action_pol
         tilo_action_policy::roles::governance_action(peer.workspace_id(), action),
         KindSet::OUTSIDE,
         Answer::Allow,
-        tilo_action_policy::Subject::person("another-person"),
+        tilo_action_policy::Subject::person(hex::encode(
+            crate::admission_tests::other_owner().1.user_public_key,
+        )),
     )
 }
 

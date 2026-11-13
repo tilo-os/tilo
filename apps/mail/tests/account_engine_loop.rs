@@ -22,8 +22,6 @@ use mail::engine::{EngineEvent, EngineRequest};
 use mail::model::{AccountConfig, Addr, Draft, Folder};
 use mail::transport::{build_mime, parse_eml, parse_fetched};
 
-/// A process-unique temp config root so the test never collides with a real
-/// `~/.config/tilo` or a parallel run.
 fn unique_root() -> PathBuf {
     static N: AtomicU32 = AtomicU32::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
@@ -40,8 +38,6 @@ fn recv(
     rx.recv_timeout(tilo_test_env::hang_bound())
 }
 
-/// Verify the MIME generated for a draft by structure and content. Independent
-/// builds differ because RFC 5322 headers include a Message-ID and Date.
 fn assert_send_builds_real_mime(loaded: &AccountConfig, draft: &Draft) {
     let from = Addr::new(loaded.display_name.clone(), loaded.email.clone());
     let mime = build_mime(&tilo_content::ContentStore::memory(), &from, draft).expect("build MIME");
@@ -66,7 +62,6 @@ fn assert_send_builds_real_mime(loaded: &AccountConfig, draft: &Draft) {
         text.contains("This travels through the engine."),
         "body present in the payload"
     );
-    // And it parses back cleanly as a real RFC 5322 message.
     let round = parse_eml(&mime, 0, Folder::Sent).expect("parse built MIME");
     assert_eq!(round.subject, "Loop check");
     assert_eq!(round.from.email, "ada@analytical.example");
@@ -87,7 +82,6 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
     std::fs::create_dir_all(&root).unwrap();
 
     // 1) An account is configured and persisted the way Settings/Mail write it:
-    //    into the shared store, with the password sealed in the vault.
     let mut cfg = AccountConfig {
         display_name: "Ada Lovelace".into(),
         email: "ada@analytical.example".into(),

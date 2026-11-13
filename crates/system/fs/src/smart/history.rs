@@ -34,7 +34,6 @@ pub const SEQUENCE_GAP: Duration = Duration::from_secs(10 * 60);
 /// Opens this close together are "opened together"; a pair touched again
 /// within the window is the same occasion, not a new one.
 pub const TOGETHER_WINDOW: Duration = Duration::from_secs(2 * 60);
-/// Occasions before a pair is trusted as a prediction.
 pub const MIN_TOGETHER_OCCASIONS: u32 = 2;
 /// Files ahead after an open that continues no run of three: the next two,
 /// so `1, 2` already has `3, 4` on the way.
@@ -42,7 +41,6 @@ pub const COLD_LOOKAHEAD: usize = 2;
 /// Files ahead once three or more were opened in order: someone paging
 /// through a folder outruns a lookahead of two.
 pub const RUN_LOOKAHEAD: usize = 4;
-/// Co-access partners proposed per open.
 pub const MAX_TOGETHER: usize = 2;
 
 #[derive(Clone, Copy, Debug)]
@@ -91,9 +89,7 @@ pub struct Prediction {
 pub struct AccessHistory {
     recent: VecDeque<Opened>,
     together: HashMap<(u64, u64), Together>,
-    /// What [`Stamp`]s count from.
     epoch: Instant,
-    /// Bumped whenever the opened-together pairs change.
     revision: u64,
 }
 
@@ -132,7 +128,6 @@ impl AccessHistory {
         self.revision
     }
 
-    /// Forget everything: the recent opens and every pair.
     pub fn clear(&mut self) {
         self.recent.clear();
         self.together.clear();

@@ -9,7 +9,6 @@
 
 use ui::widget::{FindMatch, FindOptions};
 
-/// Every match of `query` in `text`, in reading order.
 pub(crate) fn in_text(text: &str, query: &str, options: FindOptions) -> Vec<FindMatch> {
     if query.is_empty() {
         return Vec::new();
@@ -31,12 +30,10 @@ pub(crate) fn in_text(text: &str, query: &str, options: FindOptions) -> Vec<Find
     }
 }
 
-/// Whether `character` is part of a word, for whole-word matching.
 fn is_word(character: char) -> bool {
     character.is_alphanumeric() || character == '_'
 }
 
-/// Matches of `query` read literally, honouring `match_case`.
 fn plain(text: &str, query: &str, match_case: bool) -> Vec<FindMatch> {
     let (haystack, needle) = if match_case {
         (text.to_owned(), query.to_owned())

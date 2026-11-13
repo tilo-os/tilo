@@ -8,3 +8,7 @@ data-status-closed = Closed
 data-open = Open
 data-none-opened = No rows opened yet
 data-recent = Recently opened: { $rows }
+
+## What the record and its actions are called
+example-review = Results
+example-review-open-row = Open a row

@@ -1,18 +1,5 @@
 //! Starting a helper that reads a hostile volume: the preflight checks and
 //! the userspace NTFS driver.
-//!
-//! Between `fork` and `exec` the child, still root, moves into its own
-//! mount, network, IPC and UTS namespaces, so it has no network at all. In
-//! its private mount namespace a small tmpfs replaces the sandbox directory;
-//! the one block device it may use appears there as a node owned by the
-//! helper account (the driver opens devices by path, and a node it owns is
-//! the only one it can open). It then sets `no_new_privs`, restricts itself
-//! with Landlock to the program files, that directory, `/dev/fuse` and
-//! `/dev/null`, drops to the dedicated helper account, and installs the
-//! foreign-driver seccomp filter: no sockets, no pidfds, signals only to
-//! itself. Whatever a crafted volume achieves inside the driver stays there.
-//!
-//! The service is single-threaded, so the child may allocate before `exec`.
 
 use std::ffi::{CString, OsString};
 use std::fs::File;
@@ -27,32 +14,28 @@ use std::process::{Child, Command, Stdio};
 use sandbox_core::landlock::{self, FsRule, NetRestriction, RulesetSpec};
 use sandbox_core::seccomp;
 
-/// Where a helper given [`Device::Fd`] finds the volume.
 pub const DEVICE_FD: RawFd = 3;
-/// The volume's node inside the sandbox directory.
 pub const NODE: &str = "volume";
 /// A directory the helper owns, inside the sandbox directory, for a driver
 /// that insists on checking its mount point.
 pub const MOUNT_DIR: &str = "mnt";
 
-/// How the helper reaches the volume.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Device {
-    /// As descriptor [`DEVICE_FD`], read-only.
     Fd,
     /// As the node [`NODE`] in the sandbox directory, for a program that
     /// opens its device by path.
-    Node { writable: bool },
+    Node {
+        writable: bool,
+    },
 }
 
-/// The dedicated account helpers run as.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Account {
     pub uid: u32,
     pub gid: u32,
 }
 
-/// One confined helper.
 pub struct Confinement<'a> {
     pub sandbox_dir: &'a Path,
     pub account: Account,
@@ -60,9 +43,7 @@ pub struct Confinement<'a> {
     /// the device the request named.
     pub device: &'a File,
     pub access: Device,
-    /// Further descriptors to hand over: (the service's, the helper's).
     pub inherit: Vec<(RawFd, RawFd)>,
-    /// Extra read-only paths (the handoff library).
     pub read_paths: Vec<PathBuf>,
 }
 
@@ -78,7 +59,6 @@ fn c_path(path: &Path) -> io::Result<CString> {
     CString::new(path.as_os_str().as_bytes()).map_err(|_| io::Error::other("path holds a NUL"))
 }
 
-/// Everything the child needs, prepared before `fork`.
 struct Plan {
     sandbox_dir: CString,
     node: CString,
@@ -224,7 +204,6 @@ impl Plan {
     }
 }
 
-/// Start `program` with `args`, confined as `confinement` describes.
 pub fn spawn(
     confinement: &Confinement<'_>,
     program: &Path,

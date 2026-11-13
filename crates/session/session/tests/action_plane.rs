@@ -13,9 +13,7 @@
               lives until the app it serves is done"
 )]
 
-mod common;
-
-use common::audio::Card;
+use crate::common::audio::Card;
 use std::sync::Arc;
 
 use media::audio::{AudioDevice, AudioGraph};
@@ -158,7 +156,7 @@ fn app(socket: &std::path::Path, seen: &std::sync::mpsc::Sender<Seen>) {
 
 /// The session's pass until the app is done, as the session runs its loop.
 fn until_the_app_is_done<T>(session: &mut Session, seen: &std::sync::mpsc::Receiver<T>) -> T {
-    common::wait_for(session, "the app to finish its calls", |session| {
+    crate::common::wait_for(session, "the app to finish its calls", |session| {
         session.settle_services();
         session.step(std::time::Duration::from_millis(1)).unwrap();
         seen.try_recv().ok()
@@ -171,7 +169,7 @@ fn reading_of(reading: &str) -> Value {
 
 #[test]
 fn an_app_reads_watches_and_invokes_the_sound_the_session_publishes() {
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let mut session = session(&socket);
 
@@ -209,7 +207,7 @@ fn an_app_reads_watches_and_invokes_the_sound_the_session_publishes() {
 
 #[test]
 fn an_app_reads_what_the_session_does_not_publish_as_nothing() {
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let mut session = session(&socket);
 
@@ -260,7 +258,7 @@ fn an_app_reads_what_the_session_does_not_publish_as_nothing() {
 
 #[test]
 fn an_app_that_invokes_what_the_session_cannot_do_is_told_why() {
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let mut session = session(&socket);
 
@@ -333,7 +331,7 @@ fn crash_dir() -> tempfile::TempDir {
 /// what each is without its stack, and the stack of the record it names.
 #[test]
 fn the_settings_app_lists_and_reads_a_crash_record_the_session_publishes() {
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let records = crash_dir();
     let dir = records.path().to_path_buf();

@@ -102,7 +102,6 @@ fn run_para(text: &str) -> String {
     )
 }
 
-/// A footer paragraph with a complex `PAGE` field, the way Word writes page numbers.
 fn page_footer_para() -> String {
     concat!(
         r#"<w:p><w:r><w:t xml:space="preserve">Confidential &#8211; page </w:t></w:r>"#,
@@ -115,11 +114,6 @@ fn page_footer_para() -> String {
     .to_string()
 }
 
-/// A Word-shaped package. The default header lives in `word/header2.xml` under `rId8`, a
-/// first-page header in `word/header1.xml` under `rId7` (with a part-relationships file of
-/// its own), and the default footer in `word/footer1.xml` under `rId9`. With
-/// `section_break`, a paragraph also ends an earlier section whose own default header is
-/// `word/header3.xml` under `rId12`.
 fn word_docx_with_first_page_header(section_break: bool) -> Vec<u8> {
     let (extra_override, extra_rel, brk) = if section_break {
         (
@@ -183,8 +177,6 @@ fn word_docx_with_first_page_header(section_break: bool) -> Vec<u8> {
     zip_of(&parts)
 }
 
-/// The simplest Word shape: one default header and footer, already named `header1.xml` /
-/// `footer1.xml`, referenced under Word's `rId6`/`rId7`.
 fn word_docx_default_only() -> Vec<u8> {
     let content_types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/><Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/></Types>"#;
@@ -212,7 +204,6 @@ fn value(a: &Attribute) -> String {
         .into_owned()
 }
 
-/// Every element of `xml` named `name`, as its attribute map.
 fn elements(xml: &str, name: &[u8]) -> Vec<BTreeMap<String, String>> {
     let mut reader = Reader::from_str(xml);
     let mut out = Vec::new();
@@ -238,7 +229,6 @@ fn elements(xml: &str, name: &[u8]) -> Vec<BTreeMap<String, String>> {
     out
 }
 
-/// `(element, attribute, id)` for every relationship-namespace attribute in `xml`.
 fn relationship_uses(xml: &str) -> Vec<(String, String, String)> {
     let mut reader = Reader::from_str(xml);
     let mut prefixes: BTreeSet<Vec<u8>> = BTreeSet::new();
@@ -274,7 +264,6 @@ fn relationship_uses(xml: &str) -> Vec<(String, String, String)> {
     out
 }
 
-/// The part a `.rels` file describes relationships for: `word/_rels/x.xml.rels` → `word/x.xml`.
 fn rels_source(rels_name: &str) -> String {
     let (dir, file) = rels_name.rsplit_once('/').unwrap();
     let dir = dir.strip_suffix("_rels").unwrap().trim_end_matches('/');
@@ -286,7 +275,6 @@ fn rels_source(rels_name: &str) -> String {
     }
 }
 
-/// Resolve a relationship `Target` against its source part into a package part name.
 fn resolve_target(source: &str, target: &str) -> String {
     if let Some(abs) = target.strip_prefix('/') {
         return abs.to_string();
@@ -344,11 +332,8 @@ fn assert_content_types(parts: &[(String, Vec<u8>)]) -> BTreeMap<String, String>
     overrides
 }
 
-/// Relationship id → (type, target part) of each relationships part, by relationships part name.
 type PackageRels = BTreeMap<String, BTreeMap<String, (String, String)>>;
 
-/// Relationships: unique ids, no duplicate (type, target), every internal target exists, and
-/// every relationships part belongs to an existing part.
 fn assert_relationships(parts: &[(String, Vec<u8>)]) -> PackageRels {
     let names: BTreeSet<&str> = parts.iter().map(|(n, _)| n.as_str()).collect();
     let mut all_rels = PackageRels::new();
@@ -402,8 +387,6 @@ fn assert_consistent_package(bytes: &[u8]) -> Vec<String> {
     let overrides = assert_content_types(&parts);
     let all_rels = assert_relationships(&parts);
 
-    // Every relationship id the document body uses resolves; header/footer references resolve
-    // to a relationship of the matching type whose target carries the matching content type.
     let document = text_of(&parts, "word/document.xml");
     let doc_rels = all_rels
         .get("word/_rels/document.xml.rels")
@@ -430,7 +413,6 @@ fn assert_consistent_package(bytes: &[u8]) -> Vec<String> {
         }
     }
 
-    // No header/footer part is carried along without a relationship that reaches it.
     let hf_targets: BTreeSet<&str> = all_rels
         .values()
         .flat_map(BTreeMap::values)
@@ -473,8 +455,6 @@ fn header_texts(d: &Document) -> Vec<String> {
 
 const HEADER_EDIT: &str = " (revised)";
 
-/// Edit both page regions through the model: text appended to the header, the footer's first
-/// word made bold (its text and field stay as they were).
 fn edit_regions(d: &mut Document) {
     let header = d.header_blocks_in_order();
     let first = header.first().expect("a header block");
@@ -486,9 +466,6 @@ fn edit_regions(d: &mut Document) {
         .add_mark_in(tilo_doc::Region::Footer, first, 0, 3, "strong", true);
 }
 
-/// Import → export → import (twice), asserting the default header and footer text survive
-/// exactly, every exported package is consistent, and `expected_refs` header/footer parts are
-/// referenced from the section.
 fn assert_word_roundtrip(fixture: &[u8], expected_refs: usize) {
     let d1 = import(fixture);
     assert_eq!(header_texts(&d1), [HEADER_TEXT], "imported default header");
@@ -519,19 +496,13 @@ fn assert_word_roundtrip(fixture: &[u8], expected_refs: usize) {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn word_headers_and_footers_survive_docx_roundtrip() {
-    // Phase `word_header_and_footer_survive_docx_roundtrip`.
     {
         assert_word_roundtrip(&word_docx_default_only(), 2);
     }
-    // Phase `word_default_header_survives_alongside_first_page_header`.
     {
-        // The default header and footer, plus the carried first-page header.
         assert_word_roundtrip(&word_docx_with_first_page_header(false), 3);
     }
-    // Phase `unedited_header_and_footer_keep_their_parts`.
     {
-        // Regions the model holds unedited are written back as imported, parts, relationships and
-        // everything the model does not hold included.
         let fixture = word_docx_with_first_page_header(true);
         let exported = export(&import(&fixture));
         assert_consistent_package(&exported);
@@ -556,7 +527,6 @@ fn word_headers_and_footers_survive_docx_roundtrip() {
         assert_eq!(header_texts(&d2), [HEADER_TEXT]);
         assert_footer_has_page_field(&d2);
     }
-    // Phase `first_page_header_and_page_setup_are_carried_through`.
     {
         let mut d = import(&word_docx_with_first_page_header(false));
         edit_regions(&mut d);
@@ -589,8 +559,6 @@ fn word_headers_and_footers_survive_docx_roundtrip() {
             "old default footer reference replaced: {sectpr}"
         );
 
-        // The first-page header part keeps its name, text and relationships; qdoc's default
-        // header takes the part name the old default header freed.
         assert!(text_of(&parts, "word/header1.xml").contains(FIRST_PAGE_HEADER_TEXT));
         assert!(
             parts
@@ -614,7 +582,6 @@ fn word_headers_and_footers_survive_docx_roundtrip() {
             assert!(rels.contains(kept), "{kept} kept: {rels}");
         }
     }
-    // Phase `section_break_headers_follow_the_document_header`.
     {
         // A section break inside the body is kept, but the model has one header and footer for
         // the whole document: once they are edited, the break's references point at them, and the
@@ -655,7 +622,6 @@ fn word_headers_and_footers_survive_docx_roundtrip() {
     }
 }
 
-/// The single `w:sectPr` of an exported `word/document.xml`.
 fn only_sectpr(document: &str) -> &str {
     assert_eq!(
         document.matches("<w:sectPr").count(),
@@ -672,7 +638,6 @@ fn only_sectpr(document: &str) -> &str {
 
 #[test]
 fn header_removal_and_qdoc_headers_roundtrip_consistently() {
-    // Phase `removing_a_word_header_drops_its_part`.
     {
         let mut d = import(&word_docx_default_only());
         for id in d.header_blocks_in_order() {
@@ -686,7 +651,6 @@ fn header_removal_and_qdoc_headers_roundtrip_consistently() {
         assert!(d2.header().is_empty(), "header stays removed");
         assert_footer_has_page_field(&d2);
     }
-    // Phase `qdoc_header_and_footer_roundtrip_consistently`.
     {
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");

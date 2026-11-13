@@ -1,50 +1,25 @@
-//! The per-page **text layer** that sits on top of a rendered page.
-//!
-//! The raster backend paints each page as a bitmap, which alone carries no
-//! machine-readable text — so search finds nothing and there is nothing to
-//! select. This module holds the extracted glyph geometry ([`PageText`]) and
-//! the pure logic that makes it *useful*: substring search that resolves to
-//! on-page rectangles, point → glyph hit-testing for selection, and the
-//! band-merging that turns a run of glyphs into the tidy highlight rectangles a
-//! reader expects.
-//!
-//! Everything here is pure data + geometry in **page-point space** (origin at
-//! the page's top-left, y increasing downward — the same convention the rest of
-//! the reader uses). A real page's layer comes from the PDF engine
-//! ([`tilo_pdf::TextLayer`]): its glyphs are already in reading order with
-//! ligatures expanded, and copy and highlight bands go through the engine's
-//! layer so hyphenation, right-to-left lines and columns behave. The
-//! geometry here also works on its own, which keeps it unit-testable.
+//! A page's text layer over its bitmap: the extracted glyph geometry ([`PageText`])
+//! and the pure logic that makes it usable — search that resolves to on-page
+//! rectangles, point-to-glyph hit-testing and the band merging a highlight needs.
+//! Everything is in page-point space, origin at the page's top-left and y downward.
 
 use crate::model::{PtRect, SearchOptions};
 
-/// One extracted glyph: its character and its bounding box on the page.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CharBox {
     pub ch: char,
-    /// Glyph bounding box in page-point space (origin = page top-left).
     pub rect: PtRect,
-    /// Byte offset of `ch` within the owning [`PageText::text`].
     pub byte_start: usize,
 }
 
-/// The text layer of a single page: the concatenated text plus one
-/// index-aligned [`CharBox`] per character, in reading order.
 #[derive(Clone, Debug, Default)]
 pub struct PageText {
     pub text: String,
     pub chars: Vec<CharBox>,
-    /// The engine's analysed layer this text came from, index-aligned with
-    /// `chars`; `None` for synthetic text.
     pub layer: Option<std::sync::Arc<tilo_pdf::TextLayer>>,
-    /// How the layer's boxes map into the page's card space, when the page
-    /// is rotated or fitted into its slot; `chars` are already mapped.
     pub map: Option<crate::model::PageMap>,
 }
 
-/// A search hit expressed as a run of glyphs on a page. `page` is 1-based to
-/// match the reader's page numbering; `char_start`/`char_len` index into
-/// [`PageText::chars`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TextMatch {
     pub page: usize,
@@ -53,9 +28,8 @@ pub struct TextMatch {
 }
 
 impl PageText {
-    /// Build a page's text layer from glyphs already extracted (character +
-    /// page-point box), in reading order. Byte offsets and the concatenated
-    /// `text` are derived here so the two never disagree.
+    /// Build a layer from glyphs in reading order; byte offsets and the text are
+    /// derived here, so the two never disagree.
     pub fn from_glyphs(glyphs: impl IntoIterator<Item = (char, PtRect)>) -> Self {
         let mut text = String::new();
         let mut chars = Vec::new();
@@ -76,8 +50,6 @@ impl PageText {
         }
     }
 
-    /// This page text shown through `map` (a rotated or fitted page). The
-    /// character boxes move into card space; hit-testing maps back.
     #[must_use]
     pub fn with_map(&self, map: crate::model::PageMap) -> Self {
         if map.is_identity() {
@@ -93,8 +65,6 @@ impl PageText {
         out
     }
 
-    /// The reader's view of an engine text layer. Positions are shared: glyph
-    /// `i` here is character `i` of `layer`.
     pub fn from_layer(layer: std::sync::Arc<tilo_pdf::TextLayer>) -> Self {
         let mut page = Self::from_glyphs(layer.chars().iter().map(|c| {
             (
@@ -111,9 +81,6 @@ impl PageText {
         page
     }
 
-    /// The glyph range a drag from `a` to `b` (card space) selects, through
-    /// the engine layer's reading-order selection. `None` without a layer or
-    /// when nothing is selected.
     pub fn range_between(&self, a: (f64, f64), b: (f64, f64)) -> Option<(usize, usize)> {
         let layer = self.layer.as_ref()?;
         let to_layer = |p: (f64, f64)| {
@@ -124,8 +91,6 @@ impl PageText {
         (span.end > span.start).then_some((span.start, span.end))
     }
 
-    /// The engine char range `[first, last + 1)` behind glyphs `[start, end)`
-    /// — the durable text anchor of markup made from them.
     pub fn source_range(&self, start: usize, end: usize) -> Option<(u32, u32)> {
         let sources: Vec<u32> = (start..end).filter_map(|i| self.source_index(i)).collect();
         let first = sources.iter().min()?;
@@ -133,7 +98,6 @@ impl PageText {
         Some((*first, last.saturating_add(1)))
     }
 
-    /// The engine char index (stable for a given document) of glyph `i`.
     pub fn source_index(&self, i: usize) -> Option<u32> {
         let layer = self.layer.as_ref()?;
         layer
@@ -147,8 +111,6 @@ impl PageText {
         self.chars.is_empty()
     }
 
-    /// Find original glyph runs using the same Unicode search as the text
-    /// backend. Expanded lowercase spellings map back to their source glyphs.
     pub fn search(&self, page: usize, needle: &str, opts: SearchOptions) -> Vec<TextMatch> {
         crate::model::search_text(&self.text, needle, opts, crate::model::MAX_SEARCH_RESULTS)
             .into_iter()
@@ -168,21 +130,16 @@ impl PageText {
             .collect()
     }
 
-    /// The glyph index whose box contains `(x, y)`, else the nearest glyph on
-    /// the same visual row within `row_tol` points, else `None`. This is the
-    /// hit-test a selection drag uses to find where the caret landed.
     pub fn char_at(&self, x: f64, y: f64) -> Option<usize> {
         if let Some(layer) = &self.layer {
             let (x, y) = self.map.map_or((x, y), |m| m.card_to_layer((x, y)));
             return layer.hit_test(tilo_pdf::Point::new(x as f32, y as f32));
         }
-        // Exact containment first.
         for (i, c) in self.chars.iter().enumerate() {
             if c.rect.w > 0.0 && c.rect.h > 0.0 && c.rect.contains(x, y) {
                 return Some(i);
             }
         }
-        // Nearest glyph on the row the point falls within.
         let mut best: Option<(usize, f64)> = None;
         for (i, c) in self.chars.iter().enumerate() {
             if c.rect.h <= 0.0 {
@@ -199,9 +156,6 @@ impl PageText {
         best.map(|(i, _)| i)
     }
 
-    /// The glyph nearest `(x, y)` anywhere on the page (Euclidean distance to
-    /// the glyph centre). Used as the selection fallback when a drag runs past
-    /// the last line so the endpoint still resolves to a real glyph.
     pub fn nearest_char(&self, x: f64, y: f64) -> Option<usize> {
         let mut best: Option<(usize, f64)> = None;
         for (i, c) in self.chars.iter().enumerate() {
@@ -217,9 +171,6 @@ impl PageText {
         best.map(|(i, _)| i)
     }
 
-    /// Merge the glyph run `[start, end)` into one rectangle per visual row —
-    /// the tidy bands a reader draws for a selection or a search hit. Rows are
-    /// split where a glyph's vertical band no longer overlaps the running row.
     pub fn bands_for_range(&self, start: usize, end: usize) -> Vec<PtRect> {
         if let Some(layer) = &self.layer {
             return layer
@@ -242,8 +193,6 @@ impl PageText {
         }
         let mut bands: Vec<PtRect> = Vec::new();
         let Some(range) = self.chars.get(start..end) else {
-            // Unreachable given the guards above (end <= len, start < end);
-            // stay safe rather than assume it.
             return bands;
         };
         let mut cur: Option<PtRect> = None;
@@ -254,7 +203,6 @@ impl PageText {
             }
             match cur.as_mut() {
                 Some(b) => {
-                    // Same row when the vertical spans overlap by any amount.
                     let same_row = r.y < b.y + b.h && r.y + r.h > b.y;
                     if same_row {
                         let x0 = b.x.min(r.x);
@@ -276,11 +224,6 @@ impl PageText {
         bands
     }
 
-    /// The half-open glyph range `[start, end)` of the **word** containing the
-    /// glyph at `glyph_idx`, resolved through the shared `ui::word_boundaries`
-    /// core so double-click word selection behaves identically to every text
-    /// field and the ebook reader. Falls back to the single glyph when it sits
-    /// on a boundary with no surrounding word (e.g. isolated punctuation).
     pub fn word_range(&self, glyph_idx: usize) -> (usize, usize) {
         if self.chars.is_empty() {
             return (0, 0);
@@ -292,7 +235,6 @@ impl PageText {
         }
         let g = glyph_idx.min(self.chars.len() - 1);
         let Some(byte) = self.chars.get(g).map(|c| c.byte_start) else {
-            // Unreachable: `g` is clamped to a valid index by the guards above.
             return (0, 0);
         };
         let (bs, be) = ui::word_boundaries(&self.text, byte);
@@ -301,19 +243,14 @@ impl PageText {
         if ge > gs { (gs, ge) } else { (g, g + 1) }
     }
 
-    /// The half-open glyph range `[start, end)` of the **visual row** (line)
-    /// containing the glyph at `glyph_idx` — the contiguous run of glyphs whose
-    /// vertical band overlaps that glyph's row. Drives triple-click line
-    /// selection. Visual rows are used rather than `\n` boundaries because an
-    /// extracted PDF text layer routinely carries no newlines; a degenerate
-    /// (zero-size) glyph such as an inter-word space never breaks the run.
+    /// The half-open glyph range of the visual row containing `glyph_idx`, which a
+    /// triple click selects. Visual rows are used because an extracted layer often
+    /// carries no newlines, and a zero-size glyph never breaks a run.
     pub fn row_range(&self, glyph_idx: usize) -> (usize, usize) {
         if self.chars.is_empty() {
             return (0, 0);
         }
         if let Some(layer) = &self.layer {
-            // The engine's own line, without the break it generated
-            // between it and the next.
             let mut range = layer.line_range(glyph_idx.min(self.chars.len() - 1));
             while range.end > range.start
                 && layer
@@ -335,7 +272,6 @@ impl PageText {
         }
         let g = glyph_idx.min(self.chars.len() - 1);
         let Some(a) = self.chars.get(g).map(|c| c.rect) else {
-            // Unreachable: `g` is clamped to a valid index by the guard above.
             return (0, 0);
         };
         let cont = |r: &PtRect| r.w <= 0.0 || r.h <= 0.0 || (r.y < a.y + a.h && r.y + r.h > a.y);
@@ -350,8 +286,6 @@ impl PageText {
         (s, e)
     }
 
-    /// The text of the glyph run `[start, end)` — what a copy of the selection
-    /// yields.
     pub fn text_for_range(&self, start: usize, end: usize) -> String {
         if let Some(layer) = &self.layer {
             return layer.text_for(&layer.select_range(start..end));
@@ -373,10 +307,6 @@ impl PageText {
 mod tests {
     use super::*;
 
-    /// Two rows of glyphs: "PDF text " on row 1 (y≈10) and "layer" on row 2
-    /// (y≈30). Each glyph is 8pt wide, advancing left-to-right. A space glyph
-    /// ends row 1 so "text" and "layer" are distinct words (a real extracted
-    /// layer carries the inter-word space), which the whole-word test needs.
     fn sample_layer() -> PageText {
         let mut glyphs = Vec::new();
         let mut x = 10.0;
@@ -384,8 +314,6 @@ mod tests {
             glyphs.push((ch, PtRect::new(x, 10.0, 8.0, 12.0)));
             x += 8.0;
         }
-        // Inter-word space on row 1 (a real word boundary between "text" and
-        // "layer").
         glyphs.push((' ', PtRect::new(x, 10.0, 8.0, 12.0)));
         x = 10.0;
         for ch in "layer".chars() {
@@ -404,21 +332,15 @@ mod tests {
             assert_eq!(pt.text[c.byte_start..].chars().next(), Some(c.ch));
         }
 
-        // Centre of the first 'P' at (10,10)+(4,6).
         let i = pt.char_at(14.0, 16.0).expect("a glyph under the point");
         assert_eq!(pt.chars[i].ch, 'P');
-        // A point on row 2 near its start resolves to a row-2 glyph.
         let j = pt.char_at(12.0, 36.0).expect("row-2 glyph");
         assert!((pt.chars[j].rect.y - 30.0).abs() < 0.01);
 
-        // Selecting the whole layer yields two bands, one per row.
         let bands = pt.bands_for_range(0, pt.chars.len());
         assert_eq!(bands.len(), 2);
         assert!(bands[0].y < bands[1].y);
 
-        // text "PDF text layer": glyphs 0..3="PDF", 3=' ', 4..8="text",
-        // 8=' ', 9..14="layer". Double-clicking inside a word selects it.
-        // (glyph index, expected word range or None when only the text is checked, word)
         for (glyph, range, word) in [
             (5, Some((4, 8)), "text"),
             (1, Some((0, 3)), "PDF"),
@@ -431,14 +353,9 @@ mod tests {
             assert_eq!(pt.text_for_range(s, e), word, "word at glyph {glyph}");
         }
 
-        // Row 1 is "PDF text" + the trailing space (glyphs 0..=8); row 2 is
-        // "layer". A triple-click on row 1 selects the whole first line across
-        // the inter-word space, not just one word.
         let (s, e) = pt.row_range(1); // inside "PDF" on row 1
         assert_eq!(s, 0, "row starts at the first glyph");
-        // Row 1 covers "PDF text " — the eight letters + the space glyph.
         assert_eq!(pt.text_for_range(s, e).trim_end(), "PDF text");
-        // A triple-click on row 2 stays on row 2.
         let (s2, _) = pt.row_range(10);
         assert!(s2 >= 9, "row 2 does not bleed into row 1: {s2}");
     }
@@ -454,7 +371,6 @@ mod tests {
             whole_word: true,
             ..Default::default()
         };
-        // (case, query, options, expected hit count)
         for (case, query, options, count) in [
             (
                 "default is case-insensitive (exact case)",
@@ -496,7 +412,6 @@ mod tests {
             pt.text_for_range(m.char_start, m.char_start + m.char_len),
             "text"
         );
-        // And resolves to a single band on row 1, spanning the four glyphs.
         let bands = pt.bands_for_range(m.char_start, m.char_start + m.char_len);
         assert_eq!(bands.len(), 1, "one row -> one band");
         assert!(
@@ -562,7 +477,6 @@ mod tests {
         assert_eq!(hits[0].char_start, page.chars.len() - 4);
         assert_eq!(hits[0].char_len, 4);
 
-        // Materialisation is bounded per page and across pages.
         let text = "a".repeat(crate::model::MAX_SEARCH_RESULTS * 4);
         let page =
             PageText::from_glyphs(text.chars().map(|ch| (ch, PtRect::new(0.0, 0.0, 1.0, 1.0))));

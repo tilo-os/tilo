@@ -17,12 +17,10 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use serde_json::Value;
 use tilo_session::Session;
 
-use common::{Repl, on_screen, until};
+use crate::common::{Repl, on_screen, until};
 
 /// The menu of the window's own actions, as the shell's bar carries it.
 const WINDOW_ACTIONS: &str = "Window actions";
@@ -34,7 +32,7 @@ const WINDOW_MENU: &str = "This window";
 /// The session with the shell as the whole screen and the seeded apps: the framed canvas is in
 /// front of it, and the seeded notes stand on the desk as its windows.
 fn session(root: &std::path::Path) -> (Session, Vec<String>) {
-    let session = common::seeded_session(root);
+    let session = crate::common::seeded_session(root);
     let notes = note_ids(&session);
     assert!(notes.len() >= 2, "the seed keeps two notes: {notes:?}");
     (session, notes.into_iter().take(2).collect())
@@ -80,11 +78,11 @@ fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
     }
     if preset == "Desktop" {
         until(session, "the desktop", |session| {
-            common::preset_menu(session).is_none() && on_screen(session, "Dock").is_some()
+            crate::common::preset_menu(session).is_none() && on_screen(session, "Dock").is_some()
         });
     } else {
         until(session, &format!("the {preset} desk"), |session| {
-            common::preset_menu(session).as_deref() == Some(&format!("Showing {preset}"))
+            crate::common::preset_menu(session).as_deref() == Some(&format!("Showing {preset}"))
         });
     }
 }
@@ -138,7 +136,7 @@ fn note_pinned(session: &Session, record: &str) -> Option<bool> {
 /// (the window's own menu row, and the placeholder a menu of another surface keeps at its own
 /// hidden corner) is taken at the one that stands with a size on screen.
 fn press_shown(session: &mut Session, name: &str) {
-    let (place, node) = common::wait_for(
+    let (place, node) = crate::common::wait_for(
         session,
         format!("the shell's {name} to stand on the display"),
         |session| {
@@ -189,7 +187,7 @@ const KEY_ESCAPE: u32 = 1;
 
 /// The strip holding the place that shows `record`.
 fn strip_of(session: &Session, record: &str) -> String {
-    common::places(session)
+    crate::common::places(session)
         .into_iter()
         .find(|place| place.record == record)
         .map_or_else(
@@ -218,7 +216,7 @@ fn focus_strip(session: &mut Session, root: &std::path::Path, strip: &str) {
 /// a placeholder pill off screen — so the pill taken is the one on the same bar row as the window's
 /// own name, at the trailing side of it, as the bar that names the window carries it.
 fn press_window_menu(session: &mut Session, window: &str) {
-    let (place, node) = common::wait_for(
+    let (place, node) = crate::common::wait_for(
         session,
         format!("{window:?}'s own window menu"),
         |session| {
@@ -274,7 +272,7 @@ fn press_window_menu(session: &mut Session, window: &str) {
 #[test]
 fn only_a_window_behind_offers_bring_to_front_in_strips() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let (mut session, notes) = session(root.path());
     let one = notes.first().expect("a note").clone();
     let other = notes.get(1).expect("a second note").clone();
@@ -289,8 +287,8 @@ fn only_a_window_behind_offers_bring_to_front_in_strips() {
     let one_strip = strip_of(&session, &one);
     let other_strip = strip_of(&session, &other);
     assert_ne!(one_strip, other_strip, "each note stands in its own strip");
-    let one_name = common::window_name_of(&session, &one);
-    let other_name = common::window_name_of(&session, &other);
+    let one_name = crate::common::window_name_of(&session, &one);
+    let other_name = crate::common::window_name_of(&session, &other);
     until(
         &mut session,
         "both notes' windows on the Strips desk",
@@ -331,14 +329,14 @@ fn only_a_window_behind_offers_bring_to_front_in_strips() {
 #[test]
 fn every_shells_window_bar_lists_the_notes_actions_and_runs_one() {
     let _settled = ui::motion::testing::settled();
-    let root = common::private_home();
+    let root = crate::common::private_home();
     let (mut session, notes) = session(root.path());
     let note = notes.first().expect("a note").clone();
     until(&mut session, "the bar's controls", |session| {
         on_screen(session, "Notifications").is_some()
     });
     let key = place(&mut session, &note);
-    let name = common::window_name_of(&session, &note);
+    let name = crate::common::window_name_of(&session, &note);
 
     for preset in ["Frames", "Strips", "Desktop"] {
         // The note's own flag, read before the menu opens: running anything through the door may
@@ -369,13 +367,13 @@ fn every_shells_window_bar_lists_the_notes_actions_and_runs_one() {
         until(
             &mut session,
             &format!("the note's actions in the {preset} menu"),
-            |session| session.shell_says("Retitle") && session.shell_says("Tag"),
+            |session| session.shell_says("Rename…") && session.shell_says("Tag…"),
         );
 
         // The action the list offers runs the note's own action on the note: its pin flips, and
         // the label the menu offered says which way. Read back from the record.
         press_shown(&mut session, label);
-        let seen = common::wait_maybe(&mut session, |session| {
+        let seen = crate::common::wait_maybe(&mut session, |session| {
             note_pinned(session, &note).filter(|now| *now != before)
         });
         assert_eq!(
@@ -387,7 +385,7 @@ fn every_shells_window_bar_lists_the_notes_actions_and_runs_one() {
             session.accessible_labels()
         );
         assert!(
-            common::place(&session, common::number(&key)).is_some(),
+            crate::common::place(&session, crate::common::number(&key)).is_some(),
             "the note stays where it was placed in the {preset} desk"
         );
     }

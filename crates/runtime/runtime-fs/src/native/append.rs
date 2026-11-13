@@ -114,8 +114,6 @@ impl FsAppendHandle {
         if bytes.is_empty() {
             return Ok(0);
         }
-        // Attached lifetimes can end independently of the authority mutex.
-        // Recheck immediately before the actual effect, like positioned writes.
         self.session
             .validate(&table, &self.file.lease, Some(FsRight::Write))?;
         // Authority remains locked until this single O_APPEND syscall returns.

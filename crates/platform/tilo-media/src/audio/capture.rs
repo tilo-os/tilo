@@ -1,20 +1,15 @@
 //! Who is using the camera or the microphone right now, attributed from
 //! `PipeWire`'s own graph.
 //!
-//! A capture stream is a node in the graph whose class says it records. The
-//! application behind it is not taken from anything the application says
-//! about itself: the server attaches the client's security PID, and the
-//! executable behind that PID in `/proc` names the application. An app
-//! cannot rename itself into another app in the indicator this way.
-//!
-//! The same `pw-dump` the graph is enumerated from carries the clients and
-//! their server-attested PIDs, so a reader that already asks for the graph
-//! ([`super::try_read`]) pays no second process for this.
+//! The application behind a capture stream is not what the application says about
+//! itself: the server attaches the client's security PID, and the executable behind
+//! that PID in `/proc` names the app, so an app cannot rename itself into another
+//! one in the indicator. The `pw-dump` the graph is read from carries the clients and
+//! their PIDs, so no second process is needed.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// What a stream records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MediaKind {
     Microphone,
@@ -211,8 +206,6 @@ fn verify_process(
             humanize_binary(&leaf),
         )
     } else {
-        // A user can name their own executable `settings`; retaining a fixed
-        // trust qualifier prevents it from rendering as the trusted app.
         (
             format!("local-process:{}", binary.display()),
             format!("Local process · {}", humanize_binary(&leaf)),
@@ -235,8 +228,6 @@ fn valid_app_id(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
-/// Whether `path` is a system binary: an absolute path to a file owned by
-/// root that no one but its owner can write.
 #[cfg(unix)]
 fn immutable_system_binary(path: &Path) -> bool {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -246,8 +237,6 @@ fn immutable_system_binary(path: &Path) -> bool {
         })
 }
 
-/// The web has no `/proc` and no processes of this machine's: nothing it
-/// reads names a system binary.
 #[cfg(not(unix))]
 fn immutable_system_binary(_path: &Path) -> bool {
     false

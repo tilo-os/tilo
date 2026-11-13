@@ -88,7 +88,6 @@ mod tests {
 
     #[test]
     fn the_generation_is_part_of_the_signed_message() {
-        // A policy signed for generation 7, relabelled as generation 8.
         let (public, json) = signed(7, |p| p["generation"] = 8.into());
         let error = verify_pcr_prediction(&public, &json, 8).unwrap_err();
         assert!(error.contains("verification failed"), "{error}");

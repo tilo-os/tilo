@@ -62,20 +62,16 @@ struct Opts {
     width: usize,
 }
 
-/// One name to list.
 struct Entry {
     /// The name as printed: the operand as given, or the name in its
     /// directory.
     name: String,
     path: PathBuf,
     meta: Metadata,
-    /// A symlink's target, for `-l`.
     target: Option<String>,
-    /// What a symlink points at, for `-F` in the long format.
     target_meta: Option<Metadata>,
 }
 
-/// Where a listing goes: GNU's text, or one of the agent's forms.
 enum Out<'c, 'a> {
     Text,
     Names(Names),
@@ -380,7 +376,6 @@ fn indicator(o: &Opts, meta: &Metadata) -> &'static str {
     }
 }
 
-/// The marker an agent sees after a name: `ls -F`'s, always.
 fn agent_marker(meta: &Metadata) -> &'static str {
     match meta.kind {
         Kind::Dir => "/",
@@ -390,8 +385,6 @@ fn agent_marker(meta: &Metadata) -> &'static str {
     }
 }
 
-/// One group of entries: the operands that are files (`dir` none), or a
-/// directory's entries.
 fn show(
     ctx: &Ctx<'_>,
     o: &Opts,
@@ -521,7 +514,6 @@ fn indent(out: &mut String, mut from: usize, to: usize) {
     }
 }
 
-/// `-rw-r--r--`: a mode as `ls -l` and `stat` print it.
 pub fn mode_string(kind: Kind, mode: u32) -> String {
     let mut s = String::with_capacity(10);
     s.push(match kind {

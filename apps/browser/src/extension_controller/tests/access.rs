@@ -20,7 +20,6 @@ fn an_extension_asks_for_more_access_through_the_window() {
     let mut off = installed("off", None, toolbar::Access::default());
     off.enabled = false;
     controller.installed = vec![installed("permit", Some("popup.html"), access), off];
-    // The engine learns what it may ask for.
     controller.tell_access(&shared);
     let grants = |window: &ui::webview::test_engine::TestEngine| {
         window
@@ -37,7 +36,6 @@ fn an_extension_asks_for_more_access_through_the_window() {
             granted: set(&[], &[]),
         }]
     );
-    // Its request is the window's question, put as its addition was.
     let request = |request, id: &str, asked| WebViewEvent::ExtensionPermissionRequest {
         request,
         id: id.into(),
@@ -82,7 +80,6 @@ fn an_extension_asks_for_more_access_through_the_window() {
             },
         ]
     );
-    // What the engine granted it is kept, and not told back to it.
     let before = window.commands().len();
     controller.on_engine_event(
         WebViewEvent::ExtensionPermissions {
@@ -240,7 +237,6 @@ fn the_person_sees_and_revokes_what_an_extension_was_allowed_later() {
             controller.run(command, &shared);
         }
     };
-    // Allowed nothing later: nothing to list or revoke.
     assert!(!row_text(&controller).contains("Allowed later"));
     assert_eq!(revocable(&controller), (false, false));
     assert_eq!(
@@ -295,13 +291,11 @@ fn the_person_sees_and_revokes_what_an_extension_was_allowed_later() {
         }]
     );
     assert!(controller.installed[0].access.granted.is_empty());
-    // Told once: nothing is left to list, revoke or tell again.
     controller.tell_access(&shared);
     assert_eq!(window.commands().len(), before + 1);
     assert!(!row_text(&controller).contains("Allowed later"));
     assert_eq!(revocable(&controller), (false, false));
 
-    // An agent or a screen reader revokes it through the resource alike.
     controller.installed[0].access.granted = allowed;
     controller.tell_access(&shared);
     let resource = controller.resources().remove(0);

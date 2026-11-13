@@ -1,14 +1,11 @@
-//! Choosing the data plane at startup.
-//!
-//! The tier follows from probes run against the store volume, never from a
-//! kernel version string: the dedicated-volume check first (a filesystem
-//! mark on a shared volume would put every file on the machine behind the
-//! daemon), then the feature probes of `fs_native::probe`.
+//! Choosing the data plane at startup, from probes run against the store volume rather than a
+//! kernel version string: the dedicated-volume check first (a filesystem mark on a shared volume
+//! would put every file on the machine behind the daemon), then the feature probes of
+//! `fs_native::probe`.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// Which data plane the operator asked for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum DataPlane {
     /// Tier 1 when the store volume and kernel support it, else FUSE.
@@ -21,21 +18,17 @@ pub enum DataPlane {
     Native,
 }
 
-/// The outcome of tier selection, for the startup log and the decision.
 #[derive(Clone, Debug)]
 pub struct TierSelection {
-    /// Serve Tier 1 from the store volume.
     pub native: bool,
     pub store: PathBuf,
     /// One line per reason, in the order they were decided.
     pub reasons: Vec<String>,
-    /// The full probe report, when probes ran.
     pub report: Option<String>,
     pub probe_time: Duration,
 }
 
 impl TierSelection {
-    /// One line for the service log.
     pub fn summary(&self) -> String {
         if self.native {
             format!(
@@ -59,8 +52,6 @@ fn fuse(store: &Path, reasons: Vec<String>, report: Option<String>, t: Instant) 
     }
 }
 
-/// Decides the data plane for a workspace whose store volume would be
-/// `store`.
 pub fn select(choice: DataPlane, store: &Path) -> TierSelection {
     let t = Instant::now();
     if choice == DataPlane::Fuse {

@@ -1,11 +1,7 @@
-//! The process that keeps one VM awake, and puts it to sleep.
-//!
-//! `tilo-legacy` starts it on demand (`tilo-legacy serve`). It holds the
-//! VM's lock, owns the host halves of the VM's devices (the Wayland
-//! forwarder and one `virtiofsd` per share), carries out the
-//! [`Lifecycle`]'s actions, grows and shrinks the
-//! balloon, and exits once the VM is on disk. Its lifetime is the VM's waking
-//! hours.
+//! The process that keeps one VM awake, and puts it to sleep. `tilo-legacy` starts
+//! it on demand (`tilo-legacy serve`); it holds the VM's lock, owns the host halves
+//! of its devices, carries out the [`Lifecycle`]'s actions and exits once the VM is
+//! on disk.
 
 use std::collections::BTreeMap;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -530,8 +526,7 @@ impl Supervisor {
         }
     }
 
-    /// Start `vhost-device-vsock` before QEMU connects to it, when this host
-    /// has no kernel vhost-vsock.
+    /// QEMU connects to the daemon, so start it first.
     fn start_vsock_daemon(&mut self) -> Result<(), SupervisorError> {
         if self.backend.ok_or(SupervisorError::NoVsock)? != VsockBackend::Hybrid {
             return Ok(());

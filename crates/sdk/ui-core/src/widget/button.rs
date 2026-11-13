@@ -1,4 +1,4 @@
-use crate::i18n;
+use crate::i18n::widget_text;
 use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
 use crate::permissions::PermissionScope;
@@ -70,8 +70,8 @@ pub struct Button {
     /// leads with them.
     faces: Vec<(String, String)>,
     /// One person this face leads with ([`Self::with_avatar`]): their avatar before the label,
-    /// as a person field's chip shows who it holds.
-    avatar: Option<(String, String)>,
+    /// as a person field's chip shows who it holds, in the presence hue the workspace gives them.
+    avatar: Option<(String, String, crate::tokens::PresenceHue)>,
     /// The label stands for no value yet (`Self::with_placeholder`): painted in the secondary
     /// ink a field shows an empty value in.
     placeholder: bool,
@@ -446,10 +446,17 @@ impl Button {
     }
 
     /// Lead with one person's avatar before the label, so a chip names who it is about as well as
-    /// what it is called.
+    /// what it is called, in the presence `hue` the workspace gives them
+    /// ([`People::hue`](crate::presence::PresenceCtx::hue_of)): the one they chose, never one
+    /// derived here.
     #[must_use]
-    pub fn with_avatar(mut self, name: impl Into<String>, identity: impl Into<String>) -> Self {
-        self.avatar = Some((name.into(), identity.into()));
+    pub fn with_avatar(
+        mut self,
+        name: impl Into<String>,
+        identity: impl Into<String>,
+        hue: crate::tokens::PresenceHue,
+    ) -> Self {
+        self.avatar = Some((name.into(), identity.into(), hue));
         self.layout_dirty = true;
         self.dirty = true;
         self
@@ -682,7 +689,7 @@ impl Button {
     /// the transport draws it (play/pause the one round, prominent control)
     /// and named for what it does now.
     pub fn transport(id: &str, control: crate::widget::TransportControl) -> Self {
-        let mut button = Self::icon_only(id, control.icon(), control.name());
+        let mut button = Self::icon_only(id, control.icon(), &control.name());
         button.transport = Some((control, 0.0));
         button
     }
@@ -695,8 +702,9 @@ impl Button {
         let side = self.transport.map_or(0.0, |(_, side)| side);
         self.transport = Some((control, side));
         self.icon = Some(control.icon());
-        self.set_accessible_name(control.name());
-        self.tooltip = Some(control.name().to_owned());
+        let name = control.name();
+        self.set_accessible_name(&name);
+        self.tooltip = Some(name);
         self.dirty = true;
     }
 
@@ -742,6 +750,12 @@ impl Button {
         self.dirty = true;
         self.layout_dirty = true;
         self
+    }
+
+    /// Whether this is the window's one main action, drawn on the accent.
+    #[must_use]
+    pub fn is_primary(&self) -> bool {
+        self.role == ButtonRole::Primary
     }
 
     /// What the button does; the role decides its whole look.
@@ -904,8 +918,6 @@ impl Button {
         let size_changed = rect.width().to_bits() != self.rect.width().to_bits()
             || rect.height().to_bits() != self.rect.height().to_bits();
         self.rect = rect;
-        // The caller has just laid it out: whatever asked for a measure is
-        // answered by this geometry.
         self.layout_dirty = false;
         if size_changed {
             self.dirty = true;
@@ -1119,6 +1131,31 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: Interaction) -> Fa
     }
 }
 
+/// A face's colours `(fill, edge, ink)` in `interact`, `on` for a toggle
+/// that is on, and the effective interaction they were resolved for.
+fn state_face_colors(
+    theme: &Theme,
+    role: ButtonRole,
+    confirms: bool,
+    on: bool,
+    interact: Interaction,
+) -> (FaceColors, Interaction) {
+    let on = on && !interact.disabled;
+    // An "on" toggle is a lift and stays one under the pointer; a press
+    // still answers.
+    let interact = Interaction {
+        hovered: interact.hovered && !on,
+        ..interact
+    };
+    let (fill, edge, ink) = resolve_face_colors(theme, role, confirms, interact);
+    let fill = if on && !interact.pressed {
+        theme.tokens.colors.intent.selection
+    } else {
+        fill
+    };
+    ((fill, edge, ink), interact)
+}
+
 fn resolve_face_colors(
     theme: &Theme,
     role: ButtonRole,
@@ -1288,7 +1325,7 @@ struct FaceContent<'a> {
     /// empty for every face that is not a group of people.
     faces: &'a [(String, String)],
     /// One person's avatar before the label, as a person chip leads with it.
-    avatar: Option<(&'a str, &'a str)>,
+    avatar: Option<(&'a str, &'a str, crate::tokens::PresenceHue)>,
     /// The label names no value yet: painted in the secondary ink.
     placeholder: bool,
     /// What the content marks means: its colour, where the face's own ink would stand.
@@ -1438,14 +1475,16 @@ impl FaceContent<'_> {
                 );
                 return;
             }
-            if let Some((name, identity)) = self.avatar {
+            if let Some((name, identity, hue)) = self.avatar {
                 let face = Rect::new(
                     rect.center().x - icon_px / 2.0,
                     rect.center().y - icon_px / 2.0,
                     rect.center().x + icon_px / 2.0,
                     rect.center().y + icon_px / 2.0,
                 );
-                crate::widget::AvatarFace::new(name, identity).paint(ctx, face);
+                crate::widget::AvatarFace::new(name, identity)
+                    .hue(hue)
+                    .paint(ctx, face);
                 return;
             }
             if let Some(image) = self.image {
@@ -1504,10 +1543,12 @@ impl FaceContent<'_> {
                     ink,
                 );
             }
-            if let Some((name, identity)) = self.avatar {
+            if let Some((name, identity, hue)) = self.avatar {
                 let iy = rect.center().y - icon_px / 2.0;
                 let face = Rect::new(leading, iy, leading + icon_px, iy + icon_px);
-                crate::widget::AvatarFace::new(name, identity).paint(ctx, face);
+                crate::widget::AvatarFace::new(name, identity)
+                    .hue(hue)
+                    .paint(ctx, face);
             }
             if !self.faces.is_empty() {
                 self.draw_faces(ctx, leading, rect.center().y, rect.height());
@@ -1548,10 +1589,12 @@ impl FaceContent<'_> {
                 ink,
             );
         }
-        if let Some((name, identity)) = self.avatar {
+        if let Some((name, identity, hue)) = self.avatar {
             let iy = rect.center().y - icon_px / 2.0;
             let face = Rect::new(start_x, iy, start_x + icon_px, iy + icon_px);
-            crate::widget::AvatarFace::new(name, identity).paint(ctx, face);
+            crate::widget::AvatarFace::new(name, identity)
+                .hue(hue)
+                .paint(ctx, face);
         }
         if !self.faces.is_empty() {
             self.draw_faces(ctx, start_x, rect.center().y, rect.height());
@@ -1647,20 +1690,7 @@ impl FacePaint<'_> {
     /// The face's colours `(fill, edge, ink)` in its state and the effective
     /// interaction they were resolved for.
     fn colors(&self, theme: &Theme) -> (FaceColors, Interaction) {
-        let on = self.on && !self.interact.disabled;
-        // An "on" toggle is a lift and stays one under the pointer; a press
-        // still answers.
-        let interact = Interaction {
-            hovered: self.interact.hovered && !on,
-            ..self.interact
-        };
-        let (fill, edge, ink) = resolve_face_colors(theme, self.role, self.confirms, interact);
-        let fill = if on && !interact.pressed {
-            theme.tokens.colors.intent.selection
-        } else {
-            fill
-        };
-        ((fill, edge, ink), interact)
+        state_face_colors(theme, self.role, self.confirms, self.on, self.interact)
     }
 
     /// The rect the face fills: a labelled plain face keeps its ink on its
@@ -1857,6 +1887,11 @@ impl<'a> ButtonFace<'a> {
         self.role = role;
         self
     }
+    /// What the face is drawn as, for a test that holds a bar's action to what it paints.
+    #[cfg(test)]
+    pub(crate) const fn role_of(&self) -> ButtonRole {
+        self.role
+    }
     /// What the face says means something ([`Tone::Neutral`] is no tone): the
     /// icon and the label take the tone's colour.
     #[must_use]
@@ -1865,9 +1900,11 @@ impl<'a> ButtonFace<'a> {
         self
     }
     /// The confirmation step of a destructive action, the one place a
-    /// destructive face is filled.
+    /// destructive face is filled: the button that goes ahead with what
+    /// cannot be undone, in the dialog's decision or at the control that
+    /// asked.
     #[must_use]
-    pub(crate) fn confirming(mut self) -> Self {
+    pub fn confirming(mut self) -> Self {
         self.confirms = true;
         self
     }
@@ -1934,6 +1971,15 @@ impl<'a> ButtonFace<'a> {
             self.label
         }
     }
+    /// The face as a page shows it ([`crate::composition::Face`]), as
+    /// [`Button::paint`] paints it; `None` for a face that is a picture.
+    #[must_use]
+    pub fn composed(&self, theme: &Theme) -> Option<crate::composition::Face> {
+        let label = localized_label(self.label);
+        let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
+        self.painter(&metrics, &label).composed(theme)
+    }
+
     /// The resolved palette without painting: `(fill, edge, ink)`.
     pub fn colors(&self, theme: &Theme) -> FaceColors {
         resolve_face_colors(theme, self.role, self.confirms, self.interact)
@@ -2060,7 +2106,7 @@ pub fn focus_ring_reach(theme: &Theme) -> f64 {
 }
 
 /// Resolve a label key for painting, measuring or speaking. An empty key is
-/// an icon-only face and stays empty: routed through `i18n!` it would come
+/// an icon-only face and stays empty: routed through the catalogue it would come
 /// back as the pseudo-locale's `⟦⟧` markers — a visible bracket pair beside
 /// the glyph, and a non-empty spoken name that hides the `accessible_name` /
 /// tooltip fallback.
@@ -2068,7 +2114,7 @@ fn localized_label(key: &str) -> String {
     if key.is_empty() {
         String::new()
     } else {
-        i18n!(key)
+        widget_text(key)
     }
 }
 
@@ -2090,6 +2136,56 @@ impl Button {
             text_renderer,
             theme,
         ));
+    }
+
+    /// The face `draw` paints: its role, state and what it shows.
+    fn face_paint<'b>(
+        &'b self,
+        metrics: &'b FaceMetrics,
+        label: &'b str,
+        hint: Option<String>,
+        moment: crate::part_paint::Moment,
+    ) -> FacePaint<'b> {
+        let interact = Interaction {
+            // A hover face is the pointer's answer, so a surface with none never paints one —
+            // however the hover was recorded (a pointer replayed where a control was rebuilt).
+            hovered: self.is_hovered && self.interaction.supports_hover(),
+            pressed: self.press.is_held(),
+            focused: self.focus_visible(),
+            disabled: !self.effectively_enabled(),
+        };
+        let on = self.is_toggled();
+        FacePaint {
+            rect: self.rect,
+            role: self.role,
+            confirms: false,
+            on,
+            interact,
+            content: FaceContent {
+                flush: self.role.flush() && !label.is_empty(),
+                icon: self.icon,
+                image: self.image.as_ref(),
+                faces: &self.faces,
+                avatar: self
+                    .avatar
+                    .as_ref()
+                    .map(|(name, identity, hue)| (name.as_str(), identity.as_str(), *hue)),
+                placeholder: self.placeholder,
+                tone: self.content_tone,
+                badge: self.badge.as_deref(),
+                label,
+                detail: self.detail.as_deref(),
+                hint,
+                filled_icon: self.icon.is_some_and(|icon| {
+                    icon.is_brand()
+                        || icon == crate::icons::Icon::HeartFilled
+                        || (on && fills_when_on(icon))
+                }),
+                menu: self.opens_menu,
+            },
+            metrics,
+            moment,
+        }
     }
 
     fn content(&self) -> (String, Option<String>) {
@@ -2129,7 +2225,7 @@ impl Button {
                 avatar: self
                     .avatar
                     .as_ref()
-                    .map(|(name, identity)| (name.as_str(), identity.as_str())),
+                    .map(|(name, identity, hue)| (name.as_str(), identity.as_str(), *hue)),
                 placeholder: self.placeholder,
                 tone: None,
                 badge: None,
@@ -2235,6 +2331,21 @@ impl Button {
 }
 
 impl Widget for Button {
+    /// A real button showing its face: its icon, label and shortcut on the
+    /// ground its role and state give it. A face that shows people or a
+    /// picture (who is here, an extension's image, a transport control)
+    /// shows its paint.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.element("button");
+        let face = crate::composition::HTML_CODE
+            .get()
+            .and_then(|code| (code.button)(self, cx.theme()));
+        match face {
+            Some(face) => cx.face(face),
+            None => cx.picture(),
+        }
+    }
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
@@ -2461,46 +2572,17 @@ impl Widget for Button {
             return;
         }
         let (label, hint) = self.content();
-        let hit = FacePaint {
-            rect: self.rect,
-            role: self.role,
-            confirms: false,
-            on,
-            interact: Interaction {
-                disabled: !enabled,
-                ..interact
-            },
-            content: FaceContent {
-                flush: self.role.flush() && !label.is_empty(),
-                icon: self.icon,
-                image: self.image.as_ref(),
-                faces: &self.faces,
-                avatar: self
-                    .avatar
-                    .as_ref()
-                    .map(|(name, identity)| (name.as_str(), identity.as_str())),
-                placeholder: self.placeholder,
-                tone: self.content_tone,
-                badge: self.badge.as_deref(),
-                label: &label,
-                detail: self.detail.as_deref(),
-                hint,
-                filled_icon: self.icon.is_some_and(|icon| {
-                    icon.is_brand()
-                        || icon == crate::icons::Icon::HeartFilled
-                        || (on && fills_when_on(icon))
-                }),
-                menu: self.opens_menu,
-            },
-            metrics: &metrics,
-            moment,
-        }
-        .paint(&mut PaintCtx::new(
-            self.face.repaint(self.rect),
-            Affine::IDENTITY,
-            text_renderer,
-            theme,
-        ));
+        // The cached face is painted by the face it caches.
+        let mut cached = std::mem::take(&mut self.face);
+        let hit = self
+            .face_paint(&metrics, &label, hint, moment)
+            .paint(&mut PaintCtx::new(
+                cached.repaint(self.rect),
+                Affine::IDENTITY,
+                text_renderer,
+                theme,
+            ));
+        self.face = cached;
         if let (Some(count), Some(rect)) = (&self.count, self.count_rect()) {
             // Into the cached face, where it moves with the button.
             count.paint(
@@ -2530,7 +2612,6 @@ impl Widget for Button {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        self.layout_dirty = false;
     }
 
     /// A missing rect keeps the first frame's `compute_layout` running so
@@ -2555,6 +2636,12 @@ impl Widget for Button {
         // measure: the host sizes it, however hidden or unplaced it is.
         self.solver_placed
             && (self.layout_dirty || self.i18n_revision != crate::i18n::I18nManager::revision())
+    }
+
+    /// The solver measured the face it asked for, whether or not this frame
+    /// draws the control: a shut overflow door's button finds no `mark_drawn`.
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -2636,29 +2723,10 @@ impl Widget for Button {
         Some(self.id.as_str())
     }
 
-    /// This button as a slot in the window's bar, sent back as `id`: a button with an icon says
-    /// its name beside it where the bar has room for the words and its icon alone where it has
-    /// none, and one its header keeps in its menu, or one that opens a menu of its own, is
-    /// listed behind the bar's own "…". `None` for a button with no name to show.
-    fn window_slot(&self, id: String) -> Option<crate::window_toolbar::ToolbarAction> {
-        let name = self.accessibility()?.name.filter(|name| !name.is_empty())?;
-        let icon = self.icon.map_or("", crate::icons::Icon::name);
-        let action = crate::window_toolbar::ToolbarAction::new(id, icon, name)
-            .enabled(self.is_enabled())
-            .on(self.toggled == Some(true));
-        Some(
-            if self.menu_only || self.opens_menu || self.icon.is_none() {
-                action.in_menu()
-            } else {
-                action.labelled()
-            },
-        )
-    }
-
     /// Returns the raw string (a fluent key or plain text); the host
     /// resolves i18n and renders.
-    fn tooltip(&self) -> Option<&str> {
-        self.tooltip.as_deref()
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.tooltip.as_deref().map(std::borrow::Cow::Borrowed)
     }
 
     fn get_rect(&self) -> Rect {
@@ -2732,7 +2800,7 @@ impl Widget for Button {
         use crate::a11y::{AccessNode, AccessState, Role};
         let label = localized_label(&self.label);
         let spoken = |text: &str| {
-            let spoken = i18n!(text);
+            let spoken = widget_text(text);
             (!spoken.is_empty()).then_some(spoken)
         };
         // The key the name was resolved from: the app's own copy when its
@@ -2785,7 +2853,7 @@ impl Widget for Button {
         let description = self
             .description
             .as_deref()
-            .map(|why| i18n!(why))
+            .map(|why| widget_text(why))
             .filter(|why| !why.trim().is_empty())
             .or_else(|| {
                 self.detail
@@ -2907,6 +2975,7 @@ impl Button {
 mod tests;
 
 mod component;
+mod html;
 pub use component::ButtonProps;
 
 #[cfg(test)]

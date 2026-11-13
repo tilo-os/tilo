@@ -88,6 +88,63 @@ pub fn committed_surface(_input: TokenStream) -> TokenStream {
     .into()
 }
 
+/// What `tilo_resource::word!` expands to: the word `key` of the catalogue
+/// beside the crate being built, named through `krate`, the path that crate
+/// reaches `tilo_resource` by, its placeables filled with the arguments the
+/// word carries.
+#[proc_macro]
+pub fn word(input: TokenStream) -> TokenStream {
+    let WordInput {
+        krate,
+        key,
+        catalogue,
+        arguments,
+    } = parse_macro_input!(input as WordInput);
+    let catalogue = words::Catalogue::read(catalogue.as_deref().unwrap_or(words::LOCALES));
+    match catalogue.named(&krate, key.span(), &key.value(), &arguments) {
+        Ok(word) => word.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+/// What `word!` takes: the path to `tilo_resource`, a key, the arguments its
+/// placeables show (`name = …`), and the catalogue it is in when not
+/// `locales`.
+struct WordInput {
+    krate: Tokens,
+    key: syn::LitStr,
+    catalogue: Option<String>,
+    arguments: Vec<(syn::Ident, syn::Expr)>,
+}
+
+impl syn::parse::Parse for WordInput {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let mut krate = Tokens::new();
+        while !input.peek(syn::Token![,]) {
+            krate.extend([input.parse::<proc_macro2::TokenTree>()?]);
+        }
+        input.parse::<syn::Token![,]>()?;
+        let key = input.parse()?;
+        let mut catalogue = None;
+        let mut arguments = Vec::new();
+        while input.parse::<Option<syn::Token![,]>>()?.is_some() && !input.is_empty() {
+            let name: syn::Ident = input.parse()?;
+            input.parse::<syn::Token![=]>()?;
+            if name == "catalogue" {
+                catalogue = Some(input.parse::<syn::LitStr>()?.value());
+            } else {
+                arguments.push((name, input.parse()?));
+            }
+        }
+        Ok(Self {
+            krate,
+            key,
+            catalogue,
+            arguments,
+        })
+    }
+}
+
 #[proc_macro_derive(Model, attributes(model))]
 pub fn derive_model(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -128,8 +185,10 @@ mod schema;
 /// `#[effect(operation = "app.effects")]` names the vocabulary's operation
 /// type. Each variant is unit or has named fields (the effect's typed
 /// parameters, `#[param("…")]` describing one); its id is the variant name in
-/// kebab case and its label the first doc line. Variant options:
-/// `#[effect(label = "...", view, row, job, cancellable, returns,
+/// kebab case and its label the crate's catalogue message
+/// `<operation>-<id>` (separators as dashes), or the key `label = "..."`
+/// names. `#[effect(catalogue = "dir")]` on the enum reads another catalogue
+/// than `locales/`. Variant options: `#[effect(label = "key", view, row, job, cancellable, returns,
 /// destructive, privileged, idempotent, own_device, attended, audience = "agents", untrusted, opens_path, member, risk = "path", kind = "read",
 /// host_render, tag = some::TAG)]`. `host_render` marks an effect a host
 /// answers in a render service of its own rather than the record's app
@@ -155,6 +214,7 @@ pub fn derive_effect(input: TokenStream) -> TokenStream {
 }
 
 mod effect;
+mod words;
 
 #[derive(Default)]
 #[allow(
@@ -387,6 +447,30 @@ fn audience_option(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<syn::Id
             return Err(syn::Error::new(
                 value.span(),
                 "expected `audience = \"people\"`, `\"agents\"` or `\"everyone\"`",
+            ));
+        }
+    };
+    Ok(syn::Ident::new(variant, value.span()))
+}
+
+/// `step = "create"`: the kind of step an action takes, named by the
+/// `tilo_actions::StepKind` variant it is.
+fn step_option(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<syn::Ident> {
+    let value = meta.value()?.parse::<syn::LitStr>()?;
+    let variant = match value.value().as_str() {
+        "create" => "Create",
+        "write" => "Write",
+        "edit" => "Edit",
+        "delete" => "Delete",
+        "move" => "Move",
+        "read" => "Read",
+        "run" => "Run",
+        "work" => "Work",
+        _ => {
+            return Err(syn::Error::new(
+                value.span(),
+                "expected `step = \"create\"`, \"write\", \"edit\", \"delete\", \"move\", \"read\", \
+                 \"run\" or \"work\"",
             ));
         }
     };
@@ -1626,35 +1710,6 @@ fn last_ident(ty: &Type) -> Option<(String, Option<&Type>)> {
     Some((segment.ident.to_string(), inner))
 }
 
-/// How a parameter of Rust type `ty` holds bytes, when it does (`Vec<u8>`,
-/// or a list of them): the decoder that takes them inline or by a content
-/// reference, and the schema saying both. Actions carry intent and
-/// references; bytes travel by session transport into the content store.
-fn byte_param(ty: &Type) -> Option<(Tokens, Tokens)> {
-    let krate = krate();
-    let is_bytes = |ty: &Type| {
-        last_ident(ty).is_some_and(|(name, inner)| {
-            name == "Vec"
-                && inner
-                    .and_then(last_ident)
-                    .is_some_and(|(byte, _)| byte == "u8")
-        })
-    };
-    let (name, inner) = last_ident(ty)?;
-    if is_bytes(ty) {
-        return Some((
-            quote!(#krate::content::bytes),
-            quote!(#krate::content::bytes_schema),
-        ));
-    }
-    (name == "Vec" && inner.is_some_and(is_bytes)).then(|| {
-        (
-            quote!(#krate::content::byte_lists),
-            quote!(#krate::content::byte_list_schema),
-        )
-    })
-}
-
 /// The declared type of a parameter of Rust type `ty`, and whether it is
 /// optional. An app's own type is what its schema says it is written as
 /// when `schema` (the type implements `JsonSchema`), else an object.
@@ -1752,13 +1807,19 @@ fn is_action_cx(ty: &Type) -> bool {
 /// vocabulary, and implement `Resource` for it.
 ///
 /// ```ignore
-/// #[resource(kind = "example.note", label = "Note")]
+/// #[resource(kind = "example.note")]
 /// impl Note {
 ///     /// Replace the note's text.
 ///     #[action]
 ///     pub fn edit(&mut self, #[param("Note text")] text: String) { self.body = text; }
 /// }
 /// ```
+///
+/// The record is called by the message `example-note` of the crate's
+/// `locales/en-US.ftl` and each action by `<kind>-<id>` (`example-note-edit`),
+/// read in the person's language whenever it is published; a key the
+/// catalogue does not hold does not build. Each parameter is called by
+/// `<action key>-<param>`, else `<kind>-<param>`, where the catalogue has it.
 ///
 /// Generates, per action, a parameter struct in a module named after the
 /// type (`note::Edit { text }`, with a JSON Schema derived from the
@@ -1780,7 +1841,7 @@ fn is_action_cx(ty: &Type) -> bool {
 /// like the parameter, or the record's only one; `#[action(item = field)]`
 /// names it otherwise, and anything else does not compile.
 ///
-/// Action options: `label = "..."`, `destructive` (it deletes or overwrites:
+/// Action options: `label = "key"` (another key of the catalogue), `destructive` (it deletes or overwrites:
 /// when Undo takes it back, as it does any change of the document alone, it
 /// runs at once and offers Undo; otherwise people confirm it, through any
 /// door), `irreversible` (it also loses what Undo cannot bring back, such

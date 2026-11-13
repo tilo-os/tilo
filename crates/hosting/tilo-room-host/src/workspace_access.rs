@@ -14,12 +14,50 @@
 //!    a device of a user root the workspace's signed authority admits is admitted.
 //! 5. On a same-owner home host ([`AdmissionMode::SameOwner`]) the relay
 //!    owner's own devices are admitted, and enrolled where the plane enrols.
+//!    In a workspace this relay governs, a device of a person its governance
+//!    has as a member ([`person_device`]: a browser tab, a new computer of
+//!    theirs) is enrolled when it subscribes: governance records it under its
+//!    person, as the door does for a further device of a member, so it holds
+//!    the part its person holds. Membership follows the person, not one
+//!    device key.
 //! 6. Anything else is not a member.
 //!
 //! An agent's grant (a key the person certified for a service that acts for
-//! an agent they approved) is admitted on none of these planes: it acts in
-//! workspaces through the person's runtime, which checks it, and asks this
-//! host only its own operations, which no workspace decides.
+//! an agent they approved, [`tilo_user_identity::AgentScope`]) is its
+//! person's agent, and its rule replaces steps 3 to 6: after step 1, it is
+//! admitted iff
+//!
+//! - its scope reaches this workspace (all of the person's, or exactly this
+//!   one: a one-workspace grant, root-certified or minted, reaches no other
+//!   and never the site's home workspace);
+//! - it is an exact member device here: it redeemed an invitation for its
+//!   person, as any new device of theirs does, so the workspace's roster
+//!   holds it under its person;
+//! - in a governed workspace, its person is still a member;
+//! - and the plane is one an agent works on: subscribe, state, publish,
+//!   replay, channel access, remote actions, the live plane and content
+//!   discovery. Never compute, environments or governed membership, and
+//!   never by attachment or a same-owner host's enrolment.
+//!
+//! What it does there is its person's agent's ([`crate::peer`] makes its
+//! caller the agent, for its person): an agent's role cap holds it at
+//! Editor at most, and it governs and administers nothing; only a person's
+//! server key invites, for its person, as an Editor at most
+//! (`workspaces::authority`). Its certificate's expiry and its person's
+//! revocations (a minted grant's issuer included) are step 1, checked at
+//! every handshake and audit.
+//!
+//! A hosted browser environment's device is certified as a member device of
+//! the workspace's person, and is no member: a page that escapes Chromium
+//! holds its key, so its rule replaces steps 4 to 6 as an agent's does. After
+//! step 1, it is admitted iff the relay registered it for this workspace
+//! ([`crate::environment`]), on the planes a window's session works on — and
+//! its one record is what it reaches within them: the state plane's replay,
+//! live fan-out, opening and changes ask its scope what a frame's record is,
+//! and the live plane offers it no namespace but its own. A device whose
+//! environment stopped is refused by step 1 on every plane, as a revoked one
+//! is, until the certificate it was given expires: the register says so before
+//! anything is delisted, so no plane admits it in between.
 //!
 //! A public workspace is no exception to the rule: whoever visits it is a
 //! member of it with the role its owner gave them, and every device certified
@@ -205,6 +243,12 @@ pub enum DenyReason {
     AgentOutOfScope,
     /// Not a member of the workspace.
     NotAMember,
+    /// A hosted browser environment's device, outside the one workspace and
+    /// the one record the relay confines it to.
+    OutOfEnvironmentScope,
+    /// A hosted browser environment's device whose environment stopped: it
+    /// reaches nothing, and no plane admits it, until its certificate expires.
+    EnvironmentStopped,
     /// Governed membership as an agent asked for by a device that is no
     /// delegated agent of this relay's user, or for a workspace this relay does
     /// not govern.
@@ -223,6 +267,12 @@ impl DenyReason {
             Self::AgentExpired => "the agent's delegation expired",
             Self::AgentOutOfScope => "the agent is not delegated this room",
             Self::NotAMember => "device not in workspace membership",
+            Self::OutOfEnvironmentScope => {
+                "a browser environment's device reaches one workspace and its own record"
+            }
+            Self::EnvironmentStopped => {
+                "the browser environment this device belongs to has stopped"
+            }
             #[cfg(any(test, feature = "agents"))]
             Self::NotADelegatedAgent => {
                 "only a delegated agent of this relay's user joins a room it governs as an agent"
@@ -241,6 +291,9 @@ pub struct RelayTrust<'a> {
     pub own_user: &'a [u8; 32],
     /// Agent delegations this relay was told about.
     pub agents: &'a AgentRegistry,
+    /// Hosted browser environments' devices, and the one record each reaches
+    /// ([`crate::environment`]).
+    pub environments: &'a crate::environment::EnvironmentRegistry,
 }
 
 impl RelayTrust<'_> {
@@ -265,6 +318,15 @@ impl RelayTrust<'_> {
             .is_some_and(|expiry| expiry <= now_ns)
         {
             return Err(DenyReason::CertExpired);
+        }
+        // A device whose environment stopped is refused on every plane, as a
+        // revoked one is, until the certificate it was given expires: this is
+        // the check every plane and every audit makes.
+        if matches!(
+            self.environments.of(&peer.device_public_key, now_ns),
+            Some(crate::environment::Environment::Stopped { .. })
+        ) {
+            return Err(DenyReason::EnvironmentStopped);
         }
         if !self
             .revocations
@@ -384,6 +446,21 @@ impl<'a> WorkspaceFacts<'a> {
             && self.runtime.workspace_authority.is_some()
     }
 
+    /// Whether a subscribe enrols `peer`'s device here (step 5): this relay
+    /// governs the workspace, its governance has the device's person as a
+    /// member, the device is one of theirs, and no pending replacement keeps
+    /// it out.
+    fn enrols_member_device(&self, peer: &AuthenticatedPeer) -> bool {
+        self.runtime.admission == AdmissionMode::Governed
+            && self.runtime.workspace_authority.is_some()
+            && person_device(&peer.cert)
+            && self
+                .runtime
+                .governed_user_roots
+                .contains(&peer.user_public_key)
+            && self.within_ceiling(&peer.device_public_key)
+    }
+
     fn lists(&self, device: &[u8; 32]) -> bool {
         let listed = self.listed.map_or_else(
             || self.runtime.membership.contains(device),
@@ -433,8 +510,17 @@ pub(crate) fn decide_in(
     if let Err(reason) = trust.principal(peer, workspace.runtime.store.workspace_id(), now_ns) {
         return Decision::Deny(reason);
     }
-    if peer.cert.capabilities.agent.is_some() {
-        return Decision::Deny(DenyReason::NotAMember);
+    match crate::environment::environment_of(trust.environments, &peer.device_public_key) {
+        Some(crate::environment::Environment::Placed(scope)) => {
+            return environment_decision(workspace, scope, op);
+        }
+        Some(crate::environment::Environment::Stopped { .. }) => {
+            return Decision::Deny(DenyReason::EnvironmentStopped);
+        }
+        None => {}
+    }
+    if let Some(scope) = peer.cert.capabilities.agent {
+        return grant_decision(workspace, peer, scope, op);
     }
     let own_user = &peer.user_public_key == trust.own_user;
     #[cfg(any(test, feature = "agents"))]
@@ -468,7 +554,83 @@ pub(crate) fn decide_in(
             OwnerDevice::Refuse => {}
         }
     }
+    if op == WorkspaceOperation::Subscribe && workspace.enrols_member_device(peer) {
+        return Decision::AdmitAndEnrol;
+    }
     Decision::Deny(DenyReason::NotAMember)
+}
+
+/// Whether `cert` is a device of its person's own: certified by their root,
+/// or by the stand-in their browser holds for it ([`tilo_user_identity::DeviceCert::issuer`]).
+/// An agent's grant, or a key one minted, acts for the person and is no
+/// device of theirs: it comes in by the delegation that bounds it, never as
+/// the person. Nor is the stand-in itself, which approves devices and
+/// reaches no workspace.
+pub(crate) fn person_device(cert: &tilo_user_identity::DeviceCert) -> bool {
+    cert.capabilities.agent.is_none()
+        && !cert.capabilities.stand_in
+        && cert
+            .issuer
+            .as_ref()
+            .is_none_or(|issuer| issuer.capabilities.stand_in)
+}
+
+/// The rule for a hosted browser environment's device, whose scope the relay
+/// registered when it placed the environment ([`crate::environment`]): its one
+/// workspace, on the planes a window's session works on, and no other. Its
+/// record is narrower than a plane, so what a frame carries decides it: the
+/// state plane's replay, live fan-out, record opening and changes ask
+/// [`crate::environment::EnvironmentScope::reaches`], and the live plane
+/// offers such a device no namespace of anyone else's.
+fn environment_decision(
+    workspace: WorkspaceFacts<'_>,
+    scope: crate::environment::EnvironmentScope,
+    op: WorkspaceOperation,
+) -> Decision {
+    if scope.admits(workspace.runtime.store.workspace_id(), op) {
+        Decision::Admit
+    } else {
+        Decision::Deny(DenyReason::OutOfEnvironmentScope)
+    }
+}
+
+/// The rule for an agent's grant whose certificate holds relay-wide (see the
+/// module): its person's agent, only where its scope reaches, it redeemed
+/// its person's invitation and its person is a member, on an agent's planes.
+fn grant_decision(
+    workspace: WorkspaceFacts<'_>,
+    peer: &AuthenticatedPeer,
+    scope: tilo_user_identity::AgentScope,
+    op: WorkspaceOperation,
+) -> Decision {
+    let here = workspace.runtime.store.workspace_id();
+    let reaches = match scope {
+        tilo_user_identity::AgentScope::AllWorkspaces => true,
+        tilo_user_identity::AgentScope::Workspace(_) => {
+            crate::room_workspace_id(&scope.name()).is_ok_and(|id| id == here)
+        }
+    };
+    let agents_plane = matches!(
+        op,
+        WorkspaceOperation::Subscribe
+            | WorkspaceOperation::State
+            | WorkspaceOperation::Publish
+            | WorkspaceOperation::Replay
+            | WorkspaceOperation::ChannelAccess
+            | WorkspaceOperation::RemoteAction
+            | WorkspaceOperation::Live
+            | WorkspaceOperation::ContentDiscovery
+    );
+    let person_member = workspace.runtime.admission != AdmissionMode::Governed
+        || workspace
+            .runtime
+            .governed_user_roots
+            .contains(&peer.user_public_key);
+    if reaches && agents_plane && person_member && workspace.lists(&peer.device_public_key) {
+        Decision::Admit
+    } else {
+        Decision::Deny(DenyReason::NotAMember)
+    }
 }
 
 /// Whether `role`'s preset lets its members make undoable changes across a

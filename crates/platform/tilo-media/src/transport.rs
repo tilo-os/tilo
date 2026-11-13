@@ -1,17 +1,10 @@
-//! Collaborative playback transport — follow-the-host with drift correction.
+//! Collaborative playback transport: follow-the-host with drift correction.
 //!
-//! [`TransportState`] is a small, copyable snapshot of "where playback is": the
-//! play/pause flag, the authoritative playhead at a wall-clock `epoch`, and the
-//! rate. A **host** publishes it; **followers** read it and project it forward
-//! to *now*, then nudge their local engine toward that projection.
-//!
-//! The projection ([`TransportState::projected_position`]) plus the drift
-//! decision ([`correction`]) are pure functions of `(state, now_ms)` and carry
-//! all the collaborative-playback timing logic, so they are unit-tested without
-//! any decode, socket, or clock.
-//!
-//! Where the state is kept and how it reaches the other participants is the
-//! app's: a player keeps it in its shared document.
+//! [`TransportState`] is a copyable snapshot of where playback is — the play flag, the
+//! host's playhead at a wall-clock epoch, and the rate. Followers project it to now and
+//! nudge their engine toward the projection; both the projection and the drift
+//! decision ([`correction`]) are pure functions of `(state, now_ms)`. Where the state
+//! is kept and how it reaches the other participants is the app's.
 
 /// Playhead drift (ms) beyond which a follower hard-seeks to the host instead
 /// of letting the small gap ride. Below it the follower stays in sync by simply
@@ -25,21 +18,15 @@ pub const DRIFT_SEEK_THRESHOLD_MS: u64 = 500;
 /// own "now".
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TransportState {
-    /// Whether the host is playing (vs. paused).
     pub playing: bool,
-    /// The authoritative playhead, in ms, **as of `epoch_ms`**.
     pub position_ms: u64,
     /// Playback rate (1.0 = normal). Reserved for future speed controls; the
     /// projection already honours it.
     pub rate: f32,
-    /// Wall-clock time (unix millis) at which `position_ms` was authoritative.
     pub epoch_ms: u64,
 }
 
 impl TransportState {
-    /// Where the playhead should be **now** for a follower, given `now_ms` in
-    /// the same wall-clock frame as `epoch_ms`. While paused the position is
-    /// frozen; while playing it advances by `(now - epoch) * rate`.
     pub fn projected_position(&self, now_ms: u64) -> u64 {
         if !self.playing {
             return self.position_ms;
@@ -59,18 +46,12 @@ impl TransportState {
     }
 }
 
-/// The drift decision for a follower whose engine is at `local_ms` when the
-/// host's projected playhead is at `target_ms`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Correction {
-    /// Within tolerance — let playback ride, no seek.
     InSync,
-    /// Off by more than [`DRIFT_SEEK_THRESHOLD_MS`] — seek to this ms.
     Seek(u64),
 }
 
-/// Decide whether a follower at `local_ms` needs to hard-seek to catch the
-/// host's projected `target_ms`. Pure; the whole drift policy lives here.
 pub fn correction(local_ms: u64, target_ms: u64) -> Correction {
     let drift = local_ms.abs_diff(target_ms);
     if drift > DRIFT_SEEK_THRESHOLD_MS {

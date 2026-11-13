@@ -15,7 +15,6 @@
 //! }
 //! ```
 
-/// The section holding the view bound to each slot.
 pub const SECTION: &str = "shell_views";
 
 /// The key a kind of device's bindings are kept under, in the section's

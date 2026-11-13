@@ -38,6 +38,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::activation::{Activation, Interaction, activation_controls};
 use crate::widget::{Button, Element, TaffyTreeExt, Text, Tone, Widget};
 
@@ -1181,7 +1182,7 @@ impl Widget for CardGrid {
             if presence.should_cull(card.get_rect()) {
                 continue;
             }
-            card.draw(scene, transform, text_renderer, theme, presence);
+            card.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 

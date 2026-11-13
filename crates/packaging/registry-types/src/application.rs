@@ -1,18 +1,11 @@
 //! A publisher's signed application to publish under verified namespaces.
 //!
-//! The applicant signs a [`PublisherApplication`] with the key it will
-//! publish with, naming each namespace it claims and how ownership is proven
-//! ([`NamespaceClaim`]). Every proof is the same line, [`proof_token`], placed
-//! where only the namespace owner can put it:
-//!
-//! - a domain: a DNS TXT record at [`dns_txt_name`], or, as a fallback, the
-//!   file at [`well_known_url`];
-//! - a forge account: `tilo-publisher.txt` on the default branch of the
-//!   account's public repository `tilo-publisher` ([`forge_proof_url`]).
-//!
-//! The registry checks the proofs when the application arrives and again when
-//! its owner approves it, then allowlists the key for exactly those
-//! namespaces.
+//! The applicant signs the application with the key it will publish with, naming each namespace it
+//! claims and how ownership is proven. Every proof is the same line, [`proof_token`], placed where
+//! only the namespace owner can: a DNS TXT record ([`dns_txt_name`]) or the file at
+//! [`well_known_url`] for a domain, and `tilo-publisher.txt` in the account's public `tilo-publisher`
+//! repository for a forge account ([`forge_proof_url`]). The registry checks them when the
+//! application arrives and again on approval, then allowlists the key for exactly those namespaces.
 
 use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -20,7 +13,6 @@ use thiserror::Error;
 
 use crate::namespace::{Forge, domain_namespace};
 
-/// Domain separator of an application signature.
 pub const APPLICATION_DOMAIN: &[u8] = b"tilo-publisher-application-v1\0";
 
 /// Most namespaces one application may claim.
@@ -30,14 +22,17 @@ pub const MAX_CLAIMS: usize = 8;
 pub const FORGE_PROOF_REPOSITORY: &str = "tilo-publisher";
 pub const FORGE_PROOF_FILE: &str = "tilo-publisher.txt";
 
-/// How an applicant proves it owns a namespace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum NamespaceClaim {
     /// A domain; proves its reversed labels (`example.com` → `com.example`).
-    Domain { domain: String },
-    /// An account on a forge (`github`, `codeberg`, or a Forgejo/Gitea host).
-    Forge { forge: String, account: String },
+    Domain {
+        domain: String,
+    },
+    Forge {
+        forge: String,
+        account: String,
+    },
 }
 
 impl NamespaceClaim {
@@ -51,7 +46,6 @@ impl NamespaceClaim {
     }
 }
 
-/// How a namespace was proven.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProofMethod {
@@ -60,7 +54,6 @@ pub enum ProofMethod {
     Forge,
 }
 
-/// One namespace the registry saw proven, and where.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerifiedClaim {
     pub namespace: String,
@@ -77,8 +70,7 @@ pub enum ApplicationStatus {
     Rejected,
 }
 
-/// The operator-local application review snapshot. Public status replies
-/// omit its contact address and note.
+/// The operator-local review snapshot. Public status replies omit its contact address and note.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredApplication {
     pub application: PublisherApplication,
@@ -94,8 +86,8 @@ pub struct StoredApplication {
 }
 
 impl StoredApplication {
-    /// The exact stored snapshot an owner inspected, for guarded CLI or UI
-    /// decisions. A replacement, proof refresh or decision changes this id.
+    /// The exact stored snapshot an owner inspected, for guarded decisions: a replacement, proof
+    /// refresh or decision changes the id.
     pub fn review_id(&self) -> Result<String, serde_json::Error> {
         serde_json::to_vec(self).map(|bytes| blake3::hash(&bytes).to_hex().to_string())
     }
@@ -109,15 +101,11 @@ impl StoredApplication {
     }
 }
 
-/// A signed request to be allowlisted for some namespaces.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublisherApplication {
-    /// The Ed25519 key that will sign packages and entries, hex.
     pub pubkey_hex: String,
     pub claims: Vec<NamespaceClaim>,
-    /// How the registry owner can reach the applicant.
     pub contact: String,
-    /// What the applicant intends to publish.
     #[serde(default)]
     pub note: String,
     pub submitted_at_unix: u64,
@@ -141,8 +129,7 @@ pub enum ApplicationError {
 }
 
 impl PublisherApplication {
-    /// The bytes the signature covers: the domain and the application's JSON
-    /// with an empty signature.
+    /// The domain and the application's JSON with an empty signature.
     #[must_use]
     pub fn signing_message(&self) -> Vec<u8> {
         let unsigned = Self {
@@ -154,7 +141,6 @@ impl PublisherApplication {
         message
     }
 
-    /// Set `pubkey_hex` to `key`'s and sign.
     pub fn sign(&mut self, key: &SigningKey) {
         self.pubkey_hex = hex::encode(key.verifying_key().to_bytes());
         self.signature_hex = hex::encode(key.sign(&self.signing_message()).to_bytes());
@@ -163,6 +149,7 @@ impl PublisherApplication {
     /// The applicant's key.
     ///
     /// # Errors
+    ///
     /// [`ApplicationError::BadKey`] for a malformed key.
     pub fn pubkey(&self) -> Result<[u8; 32], ApplicationError> {
         hex::decode(&self.pubkey_hex)
@@ -227,9 +214,8 @@ pub fn well_known_url(domain: &str) -> String {
     )
 }
 
-/// Where the proof for `account` on `forge` is read: the raw
-/// `tilo-publisher.txt` of the account's `tilo-publisher` repository, on its
-/// default branch.
+/// Where the proof for `account` on `forge` is read: `tilo-publisher.txt` of its `tilo-publisher`
+/// repository, on the default branch.
 #[must_use]
 pub fn forge_proof_url(forge: &Forge, account: &str) -> String {
     let account = account.to_ascii_lowercase();

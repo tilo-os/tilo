@@ -15,7 +15,7 @@ mod workspace_record_custody {
     }
 
     /// A channel on `route` held by a connection the launcher attested for
-    /// `LAUNCHED` in the fixture's workspace, launched from its signed original.
+    /// `LAUNCHED` in the fixture's workspace.
     fn launched_channel(
         workspace: &signed_worker::OriginalWorkspace,
         identity: &AdmittedJoinIdentity,
@@ -27,10 +27,6 @@ mod workspace_record_custody {
             workspace.route.cluster_id.clone(),
             native_media::PeerProcess::from_socket(socket).unwrap(),
             crate::services::AuthenticatedApplicationLaunch {
-                creation: Some(crate::services::ApplicationCreationEvidence {
-                    package_hash: "ab".repeat(32),
-                    declared_kinds: vec!["notes.notebook".into()],
-                }),
                 continuation_instance: Some(91),
                 launch_ticket: None,
                 windowless: false,
@@ -97,14 +93,6 @@ mod workspace_record_custody {
                     .document_read_context()
                     .expect("a window of the workspace reads the workspace's record");
                 assert_eq!(context.record_kind(), Some(emoji().kind));
-                assert_eq!(
-                    context
-                        .application_creation()
-                        .map(|evidence| evidence.declared_kinds.clone()),
-                    Some(vec![emoji().kind.to_owned()]),
-                    "the record's kind is the platform's, not the launching package's"
-                );
-
                 for (route, why) in [
                     (
                         CrdtRoute::record(emoji().app, &cluster, "tab:0000000000000001"),
@@ -131,6 +119,60 @@ mod workspace_record_custody {
                     let refused = channel.document_read_context().err();
                     assert!(refused.is_some(), "{why}");
                 }
+            })
+            .await;
+    }
+
+    /// Another app's record a launch joined to read (its surface declares the
+    /// read) is read under the launch's own custody and the person's standing
+    /// on that record, whether or not the workspace already holds it: the
+    /// same route joined as the launch's own is refused, as is one of another
+    /// workspace, and the read ends with the launch.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_launch_reads_another_apps_record_it_joined_to_read() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let workspace = signed_worker::OriginalWorkspace::new(
+                    tilo_user_identity::DeviceCapabilities::primary(),
+                    None,
+                    None,
+                );
+                let (identity, _connection) = admitted(&workspace).await;
+                let (socket, _peer) = tokio::net::UnixStream::pair().unwrap();
+                let cluster = workspace.route.cluster_id.clone();
+                let read = |route: &CrdtRoute| {
+                    let mut channel = launched_channel(&workspace, &identity, route, &socket);
+                    channel.route_access = RouteAccess::ReadOnly;
+                    channel
+                };
+                let tasks = CrdtRoute::record("so.tilo.lang.tasks", &cluster, "");
+                let channel = read(&tasks);
+                let context = channel
+                    .document_read_context()
+                    .expect("a launch reads the record it joined to read");
+                let refused = launched_channel(&workspace, &identity, &tasks, &socket)
+                    .document_read_context()
+                    .err();
+                assert!(refused.is_some(), "the launch keeps no record of Tasks");
+                let elsewhere = CrdtRoute::record(
+                    "so.tilo.lang.tasks",
+                    tilo_desktop_model::WorkspaceId::new().to_string(),
+                    "",
+                );
+                assert!(
+                    read(&elsewhere).document_read_context().is_err(),
+                    "nor of another workspace"
+                );
+                channel
+                    .lease
+                    .as_ref()
+                    .and_then(|lease| lease.local_media.as_ref())
+                    .unwrap()
+                    .stop();
+                assert!(
+                    context.revalidate().is_err(),
+                    "the read ends with the launch"
+                );
             })
             .await;
     }

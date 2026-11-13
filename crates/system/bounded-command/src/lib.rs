@@ -1,9 +1,8 @@
-//! Deadline and allocation-bounded subprocess execution.
+//! Deadline- and allocation-bounded subprocess execution.
 //!
-//! Privileged Tilo components use small command-line clients at a few explicit
-//! platform boundaries. This wrapper prevents a wedged client, compromised
-//! daemon, or inherited pipe in a descendant from pinning or exhausting its
-//! caller.
+//! Privileged components use small command-line clients at a few platform
+//! boundaries; this wrapper keeps a wedged client, a compromised daemon or an
+//! inherited pipe in a descendant from pinning or exhausting its caller.
 
 use std::ffi::OsStr;
 use std::io::{Read, Write as _};
@@ -13,7 +12,8 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tilo_clock::time::Instant;
 
 use thiserror::Error;
 use zeroize::Zeroizing;
@@ -70,10 +70,10 @@ pub fn terminate_tree(child: &mut Child, grace: Duration) {
         // SAFETY: the child was placed in its own pid-named process group; a
         // negative pid targets exactly that group.
         unsafe { libc::kill(group, libc::SIGTERM) };
-        let deadline = Instant::now()
+        let deadline = tilo_clock::now()
             .checked_add(grace)
             .unwrap_or_else(Instant::now);
-        while Instant::now() < deadline {
+        while tilo_clock::now() < deadline {
             // The leader exiting is not enough: a worker it started may still
             // be winding down in the group. Signal 0 only probes for one.
             // SAFETY: as above; signal 0 delivers nothing.
@@ -96,7 +96,7 @@ pub fn terminate_tree(child: &mut Child, grace: Duration) {
 /// still running at the deadline; it is left running. On Unix this sleeps in
 /// [`wait_child_or`] rather than polling.
 pub fn wait_timeout(child: &mut Child, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
-    let deadline = Instant::now().checked_add(timeout);
+    let deadline = tilo_clock::now().checked_add(timeout);
     #[cfg(unix)]
     {
         Ok(match wait_child_or(child, None, deadline)? {
@@ -109,15 +109,15 @@ pub fn wait_timeout(child: &mut Child, timeout: Duration) -> std::io::Result<Opt
         if let Some(status) = child.try_wait()? {
             return Ok(Some(status));
         }
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        if deadline.is_some_and(|deadline| tilo_clock::now() >= deadline) {
             return Ok(None);
         }
         std::thread::sleep(Duration::from_millis(10));
     }
 }
 
-/// [`wait_timeout`], then kill and reap a child still running at the
-/// deadline. `None` when it had to be killed.
+/// [`wait_timeout`], then kill and reap a child still running at the deadline.
+/// `None` when it had to be killed.
 pub fn wait_or_kill(child: &mut Child, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
     let status = wait_timeout(child, timeout)?;
     if status.is_none() {
@@ -145,16 +145,13 @@ pub fn make_executable(path: &std::path::Path) -> std::io::Result<()> {
     }
 }
 
-/// Maximum secret/request body accepted by this narrow helper.
+/// Maximum secret or request body this wrapper accepts.
 pub const MAX_INPUT_BYTES: usize = 64 * 1024;
 
-/// A completed child with individually bounded output streams.
 #[derive(Debug)]
 pub struct Output {
-    /// Child exit status.
     pub status: ExitStatus,
     pub stdout: Vec<u8>,
-    /// Captured standard error.
     pub stderr: Vec<u8>,
 }
 
@@ -174,47 +171,33 @@ impl Output {
     }
 }
 
-/// Failures before a bounded child completes successfully or unsuccessfully.
 #[derive(Debug, Error)]
 pub enum Error {
-    /// Caller attempted to feed an unexpectedly large request or secret.
     #[error("command input exceeds its configured safety limit")]
     InputTooLarge,
-    /// Child could not be created or observed.
     #[error("command process failed: {0}")]
     Process(#[from] std::io::Error),
-    /// One output stream crossed its allocation ceiling.
     #[error("command {stream} exceeds {limit} bytes")]
-    OutputTooLarge {
-        stream: &'static str,
-        /// Configured maximum bytes.
-        limit: usize,
-    },
-    /// Child and its descendants did not finish before the deadline.
+    OutputTooLarge { stream: &'static str, limit: usize },
     #[error("command timed out after {0} ms")]
     Timeout(u128),
-    /// A reader thread panicked.
     #[error("command output reader failed")]
     Reader,
-    /// The bounded stdin writer failed or panicked.
     #[error("command input writer failed")]
     Writer,
-    /// The owner cancelled an asynchronous command.
     #[error("command was cancelled")]
     Cancelled,
 }
 
-/// An informational copy of bytes already read by the owned stderr capture.
-/// Capture remains authoritative; overflow disables only this observation lane.
+/// An informational copy of bytes the owned stderr capture already read. Capture
+/// stays authoritative; overflow disables only this lane.
 #[derive(Debug)]
 pub enum StderrObservation {
     /// At most 4096 captured bytes, in stream order.
     Bytes(Vec<u8>),
-    /// The bounded observation queue overflowed; no subsequent bytes are exposed.
     Overflow,
 }
 
-/// Maximum chunks retained by the optional informational stderr observer.
 pub const STDERR_OBSERVATION_CHUNKS: usize = 16;
 
 struct StderrCapture {
@@ -237,8 +220,8 @@ pub struct AsyncCommand {
 }
 
 impl AsyncCommand {
-    /// Poll the optional bounded informational stderr lane without blocking.
-    /// On overflow, pending copies are discarded and this lane stays disabled.
+    /// Poll the optional stderr lane without blocking. On overflow, pending copies
+    /// are dropped and the lane stays disabled.
     pub fn try_stderr(&mut self) -> Option<StderrObservation> {
         let observations = self.stderr_observations.as_mut()?;
         if observations.disabled {
@@ -256,7 +239,6 @@ impl AsyncCommand {
             .map(StderrObservation::Bytes)
     }
 
-    /// Return a completed result without blocking, or `None` while it runs.
     pub fn try_wait(&mut self) -> Option<Result<Output, Error>> {
         match self.result.try_recv() {
             Ok(result) => {
@@ -283,13 +265,12 @@ impl Drop for AsyncCommand {
     }
 }
 
-/// Spawn a caller-prepared bounded command for nonblocking polling.
-///
-/// Dropping the returned handle cancels and reaps the child process group.
+/// Spawn a caller-prepared bounded command for nonblocking polling. Dropping the
+/// handle cancels and reaps the process group.
 ///
 /// # Errors
 ///
-/// Returns [`Error::InputTooLarge`] before spawning a worker when needed.
+/// [`Error::InputTooLarge`] before spawning a worker.
 pub fn spawn_prepared(
     command: Command,
     input: Option<&[u8]>,
@@ -299,11 +280,11 @@ pub fn spawn_prepared(
     spawn_prepared_inner(command, input, output_limit, timeout, false)
 }
 
-/// Spawn with a bounded nonblocking copy of owned stderr capture.
+/// Spawn with a bounded nonblocking copy of the owned stderr capture.
 ///
-/// Up to sixteen 4096-byte chunks await observation. A slow observer disables
-/// this informational lane instead of blocking the child or capture readers.
-/// Output bytes, limits, cancellation and process-tree ownership are unchanged.
+/// Up to sixteen 4096-byte chunks await observation; a slow observer disables this
+/// informational lane instead of blocking the child or the capture readers. Output
+/// bytes, limits, cancellation and process-tree ownership are unchanged.
 pub fn spawn_prepared_observing_stderr(
     command: Command,
     input: Option<&[u8]>,
@@ -412,7 +393,6 @@ pub fn run(
     run_os(program, args, input, output_limit, timeout)
 }
 
-/// Run a bounded command whose arguments may contain non-UTF-8 OS strings.
 pub fn run_os(
     program: impl AsRef<OsStr>,
     args: &[impl AsRef<OsStr>],
@@ -425,7 +405,6 @@ pub fn run_os(
     run_prepared(command, input, output_limit, timeout)
 }
 
-/// Run a bounded UTF-8 command with an explicit environment overlay.
 pub fn run_with_env(
     program: &str,
     args: &[&str],
@@ -439,8 +418,8 @@ pub fn run_with_env(
     run_prepared(command, input, output_limit, timeout)
 }
 
-/// Run a caller-prepared command while replacing its standard streams and
-/// process-group configuration with the bounded policy.
+/// Run a caller-prepared command, replacing its standard streams and process-group
+/// configuration with the bounded policy.
 pub fn run_prepared(
     command: Command,
     input: Option<&[u8]>,
@@ -450,10 +429,9 @@ pub fn run_prepared(
     run_prepared_with_limits(command, input, output_limit, output_limit, timeout)
 }
 
-/// Run a caller-prepared command with independent output-stream ceilings.
-///
-/// This variant is intended for helpers whose primary output is legitimately
-/// much larger than their diagnostics, such as image acquisition tools.
+/// Run a caller-prepared command with independent output-stream ceilings, for
+/// helpers whose primary output is legitimately much larger than their diagnostics,
+/// such as image acquisition tools.
 pub fn run_prepared_with_limits(
     command: Command,
     input: Option<&[u8]>,
@@ -471,10 +449,9 @@ pub fn run_prepared_with_limits(
     )
 }
 
-/// Run a prepared command with caller-selected input and stream ceilings.
-///
-/// Most callers should retain [`MAX_INPUT_BYTES`] through [`run_prepared`].
-/// This entry point exists for bounded bulk payloads such as print documents.
+/// Run a prepared command with caller-selected input and stream ceilings, for
+/// bounded bulk payloads such as print documents. Most callers want
+/// [`run_prepared`].
 pub fn run_prepared_with_input_limit(
     command: Command,
     input: Option<&[u8]>,
@@ -519,12 +496,9 @@ pub fn run_prepared_with_stdin(
     )
 }
 
-/// What a bounded command reads as its standard input.
 enum Stdin {
     Null,
-    /// Bytes written to it through a pipe.
     Bytes(Zeroizing<Vec<u8>>),
-    /// A file it reads itself.
     File(std::fs::File),
 }
 
@@ -569,7 +543,7 @@ fn run_prepared_inner(
     let out_reader = std::thread::spawn(move || read_bounded(stdout, stdout_limit));
     let err_reader =
         std::thread::spawn(move || read_bounded_observed(stderr, stderr_limit, stderr_capture));
-    let deadline = Instant::now()
+    let deadline = tilo_clock::now()
         .checked_add(timeout)
         .unwrap_or_else(Instant::now);
     let status = loop {
@@ -577,7 +551,7 @@ fn run_prepared_inner(
             break Some(status);
         }
         let cancelled = cancel.is_some_and(|flag| flag.load(Ordering::Acquire));
-        if cancelled || Instant::now() >= deadline {
+        if cancelled || tilo_clock::now() >= deadline {
             kill_tree(&mut child);
             let _ = child.wait();
             break None;

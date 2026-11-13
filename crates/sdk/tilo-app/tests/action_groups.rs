@@ -16,8 +16,8 @@ pub struct Entry {
 
 #[resource(
     kind = "test.shopping",
-    label = "Shopping list",
-    app = "so.tilo.test-shopping"
+    app = "so.tilo.test-shopping",
+    catalogue = "tests/locales"
 )]
 impl Shopping {
     /// Rename the list.

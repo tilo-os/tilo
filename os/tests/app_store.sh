@@ -301,17 +301,23 @@ else
     # for the same socket and split apps across two CRDT sessions. Prove the
     # image ships the owner and that it binds the launcher's canonical path.
     if [ "$svc" = "collab" ]; then
-      native="$REPO/crates/session/session/src/mount/services.rs"
-      # Where the session starts the plane is the session's own business: any
-      # file of the crate that calls it, besides the one that defines it.
-      callers="$(grep -rlF 'start_action_plane(' "$REPO/crates/session/session/src" \
-                   | grep -vF 'mount/services.rs' || true)"
-      if grep -Fq 'pub(crate) fn start_action_plane(' "$native" \
-          && grep -Fq 'launcher::services::collab_socket()' "$native" \
-          && [ -n "$callers" ]; then
-        ok "the session starts 'collab' on the launcher's canonical service socket"
+      # Which file of the session defines the plane, and which one starts it,
+      # is the session's own business, and both have moved before. What has to
+      # hold is that exactly one file of the crate defines it, that this file
+      # binds the launcher's socket, and that another file of the crate calls
+      # it.
+      session_src="$REPO/crates/session/session/src"
+      native="$(grep -rlF 'pub(crate) fn start_action_plane(' "$session_src" || true)"
+      defined="$(printf '%s\n' "$native" | grep -c . || true)"
+      if [ "$defined" -ne 1 ]; then
+        bad "apps [$users] require 'collab', but $defined files of the session define start_action_plane, where exactly one must: the plane that serves it is gone, renamed or split."
       else
-        bad "apps [$users] require 'collab', but the session does not visibly serve its plane on launcher::services::collab_socket()."
+        callers="$(grep -rlF 'start_action_plane(' "$session_src" | grep -vxF "$native" || true)"
+        if grep -Fq 'launcher::services::collab_socket()' "$native" && [ -n "$callers" ]; then
+          ok "the session starts 'collab' on the launcher's canonical service socket"
+        else
+          bad "apps [$users] require 'collab', but the session does not visibly serve its plane on launcher::services::collab_socket(): ${native#"$REPO"/} defines it."
+        fi
       fi
       containerfile_installs_output "$CONTAINERFILE" tilo-session /usr/bin/tilo-session \
         && ok "the image installs the session that owns 'collab'" \

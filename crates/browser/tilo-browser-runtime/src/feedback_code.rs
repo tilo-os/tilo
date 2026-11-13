@@ -18,8 +18,8 @@ use std::sync::Arc;
 use tilo_actions::remote::feedback::FeedbackDestination;
 use tilo_app::feedback::{DurableStore, Error, PickedReport, Subject};
 use tilo_app::feedback_composer::FeedbackServices;
-use tilo_browser_peer::PeerHandle;
 use tilo_feedback_transport::Startup;
+use tilo_session_client::Link;
 use tilo_user_identity::DeviceCert;
 use ui::models::Models;
 
@@ -60,8 +60,7 @@ impl Custody for tilo_desktop::feedback::PrivateFeedback {
     }
 }
 
-type Configure =
-    fn(u32, PeerHandle, DeviceCert, DeviceCert, FeedbackDestination) -> Result<(), String>;
+type Configure = fn(u32, Link, DeviceCert, DeviceCert, FeedbackDestination) -> Result<(), String>;
 type Install = fn(Startup, Rc<dyn DurableStore>) -> Result<Box<dyn Custody>, String>;
 
 /// Feedback's code: what the module a page fetches hands over.
@@ -103,7 +102,7 @@ ui::lazy_code! {
 
 /// A destination configured before the code was in.
 struct Pending {
-    peer: PeerHandle,
+    peer: Link,
     reporter: DeviceCert,
     owner: DeviceCert,
     destination: FeedbackDestination,
@@ -122,7 +121,7 @@ thread_local! {
 /// Select peer `id`'s destination, now or once the code is in.
 pub(crate) fn configure(
     id: u32,
-    peer: PeerHandle,
+    peer: Link,
     reporter: DeviceCert,
     owner: DeviceCert,
     destination: FeedbackDestination,
@@ -241,7 +240,7 @@ pub(crate) fn register_feedback_startup(peer: u32, startup: Startup) -> Result<(
         .reporter()
         .device_public_key()
         .ok_or("feedback reporter has no certified device")?;
-    if crate::replication::device_of(peer).as_deref() != Some(hex::encode(device).as_str()) {
+    if crate::replicated::device_of(peer).as_deref() != Some(hex::encode(device).as_str()) {
         return Err("feedback reporter does not own this certified peer".into());
     }
     STARTUPS.with_borrow_mut(|startups| -> Result<(), String> {

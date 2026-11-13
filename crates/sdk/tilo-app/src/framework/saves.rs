@@ -134,7 +134,7 @@ impl SaveIndicator {
             // (a path, an errno), which goes to the log.
             RecordSaveStatus::Failed(reason) => {
                 tracing::warn!(%reason, "the window's record failed to save");
-                SaveState::Failed(ui_core::i18n!("save-status-failed-detail"))
+                SaveState::Failed(ui_core::i18n::widget_text("save-status-failed-detail"))
             }
             status => SaveState::from(status),
         });
@@ -541,7 +541,7 @@ mod window_tests {
         pub text: String,
     }
 
-    #[resource(kind = "test.save-status-draft", label = "Draft")]
+    #[resource(kind = "test.save-status-draft", catalogue = "tests/locales")]
     impl Draft {
         /// Set the text.
         #[action]

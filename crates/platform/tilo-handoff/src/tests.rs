@@ -132,8 +132,6 @@ fn a_certified_device_proof_binds_operation_package_person_and_ephemeral() {
     assert_eq!(ephemeral_key, ephemeral.verifying_key().to_bytes());
     assert_eq!(cert.user_public_key, identity.identity_public_key);
 
-    // A captured request cannot be replayed into another operation or
-    // package, nor for another person.
     let mut other = identity.clone();
     other.operation_id = uuid::Uuid::new_v4().to_string();
     assert!(transport::verify_device(&frame, now, &other, &package).is_none());
@@ -142,7 +140,6 @@ fn a_certified_device_proof_binds_operation_package_person_and_ephemeral() {
     other_person.identity_public_key = signer(4).verifying_key().to_bytes();
     assert!(transport::verify_device(&frame, now, &other_person, &package).is_none());
 
-    // A device certificate for another root is not a certified proof.
     let foreign_root = signer(5);
     let foreign = request(&identity, &package, &foreign_root, &device, &ephemeral, now);
     assert!(transport::verify_device(&foreign, now, &identity, &package).is_none());

@@ -444,7 +444,10 @@ mod tests {
         assert_eq!(items[0], "Show History");
         assert!(items[1].is_empty(), "recent changes follow a separator");
         assert_eq!(items.len(), 4, "two recent changes: {items:?}");
-        assert!(items[2..].iter().all(|title| title.contains(" · ")));
+        assert!(
+            items[2..].iter().all(|title| title.contains(" by ")),
+            "a change names who made it: {items:?}"
+        );
 
         let newest = history.itemAtIndex(2).unwrap();
         let target = &*chrome.target;

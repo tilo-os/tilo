@@ -12,8 +12,7 @@ use tilolang_tilo::action::resource_ids;
 use ui::framework::testing::HostedApp;
 
 use crate::change_marks::{
-    RUN, action_id, chroma_in, marks, named, published_with, rows, run, settle, shots_dir,
-    text_field,
+    action_id, chroma_in, marks, named, published_with, rows, run, settle, shots_dir, text_field,
 };
 
 const NOTES: &str = "so.tilo.lang.notes";
@@ -64,33 +63,13 @@ fn shoot(app: &mut HostedApp, name: &str) {
 }
 
 #[test]
-fn the_rows_and_the_window_show_what_the_run_did_in_its_colour_and_open_the_run() {
+fn the_window_shows_what_the_run_did_in_its_colour_and_opens_the_run() {
     let (mut app, _) = notes_after_a_run();
     let ground = chroma_in(&mut app, [0.0, 0.0, 8.0, 8.0]);
+    // The notebook lists each note once: the person's own and the two the run made.
     let listed = rows(&mut app);
-    // Each row the run made is marked, and says what changed under its title: one line taller
-    // than the person's own row, and both of the run's the same.
-    let marked: Vec<_> = listed.iter().filter(|(_, _, marked)| *marked).collect();
-    let plain: Vec<_> = listed.iter().filter(|(_, _, marked)| !*marked).collect();
-    assert_eq!((marked.len(), plain.len()), (2, 1), "{listed:?}");
-    let height = plain[0].1[3];
-    for (name, rect, _) in &marked {
-        assert!(
-            (rect[3] - marked[0].1[3]).abs() < 0.5,
-            "{name} reads as tall as the run's other row: {listed:?}"
-        );
-        assert!(
-            rect[3] > height,
-            "{name} says what changed under its title, one line taller: {listed:?}"
-        );
-        // Whoever changed it leads the line under its title, in their colour.
-        let face = [rect[0], rect[1] + rect[3] - 24.0, 16.0, 16.0];
-        assert!(
-            chroma_in(&mut app, face) > ground.saturating_add(24),
-            "{name} shows the agent's face under its title"
-        );
-    }
-    // The window's header says how many, and by whom.
+    assert_eq!(listed.len(), 3, "{listed:?}");
+    // The window's header says how many changed, and by whom, in the agent's colour.
     let header = marks(&mut app);
     assert_eq!(header.len(), 1, "{header:?}");
     assert!(
@@ -99,22 +78,19 @@ fn the_rows_and_the_window_show_what_the_run_did_in_its_colour_and_open_the_run(
     );
     shoot(&mut app, "notes-marks");
 
-    // Pressing the agent's face on a row asks the shell to show the run that made it.
-    let rect = marked[0].1;
+    // A note the run made says so on its page: its history names the run, in the agent's
+    // colour, under the person's own entry. The second of the rows is one of the run's: the
+    // person's own note stands first.
+    let made = listed[1].1;
     app.harness()
-        .click_at(rect[0] + 8.0, rect[1] + rect[3] - 16.0);
+        .click_at(made[0] + made[2] / 4.0, made[1] + made[3] / 2.0);
     settle(&mut app);
-    let mut asked = Vec::new();
-    while let Some(intent) = app.harness().take_host_intent() {
-        asked.push(intent);
-    }
+    let face = named(&mut app, "Avatar", "Helper (agent)");
     assert!(
-        asked.iter().any(|intent| matches!(
-            intent,
-            ui::widget::AppHostIntent::ShowTaskRun { group } if group == RUN
-        )),
-        "the mark shows its run: {asked:?}"
+        chroma_in(&mut app, face) > ground.saturating_add(24),
+        "the run's entry stands in the agent's colour"
     );
+    named(&mut app, "Text", "Tidy the notes");
 }
 
 #[test]
@@ -122,14 +98,14 @@ fn the_field_the_run_renamed_takes_its_colour() {
     let (mut app, notebook) = notes_after_a_run();
     let ground = chroma_in(&mut app, [0.0, 0.0, 8.0, 8.0]);
     let (agent, ambient) = run();
-    let item = published_with(&mut app, &notebook, "Retitle…");
-    let retitle = action_id(&mut app, &item, "Retitle…");
+    let item = published_with(&mut app, &notebook, "Rename…");
+    let retitle = action_id(&mut app, &item, "Rename…");
     let mut title = Map::new();
     title.insert("title".to_owned(), "Meeting notes".into());
     app.invoke(Some(agent), Some(&ambient), &item, &retitle, &title, false)
         .unwrap();
     settle(&mut app);
-    let row = named(&mut app, "SwipeRow", "Meeting notes");
+    let row = named(&mut app, "ListRow", "Meeting notes");
     app.harness()
         .click_at(row[0] + row[2] / 4.0, row[1] + row[3] / 2.0);
     settle(&mut app);

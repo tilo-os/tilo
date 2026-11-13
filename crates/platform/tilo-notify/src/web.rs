@@ -1,6 +1,6 @@
-//! The browser backend: the Notifications API while the page is open. A
-//! click brings the page forward and hands the notification's activation
-//! URI to the app's handler ([`crate::set_activation_handler`]).
+//! The browser backend: the Notifications API while the page is open. A click
+//! brings the page forward and hands the notification's activation URI to the app's
+//! handler ([`crate::set_activation_handler`]).
 
 use js_sys::{Promise, Reflect};
 use wasm_bindgen::prelude::*;
@@ -43,13 +43,11 @@ fn text(error: &JsValue) -> String {
         .unwrap_or_else(|| format!("{error:?}"))
 }
 
-/// Have the page report clicks to the activation handlers, once.
 fn listen() {
     static LISTENING: std::sync::Once = std::sync::Once::new();
     LISTENING.call_once(|| {
         let listener = Closure::<dyn Fn(String)>::new(|uri: String| crate::report_activation(&uri));
         set_activation_listener(&listener);
-        // The page reports clicks for as long as it runs.
         listener.forget();
     });
 }
@@ -57,9 +55,6 @@ fn listen() {
 pub(crate) struct PageNotifier;
 
 impl Notifier for PageNotifier {
-    /// Shows at once when the site may notify. While the user has not
-    /// decided, asks and shows if allowed; that later refusal is logged, not
-    /// returned.
     fn show(&self, notification: &Notification) -> Result<(), NotifyError> {
         crate::validate(notification)?;
         let Notification {

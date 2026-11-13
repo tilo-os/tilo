@@ -1,5 +1,5 @@
-//! The installation a launch runs, verified on every launch: its files, its signed record and
-//! its publisher, not revoked.
+//! The installation a launch runs, verified on every launch: its files, its signed
+//! record and its publisher, not revoked.
 
 use std::path::Path;
 
@@ -15,17 +15,15 @@ pub(crate) fn verified_launch_installation(
         .map(|(manifest, _)| manifest)
 }
 
-/// [`verified_launch_installation`], with the identity of the publisher whose key signed the
-/// package.
+/// [`verified_launch_installation`], with the identity of the publisher whose key signed the package.
 pub(crate) fn verified_launch_publisher(
     installed: &package_store::InstalledPackage,
     manifest_path: &Path,
     payload_root: &Path,
     expected: &str,
 ) -> Result<(ManifestView, [u8; 32]), RunError> {
-    // Re-read on every launch, as `tilo-install run` does: a publisher
-    // revoked after install must not keep launching from the shell. An
-    // unreadable list refuses rather than reading as "nothing revoked".
+    // Re-read on every launch, as `tilo-install run` does: a publisher revoked after install must not
+    // keep launching from the shell.
     use tilo_app_package::TrustFile as _;
     let revoked = match tilo_app_package::default_revoked_keys_path() {
         Some(path) => tilo_app_package::RevocationList::load(&path).map_err(|error| {

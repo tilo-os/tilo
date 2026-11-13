@@ -83,20 +83,6 @@ impl WorkspaceMembers {
         (!member.expired_at(now_ns)).then_some(member.epoch)
     }
 
-    /// Every device on workspace `ws`'s roster whose certificate holds at `now_ns`.
-    pub(super) fn members(&self, ws: WorkspaceId, now_ns: u64) -> Vec<EndpointId> {
-        self.rosters
-            .get(&ws)
-            .map(|roster| {
-                roster
-                    .iter()
-                    .filter(|(_, member)| !member.expired_at(now_ns))
-                    .map(|(device, _)| *device)
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
     /// Whether any workspace here still holds `device`.
     fn holds(&self, device: EndpointId) -> bool {
         self.rosters
@@ -288,10 +274,9 @@ mod tests {
             None,
             "membership of one workspace is no membership of another"
         );
-        assert_eq!(
-            members.members(WORKSPACE, NOW),
-            vec![member],
-            "this device streams to members only"
+        assert!(
+            members.member(WORKSPACE, member, NOW).is_some(),
+            "this device reaches members only"
         );
     }
 
@@ -378,7 +363,11 @@ mod tests {
             members.ingress[&(lapsing, 1)].bound[&WORKSPACE].is_none(),
             "the connection it came on is tombstoned for the workspace"
         );
-        assert_eq!(members.members(WORKSPACE, NOW + 10), vec![lasting_member]);
+        assert!(
+            members
+                .member(WORKSPACE, lasting_member, NOW + 10)
+                .is_some()
+        );
         assert!(matches!(
             members.admit(WORKSPACE, lasting_member, 1, NOW + 10),
             Admission::Member(_)
@@ -390,8 +379,7 @@ mod tests {
         let (here, lapsing) = (device(1), device(2));
         let mut members = WorkspaceMembers::default();
         members.set_roster(WORKSPACE, here, [(lapsing, Some(NOW))], minting(), true);
-        assert_eq!(members.members(WORKSPACE, NOW - 1), vec![lapsing]);
-        assert!(members.members(WORKSPACE, NOW).is_empty());
+        assert!(members.member(WORKSPACE, lapsing, NOW - 1).is_some());
         assert_eq!(members.member(WORKSPACE, lapsing, NOW), None);
     }
 }

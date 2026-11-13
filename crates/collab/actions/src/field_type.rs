@@ -89,6 +89,29 @@ impl FieldType {
         }
     }
 
+    /// This type with the named types `renames` maps given their new names:
+    /// what a surface does when a record its fields already declared is
+    /// named again by a value an action answers with.
+    #[must_use]
+    pub fn renamed(&self, renames: &std::collections::BTreeMap<String, String>) -> Self {
+        let inner = |ty: &Self| Box::new(ty.renamed(renames));
+        match self {
+            Self::Named(name) => renames
+                .get(name)
+                .map_or_else(|| self.clone(), |name| Self::Named(name.clone())),
+            Self::Option(ty) => Self::Option(inner(ty)),
+            Self::List(ty) => Self::List(inner(ty)),
+            Self::Set(ty) => Self::Set(inner(ty)),
+            Self::Collection(ty) => Self::Collection(inner(ty)),
+            Self::Map(ty) => Self::Map(inner(ty)),
+            Self::Outbox(ty) => Self::Outbox(inner(ty)),
+            Self::Union(cases) => {
+                Self::Union(cases.iter().map(|case| case.renamed(renames)).collect())
+            }
+            other => other.clone(),
+        }
+    }
+
     /// The type of a value of the JSON Schema `schema`, as far as the schema
     /// tells: what a parameter published only as its schema takes.
     #[must_use]

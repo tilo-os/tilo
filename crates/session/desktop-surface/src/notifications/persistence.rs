@@ -52,6 +52,9 @@ struct PersistedNotification {
     source_workspace: Option<u64>,
     show_preview: bool,
     posted_unix_ms: u64,
+    /// The person has not seen it yet: the bell counts it in the next session too.
+    #[serde(default)]
+    unread: bool,
     #[serde(default)]
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     scheduled_target: Option<super::ScheduledNotificationTarget>,
@@ -81,8 +84,11 @@ fn unix_ms(time: SystemTime) -> u64 {
 }
 
 /// Encode retained notifications, oldest first, for a host's private store.
-pub fn encode_history(
+/// `history` as kept between sessions, each entry with whether `unread` says the person has not
+/// seen it.
+pub(crate) fn encode_history(
     history: &[Notification],
+    unread: impl Fn(u64) -> bool,
     wall_now: SystemTime,
     now: Instant,
 ) -> Result<Vec<u8>, serde_json::Error> {
@@ -102,6 +108,7 @@ pub fn encode_history(
                     app_id: notification.app_id.as_deref().map(bounded),
                     source_workspace: notification.source_workspace,
                     show_preview: notification.show_preview,
+                    unread: unread(notification.id),
                     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
                     scheduled_target: notification
                         .scheduled_target
@@ -117,11 +124,12 @@ pub fn encode_history(
 }
 
 /// Restore bounded history with its original age and verified app attribution.
-pub fn decode_history(
+/// The history kept in `bytes`, each entry with whether the person had not seen it.
+pub(crate) fn decode_history(
     bytes: &[u8],
     wall_now: SystemTime,
     now: Instant,
-) -> Result<Vec<Notification>, serde_json::Error> {
+) -> Result<Vec<(Notification, bool)>, serde_json::Error> {
     let stored: PersistedHistory = serde_json::from_slice(bytes)?;
     let wall_now_ms = unix_ms(wall_now);
     let skip = stored.notifications.len().saturating_sub(MAX_HISTORY);
@@ -145,7 +153,7 @@ pub fn decode_history(
             }
             notification.show_preview = entry.show_preview;
             notification.show_on_lock_screen = false;
-            notification
+            (notification, entry.unread)
         })
         .collect())
 }
@@ -163,10 +171,11 @@ mod tests {
         notification.app_name = Some("Clocks".into());
         notification.source_workspace = Some(7);
         notification.actions = vec![("default".into(), "Open".into())];
-        let bytes = encode_history(&[notification], wall, now).unwrap();
+        let bytes = encode_history(&[notification], |_| true, wall, now).unwrap();
         let restored = decode_history(&bytes, wall + Duration::from_secs(30), now).unwrap();
         assert_eq!(restored.len(), 1);
-        let notice = &restored[0];
+        let (notice, unread) = &restored[0];
+        assert!(unread, "what the person had not seen is still unread");
         assert_eq!(notice.title, "Timer finished");
         assert_eq!(notice.body, "Tea is ready");
         assert_eq!(notice.app_id.as_deref(), Some("so.tilo.clocks"));
@@ -185,11 +194,12 @@ mod tests {
             .map(|i| Notification::new(i.to_string(), "ä".repeat(MAX_PERSISTED_TEXT)))
             .collect();
         let now = ui::time::now();
-        let bytes = encode_history(&history, UNIX_EPOCH, now).unwrap();
+        let bytes = encode_history(&history, |_| false, UNIX_EPOCH, now).unwrap();
         let restored = decode_history(&bytes, UNIX_EPOCH, now).unwrap();
         assert_eq!(restored.len(), MAX_HISTORY);
-        assert_eq!(restored[0].title, "3");
-        assert_eq!(restored[0].body.len(), MAX_PERSISTED_TEXT);
+        assert_eq!(restored[0].0.title, "3");
+        assert_eq!(restored[0].0.body.len(), MAX_PERSISTED_TEXT);
+        assert!(!restored[0].1, "what the person saw stays read");
         assert!(decode_history(b"broken", UNIX_EPOCH, now).is_err());
     }
 }

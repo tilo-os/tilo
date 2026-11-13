@@ -740,7 +740,8 @@ impl Workspace {
         *self.base.borrow_mut() = std::rc::Rc::new(crate::projection::read(&self.chat));
         chain
             .stage_at(&invoke, author, now_ms)
-            .map_err(|error| DoorError::Failed(error.to_string()))
+            .map_err(|error| DoorError::Failed(error.to_string()))?
+            .ok_or_else(|| DoorError::Failed("the part is on its way from the workspace".into()))
     }
 
     /// Write `part` into part `index` of the messages as it stands: a test's

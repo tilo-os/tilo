@@ -2,14 +2,6 @@
 //! permission bits, symbolic links, extended attributes, no-replace
 //! rename, private staging directories, trash management, whether two paths
 //! share a filesystem, and the capacity and free space of one.
-//!
-//! Apps that preserve or present such metadata (a backup engine, a file
-//! manager) call these functions; each one says what it does where the
-//! platform has no equivalent, so no app needs its own target checks.
-//!
-//! [`transfer`] is the one way to copy or move a file or folder into a
-//! folder: privately staged, flushed, published by a rename under a name
-//! nothing had, and put back when a move cannot finish.
 
 pub mod attributes;
 pub mod names;
@@ -86,7 +78,6 @@ pub fn same_filesystem(path: &Path, dir: &Path) -> bool {
     }
 }
 
-/// Whether [`symlink`] can create symbolic links on this platform.
 pub const HAS_SYMLINKS: bool = cfg!(unix);
 
 /// Create a symbolic link at `link` pointing to `target`.

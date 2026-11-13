@@ -1,8 +1,4 @@
 //! Stable, versioned wire records for collaborative files.
-//!
-//! Paths are mutable presentation metadata. Authority, versions, previews and
-//! conflicts refer to [`FileRecordId`] so a rename or move cannot silently
-//! change what was shared or which history belongs to a file.
 
 mod history_read;
 pub use history_read::*;
@@ -164,7 +160,6 @@ pub struct ContentRevisionV1 {
 }
 
 impl ContentRevisionV1 {
-    /// Validate version, identity, and immutable revision identifiers.
     pub fn validate(&self) -> Result<(), FileRecordError> {
         if self.schema_version != CONTENT_REVISION_VERSION {
             return Err(FileRecordError::UnsupportedContentRevisionVersion(
@@ -190,7 +185,6 @@ pub struct FileActor {
     pub device: Ed25519PublicKey,
 }
 
-/// Structural kind authenticated independently of the mutable namespace CRDT.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum FileNodeKind {
@@ -289,7 +283,6 @@ pub struct FilePropertiesV1 {
 }
 
 impl FilePropertiesV1 {
-    /// Validate all bounds in this replicated rich-properties record.
     pub fn validate(&self) -> Result<(), FileRecordError> {
         if self.schema_version != FILE_PROPERTIES_VERSION {
             return Err(FileRecordError::UnsupportedPropertiesVersion(
@@ -509,7 +502,6 @@ pub enum ConflictMergeCodecV1 {
     PlainUtf8ThreeWayV1,
 }
 
-/// Complete authenticated post-state proposed for one transaction participant.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileMutationParticipant {
@@ -545,7 +537,6 @@ impl FileMutationParticipant {
         }
     }
 
-    /// Compute the canonical digest binding this participant's proposed projection.
     pub fn computed_projection_hash(&self) -> Result<ContentHash, CanonicalError> {
         let bytes = canonical_bytes(&self.projection_view())?;
         Ok(ContentHash(Sha256::digest(bytes).into()))
@@ -698,7 +689,6 @@ pub enum FileMutationOperation {
     },
 }
 
-/// Canonical manifest signed once and copied unchanged into every prepare.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileMutationTransactionManifest {
@@ -1116,16 +1106,12 @@ pub const MAX_ATTRIBUTION_TEXT_BYTES: usize = 128;
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileAttributionV1 {
-    /// The acting agent's principal, `agent:<id>`.
     pub actor: String,
-    /// How the agent is shown.
     pub label: String,
-    /// The agent's presence colour, sRGB.
     pub color: [u8; 3],
 }
 
 impl FileAttributionV1 {
-    /// The agent's id: its principal without the `agent:` namespace.
     #[must_use]
     pub fn agent_id(&self) -> Option<&str> {
         self.actor.strip_prefix("agent:")

@@ -1,5 +1,5 @@
-//! Microphones: an audio data output converting to mono native-endian
-//! `f32` at the requested rate.
+//! Microphones: an audio data output converting to mono native-endian `f32` at the
+//! requested rate.
 
 use std::collections::VecDeque;
 use std::ptr::NonNull;
@@ -17,7 +17,6 @@ use crate::{
     AudioSource, CaptureError, CaptureState, DeviceKind, MAX_BUFFERED_SAMPLES, MicrophoneRequest,
 };
 
-/// `kAudioFormatLinearPCM` (`'lpcm'`).
 const LINEAR_PCM: u32 = 0x6C70_636D;
 
 struct Audio {
@@ -51,7 +50,6 @@ pub(crate) fn microphone(
     let kind = DeviceKind::Microphone;
     let rate = request.sample_rate.clamp(8_000, 192_000);
     let (device, input) = super::device_input(kind, request.device.as_deref())?;
-    // AVFAudio's settings keys are these very strings.
     let keys = [
         "AVFormatIDKey",
         "AVSampleRateKey",
@@ -109,7 +107,6 @@ pub(crate) fn microphone(
     }))
 }
 
-/// The sample data `sample` carries, copied out.
 fn bytes(sample: &CMSampleBuffer) -> Option<Vec<u8>> {
     // SAFETY: a sample buffer the output handed its delegate.
     let data = unsafe { sample.data_buffer() }?;

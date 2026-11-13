@@ -1,5 +1,6 @@
-//! Private orchestration for explicit target grants. No transfer starts merely
-//! because the person advances a setup page.
+//! Private orchestration for explicit target grants. No transfer starts merely because
+//! the person advances a setup page.
+
 use std::path::PathBuf;
 
 use imager_backend::journey_transfer;
@@ -384,8 +385,6 @@ mod tests {
             std::fs::read(target.join(OsStr::from_bytes(b"notes-\xfe"))).unwrap(),
             b"notes"
         );
-        // A FIFO cannot travel in a sealed Home unit; review refuses before
-        // anything is sealed or written.
         let fifo = source.join(OsStr::from_bytes(b"pipe-\xff"));
         let fifo_c = CString::new(fifo.as_os_str().as_bytes()).unwrap();
         // SAFETY: a valid NUL-terminated path inside an isolated fixture.
@@ -421,15 +420,12 @@ mod tests {
         let name = CString::new(fifo.as_os_str().as_bytes()).unwrap();
         // SAFETY: a valid NUL-terminated path inside an isolated fixture.
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-        // No writer opens the FIFO until the read has answered, so a reader
-        // that waited for one would never answer.
         let (answered, answer) = std::sync::mpsc::channel();
         let reading = fifo.clone();
         let reader = std::thread::spawn(move || {
             let _ = answered.send(journey_transfer::read_flatpak_inventory(&reading).is_err());
         });
         let refused = answer.recv_timeout(tilo_test_env::hang_bound());
-        // Release a regressed blocking open, so failure cannot hang Cargo.
         let _ = std::fs::OpenOptions::new()
             .write(true)
             .custom_flags(libc::O_NONBLOCK)

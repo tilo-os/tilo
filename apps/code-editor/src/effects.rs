@@ -1,20 +1,12 @@
-//! What Code does that is not an edit of its project document: opening and
-//! saving real files, showing a file or a location, and the editor's own
-//! commands. Every one is published on the project resource, so a button, the
-//! command palette, Ctrl+K, an agent and a script reach the same handler
-//! (the editor's view, which answers them on [`crate::CodeApp`]).
+//! What Code does that is not an edit of its project document: opening and saving real files, showing
+//! a file or a location, and the editor's own commands.
 
 use ui::tilo_resource::{self, Effect};
 
 use crate::commands::Command;
 
-/// The contract tag of an effect that acts where the caret is: the caret's
-/// line, or every line of the selection when there is one. It needs an open
-/// file, not a selection.
 const CARET: &str = ui::tilo_actions::ContextRequirement::Caret.tag();
 
-/// Code's effect vocabulary. File ids are the UUIDs of the project's file
-/// records; paths are absolute filesystem paths.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "code_editor.effect")]
 pub enum CodeEditorEffect {
@@ -177,8 +169,6 @@ pub enum CodeEditorEffect {
 }
 
 impl CodeEditorEffect {
-    /// The editor command this effect runs, for the effects that are one of
-    /// the command palette's commands.
     pub fn command(&self) -> Option<Command> {
         Some(match self {
             Self::ReadText { .. }
@@ -222,7 +212,6 @@ impl CodeEditorEffect {
 }
 
 impl Command {
-    /// The published effect that runs this command.
     pub fn effect(self) -> CodeEditorEffect {
         match self {
             Self::NewFile => CodeEditorEffect::NewBuffer,

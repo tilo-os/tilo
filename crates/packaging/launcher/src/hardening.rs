@@ -1,83 +1,30 @@
 //! Which processes get the expensive runtime protections.
 //!
-//! Most of Tilo is Rust, which does not produce the bug classes a hardening
-//! allocator catches, so paying for one everywhere would be a tax on
-//! already-memory-safe code. Measured on this machine, an allocation-heavy loop
-//! runs about 3.4x slower under scudo than under glibc's allocator (32 ms vs
-//! 110 ms for three million short-lived allocations). That number is the reason
-//! this file exists: full strength where the bugs live, nothing where they
-//! don't.
-//!
-//! "Where the bugs live" means a process that parses bytes it did not produce,
-//! in C or C++: a web engine, a media decoder, an image codec, a font shaper.
-//! The list is **owned by the image, not by the package** — an app cannot opt
-//! out, since the decision is about how much the system trusts the app's
-//! inputs. Extended at image build time via [`POLICY_PATH`]; the compiled-in
-//! list is the fallback so a missing file degrades to the known-risky set.
-//!
-//! Two protections: **hardened allocator** (scudo, from compiler-rt) —
-//! out-of-line metadata, guard slabs, header checksums, delayed reuse, turning
-//! a heap overflow or double free into a controlled abort — and **hardware
-//! shadow stacks** (`GLIBC_TUNABLES=glibc.cpu.hwcaps=SHSTK`): every Tilo binary
-//! is link-time compatible, but glibc won't switch shadow stacks on without
-//! this opt-in, which scopes the protection instead of making it global and
-//! is inert (not an error) on a CPU without shadow-stack support.
-//!
-//! Inert only at startup: once shadow stacks are on, glibc refuses to
-//! `dlopen` any object without the SHSTK note, and a multithreaded process
-//! cannot drop them again (`glibc.cpu.x86_shstk=permissive` does not help).
-//! GPU drivers are dlopened, so every library in the pinned driver's closure
-//! must be marked. Fedora 44's libzstd is not (its decoder assembly carries no
-//! GNU property note) and Mesa's RADV needs it: on a shadow-stack CPU the
-//! Vulkan loader finds no driver, wgpu has no backend, and the app never draws
-//! a window. An image that launches these packages must ship a marked libzstd
-//! (zstd built with `ZSTD_DISABLE_ASM` and `-fcf-protection`; the hosted guest
-//! image does this) or otherwise check the closure of the drivers it ships.
+//! Most of Tilo is Rust, which does not produce the bug classes a hardening allocator
+//! catches, so paying for one everywhere would be a tax on already-memory-safe code.
 
 use std::path::{Path, PathBuf};
 
-/// Image-owned list of package ids whose processes parse untrusted
-/// bytes. One entry per line, `#` for a comment, a trailing `*` for a
-/// prefix match (`so.tilo.*` covers a family).
+/// Image-owned list of package ids whose processes parse untrusted bytes.
 pub const POLICY_PATH: &str = "/usr/lib/tilo/untrusted-parsers.conf";
 
-/// Fallback when [`POLICY_PATH`] is absent — the packages in this tree
-/// that decode attacker-supplied data through a C or C++ library:
-/// browser (a whole web engine, the only package allowed to generate
-/// code), tube/music (container demux and audio/video decode operating
-/// on bytes from the network).
+/// Fallback when [`POLICY_PATH`] is absent — the packages in this tree that decode attacker-supplied
+/// data through a C or C++ library: browser (a whole web engine, the only package allowed to generate
+/// code), tube/music (container demux and audio/video decode operating on bytes from the network).
 pub const BUILTIN_HIGH_RISK: &[&str] = &["so.tilo.browser", "so.tilo.tube", "so.tilo.music"];
 
-/// Environment variable that overrides [`POLICY_PATH`] — for tests to
-/// point at a fixture; production reads the image's file. Honoured only by
-/// developer builds (see [`crate::dev_env`]).
+/// Environment variable that overrides [`POLICY_PATH`] — for tests to point at a fixture; production
+/// reads the image's file.
 pub const POLICY_PATH_ENV: &str = "TILO_UNTRUSTED_PARSERS_FILE";
 
-/// Image-owned Scudo copy. Tilo retains this DSO without shipping the complete
-/// compiler-rt sanitizer/toolchain payload it came from.
+/// Image-owned Scudo copy.
 pub const TILO_SCUDO_PATH: &str = "/usr/lib/tilo/libclang_rt.scudo_standalone.so";
 
 /// glibc tunables that keep transparent huge pages out of malloc arenas.
-/// Fedora's glibc asks the kernel for them by default, which makes every
-/// thread's 2 MiB arena resident when it first allocates (an idle compositor
-/// held 180 MiB for 34 MiB of live data). The session sets this for the
-/// compositor and its services (`os/usr/libexec/tilo-session`, held to this
-/// value by a test) and every sandboxed app gets it too.
-///
-/// Only settings that make glibc call less may go here, never more: this
-/// environment reaches code with syscall policies of its own (Chromium's
-/// renderers, every Electron app the person runs). `glibc.pthread.stack_hugetlb=0`
-/// was here and broke exactly that: it makes `pthread_create` call
-/// `madvise(MADV_NOHUGEPAGE)` on each new stack and fail when the call is
-/// refused, and Chromium's renderer sandbox refuses it with `EPERM`. Every
-/// renderer died on its first thread and the browser loaded no page. Thread
-/// stacks need no opt-out on Tilo: the kernel gives huge pages only to memory
-/// that asks for them (`CONFIG_TRANSPARENT_HUGEPAGE_MADVISE`), and nothing
-/// asks for a stack.
 pub const NO_HUGE_PAGES_TUNABLES: &str = "glibc.malloc.hugetlb=0";
 
-/// `GLIBC_TUNABLES` for one launch: [`NO_HUGE_PAGES_TUNABLES`], plus the
-/// shadow-stack request when the launch has it.
+/// `GLIBC_TUNABLES` for one launch: [`NO_HUGE_PAGES_TUNABLES`], plus the shadow-stack request when the
+/// launch has it.
 pub fn tunables(shadow_stack: bool) -> String {
     if shadow_stack {
         format!("glibc.cpu.hwcaps=SHSTK:{NO_HUGE_PAGES_TUNABLES}")
@@ -89,10 +36,7 @@ pub fn tunables(shadow_stack: bool) -> String {
 /// The extra runtime protections to apply to one launch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeHardening {
-    /// Absolute host path of the hardened allocator to `LD_PRELOAD`, when
-    /// wanted and present. `None` means the system allocator — not on the
-    /// list, or the image was built without compiler-rt, which must not be
-    /// fatal.
+    /// Absolute host path of the hardened allocator to `LD_PRELOAD`, when wanted and present.
     pub allocator: Option<PathBuf>,
     /// Ask glibc to enable hardware shadow stacks for this process.
     pub shadow_stack: bool,
@@ -111,10 +55,6 @@ impl RuntimeHardening {
 }
 
 /// Does `package_id` match one entry of a policy list?
-///
-/// Split out from file reading so matching is testable without a
-/// filesystem: comments/blank lines ignored, a bare id is exact, a
-/// trailing `*` is a prefix match.
 pub fn policy_matches(list: &str, package_id: &str) -> bool {
     list.lines().any(|line| {
         let entry = line.split('#').next().unwrap_or("").trim();
@@ -129,19 +69,13 @@ pub fn policy_matches(list: &str, package_id: &str) -> bool {
 }
 
 /// Where the scudo standalone allocator lives, if installed.
-///
-/// The path carries clang's major version, so it moves with every
-/// compiler-rt update and can't be hard-coded. Absence is `None`, not
-/// an error — an image without compiler-rt should still launch apps,
-/// with the system allocator.
 pub fn find_hardened_allocator() -> Option<PathBuf> {
     const NAME: &str = "libclang_rt.scudo_standalone.so";
     let tilo_copy = PathBuf::from(TILO_SCUDO_PATH);
     if tilo_copy.is_file() {
         return Some(tilo_copy);
     }
-    // Flat library dirs first — a distribution that ships the library
-    // unversioned puts it here.
+    // Flat library dirs first — a distribution that ships the library unversioned puts it here.
     for root in ["/usr/lib64", "/usr/lib"] {
         let direct = Path::new(root).join(NAME);
         if direct.is_file() {
@@ -149,9 +83,6 @@ pub fn find_hardened_allocator() -> Option<PathBuf> {
         }
     }
     // Fedora's layout is /usr/lib/clang/<major>/lib/<triple>/<name>.
-    // Searching only the clang trees, not all of /usr/lib, keeps this a
-    // handful of readdir calls on the launch path for every high-risk
-    // package.
     for root in ["/usr/lib64/clang", "/usr/lib/clang"] {
         if let Some(found) = search_for(Path::new(root), NAME, 3) {
             return Some(found);
@@ -160,8 +91,7 @@ pub fn find_hardened_allocator() -> Option<PathBuf> {
     None
 }
 
-/// Bounded-depth search, so a deep or symlink-looped tree can't turn a
-/// launch into a filesystem walk.
+/// Bounded-depth search, so a deep or symlink-looped tree can't turn a launch into a filesystem walk.
 fn search_for(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
     let direct = dir.join(name);
     if direct.is_file() {
@@ -176,8 +106,8 @@ fn search_for(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
         .map(|e| e.path())
         .filter(|p| p.is_dir() && !p.is_symlink())
         .collect();
-    // Deterministic order so two machines with the same layout resolve to
-    // the same library, and a newer clang wins over an older one left behind.
+    // Deterministic order so two machines with the same layout resolve to the same library, and a
+    // newer clang wins over an older one left behind.
     subdirs.sort();
     subdirs.reverse();
     subdirs
@@ -185,10 +115,8 @@ fn search_for(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
         .find_map(|sub| search_for(&sub, name, depth.saturating_sub(1)))
 }
 
-/// Whether `package_id` is named by the image-owned list at `path`, read
-/// through `variable` in developer builds. A missing file means `builtin` — the
-/// compiled-in set for that entitlement — never "nobody": an image that did not
-/// ship the list must still run the packages it is built around.
+/// Whether `package_id` is named by the image-owned list at `path`, read through `variable` in
+/// developer builds.
 pub fn entitled(package_id: &str, path: &str, variable: &'static str, builtin: &[&str]) -> bool {
     let policy_path = package_store::dev_env::dev_override(variable)
         .map_or_else(|| PathBuf::from(path), PathBuf::from);
@@ -249,8 +177,8 @@ mod tests {
     #[cfg(all(target_os = "linux", target_endian = "little"))]
     const ENGINE_THREAD_PROBE: &str = "TILO_TEST_ENGINE_THREAD_PROBE";
 
-    /// Refuse huge-page advice with `EPERM`, as Chromium's renderer sandbox
-    /// does, then start a thread and report whether it started.
+    /// Refuse huge-page advice with `EPERM`, as Chromium's renderer sandbox does, then start a thread
+    /// and report whether it started.
     #[cfg(all(target_os = "linux", target_endian = "little"))]
     fn start_a_thread_inside_an_engine_sandbox() -> bool {
         let word = |value: i64| u32::try_from(value).expect("a BPF immediate");
@@ -288,8 +216,8 @@ mod tests {
             len: u16::try_from(filter.len()).expect("a short program"),
             filter: filter.as_ptr().cast_mut(),
         };
-        // SAFETY: scalar prctl calls on this process; `program` points at
-        // `filter`, which outlives the call, and the kernel copies it.
+        // SAFETY: scalar prctl calls on this process; `program` points at `filter`, which outlives the
+        // call, and the kernel copies it.
         unsafe {
             assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
             assert_eq!(
@@ -307,8 +235,7 @@ mod tests {
             .is_ok_and(|thread| thread.join().is_ok())
     }
 
-    /// Run the probe in a fresh process: glibc reads `GLIBC_TUNABLES` only
-    /// when a process starts.
+    /// Run the probe in a fresh process: glibc reads `GLIBC_TUNABLES` only when a process starts.
     #[cfg(all(target_os = "linux", target_endian = "little"))]
     fn thread_starts_under(tunables: &str) -> bool {
         let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
@@ -335,15 +262,8 @@ mod tests {
         }
     }
 
-    /// The browser loaded no page: every Chromium renderer logged
-    /// `pthread_create: Operation not permitted` and died, two thousand of
-    /// them in fourteen seconds. The launch environment carried
-    /// `glibc.pthread.stack_hugetlb=0`, which makes glibc advise every new
-    /// thread stack against huge pages and fail the thread when the advice
-    /// is refused, and Chromium's renderer sandbox refuses it. The tunables
-    /// every launch and the session hand on must leave thread creation to
-    /// what such a sandbox allows; the stack opt-out is the control that
-    /// shows the probe sees the failure.
+    /// The browser loaded no page: every Chromium renderer logged `pthread_create: Operation not
+    /// permitted` and died, two thousand of them in fourteen seconds.
     #[test]
     #[cfg(all(target_os = "linux", target_endian = "little"))]
     fn every_launch_environment_lets_a_web_engines_sandboxed_processes_start_threads() {

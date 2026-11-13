@@ -14,7 +14,7 @@ pub struct Card {
     pub reactions: Reactions,
 }
 
-#[resource(kind = "test.board", label = "Board")]
+#[resource(kind = "test.board", catalogue = "tests/locales")]
 impl Board {
     /// Add a card.
     #[action]

@@ -275,7 +275,6 @@ fn an_exit_turns_forwarding_on_only_while_it_needs_it() {
     assert_eq!(service.handle(PERSON, Request::CloseExit).0, Response::Done);
     assert!(!service.backend().forwarding);
 
-    // Forwarding someone else turned on stays on, and is not guarded.
     service.backend.forwarding = true;
     service.backend.commands.clear();
     service.handle(

@@ -166,7 +166,6 @@ fn receiver_capacity_and_invalid_timing_do_not_allocate_unbounded_state() {
             .push(received(&format!("p{index}"), 0, now), now)
             .unwrap();
     }
-    // Every slot is speaking: a ninth voice waits, without ending anything.
     assert_eq!(queue.push(received("ninth", 0, now), now), Ok(()));
     assert_eq!(queue.stats().overruns, 1);
     for sequence in 1..10 {
@@ -256,7 +255,6 @@ fn a_ninth_voice_takes_the_slot_of_the_one_quiet_longest() {
             .push(received(&format!("p{index}"), 0, now), now)
             .unwrap();
     }
-    // Everyone's last frame played out and expired: they went quiet, p0 first.
     let later = now + Duration::from_millis(400);
     let _ = queue.poll(later);
     let speaker = received("ninth", 0, later);
@@ -313,7 +311,6 @@ fn a_publisher_that_returns_is_a_new_publication_and_its_old_frames_are_refused(
     for sequence in 10..13 {
         queue.push(received("ada", sequence, now), now).unwrap();
     }
-    // It left and came back on the same carrier: its sequence restarts.
     let mut back = received("ada", 0, now);
     back.publisher.incarnation = 2;
     queue.push(back, now).unwrap();

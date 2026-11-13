@@ -6,7 +6,6 @@ use std::fs::Metadata;
 use std::io;
 use std::rc::Rc;
 
-/// A production publication checkpoint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Checkpoint {
     StageCreated,
@@ -22,14 +21,12 @@ pub enum Checkpoint {
     Committed,
 }
 
-/// Owned observations of a retained staging file.
 #[derive(Debug)]
 pub struct StageObservation {
     pub metadata: Metadata,
     pub identity: FileIdentity,
 }
 
-/// An observed production checkpoint.
 #[derive(Debug)]
 pub struct CheckpointEvent {
     pub checkpoint: Checkpoint,
@@ -123,7 +120,6 @@ fn with_scoped_failure<T>(failure: Failure, operation: impl FnOnce() -> T) -> T 
     output
 }
 
-/// Observe production checkpoints for `operation` on this thread.
 pub fn with_observer<T>(
     observer: impl Fn(&CheckpointEvent) + 'static,
     operation: impl FnOnce() -> T,
@@ -169,6 +165,23 @@ pub(crate) fn checkpoint(event: &CheckpointEvent) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_append_is_known_unwritten_only_before_it_writes() {
+        use crate::native::atomic::{Privacy, PublicationState, append, replace};
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("journal");
+        replace(&path, b"a", Privacy::OwnerOnly).unwrap();
+        append(&path, b"b").unwrap();
+        let error = with_failure(Checkpoint::BeforePublish, || append(&path, b"c")).unwrap_err();
+        assert_eq!(error.state(), PublicationState::NotPublished);
+        assert_eq!(std::fs::read(&path).unwrap(), b"ab");
+        let error = with_failure(Checkpoint::AfterPublish, || append(&path, b"d")).unwrap_err();
+        assert_eq!(error.state(), PublicationState::PublicationUnknown);
+        assert_eq!(std::fs::read(&path).unwrap(), b"abd");
+        let missing = append(&root.path().join("missing"), b"e").unwrap_err();
+        assert_eq!(missing.state(), PublicationState::NotPublished);
+    }
 
     #[test]
     fn nth_failure_selects_one_real_publication() {

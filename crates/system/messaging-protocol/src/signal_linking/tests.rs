@@ -339,7 +339,6 @@ async fn first_account_refuses_ambiguous_or_unrelated_local_account_evidence() {
         serde_json::json!([]),
         serde_json::json!([{"aci":ACI,"number":"+15555550102"}]),
         serde_json::json!([{"aci":ACI,"number":"+15555550101"},{"aci":ACI,"number":"+15555550101"}]),
-        // Stock number-only output alone is not self-ACI evidence.
         serde_json::json!([{"number":"+15555550101"}]),
     ] {
         let (enrollment, _, peer) = enrollment();

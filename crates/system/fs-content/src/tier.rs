@@ -19,7 +19,6 @@ pub const INLINE_MAX: u64 = 4 * KIB;
 pub const SINGLE_MAX: u64 = 64 * KIB;
 const SMALL_MAX: u64 = 64 * MIB;
 const MEDIUM_MAX: u64 = 4 * GIB;
-/// How far past a tier boundary a record must move before it changes tier.
 const TIER_HYSTERESIS: u64 = 4;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
@@ -33,7 +32,6 @@ pub enum ChunkTier {
 }
 
 impl ChunkTier {
-    /// The tier a body of `len` bytes gets when it has no history.
     pub const fn for_size(len: u64) -> Self {
         if len <= INLINE_MAX {
             Self::Inline
@@ -48,7 +46,6 @@ impl ChunkTier {
         }
     }
 
-    /// Size range in which `self` is kept once a record has it.
     const fn sticky_range(self) -> (u64, u64) {
         let (lo, hi) = match self {
             Self::Inline => (0, INLINE_MAX),

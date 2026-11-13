@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use tilo_action_broker::collab_broker::FanoutState;
-use tilo_action_broker::collab_core::BrokerChannels;
 use tilo_action_broker::personal::{self, Door, Person};
+use tilo_broker_core::collab_core::BrokerChannels;
 use tilo_network_actor::HostIdentity;
 use tilo_peer_state::{PeerPersonal, PersonalSync};
 
@@ -47,10 +47,7 @@ impl Personal {
         let root = identity.device_cert.user_public_key;
         let store = personal::open(state, root, identity.device_cert.clone(), SystemTime::now())?;
         Ok(Self {
-            sync: PersonalSync::over(
-                PeerPersonal::new(store),
-                identity.device_signing_key.clone(),
-            ),
+            sync: PersonalSync::over(PeerPersonal::new(store), Arc::clone(&identity.signer)),
             root,
             state: state.to_owned(),
         })
@@ -153,7 +150,7 @@ mod tests {
     use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
     use super::*;
-    use crate::platform::plane::Cmd;
+    use crate::sync::Cmd;
 
     /// One of the person's devices' certificates, signed by their root.
     fn certificate(root: &SigningKey, n: u8, now: SystemTime) -> DeviceCert {
@@ -194,7 +191,10 @@ mod tests {
         let sync = PersonalSync::over(PeerPersonal::new(store), SigningKey::from_bytes(&[1; 32]));
 
         let (outgoing, mut commands) = tokio::sync::mpsc::unbounded_channel();
-        let dials = SiblingDials::new(here.device_public_key, outgoing);
+        let dials = SiblingDials::new(
+            here.device_public_key,
+            crate::sync::HostOutbox::of(outgoing),
+        );
         for device in held_devices(&sync) {
             dials.dial(device);
         }
@@ -202,7 +202,9 @@ mod tests {
         let mut dialled = Vec::new();
         while let Ok(command) = commands.try_recv() {
             match command {
-                Cmd::ConnectDevice(addr) => dialled.push(*addr.id.as_bytes()),
+                crate::sync::HostCmd::Plane(Cmd::ConnectDevice(addr)) => {
+                    dialled.push(*addr.id.as_bytes());
+                }
                 other => panic!("a sibling dial sent something else: {other:?}"),
             }
         }

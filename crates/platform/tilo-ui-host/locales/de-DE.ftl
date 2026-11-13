@@ -20,7 +20,6 @@ tilolang-suggested-by = vorgeschlagen von { $name }
 tilolang-ask-always = Immer erlauben
 tilolang-ask-denied = Diese Änderung ist hier nicht erlaubt.
 tilolang-ask-needs-approval = Diese Änderung muss zuerst bestätigt werden.
-tilolang-embed-source = Block
 tilolang-did-changed = hat { $field } geändert
 tilolang-did-created = hat es erstellt
 tilolang-did-removed = hat es entfernt
@@ -59,9 +58,12 @@ tilolang-all = Alle { $kind }
 # Wer eine Zeile des Verlaufs geschrieben hat: die Person selbst.
 tilolang-you = Du
 tilolang-you-lower = dich
+tilolang-nothing-open = Nichts offen
 tilolang-empty = Noch nichts hier
 # What a list says when it lists none of its kind's items: "Noch keine Notizen".
 tilolang-empty-kind = Noch keine { $kind }
+# Was ein Baum sagt, wo er steht, wenn die Suche des Fensters in ihm nichts findet.
+tilolang-nothing-found = Nichts passt
 # What a list's entry at its end says while it is empty.
 tilolang-add = Etwas hinzufügen
 
@@ -81,7 +83,6 @@ tilolang-selected = { $count ->
 }
 tilolang-clear-selection = Auswahl aufheben
 tilolang-sort = Sortieren
-tilolang-order-default = Standard
 tilolang-undo = Rückgängig
 tilolang-typing-unplaced = Keine Eingabe hat übernommen, was du getippt hast: „{ $typed }“
 tilolang-did = { $action }: { $title }
@@ -95,7 +96,7 @@ tilolang-from = Aus
 tilolang-linked = Daraus entstanden
 
 app-activate-window = Dieses Fenster anzeigen
-app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.
+app-activate-window-description = Das Fenster dieser App in den Vordergrund holen.
 tilolang-form-cancel = Abbrechen
 tilolang-none-value = Keine Angabe
 tilolang-empty-value = Leer

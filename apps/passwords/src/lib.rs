@@ -37,7 +37,7 @@ enum Vault {
 const CLOSED: &str = "the vault is not open in this window";
 const OPENING: &str = "the vault is still opening";
 
-ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VaultHealth {
@@ -455,5 +455,25 @@ mod tests {
             assert_eq!(health.weak, 1);
             assert_eq!(health.older_than_year, 1);
         }
+    }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source
+/// catalogue beside it.
+#[cfg(test)]
+mod german_window {
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalog = &super::CATALOG;
+        assert!(
+            catalog.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalog.languages()
+        );
+        catalog.set_locale("de-DE");
+        assert_eq!(catalog.t("passwords-new-item"), "Neuer Eintrag");
+        catalog.set_locale("en-US");
+        assert_eq!(catalog.t("passwords-new-item"), "New item");
     }
 }

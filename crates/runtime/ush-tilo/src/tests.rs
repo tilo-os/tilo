@@ -334,8 +334,6 @@ fn a_program_without_a_place_to_run_says_which_tier_it_needs() {
     assert!(ran.err.contains("tier 3"), "{}", ran.err);
 }
 
-/// A place that holds the person's history and has a terminal, with one
-/// program to run.
 struct Holding;
 
 impl Place for Holding {
@@ -377,9 +375,6 @@ impl Programs for Frobnicate {
     }
 }
 
-/// At the prompt the host is the place's: Up recalls the history the place
-/// holds, with no question to Terminal, and Tab completes the names of the
-/// programs the place runs, which run as the line's job.
 #[test]
 fn the_prompt_recalls_the_places_history_and_completes_its_programs() {
     let (_tmp, granted, _) = fixture();

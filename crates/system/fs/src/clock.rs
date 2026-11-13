@@ -1,13 +1,11 @@
 //! Process-wide wall clock for security decisions made by the shipped daemon.
 //!
-//! Production uses `SystemTime` unconditionally unless the daemon was
-//! explicitly launched with its hidden `--test-clock-file` option.  That
-//! option exists for release tests which must move an already-running daemon
-//! across deadline boundaries without sleeping.  The file is required to be
-//! an owner-only regular file containing one canonical decimal Unix time in
-//! milliseconds.  It is re-read for every decision.  A missing, replaced,
-//! oversized, or malformed file maps to `u64::MAX`, which expires credentials
-//! and receipts instead of extending their authority.
+//! Production uses `SystemTime` unless the daemon was launched with its hidden
+//! `--test-clock-file` option, which lets release tests move a running daemon
+//! across deadline boundaries. The file must be an owner-only regular file
+//! holding one decimal Unix time in milliseconds, re-read for every decision; a
+//! missing, replaced, oversized or malformed file maps to `u64::MAX`, which
+//! expires credentials and receipts instead of extending them.
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
@@ -32,11 +30,8 @@ struct TestClockFile {
     inode: u64,
 }
 
-/// Install the daemon's explicit test clock override.
-///
-/// The initial value is validated before installation so a bad launch fails
-/// rather than briefly running with the system clock.  Subsequent read failures
-/// fail closed through [`unix_now_ms`].
+/// Install the daemon's explicit test clock override; the initial value is
+/// validated first, so a bad launch fails rather than briefly using the system clock.
 pub fn install_test_clock_file(path: &Path) -> Result<(), ClockConfigurationError> {
     let clock = TestClockFile::validate(path)?;
     TEST_CLOCK_FILE
@@ -44,8 +39,8 @@ pub fn install_test_clock_file(path: &Path) -> Result<(), ClockConfigurationErro
         .map_err(|_| ClockConfigurationError::AlreadyConfigured)
 }
 
-/// Milliseconds since the Unix epoch used by authorization, share and receipt
-/// decisions throughout this process.
+/// Milliseconds since the Unix epoch, as authorization, share and receipt
+/// decisions read them.
 pub fn unix_now_ms() -> u64 {
     match TEST_CLOCK_FILE.get() {
         Some(clock) => clock.read().unwrap_or(u64::MAX),
@@ -53,8 +48,8 @@ pub fn unix_now_ms() -> u64 {
     }
 }
 
-/// [`tilo_clock::Clock`] over [`unix_now_ms`], for components that take an
-/// injected clock but must honour the daemon's test-clock override.
+/// [`tilo_clock::Clock`] over [`unix_now_ms`], for components that take an injected
+/// clock but must honour the daemon's test-clock override.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DaemonClock;
 
@@ -147,8 +142,8 @@ fn validate_metadata(
     Ok(metadata)
 }
 
-/// A small, owner-only regular file, and when `expected` is given, still the
-/// inode that was pinned at installation.
+/// A small, owner-only regular file, and when `expected` is given, still the inode
+/// pinned at installation.
 fn validate_open_file_metadata(
     metadata: &fs::Metadata,
     expected: Option<&TestClockFile>,

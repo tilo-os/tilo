@@ -1,5 +1,6 @@
-//! The file history Files names for the framework's History: a real accepted
-//! backend and mounted projections, restored through the hosted app.
+//! The file history Files names for the framework's History: a real accepted backend
+//! and mounted projections, restored through the hosted app.
+
 use super::*;
 use crate::FileExplorerShell;
 use fs_protocol::files::*;
@@ -7,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use ui::history_mode::checked_files::{FileHistorySource, FileHistoryTarget, FileHistoryTransport};
 use ui::prelude::TestApp;
 
-/// Files hosted by the framework, and the file history its surface names.
 fn hosted() -> (TestApp<FileExplorerShell>, FileHistorySource) {
     let mut app = TestApp::<FileExplorerShell>::new().unwrap();
     let source = app
@@ -16,11 +16,6 @@ fn hosted() -> (TestApp<FileExplorerShell>, FileHistorySource) {
     (app, source)
 }
 
-/// Submits a transport returned. A checked restore is durable backend work:
-/// the accepted backend commits a phased, fsynced transaction and the mounted
-/// projection's setxattr joins a filesystem transaction, and on a contended
-/// disk either can outlast a frame deadline. Tests wait for the backend here
-/// first and then hold the UI to its deadline.
 #[derive(Default)]
 struct SubmitReturns(std::sync::atomic::AtomicUsize);
 impl SubmitReturns {
@@ -30,7 +25,6 @@ impl SubmitReturns {
     fn count(&self) -> usize {
         self.0.load(std::sync::atomic::Ordering::SeqCst)
     }
-    /// Drive frames until `count` submits returned.
     fn wait(&self, driver: &mut ui::headless::FrameHarness, count: usize) {
         assert!(
             driver.wait_until(tilo_test_env::hang_bound(), |_| self.count() >= count),
@@ -84,7 +78,6 @@ impl FileHistoryTransport for Backend {
         self.fs.checked_history_result(self.ino, intent)
     }
 }
-/// A production transport whose submits are counted, nothing else changed.
 struct Counted {
     inner: Arc<dyn FileHistoryTransport>,
     returned: Arc<SubmitReturns>,
@@ -115,8 +108,7 @@ impl FileHistoryTransport for Counted {
         self.inner.result(intent)
     }
 }
-/// The session's report for a submit or lookup that found no receipt.
-const UNAVAILABLE_ACK: &str = "Restore acknowledgement is unavailable";
+const UNAVAILABLE_ACK: &str = "The restore may not have happened";
 fn wait(driver: &mut ui::headless::FrameHarness, text: &str) {
     assert!(
         driver.wait_until(tilo_test_env::hang_bound(), |driver| driver
@@ -147,9 +139,7 @@ fn confirm(driver: &mut ui::headless::FrameHarness, phase: &str) {
 )]
 async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_reopen() {
     let directory = tempfile::tempdir().unwrap();
-    let endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0)
-        .await
-        .unwrap();
+    let endpoint = test_relay::direct_endpoint().await;
     let content = Arc::new(fs::ContentStore::memory());
     let old_hash = content
         .write_content(b"old exact file content")
@@ -177,20 +167,6 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
                 .to_bytes(),
         ),
         device: fs_protocol::Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
-    };
-    let publisher = || {
-        Arc::new(
-            fs::RecordPublisher::new(
-                Arc::new(
-                    fs::record_repository::RecordRepository::open(directory.path().join("records"))
-                        .unwrap(),
-                ),
-                workspace,
-                actor,
-                device.clone(),
-            )
-            .unwrap(),
-        )
     };
     let mut versions = Vec::new();
     for (id, parents, hash, time, provenance) in [
@@ -224,21 +200,12 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     let namespace = Arc::new(Mutex::new(namespace));
     let hydrator = Arc::new(fs::Hydrator::new(endpoint.clone(), content));
     let heuristics = Arc::new(fs::Heuristics::new(hydrator.clone()));
-    let journal = Arc::new(Mutex::new(
-        fs::record_transaction::RecordTransactionJournal::open(
-            directory.path().join("transactions"),
-        )
-        .unwrap(),
-    ));
     let backend = Arc::new(
         fs::QuickFS::new(namespace, hydrator.clone(), heuristics)
             .with_history(actor)
             .unwrap()
             .with_checked_history_workspace(workspace)
-            .with_record_publisher(publisher())
-            .unwrap()
-            .with_replacement_transactions(journal, directory.path().join("namespace.am"))
-            .unwrap(),
+            .with_namespace_persistence(directory.path().join("namespace.am")),
     );
     let transport = Arc::new(Backend {
         fs: backend.clone(),
@@ -273,9 +240,6 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     assert_eq!(driver.state_mut().doc.get_heads(), original_heads);
     driver.click_named("history-restore").unwrap();
     confirm(driver, "backend restore");
-    // Confirming relabels the dialog at once; the submit runs in the
-    // background. Wait for it, then for its (deliberately hidden)
-    // acknowledgement to reach the session.
     wait(driver, "Refresh review");
     transport.returned.wait(driver, 1);
     wait(driver, UNAVAILABLE_ACK);
@@ -295,7 +259,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     );
     driver.key("Escape");
     driver.click_named("history-files-result").unwrap();
-    wait(driver, "Restored revision");
+    wait(driver, "Restored version");
     assert_eq!(
         *transport.lookups.lock().unwrap(),
         vec![submitted[0].intent_id],
@@ -322,8 +286,6 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
         original_heads,
         "file restore must not write incidental State"
     );
-    // The result lookup reports in the toolbar, not a modal. Escape here
-    // would leave History rather than dismiss a restore review.
     wait(driver, "history-files-undo");
     driver.click_named("history-files-undo").unwrap();
     confirm(driver, "backend undo");
@@ -390,22 +352,11 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     ));
     let reopened_heuristics = Arc::new(fs::Heuristics::new(hydrator.clone()));
     let reopened = fs::QuickFS::new(reopened_namespace, hydrator, reopened_heuristics)
-        .without_legacy_record_migration()
+        .without_history_baseline()
         .with_history(actor)
         .unwrap()
         .with_checked_history_workspace(workspace)
-        .with_record_publisher(publisher())
-        .unwrap()
-        .with_replacement_transactions(
-            Arc::new(Mutex::new(
-                fs::record_transaction::RecordTransactionJournal::open(
-                    directory.path().join("transactions"),
-                )
-                .unwrap(),
-            )),
-            directory.path().join("namespace.am"),
-        )
-        .unwrap();
+        .with_namespace_persistence(directory.path().join("namespace.am"));
     let reopened_ino = reopened
         .namespace
         .lock()
@@ -439,16 +390,12 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     endpoint.close().await;
 }
 
-/// Production targets recover a pending and an applied restore after A/B/A.
 #[expect(
     clippy::too_many_lines,
     reason = "end-to-end A/B/A session recovery scenario reads top to bottom"
 )]
 #[test]
 fn framework_history_recovers_sessions_after_a_b_a() {
-    // --- phase: round1_production_targets_recover_pending_and_applied_session_after_a_b_a ---
-    // Ordinary xattrs exercise production target construction/session routing,
-    // not backend authority. The separate `QuickFS` fixture proves real operations.
     {
         fn install(
             path: &std::path::Path,
@@ -582,8 +529,6 @@ fn framework_history_recovers_sessions_after_a_b_a() {
         wait(driver, "historical bytes");
         driver.click_named("history-restore").unwrap();
         confirm(driver, "production initial restore after repeated open");
-        // Confirming relabels the dialog at once; the submit that writes the
-        // request runs in the background and settles with the missing receipt.
         wait(driver, "Refresh review");
         returned.wait(driver, 1);
         wait(driver, UNAVAILABLE_ACK);
@@ -594,31 +539,18 @@ fn framework_history_recovers_sessions_after_a_b_a() {
                 .unwrap(),
         )
         .unwrap();
-        // Model the projection consuming the request. A retry must republish the
-        // controller's retained exact intent even when the transport no longer
-        // exposes the earlier write.
         xattr::remove(&a, CHECKED_HISTORY_RESTORE_XATTR).unwrap();
         source.set_target(Some(target(&b, record_b, "B")));
         wait(driver, &format!("timeline-entry:{}", version_b.0.simple()));
         source.set_target(Some(target(&a, record_a, "A again")));
-        // The result button survives target changes. Wait for A's immutable
-        // timeline entry instead so the A -> B -> A reconciliation has completed
-        // before the retry command is produced; commands from the superseded B
-        // presentation are deliberately discarded by the host.
         wait(driver, &select);
         assert!(
             !driver.inspection_json().unwrap().contains(UNAVAILABLE_ACK),
             "the reloaded timeline replaced the earlier report, so the next one is the retry's"
         );
-        // This case exercises exact session routing across descriptor swaps, not
-        // button hit-testing. Activate the semantic control directly so the
-        // controller's background completions cannot rebuild the toolbar
-        // between `click_named` resolving its rect and dispatching the pointer.
         driver
             .perform_semantic_named("history-files-retry", None, &ui::a11y::Action::Activate)
             .unwrap();
-        // The retry writes the request and then looks the receipt up. Let its
-        // report reach the session so it cannot land on the steps below.
         returned.wait(driver, 2);
         wait(driver, UNAVAILABLE_ACK);
         let retry: CheckedHistoryRequestV1 = serde_json::from_slice(
@@ -639,7 +571,7 @@ fn framework_history_recovers_sessions_after_a_b_a() {
         wait(driver, "historical bytes");
         driver.click_named("history-restore").unwrap();
         confirm(driver, "production replacement-intent refusal");
-        wait(driver, "An earlier restore is still pending");
+        wait(driver, "An earlier restore hasn't finished");
         driver.key("Escape");
         assert_eq!(
             serde_json::from_slice::<CheckedHistoryRequestV1>(
@@ -683,7 +615,7 @@ fn framework_history_recovers_sessions_after_a_b_a() {
         )
         .unwrap();
         driver.click_named("history-files-result").unwrap();
-        wait(driver, "Restored revision");
+        wait(driver, "Restored version");
         source.set_target(Some(target(&b, record_b, "B again")));
         wait(driver, &format!("timeline-entry:{}", version_b.0.simple()));
         source.set_target(Some(target(&a, record_a, "A third")));

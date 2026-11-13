@@ -34,6 +34,8 @@ use ui::tilo_resource::{self, Bytes, Model, Refusal};
 use uuid::Uuid;
 use vello::peniko::Color;
 
+use crate::resource::CATALOG;
+
 /// Decoded, downscaled cover artwork extracted from an EPUB. Held behind an
 /// `Arc` so a [`Book`] stays cheap to clone and the pixels are decoded
 /// exactly once (at load), never per frame.
@@ -207,8 +209,6 @@ impl Span {
     }
 }
 
-// --- Shared annotation model (reused by PDF reader + word processor) --------
-
 /// What an annotation *is*. All three share one anchor so a unified
 /// sidebar/list can present them together.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model)]
@@ -224,11 +224,13 @@ pub enum AnnoKind {
 }
 
 impl AnnoKind {
-    pub fn label(self) -> &'static str {
+    /// The catalogue message naming this kind, wherever a window says what an
+    /// annotation is.
+    pub fn message(self) -> &'static str {
         match self {
-            AnnoKind::Bookmark => "Bookmark",
-            AnnoKind::Highlight => "Highlight",
-            AnnoKind::Note => "Note",
+            AnnoKind::Bookmark => "ebook-annotation-bookmark",
+            AnnoKind::Highlight => "ebook-annotation-highlight",
+            AnnoKind::Note => "ebook-annotation-note",
         }
     }
     pub fn as_str(self) -> &'static str {
@@ -471,8 +473,6 @@ impl Annotation {
     }
 }
 
-// --- Reading settings + per-book progress ------------------------------------
-
 /// One of the three classic e-reader page tints. These tint the *content
 /// surface* (the page), layered on top of the OS theme that drives all chrome.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model)]
@@ -548,10 +548,10 @@ pub enum CompositionStyle {
 impl CompositionStyle {
     pub const ALL: [Self; 2] = [Self::Book, Self::Ragged];
 
-    pub const fn label(self) -> &'static str {
+    pub const fn message(self) -> &'static str {
         match self {
-            Self::Book => "Justified",
-            Self::Ragged => "Ragged",
+            Self::Book => "ebook-composition-justified",
+            Self::Ragged => "ebook-composition-ragged",
         }
     }
 
@@ -577,11 +577,12 @@ impl CompositionStyle {
 impl ReadMode {
     pub const ALL: [ReadMode; 3] = [ReadMode::Paged, ReadMode::Continuous, ReadMode::TwoUp];
 
-    pub fn label(self) -> &'static str {
+    /// The catalogue message that names this layout where a person picks it.
+    pub const fn message(self) -> &'static str {
         match self {
-            ReadMode::Paged => "Pages",
-            ReadMode::Continuous => "Scroll",
-            ReadMode::TwoUp => "Two pages",
+            ReadMode::Paged => "ebook-mode-paged",
+            ReadMode::Continuous => "ebook-mode-continuous",
+            ReadMode::TwoUp => "ebook-mode-two-pages",
         }
     }
     pub fn as_str(self) -> &'static str {
@@ -665,14 +666,16 @@ impl FontKind {
 /// display-settings font row. Unlike colour schemes, fonts are **not**
 /// duplicable — a face is a face; there is no per-instance colour to vary.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Model)]
-#[model(check = FontEntry::valid)]
+#[model(check = FontEntry::valid, label = FontEntry::title)]
 pub struct FontEntry {
     /// The font's id: the key it is stored under.
     #[model(readonly)]
     pub id: String,
     /// The face it resolves to
     pub kind: FontKind,
-    /// Name
+    /// The name a person gave it, once they rename it; empty while it is
+    /// called what its face is ([`Self::title`]). The record's namesake in
+    /// the published surface; a person reads [`Self::title`].
     #[model(label)]
     pub name: String,
     /// Multiplier on top of the global text-size setting, within
@@ -694,7 +697,9 @@ impl FontEntry {
                 "a font's size is between 0.7 and 1.4 times the text size",
             ));
         }
-        if self.name.trim().is_empty() {
+        // A built-in keeps no name until someone renames it; a family a
+        // person added is kept by the name it was added under.
+        if self.name.trim().is_empty() && matches!(self.kind, FontKind::Named(_)) {
             return Err(Refusal::new("a font has a name"));
         }
         Ok(())
@@ -709,6 +714,51 @@ impl FontEntry {
             shown,
         }
     }
+
+    /// A face every library starts with, kept as what it is rather than as a
+    /// name: [`Self::title`] names it in the language of whoever reads it.
+    pub fn builtin(id: &str, kind: FontKind, size_mult: f32, shown: bool) -> Self {
+        Self::new(id, kind, "", size_mult, shown)
+    }
+
+    /// The names this face is kept under before anyone renames it, as every
+    /// language the catalogue ships spells them — a record written in
+    /// another language carries one of those. Empty for a family a person
+    /// added, which only ever has the name it was added under.
+    fn builtin_names(&self) -> Vec<String> {
+        match &self.kind {
+            FontKind::Default => CATALOG.every_value("ebook-font-default"),
+            FontKind::Mono => CATALOG.every_value("ebook-font-mono"),
+            FontKind::Serif => vec![ui::ReadingFace::Default.name().to_owned()],
+            FontKind::Reading(name) => vec![name.clone()],
+            FontKind::Named(_) => Vec::new(),
+        }
+    }
+
+    /// Whether a person gave this font the name it is kept under: a built-in
+    /// whose stored name is one of its own (in whatever language, or none at
+    /// all) has not been renamed.
+    pub fn renamed(&self) -> bool {
+        let kept = self.name.trim();
+        !kept.is_empty() && !self.builtin_names().iter().any(|name| name.trim() == kept)
+    }
+
+    /// What the font is called where a person reads it: the name someone
+    /// gave it, else what its face is — the catalogue's word for the
+    /// default and monospace faces in the reader's language, a reading
+    /// face's own family name.
+    pub fn title(&self) -> String {
+        if self.renamed() {
+            return self.name.clone();
+        }
+        match &self.kind {
+            FontKind::Default => CATALOG.t("ebook-font-default"),
+            FontKind::Mono => CATALOG.t("ebook-font-mono"),
+            FontKind::Serif => ui::ReadingFace::Default.name().to_owned(),
+            FontKind::Reading(name) => name.clone(),
+            FontKind::Named(family) => family.clone(),
+        }
+    }
 }
 
 /// The built-in font registry: the reader's default proportional face, the
@@ -718,14 +768,8 @@ impl FontEntry {
 /// them.
 pub fn default_fonts() -> Vec<FontEntry> {
     let mut fonts = vec![
-        FontEntry::new("default", FontKind::Default, "Default", 1.0, true),
-        FontEntry::new(
-            "serif",
-            FontKind::Serif,
-            ui::ReadingFace::Default.name(),
-            1.05,
-            true,
-        ),
+        FontEntry::builtin("default", FontKind::Default, 1.0, true),
+        FontEntry::builtin("serif", FontKind::Serif, 1.05, true),
     ];
     fonts.extend(
         ui::ReadingFace::ALL
@@ -733,16 +777,15 @@ pub fn default_fonts() -> Vec<FontEntry> {
             .filter(|face| *face != ui::ReadingFace::Default)
             .map(|face| {
                 let name = face.name();
-                FontEntry::new(
+                FontEntry::builtin(
                     &format!("reading-{}", name.to_lowercase().replace(' ', "-")),
                     FontKind::Reading(name.to_owned()),
-                    name,
                     reading_size_mult(face),
                     true,
                 )
             }),
     );
-    fonts.push(FontEntry::new("mono", FontKind::Mono, "Mono", 0.96, true));
+    fonts.push(FontEntry::builtin("mono", FontKind::Mono, 0.96, true));
     fonts
 }
 
@@ -790,12 +833,14 @@ pub type PaletteParts = ([u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3], [u8; 3]);
 /// chips) is **derived**, so a scheme stays coherent from just these three
 /// colours — and so a whole scheme can be spun up from one background colour.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Model)]
-#[model(check = ColorScheme::valid)]
+#[model(check = ColorScheme::valid, label = ColorScheme::title)]
 pub struct ColorScheme {
     /// The scheme's id: the key it is stored under.
     #[model(readonly)]
     pub id: String,
-    /// Name
+    /// The name a person gave it, once they rename it; empty while it is
+    /// called what it is ([`Self::title`]). The record's namesake in the
+    /// published surface; a person reads [`Self::title`].
     #[model(label)]
     pub name: String,
     /// Page colour
@@ -815,11 +860,48 @@ pub struct ColorScheme {
 
 impl ColorScheme {
     fn valid(&self) -> Result<(), Refusal> {
-        if self.name.trim().is_empty() {
+        // A built-in keeps no name until someone renames it; a scheme a
+        // person made is kept by the name they gave it.
+        if self.name.trim().is_empty() && Self::builtin_message(&self.id).is_none() {
             Err(Refusal::new("a colour scheme has a name"))
         } else {
             Ok(())
         }
+    }
+
+    /// The catalogue message that names the built-in scheme `id`, if `id` is
+    /// one of them.
+    fn builtin_message(id: &str) -> Option<&'static str> {
+        match id {
+            "light" => Some("ebook-scheme-light"),
+            "sepia" => Some("ebook-scheme-sepia"),
+            "dark" => Some("ebook-scheme-dark"),
+            "high-contrast" => Some("ebook-scheme-high-contrast"),
+            _ => None,
+        }
+    }
+
+    /// Whether a person gave this scheme the name it is kept under: a
+    /// built-in whose stored name is one of its own (in whatever language, or
+    /// none at all) has not been renamed.
+    pub fn renamed(&self) -> bool {
+        let kept = self.name.trim();
+        !kept.is_empty()
+            && !Self::builtin_message(&self.id).is_some_and(|key| {
+                CATALOG
+                    .every_value(key)
+                    .iter()
+                    .any(|name| name.trim() == kept)
+            })
+    }
+
+    /// What the scheme is called where a person reads it: the name someone
+    /// gave it, else the catalogue's word for the built-in it is.
+    pub fn title(&self) -> String {
+        if self.renamed() {
+            return self.name.clone();
+        }
+        Self::builtin_message(&self.id).map_or_else(|| self.name.clone(), |key| CATALOG.t(key))
     }
 
     /// The three editable colours, labelled — drives the per-colour editor.
@@ -889,7 +971,7 @@ pub fn default_schemes() -> Vec<ColorScheme> {
     vec![
         ColorScheme {
             id: "light".into(),
-            name: "Light".into(),
+            name: String::new(),
             page: [0xFC, 0xFC, 0xFA],
             ink: [0x1B, 0x1B, 0x1F],
             accent: [0x3B, 0x82, 0xF6],
@@ -899,7 +981,7 @@ pub fn default_schemes() -> Vec<ColorScheme> {
         },
         ColorScheme {
             id: "sepia".into(),
-            name: "Sepia".into(),
+            name: String::new(),
             page: [0xF6, 0xEC, 0xD8],
             ink: [0x40, 0x33, 0x22],
             accent: [0xB4, 0x6A, 0x2E],
@@ -912,7 +994,7 @@ pub fn default_schemes() -> Vec<ColorScheme> {
             // reads as sepia/brown, but with a hair of warmth (R ≥ B) so it stays
             // comfortable for long reading rather than a clinical blue-black.
             id: "dark".into(),
-            name: "Dark".into(),
+            name: String::new(),
             page: [0x1E, 0x1D, 0x1C],
             ink: [0xE7, 0xE5, 0xE1],
             accent: [0x8A, 0xB4, 0xF8],
@@ -925,7 +1007,7 @@ pub fn default_schemes() -> Vec<ColorScheme> {
             // amber accent that stays unmistakable against the black. For
             // low-vision reading; its reading palette is fixed in `reader_theme`.
             id: "high-contrast".into(),
-            name: "High contrast".into(),
+            name: String::new(),
             page: [0x00, 0x00, 0x00],
             ink: [0xFF, 0xFF, 0xFF],
             accent: [0xFF, 0xD5, 0x2E],
@@ -1136,20 +1218,27 @@ impl LibraryEntry {
         }
     }
 
-    /// The content hash (hex) the index of the book's text is kept under.
-    pub fn index_hash(&self) -> Option<String> {
-        match &self.index {
-            Bytes::Empty => None,
-            index => Some(blake3::Hash::from_bytes(index.hash()).to_hex().to_string()),
-        }
+    /// The reference a content store keeps the book's bytes under, when
+    /// the row names them.
+    pub fn content_reference(&self) -> Option<String> {
+        self.content.reference()
     }
 
-    /// Bytes the content store keeps as `hash` (its hex form), `len` long.
-    pub fn stored(hash: &str, len: u64) -> Option<Bytes> {
+    /// Bytes a content store elsewhere keeps as `hash` (its hex form),
+    /// `len` long, named without being here.
+    #[cfg(test)]
+    pub(crate) fn stored(hash: &str, len: u64) -> Option<Bytes> {
         blake3::Hash::from_hex(hash).ok().map(|hash| Bytes::Blob {
             hash: *hash.as_bytes(),
             len,
+            sealed: None,
         })
+    }
+
+    /// The reference a content store keeps the index of the book's text
+    /// under, when the row names one.
+    pub fn index_reference(&self) -> Option<String> {
+        self.index.reference()
     }
 
     /// A row names its book by `book:` and the start of its content hash,
@@ -1203,21 +1292,18 @@ mod tests {
     /// Colour, annotation, theme, mode, font, sort and composition values round-trip with stable names and defaults.
     #[test]
     fn model_enums_round_trip_with_stable_defaults() {
-        // --- phase: annokind_round_trips ---
         {
             for k in [AnnoKind::Bookmark, AnnoKind::Highlight, AnnoKind::Note] {
                 assert_eq!(AnnoKind::from_str(k.as_str()), k);
             }
         }
 
-        // --- phase: read_theme_round_trips ---
         {
             for t in ReadTheme::ALL {
                 assert_eq!(ReadTheme::from_str(t.as_str()), t);
             }
         }
 
-        // --- phase: read_mode_round_trips_and_defaults_to_paged ---
         {
             for m in ReadMode::ALL {
                 assert_eq!(ReadMode::from_str(m.as_str()), m);
@@ -1234,7 +1320,6 @@ mod tests {
             assert!(!ReadMode::Paged.is_continuous());
         }
 
-        // --- phase: font_kind_round_trips_including_named ---
         {
             for k in [
                 FontKind::Default,
@@ -1247,7 +1332,6 @@ mod tests {
             }
         }
 
-        // --- phase: default_fonts_are_shown_and_unique ---
         {
             let f = default_fonts();
             assert!(
@@ -1262,7 +1346,6 @@ mod tests {
             assert_eq!(ids.len(), f.len(), "font ids are unique");
         }
 
-        // --- phase: composition_style_has_stable_storage_names ---
         {
             assert_eq!(CompositionStyle::Book.as_str(), "book");
             assert_eq!(
@@ -1280,7 +1363,6 @@ mod tests {
     /// Block plain text concatenates spans, body size scales with settings, and progress reads as finished at the end.
     #[test]
     fn reading_values_derive_from_content_and_settings() {
-        // --- phase: block_plain_text_concats_spans ---
         {
             let b = Block::Paragraph {
                 spans: vec![
@@ -1300,7 +1382,6 @@ mod tests {
             assert_eq!(b.plain_text(), "Hello world");
         }
 
-        // --- phase: settings_body_size_scales ---
         {
             let s = Settings {
                 font_scale: 1.5,
@@ -1309,7 +1390,6 @@ mod tests {
             assert!((s.body_size() - Settings::BODY_CONTENT_PX * 1.5).abs() < 0.01);
         }
 
-        // --- phase: progress_is_read_at_the_end ---
         {
             assert!(!Progress::is_read(0.5));
             assert!(Progress::is_read(1.0));
@@ -1319,7 +1399,6 @@ mod tests {
     /// Schemes derive contrasting ink and accents from their paper, stay neutral in dark, maximal in high contrast, and recompute on slot changes.
     #[test]
     fn scheme_palettes_derive_contrasting_parts() {
-        // --- phase: scheme_from_dark_bg_derives_light_ink_and_contrasting_accent ---
         {
             let s = ColorScheme::from_bg("u1", "Midnight", [0x12, 0x14, 0x1C]);
             assert!(s.dark, "a dark background yields a dark scheme");
@@ -1335,14 +1414,12 @@ mod tests {
             );
         }
 
-        // --- phase: scheme_from_light_bg_derives_dark_ink ---
         {
             let s = ColorScheme::from_bg("u2", "Paper", [0xF3, 0xEE, 0xE2]);
             assert!(!s.dark, "a light background yields a light scheme");
             assert!(luminance(s.ink) < 0.3, "ink is near-black on a light paper");
         }
 
-        // --- phase: scheme_derived_parts_sit_between_page_and_ink ---
         {
             let s = ColorScheme::from_bg("u3", "Warm", [0x20, 0x1C, 0x18]);
             let (page, edge, ink, dim, _rule, _code) = s.palette_parts();
@@ -1353,7 +1430,6 @@ mod tests {
             assert_ne!(dim, ink);
         }
 
-        // --- phase: dark_scheme_is_neutral_not_brown ---
         {
             let dark = default_schemes()
                 .into_iter()
@@ -1365,7 +1441,6 @@ mod tests {
             assert!(luminance(dark.page) < 0.2, "still a dark page");
         }
 
-        // --- phase: high_contrast_builtin_is_maximal_contrast ---
         {
             let hc = default_schemes()
                 .into_iter()
@@ -1382,7 +1457,6 @@ mod tests {
             assert_eq!(ReadTheme::HighContrast.as_str(), "high-contrast");
         }
 
-        // --- phase: set_slot_recomputes_dark_from_paper ---
         {
             let mut s = default_schemes()[0].clone(); // Light
             assert!(!s.dark);

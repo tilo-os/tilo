@@ -1,12 +1,7 @@
-//! Monitor's readings: the system information service.
-//!
-//! On Linux Monitor runs in a sandbox with a process namespace of its own,
-//! so its `/proc` shows Monitor and nothing else. The session reads the
-//! machine for it instead and pushes a snapshot at Monitor's cadence over
-//! the connection the launcher opened: processor, memory, disks, network and
-//! the person's processes, each with the app it belongs to. Command lines
-//! come only with their own grant, environments never. Elsewhere the same
-//! service runs in this process (`tilo_system_info`).
+//! Monitor's readings: the system information service. On Linux the session reads
+//! the machine and pushes a snapshot at Monitor's cadence, since the sandbox shows
+//! Monitor no other process; elsewhere the service runs in this process. Command
+//! lines come only with their own grant, environments never.
 
 use tilo_system_info::client::{Client, ClientSubscription, Notify};
 use tilo_system_info::protocol::{ProcessStats, Snapshot};
@@ -14,16 +9,12 @@ use tilo_system_info::protocol::{ProcessStats, Snapshot};
 use super::{StopKind, note_provider_read};
 use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo};
 
-/// The app this is, when it dials the session itself (an unconfined run).
 const APP_ID: &str = "so.tilo.monitor";
 
-/// The cadence before the person's preference is known.
 const DEFAULT_INTERVAL_MS: u32 = 1500;
 
 enum Source {
-    /// This process's connection, found on first use.
     Shared,
-    /// A connection handed in (a test's service).
     Given(Client),
 }
 
@@ -33,7 +24,6 @@ struct Live {
     interval_ms: u32,
 }
 
-/// Monitor's subscription to the session's readings.
 pub struct Sampler {
     /// Where readings come from; `None` for a sample that reads nothing.
     source: Option<Source>,
@@ -53,16 +43,14 @@ impl Sampler {
         }
     }
 
-    /// Readings from the session, subscribed on first use.
     pub fn new() -> Self {
-        // A test process has no session: it serves its own, over this
-        // machine, before anything could dial a real one.
+        // A test process has no session: it serves its own, over this machine,
+        // before anything could dial a real one.
         #[cfg(test)]
         super::install_test_session();
         Self::over(Some(Source::Shared))
     }
 
-    /// Readings over `client`'s connection.
     pub fn with_client(client: Client) -> Self {
         Self::over(Some(Source::Given(client)))
     }
@@ -79,20 +67,17 @@ impl Sampler {
         }
     }
 
-    /// Readings are pushed by the session, each one waking the window.
     pub fn is_pushed(&self) -> bool {
         self.source.is_some()
     }
 
-    /// Wake the window with `waker` whenever a snapshot arrives.
     pub fn set_waker(&mut self, waker: ui::WakeHandle) {
         self.waker = Some(waker);
-        // The current subscription was made without it.
         self.live = None;
     }
 
     /// Follow the cadence the person chose; `None` pauses, which ends the
-    /// subscription: a paused Monitor costs the session nothing.
+    /// subscription.
     pub fn set_interval(&mut self, interval_ms: Option<u32>) {
         if self.interval_ms != interval_ms {
             self.interval_ms = interval_ms;
@@ -100,7 +85,6 @@ impl Sampler {
         }
     }
 
-    /// The live subscription at the current cadence, made when missing.
     fn live(&mut self) -> Option<&Live> {
         let interval_ms = self.interval_ms?;
         if self
@@ -127,8 +111,7 @@ impl Sampler {
         self.live.as_ref()
     }
 
-    /// Fold the newest pushed snapshot into `model`. Returns whether the
-    /// model changed.
+    /// Fold the newest pushed snapshot into `model`; whether it changed.
     pub fn refresh(&mut self, model: &mut MonitorModel) -> bool {
         if self.source.is_none() || self.interval_ms.is_none() {
             // A sample, or paused: nothing is subscribed, nothing changes.
@@ -154,8 +137,8 @@ impl Sampler {
         }
     }
 
-    /// Read now, as the person asked: a new subscription, whose first
-    /// snapshot the session sends at once, waited for.
+    /// Read now, as the person asked: a new subscription, whose first snapshot the
+    /// session sends at once, waited for.
     pub fn refresh_now(&mut self, model: &mut MonitorModel) -> bool {
         if self.source.is_none() {
             return false;
@@ -196,8 +179,8 @@ impl Sampler {
             .ok_or_else(|| "the system information service is not running".to_owned())
     }
 
-    /// End the process `pid` of the lifetime `started_at` through the
-    /// session, which allows it only for the person's own apps.
+    /// End the process `pid` of the lifetime `started_at`; the session allows it only
+    /// for the person's own apps.
     pub fn signal_if_current(&mut self, pid: u32, started_at: u64, kind: StopKind) -> bool {
         self.connection().is_ok_and(|client| {
             client
@@ -206,7 +189,6 @@ impl Sampler {
         })
     }
 
-    /// End every process of `app`.
     pub fn end_app(&mut self, app: &str) -> Result<u32, String> {
         self.connection()?
             .end_app(app, false)
@@ -276,7 +258,6 @@ pub(crate) fn fold(snapshot: &Snapshot, model: &mut MonitorModel) {
             ProcessDataStatus::Ready
         };
     } else {
-        // Readings without the list: the person has not allowed it.
         model.processes.clear();
         model.process_status = ProcessDataStatus::PermissionDenied;
     }

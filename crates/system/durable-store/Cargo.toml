@@ -22,6 +22,7 @@ conformance = []
 # other than a local filesystem.
 [dependencies]
 thiserror.workspace = true
+tilo-app-id.workspace = true
 
 [lints]
 workspace = true

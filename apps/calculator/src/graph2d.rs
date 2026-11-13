@@ -1,6 +1,6 @@
-//! 2D grapher: a `y = f(x)` function list plus a pannable, zoomable canvas
-//! that samples each function per pixel-column into discontinuity-aware
-//! polylines, painted over the toolkit's [`FunctionPlane`] grid.
+//! 2D grapher: a `y = f(x)` function list and a pannable, zoomable canvas that
+//! samples each function per pixel column into discontinuity-aware polylines,
+//! over the toolkit's [`FunctionPlane`] grid.
 
 use ui::charts::{ChartPalette, FunctionPlane};
 use ui::interaction::InteractionEnvironment;
@@ -19,18 +19,14 @@ use crate::plot_panel::{CURVES, Formulas, PlotPanel};
 use crate::zoom::ZoomAnim2d;
 
 pub struct Graph2dScreen {
-    /// The plot, below the header row.
     pub canvas: Rect,
-    /// The window area the screen was last laid out in.
     area: Rect,
-    /// The formula list beside (or floating over) the plot.
     pub panel: PlotPanel,
-    /// Sampled curve geometry, rebuilt only when the functions, view, domain,
-    /// or canvas size change — never on a theme or tab switch (colour is
-    /// resolved from the theme at paint time from the cached series index).
+    /// Rebuilt only when the functions, view, domain or canvas change; colour is
+    /// resolved from the theme at paint time.
     curve_cache: CurveCache,
-    /// Smooth, non-blocking wheel zoom. While active, the cached curves are
-    /// replayed under a cheap affine instead of re-sampling every frame.
+    /// While active, the cached curves are replayed under an affine instead of
+    /// re-sampling every frame.
     zoom: ZoomAnim2d,
 }
 
@@ -46,20 +42,17 @@ impl Default for Graph2dScreen {
     }
 }
 
-/// A single sampled curve: the polyline (already in screen space) plus the
-/// series index so the colour can be re-resolved from the live theme without
-/// touching the geometry.
+/// A sampled curve in screen space, with its series index so the colour is
+/// re-resolved from the theme without touching the geometry.
 struct CurvePath {
     series: usize,
     path: BezPath,
 }
 
-/// Identity of the inputs that affect 2D plot geometry. When this is
-/// unchanged between frames the cached polylines are replayed as-is; a theme
-/// or tab switch does NOT change it, so neither triggers a re-sample.
+/// The inputs that affect plot geometry. A theme or tab switch does not change
+/// it, so neither re-samples.
 #[derive(Clone, PartialEq, Default)]
 struct CurveKey {
-    /// `(expr, visible)` for every function, in order.
     funcs: Vec<(String, bool)>,
     cx: u64,
     cy: u64,
@@ -71,8 +64,7 @@ struct CurveKey {
 struct CurveCache {
     key: Option<CurveKey>,
     paths: Vec<CurvePath>,
-    /// Counts actual (re)samples; lets a test prove a theme/tab switch reuses
-    /// the cache instead of re-evaluating every function.
+    /// Lets a test prove a theme switch reuses the cache.
     rebuilds: u32,
 }
 
@@ -102,17 +94,14 @@ impl CurveKey {
 }
 
 impl Graph2dScreen {
-    /// Resolve the panel, the content column and the plot for the window
-    /// `area`. The plot fills the content column: its controls are the
-    /// window bar's.
+    /// The plot fills the content column: its controls are the window bar's.
     pub fn layout(&mut self, area: Rect, model: &CalcModel) {
         self.area = area;
         self.panel.layout(area, model.funcs.len());
         self.canvas = self.panel.side().content();
     }
 
-    /// Measure the formulas and lay the screen out for this frame, then
-    /// advance the eased zoom. Call once per draw, before painting.
+    /// Call once per draw, before painting.
     pub fn prepare(&mut self, tr: &mut TextRenderer, theme: &Theme, model: &CalcModel, area: Rect) {
         self.panel.fit(&model.funcs, tr, theme);
         self.layout(area, model);
@@ -121,7 +110,6 @@ impl Graph2dScreen {
         self.layout(area, model);
     }
 
-    /// The plot: grid, curves and the trace under the pointer.
     pub fn draw_content(
         &mut self,
         scene: &mut Scene,
@@ -131,8 +119,8 @@ impl Graph2dScreen {
         model: &CalcModel,
         pointer: Pointer,
     ) {
-        // The eased `view` (== model when settled) drives the grid + trace so
-        // they move in lock-step with the cheaply-transformed curves.
+        // The eased view drives the grid and trace, so they move with the
+        // transformed curves.
         let view = self.zoom.display();
         self.draw_canvas(scene, t, tr, theme, model, (pointer.trace, &view));
         if let Some(environment) = pointer.hint {
@@ -148,7 +136,6 @@ impl Graph2dScreen {
         }
     }
 
-    /// The formula panel, over the plot.
     pub fn draw_panel(
         &mut self,
         scene: &mut Scene,
@@ -166,7 +153,6 @@ impl Graph2dScreen {
         self.panel.draw(scene, t, tr, theme, formulas);
     }
 
-    /// The plot canvas: grid, curves and the trace crosshair (if any).
     fn draw_canvas(
         &mut self,
         scene: &mut Scene,
@@ -202,15 +188,13 @@ impl Graph2dScreen {
         theme: &Theme,
         v: &View2d,
     ) {
-        // The grid derives against the window ground the plot stands on.
         self.plane(v)
             .paint_grid(scene, t, tr, theme, theme.tokens.colors.surfaces.content);
     }
 
     fn draw_curves(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, model: &CalcModel) {
-        // While the zoom is animating we reuse the last-sampled polylines under
-        // a cheap affine (a resample would block the frame). When settled we do
-        // the one real resample and record the view it represents.
+        // A resample would block the frame, so an animated zoom replays the
+        // sampled polylines; when settled, one real resample.
         let aff = if self.zoom.active() {
             self.zoom.curve_affine(self.canvas.center())
         } else {
@@ -228,25 +212,19 @@ impl Graph2dScreen {
         scene.pop_layer();
     }
 
-    /// Begin a smooth zoom toward the (already-updated) model view, pinning the
-    /// world point `anchor_world` under the cursor `screen` for the whole ease.
+    /// Pins `anchor_world` under `screen` for the whole ease.
     pub fn begin_zoom(&mut self, anchor_world: Point, screen: Point) {
         self.zoom.begin(anchor_world, screen, self.canvas.center());
     }
-    /// Settle the zoom immediately (pan / edit / reset / mode switch).
     pub fn settle_zoom(&mut self, v: View2d) {
         self.zoom.settle(v);
     }
-    /// Whether a smooth zoom is animating (drives the app's frame pump).
     pub fn zoom_active(&self) -> bool {
         self.zoom.active()
     }
 
-    /// Re-sample every visible function into screen-space polylines, but only
-    /// when the cache key (functions / view / domain / canvas) has changed.
-    /// This is the heavy per-pixel-column sampling; gating it here is what
-    /// keeps a theme switch, tab switch, or hover from re-evaluating the
-    /// expressions. Colour is deliberately NOT part of the cached geometry.
+    /// Samples every visible function into screen-space polylines, only when the
+    /// cache key changes. Colour is deliberately not part of the geometry.
     fn ensure_curves(&mut self, model: &CalcModel) {
         let key = CurveKey::build(model, self.canvas);
         if self.curve_cache.key.as_ref() == Some(&key) {
@@ -266,9 +244,8 @@ impl Graph2dScreen {
             let mut path = BezPath::new();
             let mut pen_down = false;
             let mut prev_wy = f64::NAN;
-            // Sample every 1.5px column. Iterating an integer step count
-            // (rather than a `while sx <= x1` float loop) keeps the last
-            // column reachable regardless of float rounding.
+            // An integer step count, not `while sx <= x1`: the last column stays
+            // reachable whatever the float rounding.
             let steps = ((self.canvas.x1 - self.canvas.x0) / 1.5).floor().max(0.0) as usize;
             for step in 0..=steps {
                 let sx = self.canvas.x0 + step as f64 * 1.5;
@@ -303,8 +280,7 @@ impl Graph2dScreen {
         self.curve_cache.rebuilds = self.curve_cache.rebuilds.wrapping_add(1);
     }
 
-    /// The trace under the pointer: a guide, a dot on the active curve and a
-    /// readout of the point it marks, in a floating chip over the plot.
+    /// A guide, a dot on the active curve and a readout of the point it marks.
     fn draw_trace(
         &self,
         scene: &mut Scene,
@@ -326,7 +302,6 @@ impl Graph2dScreen {
         let (wx, wy) = (world.x, world.y);
         let sx = self.to_screen(wx, 0.0, v).x;
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
-        // vertical guide
         ctx.fill_rect(
             Rect::new(sx - 0.5, self.canvas.y0, sx + 0.5, self.canvas.y1),
             c.text_tertiary,
@@ -378,8 +353,8 @@ impl Graph2dScreen {
         );
     }
 
-    /// Snap to a nearby crossing of the active curve and another visible
-    /// curve. A bounded bracket and a residual check reject asymptotes.
+    /// Snaps to a nearby crossing with another visible curve; a bounded bracket
+    /// and a residual check reject asymptotes.
     fn trace_point(
         &self,
         model: &CalcModel,
@@ -416,19 +391,14 @@ impl Graph2dScreen {
     }
 
     pub fn canvas_contains(&self, p: Point) -> bool {
-        // While a floating drawer (and its scrim) is up, the canvas is not
-        // directly interactive — a press there dismisses the drawer instead of
-        // panning/tracing.
+        // An open drawer takes the presses: they dismiss it instead of panning.
         !self.panel.floats_open() && self.canvas.contains(p)
     }
 }
 
-/// What the pointer is doing over the plot, for painting.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Pointer {
-    /// The point to trace, while the pointer is over the plot.
     pub trace: Option<Point>,
-    /// Show the navigation hint, for this kind of pointer.
     pub hint: Option<InteractionEnvironment>,
 }
 
@@ -522,10 +492,8 @@ mod tests {
         (s, canvas)
     }
 
-    /// The Functions panel is re-derived from the current width: it docks when
-    /// wide, becomes a floating drawer (button, scrim, no pan beneath it)
-    /// when narrow, re-docks when widened, and keeps its row buttons apart.
-    /// Fresh screen per phase.
+    /// Docks when wide, floats as a drawer when narrow, re-docks when widened,
+    /// and keeps its row buttons apart.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -605,8 +573,7 @@ mod tests {
 
         // phase panel_reflows_back_to_docked_when_widened
         {
-            // Re-derive from the current width each pass: a fresh screen must
-            // dock when wide and float when narrow, with no first-frame cache.
+            // Re-derived from the width each pass: no first-frame cache.
             let mut s = Graph2dScreen::default();
             let m = CalcModel::seeded();
             s.layout(Rect::new(0.0, 0.0, 560.0, 800.0), &m);
@@ -657,10 +624,8 @@ mod tests {
         }
     }
 
-    /// The sampled-curve cache: the first draw samples every visible function;
-    /// theme or tab switches do not resample; editing a function, panning or
-    /// zooming resample; hiding a function drops its curve. Fresh screen +
-    /// model per phase.
+    /// A theme switch does not resample; editing, panning or zooming does;
+    /// hiding a function drops its curve.
     #[test]
     fn curve_cache_resamples_only_when_geometry_changes() {
         // phase first_draw_samples_visible_functions
@@ -680,8 +645,8 @@ mod tests {
             let mut m = CalcModel::seeded();
             s.ensure_curves(&m);
             assert_eq!(s.curve_cache.rebuilds, 1);
-            // A theme switch is invisible to geometry: nothing about the model that
-            // ensure_curves keys on changes, so re-calling it must NOT resample.
+            // A theme switch changes nothing the cache keys on, so this must not
+            // resample.
             s.ensure_curves(&m);
             s.ensure_curves(&m);
             assert_eq!(
@@ -755,19 +720,13 @@ mod tests {
     }
 
     /// Sampling is a pure function of the functions, the view and the canvas:
-    /// the same inputs give the same bits, in the same order, in a screen built
-    /// from scratch and in one re-sampled after its cached geometry is dropped.
-    ///
-    /// This is what makes two runs of one binary draw one curve. A frame can
-    /// still differ between two runs by one antialiased pixel, but that tie is
-    /// the rasteriser's segment order (see `ui::offscreen`'s module docs), not
-    /// an unstable sample: nothing here reads a clock, a map's iteration order
-    /// or a second thread.
+    /// the same inputs give the same bits in the same order. A pixel can still
+    /// differ between runs through the rasteriser's segment order, not through an
+    /// unstable sample.
     #[test]
     fn the_same_view_samples_the_same_curve_bits() {
         let model = CalcModel::seeded();
-        // The tablet preset's plot: the canvas the capture writes at 768x1024
-        // with the functions panel docked at the theme's 1x width.
+        // The tablet preset's plot, with the functions panel docked at 1×.
         let canvas = Rect::new(432.0, 0.0, 768.0, 1024.0);
         let sample = |screen: &mut Graph2dScreen| {
             screen.canvas = canvas;
@@ -785,8 +744,7 @@ mod tests {
         let mut second = Graph2dScreen::default();
         assert_eq!(once, sample(&mut second), "a fresh screen samples one way");
 
-        // A cache hit replays the cached paths untouched, and a rebuild from
-        // the same key reproduces them bit for bit.
+        // A cache hit replays the paths untouched; a rebuild reproduces them.
         first.ensure_curves(&model);
         assert_eq!(
             first.curve_cache.rebuilds, 1,
@@ -802,11 +760,8 @@ mod tests {
         );
     }
 
-    /// The columns are an integer step from the canvas edge, and a line lands
-    /// on itself: `y = x` sampled on a 300x200 plot gives the points a person
-    /// can compute by hand, exactly — no accumulated float drift, and the last
-    /// column is reachable. A sampler that walked `while sx <= x1` in floats,
-    /// or accumulated `sx += 1.5`, would miss that here.
+    /// An integer step from the canvas edge, so `y = x` lands on itself exactly
+    /// and the last column is reachable. Accumulating `sx += 1.5` would drift.
     #[test]
     fn a_line_samples_at_exact_columns_and_lands_on_the_line() {
         let mut screen = Graph2dScreen {
@@ -841,8 +796,7 @@ mod tests {
         }
     }
 
-    /// Every curve of the lived-in plot gets its own colour: no two of the
-    /// first four series repeat.
+    /// No two of the first four series repeat a colour.
     #[test]
     fn curves_take_distinct_colours() {
         let palette = ChartPalette::from_theme(&Theme::dark());

@@ -203,10 +203,13 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
         version: "0.1.0".to_owned(),
     };
     let identity = crate::identity_at(&crate::state_dir().join("publisher.json"))?;
-    let mut dev = Dev::in_session(build, identity, peers, build_dir.join("bin"));
+    let mut dev = Dev::in_session(build, identity, peers, build_dir.join("bin"), &repo);
     // The sessions install them as they start.
     let apps = dev.build_for_start()?;
 
+    let (sender, wakes) = mpsc::channel();
+    // Watched before the session opens the app, so that a save made while it starts reaches it.
+    dev.start_watching(&sender)?;
     let ready = base.join("ready.json");
     let _ = std::fs::remove_file(&ready);
     let mut command = session_command(&repo, options, &base, &ready, &apps);
@@ -223,7 +226,6 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
             return Err(error);
         }
     };
-    let (sender, wakes) = mpsc::channel();
     let ended_sender = sender.clone();
     std::thread::spawn(move || {
         let _ = ended_sender.send(Wake::Ended(child.wait()));

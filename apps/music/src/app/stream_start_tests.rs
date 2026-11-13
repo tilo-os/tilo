@@ -1,6 +1,3 @@
-//! Starting a song's stream while another one is still starting: the
-//! newest choice is the one that plays.
-
 use super::*;
 
 fn app_with_doc() -> (Music, AutoCommit) {

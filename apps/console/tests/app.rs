@@ -35,6 +35,15 @@ fn shows(app: &mut TestApp<App>, target: &str) -> bool {
     app.harness().targets().contains_key(target)
 }
 
+/// Press the way back the window's bar carries, as a person does.
+fn back(app: &mut TestApp<App>) {
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            id: ui::widget::WINDOW_BACK.to_owned(),
+        });
+    app.frame();
+}
+
 #[test]
 fn every_scenario_shows_its_place_built_from_components() {
     english();
@@ -51,7 +60,6 @@ fn every_scenario_shows_its_place_built_from_components() {
         (
             "run",
             &[
-                "nav-shell-back",
                 "console-run-stop",
                 "console-run-take-over",
                 "console-run-undo",
@@ -145,10 +153,7 @@ fn the_runs_back_shows_every_run_again() {
     english();
     let mut app = TestApp::<App>::capture(Some("run")).expect("capture");
     assert!(shows(&mut app, "console-run-undo"), "the run's own page");
-    app.harness()
-        .perform_named("nav-shell-back", &ui::a11y::Action::Activate)
-        .unwrap();
-    app.frame();
+    back(&mut app);
     assert!(shows(&mut app, "console-run-run:fix-signup"), "the runs");
     assert!(!shows(&mut app, "console-run-undo"));
 }
@@ -230,6 +235,7 @@ fn agent() -> wire::Author {
         identity: "agent:claude".into(),
         relation: wire::Relation::Software,
         on_behalf_of: Some("Ada".into()),
+        kind: ui::tilo_actions::ActorKind::Agent,
         ..wire::Author::default()
     }
 }
@@ -255,6 +261,7 @@ fn run() -> wire::AgentRun {
         },
         actions: vec![wire::RunAction {
             range: wire::Range::one("ab"),
+            changes: 1,
             at_ms: 2,
             summary: "Rewrote the intro".into(),
             view: wire::ActionView::Record { target },
@@ -390,6 +397,70 @@ fn opening_an_action_shows_what_it_changed_and_reads_the_comparison() {
     );
 }
 
+/// The console open at Connect, its door listing one agent whose key does
+/// or does not operate web pages in Browser.
+fn connect(browser_pages: bool) -> TestApp<App> {
+    let mut app = TestApp::<App>::for_person("ada").expect("open");
+    let requests = asked(&mut app);
+    let runs = find(&requests, &wire::target(wire::RUNS));
+    let door_read = find(&requests, &door::target(door::DOOR));
+    answer(
+        &mut app,
+        runs.invocation,
+        serde_json::to_value(wire::Runs {
+            runs: vec![run()],
+            total: 1,
+            pending: false,
+            mutations: true,
+        })
+        .unwrap(),
+    );
+    let mut door = the_door(false);
+    door.grants[0].browser_pages = browser_pages;
+    answer(
+        &mut app,
+        door_read.invocation,
+        serde_json::to_value(door).unwrap(),
+    );
+    let targets: Vec<String> = app.harness().targets().into_keys().collect();
+    let connect = targets
+        .iter()
+        .find(|target| target.ends_with("NavList[0]/NavRow[2]"))
+        .cloned()
+        .unwrap_or_else(|| panic!("the sidebar offers Connect among {targets:?}"));
+    app.harness().click_named(&connect).unwrap();
+    app
+}
+
+/// A key that operates web pages in Browser says so in the connected
+/// agents list, beside what it reaches; a key asked about every page action
+/// says nothing of it, and revoking the agent whose key does takes that key
+/// back at the door.
+#[test]
+fn the_connected_agents_list_says_when_a_key_operates_web_pages() {
+    english();
+    let mut operating = connect(true);
+    assert!(
+        says(&mut operating, "Browser pages"),
+        "the agent's key operates web pages in Browser, and its row says so"
+    );
+    operating
+        .harness()
+        .click_named("console-grant-0-revoke")
+        .unwrap();
+    let requests = asked(&mut operating);
+    let revoke: door::GrantRef = argument(&find(&requests, &door::target(door::REVOKE)));
+    assert_eq!(
+        revoke.grant, "g1",
+        "revoking that agent ends the key that operates web pages"
+    );
+    let mut asked = connect(false);
+    assert!(
+        !says(&mut asked, "Browser pages"),
+        "a key asked about every page action says nothing of it"
+    );
+}
+
 #[test]
 fn revoking_a_grant_names_it_to_the_door() {
     english();
@@ -432,4 +503,21 @@ fn a_working_run_says_what_it_is_doing_now() {
     );
     let mut app = opened(false);
     assert!(!says(&mut app, "Running cargo test -p signup…"));
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source beside
+/// it, so a device set to German reads a German window.
+#[test]
+fn a_german_window_reads_the_catalogue() {
+    let catalogue = &tilo_console::locales::CATALOG;
+    assert!(
+        catalogue.languages().contains(&"de-DE"),
+        "the app ships German among {:?}",
+        catalogue.languages()
+    );
+    catalogue.set_locale("de-DE");
+    assert_eq!(catalogue.t("console-title"), "Konsole");
+    catalogue.set_locale("en-US");
+    assert_eq!(catalogue.t("console-title"), "Console");
 }

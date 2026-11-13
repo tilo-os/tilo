@@ -1,17 +1,5 @@
 //! What this session can run: the system store and the user's store,
 //! merged.
-//!
-//! Both stores describe packages the same way — being preinstalled is a
-//! matter of *where the payload lives*, not what the package may do, so a
-//! system row is granted exactly what a user row is. The system store is
-//! the layer of apps the image installed; updating one installs the newer
-//! version into the user's store, which shadows it (see
-//! [`runs_over_image`]) as long as it fits the OS: a user copy requiring a
-//! system interface version the image does not serve never runs over the
-//! image's copy, which matches its own image by construction (see
-//! [`crate::interfaces`]). Nor does one whose runtime build is not installed:
-//! after a rollback to an older image, an app updated for the newer one runs
-//! as the older image ships it until its runtime is back.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -68,10 +56,7 @@ impl SystemStore {
 pub struct Catalog {
     user: Layout,
     system: Option<SystemStore>,
-    /// The system store's rows, once read successfully. A failed read is
-    /// not kept: the next lookup reports it again.
     system_rows: OnceLock<Vec<InstalledPackage>>,
-    /// Whether a runtime (`<name>/<version>`) is installed.
     runtime_installed: fn(&str) -> bool,
 }
 
@@ -86,7 +71,6 @@ impl PartialEq for Catalog {
 impl Eq for Catalog {}
 
 impl Catalog {
-    /// Explicit stores, for daemons that resolve locations once and tests.
     pub fn at(user_root: impl Into<PathBuf>, system: Option<SystemStore>) -> Self {
         Self {
             user: Layout::new(user_root),
@@ -96,7 +80,6 @@ impl Catalog {
         }
     }
 
-    /// This catalogue judging which runtimes are installed by `installed`.
     #[must_use]
     pub fn with_runtimes(mut self, installed: fn(&str) -> bool) -> Self {
         self.runtime_installed = installed;
@@ -146,11 +129,6 @@ impl Catalog {
         Ok(out)
     }
 
-    /// Both copies of `app_id`: the user's store's and the system image's.
-    ///
-    /// # Errors
-    ///
-    /// See [`Catalog::list`].
     pub fn layers(&self, app_id: &str) -> Result<Layers, CatalogError> {
         let user = Registry::load(&self.user.registry())?.find(app_id).cloned();
         let image = self
@@ -167,8 +145,6 @@ impl Catalog {
         })
     }
 
-    /// Whether `row` can run on this OS: every interface it requires is
-    /// served and its runtime build is installed.
     fn fits(&self, row: &InstalledPackage) -> bool {
         self.unmet(row).is_empty() && self.runtime_present(row)
     }
@@ -183,20 +159,12 @@ impl Catalog {
         crate::interfaces::unmet_at(self.interfaces(), &row.manifest_path)
     }
 
-    /// The system interfaces the OS serves, as the system store's image
-    /// declares them.
     pub fn interfaces(&self) -> Option<&ProvidedInterfaces> {
         self.system
             .as_ref()
             .and_then(|system| system.interfaces.as_ref())
     }
 
-    /// The user's copies the system image now ships a newer version of and
-    /// that were not held back on purpose: nothing runs them any more.
-    ///
-    /// # Errors
-    ///
-    /// See [`Catalog::list`].
     pub fn superseded(&self) -> Result<Vec<InstalledPackage>, CatalogError> {
         let image = self.image_packages()?;
         Ok(Registry::load(&self.user.registry())?
@@ -233,21 +201,10 @@ impl Catalog {
             .map(str::to_owned))
     }
 
-    /// The package that runs for `app_id`.
-    ///
-    /// # Errors
-    ///
-    /// See [`Catalog::layers`].
     pub fn find(&self, app_id: &str) -> Result<Option<InstalledPackage>, CatalogError> {
         Ok(self.layers(app_id)?.running().cloned())
     }
 
-    /// The visible package whose signed root is `id`. A shadowed system
-    /// package is not visible.
-    ///
-    /// # Errors
-    ///
-    /// See [`Catalog::list`].
     pub fn find_package(&self, id: PackageId) -> Result<Option<InstalledPackage>, CatalogError> {
         Ok(self
             .list()?
@@ -270,7 +227,6 @@ pub struct Layers {
 }
 
 impl Layers {
-    /// The copy that runs.
     pub fn running(&self) -> Option<&InstalledPackage> {
         match (&self.user, &self.image) {
             (Some(user), Some(image))
@@ -302,8 +258,6 @@ pub fn runs_over_image(user: &InstalledPackage, image: &InstalledPackage) -> boo
             != std::cmp::Ordering::Less
 }
 
-/// Whether the runtime `runtime` (`<name>/<version>`) is installed where the
-/// launcher looks for it: the user's runtime directory or the system image.
 pub fn runtime_installed(runtime: &str) -> bool {
     runtime
         .split_once('/')
@@ -420,8 +374,6 @@ mod tests {
     use super::*;
     use std::fmt::Write as _;
 
-    /// Write a `registry.toml` naming `ids`, with a payload dir and manifest
-    /// on disk for each, and return the directory.
     fn store_with(ids: &[&str]) -> tempfile::TempDir {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut toml_src = String::new();
@@ -454,7 +406,6 @@ mod tests {
 
     #[test]
     fn system_and_user_stores_merge_into_one_catalog() {
-        // phase: system_store_entries_are_listed_without_any_user_install
         {
             // The preinstalled case: an image ships a system registry and the user
             // never installed anything. The palette must still have something to list.
@@ -468,7 +419,6 @@ mod tests {
             let found = catalog.find("so.tilo.notes").unwrap().unwrap();
             assert!(found.payload_root.starts_with(system.path()));
         }
-        // phase: both_stores_merge_and_a_user_install_shadows_the_system_one
         {
             let system = store_with(&["so.tilo.notes", "so.tilo.calculator"]);
             let user = store_with(&["so.tilo.notes", "so.tilo.mine"]);
@@ -485,7 +435,6 @@ mod tests {
             let calc = all.iter().find(|e| e.id == "so.tilo.calculator").unwrap();
             assert!(calc.payload_root.starts_with(system.path()));
         }
-        // phase: relocated_system_store_uses_the_developer_payload_root
         {
             let system = tempfile::tempdir().expect("system registry");
             let user = tempfile::tempdir().expect("user registry");
@@ -514,7 +463,6 @@ mod tests {
             assert_eq!(entry.payload_root, payload);
             assert_eq!(entry.manifest_path, manifest);
         }
-        // phase: a_missing_system_store_is_not_an_error
         {
             // A plain dev machine has no /usr/share/tilo-apps — that reads as
             // "nothing preinstalled", not a failure hiding the user's own installs.
@@ -524,7 +472,6 @@ mod tests {
             let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
             assert_eq!(ids, vec!["so.tilo.mine"]);
         }
-        // phase: a_system_row_pointing_outside_the_image_is_refused
         {
             let system = tempfile::tempdir().unwrap();
             let outside = tempfile::tempdir().unwrap();
@@ -603,7 +550,6 @@ mod tests {
         ));
     }
 
-    /// A store whose rows carry versions, and `held` where asked.
     fn versioned_store(rows: &[(&str, &str, bool)]) -> tempfile::TempDir {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut toml_src = String::new();

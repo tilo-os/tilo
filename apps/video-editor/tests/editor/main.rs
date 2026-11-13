@@ -16,6 +16,7 @@ mod bin_and_imports;
 mod bin_and_titles;
 mod export_dialog;
 mod export_status;
+mod german_window;
 mod hosted;
 mod hosted_editor;
 mod inspector_controls;

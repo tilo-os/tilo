@@ -4,9 +4,7 @@
 //! each writing `:name:` of emoji a registered workspace has, in dark and
 //! light, at one and two device pixels per point. A `:name:` the workspace
 //! lacks, and inline code, stay text.
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- inline_emoji_shots`
-//! Out:  `$INLINE_EMOJI_SHOTS_OUT` (default `/tmp/inline_emoji_shots`)
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -22,6 +20,7 @@ use tilo_ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::TextRole;
 use tilo_ui::wake::WakeScope;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::{Mark, MarkSpan, RichTextLine, Widget};
 use tilo_ui::workspace_emoji::{CustomEmoji, EmojiSource, WorkspaceEmoji};
 use vello::Scene;
@@ -262,7 +261,7 @@ impl Frame<'_> {
     /// height.
     fn line(&mut self, line: &mut RichTextLine, origin: Point, width: f32) -> f64 {
         let height = place(line, self.theme, origin, width);
-        line.draw(
+        line.draw_child(
             &mut self.scene,
             self.transform,
             &mut self.text,
@@ -358,7 +357,7 @@ fn composer(frame: &mut Frame<'_>, y: f64) {
         COLUMN,
     );
     // A first paint shapes the draft, so the selection lands on its layout.
-    composer.draw(
+    composer.draw_child(
         &mut Scene::new(),
         Affine::IDENTITY,
         &mut frame.text,
@@ -369,7 +368,7 @@ fn composer(frame: &mut Frame<'_>, y: f64) {
     composer
         .inner_mut()
         .set_selection(at.saturating_sub(4), at.saturating_add(":tilo: ".len()));
-    composer.draw(
+    composer.draw_child(
         &mut frame.scene,
         frame.transform,
         &mut frame.text,

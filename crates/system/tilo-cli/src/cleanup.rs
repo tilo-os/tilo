@@ -1,44 +1,23 @@
 //! Disk cleanup by policy: what this machine can download or regenerate again, removed once
 //! nothing uses it.
 //!
-//! Two scopes, because the caches have two owners:
+//! Two scopes, because the caches have two owners. **System** (root, `tilo-cache-gc.timer`):
+//! Flatpak runtimes no installed app uses, the copy of the last developer image upgrade, and OS
+//! image data no deployment uses. **User** (the person's own timer): the test fixture caches
+//! `tools/test-env.sh` keeps, keyed by the revision that generated them.
 //!
-//! * **System** (root, `tilo-cache-gc.timer`): Flatpak runtimes no installed app uses, the
-//!   copy of the last developer image upgrade in `/var/lib/tilo-vm/image`, and the OS image
-//!   data no deployment uses any more (`tilo-os-image-gc.service`, also after every update
-//!   and while the disk is low on space).
-//! * **User** (the person's own `tilo-cache-gc.timer`): the test fixture caches
-//!   `tools/test-env.sh` keeps in `$XDG_CACHE_HOME/tilo/test-env`, keyed by the revision of
-//!   what generated them, so every change to a generator leaves the previous set behind.
+//! The policy is `/etc/tilo/cache-gc.toml`, replaced by `~/.config/tilo/cache-gc.toml` for the
+//! person's own run. Each run writes a record that `tilo os status` reads to say what was freed,
+//! what was kept and when that can go.
 //!
-//! The policy is `/etc/tilo/cache-gc.toml`; a person's `~/.config/tilo/cache-gc.toml`
-//! replaces it for their own run, like `desktop.toml`. Each run writes a record
-//! (`/var/lib/tilo-cache-gc/record.json`, `$XDG_STATE_HOME/tilo/cache-gc.json`) that
-//! `tilo os status` reads to say what was freed, what was kept and when that can go.
+//! What counts as in use is the owner's own answer: `flatpak uninstall --unused` decides runtimes,
+//! `image.lock` and `vm.lock` decide the VM image copy, each test cache's `.lock` decides it, and
+//! every deployment with a boot entry decides OS image data (`bootc internals composefs-gc
+//! --prune-repo`, run while holding the update lock and the ESP's).
 //!
-//! ## What counts as in use
-//!
-//! * A Flatpak runtime: whatever Flatpak itself counts as used. This module never names a
-//!   runtime to remove; it asks `flatpak uninstall --unused`, which keeps every runtime and
-//!   extension an installed app needs and every pinned runtime, and reports the refs that
-//!   are gone afterwards.
-//! * The VM image copy: anything holding `tilo-vm`'s `image.lock` (an upgrade copying into
-//!   it) or `vm.lock` (a switch reading it). The cleanup takes both before it measures and
-//!   holds them while it removes, so an upgrade starting meanwhile waits or refuses.
-//! * A test cache: anything holding the cache's `.lock`, which every generator takes while
-//!   it writes and publishes. Held the same way while the entry goes.
-//! * OS image data: every deployment with a boot entry (the running one, the staged one and
-//!   the rollback), as bootc decides: the collection is `bootc internals composefs-gc
-//!   --prune-repo`, which removes the boot files, deployment state and repository objects
-//!   of images no boot entry names, such as an update that was cancelled half-way or a
-//!   generation an update superseded. It runs only while it holds the update lock every OS
-//!   update holds from download to activation, and the ESP's lock, which
-//!   `tilo-deployment` holds while it renames boot entries; an update running meanwhile
-//!   keeps it for the collection that runs after that update.
-//!
-//! Anything not in use goes once it has not been used for the policy's number of days, read
-//! from access and modification times (relatime still records a read once a day), or at once
-//! while the disk has less free space than the policy's floor.
+//! Anything not in use goes once the policy's number of days have passed without a use, read from
+//! access and modification times, or at once while the disk is below the policy's free-space
+//! floor.
 
 use std::collections::BTreeSet;
 use std::os::unix::fs::MetadataExt;
@@ -52,19 +31,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::os::human_size;
 
-/// The image's policy.
 pub const SYSTEM_POLICY: &str = "/etc/tilo/cache-gc.toml";
-/// The system run's record, readable by everyone so `tilo os status` needs no root.
 pub const SYSTEM_RECORD: &str = "/var/lib/tilo-cache-gc/record.json";
-/// `tilo-vmd`'s state root, which holds the image copy and the locks guarding it.
 pub const VM_ROOT: &str = "/var/lib/tilo-vm";
-/// Flatpak's system installation.
 pub const FLATPAK_ROOT: &str = "/var/lib/flatpak";
-/// The OS image collection's record, beside [`SYSTEM_RECORD`]: it runs in its own unit.
 pub const OS_IMAGE_RECORD: &str = "/var/lib/tilo-cache-gc/os-images.json";
-/// The lock `tilo-verified-update` holds from an update's download to its activation.
 pub const UPDATE_LOCK: &str = "/run/tilo-verified-update.lock";
-/// The physical root, which holds the composefs repository and the deployments.
 pub const SYSROOT: &str = "/sysroot";
 
 const DAY: u64 = 24 * 60 * 60;
@@ -83,7 +55,6 @@ pub struct Policy {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OsImagePolicy {
-    /// Remove the OS image data no deployment uses.
     pub remove: bool,
 }
 
@@ -96,7 +67,6 @@ impl Default for OsImagePolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FlatpakPolicy {
-    /// Remove runtimes no installed app uses.
     pub remove_unused_runtimes: bool,
 }
 
@@ -111,9 +81,7 @@ impl Default for FlatpakPolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgePolicy {
-    /// Whether this kind is cleaned at all.
     pub remove: bool,
-    /// Days without use after which an entry goes.
     pub unused_days: u64,
 }
 
@@ -129,7 +97,6 @@ impl Default for AgePolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SpacePolicy {
-    /// Below this much free space, anything not in use goes regardless of age.
     pub low_free_gb: u64,
 }
 
@@ -143,6 +110,7 @@ impl Policy {
     /// Parse a policy file's text.
     ///
     /// # Errors
+    ///
     /// A malformed policy is an error rather than the defaults: an owner who turned a kind
     /// off and mistyped the file must not get it cleaned.
     pub fn parse(text: &str) -> Result<Self> {
@@ -168,7 +136,6 @@ impl Policy {
     }
 }
 
-/// What a recorded entry is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Kind {
@@ -178,15 +145,11 @@ pub enum Kind {
     OsImage,
 }
 
-/// Why an entry stayed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum KeptBecause {
-    /// Something holds its lock.
     InUse,
-    /// Used within the policy's number of days.
     Recent,
-    /// The policy does not clean this kind.
     Disabled,
 }
 
@@ -203,7 +166,6 @@ pub struct Kept {
     pub name: String,
     pub bytes: u64,
     pub because: KeptBecause,
-    /// When a [`KeptBecause::Recent`] entry becomes old enough, in seconds since the epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eligible: Option<u64>,
 }
@@ -215,10 +177,8 @@ pub struct Failed {
     pub error: String,
 }
 
-/// One run's outcome, as `tilo os status` reads it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
-    /// When the run finished, in seconds since the epoch.
     pub finished: u64,
     #[serde(default)]
     pub removed: Vec<Removed>,
@@ -236,16 +196,13 @@ impl Record {
     }
 }
 
-/// What the clock and the disk say, so a decision can be tested without either.
 #[derive(Debug, Clone, Copy)]
 pub struct Conditions {
     pub now: SystemTime,
-    /// Free bytes on the filesystem being cleaned; `None` when unknown.
     pub free: Option<u64>,
 }
 
 impl Conditions {
-    /// Whether the disk has less free space than the policy's floor.
     pub fn low_on_space(&self, policy: &Policy) -> bool {
         let floor = policy.space.low_free_gb.saturating_mul(1_000_000_000);
         self.free.is_some_and(|free| free < floor)
@@ -513,7 +470,6 @@ impl Flatpak {
             .collect())
     }
 
-    /// Where a runtime ref (`id/arch/branch`) is deployed.
     fn deployed(&self, reference: &str) -> PathBuf {
         let mut path = self.root.join("runtime");
         path.extend(reference.split('/'));
@@ -567,13 +523,11 @@ pub fn clean_flatpak(record: &mut Record, flatpak: &Flatpak, policy: &Policy) {
         Ok(refs) => refs,
         Err(error) => return failed(record, &error),
     };
-    // Measured before, since the deployment is gone afterwards.
     let sizes: Vec<(String, u64)> = before
         .iter()
         .map(|reference| (reference.clone(), measure(&flatpak.deployed(reference)).0))
         .collect();
     let outcome = flatpak.uninstall_unused();
-    // Whatever went is reported, even when Flatpak stopped part-way.
     let after: BTreeSet<String> = flatpak.runtimes().map_or_else(
         |_| before.iter().cloned().collect(),
         |refs| refs.into_iter().collect(),
@@ -609,7 +563,6 @@ pub struct Bootc {
     pub boot_mount: Option<PathBuf>,
 }
 
-/// What the cleanup calls the data it collects.
 pub const OS_IMAGE_NAME: &str = "OS image data no deployment uses";
 
 /// Runs bootc's collection with the ESP writable for the one command when it was mounted

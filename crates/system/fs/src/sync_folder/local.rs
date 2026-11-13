@@ -11,19 +11,17 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-/// Prefix of the files a pass stages before renaming them into place.
-/// Never imported, and left over only by a crash.
+/// Prefix of the files a pass stages before renaming them into place; never
+/// imported, and left over only by a crash.
 pub const STAGING_PREFIX: &str = ".tilo-sync-";
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// Names that belong to the host rather than to the workspace.
 fn ignored(name: &str) -> bool {
     name.starts_with(STAGING_PREFIX) || name == ".DS_Store"
 }
 
-/// What identifies one version of a local file without reading it: a
-/// change to any of these is an edit, a replacement or a move.
+/// What identifies one version of a local file without reading it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Stamp {
     pub size: u64,
@@ -55,8 +53,6 @@ pub struct LocalEntry {
     pub stamp: Stamp,
 }
 
-/// The stamp of `path` now, `None` when it is gone or is not a plain file
-/// or directory.
 pub fn stat(path: &Path) -> io::Result<Option<LocalEntry>> {
     match fs::symlink_metadata(path) {
         Ok(meta) => Ok(entry_of(&meta)),
@@ -65,8 +61,7 @@ pub fn stat(path: &Path) -> io::Result<Option<LocalEntry>> {
     }
 }
 
-/// Symbolic links and special files are neither followed nor imported:
-/// the folder must not become a way to pull host files into the workspace.
+/// Symbolic links and special files are neither followed nor imported.
 fn entry_of(meta: &fs::Metadata) -> Option<LocalEntry> {
     let kind = meta.file_type();
     (kind.is_dir() || kind.is_file()).then(|| LocalEntry {
@@ -75,16 +70,14 @@ fn entry_of(meta: &fs::Metadata) -> Option<LocalEntry> {
     })
 }
 
-/// Every plain file and directory below `root`, by `/`-separated relative
-/// path. Names that are not UTF-8 are skipped, as the workspace names
-/// files in UTF-8.
+/// Every plain file and directory below `root`, by `/`-separated relative path;
+/// names that are not UTF-8 are skipped.
 pub fn scan(root: &Path) -> io::Result<BTreeMap<String, LocalEntry>> {
     let mut out = BTreeMap::new();
     let mut stack = vec![String::new()];
     while let Some(dir) = stack.pop() {
         let entries = match fs::read_dir(root.join(&dir)) {
             Ok(entries) => entries,
-            // Removed while the scan ran: the next pass sees it gone.
             Err(error) if error.kind() == io::ErrorKind::NotFound && !dir.is_empty() => continue,
             Err(error) => return Err(error),
         };
@@ -113,9 +106,8 @@ pub fn scan(root: &Path) -> io::Result<BTreeMap<String, LocalEntry>> {
     Ok(out)
 }
 
-/// Replaces `path` with `bytes` modified at `mtime_ms`: staged beside it,
-/// synced and renamed into place, so a reader sees the old file or the
-/// new one. Returns the new file's stamp.
+/// Replaces `path` with `bytes` modified at `mtime_ms`: staged beside it and
+/// renamed into place, so a reader sees the old file or the new one.
 pub fn write_atomically(path: &Path, bytes: &[u8], mtime_ms: u64) -> io::Result<Stamp> {
     let parent = path
         .parent()
@@ -150,9 +142,8 @@ fn stage_and_rename(staging: &Path, path: &Path, bytes: &[u8], mtime_ms: u64) ->
     Ok(stamp)
 }
 
-/// Copies `path` to `staging` and returns the stamp `path` had throughout
-/// the copy, `None` when it changed meanwhile: the copy is then not one
-/// version of the file, and the next pass takes it again.
+/// Copies `path` to `staging`, returning the stamp it had throughout, or `None`
+/// when it changed meanwhile.
 pub fn snapshot(path: &Path, staging: &Path) -> io::Result<Option<Stamp>> {
     let Some(before) = stat(path)? else {
         return Ok(None);
@@ -163,8 +154,7 @@ pub fn snapshot(path: &Path, staging: &Path) -> io::Result<Option<Stamp>> {
     Ok((after == Some(before)).then_some(before.stamp))
 }
 
-/// Removes the host's own files (Finder metadata, staging a crash left)
-/// directly in `dir`, which would otherwise keep it from being removed.
+/// Removes the host's own files (Finder metadata, staging a crash left) in `dir`.
 pub fn remove_host_files(dir: &Path) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -176,7 +166,6 @@ pub fn remove_host_files(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Creates the directory `path` and its parents; returns its stamp.
 pub fn create_dir(path: &Path) -> io::Result<Stamp> {
     fs::create_dir_all(path)?;
     Ok(Stamp::of(&fs::symlink_metadata(path)?))

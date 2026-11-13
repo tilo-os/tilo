@@ -1,41 +1,30 @@
-//! Live video capture for calls: the device's camera, or a moving test
-//! picture, delivered as tightly packed NV12 frames of one fixed size and
-//! rate, ready for [`super::RealtimeEncoder`].
+//! Live video capture for calls: the camera, or a moving test picture, delivered as
+//! tightly packed NV12 frames of one size and rate for [`super::RealtimeEncoder`].
 //!
-//! The camera is read through the OS media stack (`v4l2src`, converted and
-//! scaled in `GStreamer`). The test picture is `videotestsrc`'s colour bars,
-//! scrolling, through the same conversion: tests and screenshots see real
-//! frames that went through a real pipeline, never a painted stand-in.
-//!
-//! Without `--features realtime` [`VideoCapture::start`] says
+//! The camera is read through `v4l2src`, converted and scaled in `GStreamer`; the test
+//! picture is `videotestsrc`'s scrolling colour bars through the same conversion, so
+//! tests and screenshots see real frames from a real pipeline. Without
+//! `--features realtime`, [`VideoCapture::start`] answers
 //! [`RealtimeError::NotCompiled`].
 
 use std::time::Instant;
 
 use super::RealtimeError;
 
-/// What to capture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CaptureDevice {
-    /// A camera's V4L2 capture node (see [`camera_node`]).
     Camera { node: std::path::PathBuf },
-    /// Colour bars scrolling sideways (`videotestsrc`): a moving picture
-    /// with known colours, for tests and screenshots.
     TestPattern,
 }
 
-/// How a [`VideoCapture`] is set up.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CaptureConfig {
     pub device: CaptureDevice,
-    /// Frame size; both even.
     pub width: u32,
     pub height: u32,
     pub fps: u32,
 }
 
-/// One captured frame: NV12, tightly packed (`width × height` luma, then
-/// half as much interleaved chroma).
 #[derive(Clone, Debug)]
 pub struct CapturedFrame {
     pub nv12: Vec<u8>,
@@ -49,10 +38,6 @@ pub struct CapturedFrame {
 pub type FrameSink = Box<dyn Fn(CapturedFrame) + Send + Sync>;
 
 impl CaptureConfig {
-    /// # Errors
-    ///
-    /// [`RealtimeError::InvalidConfig`] for a zero, odd or oversized frame,
-    /// or a rate of zero.
     pub fn validate(&self) -> Result<(), RealtimeError> {
         if self.width == 0
             || self.height == 0
@@ -82,7 +67,6 @@ pub fn camera_node() -> Option<std::path::PathBuf> {
         .filter(|entry| {
             let path = entry.path();
             let name = std::fs::read_to_string(path.join("name")).unwrap_or_default();
-            // A camera's first node captures; later ones carry metadata.
             let index = std::fs::read_to_string(path.join("index")).unwrap_or_default();
             !name.trim().starts_with("Tilo Remote Camera") && index.trim() == "0"
         })
@@ -108,8 +92,6 @@ mod imp {
 
     use super::{CaptureConfig, CaptureDevice, CapturedFrame, FrameSink, RealtimeError};
 
-    /// A running capture; see the [module docs](super). Dropping it stops
-    /// the capture.
     pub struct VideoCapture {
         pipeline: gst::Pipeline,
         failed: Arc<AtomicBool>,
@@ -220,7 +202,6 @@ mod imp {
             Ok(Self { pipeline, failed })
         }
 
-        /// The capture stopped on its own: the camera went away or failed.
         #[must_use]
         pub fn failed(&self) -> bool {
             self.failed.load(Ordering::Acquire)
@@ -243,7 +224,6 @@ mod imp {
         }
     }
 
-    /// `sample`'s NV12 picture with its rows tightly packed.
     fn tight_nv12(sample: &gst::Sample) -> Option<CapturedFrame> {
         let captured_at = Instant::now();
         let info = gst_video::VideoInfo::from_caps(sample.caps()?).ok()?;
@@ -276,20 +256,15 @@ mod imp {
 mod imp {
     use super::{CaptureConfig, FrameSink, RealtimeError};
 
-    /// No value of this type exists without `--features realtime`.
     #[derive(Debug)]
     enum Never {}
 
-    /// Placeholder for builds without `--features realtime`.
     #[derive(Debug)]
     pub struct VideoCapture {
         never: Never,
     }
 
     impl VideoCapture {
-        /// # Errors
-        ///
-        /// Always [`RealtimeError::NotCompiled`].
         pub fn start(_config: &CaptureConfig, _sink: FrameSink) -> Result<Self, RealtimeError> {
             Err(RealtimeError::NotCompiled)
         }

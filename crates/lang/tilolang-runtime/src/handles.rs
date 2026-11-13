@@ -131,6 +131,9 @@ impl RunState {
 pub struct ViewState {
     /// The space this run of the view was offered.
     pub space: Space,
+    /// Whether the row this run of the view is for stands open into its document: a slot that
+    /// holds the document is built only then.
+    pub open: bool,
     /// The window the view runs in: what its `state` is kept under.
     pub window: String,
     /// The person looking: whose `state` the view reads.
@@ -141,9 +144,19 @@ pub struct ViewState {
     pub state_seen: Vec<(StateKey, Value)>,
     /// Every `space` field read, with the value it had.
     pub space_reads: Vec<(String, f64)>,
+    /// Whether it showed anything only the window knows: what it calls a participant
+    /// (`who.name()`), a day or a time of day in the person's formats, a word in the language
+    /// their window speaks. A boundary runs again when the person's environment changes, and no
+    /// other does.
+    pub person_reads: bool,
     /// Every `(resource, field)` read (the resource as `ResourceRef::id_string`), the view's
     /// dependencies.
     pub reads: Vec<(String, String)>,
+    /// Whether this run decides what an action shows or may do on a resource — a requirement, an
+    /// `applies` condition or a presentation — rather than drawing one: what it reads is kept as
+    /// an answer another turn reads again ([`crate::runtime::Reading`]), so a collection it
+    /// filters is the field it reads, which no item's own read names.
+    pub decides: bool,
     /// When the time it read (`today` in a query or a filter) next reads differently, in
     /// seconds since 1970 (UTC): it runs again then. `None` when it read no time.
     pub changes_at: Option<i64>,
@@ -155,6 +168,14 @@ pub struct ViewState {
         std::rc::Rc<crate::store::Listing>,
     )>,
     pub nodes: Vec<NodeBuild>,
+}
+
+impl ViewState {
+    /// Note that this run showed something only the window knows: a participant's name, a day or
+    /// a time of day in the person's formats, a word in the language their window speaks.
+    pub(crate) fn read_person(&mut self) {
+        self.person_reads = true;
+    }
 }
 
 pub enum FrameKind {

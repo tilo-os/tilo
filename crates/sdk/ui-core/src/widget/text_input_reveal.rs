@@ -9,6 +9,7 @@
 //! paint changes: the value never reaches the accessibility tree, a log, the
 //! clipboard or persisted state because of a reveal.
 
+use crate::i18n::widget_text;
 use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Position, Size, Style, TaffyTree};
@@ -129,7 +130,7 @@ impl RevealToggle {
     /// The tooltip claim for `point`, for hosts that hit-test only the field.
     pub(super) fn tooltip_at(&self, point: Point) -> Option<(Rect, String)> {
         self.contains(point)
-            .then(|| (self.rect, crate::i18n!(self.label())))
+            .then(|| (self.rect, widget_text(self.label())))
     }
 }
 
@@ -318,8 +319,9 @@ impl Widget for RevealToggle {
         self.rect
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        self.enabled.then(|| self.label())
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.enabled
+            .then(|| std::borrow::Cow::Borrowed(self.label()))
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
@@ -357,7 +359,7 @@ impl Widget for RevealToggle {
         use crate::a11y::{AccessNode, AccessState, Role};
         Some(
             AccessNode::new(Role::Button)
-                .with_name(crate::i18n!(self.label()))
+                .with_name(widget_text(self.label()))
                 .with_state(
                     AccessState::new()
                         .focused(self.focused)

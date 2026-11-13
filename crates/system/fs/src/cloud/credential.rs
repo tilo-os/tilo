@@ -32,7 +32,6 @@ use zeroize::Zeroizing;
 use super::providers::MountSpec;
 use tilo_lock::MutexRecover as _;
 
-/// Printed by a mount once the filesystem is serving.
 pub const READY_LINE: &str = "TILO_CLOUD_MOUNT_READY_V1";
 /// Printed by a mount when the server rejected its credential.
 pub const REJECTED_LINE: &str = "credential-rejected";
@@ -40,7 +39,6 @@ pub const REJECTED_LINE: &str = "credential-rejected";
 pub const EXPIRED_LINE: &str = "credential-expired";
 /// A credential this close to its expiry counts as expired.
 const EXPIRY_SKEW: Duration = Duration::from_secs(30);
-/// Prefix of a health line (`health <state>`).
 pub const HEALTH_PREFIX: &str = "health ";
 /// Prefix of the line a mount prints before [`READY_LINE`]: its provider's
 /// [`CloudCapabilities`] as JSON.
@@ -158,11 +156,8 @@ impl From<WireCredential> for Credential {
 pub enum ToMount {
     Start(MountSpec),
     Credential(WireCredential),
-    /// Cut the sync back-off short and sync now.
     SyncNow,
-    /// Pause background sync and uploads.
     Pause,
-    /// Resume them and sync now.
     Resume,
     /// A file request, answered by a [`REPLY_PREFIX`] line carrying `id`.
     Request {

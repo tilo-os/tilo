@@ -1,14 +1,10 @@
-//! The changes column: what is staged, what is not yet, and the commit box.
-//!
-//! The column stands on the sidebar region. Each area is a section (a
-//! `Subheading` title, a count and one action for the whole area) over a
-//! list of file rows; a row is a toolkit [`ListRowFace`] whose leading badge
-//! says how the file changed, whose secondary line names its folder and
-//! whose meta counts the lines added and removed. Every row is the height of
-//! a two-line row, so a file at the repository root (no folder line) keeps
-//! the list's rhythm. Staging a single file is
-//! the row's hover action. The commit box is pinned under the list: the
-//! message field and the view's one primary action.
+//! The changes column: what is staged, what is not yet, and the commit box. Each
+//! area is a section (a title, a count and one action for the whole area) over
+//! toolkit `ListRowFace` rows whose leading badge says how the file changed, whose
+//! secondary line names its folder and whose meta counts the lines added and
+//! removed. Every row has the height of a two-line row, so a file at the repository
+//! root keeps the list's rhythm; staging a single file is the row's hover action.
+//! The commit box is pinned under the list.
 
 use vello::kurbo::{Point, Rect};
 
@@ -23,49 +19,36 @@ use ui::widget::{
 use crate::i18n::{t, t_args};
 use crate::model::{ChangeArea, ChangeKind, FileChange, RepoModel};
 
-/// What a pointer press or an assistive action in the column asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChangesHit {
-    /// Show this file's diff. `(area, index within the area)`.
     SelectFile(ChangeArea, usize),
-    /// Move one file between the index and the working tree.
     ToggleStage(ChangeArea, usize),
-    /// The section action of an unstaged or untracked area.
     StageAll(ChangeArea),
-    /// The section action of the staged area.
     UnstageAll(ChangeArea),
-    /// The commit button.
     Commit,
-    /// The message field.
     FocusMessage,
 }
 
-/// What the column shows this frame.
 pub struct ChangesInput<'a> {
     pub model: &'a RepoModel,
     pub selected: Option<(ChangeArea, usize)>,
     pub scroll: f64,
-    /// The commit message typed so far: the commit button is enabled once it
-    /// and the staged area are both non-empty.
+    /// The commit message typed so far: the commit button is enabled once it and the staged area
+    /// are both non-empty.
     pub message: &'a str,
-    /// The pointer, for row hover and hover actions; `None` when it is not
-    /// over the column.
     pub pointer: Option<Point>,
 }
 
-/// What one paint produced: every target (row, row action, section action,
-/// the commit button and field), where the owner lays out the message field,
-/// and the list's scroll extent.
+/// What one paint produced: every target, where the owner lays out the message field, and the
+/// list's scroll extent.
 pub struct ChangesDraw {
     pub targets: Vec<(Rect, ChangesHit)>,
     pub commit_input: Rect,
-    /// The commit button, enabled or not: assistive technology reaches it
-    /// either way (only an enabled button is among the press targets).
+    /// The commit button, enabled or not: assistive technology reaches it either way, though only
+    /// an enabled button is a press target.
     pub commit_button: Rect,
     pub commit_enabled: bool,
-    /// Height of everything in the list, for clamping the scroll.
     pub content_height: f64,
-    /// Height of the list viewport above the commit box.
     pub viewport_height: f64,
 }
 
@@ -77,7 +60,6 @@ pub fn section_title(area: ChangeArea) -> String {
     })
 }
 
-/// The action label for a whole section.
 fn section_action(area: ChangeArea) -> String {
     t(match area {
         ChangeArea::Staged => "git-unstage-all",
@@ -94,8 +76,8 @@ pub fn commit_label(model: &RepoModel) -> String {
     }
 }
 
-/// `+12 −3`: the lines a change adds and removes, or `None` when it has no
-/// line counts (a binary file).
+/// `+12 −3`: the lines a change adds and removes, or `None` when it has no line counts (a binary
+/// file).
 pub fn line_counts(additions: u32, deletions: u32) -> Option<String> {
     match (additions, deletions) {
         (0, 0) => None,
@@ -105,20 +87,13 @@ pub fn line_counts(additions: u32, deletions: u32) -> Option<String> {
     }
 }
 
-/// The geometry every part of the column shares, read from the theme.
 struct Metrics {
-    /// The list's inset from the column edges (rows stand `s2` inside it).
     inset: f64,
-    /// Padding inside the commit box.
     pad: f64,
-    /// Space above a section after the first.
     section_gap: f64,
-    /// Height of a section header line.
     header_h: f64,
-    /// Gap between a section header and its first row.
     header_gap: f64,
     control_h: f64,
-    /// Gap between the commit field and the button.
     control_gap: f64,
 }
 
@@ -141,7 +116,6 @@ impl Metrics {
     }
 }
 
-/// Paint the column into `area` with `ctx`'s theme (the sidebar region's).
 pub fn paint(ctx: &mut PaintCtx<'_>, area: Rect, input: &ChangesInput<'_>) -> ChangesDraw {
     let m = Metrics::of(ctx.theme);
     let box_top = (area.y1 - m.commit_box_height()).max(area.y0);
@@ -217,28 +191,23 @@ pub fn paint(ctx: &mut PaintCtx<'_>, area: Rect, input: &ChangesInput<'_>) -> Ch
     }
 }
 
-/// A clean working tree: one sentence where the lists would be.
 fn paint_clean(ctx: &mut PaintCtx<'_>, list: Rect) {
     let title = t("git-no-changes");
     let content = EmptyStateContent::new(&title);
     EmptyState::paint(ctx, list, &content, Point::new(f64::MIN, f64::MIN));
 }
 
-/// One paint pass over the scrolling list.
 struct ListPass<'a, 'b> {
     list: Rect,
     m: &'a Metrics,
     input: &'a ChangesInput<'b>,
     /// The leading badge column every row shares, so names line up.
     badge_w: f64,
-    /// Every row's height: a row with a secondary line.
     row_h: f64,
     targets: &'a mut Vec<(Rect, ChangesHit)>,
 }
 
 impl ListPass<'_, '_> {
-    /// Paint the section for `change_area` from `y`; returns where the next
-    /// one starts.
     fn section(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -270,7 +239,6 @@ impl ListPass<'_, '_> {
         y
     }
 
-    /// The section header: title, count, and the action for the whole area.
     fn section_header(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -279,13 +247,11 @@ impl ListPass<'_, '_> {
         count: usize,
     ) {
         let theme = ctx.theme;
-        // The rows stand inside `band` by their bleed: the title starts and
-        // the action ends on their text edge.
         let pad = ui::chrome::row_bleed(theme);
         let gap = f64::from(theme.tokens.spacing.s2);
 
-        // The action trails, its label ending on the rows' text edge (where
-        // their line counts end); the title takes what is left before it.
+        // The action trails, its label ending on the rows' text edge where their line counts end;
+        // the title takes what is left.
         let label = section_action(change_area);
         let probe = ButtonFace::new(Rect::ZERO, &label)
             .role(ButtonRole::Plain)
@@ -341,7 +307,6 @@ impl ListPass<'_, '_> {
         BadgeFace::new(badge, &count).paint(ctx.scene, ctx.transform, ctx.text, theme);
     }
 
-    /// One file row at `y`; returns the `y` under it.
     fn row(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -424,8 +389,8 @@ impl ListPass<'_, '_> {
         rect.y1
     }
 
-    /// Record a target, clipped to the list viewport so a row scrolled under
-    /// the commit box never takes its presses.
+    /// Record a target, clipped to the list viewport so a row scrolled under the commit box never
+    /// takes its presses.
     fn push(&mut self, rect: Rect, hit: ChangesHit) {
         let clipped = rect.intersect(self.list);
         if clipped.width() > 0.0 && clipped.height() > 0.0 {
@@ -434,7 +399,6 @@ impl ListPass<'_, '_> {
     }
 }
 
-/// A row's title: the file name, or both names of a rename.
 fn row_title(file: &FileChange) -> String {
     match &file.old_path {
         Some(old) if file.kind == ChangeKind::Renamed => {
@@ -449,15 +413,12 @@ fn row_title(file: &FileChange) -> String {
     }
 }
 
-/// Where the commit box put its parts.
 struct CommitBox {
     field: Rect,
     button: Rect,
     enabled: bool,
 }
 
-/// The commit box under the list: the message field (laid out by the owner,
-/// which hosts the toolkit text input) and the primary commit button.
 fn paint_commit_box(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,

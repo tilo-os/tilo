@@ -1,15 +1,4 @@
 //! The network early boot needs to reach a sibling.
-//!
-//! The image's `NetworkManager` runs in the initramfs (`NETWORK_UNIT`, shipped by
-//! the `tilo-sibling-unlock` dracut module). Every wired link comes up with
-//! DHCP on its own; the only profiles added are the networks the owner chose
-//! for unlocking, written to `NetworkManager`'s runtime keyfile directory for
-//! this one attempt. Wired routes keep `NetworkManager`'s lower default metric,
-//! so Ethernet is preferred whenever it is there.
-//!
-//! [`Network::down`] (also run on drop) stops `NetworkManager`, removes the
-//! profiles and their secrets, and takes the links down again, so the booted
-//! system's own `NetworkManager` starts from clean links.
 
 use crate::exec;
 use crate::material;
@@ -18,20 +7,16 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-/// The initramfs unit that runs `NetworkManager` for an unlock.
 pub const NETWORK_UNIT: &str = "tilo-sibling-unlock-network.service";
 
-/// `NetworkManager`'s runtime keyfile directory.
 pub const KEYFILE_DIR: &str = "/run/NetworkManager/system-connections";
 
-/// A started unlock network.
 #[derive(Debug)]
 pub struct Network {
     keyfiles: Vec<PathBuf>,
     started: bool,
 }
 
-/// Writes the owner's unlock networks into `dir` and returns their paths.
 pub fn write_profiles(dir: &Path, networks: &[material::Network]) -> Result<Vec<PathBuf>> {
     std::fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
     let mut written = Vec::new();
@@ -56,7 +41,6 @@ pub fn write_profiles(dir: &Path, networks: &[material::Network]) -> Result<Vec<
     Ok(written)
 }
 
-/// Overwrites and removes each profile.
 pub fn remove_profiles(keyfiles: &[PathBuf]) {
     for path in keyfiles {
         if let Ok(meta) = std::fs::metadata(path) {
@@ -68,7 +52,6 @@ pub fn remove_profiles(keyfiles: &[PathBuf]) {
 }
 
 impl Network {
-    /// Writes the profiles and starts `NetworkManager`.
     pub fn up(networks: &[material::Network]) -> Result<Self> {
         let keyfiles = write_profiles(Path::new(KEYFILE_DIR), networks)?;
         let mut network = Self {
@@ -81,7 +64,6 @@ impl Network {
         Ok(network)
     }
 
-    /// Stops `NetworkManager`, wipes the profiles and takes the links down.
     pub fn down(&mut self) {
         if self.started {
             let _ = exec::check("systemctl", ["stop", NETWORK_UNIT], None);

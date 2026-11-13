@@ -24,8 +24,8 @@ struct PartitionBinding {
     partition_uuid: String,
     number: String,
 }
-/// A filesystem grant belongs to the already reviewed media device, and pins
-/// its exact mounted root. Arbitrary host paths and stale partition lists fail.
+/// A grant belongs to the already reviewed media device and pins its exact mounted root; arbitrary
+/// host paths and stale partition lists fail.
 #[derive(Clone)]
 pub struct MediaFilesystemGrant {
     target: TargetDrive,
@@ -34,8 +34,8 @@ pub struct MediaFilesystemGrant {
     partition: PartitionBinding,
 }
 impl MediaFilesystemGrant {
-    /// The binding is only an expectation: verify it against the held writer
-    /// descriptor and this actual filesystem grant before delivering anything.
+    /// The binding is only an expectation: verify it against the held writer descriptor and this
+    /// actual grant before delivering anything.
     pub fn validate_offline_media(
         &self,
         raw: &std::fs::File,
@@ -60,8 +60,6 @@ impl MediaFilesystemGrant {
     pub fn root_path(&self) -> &Path {
         &self.root
     }
-    /// Check an adapter's descriptor against the held canonical directory.
-    /// This checks namespace identity; callers must also validate device custody.
     pub fn check_directory_identity(&self, file: &std::fs::File) -> io::Result<()> {
         self.pin.validate_destination()?;
         if !crate::nofollow::same_directory_identity(
@@ -74,12 +72,9 @@ impl MediaFilesystemGrant {
         }
         Ok(())
     }
-    /// Resolve a pinned root against a supplied block-device fixture inventory.
-    ///
-    /// # Errors
-    /// Returns an error if the root cannot be safely opened or validated, its
-    /// filesystem is read-only, or the inventory lacks a unique supported
-    /// writable partition with filesystem and partition identities at that root.
+    /// Resolves a pinned root against a supplied block-device fixture inventory. Errors when the root
+    /// cannot be safely opened, its filesystem is read-only, or the inventory lacks a unique supported
+    /// writable partition with matching filesystem and partition identities.
     #[cfg(any(test, feature = "test-support"))]
     pub fn resolve_fixture(
         target: &TargetDrive,
@@ -97,14 +92,9 @@ impl MediaFilesystemGrant {
             partition,
         })
     }
-    /// Does not mount, format, repartition, or start writing. The existing writer
-    /// must first obtain a writable mounted filesystem on its selected medium.
-    ///
-    /// # Errors
-    /// Returns an error if the target is ineligible or changed, the root cannot
-    /// be safely opened or validated, the filesystem is read-only, inventory
-    /// lookup fails, or no unique supported writable partition with filesystem
-    /// and partition identities matches the root on the selected medium.
+    /// Mounts nothing, formats nothing and writes nothing: the writer must first obtain a writable
+    /// mounted filesystem on its selected medium. Errors when the target is ineligible or changed, the
+    /// root cannot be validated, or no unique supported writable partition matches.
     pub fn resolve(target: &TargetDrive, mounted_root: &Path) -> io::Result<Self> {
         if !target.is_media_target() {
             return Err(changed(
@@ -123,7 +113,6 @@ impl MediaFilesystemGrant {
             partition,
         })
     }
-    /// Recheck the device, pinned directory and mounted partition binding.
     pub fn validate(&self) -> io::Result<()> {
         crate::write::revalidate_target(&self.target)?;
         self.pin.validate_destination()?;
@@ -208,11 +197,8 @@ fn select_partition(
 fn writable(pin: &PinnedDirectory) -> io::Result<()> {
     check_writable_directory(&pin.file)
 }
-/// Check that the descriptor's filesystem is not mounted read-only.
-///
-/// # Errors
-/// Returns an error if filesystem status cannot be read or the filesystem is
-/// mounted read-only. This does not check directory access permissions.
+/// Errors when the status cannot be read or the filesystem is mounted read-only; directory access is
+/// not checked.
 pub fn check_writable_directory(file: &std::fs::File) -> io::Result<()> {
     use std::os::fd::AsRawFd;
     let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();

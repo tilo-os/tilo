@@ -17,17 +17,12 @@ use ui::widget::{
 use crate::model::{Deck, ElementKind, SLIDE_H, SLIDE_W, Slide};
 use crate::render::{self, DeckAssets};
 
-/// The theme's measures the renderer-free geometry lays out with, captured
-/// at the last draw.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct GridMetrics {
-    /// The content gutter round the grid.
     gutter: f64,
     column_gap: f64,
     row_gap: f64,
-    /// Narrowest a card column may be.
     min_card_w: f64,
-    /// Height of a card's text under its art.
     text_h: f64,
     /// Room the scroll bar keeps on the trailing edge, and its inset.
     bar_gutter: f64,
@@ -72,8 +67,6 @@ impl OverviewGrid {
         self.scroll = value;
     }
 
-    /// The scrolling area, every card's rect (its art and text), and the
-    /// furthest the area scrolls.
     pub(crate) fn geometry(&self, window: Rect, count: usize) -> (Rect, Vec<(usize, Rect)>, f64) {
         let m = self.metrics.get();
         let area = window;
@@ -123,7 +116,6 @@ impl OverviewGrid {
             .map(|(index, _)| index)
     }
 
-    /// The scroll bar's track and thumb over `area`, when it scrolls.
     pub(crate) fn scrollbar_rects(
         &self,
         area: Rect,
@@ -147,7 +139,6 @@ impl OverviewGrid {
         Some((track, thumb))
     }
 
-    /// The scroll a thumb drag of `dy` from `original` asks for.
     pub(crate) fn scroll_from_thumb_drag(
         &self,
         area: Rect,
@@ -166,7 +157,6 @@ impl OverviewGrid {
         }
     }
 
-    /// Paint the grid.
     pub(crate) fn draw(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -212,7 +202,6 @@ impl OverviewGrid {
                 ..Interaction::default()
             });
             face.paint(ctx, rect);
-            // The card's art is the slide itself.
             let art = face.art_rect(rect);
             render::draw_slide(ctx, assets, slide, art, radius);
         }
@@ -233,8 +222,6 @@ impl OverviewGrid {
         }
     }
 
-    /// Capture the theme's measures and the tallest card text for the
-    /// renderer-free geometry.
     fn capture_metrics(&self, text: &mut TextRenderer, theme: &Theme, window: Rect, deck: &Deck) {
         let mut m = GridMetrics::of(theme);
         self.metrics.set(m);
@@ -267,7 +254,6 @@ impl OverviewGrid {
     }
 }
 
-/// A slide's headline: its largest text, on one line.
 pub(crate) fn headline(slide: &Slide) -> Option<String> {
     slide
         .elements

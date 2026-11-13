@@ -1,17 +1,11 @@
 //! Handing a person's phone number or address to the app on this device that
 //! serves it: a call, a message, an email draft.
 //!
-//! Contacts keeps no dialler, message composer or mailbox of its own. It
-//! names the number as the session's URI vocabulary already does — `tel:`,
-//! `sms:` and `mailto:` — and the desktop hands it to whichever app (or host
-//! handler) claims that scheme, exactly as a website row opens a page. When
-//! the desktop answers that nothing here handles it, the window says so; a
-//! verb that quietly did nothing would be worse than no verb.
-//!
-//! A vCard keeps numbers as people write them (`+44 (0)20 7946 0018`,
-//! `555 0100`), which are not URIs. [`tel_uri`] and [`sms_uri`] keep the
-//! digits and the RFC 3966 separators a number is allowed to carry and drop
-//! what a URI cannot: whitespace, extensions and prose.
+//! Contacts names the number as the session's URI vocabulary does — `tel:`,
+//! `sms:` and `mailto:` — and the desktop hands it to whichever app claims that
+//! scheme. A vCard keeps numbers as people write them (`+44 (0)20 7946 0018`),
+//! which are not URIs; [`tel_uri`] and [`sms_uri`] keep the digits and the RFC
+//! 3966 separators and drop whitespace, extensions and prose.
 
 /// Characters a `tel:` or `sms:` URI may carry besides digits: the RFC 3966
 /// dial-string set, which includes the visual separators people type.

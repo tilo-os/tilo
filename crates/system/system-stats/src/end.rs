@@ -1,10 +1,4 @@
 //! Ending the person's own apps and processes.
-//!
-//! A pid alone is not a target: it is reused. Every request names the
-//! process's start time too, and the process is pinned with a pidfd
-//! *before* its identity, owner and cgroup are read again, so the signal can
-//! only reach the process that was checked — never one that took its pid
-//! in between.
 
 use crate::apps::EndPolicy;
 use crate::probe::Probe;
@@ -26,7 +20,6 @@ pub trait Signaller: Send {
     ) -> Result<(), Refusal>;
 }
 
-/// Signals through a pidfd (Linux 5.3).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PidfdSignaller;
 
@@ -76,7 +69,6 @@ impl Signaller for PidfdSignaller {
     }
 }
 
-/// End the process `pid` of the lifetime `started_at`, if `policy` allows.
 pub fn end_process(
     probe: &mut dyn Probe,
     policy: &EndPolicy,
@@ -133,7 +125,6 @@ pub fn end_app(
     for target in targets {
         match end_process(probe, policy, signaller, target, force) {
             Ok(()) => ended = ended.saturating_add(1),
-            // A process that exited meanwhile is as good as ended.
             Err(Refusal::Gone) => {}
             Err(other) => refusal = Some(other),
         }

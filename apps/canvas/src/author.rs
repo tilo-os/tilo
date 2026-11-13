@@ -2,10 +2,9 @@
 //! artwork shows it, for the magic wand and selecting by colour, and the
 //! picture's subject and edges (`crate::subject`).
 //!
-//! Like `set-reference` reading a file where the action is authored, such an
-//! action is resolved to plain geometry before it is applied, so every
-//! replica applies (and history records) the same area. The canvas tells
-//! this module what it shows each time it is presented the artwork.
+//! Such an action is resolved to plain geometry before it is applied, so
+//! every replica applies the same area; the canvas tells this module what it
+//! shows each time it is presented the artwork.
 #![allow(
     clippy::arithmetic_side_effects,
     reason = "pixel indices are bounded by the picture's size, and kurbo's float geometry does not overflow"
@@ -67,18 +66,13 @@ pub fn read(art: &Artwork) {
     LATEST.with_borrow_mut(|latest| *latest = Some(Rc::new(art.clone())));
 }
 
-/// What to find by colour.
 #[derive(Clone, Debug, Default)]
 pub struct ColourQuery {
-    /// Start at the colour here (the magic wand).
     pub at: Option<Point>,
-    /// Or find this colour, `[r, g, b]`.
     pub colour: Option<[u8; 3]>,
     /// `0..=1`.
     pub tolerance: f64,
-    /// Also like colour that does not touch the start.
     pub everywhere: bool,
-    /// See only these layers.
     pub layers: Option<Vec<String>>,
     /// Find it only inside this area: the selection, when the wand takes
     /// from it or keeps only what is in it, or the bucket fills inside it.
@@ -138,7 +132,6 @@ pub fn colour_query(find: &FindArea, art: &Artwork) -> Result<Option<ColourQuery
     }))
 }
 
-/// Run `look` with what the canvas shows.
 pub fn with_sight<T>(
     look: impl FnOnce(&mut Renderer, &mut TextRenderer, &Artwork) -> Result<T, String>,
 ) -> Result<T, String> {
@@ -171,7 +164,7 @@ pub fn colour_region(
     art: &Artwork,
     query: &ColourQuery,
 ) -> Result<Region, String> {
-    let mut search = ColourSearch::start(renderer, text, art, query.clone());
+    let mut search = ColourSearch::start(art, query.clone());
     // Answered at once where the thread can wait for its pictures; a
     // caller that cannot wait is told pictures cannot be had here.
     search
@@ -185,35 +178,32 @@ pub fn colour_region(
 /// asked for; [`poll`](Self::poll) it every frame until it answers.
 pub struct ColourSearch {
     query: ColourQuery,
-    looking: Looking,
+    /// The look asked for, once the pictures it must see are decoded; `None`
+    /// until then.
+    looking: Option<Looking>,
+    sight: Option<Glance>,
 }
 
-/// A picture the search is waiting for.
 struct Looking {
     pixels: ui::offscreen::pixels::PixelsRequest,
     sight: Glance,
 }
 
-/// What a look sees: `view` at `scale` pixels per unit.
 struct Glance {
     view: Rect,
     scale: f64,
     /// Closer, it may only find what the first look found, and the pixels
     /// about its edge.
     near: Option<Region>,
-    /// What the first look found, once this is the closer look.
     first: Option<Region>,
 }
 
 impl ColourSearch {
-    /// Start looking for what `query` names in `art`.
+    /// Start looking for what `query` names in `art`: the first look is taken
+    /// once the pictures it must see are decoded, which [`poll`](Self::poll)
+    /// waits for.
     #[must_use]
-    pub fn start(
-        renderer: &mut Renderer,
-        text: &mut TextRenderer,
-        art: &Artwork,
-        query: ColourQuery,
-    ) -> Self {
+    pub fn start(art: &Artwork, query: ColourQuery) -> Self {
         let scale = (f64::from(WAND_SIDE) / art.width.max(art.height).max(1.0)).min(2.0);
         let whole = Glance {
             view: art.bounds(),
@@ -221,8 +211,11 @@ impl ColourSearch {
             near: None,
             first: None,
         };
-        let looking = ask(renderer, text, art, &query, whole);
-        Self { query, looking }
+        Self {
+            query,
+            looking: None,
+            sight: Some(whole),
+        }
     }
 
     /// The area found, once its pictures came; `None` while one is still
@@ -233,22 +226,37 @@ impl ColourSearch {
         text: &mut TextRenderer,
         art: &Artwork,
     ) -> Option<Result<Region, String>> {
+        if self.looking.is_none() {
+            // Colour is found in the pictures themselves, never in the
+            // placeholder the canvas shows while a just-opened photograph is
+            // still being decoded: the look is taken once they are here.
+            if !renderer.pictures.ready(art) {
+                return None;
+            }
+            let sight = self.sight.take()?;
+            let query = self.query.clone();
+            self.looking = Some(ask(renderer, text, art, &query, sight));
+        }
         loop {
-            let answer = self.looking.pixels.take()?;
+            let mut looking = self.looking.take()?;
+            let Some(answer) = looking.pixels.take() else {
+                self.looking = Some(looking);
+                return None;
+            };
             let found = crate::view_ops::rgba_of(Some(answer)).and_then(|(rgba, width, height)| {
                 let picture = crate::wand::Picture {
                     rgba: &rgba,
                     width: width as usize,
                     height: height as usize,
                 };
-                find_in(art, &self.query, &picture, &self.looking.sight)
+                find_in(art, &self.query, &picture, &looking.sight)
             });
             let found = match found {
                 Ok(found) => found,
                 Err(why) => return Some(Err(why)),
             };
-            let scale = self.looking.sight.scale;
-            let found = if let Some(first) = self.looking.sight.first.take() {
+            let scale = looking.sight.scale;
+            let found = if let Some(first) = looking.sight.first.take() {
                 if found.is_empty() { first } else { found }
             } else if let Some((view, closer_scale)) = closer(art, &self.query, &found, scale) {
                 let sight = Glance {
@@ -257,7 +265,8 @@ impl ColourSearch {
                     near: Some(found.grown(3.0 / scale)),
                     first: Some(found),
                 };
-                self.looking = ask(renderer, text, art, &self.query, sight);
+                let query = self.query.clone();
+                self.looking = Some(ask(renderer, text, art, &query, sight));
                 continue;
             } else {
                 found
@@ -272,7 +281,6 @@ impl ColourSearch {
     }
 }
 
-/// Ask for the picture `sight` sees, showing what `query` looks at.
 fn ask(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
@@ -285,8 +293,6 @@ fn ask(
         bare: query.layers.is_some(),
         ..Options::default()
     };
-    // Colour is found in the pictures themselves, never in the placeholder
-    // the canvas shows while a just-opened photo is still being decoded.
     let patient = std::mem::replace(&mut renderer.pictures.patient, true);
     let drawing = crate::view_ops::drawing(sight.view, sight.scale, options.bare, |scene, to| {
         renderer.draw(art, scene, to, text, &options);
@@ -385,7 +391,6 @@ fn find_in(
     .traced(to_cells.inverse()))
 }
 
-/// The area `find` found as the selection it makes, with its options.
 pub fn found(find: &FindArea, found: &Region, matte: Option<crate::model::Matte>) -> Select {
     Select {
         d: Some(path_data(&found.to_path())),

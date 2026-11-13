@@ -3,12 +3,8 @@
 //! journal, so a run resumed or replayed reads the numbers it drew the first time.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::run::{JournalEntry, RunOutcome};
     use tilolang_runtime::{
         AmStore, InvokeOutcome, Resolution, ResourceRef, Runtime, SimpleAuthority, Store, Value,

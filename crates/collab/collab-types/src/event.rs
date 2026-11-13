@@ -1,10 +1,10 @@
 //! The append-only governance log: `ChannelEvent`.
 //!
-//! Every channel-level governance action (genesis, attestation
-//! issuance/revocation, ownership transfer, rename, settings update) is
-//! recorded as a `ChannelEvent`. Peers replay the event log to
-//! reconstruct the channel's grants; the validator consults
-//! that state to decide whether an inbound `SignedOp` is valid.
+//! Every governance action on a channel (genesis, attestation
+//! issuance/revocation, rename, member add/remove) is recorded as a
+//! `ChannelEvent`. Peers replay the event log to reconstruct the channel's
+//! grants; the validator consults that state to decide whether an inbound
+//! `SignedOp` is valid.
 //!
 //! Each variant carries its own `signature`, produced by a per-variant
 //! `signing_bytes()` helper mirroring the payload minus the signature.
@@ -13,17 +13,16 @@
 //!
 //! A tagged enum (not a `kind: String + payload: bytes` envelope) so
 //! postcard prefixes each event with a discriminant byte for the
-//! receiver to pattern-match — the cleanest fit for six fixed shapes.
+//! receiver to pattern-match — the cleanest fit for a fixed set of shapes.
 
 use serde::{Deserialize, Serialize};
 use web_time::SystemTime;
 
 use crate::canonical::{CanonicalError, canonical_bytes};
-use crate::channel::{ChannelId, ChannelSettingsDelta};
+use crate::channel::ChannelId;
 use crate::crypto::{Ed25519PublicKey, Signature};
 use crate::identity::{Attestation, AttestationId};
 use crate::role::Role;
-use crate::space::SpaceId;
 
 /// Signed attestation granting a role to a member in a channel.
 ///
@@ -59,8 +58,6 @@ pub enum ChannelEvent {
         /// New channel id, also embedded so a stray genesis event floating in a
         /// buffer is self-describing.
         channel_id: ChannelId,
-        /// Parent space.
-        space: SpaceId,
         /// Display name at creation time; renamed later via `ChannelEvent::Rename`.
         name: String,
         /// Owner identity. Equivalent to the signer for this event.
@@ -79,7 +76,7 @@ pub enum ChannelEvent {
     AttestationRevoked {
         /// Id of the attestation being revoked.
         attestation: AttestationId,
-        /// Signer of this revocation — must be `Channel::owner` or hold a
+        /// Signer of this revocation — must be the channel owner or hold a
         /// `Govern` grant.
         signed_by: Ed25519PublicKey,
         signature: Signature,
@@ -90,16 +87,6 @@ pub enum ChannelEvent {
         new_name: String,
         /// Signer of this rename.
         signed_by: Ed25519PublicKey,
-        signature: Signature,
-    },
-    /// Apply a `ChannelSettingsDelta`. Signed by the owner.
-    SettingsUpdate {
-        /// The delta; each field is `Option<…>` and `None` leaves the existing
-        /// setting untouched.
-        delta: ChannelSettingsDelta,
-        /// Signer of this update.
-        signed_by: Ed25519PublicKey,
-        /// Detached signature by `signed_by`.
         signature: Signature,
     },
     /// A new member was admitted to the channel's MLS group.
@@ -155,12 +142,11 @@ impl ChannelEvent {
         match self {
             ChannelEvent::Genesis {
                 channel_id,
-                space,
                 name,
                 owner,
                 created_at,
                 signature: _,
-            } => genesis_signing_bytes(channel_id, space, name, owner, *created_at),
+            } => genesis_signing_bytes(channel_id, name, owner, *created_at),
             ChannelEvent::AttestationIssued(ra) => attestation_issued_signing_bytes(ra),
             ChannelEvent::AttestationRevoked {
                 attestation,
@@ -172,11 +158,6 @@ impl ChannelEvent {
                 signed_by,
                 signature: _,
             } => rename_signing_bytes(new_name, signed_by),
-            ChannelEvent::SettingsUpdate {
-                delta,
-                signed_by,
-                signature: _,
-            } => settings_update_signing_bytes(delta, signed_by),
             ChannelEvent::MemberAdded {
                 welcome,
                 signed_by,
@@ -199,7 +180,6 @@ impl ChannelEvent {
             ChannelEvent::AttestationIssued(ra) => ra.attestation.issued_by,
             ChannelEvent::AttestationRevoked { signed_by, .. }
             | ChannelEvent::Rename { signed_by, .. }
-            | ChannelEvent::SettingsUpdate { signed_by, .. }
             | ChannelEvent::MemberAdded { signed_by, .. }
             | ChannelEvent::MemberRemoved { signed_by, .. } => *signed_by,
         }
@@ -211,7 +191,6 @@ impl ChannelEvent {
             ChannelEvent::Genesis { signature, .. }
             | ChannelEvent::AttestationRevoked { signature, .. }
             | ChannelEvent::Rename { signature, .. }
-            | ChannelEvent::SettingsUpdate { signature, .. }
             | ChannelEvent::MemberAdded { signature, .. }
             | ChannelEvent::MemberRemoved { signature, .. } => signature,
             ChannelEvent::AttestationIssued(ra) => &ra.attestation.signature,
@@ -222,7 +201,6 @@ impl ChannelEvent {
 /// `Genesis`'s signing view (tag 0).
 fn genesis_signing_bytes(
     channel_id: &ChannelId,
-    space: &SpaceId,
     name: &str,
     owner: &Ed25519PublicKey,
     created_at: SystemTime,
@@ -231,7 +209,6 @@ fn genesis_signing_bytes(
     struct View<'a> {
         tag: u8,
         channel_id: &'a ChannelId,
-        space: &'a SpaceId,
         name: &'a str,
         owner: &'a Ed25519PublicKey,
         created_at: SystemTime,
@@ -239,7 +216,6 @@ fn genesis_signing_bytes(
     canonical_bytes(&View {
         tag: 0,
         channel_id,
-        space,
         name,
         owner,
         created_at,
@@ -302,24 +278,6 @@ fn rename_signing_bytes(
     })
 }
 
-/// `SettingsUpdate`'s signing view (tag 5).
-fn settings_update_signing_bytes(
-    delta: &ChannelSettingsDelta,
-    signed_by: &Ed25519PublicKey,
-) -> Result<Vec<u8>, CanonicalError> {
-    #[derive(Serialize)]
-    struct View<'a> {
-        tag: u8,
-        delta: &'a ChannelSettingsDelta,
-        signed_by: &'a Ed25519PublicKey,
-    }
-    canonical_bytes(&View {
-        tag: 5,
-        delta,
-        signed_by,
-    })
-}
-
 /// `MemberAdded`'s signing view (tag 6).
 fn member_added_signing_bytes(
     welcome: &[u8],
@@ -372,7 +330,6 @@ mod tests {
             let (_, owner) = generate_keypair();
             let g = ChannelEvent::Genesis {
                 channel_id: ChannelId::new(),
-                space: SpaceId::new(),
                 name: "general".into(),
                 owner,
                 created_at: SystemTime::UNIX_EPOCH,
@@ -420,12 +377,10 @@ mod tests {
         {
             let (sk, pk) = generate_keypair();
             let cid = ChannelId::new();
-            let sid = SpaceId::new();
             let now = SystemTime::UNIX_EPOCH;
 
             let mut g = ChannelEvent::Genesis {
                 channel_id: cid,
-                space: sid,
                 name: "general".into(),
                 owner: pk,
                 created_at: now,

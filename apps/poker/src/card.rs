@@ -6,7 +6,6 @@
 use std::collections::HashMap;
 
 use ui::advanced::{Affine, NodeId, Scene, TaffyTree};
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 use ui::vello::kurbo::{BezPath, Circle, RoundedRect, Shape};
 use ui::vello::peniko::{Color, Fill};
@@ -61,16 +60,16 @@ pub struct CardView {
 /// What a screen reader says for a card's face ("Queen of hearts").
 #[must_use]
 pub fn card_name(card: u8) -> String {
-    I18nManager::format(
+    crate::locales::CATALOG.t_args(
         "poker-card-name",
         &[
             (
                 "rank",
-                I18nManager::lookup_plain(cards::rank_message(card)).into(),
+                crate::locales::CATALOG.t(cards::rank_message(card)).into(),
             ),
             (
                 "suit",
-                I18nManager::lookup_plain(cards::suit_message(card)).into(),
+                crate::locales::CATALOG.t(cards::suit_message(card)).into(),
             ),
         ],
     )
@@ -81,8 +80,8 @@ impl CardView {
     pub fn new(id: impl Into<String>, showing: Showing, size: CardSize) -> Self {
         let name = match showing {
             Showing::Face(card) => card_name(card),
-            Showing::Back(_) => I18nManager::lookup_plain("poker-card-hidden"),
-            Showing::Slot => I18nManager::lookup_plain("poker-card-slot"),
+            Showing::Back(_) => crate::locales::CATALOG.t("poker-card-hidden"),
+            Showing::Slot => crate::locales::CATALOG.t("poker-card-slot"),
         };
         Self {
             rect: Rect::ZERO,

@@ -112,7 +112,7 @@ impl<H: ComponentContextSource> TileResolver for ApplicationCatalogTileResolver<
                 }
             } else {
                 TileResolution::OpaqueForeign {
-                    app_id: id,
+                    app_id: String::from(id),
                     reason: crate::i18n::t("desktop-app-no-adapter"),
                 }
             };

@@ -1,16 +1,11 @@
-//! The keep-awake lease: a logind `sleep` block lock that keeps the machine
-//! from suspending while someone drives it with tilo-vm.
-//!
-//! Every RPC connection renews the lease until [`AWAKE_IDLE_SECONDS`] after
-//! it, and `tilo-vm vm awake --for` holds it longer. The lease outlives the
-//! connection: it is a file the daemon writes ([`Lease`]) and a transient
-//! unit, [`AWAKE_UNIT`], whose `tilo-vmd awake-hold` keeps one
-//! `systemd-inhibit --what=sleep --mode=block` in place until the deadline in
-//! that file passes. A renewal only rewrites the file; the holder takes a new
-//! lock naming the new deadline before it drops the old one, so the machine
-//! is never unheld in between. A lost connection does not end the hold, and
-//! a client that never comes back does not keep a battery machine awake for
-//! longer than the deadline.
+//! The keep-awake lease: a logind `sleep` block lock that keeps the machine from
+//! suspending while someone drives it. Every RPC connection renews the lease until
+//! [`AWAKE_IDLE_SECONDS`] after it, and `tilo-vm vm awake --for` holds it longer.
+//! The lease outlives the connection: it is a file the daemon writes ([`Lease`])
+//! and a transient unit ([`AWAKE_UNIT`]) that keeps one `systemd-inhibit
+//! --what=sleep --mode=block` in place until the deadline in that file passes. A
+//! renewal only rewrites the file, and the holder takes a new lock naming the new
+//! deadline before dropping the old one, so the machine is never unheld in between.
 
 use std::path::Path;
 use std::process::{Child, Command};
@@ -19,53 +14,38 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tilo_vm_protocol::AWAKE_IDLE_SECONDS;
 
-/// The transient unit that holds the lock.
 pub const AWAKE_UNIT: &str = "tilo-vm-awake.service";
 
-/// The lease's file under the daemon's state root.
 pub const LEASE_FILE: &str = "awake.json";
 
-/// A renewal that moves the deadline by less than this leaves the file as it
-/// is: many connections in a row cost one write, not one each.
 const RENEW_GRANULARITY: u64 = 60;
 
-/// How often the holder rereads the lease file.
 const POLL: Duration = Duration::from_secs(5);
 
-/// When the lease ends, in Unix seconds.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lease {
-    /// [`AWAKE_IDLE_SECONDS`] after the last request.
     pub idle_until: u64,
-    /// An explicit hold's end (`tilo-vm vm awake --for`).
     #[serde(default)]
     pub hold_until: Option<u64>,
 }
 
-/// What renews the lease.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Change {
-    /// Any request: awake until [`AWAKE_IDLE_SECONDS`] from now, at least.
     Request,
-    /// Awake this many seconds from now, longer or shorter than a request's.
     Hold(u64),
-    /// Release it now.
     Off,
 }
 
 impl Lease {
-    /// When the machine may suspend again.
     pub fn deadline(&self) -> u64 {
         self.hold_until
             .map_or(self.idle_until, |hold| hold.max(self.idle_until))
     }
 
-    /// Does it hold the machine at `now`?
     pub fn active(&self, now: u64) -> bool {
         self.deadline() > now
     }
 
-    /// The lease after `change` at `now`.
     #[must_use]
     pub fn renewed(self, now: u64, change: Change) -> Self {
         let hold_until = self.hold_until.filter(|&hold| hold > now);
@@ -86,10 +66,9 @@ impl Lease {
     }
 }
 
-/// Whether `change` needs the lease file rewritten, and the lease it then
-/// holds. A request that would move a running lease's deadline by less than
-/// `RENEW_GRANULARITY` needs nothing; an explicit hold or release always
-/// writes.
+/// Whether `change` needs the lease file rewritten, and the lease it then holds: a request that
+/// would move a running lease's deadline by less than `RENEW_GRANULARITY` needs nothing, while an
+/// explicit hold or release always writes.
 pub fn renewal(stored: Option<Lease>, now: u64, change: Change) -> (Lease, bool) {
     let old = stored.unwrap_or_default();
     let new = old.renewed(now, change);
@@ -104,7 +83,6 @@ pub fn renewal(stored: Option<Lease>, now: u64, change: Change) -> (Lease, bool)
     (if write { new } else { old }, write)
 }
 
-/// The lease in `path`; `None` when there is none or it cannot be read.
 pub fn read(path: &Path) -> Option<Lease> {
     let bytes = std::fs::read(path).ok()?;
     serde_json::from_slice(&bytes).ok()
@@ -121,9 +99,8 @@ pub fn utc(seconds: u64) -> String {
         )
 }
 
-/// The `systemd-inhibit` that holds the lock until `deadline`: the why
-/// names the deadline, and its own `sleep` ends a little after it in case
-/// the holder dies without its unit.
+/// The `systemd-inhibit` that holds the lock until `deadline`: the `why` names the deadline, and
+/// its own `sleep` ends a little after it in case the holder dies without its unit.
 pub fn inhibitor_argv(deadline: u64, now: u64) -> Vec<String> {
     let remaining = deadline.saturating_sub(now).saturating_add(10);
     vec![
@@ -142,8 +119,7 @@ pub fn inhibitor_argv(deadline: u64, now: u64) -> Vec<String> {
     ]
 }
 
-/// One `systemd-inhibit` in its own process group, so stopping it also
-/// stops the `sleep` it runs.
+/// One `systemd-inhibit` in its own process group, so stopping it also stops the `sleep` it runs.
 struct Inhibitor {
     child: Child,
     deadline: u64,
@@ -178,9 +154,8 @@ impl Inhibitor {
     }
 }
 
-/// `tilo-vmd awake-hold`: keep a lock in place until the lease in `path`
-/// ends, taking a new one (before dropping the old) whenever its deadline
-/// moves.
+/// `tilo-vmd awake-hold`: keep a lock in place until the lease in `path` ends, taking a new one
+/// before dropping the old whenever its deadline moves.
 pub fn hold(path: &Path) -> std::io::Result<()> {
     let mut current: Option<Inhibitor> = None;
     loop {

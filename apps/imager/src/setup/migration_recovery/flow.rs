@@ -1,4 +1,5 @@
 //! Recovery operations retain their exact reviewed grants through write admission.
+
 use super::RecoveryCopy;
 use imager_backend::{migration, windows_inventory::Inventory};
 use serde_json::{Value, json};
@@ -20,8 +21,6 @@ pub(crate) struct Evidence {
     complete_coverage: bool,
 }
 impl Evidence {
-    /// Re-enter the journal verifier, including independent content rereads and
-    /// source postflight. Existence of a previous success is never sufficient.
     pub(crate) fn validate(&self, cancel: &AtomicBool) -> Result<(), String> {
         self.copy.validate_source(cancel)?;
         let report = self.copy.copy(true, cancel, |_| {})?;
@@ -43,8 +42,6 @@ impl Evidence {
     }
 }
 
-/// Owns explicit recovery grants, cancellation and verified-copy evidence.
-/// Copy completion never authorizes replacement of the original system.
 #[derive(Default)]
 pub struct Flow {
     reviewed: Option<Arc<Evidence>>,
@@ -56,11 +53,9 @@ pub struct Flow {
     error: Option<String>,
 }
 impl Flow {
-    /// Whether a chooser or copy worker still owns the current operation.
     pub fn busy(&self) -> bool {
         self.worker.is_some() || self.picker.is_some()
     }
-    /// Open the platform folder chooser for an explicitly identified source.
     pub fn choose(&mut self, source_id: String) -> Result<(), String> {
         if self.busy() {
             return Err("Recovery selection is busy".into());
@@ -68,7 +63,6 @@ impl Flow {
         self.picker = Some((source_id, crate::setup::folders::pick_folder()));
         Ok(())
     }
-    /// Admit a completed chooser response against the current source inventory.
     pub fn poll_selection(&mut self, inventory: Option<&Inventory>) -> bool {
         let Some((source_id, channel)) = &self.picker else {
             return false;
@@ -125,8 +119,6 @@ impl Flow {
             return Err("Unknown Windows source identity".into());
         }
         Self::validate_destination(inventory, directory)?;
-        // The receipt directory is a private sibling of the output, not its
-        // ancestor. Check all source grants before creating even this metadata.
         let parent =
             migration::PinnedDirectory::open_absolute(directory).map_err(|e| e.to_string())?;
         let name = format!(".tilo-recovery-records-{}", uuid::Uuid::new_v4());
@@ -146,7 +138,6 @@ impl Flow {
             &directory.join(name).join("journal"),
         )
     }
-    /// Review a fresh private output below the selected destination directory.
     pub fn review(
         &mut self,
         inventory: &Inventory,
@@ -160,8 +151,6 @@ impl Flow {
         let output = directory.join(format!("tilo-recovery-{}", uuid::Uuid::new_v4()));
         self.review_output(inventory, source_id, &output, journal)
     }
-    /// Reattach exact grants after restarting the installer. The journal is a
-    /// hint only; explicit retry will reverify every source and output receipt.
     pub fn review_existing(
         &mut self,
         inventory: &Inventory,
@@ -201,8 +190,6 @@ impl Flow {
             .iter()
             .find(|r| r.source_id == source_id)
             .ok_or("Unknown exact Windows source grant")?;
-        // No mount-root inference: the supplied directory itself is the grant.
-        // Recovery output gets its own private child and cannot replace a folder.
         if !directory.is_absolute() || directory.parent().is_none() {
             return Err("Select an explicit recovery folder, not a filesystem root".into());
         }
@@ -232,7 +219,6 @@ impl Flow {
         self.error = None;
         Ok(())
     }
-    /// Start copying, or explicitly resume through the durable receipt verifier.
     pub fn start(&mut self, resume: bool) -> Result<(), String> {
         if self.busy() {
             return Err("Recovery copy is running".into());
@@ -244,9 +230,6 @@ impl Flow {
         if !resume && self.state != "reviewed" {
             return Err("Use explicit retry to resume verified output".into());
         }
-        // Cancellation may precede journal creation. A retry can start fresh
-        // only if neither journal nor output exists; existing output always
-        // requires the durable receipt verifier and never gets overwritten.
         let resume = if resume
             && !evidence
                 .copy
@@ -275,7 +258,6 @@ impl Flow {
         });
         Ok(())
     }
-    /// Request cancellation without removing verified output or original files.
     pub fn cancel(&mut self) {
         self.cancel.store(true, Ordering::Release);
         self.picker = None;
@@ -328,8 +310,6 @@ impl Flow {
         }
         Ok(self.verified.values().cloned().collect())
     }
-    /// Return device-local review state, including the explicitly granted paths.
-    /// This report is not a public log or destructive-write authorization.
     pub fn report(&self) -> Value {
         json!({"durable_copy_available":imager_backend::migration_worker::durable_copy_available().is_ok(),"state":if self.state.is_empty() { "not-selected" } else {self.state},"busy":self.busy(),"error":self.error,
             "reviewed":self.reviewed.as_ref().map(|e| e.report()),"verified":self.verified.values().map(|e| e.report()).collect::<Vec<_>>(),

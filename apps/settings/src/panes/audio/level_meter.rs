@@ -1,11 +1,8 @@
-//! A live level meter: how loud a device is right now, as a bar that rises
-//! with the sound and falls back smoothly, with the recent peak marked.
-//!
-//! The level comes from the model, or straight from a capture thread,
-//! through a shared atomic read between frames, so a moving meter repaints
-//! itself alone and never rebuilds the page around it. A meter asks for
-//! frames only while there is something to show: a silent output costs
-//! nothing.
+//! A live level meter: how loud a device is right now, as a bar that rises with
+//! the sound and falls back smoothly, with the recent peak marked. The level
+//! comes from the model, or straight from a capture thread, through a shared
+//! atomic read between frames, so a moving meter repaints itself alone and
+//! never rebuilds the page around it.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -20,8 +17,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::Fill;
 
-/// The level a model publishes for a meter: `0..=1`, and whether it is
-/// being measured at all.
 #[derive(Clone, Default)]
 pub struct Level {
     value: Arc<AtomicU32>,
@@ -66,13 +61,9 @@ fn store(value: &AtomicU32, level: f32) {
     value.store(level.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
 }
 
-/// Below this a level shows as nothing.
 const SILENT: f32 = 0.002;
 
-/// The bar's height at the default text size.
 const HEIGHT: f32 = ui::tokens::Metrics::BASE.meter_height;
-/// How much of the way to a lower level the bar falls each frame, and how
-/// fast the peak mark sinks: a meter that rises at once and settles.
 const FALL: f32 = 0.18;
 const PEAK_FALL: f32 = 0.01;
 
@@ -99,7 +90,6 @@ impl LevelMeter {
         }
     }
 
-    /// Follow the published level one frame: up at once, down smoothly.
     fn step(&mut self) -> bool {
         let target = self.level.get();
         let (shown, peak) = (self.shown, self.peak);
@@ -179,7 +169,6 @@ impl Widget for LevelMeter {
     ) {
         let colors = &theme.tokens.colors;
         let radius = self.rect.height() / 2.0;
-        // ratchet-allow(raw_paint): the level meter draws live audio levels, content rather than chrome
         scene.fill(
             Fill::NonZero,
             transform,
@@ -195,11 +184,9 @@ impl Widget for LevelMeter {
                 self.rect.x0 + (width * f64::from(self.shown)).max(self.rect.height()),
                 self.rect.y1,
             );
-            // ratchet-allow(raw_paint): the level meter draws live audio levels, content rather than chrome
             scene.fill(
                 Fill::NonZero,
                 transform,
-                // ratchet-allow(literal_alpha): the level meter draws live audio levels, content rather than chrome
                 colors.text_primary.multiply_alpha(0.9),
                 None,
                 &RoundedRect::from_rect(fill, radius),
@@ -208,7 +195,6 @@ impl Widget for LevelMeter {
         if self.peak > 0.02 {
             let x = (self.rect.x0 + width * f64::from(self.peak))
                 .clamp(self.rect.x0 + 1.0, self.rect.x1 - 1.0);
-            // ratchet-allow(raw_paint): the level meter draws live audio levels, content rather than chrome
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -236,8 +222,6 @@ impl Widget for LevelMeter {
 mod tests {
     use super::*;
 
-    /// The bar rises at once, falls back over frames, and the peak stays a
-    /// moment above it.
     #[test]
     fn the_meter_rises_at_once_and_settles() {
         let level = Level::default();
@@ -258,8 +242,6 @@ mod tests {
         assert!(!meter.needs_animation_frame());
     }
 
-    /// A live meter over silence asks for no frames: an output that plays
-    /// nothing costs nothing while the page is open.
     #[test]
     fn a_meter_over_silence_asks_for_no_frames() {
         let level = Level::default();

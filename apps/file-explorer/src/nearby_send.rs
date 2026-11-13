@@ -1,16 +1,5 @@
-//! Files-side state for the shell-owned Nearby Send service.
-//!
-//! This module owns no transport and never reads a file. It emits bounded
-//! commands onto the toolkit's already-authenticated collaboration lane, then
-//! projects the shell's certified-device/status reply into app-local picker,
-//! consent and progress state. The shell remains responsible for validating
-//! paths, consent and the existing resumable transfer.
-//!
-//! It never asks on a timer. The shell announces each change
-//! ([`CollabEvent::NearbyTransferChanged`], which names nothing) and Files
-//! then asks for one snapshot; the first announcement arrives when the route
-//! joins. An idle desktop with Files open therefore makes no Nearby request
-//! and no wakeup at all.
+//! Files' side of the shell-owned Nearby Send: what the shell announces, the
+//! one snapshot Files asks for after it, and the transfers it shows.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
@@ -22,10 +11,6 @@ use ui::collaboration::{
     NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget,
 };
 
-/// How long a background snapshot may go unanswered before the next
-/// announced change asks again regardless: a request sent while the route
-/// was going down is never answered, and waiting on it would stop every
-/// later refresh.
 const UNANSWERED_AFTER: Duration = Duration::from_secs(5);
 const MAX_VISIBLE_HISTORY: usize = 32;
 
@@ -57,10 +42,7 @@ pub struct NearbySendState {
     pending: BTreeMap<u64, Pending>,
     requests: VecDeque<CollabRequest>,
     snapshot: NearbyTransferSnapshot,
-    /// When the background snapshot now awaiting its reply was asked for.
     refresh_sent: Option<Instant>,
-    /// The shell announced another change while that snapshot was out: ask
-    /// once more when it is answered, so the last change is never missed.
     refresh_again: bool,
     shown_offer: Option<NearbyTransferHandle>,
     observed_phases: BTreeMap<NearbyTransferHandle, NearbyTransferPhase>,
@@ -90,8 +72,6 @@ impl NearbySendState {
         self.airdrop_available
     }
 
-    /// The app submits no certificate/trust assertion. Those are collected
-    /// on the compositor-owned verification sheet for this one attempt.
     pub fn send_airdrop(&mut self, path: &Path, address: String, port: u16) -> Result<(), String> {
         if !self.airdrop_available {
             return Err(crate::i18n::t("files-airdrop-unavailable"));
@@ -128,11 +108,6 @@ impl NearbySendState {
         );
     }
 
-    /// Queue an exact Unix path for the shell-owned transfer service.
-    ///
-    /// # Errors
-    /// Hosts whose paths are not Unix byte strings cannot represent local
-    /// paths in this service protocol; nothing is queued.
     pub fn send(&mut self, path: &Path, target: NearbyTargetHandle) -> Result<(), String> {
         let Some(source_path) = host_fs::names::unix_path_bytes(path) else {
             return Err(crate::i18n::t("files-share-not-available"));
@@ -181,10 +156,6 @@ impl NearbySendState {
         self.queue(NearbyTransferCommand::Retry { handle }, Pending::Retry);
     }
 
-    /// The shell announced that the view may have changed: ask for one
-    /// snapshot, and whether `AirDrop` is on offer. While an earlier ask is
-    /// still out, remember to ask again once it is answered instead; bursts
-    /// of changes (a transfer's progress) cost one snapshot at a time.
     fn refresh(&mut self, now: Instant) {
         if self
             .refresh_sent
@@ -193,7 +164,6 @@ impl NearbySendState {
             self.refresh_again = true;
             return;
         }
-        // Nothing is out, or what is out will never be answered.
         self.pending.retain(|_, pending| {
             !matches!(
                 pending,
@@ -212,7 +182,6 @@ impl NearbySendState {
         );
     }
 
-    /// The background snapshot was answered, either way.
     fn refreshed(&mut self, now: Instant) {
         self.refresh_sent = None;
         if std::mem::take(&mut self.refresh_again) {
@@ -232,8 +201,6 @@ impl NearbySendState {
         &self.snapshot.targets
     }
 
-    /// Path-free, broker-issued transfer projections used to publish the
-    /// same receiver decisions through Files' semantic action door.
     pub fn transfers(&self) -> &[NearbyTransferStatus] {
         &self.snapshot.transfers
     }
@@ -353,7 +320,7 @@ impl NearbySendState {
     ) -> Vec<NearbyUiEffect> {
         // A change the shell announced may leave the view as it was (a
         // handle renewed, progress inside one percent). An identical roster
-        // must not look like a frame: the runner used to commit every reply.
+        // is not news: a reply commits only when something moved.
         if !open_picker && snapshot == self.snapshot {
             return Vec::new();
         }
@@ -454,8 +421,6 @@ mod tests {
     use super::*;
     use ui::collaboration::{NearbyTransferDirection, NearbyTransferPhase, NearbyTransferReply};
 
-    /// The shell announces a change; Files asks for one snapshot and for
-    /// `AirDrop`'s availability, and nothing else. Returns the snapshot's id.
     fn announce(state: &mut NearbySendState) -> u64 {
         assert!(
             state
@@ -527,7 +492,6 @@ mod tests {
         let request_id = announce(&mut state);
         assert!(answer(&mut state, request_id, NearbyTransferSnapshot::default()).is_empty());
 
-        // A device offers a file: the shell announces it, nothing else runs.
         let offer = NearbyTransferStatus {
             handle: NearbyTransferHandle::from_issued_bytes([12; 16]),
             name: "Photos".into(),
@@ -679,8 +643,6 @@ mod tests {
         let mut state = NearbySendState::default();
         let lost = announce(&mut state);
         let sent = state.refresh_sent.expect("the ask is out");
-        // The reply never comes; the route went down with it. A change
-        // announced after the rejoin asks again rather than waiting forever.
         state.refresh(sent + UNANSWERED_AFTER);
         let requests = state.take_requests();
         let Some(CollabRequest::NearbyTransferCommand {
@@ -870,10 +832,8 @@ mod tests {
         );
     }
 
-    /// Picker and receiver consent follow typed broker results and the receiver decision uses only opaque destination authority.
     #[test]
     fn nearby_send_consent_is_driven_by_typed_opaque_broker_results() {
-        // --- phase: picker_and_receiver_consent_are_driven_by_typed_broker_results ---
         {
             let mut state = NearbySendState::default();
             state.open_picker();
@@ -919,7 +879,6 @@ mod tests {
             }));
         }
 
-        // --- phase: receiver_decision_uses_only_opaque_destination_authority ---
         {
             let mut state = NearbySendState::default();
             let transfer = NearbyTransferHandle::from_issued_bytes([8; 16]);

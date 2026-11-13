@@ -5,9 +5,9 @@
 //! stable id, so renaming a declaration keeps its translations as it keeps its data. The
 //! compiler writes the package's source catalogue from its source, `locales/en-US.ftl`, the way
 //! it writes `app.ids`; translations sit beside it and may refine any message with Fluent's
-//! selectors (an irregular plural, a gender, another word order). The source catalogue may be
-//! refined the same way: a message under a `# refined` comment is the author's, and writing the
-//! catalogue again keeps it as written.
+//! selectors (a gender, a noun the app words its own way, another word order). The source
+//! catalogue may be refined the same way: a message under a `# refined` comment is the author's,
+//! and writing the catalogue again keeps it as written.
 
 use std::fmt::Write as _;
 
@@ -44,6 +44,14 @@ pub fn key_of(id: &str) -> String {
 #[must_use]
 pub fn filter_key(ty: &str, key: &str) -> String {
     key_of(&format!("{ty}-filter-{key}"))
+}
+
+/// The key of the message of the parameter `param` of the action with the stable id `action`:
+/// what the parameter is called where a person gives it (`d-<action>-<param>`). It is keyed by
+/// its name, which an invocation names it by.
+#[must_use]
+pub fn param_key(action: &str, param: &str) -> String {
+    key_of(&format!("{action}-{param}"))
 }
 
 /// The comment that marks a message of the source catalogue as the author's own.
@@ -128,6 +136,30 @@ pub fn keys(catalogue: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// The one-line word `catalogue` gives `key`, when it has one (`d-so-tilo-lang-today = Heute`): a
+/// name a package gives itself, which a manifest carries so every surface reads it.
+#[must_use]
+pub fn word(catalogue: &str, key: &str) -> Option<String> {
+    for line in catalogue.lines() {
+        if line.starts_with(char::is_whitespace) || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let Some((name, value)) = line.split_once(" = ") else {
+            continue;
+        };
+        if name != key {
+            continue;
+        }
+        let value = value.trim();
+        // A message spanning lines or placeables is no name.
+        if value.is_empty() || value.starts_with('{') || value.ends_with('{') {
+            return None;
+        }
+        return Some(value.to_owned());
+    }
+    None
 }
 
 /// The keys `translation` has that `source` does not: words whose source changed or went, so
@@ -232,6 +264,32 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
         }
         // What it tells a person, as a notification shows it (`notify`'s title and body).
         for word in meta.words.iter().filter(|word| word.view == action.id) {
+            attribute(&mut out, &word.key, &pattern(&word.text));
+        }
+        // What each argument is called where a person gives it; the subject is the record it
+        // runs on, which nobody gives.
+        for param in meta.arguments(&action.params) {
+            named(
+                &mut out,
+                &param_key(&action.id, &param.name),
+                &param.words(),
+                "",
+            );
+        }
+    }
+    // The words a `fn` says (`std.say("...")`) are its attributes; a fn that says none is no word
+    // a person reads.
+    for function in &meta.fns {
+        let mut said = meta
+            .words
+            .iter()
+            .filter(|word| word.view == function.id)
+            .peekable();
+        if said.peek().is_none() {
+            continue;
+        }
+        message(&mut out, &function.id, &label(&function.name), "");
+        for word in said {
             attribute(&mut out, &word.key, &pattern(&word.text));
         }
     }
@@ -413,6 +471,33 @@ mod tests {
         let catalogue = source_catalogue(&meta);
         assert!(catalogue.contains("d-7vjyuy7c = Remind"), "{catalogue}");
         assert!(catalogue.contains(".w-due = Due { $d }"), "{catalogue}");
+    }
+
+    /// A type's noun in the catalogue says what one of it is called and what several are: a name
+    /// that already names several is one of them and all of them, an irregular plural is
+    /// English's, and a word English counts no number of keeps one form.
+    #[test]
+    fn a_types_noun_is_one_of_it_and_several() {
+        let mut meta = PackageMeta::default();
+        for (id, name) in [("t1", "Tasks"), ("t2", "Person"), ("t3", "Today")] {
+            meta.types.push(
+                serde_json::from_value(serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "doc": "",
+                    "fields": [],
+                }))
+                .expect("a type"),
+            );
+        }
+        let catalogue = source_catalogue(&meta);
+        for noun in [
+            "[one] task\n       *[other] tasks",
+            "[one] person\n       *[other] people",
+            "[one] today\n       *[other] today",
+        ] {
+            assert!(catalogue.contains(noun), "{noun} of\n{catalogue}");
+        }
     }
 
     /// A view the compiler makes of a loop body is a part of the view it stands in: it has no

@@ -1,29 +1,14 @@
 //! A network namespace of the sandbox's own, and the sockets the supervisor
-//! keeps inside it.
-//!
-//! The namespace belongs to a user namespace that maps exactly the caller's
-//! uid and gid. The caller owns that user namespace, so the kernel grants it
-//! `CAP_NET_ADMIN` over the network namespace from outside: it can join it
-//! (to start the sandbox and `pasta` there) and program its filter. A
-//! sandbox started inside creates its own, nested user namespace (bwrap
-//! does), so whatever it runs has no capability over the network namespace
-//! it sits in — not even one it could regain.
-//!
-//! The namespaces are made by util-linux `unshare`, which then becomes
-//! `cat` holding them. The sockets kept inside are opened by a forked child
-//! that joins them; it does only raw system calls between `fork` and
-//! `_exit`, on memory prepared before the fork.
+//! keeps inside it. The namespace belongs to a user namespace of this process,
+//! so `pasta` attaches from outside and only `lo` exists inside.
 
 use std::io::{self, Read};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
-/// A network namespace inside a user namespace.
 #[derive(Debug)]
 pub struct Netns {
-    /// A process in both namespaces: `/proc/<pid>/ns/…` names them for
-    /// `pasta`, which does not take descriptors.
     pid: libc::pid_t,
     user: OwnedFd,
     net: OwnedFd,
@@ -49,7 +34,6 @@ impl Drop for Holder {
     }
 }
 
-/// What the supervisor keeps inside the namespace.
 #[derive(Debug)]
 pub struct Inside {
     /// The DNS stub's UDP socket, bound to `127.0.0.1:53`.
@@ -60,7 +44,6 @@ pub struct Inside {
     pub netfilter: Result<OwnedFd, io::Error>,
 }
 
-/// Which step of the namespace setup failed, for the error.
 const STEPS: &[&str] = &[
     "ok",
     "unshare(CLONE_NEWUSER|CLONE_NEWNET)",
@@ -90,10 +73,8 @@ fn step_error(step: u32, errno: u32) -> io::Error {
     io::Error::new(os.kind(), format!("{what}: {os}"))
 }
 
-/// How long `unshare` may take to make the namespaces.
 const HOLDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// util-linux `unshare`.
 fn unshare_binary() -> &'static str {
     ["/usr/bin/unshare", "/bin/unshare"]
         .into_iter()
@@ -128,7 +109,6 @@ impl Netns {
             release: Some(release_w),
         };
         let deadline = std::time::Instant::now().checked_add(HOLDER_TIMEOUT);
-        // `cat` is running once `unshare` has made and mapped the namespaces.
         loop {
             if std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim() == "cat")
             {
@@ -179,7 +159,6 @@ impl Netns {
         })
     }
 
-    /// A process in the namespaces.
     pub fn pid(&self) -> libc::pid_t {
         self.pid
     }
@@ -295,13 +274,11 @@ fn socketpair() -> io::Result<(OwnedFd, OwnedFd)> {
     Ok(unsafe { (OwnedFd::from_raw_fd(a), OwnedFd::from_raw_fd(b)) })
 }
 
-/// The current `errno`, as reported to the parent.
 unsafe fn errno() -> u32 {
     // SAFETY: `__errno_location` returns this thread's errno slot.
     unsafe { (*libc::__errno_location()).unsigned_abs() }
 }
 
-/// Close every descriptor but `keep` (ascending).
 pub(crate) unsafe fn close_others(keep: [RawFd; 2]) {
     let [a, b] = if keep[0] <= keep[1] {
         keep
@@ -465,7 +442,6 @@ unsafe fn inside_child(sock: RawFd, user: RawFd, net: RawFd) -> ! {
     }
 }
 
-/// Receive the four status words and up to three descriptors.
 fn recv_fds(sock: &OwnedFd) -> io::Result<([u32; 4], Vec<OwnedFd>)> {
     let mut words = [0_u8; 16];
     let mut space = [std::mem::MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(3))];

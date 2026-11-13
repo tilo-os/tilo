@@ -1,9 +1,5 @@
-//! Device-local persistence for Music.
-//!
-//! Collaborative library state is owned and persisted by the platform app
-//! document. This module owns only device-private playback preferences and a
-//! content-addressed media cache. Neither local file paths nor media bytes
-//! enter the shared document or collaboration channel.
+//! Device-local persistence: playback preferences and a content-addressed media cache.
+//! Neither paths nor media bytes enter the document or the peer channel.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -14,32 +10,25 @@ use tilo_clock::unix_now_ms;
 
 use crate::model::Playback;
 
-/// Device-private durable state. It deliberately excludes `playing`: a launch
-/// may offer a paused resume point, but must never start audio without a local
-/// user gesture.
+/// Device-private state; `playing` is left out, so a launch never starts audio.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeviceProfile {
     /// Catalogue choice belongs to this device, never its collaborators.
     #[serde(default)]
     pub spotify_catalogue: bool,
-    /// Whether the person connected an online catalogue (Spotify or `YouTube`
-    /// Music) on this device. Until they do, Music contacts no provider.
+    /// Whether this device connected a catalogue; until it has, Music contacts no provider.
     #[serde(default)]
     pub catalogue_connected: bool,
-    /// The last explicitly opened file belongs only to this device.
     #[serde(default)]
     pub local_file: Option<crate::local_file::LocalFile>,
     #[serde(default)]
     pub playback: Playback,
-    /// Queued catalogue metadata remains private until explicitly saved to the
-    /// library; restoring playback must not depend on a previous search page.
+    /// Catalogue metadata stays private until it is saved to the library.
     #[serde(default)]
     pub queue_catalogue: Vec<crate::model::CatalogueTrack>,
 }
 
-/// Device-local index for durable media objects. It is deliberately separate
-/// from the resume profile and Automerge: track ids are app data, while paths,
-/// byte hashes, and eviction timing are private to one device.
+/// The device's index of cached media: ids are app data, hashes and paths are not.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MediaCache {
     #[serde(default)]
@@ -51,14 +40,13 @@ pub struct MediaCacheEntry {
     /// SHA-256 of the complete media bytes; the object filename is this value.
     pub content_id: String,
     pub bytes: u64,
-    /// Last local use, for deterministic least-recently-used eviction.
+    /// Last local use, for least-recently-used eviction.
     pub last_access_ms: u64,
 }
 
 const DEFAULT_MEDIA_CACHE_QUOTA: u64 = 1_073_741_824;
 
-/// Local media cache root. The explicit override makes tests and sandboxes
-/// hermetic; no cache path is ever exposed through a shared resource.
+/// The cache root; the override keeps tests and sandboxes hermetic.
 pub fn media_cache_dir() -> PathBuf {
     if let Ok(path) = std::env::var("TILO_MUSIC_CACHE")
         && !path.is_empty()
@@ -80,14 +68,12 @@ fn valid_content_id(content_id: &str) -> bool {
     content_id.len() == 64 && content_id.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// A regular object file of exactly `bytes` (non-zero) bytes.
 fn object_has_size(path: &Path, bytes: u64) -> bool {
     bytes > 0
         && crate::files::metadata(path)
             .is_ok_and(|meta| meta.kind == tilo_files::Kind::File && meta.len == bytes)
 }
 
-/// Verify a content-addressed object against its hash.
 fn object_matches_entry(path: &Path, entry: &MediaCacheEntry) -> bool {
     if !valid_content_id(&entry.content_id) || !object_has_size(path, entry.bytes) {
         return false;
@@ -98,9 +84,8 @@ fn object_matches_entry(path: &Path, entry: &MediaCacheEntry) -> bool {
     hex::encode(Sha256::digest(&bytes)) == entry.content_id
 }
 
-/// Load only entries whose content-addressed byte object remains present and
-/// non-empty. A damaged manifest or missing object can never manufacture a
-/// `Cached` badge.
+/// Load only entries whose object is still there, so a damaged manifest cannot claim
+/// a copy.
 pub fn load_media_cache_from(root: &Path) -> MediaCache {
     let Ok(bytes) = crate::files::read(&media_manifest_path(root)) else {
         return MediaCache::default();
@@ -108,8 +93,7 @@ pub fn load_media_cache_from(root: &Path) -> MediaCache {
     let Ok(mut cache) = serde_json::from_slice::<MediaCache>(&bytes) else {
         return MediaCache::default();
     };
-    // Only validate structure/size here. Full hashing is deliberately lazy at
-    // playback (`object_path`/`touch`) so a large cache never blocks startup.
+    // Size only: hashing a large cache waits for playback.
     cache.entries.retain(|_, entry| {
         valid_content_id(&entry.content_id)
             && object_has_size(&media_object_path(root, &entry.content_id), entry.bytes)
@@ -137,8 +121,7 @@ impl MediaCache {
         self.entries.values().map(|entry| entry.bytes).sum()
     }
 
-    /// Atomically install complete media bytes, then atomically publish their
-    /// manifest entry. A partial transfer is never accepted by this API.
+    /// Install complete bytes, then their entry; a partial transfer is refused.
     #[cfg(test)]
     pub fn install_bytes(
         &mut self,
@@ -170,9 +153,8 @@ impl MediaCache {
         self.save(root)
     }
 
-    /// Atomically adopt a complete temporary media file into the content store.
-    /// The temporary file must be on the same filesystem as `root`; callers
-    /// write it under `root/partials` so the final rename is atomic.
+    /// Adopt a complete temporary file; callers write it under `root/partials` so the rename
+    /// is atomic.
     pub fn install_completed_file(
         &mut self,
         root: &Path,
@@ -210,7 +192,6 @@ impl MediaCache {
         self.save(root)
     }
 
-    /// Remove a track's manifest entry and its unreferenced byte object.
     pub fn remove(&mut self, root: &Path, track_id: &str) -> std::io::Result<()> {
         let removed = self.entries.remove(track_id);
         // Publish the removal before deleting bytes: a failed manifest write
@@ -232,12 +213,11 @@ impl MediaCache {
         Ok(())
     }
 
-    /// Validate and mark one cached object as recently used.
+    /// Validate and mark one object as recently used.
     ///
     /// # Errors
     ///
-    /// Returns an error when a stale entry cannot be removed from the manifest
-    /// or when the updated access time cannot be persisted.
+    /// The manifest cannot be written or the stale entry removed.
     pub fn touch(&mut self, root: &Path, track_id: &str) -> std::io::Result<Option<PathBuf>> {
         let Some(entry) = self.entries.get_mut(track_id) else {
             return Ok(None);
@@ -282,8 +262,7 @@ impl MediaCache {
     }
 }
 
-/// Finish a background partial transfer without exposing its path outside the
-/// device-local storage layer.
+/// Finish a background transfer; its path stays inside the storage layer.
 pub fn install_completed_media_file(
     root: &Path,
     track_id: &str,
@@ -310,11 +289,8 @@ impl DeviceProfile {
     }
 }
 
-/// Resolve the local-only profile path. `TILO_MUSIC_PROFILE` is useful for
-/// sandboxed tests; it is never a replication input.
-/// Whether this device keeps the playback profile in a file. A browser page
-/// has no file paths: the player keeps its state in memory there, and
-/// opening or playing a file never fails for want of saving it.
+/// Whether this device keeps the profile in a file; `TILO_MUSIC_PROFILE` keeps tests
+/// hermetic, and a page keeps its player state in memory.
 pub fn device_profile_has_a_place() -> bool {
     tilo_paths::availability(tilo_paths::Feature::NativePaths)
         == tilo_paths::Availability::Available
@@ -329,9 +305,7 @@ pub fn device_profile_path() -> PathBuf {
         .join("device-profile.json")
 }
 
-/// Read a local profile. A missing or malformed profile is treated as a safe
-/// empty/paused state; callers can continue using the library without trusting
-/// corrupt device data.
+/// A missing or malformed profile reads as an empty, paused state.
 pub fn load_device_profile_from(path: &Path) -> DeviceProfile {
     crate::files::read(path)
         .ok()
@@ -344,8 +318,7 @@ pub fn load_device_profile() -> DeviceProfile {
     load_device_profile_from(&device_profile_path())
 }
 
-/// Atomically store paused device-local resume state. Cache availability is
-/// not in it: the media manifest is the sole authority for bytes.
+/// Write the paused resume state atomically; the media manifest alone says what is cached.
 pub fn save_device_profile_to(path: &Path, profile: &DeviceProfile) -> std::io::Result<()> {
     let persisted = profile.clone().paused();
     let bytes = serde_json::to_vec(&persisted).map_err(std::io::Error::other)?;
@@ -360,15 +333,12 @@ pub fn save_device_profile(profile: &DeviceProfile) -> std::io::Result<()> {
     save_device_profile_to(&device_profile_path(), profile)
 }
 
-/// Native device-local data directory, with an absolute XDG override for
-/// sandboxed launches. Windows resolves to `LocalAppData` through `tilo-paths`.
+/// The data directory; an absolute XDG override keeps sandboxed launches hermetic.
 fn dirs_data_dir() -> PathBuf {
     tilo_paths::env_dir("XDG_DATA_HOME")
         .or_else(tilo_paths::data_local_dir)
         .or_else(tilo_paths::temp_dir)
-        // No file system (the page): an unreachable relative path fails the
-        // profile's reads and writes, and the player keeps its state in
-        // memory.
+        // A page has no file system: the player keeps its state in memory.
         .unwrap_or_else(|| PathBuf::from("tilo-music"))
 }
 

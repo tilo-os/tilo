@@ -142,8 +142,7 @@ impl RemotePlacement {
         // Drop all parent aliases BEFORE child closes its aliases and unmounts.
         self.view.take();
         let result = owner.retire_exposure(&self.record);
-        // R reaps the actual owned ordinary outer child before detach. An ACK
-        // alone is insufficient: independently observe its actual kernel task.
+        // R reaps the actual owned ordinary outer child before detach.
         if !kernel_stopped(&self.launcher)? {
             return Err(io::ErrorKind::WouldBlock.into());
         }

@@ -3,17 +3,7 @@
 //! real five-pass pipeline (`sync` → `build_layout` → `compute_layout` →
 //! `apply_layout` → `draw`) on the same widget tree the interactive `gallery`
 //! example builds.
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- gallery_shots [out-dir]`
-//! Out:  `out-dir`, else `$GALLERY_SHOTS_OUT` (default `/tmp/gallery_shots`) — gallery-dark.png,
-//!       gallery-light.png
-//!
-//! Fractional `HiDPI`: set `GALLERY_SHOTS_SCALE=1.5` (or 1.25 / 1.75 / 2.0)
-//! to render at that display scale. This reproduces the exact live-window
-//! path — a physical-pixel surface sized `logical × scale`, taffy solved
-//! at the logical size, and the whole scene composited through
-//! `Affine::scale(scale)` — so the PNG is crisp (vector-rasterized) at a
-//! fractional factor rather than a blurry upscale of a 1× frame.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -30,6 +20,7 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
 
 use super::gallery_scene;
+use tilo_ui::widget::DrawChild;
 
 const WIDTH: u32 = 1200;
 const HEIGHT: u32 = 2300;
@@ -82,7 +73,7 @@ fn shoot(theme: &Theme, out: &Path, scale: f64) {
     let presence = PresenceCtx::default();
     // Composite through a pure scale by the (possibly fractional) factor —
     // exactly what `App` does live with `Affine::scale(window.scale_factor())`.
-    root.draw(&mut scene, Affine::scale(scale), &mut tr, theme, &presence);
+    root.draw_child(&mut scene, Affine::scale(scale), &mut tr, theme, &presence);
 
     // The offscreen target is sized in PHYSICAL pixels: logical × scale.
     // WIDTH/HEIGHT → f64 is lossless; the rounded product is always a

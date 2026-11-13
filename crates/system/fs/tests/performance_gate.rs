@@ -22,23 +22,12 @@ const RANGE_BYTES: u64 = 256 * 1024;
 const RANGE_READS: usize = 64;
 const RANGES_BYTES: u64 = RANGE_BYTES * RANGE_READS as u64;
 const MAX_RANGE_OFFSET: u64 = LARGE_FILE_BYTES as u64 - RANGE_BYTES;
-/// Remote renames a sync peer applies while the mount serves ranged reads.
 const REMOTE_APPLY_DELTAS: usize = 512;
 const WARM_DIRECTORY_PASSES: usize = 8;
 
-/// The workspace behind the conflict-watch scenario: 50,000
-/// files in 500 directories.
 const CONFLICT_DIRECTORIES: usize = 500;
 const CONFLICT_FILES_PER_DIRECTORY: usize = 100;
-/// Nodes a conflict scan may examine under one hold of the namespace lock,
-/// whatever `fs::conflict::SCAN_STEP_NODES` says: a FUSE request waits for
-/// one hold, so a longer one is a latency regression on every mount.
 const CONFLICT_NODES_PER_HOLD: usize = 64;
-/// Document lookups to reopen a persisted namespace and list a directory of
-/// it, per entry, and to list it again once open: each listing reads every
-/// child's name and kind, never the whole document. Reopening pays the
-/// record-id backfill and the index rebuild, which read each node once (4000
-/// for this fixture's 1000 entries); the listing half is two reads an entry.
 const COLD_LISTING_LOOKUPS_PER_ENTRY: u64 = 4;
 const WARM_LISTING_LOOKUPS_PER_ENTRY: u64 = 2;
 
@@ -54,7 +43,6 @@ fn deterministic_bytes(len: usize) -> Vec<u8> {
         .collect()
 }
 
-/// The offset of the `index`th of the scenarios' ranged reads.
 fn range_offset(index: usize) -> u64 {
     (index as u64)
         .wrapping_mul(1_000_003)
@@ -63,15 +51,12 @@ fn range_offset(index: usize) -> u64 {
         & !4095
 }
 
-/// The bytes of `file` the read at `offset` returns.
 fn expected_range(file: &[u8], offset: u64) -> Option<&[u8]> {
     let start = usize::try_from(offset).ok()?;
     let end = usize::try_from(offset.saturating_add(RANGE_BYTES)).ok()?;
     file.get(start..end)
 }
 
-/// The ranged reads read their ranges and the file's manifest, once: never
-/// the whole file, nor the manifest again per read.
 fn assert_ranged_read_work(name: &str, read: u64, manifest_len: u64) {
     eprintln!(
         "WORK {name}: {read} B read for {RANGES_BYTES} B of ranges ({manifest_len} B manifest)"
@@ -82,12 +67,6 @@ fn assert_ranged_read_work(name: &str, read: u64, manifest_len: u64) {
     );
 }
 
-/// #3985: the conflict step every writer's reconciliation loop runs every
-/// few seconds. It used to walk every node under one hold of the namespace
-/// lock on every pass. Now a pass with nothing merged since the last scan
-/// reads the namespace's merge generation and examines no node, and a scan
-/// (after a merge, a retry, or the periodic sweep) walks the nodes a step
-/// at a time, releasing the lock between steps.
 #[test]
 fn conflict_watch_idle_pass_and_lock_hold_performance_gate() {
     let mut namespace = Namespace::new("perf-conflict").unwrap();
@@ -103,13 +82,10 @@ fn conflict_watch_idle_pass_and_lock_hold_performance_gate() {
         }
     }
     let nodes = CONFLICT_DIRECTORIES * (1 + CONFLICT_FILES_PER_DIRECTORY);
-    // Commit the fixture's edits, as a mounted namespace commits each
-    // change when it saves its delta.
     namespace.heads();
 
     let namespace = Mutex::new(namespace);
     let mut watch = fs::conflict::NamespaceScan::new();
-    // The first pass, and any after a merge, scans every node.
     assert!(watch.due(&namespace).is_empty());
     let scan = watch.last_pass();
     eprintln!(
@@ -123,7 +99,6 @@ fn conflict_watch_idle_pass_and_lock_hold_performance_gate() {
         scan.max_nodes_per_hold
     );
 
-    // What every pass of an idle writer now does.
     for _ in 0..3 {
         assert!(watch.due(&namespace).is_empty());
         let idle = watch.last_pass();
@@ -136,9 +111,6 @@ fn conflict_watch_idle_pass_and_lock_hold_performance_gate() {
     assert_eq!(watch.scans(), 1, "an idle pass scanned");
 }
 
-/// The ranged reads of the local-residency scenario, through the mount's
-/// read path, while a sync peer's remote namespace changes are applied under
-/// the namespace lock that read path shares.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mount_ranged_read_under_remote_apply_performance_gate() {
     let store = Arc::new(ContentStore::memory());
@@ -183,8 +155,6 @@ async fn mount_ranged_read_under_remote_apply_performance_gate() {
         Arc::clone(&hydrator),
         Arc::new(Heuristics::new(Arc::clone(&hydrator))),
     );
-    // Each read shares a round with its share of the remote changes, and
-    // neither side runs ahead: every run interleaves the same work.
     let round = Arc::new(Barrier::new(2));
     let applier = {
         let (namespace, round) = (Arc::clone(&namespace), Arc::clone(&round));
@@ -229,10 +199,6 @@ async fn mount_ranged_read_under_remote_apply_performance_gate() {
     router.shutdown().await.expect("stop local endpoint");
 }
 
-/// Document media an app reads after a daemon restart: the status check its
-/// draw path makes and a range near the end of the largest attachment. Each
-/// read verifies only the chunk groups it returns; before, each loaded and
-/// verified the whole attachment.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn document_media_cold_range_performance_gate() {
     let dir = tempfile::tempdir().expect("media store tempdir");
@@ -240,7 +206,6 @@ async fn document_media_cold_range_performance_gate() {
     let len = usize::try_from(MAX_BLOB_BYTES).expect("media limit fits usize");
     let chunk = MAX_READ_CHUNK as usize;
     let data = deterministic_bytes(len);
-    // Near the end, and not on a 16 KiB chunk-group boundary.
     let offset = len - chunk - 12_345;
     let tail = data[offset..offset + chunk].to_vec();
     let hash = {
@@ -289,8 +254,6 @@ async fn document_media_cold_range_performance_gate() {
             total_len: MAX_BLOB_BYTES
         }
     );
-    // Verification reads whole 1 KiB leaves: an unaligned range pays for at
-    // most one more at each end.
     let ceiling = u64::from(MAX_READ_CHUNK) + 2 * blake3::CHUNK_LEN as u64;
     eprintln!(
         "WORK document-media-cold-64m-tail-4m-read: {tail_read} B read (at most {ceiling} B)"
@@ -300,8 +263,6 @@ async fn document_media_cold_range_performance_gate() {
         "a {MAX_READ_CHUNK} B read of a {MAX_BLOB_BYTES} B attachment read {tail_read} B"
     );
 
-    // The same blob loaded whole, as every read was answered before ranges
-    // were verified on their own.
     let before = store.read_bytes();
     let whole = store.local(hash).await.expect("whole media blob");
     assert_eq!(whole.len(), len);
@@ -309,8 +270,6 @@ async fn document_media_cold_range_performance_gate() {
     store.store().shutdown().await.expect("close media store");
 }
 
-/// Reopening persisted metadata and listing it, then the local ranged reads
-/// of a resident chunked file through `Hydrator::read`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn collaborative_fs_release_performance_gate() {
     let mut original = Namespace::new("perf-fixture").unwrap();
@@ -350,9 +309,6 @@ async fn collaborative_fs_release_performance_gate() {
         "{WARM_DIRECTORY_PASSES} listings of {DIRECTORY_ENTRIES} entries took {warm} lookups"
     );
 
-    // `Hydrator` owns an Endpoint, but this local-residency scenario installs
-    // no peers and makes no protocol requests. The router merely keeps the
-    // loopback-bound endpoint alive while production `Hydrator::read` is used.
     let store = Arc::new(ContentStore::memory());
     let large_file = deterministic_bytes(LARGE_FILE_BYTES);
     let manifest = store

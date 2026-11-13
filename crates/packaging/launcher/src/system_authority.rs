@@ -1,53 +1,7 @@
 //! What the device's control panel reaches of the system it controls.
 //!
-//! Settings is a client of the system's authorities — `NetworkManager`,
-//! `BlueZ`, logind, timedated, `PipeWire`, bootc — not a second
-//! implementation of them. Those authorities answer on the system bus, on
-//! their own sockets and through their own command-line clients, and each one
-//! decides what the person may change (polkit, group membership). An ordinary
-//! app sandbox carries none of that: inside it `nmcli` does not exist and the
-//! system bus is not there, so every read fails and the pane would have
-//! nothing true to show.
-//!
-//! The grant is **owned by the image, not by the package**: only the package
-//! ids in [`CLIENTS`] receive it, whatever a manifest says. The package in
-//! turn names the contract it was built against as the `system` service of
-//! its `[sandbox.services]` ([`crate::services::SYSTEM_SERVICE`]); a client
-//! that does not declare it gets nothing, and one that requires a version
-//! the image does not serve is refused before launch. This grant is version
-//! 1 of that interface; changing what it binds or which authorities it
-//! reaches in a way an older control panel could not work with is a new
-//! version, declared in the image's `system-interfaces.toml`. It adds
-//!
-//! - the host's client binaries and configuration, read-only
-//!   ([`HOST_READ_PATHS`]);
-//! - the system bus through its own filtered `xdg-dbus-proxy`, which lets
-//!   the app talk only to the named authorities ([`SYSTEM_BUS_FILTER_ARGS`]);
-//!   there is no raw-bus fallback, a failed proxy leaves the bus absent;
-//! - the `PipeWire` socket, when the session runs it (printing stays behind
-//!   the Print portal: no sandbox reaches the print spooler's socket);
-//! - the cloud account service's runtime directory with its control socket:
-//!   sync now, pause and resume a mounted account (no credential crosses it,
-//!   and file requests are served only on a socket outside this grant);
-//! - the filesystem daemon's storage directory ([`STORAGE_DIR`]) with its
-//!   accounting socket: what synced files hold locally, the cache policy,
-//!   and evicting copies the daemon verifies are safe to drop. The daemon's
-//!   blob and authority sockets live elsewhere and are not bound;
-//! - the NTFS mount service's directory with its control socket
-//!   ([`NTFS_MOUNT_DIR`]): the person's remembered drives, to list, forget
-//!   or switch to opening safely. Opening a drive is not among them: the
-//!   service opens one only for the compositor, after its own prompt;
-//! - the compositor's runtime state files (`$XDG_RUNTIME_DIR/tilo`: the
-//!   connected displays, input devices), read-only, with every
-//!   subdirectory (capabilities, identity projections, service sockets)
-//!   masked by an empty tmpfs;
-//! - the installed applications, read-only: the image's store
-//!   (`/usr/share/tilo-apps`) and the person's own, at the path the app's
-//!   remapped `XDG_DATA_HOME` names, so the default-app and notification
-//!   lists show what is really installed.
-//!
-//! The rest of the sandbox is unchanged: no network namespace of its own, the
-//! same seccomp profile, Landlock rules for exactly the paths bound here.
+//! Settings is a client of the system's authorities — `NetworkManager`, `BlueZ`,
+//! logind, timedated, `PipeWire`, bootc — not a second implementation of them.
 
 use std::path::PathBuf;
 
@@ -62,20 +16,17 @@ pub const HOST_READ_PATHS: &[&str] = &[
     "/usr/sbin",
     "/usr/libexec",
     "/etc",
-    // systemctl, timedatectl and localectl probe sd_booted() before opening
-    // their bus connection. This empty marker identifies the systemd host;
-    // it grants neither its PID namespace nor its private manager socket.
+    // systemctl, timedatectl and localectl probe sd_booted() before opening their bus connection.
     "/run/systemd/system",
     package_store::layout::SYSTEM_DATA_DIR,
 ];
 
-/// Where the filtered system bus appears inside the sandbox: the path every
-/// client library tries when `DBUS_SYSTEM_BUS_ADDRESS` is unset.
+/// Where the filtered system bus appears inside the sandbox: the path every client library tries when
+/// `DBUS_SYSTEM_BUS_ADDRESS` is unset.
 pub const SANDBOX_SYSTEM_BUS: &str = "/run/dbus/system_bus_socket";
 
-/// The system-bus filter: the bus daemon (for `Hello` and name lookups) and
-/// the authorities the control panel is a client of. Each authority still
-/// applies its own policy to every call.
+/// The system-bus filter: the bus daemon (for `Hello` and name lookups) and the authorities the control
+/// panel is a client of.
 pub const SYSTEM_BUS_FILTER_ARGS: &[&str] = &[
     "--filter",
     "--see=org.freedesktop.DBus",
@@ -102,8 +53,8 @@ pub fn is_client(package_id: &str) -> bool {
     CLIENTS.contains(&package_id)
 }
 
-/// Whether a launch of `package_id` declaring `services` receives the grant:
-/// an image-named client that declares the system interface.
+/// Whether a launch of `package_id` declaring `services` receives the grant: an image-named client that
+/// declares the system interface.
 #[must_use]
 pub fn grants(
     package_id: &str,
@@ -124,20 +75,19 @@ pub struct SocketBind {
 pub struct SystemAuthorityPlan {
     /// Host paths bound read-only at the same path.
     pub read_paths: Vec<PathBuf>,
-    /// Sockets the app connects to: the filtered system bus and the
-    /// authorities' own sockets.
+    /// Sockets the app connects to: the filtered system bus and the authorities' own sockets.
     pub sockets: Vec<SocketBind>,
     pub system_bus: bool,
     /// The compositor's runtime state directory, bound read-only.
     pub runtime_state: Option<RuntimeState>,
-    /// The person's own app store, bound read-only where the app looks for
-    /// it and at its own path, which its registry's entries name.
+    /// The person's own app store, bound read-only where the app looks for it and at its own path,
+    /// which its registry's entries name.
     pub user_apps: Option<SocketBind>,
 }
 
-/// The compositor publishes what it sees of the hardware (displays, input
-/// devices) as files it replaces atomically, so the directory is bound, not
-/// the files: a bound file would keep showing the inode it was bound to.
+/// The compositor publishes what it sees of the hardware (displays, input devices) as files it replaces
+/// atomically, so the directory is bound, not the files: a bound file would keep showing the inode it
+/// was bound to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeState {
     pub dir: PathBuf,
@@ -145,8 +95,7 @@ pub struct RuntimeState {
     pub masked: Vec<PathBuf>,
 }
 
-/// The compositor's runtime state directory for a session of `uid`, with its
-/// subdirectories to mask. `None` when the compositor has published nothing.
+/// The compositor's runtime state directory for a session of `uid`, with its subdirectories to mask.
 fn runtime_state(uid: u32) -> Option<RuntimeState> {
     runtime_state_in(PathBuf::from(format!("/run/user/{uid}/tilo")))
 }
@@ -162,25 +111,13 @@ fn runtime_state_in(dir: PathBuf) -> Option<RuntimeState> {
     Some(RuntimeState { dir, masked })
 }
 
-/// The consent-gated NTFS mount service's runtime directory, holding its
-/// control socket (`ntfs_mount::protocol::SOCKET_PATH`). Bound rather than
-/// the socket, like the cloud service's: the socket unit may be restarted,
-/// and the directory exists from boot (tmpfiles). The service answers a
-/// sandboxed caller only with what the person at the seat may do outside
-/// the shell's prompt: list, close and forget drives, and change how a
-/// remembered one opens.
+/// The consent-gated NTFS mount service's runtime directory, holding its control socket
+/// (`ntfs_mount::protocol::SOCKET_PATH`).
 pub const NTFS_MOUNT_DIR: &str = "/run/tilo-ntfs-mount";
 
-/// The host sockets the control panel's clients use, for a session of `uid`:
-/// `PipeWire`, and the cloud account service's runtime directory, which holds
-/// its mount control socket (`runtime_fs::cloud::socket_in`; no credential
-/// crosses it). The directory is bound rather than the socket: it lasts the
-/// whole session (user tmpfiles, `RuntimeDirectoryPreserve=`), so a service
-/// restart's new socket shows through. That socket only lists, syncs, pauses
-/// and resumes mounts; file requests (revisions, restore, share links) are
-/// served on the file socket in `tilo-fs-cloud-files`, which is not bound.
-/// And [`NTFS_MOUNT_DIR`]. A path that does not exist (no such service on
-/// this host) is left out by [`resolve`].
+/// The host sockets the control panel's clients use, for a session of `uid`: `PipeWire`, and the cloud
+/// account service's runtime directory, which holds its mount control socket
+/// (`runtime_fs::cloud::socket_in`; no credential crosses it).
 fn authority_sockets(uid: u32) -> Vec<PathBuf> {
     vec![
         PathBuf::from(format!("/run/user/{uid}/pipewire-0")),
@@ -189,20 +126,14 @@ fn authority_sockets(uid: u32) -> Vec<PathBuf> {
     ]
 }
 
-/// The filesystem daemon's storage directory, as Settings sees it: the
-/// image's (`runtime_fs::storage::STORAGE_DIR`), which holds the accounting
-/// socket and nothing else. Bound as a directory, like the cloud service's,
-/// so a restarted daemon's new socket shows through.
+/// The filesystem daemon's storage directory, as Settings sees it: the image's
+/// (`runtime_fs::storage::STORAGE_DIR`), which holds the accounting socket and nothing else.
 pub const STORAGE_DIR: &str = "/run/tilo/fs-storage";
-/// Names the storage directory of a session whose daemon runs elsewhere (a
-/// host session's runs from the person's runtime directory). It is bound at
-/// [`STORAGE_DIR`], so Settings connects to one path either way.
+/// Names the storage directory of a session whose daemon runs elsewhere (a host session's runs from the
+/// person's runtime directory).
 pub const STORAGE_DIR_ENV: &str = "TILO_FS_STORAGE_DIR";
 
-/// The storage directory bind: `named` (from [`STORAGE_DIR_ENV`]) or the
-/// image's. A session-named directory is created private when the daemon has
-/// not started yet, so a Settings opened first still sees it start. Only a
-/// real directory is bound, never a symlink to some other tree.
+/// The storage directory bind: `named` (from [`STORAGE_DIR_ENV`]) or the image's.
 fn storage_bind(named: Option<PathBuf>) -> Option<SocketBind> {
     use std::os::unix::fs::DirBuilderExt as _;
     let host = match named.filter(|dir| dir.is_absolute()) {
@@ -224,8 +155,8 @@ fn storage_bind(named: Option<PathBuf>) -> Option<SocketBind> {
         })
 }
 
-/// Where an app looks for the person's app store: under the `XDG_DATA_HOME`
-/// its sandbox environment names.
+/// Where an app looks for the person's app store: under the `XDG_DATA_HOME` its sandbox environment
+/// names.
 fn sandbox_user_apps() -> PathBuf {
     PathBuf::from(crate::appdir::SANDBOX_APP_DIR)
         .join(".local/share")
@@ -239,9 +170,7 @@ fn system_bus_address() -> String {
         .unwrap_or_else(|| format!("unix:path={SANDBOX_SYSTEM_BUS}"))
 }
 
-/// Plan the grant for `package_id`, starting its system-bus proxy. `None`
-/// for every package that is not a control panel. The guard must outlive
-/// the sandbox.
+/// Plan the grant for `package_id`, starting its system-bus proxy.
 #[must_use]
 pub fn resolve(
     package_id: &str,
@@ -358,8 +287,8 @@ pub fn push_binds(argv: &mut Vec<String>, plan: &SystemAuthorityPlan) {
     }
 }
 
-/// Landlock rules for the same paths: read and execute on the bound trees,
-/// read and write on the sockets (`connect(2)` is write-flavoured).
+/// Landlock rules for the same paths: read and execute on the bound trees, read and write on the
+/// sockets (`connect(2)` is write-flavoured).
 pub fn push_landlock_rules(argv: &mut Vec<String>, plan: &SystemAuthorityPlan) {
     for path in &plan.read_paths {
         argv.extend(["--ro".to_string(), path.display().to_string()]);
@@ -436,8 +365,8 @@ mod tests {
         // The blob and authority sockets' directory is never reached.
         let workspace = root.path().join("run/tilo/files-workspace/fs-blobs.sock");
         assert!(!workspace.starts_with(&bind.host));
-        // A symlink is not followed into another tree, and a relative
-        // name never stands for the image's directory.
+        // A symlink is not followed into another tree, and a relative name never stands for the
+        // image's directory.
         let link = root.path().join("link");
         std::os::unix::fs::symlink(root.path(), &link).unwrap();
         assert!(storage_bind(Some(link)).is_none());

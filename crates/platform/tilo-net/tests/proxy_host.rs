@@ -33,7 +33,6 @@ fn request(method: &str, target: &str, body: &'static [u8]) -> http::Request<Ful
         .unwrap()
 }
 
-/// A proxy that may reach loopback, as the development server's does.
 fn local(mut config: Config) -> FetchProxy {
     config.destinations = Destinations::Any;
     FetchProxy::new(config).unwrap()
@@ -328,7 +327,6 @@ async fn each_device_and_each_destination_has_a_budget() {
             .unwrap()
             >= 1
     );
-    // Another device still has its own budget.
     let other = Caller([8; 32]);
     assert_eq!(
         proxy.serve(other, request("GET", &url, b"")).await.status(),
@@ -385,8 +383,6 @@ async fn a_device_that_fetched_too_much_waits() {
     assert_eq!(refused.headers()[ERROR_HEADER], "rate-limited");
 }
 
-/// `method` `target` as a media element sends it: the marker and the session
-/// in the query, `range` the element's own.
 fn media_request(method: &str, target: &str, range: &str) -> http::Request<Full<Bytes>> {
     let proxy = Proxy {
         endpoint: url::Url::parse("http://host.example/_tilo/net/fetch").unwrap(),
@@ -465,8 +461,6 @@ async fn a_media_element_streams_through_the_query_form_a_piece_at_a_time() {
     );
 }
 
-/// A proxy that relays `visitor_bytes` to each visitor and `room_bytes` to
-/// each workspace per `window`.
 fn budgeted(visitor_bytes: Option<u64>, room_bytes: Option<u64>, window: Duration) -> FetchProxy {
     local(Config {
         budgets: Budgets {
@@ -493,7 +487,6 @@ async fn a_visitor_that_received_its_budget_is_refused_until_the_window_turns_ov
     assert_eq!(refused.headers()[ERROR_HEADER], "over-budget");
     assert_eq!(refused.headers()["retry-after"], "1");
     assert!(body_of(refused).await.contains("for now"));
-    // Another visitor has its own budget.
     let other = proxy
         .serve(Caller([8; 32]), request("GET", &url, b""))
         .await;
@@ -525,8 +518,6 @@ async fn everyone_in_a_workspace_shares_its_budget() {
         assert_eq!(response.status(), 200);
         body_of(response).await;
     }
-    // A third person in the workspace is refused, though they received
-    // nothing.
     let refused = proxy
         .serve_in(Caller([3; 32]), &studio, request("GET", &url, b""))
         .await;
@@ -541,8 +532,6 @@ async fn everyone_in_a_workspace_shares_its_budget() {
         (3500..=3600).contains(&retry),
         "until the window turns over: {retry}"
     );
-    // So is one who is also in another workspace: every workspace they are
-    // in counts.
     let refused = proxy
         .serve_in(
             Caller([4; 32]),
@@ -551,7 +540,6 @@ async fn everyone_in_a_workspace_shares_its_budget() {
         )
         .await;
     assert_eq!(refused.headers()[ERROR_HEADER], "over-budget");
-    // Another workspace has its own.
     let response = proxy
         .serve_in(Caller([3; 32]), &[Room(2)], request("GET", &url, b""))
         .await;

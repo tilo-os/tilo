@@ -1,5 +1,5 @@
-//! Portable transport surface. Native descriptor channels cannot be constructed
-//! here; operations report the same typed unsupported error as capture admission.
+//! Portable transport surface. Native descriptor channels cannot be constructed here; operations
+//! report the same typed unsupported error as capture admission.
 use crate::capture::{original_caller::OriginalCallerFacts, process::OriginalCaller};
 use std::{fs::File, io};
 
@@ -23,49 +23,31 @@ impl HostChannel {
     pub fn original_peer(&self) -> OriginalCaller {
         match self.never {}
     }
-    /// # Errors
-    /// Always returns the capture unsupported-platform error.
     pub fn original_caller_facts(&self) -> io::Result<OriginalCallerFacts> {
         unsupported()
     }
-    /// # Errors
-    /// Always returns the capture unsupported-platform error.
     pub fn validate_peer(&self) -> io::Result<()> {
         unsupported()
     }
-    /// # Errors
-    /// Always returns the capture unsupported-platform error.
     pub fn send(&mut self, _tag: u8, _file: &File) -> io::Result<()> {
         unsupported()
     }
-    /// # Errors
-    /// Always returns the capture unsupported-platform error.
     pub fn send_inventory_scratch(&mut self, _file: &File, _quota: u64) -> io::Result<()> {
         unsupported()
     }
-    /// # Errors
-    /// Always returns the capture unsupported-platform error.
     pub fn authenticate_as_root(&mut self) -> io::Result<()> {
         unsupported()
     }
-    /// # Errors
-    /// Always returns the capture unsupported-platform error.
     pub fn receive_mounted_input(&mut self, _tag: u8, _directory: bool) -> io::Result<File> {
         unsupported()
     }
-    /// # Errors
-    /// Always returns the capture unsupported-platform error.
     pub fn receive_retained_home(&mut self) -> io::Result<RetainedHomeInput> {
         unsupported()
     }
-    /// # Errors
-    /// Always returns the capture unsupported-platform error.
     pub fn receive(&mut self, _tag: u8) -> io::Result<File> {
         unsupported()
     }
     #[cfg(unix)]
-    /// # Errors
-    /// Always returns the capture unsupported-platform error.
     pub fn authenticate(
         _stream: std::os::unix::net::UnixStream,
         _child_pid: u32,
@@ -80,39 +62,25 @@ impl HostChannel {
 }
 
 impl WorkerChannel {
-    /// # Errors
-    /// Always returns the capture unsupported-platform error.
     pub fn authenticate_root(&mut self, _expected_pid: u32) -> io::Result<()> {
         unsupported()
     }
-    /// # Errors
-    /// Always returns the capture unsupported-platform error.
     pub fn send(&mut self, _tag: u8, _file: &File) -> io::Result<()> {
         unsupported()
     }
-    /// # Errors
-    /// Always returns the capture unsupported-platform error.
     pub fn receive(&mut self, _tag: u8, _directory: bool) -> io::Result<File> {
         unsupported()
     }
-    /// # Errors
-    /// Always returns the capture unsupported-platform error.
     pub fn receive_inventory_scratch(&mut self) -> io::Result<(File, u64)> {
         unsupported()
     }
-    /// # Errors
-    /// Always returns the capture unsupported-platform error.
     pub fn validate_root(&self) -> io::Result<()> {
         unsupported()
     }
-    /// # Errors
-    /// Always returns the capture unsupported-platform error.
     pub fn receive_read_only_media(&mut self) -> io::Result<File> {
         unsupported()
     }
     #[cfg(unix)]
-    /// # Errors
-    /// Always returns the capture unsupported-platform error.
     pub fn authenticate(_stream: std::os::unix::net::UnixStream) -> io::Result<Self> {
         unsupported()
     }
@@ -123,15 +91,11 @@ impl WorkerChannel {
 }
 
 impl RetainedHomeInput {
-    /// # Errors
-    /// Always returns the capture unsupported-platform error.
     pub fn validate(&self, _channel: &HostChannel, _named: &File) -> io::Result<()> {
         unsupported()
     }
 }
 
-/// # Errors
-/// Always returns the capture unsupported-platform error.
 pub fn validate_read_only_block_device(_file: &File) -> io::Result<()> {
     unsupported()
 }

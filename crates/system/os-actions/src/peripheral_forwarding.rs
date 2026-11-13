@@ -1,10 +1,5 @@
-//! Policy core for forwarding sanitized gamepad input between verified sessions.
-//!
-//! This is deliberately not USB, Bluetooth, HID, evdev, or uinput forwarding.
-//! No descriptor, serial, credential, security key, storage interface, raw
-//! report, keyboard, or pointer event can be represented by these types. A
-//! privileged integrator may implement [`VirtualGamepadFactory`] using a fixed
-//! virtual-gamepad profile after this broker grants an exact short-lived lease.
+//! The policy for forwarding sanitized gamepad input between verified sessions: not
+//! USB, Bluetooth, HID, evdev or uinput.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -33,8 +28,8 @@ pub struct ForwardedPeripheralIdentity {
 }
 
 impl ForwardedPeripheralIdentity {
-    /// Construct only after the privileged caller verified both devices, the
-    /// installed app, its workspace membership, and the live app session.
+    /// Only after the privileged caller has verified both devices, the installed app, its workspace
+    /// membership and the live app session.
     pub fn new_after_verification(
         source_device: impl Into<String>,
         target_device: impl Into<String>,
@@ -153,8 +148,8 @@ impl ForwardedGamepadEvent {
     }
 }
 
-/// Fixed, reviewable virtual-device shape. It cannot carry a vendor
-/// descriptor, arbitrary key bitmap, raw report size, or device serial.
+/// A fixed, reviewable virtual-device shape: it cannot carry a vendor descriptor, arbitrary key bitmap,
+/// raw report size or device serial.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VirtualGamepadPlan {
     pub axes: u8,
@@ -173,15 +168,12 @@ impl Default for VirtualGamepadPlan {
 }
 
 pub trait VirtualGamepad: Send {
-    /// Apply one validated logical gamepad event.
     fn apply(&mut self, event: ForwardedGamepadEvent) -> Result<(), String>;
 
-    /// Neutralize every axis/hat and release every button.
     fn release_all(&mut self) -> Result<(), String>;
 }
 
 pub trait VirtualGamepadFactory: Send + Sync {
-    /// Create exactly the fixed sanitized gamepad plan.
     fn create(&self, plan: VirtualGamepadPlan) -> Result<Box<dyn VirtualGamepad>, String>;
 }
 
@@ -278,7 +270,6 @@ impl<F: VirtualGamepadFactory> ForwardedPeripheralBroker<F> {
         }
     }
 
-    /// Register a broker-local gamepad. No other peripheral class is representable.
     pub fn register_gamepad(
         &mut self,
         label: impl Into<String>,
@@ -313,7 +304,6 @@ impl<F: VirtualGamepadFactory> ForwardedPeripheralBroker<F> {
         });
     }
 
-    /// Mint a fresh one-shot proof for an exact gamepad and identity binding.
     pub fn authorize(
         &mut self,
         identity: &ForwardedPeripheralIdentity,
@@ -348,7 +338,6 @@ impl<F: VirtualGamepadFactory> ForwardedPeripheralBroker<F> {
         Ok(id)
     }
 
-    /// Consume fresh authorization and construct one constrained virtual gamepad.
     pub fn acquire(
         &mut self,
         authorization: PeripheralAuthorizationId,
@@ -408,7 +397,6 @@ impl<F: VirtualGamepadFactory> ForwardedPeripheralBroker<F> {
         Ok(id)
     }
 
-    /// Apply one bounded logical event to the exact focused lease.
     pub fn submit(
         &mut self,
         lease_id: PeripheralLeaseId,

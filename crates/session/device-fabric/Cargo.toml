@@ -26,6 +26,7 @@ serde_json.workspace = true
 settings-store = { path = "../../system/settings-store" }
 thiserror.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-fabric-core = { path = "../../collab/fabric-core" }
 tilo-desktop-surface = { path = "../desktop-surface" }
 tilo-nearby-service = { path = "../nearby-service" }
 tilo-network-actor = { path = "../network-actor" }

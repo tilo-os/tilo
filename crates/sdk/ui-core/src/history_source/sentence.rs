@@ -3,9 +3,11 @@
 //! of the actions it publishes.
 
 use tilo_actions::ActionContext;
+use tilo_actions::remote::workspace_activity as wire;
 use tilo_history::{FluentArgs, Messages, Reader};
 
 use crate::i18n::I18nManager;
+use crate::widget::history::{AuthorRelation, HistoryAuthor};
 
 /// The catalogues installed on this thread, which include the app's own.
 struct ThreadCatalogue;
@@ -13,6 +15,23 @@ struct ThreadCatalogue;
 impl Messages for ThreadCatalogue {
     fn format(&self, key: &str, args: &FluentArgs<'_>) -> Option<String> {
         I18nManager::has_message(key).then(|| I18nManager::lookup(key, Some(args)))
+    }
+
+    fn has(&self, key: &str) -> bool {
+        I18nManager::has_message(key)
+    }
+}
+
+/// The app's catalogues, saying only what they can say without what a step
+/// carried: a step title names what somebody did, never the words they wrote
+/// or the name they gave something, so a message only a value completes
+/// ("Named the workbook { $new }") is one this leaves to the framework's own
+/// words for the action.
+struct BareCatalogue;
+
+impl Messages for BareCatalogue {
+    fn format(&self, key: &str, args: &FluentArgs<'_>) -> Option<String> {
+        I18nManager::lookup_complete(key, Some(args))
     }
 
     fn has(&self, key: &str) -> bool {
@@ -30,6 +49,68 @@ pub fn with_reader<T>(read: impl FnOnce(&Reader<'_>) -> T) -> T {
 
 pub fn sentence(entry: &ActionContext) -> String {
     with_reader(|reader| reader.sentence(entry))
+}
+
+/// An author as one line names them, in this thread's words: "You", "Ada",
+/// "claude for Ada", "Ada via task ‘Prepare Q3 financials’".
+///
+/// The one place a history row, a pill or an app's list says who made a
+/// change: the name it carries is a name, and whom software acted for is
+/// said here once.
+pub fn author_line(author: &HistoryAuthor) -> String {
+    actor_line(
+        &author.name,
+        author
+            .attribution
+            .as_ref()
+            .and_then(|attribution| attribution.on_behalf_of_name.as_deref()),
+        author.for_reader,
+        author.relation == AuthorRelation::Reader,
+        author.task.as_deref(),
+    )
+}
+
+/// [`author_line`] for software named `name` acting for `person`: "Helper for Ada", or "Helper
+/// for you" to that person. Where a surface knows no person, the name alone.
+pub fn acting_line(name: &str, person: Option<&str>, for_reader: bool) -> String {
+    actor_line(name, person, for_reader, false, None)
+}
+
+/// [`author_line`] for an author as an app reads it over the wire.
+pub fn wire_author_line(author: &wire::Author) -> String {
+    actor_line(
+        &author.name,
+        author.on_behalf_of.as_deref(),
+        author.for_reader,
+        author.relation == wire::Relation::Reader,
+        author.task.as_deref(),
+    )
+}
+
+fn actor_line(
+    name: &str,
+    for_person: Option<&str>,
+    for_reader: bool,
+    is_reader: bool,
+    task: Option<&str>,
+) -> String {
+    // A task names who did it: the person it was taken for, else the actor. A task that goes by
+    // its agent's own name (an agent's run) is that agent's: it says who it acts for.
+    let task = task.filter(|label| label.trim() != name.trim());
+    let actor = match (task, for_person) {
+        (Some(_), Some(person)) => person,
+        _ => name,
+    };
+    let task = task.map(|label| tilo_history::Task { id: "", label });
+    with_reader(|reader| {
+        reader.actor(&tilo_history::Who {
+            actor,
+            for_person,
+            for_reader,
+            is_reader,
+            task: task.as_ref(),
+        })
+    })
 }
 
 /// History in this thread's words: a step as [`sentence`] says it, and a
@@ -70,7 +151,11 @@ pub fn step_title(entry: &ActionContext) -> Option<String> {
     bare.what = Some(tilo_actions::Did::Verb(verb));
     bare.resource = None;
     bare.item = None;
-    let reader = Reader::new(&I18nManager::window_locale()).with_labels(&ThreadLabels);
+    // The app's words only where they stand without the value the step
+    // carried: a title that needs one is left to the action's own label.
+    let reader = Reader::new(&I18nManager::window_locale())
+        .with_app(&BareCatalogue)
+        .with_labels(&ThreadLabels);
     Some(reader.sentence(&bare))
 }
 
@@ -93,7 +178,14 @@ pub fn learn_labels(resources: &[tilo_actions::ResourceSpec]) {
         labels: &mut std::collections::HashMap<String, Vec<(String, String)>>,
     ) {
         for action in &resource.actions {
-            let known = labels.entry(action.id.clone()).or_default();
+            // What a change of the action says it by: the id the app declares it under, where
+            // that is not the name it publishes it by.
+            let by = if action.declared.is_empty() {
+                action.id.clone()
+            } else {
+                action.declared.clone()
+            };
+            let known = labels.entry(by).or_default();
             match known.iter_mut().find(|(kind, _)| *kind == resource.kind) {
                 Some(entry) => entry.1.clone_from(&action.label),
                 None => known.push((resource.kind.clone(), action.label.clone())),

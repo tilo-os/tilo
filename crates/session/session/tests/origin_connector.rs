@@ -23,8 +23,6 @@
     reason = "test fixtures: a failed step is the assertion, and a session outlives every call"
 )]
 
-mod common;
-
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -33,7 +31,7 @@ use serde_json::json;
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, AppActions, Launches, Options, Session};
 
-use common::{PERSON, private_home};
+use crate::common::{PERSON, private_home};
 
 /// The `YouTube` client, as a package names it.
 const TUBE: &str = "so.tilo.lang.tube";
@@ -143,7 +141,7 @@ fn scripted() -> tilolang_youtube::Scripted {
 
 /// Write the launcher the session starts the apps' connectors through: the stand-in runs this test
 /// binary as the connector process, on the gate the launcher is handed. The apps are the ones
-/// installed in `home` 's own store ([`common::install_apps_in`]), the `YouTube` client's signed
+/// installed in `home` 's own store ([`crate::common::install_apps_in`]), the `YouTube` client's signed
 /// package among them; its manifest declares the `youtube` origin.
 fn connector_launcher(home: &tilo_test_env::TestHome) -> tilo_test_env::StandIn {
     // The launcher the session starts connectors through: it runs this test binary as the connector
@@ -152,7 +150,7 @@ fn connector_launcher(home: &tilo_test_env::TestHome) -> tilo_test_env::StandIn 
         home.home().join("tilo-launcher"),
         &format!(
             "export {CHILD_ENV}=1\n\
-             exec '{exe}' --exact youtube_connector_child --nocapture\n",
+             exec '{exe}' --exact origin_connector::youtube_connector_child --nocapture\n",
             exe = std::env::current_exe()
                 .expect("this test's program")
                 .display(),
@@ -171,13 +169,13 @@ fn session(
     root: &Path,
     launcher: &tilo_test_env::StandIn,
 ) -> Session {
-    let apps = Rc::new(tilo_session::mount::apps::Apps::with_launcher(
+    let apps = Rc::new(tilo_session::apps::Apps::with_launcher(
         tilo_app_launch::SessionEnvironment::from_process(),
         None,
         Some(launcher.path().to_owned()),
     ));
     let store = home.data().join("tilo-apps");
-    let seeded = common::seeded_apps_in(&store);
+    let seeded = crate::common::seeded_apps_in(&store);
     crate::common::headless(Options {
         person: PERSON.to_owned(),
         shell: true,
@@ -201,7 +199,7 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
     // The apps a development session runs, installed in this test's own store: the YouTube client's
     // signed package is one of them, with the manifest that declares its origin.
     let store = home.data().join("tilo-apps");
-    common::install_apps_in(&store, &home.state().join("tilolang"));
+    crate::common::install_apps_in(&store, &home.state().join("tilolang"));
     home.env().set("TILO_APPS_DATA_DIR", &store);
     let launcher = connector_launcher(&home);
     let root = private_home();
@@ -209,7 +207,7 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
 
     // The client's root is published by the seeded apps, and the video the scripted service answers
     // with is not in it: only the scenario's own are.
-    common::until(&mut session, "the client's root", |session| {
+    crate::common::until(&mut session, "the client's root", |session| {
         session
             .resources()
             .iter()
@@ -255,7 +253,7 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
     // The answer lands in the client's record: the video the scripted service found and the channel
     // it names, each a resource of the client's the door reads, and the search settled
     // (`search_state` `done` , so the client's view stops saying it searches).
-    common::until(&mut session, "the answer in the record", |session| {
+    crate::common::until(&mut session, "the answer in the record", |session| {
         record_says(session, VIDEO) && record_says(session, NAME)
     });
     let videos = client_items(&session, "Video");
@@ -324,7 +322,7 @@ fn a_live_canvas_query_places_a_channel_the_client_never_held() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a home");
     let store = home.data().join("tilo-apps");
-    common::install_apps_in(&store, &home.state().join("tilolang"));
+    crate::common::install_apps_in(&store, &home.state().join("tilolang"));
     home.env().set("TILO_APPS_DATA_DIR", &store);
     let launcher = connector_launcher(&home);
     let root = private_home();
@@ -332,7 +330,7 @@ fn a_live_canvas_query_places_a_channel_the_client_never_held() {
 
     // The channel the scripted test origin answers for "compositor" is not held before the query:
     // only the client's own scenario channels are.
-    common::until(&mut session, "the client's root", |session| {
+    crate::common::until(&mut session, "the client's root", |session| {
         session
             .resources()
             .iter()
@@ -357,13 +355,13 @@ fn a_live_canvas_query_places_a_channel_the_client_never_held() {
 
     // The client's own search action asked its origin, and the answer became the channel's
     // record: the channel the scripted test origin named, held now by the client.
-    common::until(
+    crate::common::until(
         &mut session,
         "the answered channel in the record",
         |session| record_says(session, NAME),
     );
     // And that channel's page is the place, not the client's feed.
-    common::until(&mut session, "the answered channel placed", |session| {
+    crate::common::until(&mut session, "the answered channel placed", |session| {
         placed(session)
             .iter()
             .any(|(kind, label)| kind == &format!("tl.{TUBE}.Channel") && label == NAME)
@@ -384,7 +382,7 @@ fn a_live_canvas_query_places_a_channel_the_client_never_held() {
 
 /// What stands on the canvas, by the kind and label of the resource each place shows.
 fn placed(session: &Session) -> Vec<(String, String)> {
-    common::placed_resources(session)
+    crate::common::placed_resources(session)
 }
 
 /// Whether any of the client's records holds `text` in a text field, as the session's door reads
@@ -431,7 +429,7 @@ fn live_session(
     launcher: &tilo_test_env::StandIn,
 ) -> Session {
     let mut session = session(home, root, launcher);
-    common::until(&mut session, "the client's root", |session| {
+    crate::common::until(&mut session, "the client's root", |session| {
         session
             .resources()
             .iter()
@@ -448,7 +446,7 @@ fn a_live_canvas_query_that_matches_several_shows_the_rows_it_found() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a home");
     let store = home.data().join("tilo-apps");
-    common::install_apps_in(&store, &home.state().join("tilolang"));
+    crate::common::install_apps_in(&store, &home.state().join("tilolang"));
     home.env().set("TILO_APPS_DATA_DIR", &store);
     let launcher = connector_launcher(&home);
     let root = private_home();
@@ -457,7 +455,7 @@ fn a_live_canvas_query_that_matches_several_shows_the_rows_it_found() {
     type_on_canvas(&mut session, "youtube videos of shared");
 
     // Two channels came back, so the place stands as a query with two rows, not a channel.
-    common::until(&mut session, "the query settles with several", |session| {
+    crate::common::until(&mut session, "the query settles with several", |session| {
         query_shown(session).is_some_and(|query| query.state == "several")
     });
     let query = query_shown(&session).expect("the place shows its query");
@@ -496,7 +494,7 @@ fn a_live_canvas_query_that_matches_several_shows_the_rows_it_found() {
                 .expect("arguments"),
         )
         .expect("the row places its channel");
-    common::until(&mut session, "the row's channel placed", |session| {
+    crate::common::until(&mut session, "the row's channel placed", |session| {
         placed(session)
             .iter()
             .any(|(kind, _)| kind == &format!("tl.{TUBE}.Channel"))
@@ -511,7 +509,7 @@ fn a_live_canvas_query_the_origin_answers_empty_settles_matched_nothing() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a home");
     let store = home.data().join("tilo-apps");
-    common::install_apps_in(&store, &home.state().join("tilolang"));
+    crate::common::install_apps_in(&store, &home.state().join("tilolang"));
     home.env().set("TILO_APPS_DATA_DIR", &store);
     let launcher = connector_launcher(&home);
     let root = private_home();
@@ -519,7 +517,7 @@ fn a_live_canvas_query_the_origin_answers_empty_settles_matched_nothing() {
 
     type_on_canvas(&mut session, "youtube videos of empty");
 
-    common::until(&mut session, "the query matches nothing", |session| {
+    crate::common::until(&mut session, "the query matches nothing", |session| {
         query_shown(session).is_some_and(|query| query.state == "none")
     });
     let query = query_shown(&session).expect("the place shows its query");

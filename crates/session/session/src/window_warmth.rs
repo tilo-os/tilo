@@ -27,7 +27,7 @@ use ui::floating_surface::HostNetworkStatus;
 use ui::tokens::PresenceHue;
 use ui::workspace_sync::WorkspaceSync;
 
-use crate::mount::app_tabs::AppTabs;
+use crate::app_tabs::AppTabs;
 use crate::wallpapers::Wallpapers;
 
 /// What every window is told of the desk it stands on, and the settings that decide it as last
@@ -47,7 +47,7 @@ impl Windows {
     /// The windows of a desk wearing `theme` , with `person` sitting at this machine.
     pub(crate) fn new(theme: Theme, person: &str) -> Self {
         let document = settings_store::load();
-        let your_colour = colour_in(&document, person);
+        let your_colour = PresenceHue::worn_in(&Value::Object(document.clone()), person);
         Self {
             warmth: WindowWarmth::new(your_colour),
             theme,
@@ -69,8 +69,10 @@ impl Windows {
         }
         self.stamp = stamp;
         self.document = settings_store::load();
-        self.warmth
-            .set_your_colour(colour_in(&self.document, person));
+        self.warmth.set_your_colour(PresenceHue::worn_in(
+            &Value::Object(self.document.clone()),
+            person,
+        ));
         self.theme = desk_theme(&self.document);
         Some(self.theme.clone())
     }
@@ -139,13 +141,6 @@ fn workspace_sync(
     )
 }
 
-/// The person's colour, as they sit at this machine: the one they chose in Settings, else the one
-/// their identity derives — the same colour the desk's own chip and every face of them wears.
-fn colour_in(document: &Map<String, Value>, person: &str) -> PresenceHue {
-    PresenceHue::chosen_in(&Value::Object(document.clone()))
-        .unwrap_or_else(|| PresenceHue::of_identity(person))
-}
-
 /// The theme the desk and its windows wear: the settings document's, with the host's accessibility
 /// overrides on top, built as the desk's own theme was when the session started.
 fn desk_theme(document: &Map<String, Value>) -> Theme {
@@ -189,6 +184,7 @@ impl crate::Session {
             self.shared.chrome.borrow_mut().set_theme(theme.clone());
             self.shared.people.borrow().set_theme(theme.clone());
             self.readout.borrow_mut().set_theme(theme.clone());
+            crate::sheets::set_theme(&theme);
             if let Some(shell) = self.shell.as_mut() {
                 shell.set_theme(&theme);
             }

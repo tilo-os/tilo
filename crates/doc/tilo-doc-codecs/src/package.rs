@@ -1,8 +1,6 @@
-//! The ZIP package every office format is: OOXML (`.docx`, `.xlsx`) and ODF
-//! (`.odt`, `.ods`). Untrusted bytes enter only through [`ZipPackage::read`],
-//! so the same zip-bomb, entry-count and DTD/XXE guards ([`read_zip_parts`])
-//! apply to every format. Parts keep their original order and bytes, so parts
-//! a codec doesn't model are carried through an export verbatim.
+//! The ZIP package every office format is: OOXML (`.docx`, `.xlsx`) and ODF (`.odt`, `.ods`).
+//! Untrusted bytes enter only through [`ZipPackage::read`], so the zip-bomb, entry-count and
+//! DTD/XXE guards apply to every format. Parts keep their original order and bytes.
 
 use crate::format::CodecError;
 use crate::safety::{ZipLimits, read_zip_parts};
@@ -16,7 +14,6 @@ pub struct ZipPackage {
 }
 
 impl ZipPackage {
-    /// Read an untrusted package under the default [`ZipLimits`].
     pub fn read(bytes: &[u8]) -> Result<Self, CodecError> {
         Ok(Self {
             parts: read_zip_parts(bytes, &ZipLimits::default())?,
@@ -30,7 +27,6 @@ impl ZipPackage {
             .map(|(_, b)| b.as_slice())
     }
 
-    /// Replace an existing part (preserving its position) or append a new one.
     pub fn set(&mut self, name: &str, bytes: Vec<u8>) {
         if let Some(p) = self.parts.iter_mut().find(|(n, _)| n == name) {
             p.1 = bytes;
@@ -39,7 +35,6 @@ impl ZipPackage {
         }
     }
 
-    /// Remove a part, if present.
     pub fn remove(&mut self, name: &str) {
         self.parts.retain(|(n, _)| n != name);
     }

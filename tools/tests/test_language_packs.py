@@ -38,6 +38,25 @@ class LanguagePackTests(unittest.TestCase):
             self.assertFalse((out / "en-US").exists(), "English stays in the packages")
             self.assertFalse((out / "de-DE").exists(), "a self-embedding catalogue is not packed")
 
+    def test_a_crate_whose_declarations_are_named_from_its_catalogue_is_packed(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            repo = pathlib.Path(scratch) / "repo"
+            crate(repo, "tasks-model", '#[resource(kind = "tasks.list")]\nimpl List {}\n',
+                  {"en-US": "tasks-list = List\n", "de-DE": "tasks-list = Liste\n"})
+            crate(repo, "jobs", "#[derive(Clone, tilo_resource::Effect)]\nenum Job {}\n",
+                  {"en-US": "a = A\n", "de-DE": "a = Ä\n"})
+            # Named in documentation only: nothing reads its catalogue.
+            crate(repo, "docs", "//! #[resource(kind = \"x\")]\n",
+                  {"en-US": "x = X\n", "de-DE": "x = Ix\n"})
+            out = pathlib.Path(scratch) / "packs"
+            self.assertEqual(packs.build(repo, out), 0)
+            self.assertEqual(sorted(p.name for p in (out / "de").iterdir()),
+                             ["jobs.ftl", "tasks-model.ftl"])
+
+    def test_the_repository_packs_the_tasks_models_german(self) -> None:
+        found = {(locale, name) for locale, name, _ in packs.catalogues(ROOT)}
+        self.assertIn(("de-DE", "tasks-model"), found)
+
     def test_one_pack_per_language_whatever_region_a_crate_names(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:
             repo = pathlib.Path(scratch) / "repo"

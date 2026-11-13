@@ -1,50 +1,4 @@
 //! Google Drive accounts as a [`CloudSource`], over the Drive API v3.
-//!
-//! - **Ids and parents.** Items are Drive file ids. Drive allows several
-//!   items with one name in a folder and (for items created before 2020)
-//!   several parents; both are passed through as they are and made
-//!   presentable by [`cloud_source::tree::Tree`]. When the mounted root is
-//!   the whole of My Drive, its id is the `root` alias and every real root id
-//!   in `parents` is mapped onto it.
-//! - **Change feed.** [`CloudSource::changes`] wraps `changes.list`. Drive's
-//!   feed is account-wide and has no "list everything" mode, so the cursor
-//!   carries a start page token plus a queue of folders still to enumerate:
-//!   a fresh cursor enumerates the root breadth-first (several folders per
-//!   `files.list` query) and then continues from the token taken before the
-//!   walk began. Changes outside the mounted subtree are reported as
-//!   removals (they may have been moved out), and a folder that enters the
-//!   subtree is enumerated because Drive reports only the folder itself.
-//! - **No push without a public endpoint.** `changes.watch` delivers to an
-//!   HTTPS webhook reachable from Google, which a desktop cannot offer, so
-//!   [`Capabilities::notify`] is [`Notify::None`]. [`CloudSource::wait`]
-//!   still works: it polls one-entry `changes.list` pages every
-//!   [`DriveConfig::poll_interval`] ([`DEFAULT_POLL_INTERVAL`], 30 s) until
-//!   something changes or the timeout passes.
-//! - **Revisions.** A blob file's revision is its `headRevisionId`, which
-//!   moves exactly when the content does and names an entry of
-//!   `revisions.list`; folders and native documents use `v<version>`.
-//! - **Conditional writes are checked, not atomic.** Drive v3 has no
-//!   `If-Match` on `files.update`. A write with an expected revision checks
-//!   `headRevisionId` when the upload starts and again immediately before
-//!   the request that commits it; the commit request carries at most
-//!   [`UPLOAD_QUANTUM`] bytes so the window between check and commit is one
-//!   round trip plus that chunk. A write that lands inside the window is
-//!   detected afterwards from the revision history: the overwritten
-//!   revisions are pinned with `keepForever` and the write reports
-//!   [`Error::Conflict`]. Moves and deletes check `version`/`headRevisionId`
-//!   first with the same one-round-trip window (a delete goes to the trash
-//!   by default, so it stays recoverable). Because the window cannot be
-//!   closed, [`Capabilities::conditional_writes`] is `false`.
-//! - **Native documents.** Docs, Sheets, Slides, Drawings (and Forms, Sites,
-//!   shortcuts) are [`ItemKind::Native`](cloud_source::ItemKind::Native) with their `webViewLink`; Docs,
-//!   Sheets, Slides and Drawings export to office formats and PDF.
-//! - **Rate limits.** `403 userRateLimitExceeded`/`rateLimitExceeded` and
-//!   `429` are [`Error::RateLimited`] with the `Retry-After` delay when the
-//!   server sent one. Nothing is retried here; the daemon schedules retries
-//!   and chooses the backoff.
-//! - **Credentials.** Every request asks the [`CredentialSource`] for a
-//!   Bearer token; a 401 reports [`CredentialSource::rejected`] so Settings
-//!   refreshes it.
 
 #![allow(
     clippy::missing_errors_doc,
@@ -78,17 +32,14 @@ pub use reqwest::Url;
 use crate::api::{About, ErrorBody, File, FileList, RevisionEntry, RevisionList};
 use tilo_lock::MutexRecover as _;
 
-/// Google's API origin.
 pub const DEFAULT_API: &str = "https://www.googleapis.com/";
 /// Resumable upload chunks must be multiples of this (except the last).
 pub const UPLOAD_QUANTUM: u64 = 256 * 1024;
 /// Bytes per upload request: 32 quanta.
 pub const DEFAULT_UPLOAD_CHUNK: u64 = 8 * 1024 * 1024;
-/// How often [`CloudSource::wait`] polls the changes feed.
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 const ERROR_BODY_LIMIT: usize = 64 * 1024;
-/// A 1000-entry listing page is around a megabyte.
 const JSON_LIMIT: usize = 32 * 1024 * 1024;
 /// Drive refuses exports over 10 MB (`exportSizeLimitExceeded`).
 const EXPORT_LIMIT: usize = 16 * 1024 * 1024;
@@ -100,19 +51,16 @@ const JSON_UTF8: &str = "application/json; charset=UTF-8";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DriveConfig {
-    /// API origin with a trailing slash; [`DEFAULT_API`] except in tests.
     pub api: String,
     /// The folder to mount; the whole of My Drive (or of the shared drive)
     /// when `None`.
     pub root: Option<String>,
-    /// A shared drive to mount instead of My Drive.
     pub shared_drive: Option<String>,
     /// Delete moves to the Drive trash (recoverable for 30 days) instead of
     /// deleting permanently.
     pub trash: bool,
     /// Bytes per upload request, a multiple of [`UPLOAD_QUANTUM`].
     pub upload_chunk: u64,
-    /// Poll interval of [`CloudSource::wait`].
     pub poll_interval: Duration,
 }
 
@@ -141,14 +89,12 @@ impl DriveConfig {
         }
     }
 
-    /// Mount only the folder `folder_id`.
     #[must_use]
     pub fn with_root(mut self, folder_id: impl Into<String>) -> Self {
         self.root = Some(folder_id.into());
         self
     }
 
-    /// Talk to `api` (a fake server) instead of Google.
     #[must_use]
     pub fn with_api(mut self, api: impl Into<String>) -> Self {
         let mut api = api.into();
@@ -160,7 +106,6 @@ impl DriveConfig {
     }
 }
 
-/// One Google Drive account (or shared drive, or folder of either).
 #[derive(Clone)]
 pub struct GDrive {
     inner: Arc<Inner>,
@@ -170,7 +115,6 @@ pub(crate) struct Inner {
     config: DriveConfig,
     http: Client,
     credentials: Arc<dyn CredentialSource>,
-    /// The real id behind the `root` alias, once asked.
     real_root: Mutex<Option<String>>,
     /// Parents of folders seen so far, to decide whether a change lies
     /// below the root. An empty list means "not below any folder".
@@ -231,7 +175,6 @@ impl Inner {
         ItemId::new(self.configured_root().unwrap_or("root"))
     }
 
-    /// The real id of the root folder (resolving the `root` alias once).
     pub(crate) fn real_root(&self) -> Result<String> {
         if let Some(root) = self.configured_root() {
             return Ok(root.to_owned());
@@ -245,7 +188,6 @@ impl Inner {
         Ok(file.id)
     }
 
-    /// The Drive id for `id`, resolving the `root` alias.
     fn real_id(&self, id: &ItemId) -> Result<String> {
         if self.configured_root().is_none() && id.as_str() == "root" {
             self.real_root()
@@ -291,7 +233,6 @@ impl Inner {
         Ok(url)
     }
 
-    /// `true` when `url` is on the API origin, so it may see the token.
     pub(crate) fn same_origin(&self, url: &Url) -> bool {
         Url::parse(&self.config.api).is_ok_and(|api| api.origin() == url.origin())
     }
@@ -381,7 +322,6 @@ impl Inner {
         Ok(file)
     }
 
-    /// Check `expect` against the file's current revision.
     pub(crate) fn check_revision(&self, id: &ItemId, expect: Option<&Revision>) -> Result<File> {
         let file = self.live_file(id, api::REVISION_FIELDS)?;
         if let Some(expect) = expect {
@@ -437,7 +377,6 @@ impl Inner {
         self.to_item(&file)
     }
 
-    /// Stream `range` of `url`, a media download.
     pub(crate) fn download(
         &self,
         url: Url,
@@ -493,7 +432,6 @@ impl Inner {
         .map(drop)
     }
 
-    /// Revision ids of `id`, oldest first.
     pub(crate) fn revision_ids(&self, id: &str) -> Result<Vec<RevisionEntry>> {
         let mut all = Vec::new();
         let mut page: Option<String> = None;
@@ -575,7 +513,6 @@ impl CloudSource for GDrive {
                 HashAlgorithm::Sha256,
             ],
             share_links: true,
-            // Shared drive storage is not the person's quota.
             quota: !shared,
             trash: self.inner.config.trash,
             resumable_upload: true,
@@ -584,7 +521,6 @@ impl CloudSource for GDrive {
             // Checked immediately before the commit, not atomically; see the
             // crate documentation for the window.
             conditional_writes: false,
-            // Legacy My Drive items; shared drives enforce one parent.
             multiple_parents: !shared,
             duplicate_names: true,
             case_insensitive: false,

@@ -36,7 +36,6 @@ pub(super) fn parse(doc: &Document) -> Result<Vec<EngineResult>, EngineError> {
     .parse(doc)
 }
 
-/// `DuckDuckGo` links through `//duckduckgo.com/l/?uddg=<address>`.
 fn clean_href(href: &str) -> Option<String> {
     let absolute = if href.starts_with("//") {
         format!("https:{href}")

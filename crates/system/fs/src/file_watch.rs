@@ -1,14 +1,6 @@
-//! Re-reading a file when it changes, instead of on a timer.
-//!
-//! The capability list a mount enforces is re-read while the mount runs, so
-//! a revocation takes effect without a remount. [`FileChanges`] waits for the
-//! host's file events (`inotify` on Linux, `FSEvents` on macOS)
-//! through [`tilo_files::native::watch_changes`]: a change is seen in milliseconds,
-//! and an unchanged file costs nothing.
-//!
-//! The parent directory is watched, not the file: a producer that renames
-//! a new file over the old one, deletes it or creates it again replaces
-//! the inode a file watch would be bound to.
+//! Re-reading a file when it changes, instead of on a timer. The parent directory
+//! is watched, not the file: a producer that renames a new file over the old one,
+//! deletes it or creates it again replaces the inode a watch would bind to.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -16,12 +8,11 @@ use std::path::{Path, PathBuf};
 use tilo_files::native::{ChangeWatch, watch_changes};
 use tokio::sync::watch;
 
-/// Wakes on each change of one file.
 pub struct FileChanges {
     _watch: ChangeWatch,
     changes: watch::Receiver<()>,
-    /// The first [`Self::next`] returns at once: a change between the
-    /// caller's first read and the watch going up must not be missed.
+    /// The first [`Self::next`] returns at once, so a change between the caller's
+    /// first read and the watch going up is not missed.
     primed: bool,
 }
 
@@ -32,11 +23,6 @@ impl std::fmt::Debug for FileChanges {
 }
 
 impl FileChanges {
-    /// Watch `path` through its parent directory.
-    ///
-    /// # Errors
-    ///
-    /// The path has no file name, or its directory cannot be watched.
     pub fn for_file(path: &Path) -> std::io::Result<Self> {
         let name = path
             .file_name()
@@ -61,8 +47,8 @@ impl FileChanges {
         })
     }
 
-    /// Wait until the file may have changed. If the watch ends (its
-    /// directory went away) this never returns again.
+    /// Wait until the file may have changed; if the watch ends, this never
+    /// returns again.
     pub async fn next(&mut self) {
         if std::mem::take(&mut self.primed) {
             return;

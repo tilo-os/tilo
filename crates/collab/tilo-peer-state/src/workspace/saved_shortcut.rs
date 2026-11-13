@@ -11,7 +11,8 @@
 //! arming each time it arms, against the workspace's revocations then.
 
 use automerge::AutoCommit;
-use ed25519_dalek::{Signer as _, SigningKey, Verifier as _};
+use collab_types::signer::DeviceSigner;
+use ed25519_dalek::Verifier as _;
 use tilo_automation::{SavedProof, Shortcut};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
@@ -26,17 +27,19 @@ pub fn sign_saved_shortcut(
     workspace: &str,
     shortcut: &mut Shortcut,
     device: &DeviceCert,
-    key: &SigningKey,
+    key: &dyn DeviceSigner,
 ) -> Result<(), String> {
-    if key.verifying_key().to_bytes() != device.device_public_key {
+    if key.device_public_key() != device.device_public_key {
         return Err("the signing key is not the certified device's".into());
     }
     shortcut.saved_by = Some(hex::encode(device.user_public_key));
     shortcut.saved_proof = None;
-    let signature = key.sign(&shortcut.saved_signing_digest(workspace));
+    let signature =
+        collab_types::signer::sign_now(key, shortcut.saved_signing_digest(workspace).to_vec())
+            .map_err(|error| error.to_string())?;
     shortcut.saved_proof = Some(SavedProof {
         device_cert: serde_json::to_value(device).map_err(|error| error.to_string())?,
-        signature: hex::encode(signature.to_bytes()),
+        signature: hex::encode(signature),
     });
     Ok(())
 }

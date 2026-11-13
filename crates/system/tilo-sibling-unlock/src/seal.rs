@@ -1,9 +1,4 @@
 //! Sealing the material to this machine's TPM, where it has one.
-//!
-//! `systemd-creds` with the TPM2 key and PCR 7: the blob opens only on this
-//! TPM, and only while the Secure Boot state it was sealed under holds. A
-//! copied disk carries a blob nothing else can open. Without a TPM the
-//! material is stored in the clear; Settings tells the owner so.
 
 use crate::exec;
 use crate::token::Sealing;
@@ -12,13 +7,10 @@ use base64::Engine as _;
 use std::path::Path;
 use zeroize::Zeroizing;
 
-/// The credential name bound into the sealed blob.
 const CREDENTIAL: &str = "tilo-sibling-unlock";
 
-/// The TPM device whose presence decides the sealing.
 pub const TPM_DEVICE: &str = "/dev/tpmrm0";
 
-/// The sealing this machine supports.
 pub fn available() -> Sealing {
     if Path::new(TPM_DEVICE).exists() {
         Sealing::Tpm2
@@ -27,7 +19,6 @@ pub fn available() -> Sealing {
     }
 }
 
-/// Seals `plaintext` and returns it as the token stores it (base64).
 pub fn seal(sealing: Sealing, plaintext: &[u8]) -> Result<String> {
     let engine = base64::engine::general_purpose::STANDARD;
     match sealing {

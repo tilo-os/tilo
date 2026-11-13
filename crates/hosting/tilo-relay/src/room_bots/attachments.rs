@@ -9,9 +9,9 @@
 //! workspace for every one it does not keep yet, on its own presence, as any
 //! member asks. A report's receipt waits for the host to keep them. The pieces members answer it with are
 //! assembled and verified as a page assembles them
-//! ([`tilo_browser_peer::content::ContentWants`]) and kept in the host's one
-//! blob store, beside what its bots fetched ([`super::installed::FsBlobs`]),
-//! which already answers members' requests for content the host keeps
+//! ([`neighbour_wire::content::ContentWants`]) and kept in the workspace's
+//! content store on this host, beside what its bots fetched ([`crate::content`]),
+//! from which the host answers members' requests for content it keeps
 //! ([`crate::workspaces::WorkspaceContent`]).
 //!
 //! What a host keeps is bounded ([`AttachmentLimits`]): a file larger than
@@ -32,13 +32,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use automerge::AutoCommit;
+use neighbour_wire::content::ContentWants;
 use serde::{Deserialize, Serialize};
-use tilo_browser_peer::content::ContentWants;
 use tilo_lock::MutexRecover as _;
 
 use super::CHAT;
-use super::installed::FsBlobs;
 use crate::workspaces::{ContentKeeper, RecordWrite, Workspaces};
+use tilo_content::ContentStore;
 
 /// How long the host waits before it asks again for files nobody answered.
 const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(90);
@@ -48,6 +48,10 @@ const HOUR_MS: u64 = 3_600_000;
 /// How often the parts members wrote to are read for their files: a busy
 /// Chat takes many writes a second, and one read finds all their files.
 const READ_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+/// How often the files being gathered are looked at for the pieces a lost one
+/// left missing, so a member's answer arrives whole without waiting for the
+/// next write to the part that named it.
+const MISSING_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// How much of members' posted files a host keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,7 +145,7 @@ pub struct WorkspaceAttachments {
     /// This host's device: what its requests name, and what answers to
     /// them are addressed to.
     host: [u8; 32],
-    blobs: Arc<FsBlobs>,
+    blobs: ContentStore,
     ledger: PathBuf,
     limits: AttachmentLimits,
     state: Mutex<State>,
@@ -172,13 +176,19 @@ pub fn referenced(part: &[u8]) -> Vec<Referenced> {
         .flat_map(|message| {
             message.attachments.iter().filter_map(move |attached| {
                 Some(Referenced {
-                    hash: attached.blob()?.to_ascii_lowercase(),
+                    hash: tilo_content::content_address(attached.blob()?)?,
                     member: message.author.0.clone(),
                     size: attached.size(),
                 })
             })
         })
         .collect()
+}
+
+/// The address content `reference` is stored under, as the host keeps it:
+/// the host holds a sealed file's ciphertext, never its key.
+fn address(reference: &str) -> String {
+    tilo_content::content_address(reference).unwrap_or_else(|| reference.to_ascii_lowercase())
 }
 
 /// The pictures and recordings of the feedback reports filed in `record`,
@@ -195,12 +205,12 @@ pub fn reported(record: &[u8]) -> Vec<Referenced> {
         .flat_map(|(submission, author)| {
             let feedback = &submission.feedback;
             let picture = feedback.screenshot.as_ref().map(|picture| Referenced {
-                hash: picture.hash.to_ascii_lowercase(),
+                hash: address(&picture.hash),
                 member: author.0.clone(),
                 size: None,
             });
             let recording = feedback.recording.as_ref().map(|recording| Referenced {
-                hash: recording.hash.to_ascii_lowercase(),
+                hash: address(&recording.hash),
                 member: author.0.clone(),
                 size: Some(u64::from(recording.bytes)),
             });
@@ -224,7 +234,7 @@ impl WorkspaceAttachments {
         workspaces: Workspaces,
         workspace: String,
         host: [u8; 32],
-        blobs: Arc<FsBlobs>,
+        blobs: ContentStore,
         ledger: PathBuf,
         limits: AttachmentLimits,
     ) -> Arc<Self> {
@@ -254,12 +264,15 @@ impl WorkspaceAttachments {
     /// member write to a part after, until the workspace is no longer governed
     /// here.
     pub async fn run(self: Arc<Self>) {
-        self.workspaces.keep_content(self.clone());
+        let keeper: Arc<dyn ContentKeeper> = self.clone();
+        self.workspaces.keep_content(&keeper);
         let mut writes = self.workspaces.record_writes();
         let mut again = tokio::time::interval(ASK_AGAIN);
         again.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut read = tokio::time::interval(READ_EVERY);
         read.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut missing = tokio::time::interval(MISSING_EVERY);
+        missing.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         self.read_all().await;
         loop {
             tokio::select! {
@@ -279,12 +292,32 @@ impl WorkspaceAttachments {
                         self.read_part(&part).await;
                     }
                 }
+                _ = missing.tick() => self.ask_again_for_missing().await,
                 _ = again.tick() => {
                     let parts = std::mem::take(&mut self.state.lock_recover().unanswered);
                     for part in parts {
                         self.read_part(&part).await;
                     }
                 }
+            }
+        }
+    }
+
+    /// Ask the workspace again for the files being gathered that a lost piece
+    /// left short: an answer carries only so much of a file at a time, and a
+    /// piece a session could not deliver is not sent again by itself, so the
+    /// host asks within [`neighbour_wire::content::PIECE_PATIENCE_MS`] of the
+    /// last piece it got, naming what it holds.
+    async fn ask_again_for_missing(&self) {
+        let asks = {
+            let mut state = self.state.lock_recover();
+            state.wants.reask(&self.host, now_ms())
+        };
+        // Every file here belongs to this one workspace, whatever member
+        // posted it.
+        for (_, ask) in asks {
+            if let Err(error) = self.workspaces.ask_members(&self.workspace, ask).await {
+                tracing::debug!(workspace = %self.workspace, %error, "could not ask the room for a file it is missing");
             }
         }
     }
@@ -314,7 +347,9 @@ impl WorkspaceAttachments {
                 workspace: self.workspace.clone(),
                 app,
                 record,
+                carried: tilo_room_host::workspaces::repaired_records::Carried::Nothing,
             };
+
             if let Some(part) = self.part_of(&write) {
                 self.read_part(&part).await;
             }
@@ -409,7 +444,7 @@ impl WorkspaceAttachments {
         tilo_content::valid_hash(&file.hash)
             && file.size.is_none_or(|size| size <= self.limits.file_bytes)
             && !state.ledger.let_go.contains(&file.hash)
-            && !self.blobs.contains(&file.hash)
+            && !self.blobs.has(&file.hash)
     }
 
     /// Keep `bytes`, the whole and verified file `hash` `member` posted,
@@ -418,10 +453,10 @@ impl WorkspaceAttachments {
         let Ok(size) = u64::try_from(bytes.len()) else {
             return;
         };
-        if size > self.limits.file_bytes || self.blobs.contains(hash) {
+        if size > self.limits.file_bytes || self.blobs.has(hash) {
             return;
         }
-        if let Err(error) = tilo_connector::BlobAccess::store(&*self.blobs, bytes) {
+        if let Err(error) = self.blobs.put(bytes) {
             tracing::warn!(workspace = %self.workspace, %error, "could not keep a member's file");
             return;
         }
@@ -457,7 +492,7 @@ impl WorkspaceAttachments {
     fn let_go(&self, state: &mut State, hash: &str) {
         state.ledger.kept.remove(hash);
         state.ledger.let_go.insert(hash.to_owned());
-        if let Err(error) = self.blobs.remove(hash) {
+        if let Err(error) = self.blobs.release(hash) {
             tracing::warn!(workspace = %self.workspace, %error, "could not let a member's file go");
         }
     }
@@ -499,7 +534,7 @@ impl ContentKeeper for WorkspaceAttachments {
             return;
         }
         let mut state = self.state.lock_recover();
-        if let Some(arrived) = state.wants.piece(&self.host, frame) {
+        if let Some(arrived) = state.wants.piece(&self.host, frame, now_ms()) {
             self.keep(&mut state, &arrived.tag, &arrived.hash, &arrived.bytes);
         }
     }

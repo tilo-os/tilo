@@ -1,42 +1,24 @@
-//! Building the guest: the root filesystem, the namespaces, and the argv
-//! that makes them. Everything here is a pure function of a [`GuestPlan`]
-//! until [`spawn`] is called, so confinement can be asserted on without a
-//! kernel.
+//! Building the guest: the root filesystem, the namespaces, and the argv that makes them.
+//! Everything here is a pure function of a [`GuestPlan`] until [`spawn`] is called, so
+//! confinement can be asserted on without a kernel.
 //!
-//! `bwrap` performs the whole unshare/mount/`pivot_root`/seccomp/`exec`
-//! sequence itself, with the filter landing after the last privileged
-//! operation and before the guest exists — the supervisor never calls
-//! `mount(2)`.
+//! `bwrap` performs the whole unshare/mount/`pivot_root`/seccomp/`exec` sequence with the
+//! filter landing after the last privileged operation, so the supervisor never calls
+//! `mount(2)`. `/usr` and `/etc` are a read-only overlay of the tool images with no
+//! writable upper; grants are one bind per `FsPath` at the same path as on the host;
+//! `/tmp`, `/run`, `/proc` and `/dev` are fresh; `/run/ush/bin` holds the runtime and its
+//! shims.
 //!
-//! ```text
-//! /usr, /etc     read-only overlay: lowers = [tool images…, env-runtime]
-//!                (/etc also carries the session's passwd, group and resolver
-//!                on top); no writable upper anywhere
-//! /bin /sbin /lib /lib64   symlinks into /usr, as on any usrmerge system
-//! /home/<user>   the environment's home
-//! <grants>       one bind per FsPath grant, at the same path as on the host
-//! /tmp /run /proc /dev     fresh
-//! /var           tmpfs, plus the environment's own /var/lib and /var/cache
-//! /run/ush/bin   the runtime and its command shims, read-only
-//! ```
-//!
-//! The guest runs as the real uid and gid — a single-id user namespace
-//! mapping — so a file written to a granted directory belongs to the user.
-//! It starts inside the session's own network namespace (see
-//! [`tilo_egress`]), whose resolver is the supervisor's DNS stub; `bwrap`'s
-//! user namespace nests inside the one that owns that network namespace, so
-//! nothing in the guest has any capability over its network.
-//! A path the guest was not granted is not missing a permission — it is not
-//! in the namespace.
+//! The guest runs as the real uid and gid through a single-id user namespace, so a file
+//! written to a granted directory belongs to the user, and inside the session's network
+//! namespace ([`tilo_egress`]) whose resolver is the supervisor's DNS stub. A path the
+//! guest was not granted is not missing a permission: it is not in the namespace.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-/// The subtrees the images provide. Everything else in the guest's root is
-/// built fresh per session.
 pub const IMAGE_SUBTREES: &[&str] = &["usr", "etc"];
 
-/// The environment's own state under `/var`, bound from the store.
 pub const ENVIRONMENT_VAR_DIRS: &[&str] = &["lib", "cache"];
 
 /// `PATH` inside a guest. The runtime's own commands come first so `pkg`
@@ -60,7 +42,6 @@ pub const INHERITED_ENV: &[&str] = &[
     "COLORTERM",
 ];
 
-/// Who the guest runs as: the real user, by the same uid and gid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuestUser {
     pub name: String,
@@ -69,7 +50,6 @@ pub struct GuestUser {
 }
 
 impl GuestUser {
-    /// The user running this process.
     pub fn current() -> Self {
         let (uid, gid) = (
             rustix::process::geteuid().as_raw(),
@@ -82,20 +62,15 @@ impl GuestUser {
         Self { name, uid, gid }
     }
 
-    /// Where the guest's home is mounted.
     pub fn home(&self) -> PathBuf {
         PathBuf::from("/home").join(&self.name)
     }
 
-    /// The guest's `XDG_RUNTIME_DIR`: a tmpfs of its own, the user's alone
-    /// (0700), living as long as the guest, where programs keep their
-    /// sockets, locks and pid files (podman, gpg-agent, dbus).
     pub fn runtime_dir(&self) -> PathBuf {
         PathBuf::from("/run/user").join(self.uid.to_string())
     }
 }
 
-/// A name safe to put in `passwd` and in a path: what `useradd` accepts.
 fn is_user_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 32
@@ -107,29 +82,18 @@ fn is_user_name(name: &str) -> bool {
         && name != ".."
 }
 
-/// Everything needed to build one guest.
 #[derive(Debug, Clone)]
 pub struct GuestPlan {
-    /// Image roots stacked for `/usr` and `/etc`, topmost first: the tools,
-    /// newest first, then the runtime last.
     pub images: Vec<PathBuf>,
-    /// The machine's root: where the resolver configuration is read from and
-    /// where the brokered management commands (`tilo`, `app`) live.
     pub host_root: PathBuf,
-    /// Per-session scratch on the store: the generated `/etc` entries.
     pub session_dir: PathBuf,
-    /// The environment's `/var` state; holds [`ENVIRONMENT_VAR_DIRS`].
     pub var_dir: PathBuf,
-    /// Where `~` is in the guest: `$HOME`, and the user's home in `passwd`.
     pub home: PathBuf,
     /// The home's directory on the host, bound at [`Self::home`] unless
     /// [`Self::home_by_grants`].
     pub guest_home: PathBuf,
-    /// The home is the workspace's folder, which the guest sees through its
-    /// grants like any other, at its own path: nothing binds it besides.
     pub home_by_grants: bool,
     pub user: GuestUser,
-    /// The environment's name, for the prompt.
     pub environment: String,
     /// Host paths a grant may cover but the guest must never see — the
     /// runtime's own store and the environment records. Covered by a tmpfs
@@ -143,26 +107,15 @@ pub struct GuestPlan {
     pub grant_root: Option<PathBuf>,
     /// The runtime binary, bound in so the guest's `pkg`/`perm`/… resolve.
     pub runtime_bin: PathBuf,
-    /// Private loader closure for a dynamically linked runtime.
     pub helper_runtime: Option<crate::helper_runtime::HelperRuntime>,
-    /// Installed legacy apps' commands: shims that ask the broker for a
-    /// `LegacyLaunch`.
     pub legacy_commands: Vec<String>,
     pub broker_socket: PathBuf,
-    /// The compiled seccomp blob.
     pub seccomp_blob: PathBuf,
-    /// What to run.
     pub command: Vec<String>,
-    /// The shell the guest's `$SHELL` names: ush's own.
     pub shell: PathBuf,
     pub term: String,
-    /// Extra environment, applied last.
     pub env: Vec<(String, String)>,
-    /// The guest's `/etc/resolv.conf`: the session's DNS stub. `None` copies
-    /// the machine's.
     pub resolver: Option<String>,
-    /// A served session's terminal, handed to the guest's first process at
-    /// [`crate::setup::TERMINAL_FD`] ([`crate::setup`]).
     pub terminal: Option<std::sync::Arc<std::os::fd::OwnedFd>>,
     /// The control socket of a guest that serves a Tilo-side shell's
     /// programs, handed to its first process at
@@ -170,14 +123,10 @@ pub struct GuestPlan {
     /// own and a process group of its own: the terminal reaches only the
     /// programs given it.
     pub control: Option<std::sync::Arc<std::os::fd::OwnedFd>>,
-    /// The environment's own agent door on the host ([`crate::agent_door`]),
-    /// bound at [`tilo_paths::login::GUEST_AGENT_SOCKET`] and named in
-    /// [`tilo_paths::login::AGENT_SOCKET_ENV`]. `None` binds none.
     pub agent_door: Option<PathBuf>,
 }
 
 impl GuestPlan {
-    /// Where a granted directory's contents are on this machine.
     pub fn grant_source(&self, granted: &Path) -> PathBuf {
         match &self.grant_root {
             Some(root) => root.join(granted.strip_prefix("/").unwrap_or(granted)),
@@ -185,7 +134,6 @@ impl GuestPlan {
         }
     }
 
-    /// The generated tree stacked on top of the images' `/etc`.
     pub fn etc_overlay(&self) -> PathBuf {
         self.session_dir.join("root")
     }
@@ -234,8 +182,6 @@ impl GuestPlan {
     }
 }
 
-/// The images' `passwd` with the real user added, replacing any entry that
-/// claims the same name or uid.
 pub fn passwd_with_user(image: &str, user: &GuestUser, home: &Path, shell: &Path) -> String {
     let mut out = without_claims(image, &user.name, user.uid);
     out.push_str(&user.name);
@@ -251,8 +197,6 @@ pub fn passwd_with_user(image: &str, user: &GuestUser, home: &Path, shell: &Path
     out
 }
 
-/// The lines of a `passwd`/`group` file that claim neither `name` nor `id`
-/// (the third field), each newline-terminated.
 fn without_claims(file: &str, name: &str, id: u32) -> String {
     let mut out = String::new();
     for line in file.lines() {
@@ -267,7 +211,6 @@ fn without_claims(file: &str, name: &str, id: u32) -> String {
     out
 }
 
-/// The images' `group` with the user's primary group added.
 pub fn group_with_user(image: &str, user: &GuestUser) -> String {
     let mut out = without_claims(image, &user.name, user.gid);
     out.push_str(&user.name);
@@ -277,10 +220,6 @@ pub fn group_with_user(image: &str, user: &GuestUser) -> String {
     out
 }
 
-/// The machine's resolver configuration, read through `/etc/resolv.conf`
-/// (on a systemd-resolved host a link into `/run`). It describes the network
-/// the machine is on and carries no user content. `None` on a machine
-/// without one.
 pub fn host_resolver(host_root: &Path) -> Option<String> {
     std::fs::read_to_string(host_root.join("etc/resolv.conf")).ok()
 }
@@ -296,9 +235,6 @@ pub fn build_argv(plan: &GuestPlan, seccomp_fd: Option<std::os::fd::RawFd>) -> V
     build_guest_argv(plan, seccomp_fd, None)
 }
 
-/// Build a broker-free, network-isolated check guest using the same image,
-/// namespace, seccomp and helper closure as ordinary environment guests.
-/// The trusted supervisor supplies both paths; neither comes from an effect.
 #[must_use]
 pub fn build_check_argv(
     plan: &GuestPlan,
@@ -341,8 +277,6 @@ fn build_guest_argv(
     a
 }
 
-/// `--clearenv` and the namespace/identity flags — the part of the argv
-/// that exists before any filesystem is touched.
 fn push_namespace_flags(a: &mut Vec<OsString>, plan: &GuestPlan) {
     let push = |a: &mut Vec<OsString>, s: &str| a.push(OsString::from(s));
 
@@ -415,10 +349,6 @@ fn push_image_mounts(a: &mut Vec<OsString>, plan: &GuestPlan) {
     }
 }
 
-/// The usrmerge links every image-built root needs, and `/var/run` and
-/// `/var/lock` into `/run` (they are symlinks there on every modern
-/// distribution, and a program that opens a path under one gets `ENOENT`
-/// rather than a clear error when missing).
 pub fn root_symlinks() -> Vec<(PathBuf, PathBuf)> {
     [
         ("usr/bin", "/bin"),
@@ -434,7 +364,6 @@ pub fn root_symlinks() -> Vec<(PathBuf, PathBuf)> {
 }
 
 fn push_symlinks(a: &mut Vec<OsString>) {
-    // `/var` is a tmpfs mounted below; its links are created after it.
     for (target, link) in root_symlinks()
         .into_iter()
         .filter(|(_, link)| !link.starts_with("/var"))
@@ -445,8 +374,6 @@ fn push_symlinks(a: &mut Vec<OsString>) {
     }
 }
 
-/// `/proc`, `/dev`, the fresh tmpfs mounts, and the environment's own `/var`
-/// state on top of the `/var` tmpfs.
 fn push_pseudo_filesystems_and_var(a: &mut Vec<OsString>, plan: &GuestPlan) {
     for (flag, dest) in [
         ("--proc", "/proc"),
@@ -624,8 +551,6 @@ fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool) {
             );
         }
     }
-    // Carried across explicitly since the guest no longer inherits it: a shell
-    // with no `LANG` answers in the C locale, breaking `ls`, `date`, and messages.
     for key in INHERITED_ENV {
         let Some(value) = std::env::var_os(key) else {
             continue;
@@ -642,8 +567,6 @@ fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool) {
     a.push(crate::store::STORE_ENV.into());
 }
 
-/// The seccomp filter — last of the sandbox flags, applied immediately
-/// before `bwrap` execs — followed by the guest's own argv.
 fn push_seccomp_and_command(
     a: &mut Vec<OsString>,
     plan: &GuestPlan,
@@ -692,20 +615,16 @@ pub fn open_seccomp_fd(blob: &Path) -> std::io::Result<(std::fs::File, std::os::
     use std::os::fd::AsRawFd;
     let file = std::fs::File::open(blob)?;
     let fd = file.as_raw_fd();
-    // SAFETY: `fd` is owned by `file`, which outlives this call.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     if flags < 0 {
         return Err(std::io::Error::last_os_error());
     }
-    // SAFETY: as above.
     if unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
         return Err(std::io::Error::last_os_error());
     }
     Ok((file, fd))
 }
 
-/// Spawn the guest as a child, inside `netns` when given (`bwrap` then
-/// nests its user namespace in the one that owns it).
 pub fn spawn(
     plan: &GuestPlan,
     netns: Option<&tilo_egress::Netns>,
@@ -750,7 +669,6 @@ pub fn spawn(
         use std::os::unix::process::CommandExt;
         let fd = control.as_raw_fd();
         cmd.stdin(std::process::Stdio::null());
-        // What the guest says outside a program is the session's log.
         cmd.stdout(std::io::stderr().as_fd().try_clone_to_owned()?);
         cmd.process_group(0);
         // SAFETY: only dup2/fcntl on descriptors this process owns, between
@@ -851,9 +769,6 @@ mod tests {
         }
     }
 
-    /// The environment's own agent door is bound into its guest alone, at the
-    /// path its variable names; a guest without one, and a check's guest,
-    /// have neither.
     #[test]
     fn the_environments_agent_door_is_bound_where_its_variable_says() {
         let dir = tempfile::tempdir().unwrap();
@@ -964,7 +879,6 @@ mod tests {
                 &path(&p.images[0].join("usr"))
             ]
         );
-        // `/etc`: the session's generated entries over the runtime's.
         assert!(
             argv.windows(2)
                 .any(|w| w[0] == "--ro-overlay" && w[1] == "/etc")
@@ -1029,8 +943,6 @@ mod tests {
                 .any(|w| w[0] == "--setenv" && w[1] == "HOME" && w[2] == "/home/you")
         );
 
-        // passwd names the user at its real uid, replacing the image's claim on
-        // the name; group gains the primary group.
         p.prepare().unwrap();
         let passwd = std::fs::read_to_string(p.etc_overlay().join("etc/passwd")).unwrap();
         assert!(passwd.contains("root:x:0:0:"), "{passwd}");
@@ -1077,8 +989,6 @@ mod tests {
             "with no grant there is nothing to cover"
         );
 
-        // A grant is bound at its host path; one covering the store gets the
-        // store masked after it.
         p.trusted_dirs = vec![dir.path().to_path_buf()];
         p.readable_dirs = vec![PathBuf::from("/srv/notes")];
         let flat = strings(&build_argv(&p, Some(9)));
@@ -1107,8 +1017,6 @@ mod tests {
         let files = dir.path().join("member/files");
         p.grant_root = Some(files.clone());
         p.trusted_dirs = vec![PathBuf::from("/home/alice/src")];
-        // The member's store sits inside a granted source: it is covered at
-        // the path the guest sees it by.
         p.masked = vec![files.join("home/alice/src/.store")];
         let w3 = windows(&build_argv(&p, Some(9)), 3);
         assert!(w3.iter().any(|w| w[0] == "--bind-try"

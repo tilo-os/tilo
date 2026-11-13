@@ -57,6 +57,9 @@ esac
 # session manager, which the screen-capture tests start to serve a headless
 # screen node to the production pipewiresrc capture path; pipewire-utils'
 # pw-dump finds the node they create.
+# postgresql-server: the tests that need a database make and start a PostgreSQL of their own
+# inside the job, with initdb and pg_ctl on PATH, so no test's answer comes from a server shared
+# with other jobs.
 # valgrind is the instrumenter the iai-callgrind benches run under (the runner
 # invokes it from PATH), and valgrind-devel the client-request headers they are
 # compiled against: iai-callgrind reads them from /usr/include when
@@ -90,6 +93,7 @@ install_test_runtime_fedora() {
         libsecret gnome-keyring python3-gobject \
         xorg-x11-server-Xwayland xcb-util-cursor-devel open-sans-fonts \
         pipewire wireplumber pipewire-gstreamer pipewire-utils \
+        postgresql-server \
         valgrind valgrind-devel
     dnf install -y --setopt=install_weak_deps=False \
         ostree gpgme-devel flatpak chromium

@@ -246,8 +246,8 @@ export function askToKeepStorage(storage = globalThis.navigator?.storage) {
  * saved to `storage` as it lands. Keeping it asks the browser to keep
  * this site's storage through `persist` (`askToKeepStorage`).
  */
-async function openKept(storage, record, persist) {
-  const runtime = await pageRuntime();
+async function openKept(storage, record, persist, runtime) {
+  runtime ??= await pageRuntime();
   const identity = await runtime.rootHeld(record.rootPublicKey, record.held);
   const save = async envelope => {
     record = {...record, envelope};
@@ -282,8 +282,8 @@ async function openKept(storage, record, persist) {
      * entry it signed, which is kept here beside the person and reaches
      * every session of theirs, the open ones at once and later ones as they
      * start. */
-    async revokeDevice(keyHex) {
-      const entry = JSON.parse(await runtime.revokeDevice(identity, keyHex));
+    async revokeDevice(keyHex, reason = 'retired') {
+      const entry = JSON.parse(await runtime.revokeDevice(identity, keyHex, reason));
       const kept = (await storage.get(BROWSER_RECORD)) ?? record;
       record = {...kept, revocations: [...(kept.revocations ?? []), entry]};
       await storage.put(BROWSER_RECORD, record);
@@ -315,6 +315,9 @@ export async function browserIdentity({storage, create = true, persist = globalT
     if (!create) return null;
     const identity = await runtime.rootNew();
     record = {rootPublicKey: identity.userPublicKey, held: identity.held, envelope: documentOf(runtime.rootEnvelopeEmpty(identity.publicKey))};
+    // Kept from the start: the same person on the next load, and in every
+    // other tab of this site.
+    await storage.put(BROWSER_RECORD, record);
   }
   const identity = await openKept(storage, record, persist);
   current = identity;
@@ -355,10 +358,10 @@ export async function storagePersisted(storage = globalThis.navigator?.storage) 
  * same assertion gave opens it. The root is then kept here as
  * `browserIdentity` keeps it, replacing whoever this browser was.
  */
-export async function signInWithPasskey({rpId = globalThis.location?.hostname, fetchEnvelope: find, storage, credentials, persist = globalThis.navigator?.storage} = {}) {
+export async function signInWithPasskey({rpId = globalThis.location?.hostname, fetchEnvelope: find, storage, credentials, persist = globalThis.navigator?.storage, runtime} = {}) {
   if (typeof find !== 'function') throw new TypeError('signInWithPasskey needs fetchEnvelope');
   storage ??= (await import('./device-custody.mjs')).idbStorage();
-  const runtime = await pageRuntime();
+  runtime ??= await pageRuntime();
   credentials = credentialsOf({credentials});
   if (!credentials?.get) throw new IdentityError('passkeys-unavailable', 'Passkeys are unavailable here');
   const salt = await browserPrfSalt();
@@ -378,7 +381,10 @@ export async function signInWithPasskey({rpId = globalThis.location?.hostname, f
     const identity = await runtime.rootOpenPasskey(sealed(envelope), new Uint8Array(credential.rawId), output);
     currentIdentity()?.lock();
     const record = {rootPublicKey: rootHex, held: identity.held, envelope};
-    const signedIn = await openKept(storage, record, persist);
+    // Kept, replacing whoever this browser was: the page loads again as this
+    // person, and every other tab of the site is them too.
+    await storage.put(BROWSER_RECORD, record);
+    const signedIn = await openKept(storage, record, persist, runtime);
     current = signedIn;
     askToKeepStorage(persist);
     return signedIn;

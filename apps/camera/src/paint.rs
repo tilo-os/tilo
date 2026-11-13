@@ -11,7 +11,6 @@ pub fn line(scene: &mut Scene, t: Affine, from: Point, to: Point, color: Color, 
     scene.stroke(&Stroke::new(w), t, color, None, &Line::new(from, to));
 }
 
-/// Outline a closed polygon.
 pub fn outline(scene: &mut Scene, t: Affine, points: &[Point], edge: Color, w: f64) {
     let Some((first, rest)) = points.split_first() else {
         return;
@@ -25,7 +24,6 @@ pub fn outline(scene: &mut Scene, t: Affine, points: &[Point], edge: Color, w: f
     scene.stroke(&Stroke::new(w), t, edge, None, &path);
 }
 
-/// A rounded-rect clip layer. Pair every call with [`pop`].
 pub fn push_clip_round(scene: &mut Scene, t: Affine, rect: Rect, radius: f64) {
     let rr = RoundedRect::from_rect(rect, radius);
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &rr);

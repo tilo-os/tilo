@@ -10,7 +10,6 @@ use std::time::Duration;
 use tilo_web_search::{FetchError, FetchLimits, FetchedBody, fetch, fetch_fixture};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-/// A small but real PDF header and body: what matters is that it is binary.
 const PDF: &[u8] = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<< /Type /Catalog >>\nendobj\n\x00\x01\x02trailer\n%%EOF\n";
 
 /// Serve each request for one of `routes` (path, content type, body) until

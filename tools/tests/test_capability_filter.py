@@ -1,12 +1,23 @@
 import importlib.util
+import os
 from pathlib import Path
+import tempfile
+import tomllib
 import unittest
+from unittest import mock
 
-SPEC = importlib.util.spec_from_file_location(
-    "capability", Path(__file__).parents[1] / "ci/capability_filter.py"
-)
-capability = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(capability)
+
+def load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+TOOLS = Path(__file__).parents[1]
+capability = load("capability", TOOLS / "ci/capability_filter.py")
+# What a t.toml family tests, as the nested-sandbox check reads it.
+families = load("nested_sandboxes_test", TOOLS / "tests/test_nested_sandboxes.py")
 
 FAILED = "bwrap exited with exit status: 1"
 
@@ -78,6 +89,46 @@ class ProbeTests(unittest.TestCase):
         self.assertIsNone(probes["bubblewrap"])
         self.assertEqual(probes["bubblewrap-overlay"], FAILED)
         self.assertEqual(variables["UserNamespace"], "TILO_REQUIRE_USERNS")
+
+    def test_a_handed_probe_runs_without_cargo(self):
+        # A shard is handed the family's build of the probe (t.toml's `starts`): it
+        # compiles nothing to run it.
+        with tempfile.TemporaryDirectory() as work:
+            probe = Path(work) / capability.PROBE
+            probe.write_text("#!/bin/sh\n")
+            probe.chmod(0o755)
+            with (
+                mock.patch.dict(os.environ, {capability.HANDED: str(probe)}),
+                mock.patch.object(capability.subprocess, "run", side_effect=AssertionError("cargo ran")),
+            ):
+                self.assertEqual(capability.probe_program(), str(probe))
+
+
+class StartsTests(unittest.TestCase):
+    def test_every_family_hands_the_probe_to_the_packages_it_probes_for(self):
+        """A run of a package the manifest names runs the probe first; t hands every shard of it
+        the family's build of the probe, or each shard would compile it from its ~765 units."""
+        probed = {
+            package
+            for group in capability.groups(capability.manifest())
+            for package in capability.PACKAGE.findall(group["filter"])
+        }
+        self.assertTrue(probed)
+        members = families.workspace_packages()
+        config = tomllib.loads(families.T_CONFIG.read_text(encoding="utf-8"))
+        wanted = f"tilo-test-env:{capability.PROBE}"
+        for family in config.get("cargo", []):
+            packages = families.tested(family, members)
+            if packages is None:
+                continue
+            starts = family.get("starts", {})
+            missing = sorted(p for p in packages & probed if wanted not in starts.get(p, []))
+            self.assertEqual(
+                missing,
+                [],
+                f"t.toml's {family.get('name')} family tests these packages, which "
+                f".config/nextest-capabilities.toml names, without {wanted!r} in their `starts`",
+            )
 
 
 if __name__ == "__main__":

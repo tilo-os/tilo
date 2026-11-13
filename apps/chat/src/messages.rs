@@ -14,6 +14,7 @@
 //! ([`ActionCx::author`]), never an argument; when is the action's time
 //! ([`ActionCx::now_ms`]).
 
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
@@ -28,15 +29,8 @@ use ui::tilo_resource::{
 use crate::parts::{self, ChatPart};
 use crate::record::{
     Chat, MAX_AGENT_NAME_BYTES, MAX_MESSAGE_TEXT_BYTES, Message, Posting, ProviderStream, Revision,
-    ShareAccess, Step, Transition, WindowShare, Work, WorkUpdate, reply_id_at,
+    ShareAccess, Step, Transition, WindowShare, Work, WorkUpdate, author, reply_id_at, seconds,
 };
-
-fn author(cx: &ActionCx) -> Result<String, Refusal> {
-    cx.author()
-        .filter(|author| !author.is_empty() && author.len() <= 4096)
-        .map(str::to_owned)
-        .ok_or_else(|| Refusal::new("an action in chat is always someone's"))
-}
 
 /// Refuses anyone but `message`'s author: editing and deleting a message is
 /// its author's. Removing someone else's is moderation (`remove-message`),
@@ -53,10 +47,6 @@ fn own(cx: &ActionCx, message: &Message) -> Result<(), Refusal> {
 
 /// The longest name a delivered message is shown under.
 const MAX_SHOWN_NAME_BYTES: usize = 128;
-
-fn seconds(cx: &ActionCx) -> i64 {
-    cx.now_ms().div_euclid(1000)
-}
 
 /// A post's time: when it was `written` elsewhere, for a message a bot
 /// brings over on someone's behalf (`brought`), never later than now; else
@@ -122,18 +112,19 @@ impl ChatPart {
             .sum()
     }
 
-    /// Append a message to `channel` by `author` at `ts`, refusing what no
+    /// Append a message to `channel` by the invoker `cx` names, at `ts`, refusing what no
     /// one should see: a reply to a reply or to another channel's message,
     /// an oversized body or an invalid attachment. Whether the channel takes
     /// posts is the chat record's to say, where the post is invoked.
     pub(crate) fn append(
         &mut self,
+        cx: &ActionCx,
         id: Id,
         channel: &Id,
-        author: String,
         ts: i64,
         posting: Posting,
     ) -> Result<Id, Refusal> {
+        let author = author(cx)?;
         if posting.text.len() > MAX_MESSAGE_TEXT_BYTES {
             return Err(Refusal::new("the message is too long"));
         }
@@ -193,6 +184,7 @@ impl ChatPart {
                 mentions: posting.mentions,
                 attachments: posting.attachments,
                 appearance: posting.appearance.map(Into::into),
+                acting: cx.acting(),
                 share: posting.share,
                 ..Message::default()
             },
@@ -235,12 +227,11 @@ pub struct NewMessage {
 // each message the chain publishes, as on the record's other items.
 #[ui::tilo_resource::resource(
     kind = "chat.messages",
-    label = "Messages",
     params = chat_part,
     search = ChatPart::search,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
-    version = 4,
+    version = 5,
     migrate = crate::record::upgrade_part,
 )]
 impl ChatPart {
@@ -267,13 +258,12 @@ impl ChatPart {
             return Err(Refusal::new("a message says something"));
         }
         let id = cx.id();
-        let by = author(cx)?;
         let appearance = cx.appearance();
         let ts = written_at(cx, written, appearance.is_some());
         self.append(
+            cx,
             id,
             &channel,
-            by,
             ts,
             Posting {
                 text,
@@ -316,12 +306,11 @@ impl ChatPart {
             })
             .ok_or("the file is described where it is posted")?;
         let id = cx.id();
-        let by = author(cx)?;
         let ts = seconds(cx);
         self.append(
+            cx,
             id,
             &channel,
-            by,
             ts,
             Posting {
                 text: text.unwrap_or_default(),
@@ -360,12 +349,11 @@ impl ChatPart {
             .filter(|text| !text.trim().is_empty())
             .unwrap_or_else(|| label.clone());
         let id = cx.id();
-        let by = author(cx)?;
         let ts = seconds(cx);
         self.append(
+            cx,
             id,
             &channel,
-            by,
             ts,
             Posting {
                 text,
@@ -403,12 +391,11 @@ impl ChatPart {
         }
         let label = attached.reference.label.clone();
         let id = cx.id();
-        let by = author(cx)?;
         let ts = seconds(cx);
         self.append(
+            cx,
             id,
             &channel,
-            by,
             ts,
             Posting {
                 text: text.unwrap_or_default().trim().to_owned(),
@@ -527,12 +514,11 @@ impl ChatPart {
         if self.messages.contains(&id) {
             return Ok(());
         }
-        let by = self::author(cx)?;
         let now = seconds(cx);
         self.append(
+            cx,
             id,
             &channel,
-            by,
             ts.map_or(now, |ts| ts.clamp(0, now)),
             Posting {
                 text: body,
@@ -680,12 +666,12 @@ impl ChatPart {
         &mut self,
         cx: &mut ActionCx,
         message: &Id,
-        #[param("Where the work is, what was done and why")] work: WorkUpdate,
+        #[param("Where the work is and what was done")] work: WorkUpdate,
         #[param("The reply's words, when it has none yet")] say: Option<String>,
     ) -> Result<(), Refusal> {
         let me = author(cx)?;
         let since = seconds(cx);
-        let (state, reasoning, trace) = crate::model::AgentWork::from_update(&work)
+        let (state, trace) = crate::model::AgentWork::from_update(&work)
             .map_err(Refusal::new)?
             .into_parts();
         let summons = self
@@ -699,9 +685,9 @@ impl ChatPart {
         let reply = reply_id_at(message, &me, summons.attempts);
         if !self.messages.contains(&reply) {
             self.append(
+                cx,
                 reply.clone(),
                 &channel,
-                me.clone(),
                 since,
                 Posting {
                     parent: Some(thread),
@@ -724,8 +710,6 @@ impl ChatPart {
         if !unchanged {
             record.state = Some(Transition { state, since });
         }
-        // Each update says why, or that no reason is on record now.
-        record.reasoning = reasoning;
         // The run's working record of a failure, kept beside the words the
         // reply shows; a later update without one leaves it as it was.
         if work.detail.is_some() {
@@ -794,7 +778,6 @@ impl ChatPart {
         {
             return Err(Refusal::new("provider display name is too long"));
         }
-        let me = author(cx)?;
         let id = Id::from_raw(reply);
         let existing = self.messages.get(&id);
         if let Some(row) = existing {
@@ -816,9 +799,9 @@ impl ChatPart {
         }
         if existing.is_none() {
             self.append(
+                cx,
                 id.clone(),
                 &channel,
-                me,
                 seconds(cx),
                 Posting {
                     appearance: name.map(|name| tilo_actions::Appearance {
@@ -1037,6 +1020,10 @@ pub struct Messages {
     /// ([`crate::record::kept_messages`]): the oldest of the timeline, in
     /// no part, so no verb changes them and none of them is unread.
     kept: Rc<tilo_resource::Collection<Message>>,
+    /// The messages sent from here that wait for the part they go to, on its
+    /// way from the workspace ([`ui::framework::Chain::unwritten`]): shown as
+    /// being sent, in no part yet.
+    sending: Option<Rc<ChatPart>>,
 }
 
 impl Messages {
@@ -1047,7 +1034,23 @@ impl Messages {
         Self {
             parts,
             kept: Rc::default(),
+            sending: None,
         }
+    }
+
+    /// These parts with the messages being sent, `sending`, after them.
+    #[must_use]
+    pub fn with_sending(mut self, sending: Option<Rc<ChatPart>>) -> Self {
+        self.sending = sending;
+        self
+    }
+
+    /// The messages being sent: written once the part they go to is here.
+    pub fn sending(&self) -> impl Iterator<Item = (&Id, &Message)> + '_ {
+        self.sending
+            .iter()
+            .flat_map(|part| part.messages.iter())
+            .filter(|(id, _)| self.part_of(id).is_none())
     }
 
     /// These parts after the messages the chat record kept, `kept`.
@@ -1085,6 +1088,11 @@ impl Messages {
             .iter()
             .filter(|(id, _)| self.part_of(id).is_none())
             .chain(self.parts.iter().flat_map(|(_, part)| part.messages.iter()))
+    }
+
+    /// The messages the chat record kept in itself, which no part holds.
+    pub fn kept(&self) -> impl Iterator<Item = (&Id, &Message)> + '_ {
+        self.kept.iter()
     }
 
     /// Every message held, oldest first, with the part holding it.
@@ -1231,6 +1239,41 @@ impl Messages {
                         .values()
                         .filter(|message| message.channel == *channel && message.parent.is_none())
                         .count(),
+                    None => newest
+                        .earlier
+                        .get(&index.to_string())
+                        .and_then(|counts| counts.get(channel.as_str()))
+                        .and_then(|count| usize::try_from(*count).ok())
+                        .unwrap_or_default(),
+                };
+                if index == from {
+                    count.saturating_sub(seen)
+                } else {
+                    count
+                }
+            })
+            .sum()
+    }
+
+    /// [`Self::unread`], counted from `counts`, the top-level messages each
+    /// channel has in each part held: what a reload read when it read that
+    /// part, so a count costs the parts and not their messages.
+    #[must_use]
+    pub fn unread_counted(
+        &self,
+        channel: &Id,
+        mark: parts::ReadMark,
+        counts: &BTreeMap<u64, BTreeMap<String, usize>>,
+    ) -> usize {
+        let Some((head, newest)) = self.parts.last() else {
+            return 0;
+        };
+        let from = u64::try_from(mark.part.max(0)).unwrap_or_default();
+        let seen = usize::try_from(mark.seen.max(0)).unwrap_or(usize::MAX);
+        (from..=*head)
+            .map(|index| {
+                let count = match counts.get(&index) {
+                    Some(counted) => counted.get(channel.as_str()).copied().unwrap_or_default(),
                     None => newest
                         .earlier
                         .get(&index.to_string())

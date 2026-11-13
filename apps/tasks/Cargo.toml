@@ -36,12 +36,6 @@ tasks-model = { path = "../tasks-model" }
 tasks-samples = { package = "tasks", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { version = "0.1.0", path = "../../crates/dev/test-env" }
-# The session's document host, for the test that mounts this app over it: the model runs as the
-# app's own module, and the app's window shows the readings it publishes
-# (docs/architecture/apps.md §8 step 2).
-tilo-model-host = { path = "../../crates/sdk/tilo-model-host" }
-# The session's door the document host answers on, as the test's connection reaches it.
-tilo-service = { path = "../../crates/session/service" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

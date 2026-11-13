@@ -4,8 +4,8 @@
 
 use tilo_actions::ActionAddress;
 
-use crate::{Session, mount, surfaces};
-use tilo_compositor::Error;
+use crate::Error;
+use crate::{Session, slots, surfaces};
 
 impl Session {
     /// Put up the view that draws the shell's window menu, and show it while
@@ -25,14 +25,14 @@ impl Session {
     /// Rebinding the slot starts the view bound to it now, on the next pass,
     /// hidden or over the reading it already drew.
     pub(crate) fn follow_window_menu(&mut self) {
-        use mount::slots::{Mount, View};
+        use slots::{Mount, View};
 
         /// The view's surface name, whatever view draws it.
-        const VIEW: &str = mount::shell::WINDOW_MENU_SLOT;
+        const VIEW: &str = crate::shell::state::WINDOW_MENU_SLOT;
         /// The app whose view the session shows the menu through until the person binds another.
         const SHIPPED: (&str, &str) = ("so.tilo.window-menu", "window-menu");
         // Nothing to draw or to watch until the session publishes the menu.
-        let Some(reading) = self.read(mount::shell::WINDOW_MENU) else {
+        let Some(reading) = self.read(crate::shell::state::WINDOW_MENU) else {
             return;
         };
         let for_a_window = reading.get("tab").is_some_and(|tab| !tab.is_null());
@@ -57,7 +57,7 @@ impl Session {
         // every pass of a menu that is down: an app that will not stay up then costs one start an
         // opening, and not the session.
         if up || !self.slots.stood(VIEW) {
-            let settings = self.read(mount::slots::BINDINGS);
+            let settings = self.read(slots::BINDINGS);
             match self.slots.follow(VIEW, SHIPPED, settings.as_ref()) {
                 Mount::Nothing => {}
                 Mount::Stop => self.stop_slot_view(VIEW),
@@ -120,8 +120,11 @@ impl Session {
     /// Close the window menu through the verb it publishes: the same path a press outside the menu
     /// and the person's own Escape take.
     fn close_window_menu(&mut self) {
-        if let Err(error) = self.invoke(mount::shell::WINDOW_MENU, "close", &serde_json::Map::new())
-        {
+        if let Err(error) = self.invoke(
+            crate::shell::state::WINDOW_MENU,
+            "close",
+            &serde_json::Map::new(),
+        ) {
             tracing::warn!(%error, "a menu left up for a window that is gone was not closed");
         }
     }
@@ -137,11 +140,11 @@ impl Session {
         view: String,
         reading: Option<&serde_json::Value>,
     ) {
-        let (Some(state), Some(reading)) = (mount::slots::surface(slot), reading) else {
+        let (Some(state), Some(reading)) = (slots::surface(slot), reading) else {
             tracing::warn!(slot, "the slot has no state for a view of it to read");
             return;
         };
-        let spec = tilo_surface_host::slot_view::Spec {
+        let spec = crate::platform::surfaces::slot_view::Spec {
             app,
             view,
             dir,
@@ -183,8 +186,8 @@ impl Session {
     /// menu does, and what else the view asked runs through the session's door.
     pub(crate) fn follow_slot_views(&mut self) -> Result<(), Error> {
         /// The one slot a person can bind a view to today.
-        const VIEW: &str = mount::shell::WINDOW_MENU_SLOT;
-        let Some(state) = mount::slots::surface(VIEW) else {
+        const VIEW: &str = crate::shell::state::WINDOW_MENU_SLOT;
+        let Some(state) = slots::surface(VIEW) else {
             return Ok(());
         };
         if self.slot_views.take_pressed_outside(VIEW) {
@@ -208,7 +211,7 @@ impl Session {
                 .invoke(
                     &ActionAddress::new(&ask.resource, &ask.action),
                     &arguments,
-                    &mut tilo_surface_host::Look::none(),
+                    &mut tilo_session_core::door::Look::none(),
                 )
                 .map(drop)
                 .map_err(|error| error.to_string())

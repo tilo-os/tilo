@@ -1,44 +1,11 @@
 //! Apply one caller's staged plan of changes to the read-only ESP.
 //!
-//! ```text
-//! tilo-esp-write CALLER
-//! ```
-//!
 //! /boot (the ESP, or the separate /boot beside it) stays mounted read-only.
 //! The units that maintain it decide what to change without privileges and
 //! stage a plan; this helper, started as `tilo-esp-write@CALLER.service`, is
 //! the only step that writes. It remounts the ESP read-write inside its own
 //! private mount namespace (`PrivateMounts=yes`), so the global mount never
 //! becomes writable.
-//!
-//! A plan is read only from the caller's own directory,
-//! `/var/lib/tilo/esp-plan/CALLER/plan.json` (root-owned, mode 0700, a
-//! `StateDirectory=` of the caller's unit). It lists operations relative to
-//! the ESP; each caller may use only the operations and paths it needs:
-//!
-//! ```json
-//! {"ops": [
-//!   {"op": "mkdir",   "path": "EFI/tilo"},
-//!   {"op": "rename",  "src": "loader/entries/x.conf", "dst": "loader/entries/x+3.conf"},
-//!   {"op": "install", "file": "repair.efi", "sha256": "...", "dst": "EFI/Linux/tilo-repair.efi"},
-//!   {"op": "remove",  "path": "EFI/tilo/repair.efi"}
-//! ]}
-//! ```
-//!
-//! Every path is walked one component at a time with `O_NOFOLLOW`, so a
-//! symlink anywhere on the ESP is refused rather than followed. An install
-//! opens its staged file `O_NOFOLLOW`, checks its SHA-256 against the plan,
-//! writes it to a temporary name beside its destination, fsyncs it, renames
-//! it into place and fsyncs the directory: each operation is atomic, and an
-//! interruption between operations leaves every file either old or new. The
-//! plan and staged files are removed once applied, or once refused.
-//!
-//! Exit status: 0 applied, 1 refused or failed, 2 usage. The test hook
-//! `TILO_ESP_WRITE_CRASH_AFTER=N` stops with 99 before operation N, leaving
-//! the plan in place as an interruption would.
-//!
-//! Run as `tilo-uki-cmdline` (the link `/usr/libexec/tilo-uki-cmdline`), it
-//! is the in-place UKI editor of `tilo_esp_write::uki` instead.
 
 use std::ffi::{CString, OsStr, OsString};
 use std::fs::File;
@@ -75,7 +42,6 @@ const POLICIES: &[Policy] = &[
     Policy {
         caller: "boot-entries",
         mkdir: &[r"EFI/tilo", r"EFI/Linux"],
-        // Boot counters: a bootc entry gains, or keeps counting down, its +N tries.
         rename: &[
             (
                 r"loader/entries/bootc[A-Za-z0-9._-]*(\+[0-9]+(-[0-9]+)?)?\.conf",
@@ -115,10 +81,12 @@ enum Failure {
     /// The plan asked for something its caller may not do.
     Refused(String),
     /// A system call failed.
-    Os { what: String, errno: Errno },
+    Os {
+        what: String,
+        errno: Errno,
+    },
     /// Anything else: a malformed plan, a failed remount.
     Other(String),
-    /// The test hook's interruption between operations.
     Interrupted,
 }
 
@@ -135,7 +103,6 @@ fn os(what: impl Into<String>) -> impl FnOnce(Errno) -> Failure {
     move |errno| Failure::Os { what, errno }
 }
 
-/// The C library's message for `errno`, as Python's `OSError.strerror`.
 fn strerror(errno: Errno) -> String {
     let text = io::Error::from(errno).to_string();
     match text.rfind(" (os error ") {
@@ -171,7 +138,6 @@ fn allowed_pair(policy: &Policy, src: &str, dst: &str) -> Result<()> {
     )))
 }
 
-/// `[A-Za-z0-9][A-Za-z0-9._+-]*`: no `.`, `..`, empty or hidden component.
 fn is_name(part: &str) -> bool {
     let mut chars = part.chars();
     chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
@@ -189,7 +155,6 @@ fn components(path: &str) -> Result<Vec<&str>> {
     Ok(parts)
 }
 
-/// The parent components and the final name of a path from `components`.
 fn split_parent<'a>(parts: &'a [&'a str]) -> Result<(&'a [&'a str], &'a str)> {
     match parts.split_last() {
         Some((last, parent)) => Ok((parent, last)),
@@ -316,7 +281,6 @@ fn str_field<'a>(op: &'a Map<String, Value>, key: &str) -> Result<&'a str> {
         .ok_or_else(|| Failure::Other(format!("operation's {} is not a string", repr_str(key))))
 }
 
-/// Names in `dir`, without `.` and `..`.
 fn list_dir(dir: BorrowedFd<'_>) -> Result<Vec<CString>> {
     let entries = Dir::read_from(dir).map_err(os("list a directory"))?;
     let mut names = Vec::new();
@@ -499,7 +463,6 @@ fn esp_root(caller: &str) -> Result<PathBuf> {
         .ok_or_else(|| Failure::Refused("no ESP at /boot or /boot/efi".to_owned()))
 }
 
-/// Remount the ESP's mount read-write in this (private) namespace.
 fn writable(root: &Path) -> Result<()> {
     let shown = root.display();
     let st = rustix::fs::statvfs(root).map_err(os(format!("statvfs {shown}")))?;

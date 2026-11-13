@@ -122,8 +122,8 @@ fn main() {
     }
 }
 
-// Finite original-source read fixture; this is actual worker execution after
-// canonical namespace construction and shim credential drop, not a ready flag.
+// Finite original-source read fixture; this is actual worker execution after canonical namespace
+// construction and shim credential drop, not a ready flag.
 fn original_read(args: &[String]) {
     use std::os::{
         fd::FromRawFd,
@@ -147,8 +147,8 @@ fn original_read(args: &[String]) {
     // Filesystem credentials govern DAC separately from effective UID/GID.
     assert_eq!(unsafe { setfsuid(u32::MAX) } as u32, 1000);
     assert_eq!(unsafe { setfsgid(u32::MAX) } as u32, 1001);
-    // Actual libc lookup through the generated readonly account after source
-    // UID drop, not a helper string assertion before entering the namespace.
+    // Actual libc lookup through the generated readonly account after source UID drop, not a helper
+    // string assertion before entering the namespace.
     let account = unsafe { getpwuid(getuid()) };
     assert!(
         !account.is_null(),
@@ -201,8 +201,8 @@ fn original_read(args: &[String]) {
         fs::read("/run/tilo/migration/source/owner-writable").unwrap(),
         b"unchanged owner bytes"
     );
-    // Query the actual kernel state without requiring access to proc files,
-    // which the worker's mandatory Landlock policy deliberately restricts.
+    // Query the actual kernel state without requiring access to proc files, which the worker's
+    // mandatory Landlock policy deliberately restricts.
     for fd in [40, 41, 44, 45, 46, 47, 48, 49] {
         assert_eq!(
             unsafe { fcntl(fd, 1) },
@@ -227,8 +227,7 @@ fn original_read(args: &[String]) {
         assert_eq!(unsafe { prctl(47, 1u64, capability, 0u64, 0u64) }, 0);
     }
     assert_eq!(unsafe { prctl(39, 0u64, 0u64, 0u64, 0u64) }, 1);
-    // unshare(0) succeeds without privilege absent the full baseline. This
-    // observes actual reinstatement, independently of the cleared capabilities.
+    // unshare(0) succeeds without privilege absent the full baseline.
     assert_eq!(unsafe { unshare(0) }, -1);
     assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(1));
     let archive = std::process::Command::new("/usr/bin/tar")
@@ -350,8 +349,8 @@ fn original_openpgp() {
             .kind(),
         std::io::ErrorKind::PermissionDenied,
     );
-    // Equivalent to configure_ostree's admitted private TMPDIR, under the
-    // actual original UID and fully enforced signed worker sandbox.
+    // Equivalent to configure_ostree's admitted private TMPDIR, under the actual original UID and
+    // fully enforced signed worker sandbox.
     let scratch = "/run/tilo/app/ostree-temp-probe";
     fs::DirBuilder::new().mode(0o700).create(scratch).unwrap();
     let owner = unsafe { geteuid() };
@@ -431,8 +430,8 @@ fn original_openpgp() {
                 .unwrap()
         };
         let initialized = run(&["init", "--mode=archive"]);
-        // Only fixed synthetic public-key/commit commands use this diagnostic;
-        // never emit stdout, key contents, or a caller-supplied command line.
+        // Only fixed synthetic public-key/commit commands use this diagnostic; never emit stdout, key
+        // contents, or a caller-supplied command line.
         let diagnostic = |output: &std::process::Output| {
             let stderr = String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(2048)])
                 .replace(&repo, "[synthetic-repository]")
@@ -495,8 +494,6 @@ fn original_openpgp() {
         } else {
             // OSTree's canonical missing-key diagnostic is emitted by
             // ostree_gpg_verify_result_describe; it contains no literal "gpg".
-            // Require its full observed refusal for this exact signed commit
-            // and the approved real key, not any generic command failure.
             assert_eq!(result.status.code(), Some(1));
             assert!(result.stderr.len() <= 4096);
             let reason = String::from_utf8(result.stderr.clone())

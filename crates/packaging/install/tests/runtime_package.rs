@@ -1,15 +1,13 @@
-//! Runtime packages: the runtime build a thin app links travels as a
-//! `kind = "runtime"` package, and installing it installs the signed bundle
-//! where the launcher looks. An app naming a build this device lacks is
-//! refused until that build is installed, and a runtime package is held to
-//! the launcher's own bundle checks.
+//! Runtime packages: the build a thin app links travels as a `kind = "runtime"` package, and
+//! installing it puts the signed bundle where the launcher looks. An app naming a build this device
+//! lacks is refused until that build is installed.
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use test_http::{Reply, Responder};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::SigningKey;
@@ -69,8 +67,7 @@ impl Env {
         self.home.path().join(rel)
     }
 
-    /// A signed runtime build of 2026.07 holding `dylib` as its toolkit,
-    /// as the release pipeline bakes it; returns its version.
+    /// A signed runtime build holding `dylib` as its toolkit; returns its version.
     fn bundle(&self, name: &str, dylib: &[u8], runtime_key: &Path) -> (String, PathBuf) {
         let host = self.path(&format!("host-{name}"));
         let lib = runtime_bundle::host_minimal_paths_for(runtime_bundle::host_arch())
@@ -98,8 +95,7 @@ impl Env {
         (manifest.version, dir)
     }
 
-    /// The `so.tilo.runtime` package of a bundle, saying it provides
-    /// `provides`.
+    /// The `so.tilo.runtime` package of a bundle.
     fn runtime_tapp(&self, name: &str, bundle: &Path, provides: &str) -> PathBuf {
         self.runtime_tapp_with_host(name, bundle, provides, None)
     }
@@ -185,8 +181,8 @@ bin = "bin/app"
         path
     }
 
-    /// The thin form of `runtime_tapp`: metadata only, its payload blobs
-    /// served by a registry. Returns the path and the payload by hash.
+    /// The thin form of `runtime_tapp`, its payload blobs served by a registry: the path and the
+    /// payload by hash.
     fn thin_runtime_tapp(
         &self,
         name: &str,
@@ -216,7 +212,6 @@ bin = "bin/app"
             .env("HOME", self.home.path())
             .env("XDG_CONFIG_HOME", self.path("config"))
             .env("XDG_DATA_HOME", self.path("data"))
-            // Where `XDG_DATA_HOME` puts it on every platform, macOS included.
             .env(
                 runtime_bundle::RUNTIME_DIR_ENV,
                 self.path("data/tilo-runtime"),
@@ -261,38 +256,25 @@ impl tilo_app_package::BlobSink for Collected {
     }
 }
 
-/// A registry serving `blobs` at `/blobs/<hex>` until the test ends; every
-/// requested path is recorded.
-fn registry(blobs: HashMap<String, Vec<u8>>) -> (String, Arc<Mutex<Vec<String>>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
+/// A registry serving `blobs` at `/blobs/<hex>`, recording every requested path.
+fn registry(blobs: HashMap<String, Vec<u8>>) -> (String, Arc<Mutex<Vec<String>>>, Responder) {
     let requested = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&requested);
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { return };
-            let mut request = [0; 2048];
-            let read = stream.read(&mut request).unwrap_or(0);
-            let text = String::from_utf8_lossy(&request[..read]).to_string();
-            let path = text.split_whitespace().nth(1).unwrap_or("").to_string();
-            seen.lock().unwrap().push(path.clone());
-            let body = path
+    let blobs = Arc::new(blobs);
+    let served = Responder::handle(move |request| {
+        let path = request.target.clone();
+        seen.lock().unwrap().push(path.clone());
+        Some(
+            match path
                 .strip_prefix("/blobs/")
-                .and_then(|hash| blobs.get(hash));
-            let mut reply = match body {
-                Some(body) => format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                )
-                .into_bytes(),
-                None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                    .to_vec(),
-            };
-            reply.extend_from_slice(body.map_or(&[][..], Vec::as_slice));
-            let _ = stream.write_all(&reply);
-        }
+                .and_then(|hash| blobs.get(hash))
+            {
+                Some(body) => Reply::status(200).body(body.clone()),
+                None => Reply::status(404),
+            },
+        )
     });
-    (url, requested)
+    (served.url(), requested, served)
 }
 
 #[test]
@@ -300,7 +282,6 @@ fn runtime_install_reuses_verified_local_blobs() {
     let env = Env::new();
     let (runtime_key, runtime_identity) = identity_file(&env, "runtime-publisher");
     env.trust(&[&runtime_key]);
-    // Build one is installed; build two shares its loader, not its toolkit.
     let (one, one_bundle) = env.bundle("one", b"toolkit build one", &runtime_identity);
     let package = env.runtime_tapp("one", &one_bundle, &format!("tilo-runtime/{one}"));
     let (ok, out) = env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"]);
@@ -309,15 +290,13 @@ fn runtime_install_reuses_verified_local_blobs() {
     let (thin, blobs) = env.thin_runtime_tapp("two", &two_bundle, &format!("tilo-runtime/{two}"));
     let shared = tilo_app_package::BlobHash::of(b"loader").to_hex();
     assert!(blobs.contains_key(&shared), "both builds carry the loader");
-    let (url, requested) = registry(blobs);
+    let (url, requested, _served) = registry(blobs);
 
-    // Phase `only_bytes_this_device_lacks_are_fetched`.
     let (ok, out) = env.cmd(&[
         "install",
         thin.to_str().unwrap(),
         "--allow-self-signed",
-        // A second build of the one runtime package is a replacement: the
-        // catalogue holds one verified record per package id.
+        // A second build is a replacement: the catalogue holds one verified record per package id.
         "--force",
         "--payload-from",
         &url,
@@ -347,9 +326,8 @@ fn runtime_install_refuses_a_local_file_whose_hash_differs() {
     let package = env.runtime_tapp("one", &one_bundle, &format!("tilo-runtime/{one}"));
     let (ok, out) = env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"]);
     assert!(ok, "{out}");
-    // The installed loader no longer holds the bytes its manifest lists. A
-    // runtime sealed with fs-verity cannot be written, but its directory can:
-    // the loader is replaced, not edited.
+    // The installed loader no longer holds the bytes its manifest lists: a sealed runtime cannot be
+    // written, but its directory can, so the loader is replaced.
     let shared = tilo_app_package::BlobHash::of(b"loader").to_hex();
     let loader = bundle_path_of(&env.installed_bundle(&one), &shared);
     let loader_path = env.installed_bundle(&one).join(&loader);
@@ -357,7 +335,7 @@ fn runtime_install_refuses_a_local_file_whose_hash_differs() {
     std::fs::write(&loader_path, b"loadeR").unwrap();
     let (two, two_bundle) = env.bundle("two", b"toolkit build two", &runtime_identity);
     let (thin, blobs) = env.thin_runtime_tapp("two", &two_bundle, &format!("tilo-runtime/{two}"));
-    let (url, requested) = registry(blobs);
+    let (url, requested, _served) = registry(blobs);
     let (ok, out) = env.cmd(&[
         "install",
         thin.to_str().unwrap(),
@@ -382,8 +360,7 @@ fn runtime_install_refuses_a_local_file_whose_hash_differs() {
     assert_eq!(std::fs::read(installed.join(loader)).unwrap(), b"loader");
 }
 
-/// A temporary directory on a filesystem with fs-verity:
-/// `TILO_FSVERITY_DIR`, else the target's temporary directory.
+/// A temporary directory on a filesystem with fs-verity: `TILO_FSVERITY_DIR`, else the target's.
 fn verity_dir() -> Result<tempfile::TempDir, String> {
     let base = std::env::var_os("TILO_FSVERITY_DIR")
         .filter(|dir| !dir.is_empty())
@@ -431,7 +408,6 @@ fn an_installed_runtime_is_sealed_so_a_launch_reads_none_of_it() {
             hashed_bytes: 0,
         }
     );
-    // Sealed means immutable: the toolkit cannot be edited in place.
     let toolkit = installed.join("lib/libruntime_dylib.so");
     assert!(
         std::fs::OpenOptions::new()
@@ -441,7 +417,6 @@ fn an_installed_runtime_is_sealed_so_a_launch_reads_none_of_it() {
     );
 }
 
-/// The path `bundle`'s manifest lists for the file hashing to `hash`.
 fn bundle_path_of(bundle: &Path, hash: &str) -> String {
     let text =
         std::fs::read_to_string(bundle.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME)).unwrap();
@@ -470,14 +445,12 @@ fn an_app_installs_only_beside_the_runtime_build_it_links() {
     let (version, bundle) = env.bundle("one", b"toolkit build one", &runtime_identity);
     let runtime = format!("tilo-runtime/{version}");
 
-    // Phase `an_app_naming_a_missing_build_is_refused_with_the_fix`.
     let app = env.app_tapp(&runtime);
     let (ok, out) = env.cmd(&["install", app.to_str().unwrap(), "--allow-self-signed"]);
     assert!(!ok, "{out}");
     assert!(out.contains(&format!("needs runtime `{runtime}`")), "{out}");
     assert!(out.contains("app install so.tilo.linked"), "{out}");
 
-    // Phase `the_runtime_package_installs_the_bundle_where_the_launcher_looks`.
     let package = env.runtime_tapp("one", &bundle, &runtime);
     let (ok, out) = env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"]);
     assert!(ok, "{out}");
@@ -488,16 +461,14 @@ fn an_app_installs_only_beside_the_runtime_build_it_links() {
         std::fs::read(installed.join("lib/libruntime_dylib.so")).unwrap(),
         b"toolkit build one"
     );
-    // Installing it again is a no-op, not a failure: the Store asks for a
-    // runtime only when it is missing, but a race must not break an install.
+    // Installing it again is a no-op: the store asks for a runtime only when it is missing, but a
+    // race must not break an install.
     let (ok, out) = env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"]);
     assert!(ok && out.contains("already installed"), "{out}");
 
-    // Phase `with_its_runtime_present_the_app_installs`.
     let (ok, out) = env.cmd(&["install", app.to_str().unwrap(), "--allow-self-signed"]);
     assert!(ok, "{out}");
 
-    // Phase `a_runtime_from_an_untrusted_publisher_is_refused`.
     let (_, other_identity) = identity_file(&env, "other-publisher");
     let (other_version, other_bundle) = env.bundle("two", b"toolkit build two", &other_identity);
     let other = env.runtime_tapp(
@@ -510,7 +481,6 @@ fn an_app_installs_only_beside_the_runtime_build_it_links() {
     assert!(out.contains("does not trust"), "{out}");
     assert!(!env.installed_bundle(&other_version).exists());
 
-    // Phase `a_package_claiming_another_build_is_refused`.
     let forged = format!(
         "tilo-runtime/2026.07+native.{}",
         "0".repeat(runtime_bundle::ABI_DIGEST_HEX_LEN)
@@ -722,6 +692,5 @@ fn host_runtime_directory_setup_preserves_existing_permissions() {
     );
 }
 
-/// Collecting the runtime builds nothing runs on, with this file's fixtures.
 #[path = "gc.rs"]
 mod gc;

@@ -372,3 +372,58 @@ fn switching_notes_returns_to_the_scroll_each_was_left_at() {
         "the second keeps its own"
     );
 }
+
+#[test]
+#[allow(
+    clippy::float_cmp,
+    reason = "a note at its top is scrolled exactly zero"
+)]
+fn page_keys_while_writing_page_the_note() {
+    use std::fmt::Write as _;
+    let (mut app, target) = crate::cpu_profile::fixture(1);
+    let mut body = String::new();
+    for index in 0..120 {
+        writeln!(&mut body, "Paragraph {index}: words to scroll past.\n").unwrap();
+    }
+    let blocks = MainPanel::seed_blocks(&body, |_| None);
+    app.invoke(
+        ui::tilo_resource::Invoke::apply(&crate::actions::write_body_action(target, &blocks))
+            .unwrap(),
+    )
+    .unwrap();
+    app.harness().relayout_at((1051, 952)).unwrap();
+    let rect = app
+        .harness()
+        .targets()
+        .get("block_editor")
+        .copied()
+        .expect("mounted editor");
+    app.harness().click_at(rect.x0 + 40.0, rect.y0 + 10.0);
+    let text = app
+        .surface(|notes: &mut crate::NotesApp| notes.editor_text_for_test())
+        .unwrap();
+    let scroll = |app: &mut ui::framework::testing::TestApp<crate::NotesShell>| {
+        app.surface(|notes: &mut crate::NotesApp| notes.main_panel_mut().scroll_y_for_test())
+            .unwrap()
+    };
+    assert_eq!(scroll(&mut app), 0.0);
+    assert!(
+        app.harness()
+            .dispatch_to_root(&ui::synthetic_input::named_key(NamedKey::PageDown))
+    );
+    app.harness().relayout();
+    let paged = scroll(&mut app);
+    assert!(paged > 400.0, "a page down the note: {paged}");
+    assert!(
+        app.harness()
+            .dispatch_to_root(&ui::synthetic_input::named_key(NamedKey::PageUp))
+    );
+    app.harness().relayout();
+    assert_eq!(scroll(&mut app), 0.0, "and back up");
+    assert_eq!(
+        app.surface(|notes: &mut crate::NotesApp| notes.editor_text_for_test())
+            .unwrap(),
+        text,
+        "paging edits nothing"
+    );
+}

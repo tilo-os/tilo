@@ -1,14 +1,7 @@
-//! Real `GStreamer` decode proof for the local video player.
-//!
-//! Compiled only with `--features decode` (which turns on `media/decode`, the
-//! real `playbin`→`appsink` pipeline). It synthesizes a tiny real media file on
-//! disk with `GStreamer`'s own encoders, decodes it back through the exact engine
-//! the app uses, and asserts that genuine RGBA frames are produced and their
-//! presentation timestamps advance — i.e. the file actually plays.
-//!
-//! These tests require a working `GStreamer` runtime, `gst-launch-1.0`, and an
-//! encoder/muxer from the candidates below. Missing prerequisites fail the test;
-//! synthesized frames or an unobserved decoder cannot establish real playback.
+//! Real `GStreamer` decode proof, compiled only with `--features decode`. A tiny media file
+//! is encoded with `GStreamer`'s own encoders and decoded back through the engine the app
+//! uses, so genuine RGBA frames and advancing timestamps are observed. Missing
+//! prerequisites fail the test.
 
 #![cfg(feature = "decode")]
 #![allow(
@@ -30,9 +23,8 @@ use ui::framework::{LaunchInput, RunMode};
 use ui::widget::Widget; // brings `sync` (the per-frame Widget method) into scope
 use video_player::PlayerApp;
 
-/// Encode a ~1s 160x120 test clip to `sample` via `videotestsrc` + the given
-/// encoder/muxer tail, using the `gst-launch-1.0` CLI. Returns whether a
-/// non-empty file was produced.
+/// Encode a ~1s 160x120 clip to `sample` with `gst-launch-1.0`; whether a non-empty file
+/// was produced.
 fn try_encode(sample: &Path, encoder_muxer: &str) -> bool {
     let desc = format!(
         "videotestsrc num-buffers=25 ! \
@@ -54,9 +46,8 @@ fn try_encode(sample: &Path, encoder_muxer: &str) -> bool {
     for tok in desc.split_whitespace() {
         cmd.arg(tok);
     }
-    // Keep the filename one argument and quote it for GStreamer's own parser.
-    // Otherwise whitespace splits the path and Windows backslashes are eaten
-    // as parser escapes even though no command shell is involved.
+    // The filename is one quoted argument for GStreamer's own parser: whitespace would
+    // split the path and Windows backslashes would be read as escapes.
     let location = sample
         .to_str()
         .expect("UTF-8 scratch path")
@@ -73,11 +64,8 @@ fn try_encode(sample: &Path, encoder_muxer: &str) -> bool {
     ok && sample.metadata().is_ok_and(|m| m.len() > 0)
 }
 
-/// Produce a small real media file, trying formats in order of how ubiquitous
-/// their `GStreamer` plugins are. `None` when the host has no usable encoder.
-/// The file we make is decodable by the same host (having
-/// an encoder for a format essentially guarantees the matching decoder), so a
-/// produced sample is a fair test of the real decode path.
+/// A small real media file, trying formats in order of plugin ubiquity; `None` when the
+/// host has no usable encoder.
 fn write_sample_media(dir: &Path) -> Option<PathBuf> {
     let candidates = [
         ("sample.ogv", "theoraenc ! oggmux"),
@@ -96,7 +84,6 @@ fn write_sample_media(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-/// A private scratch directory for this test run, cleaned up at the end.
 fn scratch_dir() -> PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
     static SEQ: AtomicU32 = AtomicU32::new(0);
@@ -111,7 +98,6 @@ fn scratch_dir() -> PathBuf {
     dir
 }
 
-/// The live player launched on `sample`, as `video-player SAMPLE` opens it.
 fn launched(sample: &Path) -> PlayerApp {
     let mut app = PlayerApp::new(RunMode::Live);
     app.open_launch(&LaunchInput::new(&[sample.display().to_string()], None));
@@ -120,7 +106,6 @@ fn launched(sample: &Path) -> PlayerApp {
 
 #[test]
 fn real_file_decodes_and_reaches_the_player_surface() {
-    // Case `engine_decodes_a_real_file_and_the_pts_advances`.
     {
         let dir = scratch_dir();
         let sample = write_sample_media(&dir)
@@ -132,7 +117,7 @@ fn real_file_decodes_and_reaches_the_player_surface() {
         engine.open(Source::LocalFile(sample.clone()));
         engine.play();
 
-        // Pump until several distinct frame PTS are observed (or we time out).
+        // Pump until several distinct frame PTS are observed, or time out.
         let mut ptss: Vec<u64> = Vec::new();
         let mut saw_duration = false;
         let mut first_frame_dims: Option<(u32, u32)> = None;
@@ -190,7 +175,6 @@ fn real_file_decodes_and_reaches_the_player_surface() {
             "decoded the frame at the encoded resolution"
         );
     }
-    // Case `player_app_pulls_a_real_decoded_frame_onto_its_surface`.
     {
         let dir = scratch_dir();
         let sample = write_sample_media(&dir)

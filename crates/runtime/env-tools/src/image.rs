@@ -2,7 +2,6 @@
 //!
 //! The manifest is a pure function of the cache key and the request, so one
 //! signer sealing one key's tree twice produces the same package id.
-
 use std::io::Write as _;
 use std::path::Path;
 
@@ -10,9 +9,8 @@ use tilo_app_package::manifest::Arch;
 use tilo_app_package::{BlobSource, ImageSpec, Kind, Packed, SigningIdentity};
 
 use crate::key::CacheKey;
-
-/// The version every tool image carries. A tool's identity is its package
-/// id; what it holds is named by the packages in its manifest.
+/// The version every tool image carries: a tool's identity is its package id,
+/// and what it holds is named by the packages in its manifest.
 pub const TOOL_VERSION: &str = "1.0.0";
 
 /// The architecture this process's binaries — and so the runtime it builds
@@ -77,8 +75,6 @@ pub fn seal_tool(
     )?)
 }
 
-/// Write `packed` as a full `.tapp` at `path` (via a temporary file beside
-/// it, renamed into place).
 pub fn write_tapp(path: &Path, packed: &Packed) -> anyhow::Result<()> {
     let temp = path.with_extension(format!("tapp.{}.tmp", std::process::id()));
     let result = (|| -> anyhow::Result<()> {

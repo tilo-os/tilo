@@ -75,7 +75,6 @@ impl Baseline {
         tilo_files::native::atomic::write_creating_parent_with_mode(&self.path, &bytes, 0o600)
     }
 
-    /// Moves `from` and everything below it to `to`.
     pub fn rename(&mut self, from: &str, to: &str) {
         let moved: Vec<String> = self
             .entries

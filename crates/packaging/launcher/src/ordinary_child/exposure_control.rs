@@ -1,5 +1,5 @@
-//! Fixed placement framing only; these descriptions cannot mint a source grant.
-//! Callers must already own the actual mutually authenticated managed helper.
+//! Fixed placement framing only; these descriptions cannot mint a source grant. Callers
+//! must already own the actual mutually authenticated managed helper.
 use crate::ordinary_namespace::Handoff;
 use std::os::fd::AsFd;
 use std::{fs::File, io, os::fd::OwnedFd};
@@ -116,8 +116,7 @@ pub(crate) fn receive_file(io: &mut Handoff<'_>, tag: u8) -> io::Result<File> {
     io.write_all(&[tag])?;
     Ok(file)
 }
-/// Every response echoes the exact closed request before a status. An errno
-/// reports failure only; it never certifies clean placement or retirement.
+/// Every response echoes the exact closed request before a status.
 pub(crate) fn send_result(
     io: &mut Handoff<'_>,
     operation: Operation,
@@ -312,9 +311,7 @@ impl super::ManagedConsumingBootstrap {
         drop(io);
         self.check_current()
     }
-    /// Kernel/controller custody only: source cancellation cannot prevent
-    /// cleanup. Parent has observed actual consuming init stop and closes all
-    /// local aliases; child R stops and reaps its owned outer before detachment.
+    /// Kernel/controller custody only: source cancellation cannot prevent cleanup.
     pub(crate) fn retire_exposure(&mut self, record: &PlacementRecord) -> io::Result<()> {
         self.check_current()?;
         let cleanup = crate::owned_service::ServiceCancellation::default();
@@ -332,15 +329,13 @@ impl super::ManagedConsumingBootstrap {
 }
 
 /// Minted only by the authenticated internal consuming bootstrap's sole reader.
-/// Public callers cannot supply a descriptor, pathname or placement description.
 pub struct ExposureRequest {
     operation: Operation,
     record: PlacementRecord,
     clone: Option<File>,
     witness: Option<(OwnedFd, OwnedFd, File, File)>,
 }
-/// Actual child stage lifetime, never an app/source grant. Retain this across
-/// every command error. Unknown parent EOF cannot discharge a mounted stage.
+/// Actual child stage lifetime, never an app/source grant.
 #[derive(Default)]
 pub struct ChildExposureOwner {
     scope: Option<PlacementRecord>,
@@ -389,9 +384,8 @@ impl super::ConsumingBootstrapEntry {
     }
 }
 impl ExposureRequest {
-    /// Retire checks the held actual init and stops/reaps the typed owned outer
-    /// internally before detaching. Wire descriptions never grant source access.
-    /// Apply an authenticated exposure request to the held child custody.
+    /// Retire checks the held actual init and stops/reaps the typed owned outer internally before
+    /// detaching.
     pub fn apply(
         self,
         owner: &mut ChildExposureOwner,
@@ -431,8 +425,8 @@ impl ExposureRequest {
                 {
                     return Err(io::ErrorKind::WouldBlock.into());
                 }
-                // Actual owned outer process wait/reap is mandatory even when
-                // it is still waiting at the unexported view gate.
+                // Actual owned outer process wait/reap is mandatory even when it is still waiting at
+                // the unexported view gate.
                 if let Some(consumer) = consumer.as_mut() {
                     consumer.retire_before_exit();
                     if !consumer.observed_stopped() {
@@ -490,8 +484,7 @@ impl ChildExposureOwner {
 impl Drop for ChildExposureOwner {
     fn drop(&mut self) {
         if self.placement.is_some() {
-            // The dispatcher lost its observation/control path. Keep the actual
-            // child, stage and kernel references alive; do not fake retirement.
+            // The dispatcher lost its observation/control path.
             loop {
                 std::thread::park_timeout(std::time::Duration::from_secs(1));
             }
@@ -499,7 +492,7 @@ impl Drop for ChildExposureOwner {
     }
 }
 
-// Kernel process observations only. These descriptors never grant file access.
+// Kernel process observations only.
 fn verify_init(init: &OwnedFd, launcher: &OwnedFd, pidns: &File, mntns: &File) -> io::Result<()> {
     fn status(pid: u32) -> io::Result<Vec<u8>> {
         use std::io::Read as _;

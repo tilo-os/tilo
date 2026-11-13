@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::Theme;
-use crate::component::{Described as _, Fired, Intent, Value};
+use crate::component::{Fired, Intent, Value};
 use crate::headless::FrameHarness;
 
 /// The key the map reports its pointing under.
@@ -18,7 +18,7 @@ fn pointing_map(queue: &crate::Intents<Fired>, camera: MapCamera) -> Map {
     map.press = Event::View(Intent::new(queue, CANVAS, "press"));
     map.frame = Event::View(Intent::new(queue, CANVAS, "frame"));
     map.context = Event::View(Intent::new(queue, CANVAS, "context"));
-    map.camera = camera;
+    map.set_camera(camera);
     map
 }
 
@@ -462,6 +462,9 @@ fn two_fingers_pan_and_a_pinch_zooms() {
 /// pixels, at the camera's zoom, and points at nothing on the canvas while it does.
 #[test]
 fn dragging_a_places_corner_reports_its_new_size() {
+    // The place stands where it arrives at once: a place still gliding in is grabbed where it
+    // has come to, which a single frame does not settle.
+    let _settled = crate::motion::testing::settled();
     let queue = crate::Intents::default();
     let camera = MapCamera {
         origin: Point::ORIGIN,
@@ -547,5 +550,34 @@ fn a_pointed_rectangle_is_outlined_where_it_stands() {
         at(&outlined, 160, 125),
         at(&plain, 160, 125),
         "inside the rectangle stays the canvas"
+    );
+}
+
+/// A press that lands outside the map is no pointing at the canvas, whatever of it reaches the
+/// map: the desk's bar stands over the canvas in the Desktop style, and a press on its bell or
+/// its window menu that the map answered as a click on the canvas opened the caret there and
+/// closed what the press had opened.
+#[test]
+fn a_press_outside_the_map_reports_nothing() {
+    let queue = crate::Intents::default();
+    let mut host = harness(&queue, MapCamera::default());
+    let device = winit::event::DeviceId::dummy();
+    host.dispatch_to_root(&WindowEvent::CursorMoved {
+        device_id: device,
+        position: winit::dpi::PhysicalPosition::new(900.0, 300.0),
+    });
+    for button in [MouseButton::Left, MouseButton::Right] {
+        for state in [ElementState::Pressed, ElementState::Released] {
+            host.dispatch_to_root(&WindowEvent::MouseInput {
+                device_id: device,
+                state,
+                button,
+            });
+        }
+    }
+    assert_eq!(
+        reported(&queue),
+        Vec::new(),
+        "a press beside the map is not the canvas's"
     );
 }

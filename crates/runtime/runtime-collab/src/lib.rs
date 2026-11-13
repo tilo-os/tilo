@@ -31,7 +31,6 @@ use tilo_sort::CompactSort as _;
 
 pub mod browser_service_sessions;
 pub mod file_clipboard;
-pub mod open_selected;
 pub use browser_service_sessions::*;
 pub mod retained_person;
 pub mod retained_retirement;
@@ -54,6 +53,8 @@ mod action_directory;
 pub use action_directory::*;
 mod surface_delta;
 pub use surface_delta::*;
+mod catalogue;
+pub use catalogue::*;
 pub mod audio_output;
 #[cfg(feature = "client")]
 mod client;
@@ -1036,6 +1037,10 @@ pub struct PresenceEvent {
 pub struct ChannelContext {
     pub collaborators: Vec<collab_types::presence::Collaborator>,
     pub permissions: Vec<String>,
+    /// What each app installed on this device is called, in each language its
+    /// package names it in: a window names another app's changes by these,
+    /// never by an id. Session-local presentation, sent with the roster.
+    pub apps: Vec<collab_types::history::NamedApp>,
     /// `Some` only for a session-local Follow control frame. The inner
     /// `None` means stop following; ordinary context snapshots keep this
     /// field at `None` and replace roster/permissions as before.

@@ -10,12 +10,9 @@ use tilo_doc::{BlockView, DocSnapshot};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
-/// Error produced while assembling an EPUB.
 #[derive(Debug)]
 pub enum DocEpubError {
-    /// A ZIP-level write failure (entry start or byte write).
     Zip(String),
-    /// An I/O failure writing archive bytes.
     Io(String),
 }
 
@@ -30,7 +27,6 @@ impl fmt::Display for DocEpubError {
 
 impl std::error::Error for DocEpubError {}
 
-/// The OCF `mimetype` payload — fixed by the EPUB spec.
 const MIMETYPE: &str = "application/epub+zip";
 
 /// Render a materialized qdoc snapshot to the bytes of a `.epub` file:
@@ -50,19 +46,14 @@ pub fn render_epub(
 ) -> Result<Vec<u8>, DocEpubError> {
     let snap = tilo_doc::export::without_kept_placeholders(snap);
     let snap = &Resolved::new(&snap, content);
-    // 1. Collect image blobs into packaged resources, mapping blob-hash → item.
     let images = collect_images(snap);
 
-    // 2. Split the body into chapters (one per top-level H1).
     let chapters = build_chapters(snap, &images);
 
-    // 3. Build the nav (TOC) document from headings.
     let nav = build_nav(snap, &chapters);
 
-    // 4. Build the OPF package document.
     let opf = build_opf(snap, &chapters, &images);
 
-    // 5. Assemble the OCF ZIP.
     let mut zw = ZipWriter::new(Cursor::new(Vec::new()));
     let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
     let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
@@ -91,8 +82,6 @@ pub fn render_epub(
     }
 
     for img in &images {
-        // Image bytes are already compressed formats (PNG/JPEG/…); store
-        // them to avoid deflating incompressible data.
         zw.start_file(format!("OEBPS/{}", img.href), stored)
             .map_err(zerr)?;
         zw.write_all(&img.bytes).map_err(ierr)?;
@@ -110,15 +99,12 @@ const CONTAINER_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 </container>
 "#;
 
-/// A packaged image resource derived from an image the snapshot references.
 struct ImageItem {
     /// Manifest item id (e.g. `img-1`).
     id: String,
     /// Href relative to the OPF (e.g. `images/img-1.png`).
     href: String,
-    /// MIME / media-type for the manifest (`image/png`, …).
     media_type: &'static str,
-    /// The raw bytes.
     bytes: Vec<u8>,
     /// The blob hash key this resource was built from.
     blob_hash: String,
@@ -182,11 +168,9 @@ struct Chapter {
     xhtml: String,
 }
 
-/// A heading recovered from the body, with an anchor id assigned for the nav.
 struct Heading {
     level: u8,
     text: String,
-    /// Fragment id to anchor to within the chapter document.
     frag: String,
 }
 
@@ -194,8 +178,6 @@ struct Heading {
 /// top-level `H1`; everything before the first forms a lead chapter.
 /// Never empty (no blocks → one empty chapter).
 fn build_chapters(snap: &Resolved<'_>, images: &[ImageItem]) -> Vec<Chapter> {
-    // Group blocks into runs each beginning at a top-level H1; blocks
-    // before the first H1 form the lead group.
     let mut groups: Vec<Vec<&BlockView>> = Vec::new();
     let mut current: Vec<&BlockView> = Vec::new();
 
@@ -218,7 +200,6 @@ fn build_chapters(snap: &Resolved<'_>, images: &[ImageItem]) -> Vec<Chapter> {
         let id = format!("chapter-{n}");
         let href = format!("{id}.xhtml");
 
-        // Assign per-chapter heading anchors and collect them for the nav.
         let mut headings = Vec::new();
         let mut anchored: Vec<(String, &BlockView)> = Vec::new();
         let mut hcount = 0usize;
@@ -278,9 +259,6 @@ fn render_chapter_xhtml(
 ) -> String {
     let mut body = String::new();
     for (frag, block) in anchored {
-        // Render this block via export_html by handing it a one-block
-        // snapshot sharing blobs/styles, since its fragment renderer takes
-        // whole snapshots.
         let mut sub = empty_like(snap);
         sub.blocks = vec![(*block).clone()];
         let opts = crate::export_html::HtmlOptions {
@@ -290,15 +268,11 @@ fn render_chapter_xhtml(
         };
         let mut frag_html = crate::export_html::render_resolved(&snap.with_snapshot(&sub), opts);
 
-        // Re-point image data: URIs to packaged file resources.
         frag_html = repoint_images(&frag_html, block, images);
 
-        // Make the HTML5 fragment XML-well-formed (void elements self-close).
         frag_html = xhtmlify(&frag_html);
 
         if !frag.is_empty() {
-            // Anchor the heading so the nav can link to it — inject an id on
-            // the fragment's first start-tag.
             frag_html = inject_id(&frag_html, frag);
         }
         body.push_str(&frag_html);
@@ -307,8 +281,6 @@ fn render_chapter_xhtml(
     wrap_xhtml(title, &body)
 }
 
-/// A blank snapshot sharing the source's styles, so a
-/// sub-render of one block resolves styles/images identically.
 fn empty_like(snap: &DocSnapshot) -> DocSnapshot {
     DocSnapshot {
         schema: snap.schema.clone(),
@@ -356,8 +328,6 @@ fn repoint_images(frag: &str, block: &BlockView, images: &[ImageItem]) -> String
     out
 }
 
-/// Inject an `id="<frag>"` attribute into a fragment's first start-tag,
-/// to anchor headings for nav links.
 fn inject_id(frag: &str, id: &str) -> String {
     if let Some(lt) = frag.find('<') {
         // Find the end of the tag name (first space or `>` or `/`).
@@ -396,16 +366,14 @@ fn xhtmlify(html: &str) -> String {
         let Some(c) = rest.chars().next() else {
             break;
         };
-        if c == '<' {
-            // Find the matching '>'.
-            if let Some(rel) = rest.find('>') {
-                let end = i.saturating_add(rel); // index of '>'
-                if let Some(tag) = html.get(i..=end) {
-                    // includes '<' and '>'
-                    out.push_str(&self_close_void(tag));
-                    i = end.saturating_add(1);
-                    continue;
-                }
+        if c == '<'
+            && let Some(rel) = rest.find('>')
+        {
+            let end = i.saturating_add(rel); // index of '>'
+            if let Some(tag) = html.get(i..=end) {
+                out.push_str(&self_close_void(tag));
+                i = end.saturating_add(1);
+                continue;
             }
         }
         out.push(c);
@@ -422,11 +390,9 @@ fn self_close_void(tag: &str) -> String {
         "source", "track", "wbr",
     ];
 
-    // tag looks like "<name ...>" or "</name>" or "<name/>".
     if tag.starts_with("</") || tag.ends_with("/>") {
         return tag.to_string();
     }
-    // strip '<' and '>'
     let Some(inner_end) = tag.len().checked_sub(1) else {
         return tag.to_string();
     };
@@ -470,7 +436,6 @@ fn wrap_xhtml(title: &str, body: &str) -> String {
 fn build_nav(snap: &Resolved<'_>, chapters: &[Chapter]) -> String {
     let title = doc_title(snap);
 
-    // Flatten all headings (with their chapter href) into a level/label/link list.
     let mut entries: Vec<(u8, String, String)> = Vec::new(); // (level, label, href#frag)
     for ch in chapters {
         for h in &ch.headings {
@@ -517,7 +482,6 @@ fn build_nav(snap: &Resolved<'_>, chapters: &[Chapter]) -> String {
     )
 }
 
-/// A node in the TOC tree: a label/link plus sub-entries nested under it.
 struct NavNode {
     label: String,
     link: String,
@@ -536,7 +500,6 @@ fn render_nav_list(entries: &[(u8, String, String)]) -> String {
     out
 }
 
-/// Build a forest of [`NavNode`]s from the flat level/label/link list.
 fn build_nav_forest(entries: &[(u8, String, String)]) -> Vec<NavNode> {
     let mut roots: Vec<NavNode> = Vec::new();
     // Stack of (level, index-path) — tracks the path to the currently-open
@@ -544,7 +507,6 @@ fn build_nav_forest(entries: &[(u8, String, String)]) -> Vec<NavNode> {
     let mut path: Vec<(u8, usize)> = Vec::new(); // (level, index-within-its-parent)
 
     for (level, label, link) in entries {
-        // Pop ancestors that are not strictly shallower than this heading.
         while path.last().is_some_and(|(l, _)| *l >= *level) {
             path.pop();
         }
@@ -586,7 +548,6 @@ fn walk_children<'a>(roots: &'a mut Vec<NavNode>, path: &[(u8, usize)]) -> &'a m
     cur
 }
 
-/// Render a forest of nav nodes as an `<ol>` at the given indent depth.
 fn render_nav_forest(nodes: &[NavNode], depth: usize, out: &mut String) {
     if nodes.is_empty() {
         return;
@@ -614,7 +575,6 @@ fn render_nav_forest(nodes: &[NavNode], depth: usize, out: &mut String) {
     out.push_str("</ol>\n");
 }
 
-/// Build the OPF package document: metadata (Dublin Core) + manifest + spine.
 fn build_opf(snap: &Resolved<'_>, chapters: &[Chapter], images: &[ImageItem]) -> String {
     let title = doc_title(snap);
     let author = snap.properties.get("author").cloned();
@@ -656,14 +616,12 @@ fn build_opf(snap: &Resolved<'_>, chapters: &[Chapter], images: &[ImageItem]) ->
             escape_text(subject)
         );
     }
-    // EPUB 3 requires a dcterms:modified meta.
     let _ = writeln!(
         metadata,
         "    <meta property=\"dcterms:modified\">{}</meta>",
         escape_text(&normalize_modified(&modified))
     );
 
-    // Manifest: nav + chapters + images.
     let mut manifest = String::new();
     manifest.push_str(
         "    <item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n",
@@ -714,7 +672,6 @@ fn build_opf(snap: &Resolved<'_>, chapters: &[Chapter], images: &[ImageItem]) ->
     )
 }
 
-/// Best-effort document title from `properties`, falling back to "Untitled".
 fn doc_title(snap: &Resolved<'_>) -> String {
     snap.properties
         .get("title")
@@ -734,10 +691,7 @@ fn normalize_modified(s: &str) -> String {
     t.to_string()
 }
 
-/// A deterministic pseudo-id derived from title + block count, so two
-/// renders share a `dc:identifier` without a uuid/random dep.
 fn stable_id(snap: &Resolved<'_>, title: &str) -> String {
-    // FNV-1a 64-bit over title + block count — cheap, dependency-free, stable.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     let feed = |hash: &mut u64, byte: u8| {
         *hash ^= u64::from(byte);

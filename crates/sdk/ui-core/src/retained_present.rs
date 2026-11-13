@@ -92,9 +92,12 @@ impl PanFrame {
 /// every window.
 ///
 /// A replayed window did not draw, so what its widgets note while drawing
-/// (where a control was painted, where a caret is) still describes where
-/// the window was. The host draws again before anything reads that: before
-/// input reaches the widgets, and before it reads the frame's semantics
+/// (where a control was painted) still describes where the window was. The
+/// carets and the name tags beside them are the exception: they move with
+/// the drawing, so a reader is told each peer where the frame shows them
+/// ([`crate::presence::PresenceCtx`]). The host draws again before anything
+/// else reads what a window noted: before input reaches the widgets, and
+/// before it reads the frame's semantics
 /// ([`crate::headless::FrameHarness::settle_replayed_draws`]).
 pub struct PanReplay {
     previous: (PanFrame, u64),

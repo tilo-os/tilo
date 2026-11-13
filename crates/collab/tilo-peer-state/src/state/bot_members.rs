@@ -9,6 +9,7 @@
 
 use super::facades::PeerGovernance;
 use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+use collab_types::signer::DeviceSigner;
 use tilo_action_policy::{
     Context, Grant, GrantId, WorkspacePolicy, bot,
     roles::{self, governance},
@@ -17,7 +18,7 @@ use tilo_automation::program::{parse_program, program_hash};
 use tilo_user_identity::DeviceCert;
 
 use super::delegates::{GovernedDelegateRow, holds_no_power};
-use super::{GovernedIdentity, SigningKey, StatePeer, SystemTime, err, governed_map, now_ns};
+use super::{GovernedIdentity, StatePeer, SystemTime, err, governed_map, now_ns};
 use crate::installation::Installation;
 use crate::workspace_membership::{BotDevice, BotInstall, BotRenewal};
 
@@ -73,7 +74,7 @@ impl StatePeer {
             .ok_or("workspace governance missing")?;
         let mut out = Vec::new();
         for bytes in doc.policy().identities.values() {
-            let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
+            let identity = GovernedIdentity::decode(bytes).map_err(err)?;
             if identity
                 .delegate
                 .as_ref()
@@ -121,13 +122,13 @@ impl StatePeer {
             .workspace_doc
             .as_ref()
             .ok_or("workspace governance missing")?
-            .policy()
             .workspace_policy(&self.core.workspace);
         let prefix = bot::grant_prefix(id);
         Ok(policy
             .grants
-            .into_iter()
+            .iter()
             .filter(|grant| grant.id.as_str().starts_with(&prefix))
+            .cloned()
             .collect())
     }
 
@@ -164,7 +165,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         install: &BotInstall,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
@@ -180,7 +181,7 @@ impl StatePeer {
                 if install.installation.installed_by != member.person {
                     return Err("a bot is installed by the person installing it".into());
                 }
-                let authority = member.authority(&bound);
+                let authority = member.authority(bound);
                 member
                     .policy
                     .check_action(&authority, governance::INSTALL_BOT, &cx, false)
@@ -221,7 +222,7 @@ impl StatePeer {
                 } else {
                     governance::INSTALL_BOT
                 };
-                let authority = member.authority(&bound);
+                let authority = member.authority(bound);
                 member
                     .policy
                     .check_action(&authority, action, &cx, false)
@@ -276,7 +277,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         renewal: &BotRenewal,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
@@ -343,7 +344,7 @@ impl StatePeer {
     pub(super) fn put_bot_change(
         &mut self,
         write: &BotWrite,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let mut doc = self
@@ -354,34 +355,37 @@ impl StatePeer {
         let before = doc.get_heads();
         let identities = governed_map(&doc, "peer_identities_v1")?;
         let names = governed_map(&doc, "peers")?;
-        let grants = governed_map(&doc, "grants")?;
         doc.set_actor(self.workspace_actor_of(key));
         for identity in &write.identities {
             let id = hex::encode(identity.device_cert.device_public_key);
             doc.put(
                 &identities,
                 &id,
-                automerge::ScalarValue::Bytes(serde_json::to_vec(identity).map_err(err)?),
+                automerge::ScalarValue::Bytes(identity.encode().map_err(err)?),
             )
             .map_err(err)?;
             doc.put(&names, &id, identity.device_cert.device_label.as_str())
                 .map_err(err)?;
         }
-        for id in &write.revoke {
-            if doc.get(&grants, id.as_str()).map_err(err)?.is_some() {
-                doc.delete(&grants, id.as_str()).map_err(err)?;
-            }
-        }
+        let held = doc.workspace_policy(&self.core.workspace).grants.clone();
+        let mut changes: Vec<tilo_action_policy::Change> = write
+            .revoke
+            .iter()
+            .filter(|id| held.iter().any(|grant| grant.id == **id))
+            .map(|id| tilo_action_policy::Change::Revoke(id.clone()))
+            .collect();
         for grant in &write.grant {
             if grant.node.workspace_id() != Some(self.core.workspace.as_str()) {
                 return Err(format!("grant {:?} names another workspace", grant.id));
             }
-            doc.put(
-                &grants,
-                grant.id.as_str(),
-                automerge::ScalarValue::Bytes(serde_json::to_vec(grant).map_err(err)?),
-            )
-            .map_err(err)?;
+            match held.iter().find(|kept| kept.id == grant.id) {
+                Some(kept) if kept == grant => continue,
+                Some(_) if !write.revoke.contains(&grant.id) => {
+                    changes.push(tilo_action_policy::Change::Revoke(grant.id.clone()));
+                }
+                _ => {}
+            }
+            changes.push(tilo_action_policy::Change::Grant(grant.clone()));
         }
         if write.program.is_some() || write.drop_program.is_some() {
             let programs = match doc.get(ROOT, PROGRAMS).map_err(err)? {
@@ -403,7 +407,9 @@ impl StatePeer {
             }
         }
         doc.commit();
-        self.write_governance(doc, &before, key, now)
+        let membership = (!changes.is_empty())
+            .then_some(crate::members::MembershipOpCommand::Project { changes });
+        self.write_membership(doc, &before, key, now, membership)
     }
 }
 impl StatePeer {
@@ -414,7 +420,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         request: &crate::workspace_membership::BotRequest,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.check_bot_governance(caller, governance::INSTALL_BOT, now)?;
@@ -460,7 +466,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         entry: &str,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.check_bot_governance(caller, governance::UNINSTALL_BOT, now)?;
@@ -475,7 +481,7 @@ impl StatePeer {
         &mut self,
         entry: &str,
         row: Option<&RequestedBot>,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let mut doc = self
@@ -608,7 +614,7 @@ impl StatePeer {
         member
             .policy
             .check_action(
-                &member.authority(&bound),
+                &member.authority(bound),
                 action,
                 &Context::at_time(now),
                 false,
@@ -622,7 +628,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         id: &str,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.check_bot_governance(caller, governance::UNINSTALL_BOT, now)?;
@@ -654,7 +660,7 @@ impl StatePeer {
         id: &str,
         action: &str,
         change: impl FnOnce(&mut Installation) -> bool,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         self.check_bot_governance(caller, action, now)?;
@@ -681,7 +687,7 @@ impl StatePeer {
         &mut self,
         caller: &DeviceCert,
         adoption: &crate::workspace_membership::BotAdoption,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.check_bot_governance(caller, governance::ADOPT_BOT, now)?;
@@ -714,12 +720,12 @@ impl StatePeer {
         // sees: the granter is the signer, whether it acts for itself or on
         // the adopter's behalf.
         let signer = self
-            .certificate(&key.verifying_key().to_bytes(), now)
+            .certificate(&key.device_public_key(), now)
             .map_err(|error| error.to_string())?
             .user_public_key;
         let cx = Context::at_time(now);
         let bound = roles::foreign_device_bound();
-        let authority = member.authority(&bound);
+        let authority = member.authority(bound);
         let old = self.bot_grants(id, now)?;
         let mut reissued = Vec::with_capacity(old.len());
         for grant in &old {

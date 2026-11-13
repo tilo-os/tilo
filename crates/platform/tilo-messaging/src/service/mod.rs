@@ -1,9 +1,8 @@
-//! Messages' connection to the person's messaging service (`tilo-messaging`).
+//! Messages' connection to the person's messaging service.
 //!
-//! The service holds the accounts; the launcher connects an app to it and
-//! names the app on the connection before handing it over. What an app gets
-//! from it are the same [`EnrollmentClient`](crate::EnrollmentClient) and
-//! [`MessagingClient`](crate::MessagingClient) a host would lend it.
+//! The service holds the accounts; the launcher connects an app to it and names
+//! the app on the connection before handing it over. The app then gets the same
+//! clients a host would lend it.
 
 pub mod wire;
 
@@ -13,18 +12,12 @@ pub mod link;
 #[cfg(unix)]
 pub mod client;
 
-/// The session service name apps declare (`[sandbox.services] messaging`).
 pub const SERVICE: &str = "messaging";
 /// The only app that holds messaging accounts.
 pub const MESSAGES_APP: &str = "so.tilo.messages";
-/// The app that answers the service's permission requests.
 pub const PASSWORDS_APP: &str = "so.tilo.passwords";
-/// Where the launcher hands an app its connection.
 pub const SERVICE_FD_ENV: &str = "TILO_SVC_MESSAGING_FD";
 
-/// The enrollment and messaging clients of the service this app was
-/// launched with; `None` when it has none (the service is not running, or
-/// this platform has no session services).
 pub fn inherited() -> Option<(crate::EnrollmentClient, crate::MessagingClient)> {
     #[cfg(unix)]
     {
@@ -37,8 +30,6 @@ pub fn inherited() -> Option<(crate::EnrollmentClient, crate::MessagingClient)> 
     }
 }
 
-/// The permission requests the messaging service waits on, for Passwords
-/// launched with a connection to it.
 pub fn proposals() -> Vec<accounts::CredentialProposal> {
     #[cfg(unix)]
     {
@@ -58,7 +49,6 @@ pub fn proposals() -> Vec<accounts::CredentialProposal> {
     }
 }
 
-/// How many times those requests changed.
 pub fn proposals_revision() -> Option<u64> {
     #[cfg(unix)]
     {
@@ -70,7 +60,6 @@ pub fn proposals_revision() -> Option<u64> {
     }
 }
 
-/// Answer one of those requests.
 pub fn decide(proposal: &str, decision: accounts::AccessDecision) -> Result<(), crate::SendError> {
     let decision = match decision {
         accounts::AccessDecision::Deny => wire::Decision::Deny,

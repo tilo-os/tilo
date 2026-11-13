@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use std::{future::Future, pin::Pin};
 
 pub type CommitFuture = Pin<Box<dyn Future<Output = Result<OwnerCommitReceipt, String>> + Send>>;
+/// A committed local document write: the write as the record took it, and its receipt.
+pub type LocalDocumentFuture =
+    Pin<Box<dyn Future<Output = Result<(OwnerCommitRequest, OwnerCommitReceipt), String>> + Send>>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OwnerCommitRequest {
@@ -57,13 +60,12 @@ pub enum CommitOperation {
         caller: tilo_user_identity::DeviceCert,
         command: WorkspaceMembershipCommand,
     },
-    /// Save or remove one shortcut of the workspace for the authenticated caller,
-    /// whose device's proof names them as its saver
-    /// ([`crate::workspace::proven_saver`]); governor signing custody is
-    /// supplied out of band, as for membership. The change is its JSON
-    /// ([`tilo_automation::ShortcutChange`]): a shortcut carries
-    /// self-describing values a binary encoding does not read back.
-    ShortcutChange {
+    /// Retired with its own commit family: a saved shortcut is one of the
+    /// workspace's settings and is written as one
+    /// ([`crate::workspace_membership::SettingsChange::Shortcuts`]). It keeps
+    /// the variants after it at their encoded positions, still reads where a
+    /// device holds it, and is refused.
+    RetiredShortcutChange {
         invocation: uuid::Uuid,
         caller: tilo_user_identity::DeviceCert,
         change: Vec<u8>,
@@ -92,11 +94,14 @@ pub enum CommitTarget {
         device: [u8; 32],
         invocation: uuid::Uuid,
     },
-    /// Signed native content root publication; not a caller-facing operation.
+    /// The publication of a workspace's checkpoint root, anchored before
+    /// checkpoints were retired; still read where it was signed.
     NativeCheckpointRoot {
         root: [u8; 32],
     },
-    ShortcutChange {
+    /// Retired with [`CommitOperation::RetiredShortcutChange`]; keeps the
+    /// targets after it at their encoded positions.
+    RetiredShortcutChange {
         device: [u8; 32],
         invocation: uuid::Uuid,
     },
@@ -145,6 +150,9 @@ impl OwnerCommitRequest {
             CommitOperation::RetiredWorkspaceTask => {
                 return Err("workspace task owner commits are retired".into());
             }
+            CommitOperation::RetiredShortcutChange { .. } => {
+                return Err("shortcut owner commits are retired".into());
+            }
             CommitOperation::DesktopCommand {
                 invocation,
                 caller,
@@ -177,11 +185,6 @@ impl OwnerCommitRequest {
                 caller,
                 command,
             } => membership_binding(*invocation, caller, command)?,
-            CommitOperation::ShortcutChange {
-                invocation,
-                caller,
-                change,
-            } => shortcut_binding(*invocation, caller, change)?,
             CommitOperation::Document {
                 app,
                 record,
@@ -249,25 +252,6 @@ fn membership_binding(
         postcard::to_allocvec(&(invocation, caller, command)).map_err(|error| error.to_string())?,
     ))
 }
-/// The target and committed basis of a shortcut change request.
-fn shortcut_binding(
-    invocation: uuid::Uuid,
-    caller: &tilo_user_identity::DeviceCert,
-    change: &[u8],
-) -> Result<(CommitTarget, Vec<u8>), String> {
-    if invocation.is_nil()
-        || serde_json::from_slice::<tilo_automation::ShortcutChange>(change).is_err()
-    {
-        return Err("invalid shortcut change binding".into());
-    }
-    Ok((
-        CommitTarget::ShortcutChange {
-            device: caller.device_public_key,
-            invocation,
-        },
-        postcard::to_allocvec(&(invocation, caller, change)).map_err(|e| e.to_string())?,
-    ))
-}
 /// The target and committed basis of a document import request.
 fn import_binding(
     invocation: uuid::Uuid,
@@ -324,8 +308,62 @@ pub trait OwnerCommitService: Send + Sync {
         let _ = record_kind;
         self.commit(request)
     }
+    /// [`Self::commit_with_record_kind`] for a document write one of this
+    /// device's local writers signed before the owner's turn: the write as
+    /// the record took it, with its receipt. An owner holding the device's key
+    /// signs a write that another writer's later-signed write passed again
+    /// under a sequence past it
+    /// ([`crate::StatePeer::sequenced_local_document`]); one without commits
+    /// it as it is.
+    fn commit_local_document(
+        &self,
+        request: OwnerCommitRequest,
+        record_kind: Option<String>,
+    ) -> LocalDocumentFuture {
+        let commit = self.commit_with_record_kind(request.clone(), record_kind);
+        Box::pin(async move { Ok((request, commit.await?)) })
+    }
     /// Whether the owner can currently accept commits.
     fn health(&self) -> Result<(), String>;
+}
+
+impl OwnerCommitReceipt {
+    /// Check that this receipt answers `asked`, a document write of this
+    /// device, with `committed`: the same write of the same author to the
+    /// same record, at most signed again under another sequence
+    /// ([`OwnerCommitService::commit_local_document`]).
+    pub fn validate_local_document(
+        &self,
+        asked: &OwnerCommitRequest,
+        committed: &OwnerCommitRequest,
+    ) -> Result<(), String> {
+        let (
+            CommitOperation::Document {
+                app,
+                record,
+                envelope,
+            },
+            CommitOperation::Document {
+                app: taken_app,
+                record: taken_record,
+                envelope: taken,
+            },
+        ) = (&asked.operation, &committed.operation)
+        else {
+            return Err("owner receipt does not answer a document write".into());
+        };
+        let mut resigned = (**taken).clone();
+        resigned.seq = envelope.seq;
+        resigned.signature = envelope.signature;
+        if asked.workspace != committed.workspace
+            || app != taken_app
+            || record != taken_record
+            || resigned != **envelope
+        {
+            return Err("the owner committed another write than the one asked".into());
+        }
+        self.validate_for(committed)
+    }
 }
 
 #[cfg(test)]

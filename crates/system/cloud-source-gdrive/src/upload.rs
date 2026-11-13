@@ -1,16 +1,4 @@
 //! Resumable uploads (`uploadType=resumable`).
-//!
-//! The session is opened with the file's metadata (`POST` to create,
-//! `PATCH` to replace), then fed with `PUT`s carrying `Content-Range`.
-//! Every chunk but the last is a multiple of [`UPLOAD_QUANTUM`]; the server
-//! answers `308 Resume Incomplete` with the committed `Range`, and the file
-//! resource once the last byte arrived. The session URI is the resumable
-//! state: a status query (`Content-Range: bytes */<size>`) tells where to
-//! continue after a restart.
-//!
-//! A replace with an expected revision re-checks the head revision right
-//! before the request that commits, and that request carries at most one
-//! quantum, so the unguarded window is one round trip plus 256 KiB.
 
 use std::io::Read;
 use std::sync::{Arc, Mutex};
@@ -27,7 +15,6 @@ use crate::api::{self, File};
 use crate::{Inner, UPLOAD_QUANTUM, Url};
 use tilo_lock::MutexRecover as _;
 
-/// Google's `499 Client Closed Request`, the answer to cancelling a session.
 const CANCELLED: u16 = 499;
 const RESUME_INCOMPLETE: u16 = 308;
 
@@ -48,10 +35,8 @@ struct DriveUpload {
     session: Url,
     size: u64,
     offset: u64,
-    /// The file being replaced.
     id: Option<String>,
     expect: Option<Revision>,
-    /// The file resource the final chunk returned.
     done: Option<File>,
 }
 
@@ -173,7 +158,6 @@ pub(crate) fn restore(
     session.finish()
 }
 
-/// One reader handed out in several consecutive request bodies.
 #[derive(Clone)]
 struct Shared(Arc<Mutex<Box<dyn Read + Send>>>);
 
@@ -189,7 +173,6 @@ impl DriveUpload {
         if self.inner.same_origin(&url) {
             self.inner.request(Method::PUT, url)
         } else {
-            // The session URI authorises itself; the token stays home.
             Ok(self.inner.http.request(Method::PUT, url))
         }
     }
@@ -208,7 +191,6 @@ impl DriveUpload {
         self.absorb(request)
     }
 
-    /// Send a chunk request and take the server's view of the session.
     fn absorb(&mut self, request: RequestBuilder) -> Result<()> {
         let response: Response = Inner::send(request)?;
         match response.status().as_u16() {
@@ -232,7 +214,6 @@ impl DriveUpload {
         }
     }
 
-    /// The precondition, immediately before the committing request.
     fn precondition(&self) -> Result<()> {
         let (Some(id), Some(expect)) = (&self.id, &self.expect) else {
             return Ok(());

@@ -1,14 +1,7 @@
-//! Capability report and local benchmarks for the native data plane.
-//!
-//! ```text
-//! tilo-fs-native probe <store> [--k5 FILES,DIRTY_MIB,SAMPLES]
-//! tilo-fs-native userns-probe [<btrfs-dir>]
-//! tilo-fs-native bench <io|meta|capture|hash|ttfb|all> <store> [--quick]
-//! ```
-//!
-//! `probe` and most benchmarks need `CAP_SYS_ADMIN` and a dedicated Btrfs
-//! store volume; `userns-probe` shows what an unprivileged user namespace
-//! can and cannot do.
+//! Capability report and local benchmarks for the native data plane. `probe`
+//! and most benchmarks need `CAP_SYS_ADMIN` and a dedicated Btrfs store
+//! volume; `userns-probe` shows what an unprivileged user namespace can and
+//! cannot do.
 
 #[cfg(target_os = "linux")]
 use std::path::Path;

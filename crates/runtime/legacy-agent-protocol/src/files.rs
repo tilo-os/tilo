@@ -1,8 +1,6 @@
-//! Shared directories over vsock, for VMs whose hypervisor has no virtio-fs.
-//!
-//! A hosted VM (Firecracker, see `legacy-vm`'s `hosted` module) has no
-//! virtio-fs device, so the guest agent mounts each shared directory as a
-//! FUSE filesystem whose every operation is a request to the host:
+//! Shared directories over vsock, for VMs whose hypervisor has no virtio-fs: the
+//! guest agent mounts each shared directory as a FUSE filesystem whose every
+//! operation is a request to the host.
 //!
 //! ```text
 //! host  → MountFiles { shares }          guest → FilesMounted { paths }
@@ -11,34 +9,26 @@
 //! guest → FsRequest::…                   host  → one FsReply each, in order
 //! ```
 //!
-//! Each share has a port of its own, served by a host process confined to
-//! that share alone. The host decides everything: it serves only the
-//! directories it named,
-//! resolves every path beneath the share's root, refuses writes to a
-//! read-only share, and reports every file as the guest user's. Nodes are
-//! the host's numbers for paths it has resolved; [`ROOT_NODE`] is the share
-//! itself. Errors are `errno` values, as the guest kernel wants them.
+//! Each share has a port of its own, served by a host process confined to that
+//! share. The host serves only the directories it named, resolves every path
+//! beneath the share's root, refuses writes to a read-only share, and reports
+//! every file as the guest user's. Errors are `errno` values.
 
 use serde::{Deserialize, Serialize};
 
-/// The host's vsock port of a VM's first share; the next ones count up.
 pub const FILES_PORT_BASE: u32 = 7200;
 
-/// The share's own directory.
 pub const ROOT_NODE: u64 = 1;
 
 /// The most a single read or write carries; FUSE asks for at most 128 KiB.
 pub const MAX_IO_BYTES: u32 = 128 * 1024;
 
-/// The most directory entries one reply carries.
 pub const MAX_ENTRIES: usize = 256;
 
-/// One host directory the guest mounts at the same path over vsock.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct FileShare {
     pub path: String,
     pub read_only: bool,
-    /// The host's vsock port serving it.
     pub port: u32,
 }
 
@@ -57,7 +47,6 @@ pub struct Time {
     pub nanos: u32,
 }
 
-/// What `stat` says about a node, as the guest sees it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Attr {
     pub node: u64,
@@ -96,10 +85,8 @@ pub struct StatFs {
     pub frsize: u32,
 }
 
-/// Guest → host, on a file connection.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum FsRequest {
-    /// The first request: which share this connection serves.
     Hello {
         path: String,
     },
@@ -107,7 +94,6 @@ pub enum FsRequest {
         parent: u64,
         name: Vec<u8>,
     },
-    /// The guest kernel forgot a node; the host may forget it too.
     Forget {
         node: u64,
     },
@@ -121,8 +107,6 @@ pub enum FsRequest {
         atime: Option<SetTime>,
         mtime: Option<SetTime>,
     },
-    /// Up to [`MAX_ENTRIES`] entries from `offset` (an index into the
-    /// directory as the host lists it, `.` and `..` excluded).
     ReadDir {
         node: u64,
         offset: u64,
@@ -191,27 +175,17 @@ pub enum FsRequest {
     StatFs,
 }
 
-/// Host → guest: one per request.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum FsReply {
     Ok,
     Attr(Attr),
-    Entries {
-        entries: Vec<DirEntry>,
-        done: bool,
-    },
-    Opened {
-        handle: u64,
-    },
-    Created {
-        attr: Attr,
-        handle: u64,
-    },
+    Entries { entries: Vec<DirEntry>, done: bool },
+    Opened { handle: u64 },
+    Created { attr: Attr, handle: u64 },
     Data(Vec<u8>),
     Written(u32),
     Target(Vec<u8>),
     StatFs(StatFs),
-    /// An `errno`.
     Error(i32),
 }
 

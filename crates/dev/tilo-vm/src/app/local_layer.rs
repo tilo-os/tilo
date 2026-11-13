@@ -33,7 +33,6 @@ impl App {
         &mut self,
         request: &LocalLayerImport,
     ) -> Result<Outcome, CliError> {
-        // Freeze and validate inputs before any transport or daemon mutation.
         let mut prepared = crate::local_layer::prepare(request)?;
         let vm = self.resolve_vm(None)?;
         // Importing an inert layer never starts or wakes a stopped VM.

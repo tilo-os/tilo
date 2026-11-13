@@ -146,7 +146,6 @@ fn google_refreshes_canonical_grant_and_sends_bearer_report_and_guarded_writes()
         .authorised(Some(id.as_str()), &config.server_url, "", "", &url)
         .unwrap();
     let run = |future| ui::rt::block_on(future).expect("test thread may block");
-    // A single opaque capability can never be redirected to a foreign origin.
     assert_eq!(
         run(client.report(&url, tilo_dav::Depth::One, "<report/>".into()))
             .unwrap()

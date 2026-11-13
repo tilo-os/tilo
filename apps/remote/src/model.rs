@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Atom, Collection, Id, JsonSchema, Model, Refusal};
 use uuid::Uuid;
 
+use crate::resource::CATALOG;
+
 /// Stable identifier for a saved connection. Backs every cross-reference
 /// and the per-connection session state.
 pub type ConnectionId = Uuid;
@@ -51,13 +53,13 @@ impl ConnectionKind {
         }
     }
 
-    /// Human-friendly protocol name for forms and detail panes.
-    pub fn label(self) -> &'static str {
+    /// The message naming this protocol in forms and detail panes.
+    pub fn label_message(self) -> &'static str {
         match self {
-            ConnectionKind::Ssh => "SSH",
-            ConnectionKind::Vnc => "VNC",
-            ConnectionKind::Rdp => "RDP",
-            ConnectionKind::Tilo => "Tilo device",
+            ConnectionKind::Ssh => "remote-kind-ssh",
+            ConnectionKind::Vnc => "remote-kind-vnc",
+            ConnectionKind::Rdp => "remote-kind-rdp",
+            ConnectionKind::Tilo => "remote-kind-tilo",
         }
     }
 
@@ -138,11 +140,12 @@ pub enum AuthMethod {
 }
 
 impl AuthMethod {
-    pub fn label(self) -> &'static str {
+    /// The message naming how a connection signs in.
+    pub fn label_message(self) -> &'static str {
         match self {
-            AuthMethod::Password => "Password",
-            AuthMethod::PublicKey => "Public key",
-            AuthMethod::DeviceIdentity => "Device identity",
+            AuthMethod::Password => "remote-auth-password",
+            AuthMethod::PublicKey => "remote-auth-public-key",
+            AuthMethod::DeviceIdentity => "remote-auth-device-identity",
         }
     }
 
@@ -282,9 +285,10 @@ impl Connection {
         }
     }
 
-    /// Explain why this persisted profile cannot safely start a transport.
+    /// Explain why this persisted profile cannot safely start a transport:
+    /// the catalogue message a window paints in the person's language.
     ///
-    /// The result is deliberately a stable, non-secret string: it is shared by
+    /// The result is deliberately a stable, non-secret key: it is shared by
     /// the canvas UI, accessibility tree, resource catalogue, and agent-facing
     /// availability contract. No connect attempt is made until this returns
     /// `None`.
@@ -319,17 +323,17 @@ pub fn compact_tilo_endpoint(endpoint: &str) -> String {
 fn profile_issue(kind: ConnectionKind, host: &str, auth: AuthMethod) -> Option<&'static str> {
     if !auth.is_supported_by(kind) {
         return Some(match kind {
-            ConnectionKind::Ssh => "SSH profiles support password or public-key authentication.",
-            ConnectionKind::Vnc => "VNC profiles support password authentication only.",
-            ConnectionKind::Rdp => "RDP profiles support password authentication only.",
-            ConnectionKind::Tilo => "Tilo device profiles must use Tilo device identity.",
+            ConnectionKind::Ssh => "remote-issue-ssh-auth",
+            ConnectionKind::Vnc => "remote-issue-vnc-auth",
+            ConnectionKind::Rdp => "remote-issue-rdp-auth",
+            ConnectionKind::Tilo => "remote-issue-tilo-auth",
         });
     }
     if kind == ConnectionKind::Tilo
         && !host.trim().is_empty()
         && host.trim().parse::<iroh_base::EndpointId>().is_err()
     {
-        return Some("Tilo device node must be an exact certified endpoint id.");
+        return Some("remote-issue-tilo-endpoint");
     }
     None
 }
@@ -405,7 +409,7 @@ impl ConnectionDraft {
             }
         }
         if let Some(issue) = profile_issue(self.kind, &self.host, self.auth) {
-            out.push(issue.into());
+            out.push(CATALOG.t(issue));
         }
         out
     }
@@ -599,7 +603,10 @@ mod tests {
             assert!(!ConnectionKind::Rdp.is_supported());
             assert!(ConnectionKind::Tilo.is_supported());
             assert!(ConnectionKind::Tilo.streams_framebuffer());
-            assert_eq!(ConnectionKind::Tilo.label(), "Tilo device");
+            assert_eq!(
+                CATALOG.t(ConnectionKind::Tilo.label_message()),
+                "Tilo device"
+            );
         }
 
         eprintln!("phase draft_validation_catches_empty_and_bad_port");
@@ -635,14 +642,20 @@ mod tests {
             connection.host = Atom("friendly-name".into());
             connection.auth = AuthMethod::Password;
             assert_eq!(
-                connection.profile_issue(),
+                connection
+                    .profile_issue()
+                    .map(|issue| CATALOG.t(issue))
+                    .as_deref(),
                 Some("Tilo device profiles must use Tilo device identity.")
             );
 
             connection.auth = AuthMethod::DeviceIdentity;
             assert_eq!(
-                connection.profile_issue(),
-                Some("Tilo device node must be an exact certified endpoint id.")
+                connection
+                    .profile_issue()
+                    .map(|issue| CATALOG.t(issue))
+                    .as_deref(),
+                Some("Tilo device node must be the device's exact endpoint id.")
             );
 
             connection.host = Atom(SecretKey::generate().public().to_string());

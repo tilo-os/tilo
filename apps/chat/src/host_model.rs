@@ -114,7 +114,7 @@ impl ChatApp {
                 label.push('\n');
                 label.push_str(&stream.detail);
             }
-            if self.expanded_reasoning.contains(&message.id) && !stream.reasoning.is_empty() {
+            if self.expanded_agent.contains(&message.id) && !stream.reasoning.is_empty() {
                 label.push('\n');
                 label.push_str(&crate::i18n::t("chat-agent-provider-reasoning"));
                 label.push_str(": ");
@@ -151,7 +151,8 @@ impl ChatApp {
         } else if message.author.starts_with("bot:") {
             self.bot_name(message)
         } else {
-            self.user_name(&message.author)
+            self.acting_name(&message.author, message.acting.as_ref())
+                .unwrap_or_else(|| self.user_name(&message.author))
         }
     }
 
@@ -186,13 +187,18 @@ impl ChatApp {
             // A person a bridge speaks for, by their own name and where
             // they are: "Dana, from Discord".
             let members: Vec<&str> = self.users.iter().map(|user| user.name.as_str()).collect();
-            let shown = self
-                .message_author(message, &name, "", None)
-                .label(&members);
-            crate::i18n::t_args(
-                "chat-via-attribution",
-                &[("name", shown.into()), ("service", service.into())],
-            )
+            let author = self.message_author(message, &name, "", None);
+            let shown = author.label(&members);
+            // A name that had to say its service to tell it from a member
+            // already names it once.
+            if shown == author.shown_name() {
+                crate::i18n::t_args(
+                    "chat-via-attribution",
+                    &[("name", shown.into()), ("service", service.into())],
+                )
+            } else {
+                shown
+            }
         } else if message.author.starts_with("bot:") {
             let members: Vec<&str> = self.users.iter().map(|user| user.name.as_str()).collect();
             let shown = self

@@ -29,13 +29,11 @@ fn drivewsid(doc: &str, node: &Node) -> String {
     }
 }
 
-/// The docwsid of a live node named by a drivewsid.
 fn live(state: &State, id: &str) -> Option<String> {
     let doc = split_id(id).2;
     reachable(state, doc).then(|| doc.to_owned())
 }
 
-/// A node that exists and is not (below) a trashed folder.
 fn reachable(state: &State, doc: &str) -> bool {
     let mut current = doc.to_owned();
     for _ in 0..256 {
@@ -53,7 +51,6 @@ fn reachable(state: &State, doc: &str) -> bool {
     false
 }
 
-/// Live children of folder `doc`, in name order.
 pub fn children(state: &State, doc: &str) -> Vec<String> {
     let mut out: Vec<(String, String)> = state
         .nodes
@@ -65,7 +62,6 @@ pub fn children(state: &State, doc: &str) -> Vec<String> {
     out.into_iter().map(|(_, child)| child).collect()
 }
 
-/// The docwsid at `path` below the root.
 pub fn lookup(state: &State, path: &str) -> Option<String> {
     let mut current = "root".to_owned();
     for part in path.split('/').filter(|part| !part.is_empty()) {
@@ -94,7 +90,6 @@ fn bump(state: &mut State, doc: &str) {
     }
 }
 
-/// A folder changed: its own etag moves (direct children only).
 fn touch_folder(state: &mut State, doc: &str) {
     bump(state, doc);
     if let Some(node) = state.nodes.get_mut(doc) {
@@ -562,7 +557,6 @@ pub fn content(state: &mut State, request: &Request, path: &str) -> Reply {
     }
 }
 
-/// The file part of a `multipart/form-data` body.
 fn multipart_file(request: &Request) -> Option<Vec<u8>> {
     let content_type = request.header("content-type")?;
     let boundary = content_type
@@ -602,7 +596,6 @@ fn upload(state: &mut State, request: &Request, doc: &str) -> Reply {
         "wrappingKey": "wrapping-key",
         "size": size,
     });
-    // Apple leaves the receipt out for empty files.
     if size > 0
         && let Value::Object(map) = &mut single
     {

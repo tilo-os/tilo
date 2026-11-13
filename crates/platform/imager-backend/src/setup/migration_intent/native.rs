@@ -1,6 +1,6 @@
-//! Explicit private source grant carried from belongings review into staging.
-//! Capturing an intent never mounts, copies or installs. The actual stage UUID
-//! and retained partition geometry are bound again on the download worker.
+//! Explicit private source grant carried from belongings review into staging. Capturing an intent
+//! never mounts, copies or installs; the stage UUID and retained partition geometry are bound again
+//! on the download worker.
 use crate::setup::{
     destination_security,
     flatpak_transfer::{HandoffInventory, InstalledRef, NativeRunner},
@@ -73,8 +73,8 @@ fn private(directory: &Path) -> io::Result<Arc<PinnedDirectory>> {
 }
 pub type Capture = fn(&Path, &str, Categories) -> io::Result<Plan>;
 impl MigrationIntent {
-    /// Preserve separate original-home and application grants when both are
-    /// selected. Platform admission belongs to the backend, not the journey.
+    /// Preserves separate home and application grants when both are selected; platform admission
+    /// belongs to the backend.
     pub fn capture_reviewed_with_policy(
         home: &Path,
         directory: &Path,
@@ -85,9 +85,8 @@ impl MigrationIntent {
         Self::capture_reviewed_selection(home, directory, categories, refs, policy, &[])
     }
 
-    /// The same reviewed capture with the person's nested source exclusions.
-    /// Exclusions are consent metadata: the plan carries them and the receiving
-    /// producer revalidates each path under its own pinned source.
+    /// Exclusions are consent metadata: the plan carries them and the receiving producer revalidates
+    /// each path under its own pinned source.
     pub fn capture_reviewed_selection(
         home: &Path,
         directory: &Path,
@@ -104,8 +103,6 @@ impl MigrationIntent {
             Self::capture_source_selection(home, directory, categories, refs, policy, exclusions)
         }
     }
-    /// Reattest the exact applications selected alongside a retained home.
-    /// Inventory metadata alone is not a grant to additional application data.
     pub fn validate_computer_applications_selection(
         &self,
         selected: &[InstalledRef],
@@ -130,9 +127,8 @@ impl MigrationIntent {
         }
         Ok(())
     }
-    /// Export the encrypted artifact outside the actual selected original Home.
-    /// Both ancestry directions are checked against held directory identities,
-    /// rather than the caller's spelling of a path.
+    /// Both ancestry directions are checked against held directory identities, not the caller's
+    /// spelling of a path.
     pub fn validate_artifact_destination(&self, destination: &PinnedDirectory) -> io::Result<()> {
         self.source_pin.validate()?;
         destination.validate_destination()?;
@@ -146,8 +142,7 @@ impl MigrationIntent {
         self.source_pin.validate()?;
         destination.validate_destination()
     }
-    /// The actual rebound staging selection enters the canonical root helper;
-    /// a serialized Plan cannot replace this retained original permission.
+    /// A serialized plan cannot replace this retained original permission.
     #[cfg(target_os = "linux")]
     pub fn register_staging_copy(
         &self,
@@ -204,7 +199,6 @@ impl MigrationIntent {
     ) -> io::Result<Self> {
         Self::capture_source_selection(source, directory, categories, selected, home_policy, &[])
     }
-    /// Capture one source scope with explicit nested exclusions.
     pub fn capture_source_selection(
         source: &Path,
         directory: &Path,
@@ -331,7 +325,6 @@ impl MigrationIntent {
         intent.renew_application_budget()?;
         Ok(intent)
     }
-    /// Whether the reviewed grant includes separately captured native applications.
     /// Unsupported hosts refuse native grants instead of treating them as empty.
     pub fn has_computer_applications(&self) -> io::Result<bool> {
         #[cfg(target_os = "linux")]
@@ -383,12 +376,8 @@ impl MigrationIntent {
         self.grant.plan.clone()
     }
 
-    /// Bind an already written private source journal to this reviewed grant.
-    /// This changes only the plan's opaque locator; source custody, identity
-    /// and selection authority stay with the existing intent.
-    ///
-    /// # Errors
-    /// Refuses a locator that does not match the reviewed UID 1000 plan.
+    /// Changes only the plan's opaque locator; source custody, identity and selection authority stay
+    /// with the existing intent. Refuses a locator that does not match the reviewed UID 1000 plan.
     pub fn attach_deferred_handoff(
         &self,
         handoff: crate::setup::migration_handoff::DeferredHandoff,
@@ -397,9 +386,8 @@ impl MigrationIntent {
         attached.grant.plan.attach_deferred_handoff(handoff)?;
         Ok(attached)
     }
-    /// Re-attest a granted original home before sealing USB setup metadata.
-    /// No destination geometry is invented; the USB installer must check the
-    /// retained partition against its actual chosen target before mutation.
+    /// No destination geometry is invented; the USB installer must check the retained partition
+    /// against its actual chosen target before mutation.
     pub fn for_media(&self) -> io::Result<Plan> {
         #[cfg(target_os = "linux")]
         self.validate_computer_applications()?;
@@ -461,9 +449,8 @@ impl MigrationIntent {
         current.validate()?;
         Ok(current)
     }
-    /// Authority-only review for an authenticated pending offline declaration.
-    /// This never authorizes live copying, deployment or completed export. The
-    /// future offline epoch must independently capture content and capacity.
+    /// Authority-only review for an authenticated pending offline declaration; it never authorizes
+    /// copying, deployment or a completed export.
     pub fn for_pending_offline(&self) -> io::Result<Plan> {
         self.directory_pin.validate_destination()?;
         self.source_pin.validate()?;
@@ -490,8 +477,7 @@ impl MigrationIntent {
         }
         self.pending_original_selection()
     }
-    /// Revalidate the held producer and its exact private staging hint. The hint
-    /// remains metadata; authenticated registration supplies reader authority.
+    /// The hint stays metadata; authenticated registration supplies reader authority.
     #[cfg(target_os = "linux")]
     pub fn validate_staging_copy(&self, declared: &Plan) -> io::Result<()> {
         let reviewed = self.for_media()?;
@@ -509,8 +495,8 @@ impl MigrationIntent {
         self.source_pin.validate()?;
         self.directory_pin.validate_destination()
     }
-    /// Root registration retains the exact selected inventory and original caller
-    /// through the canonical helper/ACK; this is not an immutable export receipt.
+    /// Registration retains the exact selected inventory and original caller through the canonical
+    /// helper and ACK; this is not an immutable export receipt.
     #[cfg(target_os = "linux")]
     pub fn register_pending_applications(
         &self,
@@ -554,8 +540,8 @@ impl MigrationIntent {
                 inventory
                     .validate_operation(&current.operation_id)
                     .map_err(io::Error::other)?;
-                // Exact original selection is retained, not asserted to be the
-                // final coherent source deployment or current app-data epoch.
+                // The exact original selection is retained, not asserted as the final coherent
+                // source deployment or current app-data epoch.
                 current.flatpak_inventory = Some(serde_json::from_slice(bytes)?);
             }
             (None, false) => {}
@@ -566,8 +552,8 @@ impl MigrationIntent {
         self.directory_pin.validate_destination()?;
         Ok(current)
     }
-    /// Only the explicitly supplied private directory is inspected. No global
-    /// discovery or source path fallback participates in stage authority.
+    /// Only the supplied private directory is inspected; no global discovery or source path
+    /// fallback participates in stage authority.
     fn load_single(directory: &Path) -> io::Result<Self> {
         let directory_pin = private(directory)?;
         let mut options = OpenOptions::new();
@@ -873,7 +859,6 @@ pub fn reviewed_app_routing_fixture() -> (tempfile::TempDir, MigrationIntent) {
     std::fs::create_dir(&directory).unwrap();
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
     std::fs::write(source.join("original"), b"preserve").unwrap();
-    // Metadata-only routing fixture; this cannot mint source or target authority.
     let mut plan = crate::setup::migration_handoff::fixture_plan();
     plan.operation_id = "review-1".into();
     plan.categories = Categories {

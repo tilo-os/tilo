@@ -1,6 +1,7 @@
 use super::bool_control::{
     BoolControl, bool_control_api, bool_control_capabilities, bool_control_widget_methods,
 };
+use crate::i18n::widget_text;
 use crate::text_render::TextRenderer;
 use crate::text_render::TextStyle;
 use crate::theme::Theme;
@@ -367,12 +368,13 @@ impl Checkbox {
     }
 
     /// Go on from the box a rebuild dropped: its mark, on its way or at
-    /// rest. Showing what it showed, a change since moves from there, as
-    /// the input that made it asks; showing something else, it rests.
-    fn take_up(&mut self, kept: KeptCheck) {
+    /// rest. The same box shown another value since moves from there, as
+    /// the input that made it asks; another box's that it merely stands
+    /// where, showing something else, rests.
+    fn take_up(&mut self, kept: KeptCheck, found: crate::motion::Found) {
         self.motion = kept.motion;
         let shown = self.shown();
-        if kept.shown != shown {
+        if kept.shown != shown && found == crate::motion::Found::Where {
             self.motion.snap(shown.0, shown.1);
         }
     }
@@ -443,6 +445,7 @@ impl Checkbox {
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         let label = label.into();
         self.control.accessible_name = Some(label.clone());
+        self.control.name_resolved = true;
         self.label = Some(label);
         self.label_layout_revision = None;
         self
@@ -457,6 +460,7 @@ impl Checkbox {
     /// Change the visible label in place; `None` leaves only the box.
     pub fn set_label(&mut self, label: &str) {
         self.control.accessible_name = Some(label.to_owned());
+        self.control.name_resolved = true;
         self.label = Some(label.to_owned());
         self.label_layout_revision = None;
     }
@@ -692,8 +696,8 @@ impl Widget for Checkbox {
             flex_shrink: 1.0,
             ..Default::default()
         };
-        if let Some(kept) = self.hand_on.build(self.identity().as_deref()) {
-            self.take_up(kept);
+        if let Some((kept, found)) = self.hand_on.build(self.identity().as_deref()) {
+            self.take_up(kept, found);
         }
         taffy.widget_leaf(style, node_map, self)
     }
@@ -720,11 +724,11 @@ impl Widget for Checkbox {
         });
         let label_limit = available_width.map(|width| (width - target - gap).max(0.0));
         let (label_width, label_height) =
-            text_renderer.measure_style(&crate::i18n!(label), label_limit, &self.label_style);
+            text_renderer.measure_style(&widget_text(label), label_limit, &self.label_style);
         // An intrinsic box is as wide as its label needs, within the room.
         let hugged = self.intrinsic.then(|| {
             let (natural, _) =
-                text_renderer.measure_style(&crate::i18n!(label), None, &self.label_style);
+                text_renderer.measure_style(&widget_text(label), None, &self.label_style);
             let natural = target + gap + natural.ceil();
             available_width.map_or(natural, |room| natural.min(room))
         });
@@ -742,8 +746,8 @@ impl Widget for Checkbox {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.control.rect = crate::widget::layout_rect(taffy, node, origin);
-        if let Some(kept) = self.hand_on.place(self.control.rect) {
-            self.take_up(kept);
+        if let Some((kept, found)) = self.hand_on.place(self.control.rect) {
+            self.take_up(kept, found);
         }
     }
 
@@ -783,7 +787,7 @@ impl Widget for Checkbox {
         let face = if self.radio { face.radio() } else { face };
         Self::paint(scene, transform, theme, &face);
         if let Some(label) = self.label.as_ref() {
-            let label = crate::i18n!(label);
+            let label = widget_text(label);
             let gap = f64::from(LABEL_GAP);
             let x = self.control.rect.x0 + target + gap;
             let max_width = (self.control.rect.x1 - x).max(0.0);
@@ -854,12 +858,7 @@ impl Widget for Checkbox {
         // A visible inline label names itself; an explicit accessible name
         // covers label-less uses so the control is never announced as an
         // anonymous checkbox. The checked state is the load-bearing semantic.
-        let name = self
-            .control
-            .accessible_name
-            .as_ref()
-            .map(|n| crate::i18n!(n))
-            .filter(|n| !n.is_empty());
+        let name = self.control.spoken_name();
         let mut state = AccessState::new()
             .focusable(self.is_focusable())
             .focused(self.is_focused())

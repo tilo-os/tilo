@@ -148,9 +148,6 @@ fn already_open_mail_adopts_settings_google_consent_on_sync() {
     assert!(!mail.is_first_run());
     assert!(mail.state().engine.is_none());
 }
-/// A folder sync brings what is new, takes what another client changed
-/// or removed, keeps the result on the device, and asks only for what
-/// is new the next time.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -265,7 +262,6 @@ fn folder_syncs_apply_new_mail_remote_flags_and_removals_and_are_kept() {
         .is_some_and(|message| message.read);
     assert!(read, "read on another client reads as read here");
 
-    // What was fetched is kept: a new window opens on it.
     let deadline = ui::testing::hang_deadline();
     let kept_uids = loop {
         let mut uids: Vec<u32> = app
@@ -283,8 +279,6 @@ fn folder_syncs_apply_new_mail_remote_flags_and_removals_and_are_kept() {
     };
     assert_eq!(kept_uids, [1, 3, 4]);
 }
-/// A watched inbox that changed is fetched at once, for the account it
-/// belongs to; a watch for an account no longer held is ignored.
 #[test]
 fn a_watched_inbox_that_changed_is_fetched_at_once() {
     let (mut app, mut doc) = app();
@@ -312,8 +306,6 @@ fn a_watched_inbox_that_changed_is_fetched_at_once() {
             if fetched.email == account.email
     ));
 }
-/// Every inbox together lists each account's mail, and a reply to a
-/// message goes from the account it came to.
 #[test]
 fn all_inboxes_list_every_account_and_replies_go_from_the_owner() {
     let (mut app, _doc) = app();
@@ -364,8 +356,6 @@ fn all_inboxes_list_every_account_and_replies_go_from_the_owner() {
     assert_eq!(app.compose.sending_from(), Some(second.as_str()));
     assert_eq!(app.sending_account().email, second);
 }
-/// Searching asks every account's server once the text stops changing,
-/// and what the servers find joins the mail the search reads.
 #[test]
 fn a_search_asks_the_servers_and_keeps_what_they_find() {
     let (mut app, mut doc) = app();
@@ -464,8 +454,6 @@ fn a_search_asks_the_servers_and_keeps_what_they_find() {
             "what the server found is searched"
         );
 }
-/// A sent message waits out the undo time before it reaches the server;
-/// "Undo" on the sending notice takes it back to the composer unsent.
 #[test]
 fn a_sent_message_waits_so_undo_takes_it_back_unsent() {
     let send = |app: &mut MailApp, doc: &mut AutoCommit| -> Outgoing {
@@ -549,9 +537,6 @@ fn a_sent_message_waits_so_undo_takes_it_back_unsent() {
         "after the undo time it goes"
     );
 }
-/// A forward carries the forwarded message's files: one on this device
-/// goes with it, and one not downloaded yet is named, not dropped
-/// unsaid.
 #[test]
 fn a_forward_carries_the_messages_files() {
     let (mut app, mut doc) = app();
@@ -588,7 +573,13 @@ fn a_forward_carries_the_messages_files() {
         crate::attachment_store::materialize(&app.content, file).unwrap(),
         b"quarter,total\n3,42\n"
     );
-    let status = app.shared.borrow().status.clone().unwrap_or_default();
+    let status = app
+        .shared
+        .borrow()
+        .status
+        .clone()
+        .map(|notice| notice.text)
+        .unwrap_or_default();
     assert!(
         status.contains("deck.pdf") && status.contains("not downloaded"),
         "the file left behind is named: {status}"
@@ -598,9 +589,6 @@ fn a_forward_carries_the_messages_files() {
         "a forward nobody changed leaves no draft when closed"
     );
 }
-/// A forward says truly why a file stays behind: a downloaded file past
-/// what one message carries is too large, not "not downloaded", and a
-/// file whose bytes another one already carries is not left behind.
 #[test]
 fn a_forward_names_a_file_too_large_to_carry_as_too_large() {
     let (mut app, mut doc) = app();
@@ -634,7 +622,13 @@ fn a_forward_names_a_file_too_large_to_carry_as_too_large() {
         );
     };
     assert_eq!(file.filename, "notes.txt");
-    let status = app.shared.borrow().status.clone().unwrap_or_default();
+    let status = app
+        .shared
+        .borrow()
+        .status
+        .clone()
+        .map(|notice| notice.text)
+        .unwrap_or_default();
     assert!(
         status.contains("footage.mp4") && status.contains("more than one message can carry"),
         "the downloaded file too large to carry is named as too large: {status}"
@@ -648,8 +642,6 @@ fn a_forward_names_a_file_too_large_to_carry_as_too_large() {
         "the notes' bytes go with the forward: {status}"
     );
 }
-/// A saved draft, opened again and sent, is done with: it leaves
-/// Drafts, and the mailbox's draft is empty for the next message.
 #[test]
 fn a_sent_draft_leaves_drafts() {
     let (mut app, mut doc) = app();
@@ -696,9 +688,6 @@ fn a_sent_draft_leaves_drafts() {
         "the sent message no longer shows in Drafts"
     );
 }
-/// Select all acts on the whole folder: without a server to read the
-/// rest from, what the device holds is the whole of it, and the status
-/// says how many it took rather than leaving the person to count.
 #[test]
 fn select_all_takes_the_whole_folder_and_says_how_many() {
     let (mut app, mut doc) = app();
@@ -726,11 +715,11 @@ fn select_all_takes_the_whole_folder_and_says_how_many() {
         Some(format!("Selected all {rows} messages in Inbox").as_str())
     );
 }
-/// Select all on a folder whose server holds pages this device has not
-/// read asks for them, and acts on none of them until the folder is
-/// whole — the old "Marked 50 read" over a wall of unread mail was a
-/// whole-folder command applied to one page.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps the paging, the refusal and the whole-folder result in view"
+)]
 fn select_all_reads_the_pages_the_server_still_holds() {
     let (mut app, mut doc) = app();
     let (outgoing, requests) = std::sync::mpsc::channel();
@@ -796,9 +785,16 @@ fn select_all_reads_the_pages_the_server_still_holds() {
     );
     assert!(app.shared.borrow().selecting_all);
     let chose = app.shared.borrow().selected_bulk_ids().len();
+    assert!(
+        app.shared.borrow().status.is_none(),
+        "reading the rest says nothing: the selection growing already shows it"
+    );
+    // An action meanwhile would act on a part of the folder, so it waits and
+    // says why.
+    assert!(app.shared.borrow_mut().selection_still_arriving());
     assert_eq!(
         app.shared.borrow().status.as_deref(),
-        Some("Reading the rest of this folder…")
+        Some(format!("Still reading this folder; {chose} selected so far").as_str())
     );
 
     // The last page arrives: the folder is whole, and the selection is
@@ -837,9 +833,6 @@ fn select_all_reads_the_pages_the_server_still_holds() {
         Some(format!("Selected all {held} messages in Inbox").as_str())
     );
 }
-/// The outbox is a place: a row in the sidebar, a page of what waits to
-/// leave with the reason a server refused it, and the verb that takes a
-/// message back unsent.
 #[test]
 fn the_outbox_shows_what_waits_and_why_and_takes_a_message_back() {
     let (mut app, mut doc) = app();
@@ -870,7 +863,6 @@ fn the_outbox_shows_what_waits_and_why_and_takes_a_message_back() {
     };
     let queued_id = queued.id.clone();
 
-    // A device that holds the account refuses it, in its own words.
     TestMail::settle_delivery(
         &mut doc,
         &queued_id,
@@ -907,7 +899,6 @@ fn the_outbox_shows_what_waits_and_why_and_takes_a_message_back() {
         crate::window_bar::location(&app.shared.borrow(), None),
         "Outbox"
     );
-    // The page says the same: what waits, and the verb that takes it back.
     let tree = MailApp::overview_accessibility_node(&app.shared.borrow());
     let said = format!("{tree:?}");
     assert!(
@@ -934,8 +925,6 @@ fn the_outbox_shows_what_waits_and_why_and_takes_a_message_back() {
     app.sync(&doc, &automerge::ROOT);
     assert_eq!(app.shared.borrow().queued_count(account), 0, "and gone");
 }
-/// A failure that arrives after the person switched accounts is said of
-/// the account that asked, not of the one selected now.
 #[test]
 fn a_late_engine_error_stays_with_the_account_that_asked() {
     let (mut app, mut doc) = app();
@@ -971,10 +960,17 @@ fn a_late_engine_error_stays_with_the_account_that_asked() {
         })
         .unwrap();
     app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
-    let status = app.shared.borrow().status.clone().unwrap_or_default();
-    assert!(status.contains("asking@example.test"), "{status}");
-    assert!(!status.contains("selected@example.test"), "{status}");
-    // Its sync health is kept for that account, in this app's profile.
+    let said = app
+        .shared
+        .borrow()
+        .sync_error
+        .clone()
+        .expect("the failure is kept for the list to show");
+    assert!(said.account.contains("asking@example.test"), "{said:?}");
+    assert!(
+        !said.account.contains("selected@example.test"),
+        "the account selected since is not blamed: {said:?}"
+    );
     let root = app.accounts_persist_root().expect("sandboxed profile");
     let health = accounts::AccountSyncStatusStore::load_in(&root);
     assert_eq!(
@@ -989,6 +985,129 @@ fn a_late_engine_error_stays_with_the_account_that_asked() {
             .is_none()
     );
 }
+
+/// Whether a window's semantics say `fragment`, in its own node or below it.
+fn window_says(node: &ui::a11y::AccessNode, fragment: &str) -> bool {
+    node.name
+        .as_deref()
+        .is_some_and(|name| name.contains(fragment))
+        || node
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains(fragment))
+        || node
+            .children
+            .iter()
+            .any(|child| window_says(child, fragment))
+}
+
+/// A check that cannot run is a state the window keeps, not a notice that
+/// fades: the list says which account cannot be reached until a check works.
+#[test]
+fn an_unreachable_account_stays_said_in_the_window_until_a_check_works() {
+    let (mut app, mut doc) = app();
+    let (outgoing, outgoing_rx) = std::sync::mpsc::channel();
+    let (incoming, incoming_rx) = std::sync::mpsc::channel();
+    app.state().engine = Some(EngineHandle {
+        tx: outgoing,
+        rx: incoming_rx,
+    });
+    let account = app.shared.borrow().accounts.active_config();
+    let request = app
+        .state()
+        .post_engine(EngineRequest::fetch(account.clone(), Folder::Inbox))
+        .expect("the fetch went to the engine");
+    assert_eq!(outgoing_rx.try_recv().unwrap().account(), account.email);
+    incoming
+        .send(EngineEvent::Error {
+            request_id: request,
+            kind: EngineRequestKind::Fetch,
+            context: "fetch".into(),
+            message: "connection refused".into(),
+        })
+        .unwrap();
+    app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
+
+    // Nothing fades: no toast carries the failure.
+    app.show_status();
+    assert_eq!(
+        app.nav.toast_text(),
+        None,
+        "a check that fails is not a notice that fades"
+    );
+    let said = app
+        .shared
+        .borrow()
+        .sync_error
+        .clone()
+        .expect("the failure is kept for the list to show");
+    assert_eq!(said.account, account.label());
+    assert_eq!(said.cause, crate::state::SyncCause::Unreachable);
+
+    // The window's own tree says it, with the way out beside it.
+    app.layout_for_test(1100.0, 780.0);
+    let window = app
+        .accessibility()
+        .expect("an open Mail window has semantics");
+    assert!(
+        window_says(&window, &format!("Can’t reach {}", account.label())),
+        "the list says which account cannot be reached"
+    );
+    assert!(
+        window_says(&window, "Try again"),
+        "and offers to check again"
+    );
+
+    // The words are resolved when they are shown, so the same state reads in
+    // the window's language: German here, and English again after.
+    {
+        let _german = GermanWindow::new();
+        let window = app
+            .accessibility()
+            .expect("an open Mail window has semantics");
+        assert!(
+            window_says(
+                &window,
+                &format!("{} ist nicht erreichbar", account.label())
+            ),
+            "a German window says which account cannot be reached"
+        );
+        assert!(window_says(&window, "Erneut versuchen"));
+    }
+    let window = app
+        .accessibility()
+        .expect("an open Mail window has semantics");
+    assert!(window_says(&window, "Can’t reach"));
+
+    // A check that works clears it.
+    let again = app
+        .state()
+        .post_engine(EngineRequest::fetch(account.clone(), Folder::Inbox))
+        .expect("the second fetch went to the engine");
+    assert_eq!(outgoing_rx.try_recv().unwrap().account(), account.email);
+    incoming
+        .send(EngineEvent::Fetched {
+            request_id: again,
+            account_id: account.email,
+            folder: Folder::Inbox,
+            synced: crate::sync::Synced::default(),
+        })
+        .unwrap();
+    app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
+    assert_eq!(
+        app.shared.borrow().sync_error,
+        None,
+        "the account answers again, so the list stops saying it failed"
+    );
+    let window = app
+        .accessibility()
+        .expect("an open Mail window has semantics");
+    assert!(
+        !window_says(&window, "Can’t reach"),
+        "the words are gone from the window"
+    );
+}
+
 /// What the document still has to tell the server goes to the engine on
 /// the account it belongs to, and the engine's acknowledgement records it
 /// as applied; a refusal leaves it to tell, and an update for an account
@@ -1256,8 +1375,6 @@ fn engine_events_settle_only_their_own_request() {
         assert!(app.state().resource_refresh_invocation.is_none());
     }
 }
-/// Sample mode keeps its accounts in a sandbox, never the real store; a
-/// live window keeps them in its host's profile.
 #[test]
 fn account_roots_follow_each_mode() {
     {
@@ -1320,7 +1437,6 @@ fn trusted_senders_are_a_record_both_ways() {
     mail.follow_trusted_senders(record.clone());
     let doc = TestMail::doc();
 
-    // Another window or device trusts a sender: this window adopts it.
     record
         .invoke(&TrustedSenders::TRUST.with("lena@fischer.example".to_owned()))
         .unwrap();

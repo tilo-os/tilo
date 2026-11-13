@@ -12,26 +12,18 @@ use crate::json;
 use automerge::{ChangeHash, ObjId, ObjType, ReadDoc, Value as Am};
 use serde_json::Value;
 
-/// How deep the search for an item goes.
 const MAX_DEPTH: usize = 6;
 /// How many values a converted item may hold in all, so one huge item
 /// cannot balloon an event.
 const MAX_ENTRIES: usize = 10_000;
 
-/// The item `item` as it was at `heads`, or `None` when no map held it.
 #[must_use]
 pub fn item_json(doc: &impl ReadDoc, heads: &[ChangeHash], item: &str) -> Option<Value> {
     let object = find(doc, heads, item)?;
     let object = collection_value(doc, heads, &object).unwrap_or(object);
-    // What JSON cannot hold, or a subtree past the budget, still reports the
-    // item: the host reads what the document could answer.
     Some(json::read_at(doc, &object, heads, Some(MAX_ENTRIES)).unwrap_or(Value::Null))
 }
 
-/// The item `item` of the collection stored under the field `field`, as it
-/// was at `heads`: what [`item_json`] reads when another map of the record
-/// may hold the same key (an outbox entry and the item it became can share
-/// an id).
 #[must_use]
 pub fn collection_item_json(
     doc: &impl ReadDoc,
@@ -47,8 +39,6 @@ pub fn collection_item_json(
     Some(json::read_at(doc, &object, heads, Some(MAX_ENTRIES)).unwrap_or(Value::Null))
 }
 
-/// The value of a collection's entry: an ordered collection keeps each
-/// item as `{k: order key, v: value}`, and a reader wants the value.
 fn collection_value(doc: &impl ReadDoc, heads: &[ChangeHash], entry: &ObjId) -> Option<ObjId> {
     let keys: Vec<String> = doc.keys_at(entry, heads).collect();
     if keys != ["k", "v"] {
@@ -60,26 +50,18 @@ fn collection_value(doc: &impl ReadDoc, heads: &[ChangeHash], entry: &ObjId) -> 
     }
 }
 
-/// One entry of an outbox as stored: its id, the queued value, and the
-/// settled outcome (`{"state": .., "result": ..}`) once there is one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutboxRow {
-    /// The entry's id.
     pub id: String,
-    /// What was queued: for a connector, `{"op": .., "publish": [..]}`.
     pub value: Value,
-    /// How it settled, when it did.
     pub settled: Option<Value>,
 }
 
-/// The entries of the outbox stored under the field `field`, in queue
-/// order, as they are at `heads`.
 #[must_use]
 pub fn outbox_entries(doc: &impl ReadDoc, heads: &[ChangeHash], field: &str) -> Vec<OutboxRow> {
     let Some(Value::Object(entries)) = item_json(doc, heads, field) else {
         return Vec::new();
     };
-    // A collection keeps each entry as `{k: order key, v: entry}`.
     let mut rows: Vec<(String, OutboxRow)> = entries
         .into_iter()
         .filter_map(|(id, stored)| {

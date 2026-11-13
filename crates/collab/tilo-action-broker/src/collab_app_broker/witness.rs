@@ -93,7 +93,7 @@ pub(super) async fn serve_answering(
         .await
     {
         Some(Ok(witnessed)) => witnessed,
-        Some(Err(ActionHostError::ConfirmationRequired)) | None => return Some(first),
+        Some(Err(ActionHostError::ConfirmationRequired { .. })) | None => return Some(first),
         Some(Err(error)) => {
             return Some(RemoteActionMessage::Receipt(InvocationReceipt {
                 invocation: request.invocation,
@@ -114,7 +114,7 @@ fn needs_witness(reply: &RemoteActionMessage) -> bool {
         reply,
         RemoteActionMessage::Receipt(InvocationReceipt {
             status: ReceiptStatus::Rejected {
-                error: ActionHostError::ConfirmationRequired
+                error: ActionHostError::ConfirmationRequired { .. }
             },
             ..
         })
@@ -210,11 +210,7 @@ impl AppBrokerState {
         offered: &(super::PublishedSurface, super::PublishedAction),
     ) -> Result<(), String> {
         let current = self
-            .surfaces
-            .lock()
-            .map_err(|_| "task surface unavailable")?
-            .get(&offered.0.peer_id)
-            .and_then(|surface| surface.action_projection(&offered.1.resource, &offered.1.action))
+            .offered_by(offered.0.peer_id, &offered.1.resource, &offered.1.action)
             .ok_or("Store action retired while awaiting confirmation")?;
         if !current.0.live
             || current.0.route != offered.0.route
@@ -334,7 +330,7 @@ impl AppBrokerState {
                         .map(|root| super::principal_id_for_root(*root))
                 }),
         }) else {
-            return Pending::ready(Err(ActionHostError::ConfirmationRequired));
+            return Pending::ready(Err(ActionHostError::confirmation_required()));
         };
         // A foreign device is not the person's: they are asked on one of
         // their own devices, which draws the question and answers it.
@@ -350,7 +346,7 @@ impl AppBrokerState {
             Ok(Some(question)) => question,
             Ok(None) => {
                 return Pending::ready(Err(if BrokerActor::for_caller(caller).direct() {
-                    ActionHostError::ConfirmationRequired
+                    ActionHostError::confirmation_required()
                 } else {
                     ActionHostError::UnknownAction
                 }));
@@ -361,10 +357,10 @@ impl AppBrokerState {
             && !requires_store_witness(&question.request.target_app, &question.request.action)
         {
             // Other direct actions keep confirming on the caller's screen.
-            return Pending::ready(Err(ActionHostError::ConfirmationRequired));
+            return Pending::ready(Err(ActionHostError::confirmation_required()));
         }
         let Some(answer) = self.ask_person(&question) else {
-            return Pending::ready(Err(ActionHostError::ConfirmationRequired));
+            return Pending::ready(Err(ActionHostError::confirmation_required()));
         };
         self.show_waiting(&question, request, true);
         let (completer, pending) = tilo_actions::remote::pending();
@@ -434,7 +430,7 @@ impl AppBrokerState {
         }
         let token = self
             .witness_confirmation(&binding)
-            .ok_or(ActionHostError::ConfirmationRequired)?;
+            .ok_or(ActionHostError::confirmation_required())?;
         Ok(ConfirmedInvocation {
             confirmation: Confirmation::Witnessed(token),
             arguments,

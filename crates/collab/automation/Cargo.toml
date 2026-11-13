@@ -28,6 +28,8 @@ uuid.workspace = true
 # How a Shortcuts draft stores a step's bindings, condition and transform and
 # a shortcut's triggers (`model`): as values of the resource layer.
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
+# The clock that also reads in a browser page, where std has none.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
 [features]
 model = ["dep:tilo-resource"]

@@ -1,20 +1,9 @@
-//! Typed settings: one definition per setting.
+//! Typed settings: one [`Key`] per leaf of the settings document, naming its section, name, type
+//! and default.
 //!
-//! A [`Key`] names one leaf of the settings document — its section, its
-//! name, its value type and its default — and is the way production code
-//! reads and writes a setting. A misspelt section or a value of the wrong
-//! type is then a compile error instead of a leaf no reader looks at, and a
-//! chord, a Quick Settings tile and an action that change the same setting
-//! go through the same definition.
-//!
-//! Keys write leaf by leaf, never a whole section: a section is shared by
-//! writers that ship at different times, and each must keep the leaves it
-//! does not know (see the [crate docs](crate)). The persisted shape is
-//! exactly what the untyped writers stored, so readers on either side of
-//! this change agree.
-//!
-//! Reads are forgiving like every read in this crate: an absent leaf, or one
-//! whose value does not have the key's type, reads as the default.
+//! Keys write leaf by leaf, never a whole section: writers shipping at different times share a
+//! section, and each must keep the leaves it does not know. An absent leaf, or one whose value has
+//! another type, reads as the key's default.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -22,7 +11,6 @@ use serde_json::{Map, Value};
 
 use crate::{ChangeOrigin, SettingsSource};
 
-/// One setting: its section, leaf name, value type and default.
 pub struct Key<T: 'static> {
     section: &'static str,
     name: &'static str,
@@ -30,7 +18,6 @@ pub struct Key<T: 'static> {
 }
 
 impl<T> Key<T> {
-    /// The setting `section.name`, reading as `default()` when unset.
     #[must_use]
     pub const fn new(section: &'static str, name: &'static str, default: fn() -> T) -> Self {
         Self {
@@ -40,19 +27,16 @@ impl<T> Key<T> {
         }
     }
 
-    /// The top-level section the setting lives in.
     #[must_use]
     pub const fn section(&self) -> &'static str {
         self.section
     }
 
-    /// The leaf name inside its section.
     #[must_use]
     pub const fn name(&self) -> &'static str {
         self.name
     }
 
-    /// The value an unset or unreadable setting reads as.
     #[must_use]
     pub fn default_value(&self) -> T {
         (self.default)()
@@ -60,7 +44,6 @@ impl<T> Key<T> {
 }
 
 impl<T: Serialize + DeserializeOwned> Key<T> {
-    /// The value in `section`, an already loaded section object.
     #[must_use]
     pub fn from_section(&self, section: &Map<String, Value>) -> T {
         section
@@ -69,7 +52,6 @@ impl<T: Serialize + DeserializeOwned> Key<T> {
             .unwrap_or_else(|| self.default_value())
     }
 
-    /// The value in `document`, an already loaded settings document.
     #[must_use]
     pub fn from_document(&self, document: &Map<String, Value>) -> T {
         match document.get(self.section) {
@@ -78,57 +60,32 @@ impl<T: Serialize + DeserializeOwned> Key<T> {
         }
     }
 
-    /// The current value, from this process's settings ([`crate::source`]).
     #[must_use]
     pub fn get(&self) -> T {
         self.from_section(&crate::load_section(self.section))
     }
 
-    /// The value in `source`.
     #[must_use]
     pub fn get_in(&self, source: &dyn SettingsSource) -> T {
         self.from_section(&crate::load_section_in(source, self.section))
     }
 
-    /// Store `value`, leaving every other leaf alone.
-    ///
-    /// # Errors
-    /// The value cannot be serialised, or the write fails as
-    /// [`crate::update_section`] does.
     pub fn set(&self, value: T) -> std::io::Result<()> {
         self.set_by(value, &ChangeOrigin::default())
     }
 
-    /// [`Self::set`], recording who and what made the change.
-    ///
-    /// # Errors
-    /// As [`Self::set`].
     pub fn set_by(&self, value: T, origin: &ChangeOrigin) -> std::io::Result<()> {
         crate::update_section_by(self.section, self.leaf(value)?, origin)
     }
 
-    /// [`Self::set`] in `source`.
-    ///
-    /// # Errors
-    /// As [`SettingsSource::update_section`].
     pub fn set_in(&self, source: &dyn SettingsSource, value: T) -> std::io::Result<()> {
         source.update_section(self.section, self.leaf(value)?)
     }
 
-    /// Replace the value with what `change` makes of it, as one step no
-    /// other write lands inside: two toggles in quick succession flip twice.
-    /// Returns the stored value.
-    ///
-    /// # Errors
-    /// As [`Self::set`].
     pub fn update(&self, change: impl FnOnce(T) -> T) -> std::io::Result<T> {
         self.update_by(&ChangeOrigin::default(), change)
     }
 
-    /// [`Self::update`], recording who and what made the change.
-    ///
-    /// # Errors
-    /// As [`Self::set`].
     pub fn update_by(
         &self,
         origin: &ChangeOrigin,
@@ -142,10 +99,6 @@ impl<T: Serialize + DeserializeOwned> Key<T> {
         Self::stored(stored)
     }
 
-    /// [`Self::update`] in `source`.
-    ///
-    /// # Errors
-    /// As [`SettingsSource::update_section_with`].
     pub fn update_in(
         &self,
         source: &dyn SettingsSource,
@@ -159,8 +112,6 @@ impl<T: Serialize + DeserializeOwned> Key<T> {
         Self::stored(stored)
     }
 
-    /// One read-modify-write step: apply `change` (once) to the value in
-    /// `section`, keep the result in `stored`, and return the leaf to merge.
     fn step(
         &self,
         section: &Map<String, Value>,
@@ -183,12 +134,10 @@ impl<T: Serialize + DeserializeOwned> Key<T> {
         }
     }
 
-    /// What a step stored, once its write landed.
     fn stored(stored: Option<std::io::Result<T>>) -> std::io::Result<T> {
         stored.unwrap_or_else(|| Err(std::io::Error::other("the settings change was not applied")))
     }
 
-    /// `{name: value}`, the one leaf this key writes.
     fn leaf(&self, value: impl Serialize) -> std::io::Result<Map<String, Value>> {
         let value = serde_json::to_value(value).map_err(std::io::Error::other)?;
         Ok(Map::from_iter([(self.name.to_string(), value)]))
@@ -211,7 +160,6 @@ impl Default for SectionWrite {
 }
 
 impl SectionWrite {
-    /// An empty write.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -248,11 +196,6 @@ impl SectionWrite {
         self
     }
 
-    /// Store every key at once, recording `origin`.
-    ///
-    /// # Errors
-    /// A key was in another section or could not be serialised, or the write
-    /// fails as [`crate::update_section`] does.
     pub fn commit_by(self, origin: &ChangeOrigin) -> std::io::Result<()> {
         if let Some(error) = self.error {
             return Err(error);
@@ -263,10 +206,6 @@ impl SectionWrite {
         crate::update_section_by(section, self.values, origin)
     }
 
-    /// [`Self::commit_by`] with no recorded origin.
-    ///
-    /// # Errors
-    /// As [`Self::commit_by`].
     pub fn commit(self) -> std::io::Result<()> {
         self.commit_by(&ChangeOrigin::default())
     }

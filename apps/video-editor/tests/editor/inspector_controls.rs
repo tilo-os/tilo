@@ -50,7 +50,7 @@ fn the_key_and_mask_sliders_appear_once_switched_on_and_write_the_document() {
         node(&mut app, Role::CheckBox, "Switch chroma key off").is_some(),
         "and now says what pressing it does"
     );
-    press(&mut app, Role::RadioButton, "Mask shape ellipse");
+    press(&mut app, Role::RadioButton, "Mask shape Ellipse");
     assert_eq!(app.state().clip(id).unwrap().mask.shape, MaskShape::Ellipse);
 
     let reads: [(&str, Reading); 5] = [
@@ -95,7 +95,7 @@ fn a_new_mask_lands_on_the_placed_picture_and_a_later_shape_keeps_its_size() {
     let mut app = editor_with(&project);
     select_clip(&mut app, MARKET);
 
-    press(&mut app, Role::RadioButton, "Mask shape ellipse");
+    press(&mut app, Role::RadioButton, "Mask shape Ellipse");
     let mask = app.state().clip(id).unwrap().mask;
     assert!(
         (mask.x - placed.pos_x).abs() < 1e-9,
@@ -106,7 +106,7 @@ fn a_new_mask_lands_on_the_placed_picture_and_a_later_shape_keeps_its_size() {
 
     act(&mut app, Role::Slider, "Width", &Action::Increment);
     let adjusted = app.state().clip(id).unwrap().mask.w;
-    press(&mut app, Role::RadioButton, "Mask shape rect");
+    press(&mut app, Role::RadioButton, "Mask shape Rect");
     let mask = app.state().clip(id).unwrap().mask;
     assert_eq!(mask.shape, MaskShape::Rect);
     assert!(
@@ -120,7 +120,7 @@ fn turning_the_mask_leaves_the_picture_where_it_is() {
     let mut app = sample_editor();
     let id = clip_of(&app.state(), MARKET);
     select_clip(&mut app, MARKET);
-    press(&mut app, Role::RadioButton, "Mask shape ellipse");
+    press(&mut app, Role::RadioButton, "Mask shape Ellipse");
     let before = app.state().clip(id).unwrap().clone();
     let rotation = mask_rotation(&mut app);
     app.harness()

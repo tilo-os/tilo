@@ -1,8 +1,6 @@
 //! Target-user prepared setup consumer; no UI initialization or activation.
+
 fn bootstrap() -> Option<std::process::ExitCode> {
-    // The private consuming child isolates its mount namespace before any
-    // controller, runtime or output initialization. Its inherited descriptor
-    // is routing only; the driver authenticates actual parent and Shell roles.
     if std::env::args_os().nth(1).as_deref()
         == Some(std::ffi::OsStr::new(
             launcher::ordinary_child::CONSUMING_BOOTSTRAP_MODE,
@@ -48,8 +46,6 @@ fn bootstrap() -> Option<std::process::ExitCode> {
             },
         );
     }
-    // Root controller reexec uses the same registered UTF-8 argv as Imager.
-    // Existing unrelated consumers retain their OsString path handling.
     let controller_arguments = std::env::args_os()
         .skip(1)
         .map(std::ffi::OsString::into_string)
@@ -70,8 +66,6 @@ fn bootstrap() -> Option<std::process::ExitCode> {
     None
 }
 
-/// Installed consumer capability producers and checks keep their own closed
-/// diagnostics, which the image build and release packaging report.
 fn installed_consumers() -> Option<std::process::ExitCode> {
     use std::io::Write;
     let mode = std::env::args_os().nth(1)?.into_string().ok()?;

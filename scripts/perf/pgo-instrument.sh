@@ -8,7 +8,7 @@
 #
 # Usage:   scripts/perf/pgo-instrument.sh
 # Emits:   target/pgo-profraw/            (empty; populated by runs)
-#          target/pgo-instrumented/shell  (and terminal / file-explorer / tilo-install)
+#          target/pgo-instrumented/tilo-session  (and terminal / file-explorer / tilo-install)
 
 set -euo pipefail
 
@@ -37,12 +37,15 @@ export LLVM_PROFILE_FILE="$PROFRAW/tilo-%p-%m.profraw"
 RUSTFLAGS="-C profile-generate=$PROFRAW $(grep -oE '\-C[[:space:]]+[^"]*' .cargo/config.toml | tr '\n' ' ')" \
 CARGO_TARGET_DIR="$BUILD" \
 run_in_env bash -c "cd $ROOT && cargo build --release \
-    -p shell -p terminal -p file-explorer -p install"
+    -p tilo-session -p terminal -p file-explorer -p install"
 
 echo
 echo "Instrumented binaries at $BUILD/release/:"
-ls -la "$BUILD/release/shell" "$BUILD/release/terminal" \
+ls -la "$BUILD/release/tilo-session" "$BUILD/release/terminal" \
        "$BUILD/release/file-explorer" "$BUILD/release/tilo-install" 2>&1 | head
 echo
-echo "Now exercise them; each run drops .profraw files at $PROFRAW/."
+# LLVM_PROFILE_FILE was exported for this script only: a binary run from
+# another one needs the same export to land its counters here.
+echo "Now exercise them, so each run drops its .profraw files here:"
+echo "  export LLVM_PROFILE_FILE=$PROFRAW/tilo-%p-%m.profraw"
 echo "Then merge with: scripts/perf/pgo-merge.sh"

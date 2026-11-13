@@ -1,4 +1,5 @@
-//! The map's life: what it is built from, the tile cache it reads, the menus and panels it opens, and the durable resource it attaches to and adopts.
+//! The map's life: what it is built from, the cache it reads, the panels it opens, and the resource
+//! it attaches to and adopts.
 
 #[cfg(feature = "samples")]
 use super::sample;
@@ -11,14 +12,9 @@ use super::{
 use crate::failure;
 
 impl MapsApp {
-    /// Live app: spawns the background tile worker (network + decode off the
-    /// UI thread) and starts from an empty model — real OSM imagery, no
-    /// fabricated places. The user's own searches, routes and saved pins are
-    /// the only content; nothing is invented on startup.
+    /// The live app: a tile worker off the UI thread, and an empty model, so nothing is invented on
+    /// startup.
     pub fn new() -> Self {
-        // Empty model + empty vector basemap: before the first real tiles
-        // arrive the map shows a plain themed land colour (an honest loading
-        // state) rather than an invented street grid.
         Self::build(
             MapModel::default(),
             Basemap::default(),
@@ -28,9 +24,7 @@ impl MapsApp {
         )
     }
 
-    /// A capture of `sample`: no worker thread, no network, the bundled
-    /// sample's basemap standing in for raster imagery. The scenario's
-    /// places and plans arrive as the resource's state.
+    /// A capture of `sample`: no worker, no network, the sample basemap standing in for imagery.
     #[cfg(feature = "samples")]
     pub(crate) fn sample(sample: crate::scenario::Sample) -> Self {
         match sample {
@@ -39,8 +33,6 @@ impl MapsApp {
         }
     }
 
-    /// A past version in History mode: drawn from the version's places and
-    /// plans over a plain basemap, without a tile worker or the network.
     pub(crate) fn past() -> Self {
         Self::build(
             MapModel::default(),
@@ -51,11 +43,8 @@ impl MapsApp {
         )
     }
 
-    /// Headless/offline variant used by captures and tests: no worker thread,
-    /// no network. Renders the bundled sample city (places, a route, transit
-    /// options) and the stylised vector basemap so the screenshot is fully
-    /// populated without ever touching the wire. The overlay drawer starts
-    /// open so narrow screenshots show the panel content.
+    /// The offline variant captures and tests use: no worker, no network, the sample city on the
+    /// stylised basemap. The drawer starts open so narrow captures show the panel.
     #[cfg(feature = "samples")]
     pub(crate) fn offline() -> Self {
         Self::build(
@@ -131,7 +120,6 @@ impl MapsApp {
             tiles,
             overflow: {
                 let mut m = ContextMenu::new();
-                // Indices are mapped in `dispatch` via `take_selection`.
                 m.push(MenuItem::action(failure::t("maps-attribution"), || {}));
                 m.push(MenuItem::action(failure::t("maps-offline-maps"), || {}));
                 m.push(MenuItem::action(failure::t("maps-licenses"), || {}));
@@ -159,8 +147,6 @@ impl MapsApp {
         }
     }
 
-    /// Open the overflow menu at its button; the toolkit flips it up from
-    /// the bottom corner.
     pub(super) fn open_overflow(&mut self) {
         self.menu_for = MapMenu::More;
         self.overflow.set_items(vec![
@@ -171,8 +157,6 @@ impl MapsApp {
         self.overflow.open_anchored(self.overflow_rect(), self.rect);
     }
 
-    /// The map's layers, each checked while it shows, under the layers
-    /// button. Traffic is the one layer the map draws over its basemap.
     pub(super) fn open_layers(&mut self) {
         self.menu_for = MapMenu::Layers;
         self.overflow.set_items(vec![
@@ -183,14 +167,10 @@ impl MapsApp {
             .open_anchored(self.map_controls.rect(MapControlAction::Layers), self.rect);
     }
 
-    /// Whether the menu of `which` is open.
     pub(super) fn menu_open(&self, which: MapMenu) -> bool {
         self.overflow.is_open() && self.menu_for == which
     }
 
-    /// An offline (no-worker, no-network) app that mirrors the live first-run
-    /// state — an empty model and a plain themed basemap — so the empty
-    /// Explore hint can be captured hermetically.
     pub(crate) fn offline_empty() -> Self {
         Self::build(
             MapModel::default(),
@@ -201,81 +181,61 @@ impl MapsApp {
         )
     }
 
-    /// A fully live app (real tile worker, real network, `online == true`)
-    /// whose on-disk tile cache is rooted at `cache_dir`: the app's cache
-    /// area in a live window, a clean directory in a live integration test
-    /// that inspects exactly the PNGs the worker writes.
+    /// A live app whose on-disk cache is rooted at `cache_dir`: the app's cache area in a window, a
+    /// clean directory in an integration test.
     pub fn new_with_cache_dir(cache_dir: std::path::PathBuf) -> Self {
         Self::build(
             MapModel::default(),
             Basemap::default(),
-            // Rooted here like the real `new()`; the active theme's style is
-            // chosen on the first draw.
             TileLayer::live_with_root(cache_dir),
             false,
             true,
         )
     }
 
-    // --- live-verify accessors ---------------------------------------------
-    // Read-only windows onto the tile layer for the live-render harness and
-    // the full-plumbing integration test. They assert on the *production*
-    // request→worker→fetch→decode→drain path, not a mock.
+    // Read-only windows onto the tile layer for the live-render harness and the integration test,
+    // which assert on the production request→worker→fetch→decode→drain path.
 
-    /// Decoded OSM raster tiles resident in memory. `> 0` proves the live path
-    /// fetched AND decoded real imagery (the thing the mock/sample tests never
-    /// exercised).
+    /// Decoded tiles resident: more than zero proves the live path fetched and decoded real
+    /// imagery.
     pub fn tiles_mem_len(&self) -> usize {
         self.tiles.mem_len()
     }
 
-    /// Whether any tile fetch failed and is in the negative-cache backoff —
-    /// i.e. imagery is unreachable (egress blocked / offline).
     pub fn tiles_has_failures(&self) -> bool {
         self.tiles.has_failures()
     }
 
-    /// Why tile fetches are failing, if they are: a refusing server
-    /// ([`TileFault::Rejected`]) or unreachable imagery.
     pub fn tiles_failure(&self) -> Option<TileFault> {
         self.tiles.failure()
     }
 
-    /// Whether any tile request is still awaiting the background worker.
     pub fn tiles_has_inflight(&self) -> bool {
         self.tiles.has_inflight()
     }
 
-    /// On-disk tile cache root (`z/x/y.png` beneath it) — so a test can prove
-    /// real PNGs were persisted.
+    /// The cache root (`z/x/y.png` beneath it), so a test can prove real PNGs were persisted.
     pub fn tiles_cache_dir(&self) -> &std::path::Path {
         self.tiles.cache_dir()
     }
 
-    /// Live-verify hook: jump the camera to `zoom` (clamped), leaving the centre
-    /// put, so the render harness can capture a *mid-zoom* frame — the
-    /// target-level tiles not yet fetched — and prove the map reuses the
-    /// resident tiles scaled under an affine instead of blanking.
+    /// Jump the camera to `zoom`, leaving the centre put, so the harness captures a mid-zoom frame:
+    /// a fresh zoom must reuse resident tiles instead of blanking.
     pub fn set_zoom_for_verify(&mut self, zoom: f64) {
         self.model.zoom = zoom.clamp(3.0, 19.0);
     }
 
-    /// Live-verify read-back of the current camera zoom.
     pub fn zoom_for_verify(&self) -> f64 {
         self.model.zoom
     }
 
-    /// Test-only: seed the resident tile store with solid tiles covering the
-    /// current viewport across a few zoom levels, so a perf scenario measures
-    /// the *loaded* raster path (exact tiles + ancestor/descendant reuse under
-    /// zoom) instead of the empty first-frame substrate. No worker, no network.
+    /// Test-only: seed solid tiles over the viewport across three zoom levels, so a perf scenario
+    /// measures the loaded raster path.
     #[cfg(test)]
     pub(crate) fn seed_perf_tiles(&mut self, w: f64, h: f64) {
         self.rect = Rect::new(0.0, 0.0, w, h);
         let vc = self.view_center();
         let base_z = TileLayer::tile_zoom(self.model.zoom);
-        // Seed one level below through one level above so both zoom-in
-        // (ancestors) and zoom-out (descendants) reuse resident imagery.
         for z in base_z.saturating_sub(1)..=(base_z + 1).min(19) {
             let zoom = f64::from(z);
             for (id, _) in TileLayer::visible_tiles(self.model.center, zoom, vc, self.rect) {
@@ -284,13 +244,9 @@ impl MapsApp {
         }
     }
 
-    /// Show the places, searches and plans the framework resource holds.
     pub(crate) fn adopt_resource_state(&mut self, state: &Workspace) {
         let estimate = self.model.route.take();
         state.show_in(&mut self.model);
-        // A mode edit can arrive before its planner response. Keep the local
-        // estimate for those same endpoints, not the previous mode's accepted
-        // route. Clearing the accepted plan must still remove the estimate.
         if self.model.route.is_none()
             && !state.mode.is_transit()
             && self.pending > 0
@@ -305,8 +261,6 @@ impl MapsApp {
         }
     }
 
-    /// Attached to the view: edits go through `dispatch`, and the
-    /// offline areas are this device's in the `offline_areas` record.
     pub(crate) fn attach_framework(
         &mut self,
         dispatch: ui::framework::Dispatcher<Workspace>,
@@ -320,8 +274,6 @@ impl MapsApp {
         self.follow_offline_areas();
     }
 
-    /// Toggle the traffic overlay. Turning it on triggers a refresh so the
-    /// current congestion picture is loaded (or the honest empty state is set).
     pub(super) fn set_traffic(&mut self, on: bool) {
         self.map_controls.set_traffic_enabled(on);
         if on {
@@ -329,17 +281,6 @@ impl MapsApp {
         }
     }
 
-    /// Populate the traffic overlay.
-    ///
-    /// Tilo traffic is a crowdsourced, peer-shared layer;
-    /// no such live feed is wired yet, so the LIVE app has no reports and the
-    /// overlay stays empty — the map then shows "No traffic data" rather than
-    /// inventing congestion. When the bundled offline cartography is loaded
-    /// (the `--shots` / sample path, distinguished by a non-empty vector
-    /// basemap), we colour its arterials from the sample congestion set so the
-    /// overlay is demonstrable — the same sample-only gating every other piece
-    /// of this app's offline data already uses. Nothing is fabricated on the
-    /// live path.
     pub(super) fn refresh_traffic(&mut self) {
         if self.basemap.is_empty() {
             self.traffic = TrafficData::default();
@@ -348,24 +289,17 @@ impl MapsApp {
         }
     }
 
-    /// Submit one verb or field edit of the shared map through the
-    /// framework's door. Callers show its result in this window right away;
-    /// the door checks, applies, records and replicates it, and the state it
-    /// stores is presented back, so an edit the door refuses is undone here
-    /// too.
     pub(super) fn perform(&self, submit: impl ui::framework::Submit<Workspace>) {
         if let Some(dispatch) = &self.dispatch {
             dispatch.submit(submit);
         }
     }
 
-    /// Choose how directions travel, here and for everyone.
     pub(super) fn choose_mode(&mut self, mode: TravelMode) {
         self.model.mode = mode;
         self.perform(Workspace::paths().mode.set(mode));
     }
 
-    /// Anchor the transit planner at `value`, here and for everyone.
     pub(super) fn set_transit_time(&mut self, value: crate::model::TransitTime) {
         self.model.transit_time = value;
         self.perform(Workspace::paths().transit_time.set(value));
@@ -373,25 +307,17 @@ impl MapsApp {
 
     pub(super) fn toggle_save_selected(&mut self) {
         if let Some(id) = self.model.selected.clone() {
-            // Resolve the target state here (authoring time) so the action carries
-            // an explicit `saved`, never a read-and-toggle that could diverge on
-            // replay.
             let now_saved = self.model.place(&id).is_some_and(|p| p.saved);
             let saved = !now_saved;
             if self.model.places.iter().any(|place| place.id == id) {
                 self.perform(Workspace::save(&id, saved));
             } else if let Some(found) = self.model.results.iter().find(|place| place.id == id) {
-                // A search result becomes a place of the shared map as it is
-                // saved.
                 let place = Place {
                     saved,
                     ..found.clone()
                 };
                 self.accept_places(vec![place]);
             }
-            // The selection is local; reflect the explicit action payload in
-            // this window even when the selected search result is not yet a
-            // durable bookmark row.
             if let Some(place) = self.model.places.iter_mut().find(|place| place.id == id) {
                 place.saved = saved;
             }

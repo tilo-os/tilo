@@ -80,10 +80,10 @@ pub fn record_document(
     home: &str,
     record_key: &str,
 ) -> Result<DocStore, StoreError> {
-    app_state::validate_record_identity(package, home, record_key)?;
+    app_state::validate_document_identity(package, home, record_key)?;
     DocStore::shared(
         Rc::clone(documents),
-        StorageKey::record(package, home, record_key),
+        StorageKey::document(package, home, record_key),
     )
 }
 
@@ -138,7 +138,7 @@ pub fn open_stored_adopting(
         && let Some(mut workspace) = workspace
         && let Ok(Some(mut doc)) = workspace.load_complete()
     {
-        doc.set_actor(store.actor().clone());
+        doc.set_actor(store.actor());
         let mut writer = store.writer();
         // Nothing of it is on disk under the person's record yet: the first write keeps it.
         writer.request(&mut doc);

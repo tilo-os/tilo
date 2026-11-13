@@ -13,15 +13,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-mod common;
-
-// Records are held in confined app workers (this binary, started again);
-// their changes are admitted through the Automerge isolate.
-tilo_agent_participant::app_worker!();
-tilo_automerge_isolate::test_worker!();
-
+use crate::common::catalogue;
 use collab_types::DocumentMutation;
-use common::catalogue;
 use serde_json::{Value, json};
 use tilo_actions::OperationKind;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
@@ -116,7 +109,7 @@ fn messages_is_in_the_agents_catalogue() {
 #[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
 fn an_agent_reads_searches_answers_and_exports_sms_delivered_into_a_record() {
     let workspace = ContentStore::memory();
-    let agent = common::confined(MESSAGES, "assistant", &ReplicaActor::Agent, Seed::New)
+    let agent = crate::common::confined(MESSAGES, "assistant", &ReplicaActor::Agent, Seed::New)
         .expect("a Messages record is held in a confined worker")
         .lending(workspace.clone());
     assert_ne!(agent.worker_id(), Some(std::process::id()));
@@ -245,7 +238,7 @@ fn an_agent_reads_searches_answers_and_exports_sms_delivered_into_a_record() {
     let DocumentMutation::Snapshot(snapshot) = genesis else {
         panic!("a new record is published whole");
     };
-    let mut page = common::open(
+    let mut page = crate::common::open(
         MESSAGES,
         "ada",
         ReplicaActor::Owner,

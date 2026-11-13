@@ -135,26 +135,32 @@ class AppToolbarsTests(unittest.TestCase):
         self.assertEqual(counts["nav-header-leading"], 2, "clearing the slot draws nothing")
         self.assertEqual(counts["own-back"], 1, "the definition is not a header")
 
-    def test_a_reasoned_exemption_covers_its_line_or_the_statement_after_it(self):
+    def test_an_exempt_call_covers_only_the_control_it_wraps(self):
         code = (
             "fn f() {\n"
-            "    // window-bar: picker, the Open with chooser\n"
-            "    self.chooser\n"
-            '        .set_query_placeholder("Search apps");\n'
-            "    let f = SearchField::new(); // window-bar: service, no window bar\n"
+            "    let chooser = ui::window_toolbar::exempt!(Picker, {\n"
+            "        self.chooser\n"
+            '            .set_query_placeholder("Search apps")\n'
+            "    });\n"
             "    let g = SearchField::new();\n"
             "}\n"
         )
         self.assertEqual(app_toolbars.count_file(code)["own-search"], 1)
 
-    def test_an_exemption_with_an_unknown_reason_fails(self):
-        root = self.fixture({
-            "apps/demo/src/app.rs": "fn f() {\n    // window-bar: legacy\n    SearchField::new();\n}\n",
-        })
-        errors = app_toolbars.check(root, root / "none.txt")
-        self.assertTrue(any("apps/demo/src/app.rs:2: window-bar exemption 'legacy'" in e
-                            for e in errors), errors)
-        self.assertTrue(any("1 own-search (allowed 0)" in e for e in errors), errors)
+    def test_the_exemption_lives_in_code_not_in_the_comments_around_it(self):
+        exempt = (
+            "fn f() {\n"
+            "    let kept = ui::window_toolbar::exempt!(Service, {\n"
+            "        SearchField::new().with_placeholder(\"Search emoji\")\n"
+            "    });\n"
+            "}\n"
+        )
+        with_comment = exempt.replace(
+            "    let kept", "    // the on-screen keyboard has no window bar\n    let kept"
+        )
+        self.assertEqual(app_toolbars.count_file(exempt)["own-search"], 0)
+        self.assertEqual(app_toolbars.count_file(with_comment)["own-search"], 0,
+                         "a comment neither grants nor takes an exemption")
 
     def test_messages_are_read_from_each_apps_english_catalogue(self):
         root = self.fixture({

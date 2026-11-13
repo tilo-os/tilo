@@ -147,8 +147,8 @@ fn assert_normal_launch_expected_root(installed: &InstalledPackage) {
         .is_err(),
         "another metadata path must be rejected before exec"
     );
-    // A publisher revoked after install stops launching: the signed record's
-    // own publisher key is what the revocation list is matched against.
+    // A publisher revoked after install stops launching: the signed record's own publisher key is what
+    // the revocation list is matched against.
     let record = package_store::integrity::read_record(
         &package_store::integrity::record_dir(installed),
         &installed.id,

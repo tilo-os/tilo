@@ -236,7 +236,7 @@ pub fn ignored(guild: &Guild, user: &str, webhook: Option<&str>) -> bool {
 /// persona stays the Discord account, which says where it was written.
 fn appearance(
     guild: &Guild,
-    chat: &serde_json::Value,
+    chat: &crate::tilo::ChatRead,
     author: &Author,
 ) -> Result<Appearance, Box<AvatarFetch>> {
     let linked = guild
@@ -342,7 +342,7 @@ fn place(
 #[must_use]
 pub fn plan_created(
     guild: &Guild,
-    chat: &serde_json::Value,
+    chat: &crate::tilo::ChatRead,
     event: &MessageCreated,
 ) -> InboundPlan {
     let mut plan = InboundPlan::default();
@@ -503,7 +503,7 @@ pub fn plan_deleted(guild: &Guild, event: &MessageDeleted) -> InboundPlan {
 pub fn plan_reaction(
     guild: &Guild,
     event: &ReactionChanged,
-    chat: &serde_json::Value,
+    chat: &crate::tilo::ChatRead,
     added: bool,
 ) -> InboundPlan {
     let mut plan = InboundPlan::default();
@@ -626,7 +626,7 @@ pub const EXPIRED_REPLY: &str = "That link expired. Run /link again to get a new
 /// reply's button; `/unlink` unlinks it, and its reply says what came of
 /// it. `chat` names the Tilo person.
 #[must_use]
-pub fn plan_command(guild: &Guild, chat: &serde_json::Value, event: &Command) -> InboundPlan {
+pub fn plan_command(guild: &Guild, chat: &crate::tilo::ChatRead, event: &Command) -> InboundPlan {
     let mut plan = InboundPlan::default();
     match event.name.as_str() {
         "link" => {
@@ -706,7 +706,7 @@ pub fn plan_authorized(event: &Authorized) -> InboundPlan {
 /// says so, and the account's Discord picture is brought in while they
 /// have none of their own in Tilo.
 #[must_use]
-pub fn plan_linked(guild: &Guild, chat: &serde_json::Value, person: &str) -> InboundPlan {
+pub fn plan_linked(guild: &Guild, chat: &crate::tilo::ChatRead, person: &str) -> InboundPlan {
     let mut plan = InboundPlan::default();
     let Some(link) = guild.links.iter().find(|link| link.person == person) else {
         return plan;

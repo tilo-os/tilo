@@ -23,6 +23,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::context_menu::{ContextMenu, MenuItem};
+use crate::widget::DrawChild;
 
 #[path = "toolbar_component.rs"]
 mod component;
@@ -589,7 +590,7 @@ impl Toolbar {
     /// when a label or the text scale changed since.
     pub fn lay_out_at(&mut self, rect: Rect, theme: &Theme) {
         if self.measured_scale != Some(theme.text_scale) || self.extents.len() != self.items.len() {
-            crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            crate::text_render::with_layout_renderer(theme, |text| {
                 self.lay_out_in(rect, text, theme);
             });
             return;
@@ -1747,7 +1748,7 @@ impl Widget for Toolbar {
                 }
                 Some(ToolbarItem::Element(_)) => {
                     if let Some(ToolbarItem::Element(element)) = self.items.get_mut(index) {
-                        element.draw(scene, transform, text, theme, presence);
+                        element.draw_child(scene, transform, text, theme, presence);
                     }
                 }
                 Some(ToolbarItem::Spacer) | None => {}

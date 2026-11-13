@@ -1,24 +1,9 @@
 //! Reading the battery straight off `/sys/class/power_supply`.
 //!
-//! [`super::upower`] is the richer source and stays the one the power
-//! *service* uses — it aggregates every battery into one composite
-//! device and it pushes changes rather than being asked. But it is async
-//! and needs a system-bus connection, and the compositor's status
-//! indicator needs a number it can read from a plain polling thread with
-//! no runtime, no bus, and no subprocess. A file read is that.
-//!
-//! The kernel's power-supply class is a stable ABI (`Documentation/ABI/
-//! testing/sysfs-class-power`), present on every laptop, and readable by
-//! anyone — so this works before logind is up, inside the initrd, and in
-//! a container without a bus, all cases where `UPower` answers nothing.
-//!
-//! This is also the one reader of that class: the Settings power pane, the
-//! installer's low-battery check and the shell's device health all go
-//! through the types below rather than parsing the class themselves.
-//!
-//! Multiple batteries are aggregated the way `UPower` does it: by energy,
-//! so a machine with a 60 Wh and a 20 Wh pack reports one honest
-//! percentage rather than the mean of two unrelated ones.
+//! The power service uses [`super::upower`], which aggregates every battery and
+//! pushes changes, but it is async and needs a system bus. The compositor's
+//! status indicator needs a number it can read from a plain polling thread, and
+//! a file read is that.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,19 +11,18 @@ use std::time::Duration;
 
 use crate::battery::{BatterySnapshot, BatteryState};
 
-/// The kernel's power-supply class directory. A parameter on the inner
-/// functions so the tests can point at a fixture tree.
+/// The kernel's power-supply class directory. A parameter on the inner functions
+/// so the tests can point at a fixture tree.
 const POWER_SUPPLY: &str = "/sys/class/power_supply";
 
-/// What a driver measures a battery's contents in: energy (`energy_*`,
-/// µWh) or charge (`charge_*`, µAh).
+/// What a driver measures a battery's contents in: energy (`energy_*`, µWh) or
+/// charge (`charge_*`, µAh).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapacityUnit {
     Energy,
     Charge,
 }
 
-/// A snapshot of the primary battery and external-power state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BatteryInfo {
     pub present: bool,
@@ -46,18 +30,15 @@ pub struct BatteryInfo {
     pub status: String,
     pub cycle_count: Option<u32>,
     pub on_ac: bool,
-    /// Current full-charge capacity in the units exported by the driver.
     pub full_capacity: Option<u64>,
     /// Factory design capacity in the same units as `full_capacity`.
     pub design_capacity: Option<u64>,
-    /// The unit of `full_capacity`, `design_capacity` and `remaining`.
     pub unit: CapacityUnit,
     /// Charge stop threshold reported by the platform driver.
     pub charge_limit: Option<u32>,
-    /// What the battery holds now, in the units of `full_capacity`.
     pub remaining: Option<u64>,
-    /// How fast it fills or drains, in those units per hour (µW for
-    /// energy, µA for charge); `None` or zero when the driver does not say.
+    /// How fast it fills or drains, in those units per hour (µW for energy, µA for
+    /// charge); `None` or zero when the driver does not say.
     pub rate: Option<u64>,
 }
 
@@ -103,8 +84,8 @@ impl BatteryInfo {
 
     pub fn from_battery_dir(dir: &Path, on_ac: bool) -> Self {
         let read_num = |names: &[&str]| names.iter().find_map(|name| read_u64(dir, name));
-        // The level now and its rate of change, in matching units: energy
-        // (µWh, µW) or charge (µAh, µA). Some drivers sign the rate.
+        // The level now and its rate of change, in matching units: energy (µWh, µW) or
+        // charge (µAh, µA). Some drivers sign the rate.
         let read_signed = |name: &str| {
             read_trimmed(dir, name)
                 .and_then(|v| v.parse::<i64>().ok())
@@ -118,8 +99,8 @@ impl BatteryInfo {
                 CapacityUnit::Charge,
             ),
         };
-        // Drivers expose either energy_* (µWh) or charge_* (µAh); full and
-        // design are read in the same unit so health compares like with like.
+        // Drivers expose either energy_* (µWh) or charge_* (µAh); full and design are
+        // read in the same unit so health compares like with like.
         let (unit, full_capacity, design_capacity) =
             match (read_num(&["energy_full"]), read_num(&["charge_full"])) {
                 (Some(full), _) => (
@@ -140,8 +121,8 @@ impl BatteryInfo {
             rate,
             capacity: read_num(&["capacity"])
                 .or_else(|| {
-                    // Some drivers (Qualcomm's battmgr) publish no
-                    // `capacity`, only the charge or energy left and full.
+                    // Some drivers (Qualcomm's battmgr) publish no `capacity`, only the charge or
+                    // energy left and full.
                     [("energy_now", "energy_full"), ("charge_now", "charge_full")]
                         .iter()
                         .find_map(|(now, full)| {
@@ -164,8 +145,8 @@ impl BatteryInfo {
         }
     }
 
-    /// How long until the battery is empty at the rate it drains now, while
-    /// it is discharging.
+    /// How long until the battery is empty at the rate it drains now, while it is
+    /// discharging.
     pub fn time_to_empty(&self) -> Option<Duration> {
         if !self.present || self.on_ac || self.status != "Discharging" {
             return None;
@@ -173,8 +154,8 @@ impl BatteryInfo {
         hours_at(self.remaining?, self.rate?)
     }
 
-    /// How long until the battery is full (or at its charge limit) at the
-    /// rate it charges now, while it is charging.
+    /// How long until the battery is full (or at its charge limit) at the rate it
+    /// charges now, while it is charging.
     pub fn time_to_full(&self) -> Option<Duration> {
         if !self.present || self.status != "Charging" {
             return None;
@@ -196,8 +177,8 @@ impl BatteryInfo {
             .map(|pct| u32::try_from(pct.min(100)).unwrap_or(100))
     }
 
-    /// What the battery holds when full now and what it held new, in watt
-    /// hours; `None` for a driver that counts charge or does not say.
+    /// What the battery holds when full now and what it held new, in watt hours;
+    /// `None` for a driver that counts charge or does not say.
     #[allow(
         clippy::cast_precision_loss,
         reason = "µWh of a battery are far below f64's exact integer range"
@@ -210,7 +191,6 @@ impl BatteryInfo {
         (design > 0).then(|| (full as f64 / 1e6, design as f64 / 1e6))
     }
 
-    /// One line for a status card.
     #[must_use]
     pub fn summary(&self) -> String {
         if !self.present {
@@ -226,23 +206,22 @@ impl BatteryInfo {
 }
 
 /// A charge stop threshold as a cap: `0` is how some drivers (Qualcomm's
-/// battmgr) say no threshold is set, since a battery stopped at 0 % would
-/// never charge; such a battery charges to full.
+/// battmgr) say no threshold is set, since a battery stopped at 0 % would never
+/// charge; such a battery charges to full.
 fn charge_cap_of(threshold: u64) -> Option<u32> {
     (threshold > 0).then(|| u32::try_from(threshold.min(100)).unwrap_or(100))
 }
 
-/// `amount` at `per_hour`, as a duration; `None` at no rate or past two
-/// days, which a driver's momentary reading can suggest but no battery
-/// lasts.
+/// `amount` at `per_hour`, as a duration; `None` at no rate or past two days,
+/// which a driver's momentary reading can suggest but no battery lasts.
 fn hours_at(amount: u64, per_hour: u64) -> Option<Duration> {
     let seconds = amount.checked_mul(3600)?.checked_div(per_hour)?;
     (seconds <= 48 * 3600).then(|| Duration::from_secs(seconds))
 }
 
-/// A normalized description of the charge-limit control the kernel or
-/// platform driver actually exposes.  Settings builds its choices from this
-/// instead of assuming that every laptop accepts the same percentages.
+/// A normalized description of the charge-limit control the kernel or platform
+/// driver actually exposes. Settings builds its choices from this rather than
+/// assuming every laptop accepts the same percentages.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "service", derive(serde::Serialize, serde::Deserialize))]
 pub struct ChargeCapCapability {
@@ -255,11 +234,8 @@ pub struct ChargeCapCapability {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "service", derive(serde::Serialize, serde::Deserialize))]
 pub enum ChargeCapBackend {
-    /// Linux power-supply attributes such as
-    /// `charge_control_end_threshold`; used by `ThinkPad`, Framework, ASUS,
-    /// TUXEDO and several other drivers.
     PowerSupply,
-    /// Lenovo `IdeaPad`'s binary conservation mode (roughly 55–60%, or off).
+    /// Lenovo `IdeaPad`'s binary conservation mode (roughly 55–60 %, or off).
     ConservationMode,
     /// Huawei WMI's paired `start end` threshold control.
     HuaweiWmi,
@@ -281,8 +257,7 @@ pub enum PowerSupplyKind {
     Ups,
 }
 
-/// One battery or UPS the kernel lists, as the charge-limit discovery and the
-/// Settings battery card see it.  Names and serial numbers are never
+/// One battery or UPS the kernel lists. Names and serial numbers are never
 /// persisted; the id is only the kernel's current power-supply basename.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PowerDevice {
@@ -326,10 +301,9 @@ pub fn power_devices_from(root: &Path) -> Vec<PowerDevice> {
     out
 }
 
-/// Discover the hardware charge-limit contract.  Standard power-supply
-/// attributes win; vendor paths are used only when the kernel has not
-/// normalized the feature already.  `sys_root` is injectable so every backend
-/// is tested without touching the host.
+/// Discover the hardware charge-limit contract: standard power-supply attributes
+/// win, and vendor paths are used only when the kernel has not normalized the
+/// feature already.
 pub fn charge_capability() -> Option<ChargeCapCapability> {
     charge_capability_from(Path::new("/sys"))
 }
@@ -349,10 +323,10 @@ pub fn charge_capability_from(sys_root: &Path) -> Option<ChargeCapCapability> {
         }
     }
     if let Some(&(current, supports_start_threshold)) = standard.first() {
-        // The privileged helper applies one normalized cap to every battery.
-        // A single selector is only truthful when every controllable battery
-        // currently exposes the same contract; mixed state is left to a
-        // specialist diagnostic tool rather than partially changing hardware.
+        // The privileged helper applies one normalized cap to every battery, so a single
+        // selector is only truthful when every controllable battery exposes the same
+        // contract; mixed state is left to a specialist diagnostic tool rather than
+        // partially changing hardware.
         if standard
             .iter()
             .any(|entry| *entry != (current, supports_start_threshold))
@@ -418,28 +392,24 @@ pub fn charge_capability_from(sys_root: &Path) -> Option<ChargeCapCapability> {
     None
 }
 
-/// Read the machine's composite battery from sysfs.
-///
-/// Returns [`BatterySnapshot::absent`] on a machine with no battery — a
-/// desktop, a VM — which is the same thing `UPower` reports and is what
-/// the indicator renders as "no battery" rather than as "empty".
+/// Read the machine's composite battery from sysfs. A machine with no battery (a
+/// desktop, a VM) answers [`BatterySnapshot::absent`], which the indicator renders
+/// as "no battery" rather than as "empty".
 pub fn battery_snapshot() -> BatterySnapshot {
     snapshot_in(Path::new(POWER_SUPPLY))
 }
 
-/// How long the battery has left to run, or to charge, at the rate it is
-/// going now.
+/// How long the battery has left to run, or to charge, at the rate it is going
+/// now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BatteryTime {
-    /// Minutes until it is empty.
     ToEmpty(u32),
-    /// Minutes until it is full.
     ToFull(u32),
 }
 
-/// [`BatteryTime`] from sysfs: the packs' energy (or charge) and the rate
-/// it is flowing at. `None` while the rate is not known — just after the
-/// cable moved, on firmware that does not report it, at rest when full.
+/// [`BatteryTime`] from sysfs: the packs' energy (or charge) and the rate it is
+/// flowing at; `None` while the rate is not known, just after the cable moved, on
+/// firmware that does not report it, or at rest when full.
 #[must_use]
 pub fn battery_time() -> Option<BatteryTime> {
     time_in(Path::new(POWER_SUPPLY))
@@ -458,15 +428,15 @@ fn time_in(root: &Path) -> Option<BatteryTime> {
     let mut rate_total: u64 = 0;
     let mut states = Vec::new();
     for dir in supplies_of_type(root, "Battery") {
-        // A battery that is present but not `present` (a removed pack in
-        // a dual-bay laptop) contributes nothing.
+        // A battery that is present but not `present` (a removed pack in a dual-bay
+        // laptop) contributes nothing.
         if read_u64(&dir, "present").is_some_and(|p| p == 0) {
             continue;
         }
         let info = BatteryInfo::from_battery_dir(&dir, false);
         states.push(state_of(&info.status));
-        // Energy (µWh) over power (µW), or charge (µAh) over current
-        // (µA): never one of each, so the ratio is hours either way.
+        // Energy (µWh) over power (µW), or charge (µAh) over current (µA): never one of
+        // each, so the ratio is hours either way.
         now_total = now_total.saturating_add(info.remaining?);
         full_total = full_total.saturating_add(info.full_capacity?);
         rate_total = rate_total.saturating_add(info.rate?);
@@ -488,19 +458,17 @@ fn time_in(root: &Path) -> Option<BatteryTime> {
     }
 }
 
-/// Whether the machine is running on battery (no mains supply online).
-///
-/// Read separately from the battery because it is also true on a machine
-/// whose battery is absent or unreadable, and because the AC adapter's
-/// `online` flag changes the instant the cable moves, while a battery's
-/// `status` can lag a poll behind.
+/// Whether the machine is running on battery. Read separately from the battery
+/// because it is also true on a machine whose battery is absent or unreadable,
+/// and because the AC adapter's `online` flag changes the instant the cable
+/// moves while a battery's `status` can lag a poll behind.
 pub fn on_battery() -> bool {
     on_battery_in(Path::new(POWER_SUPPLY))
 }
 
-// Battery energy values are always tiny relative to f64's precision limit
-// (tens of watt-hours in µWh), and the percentage ratio below is clamped to
-// 0.0..=100.0 immediately before its cast to u8, so it always fits.
+// Battery energy values are always tiny relative to f64's precision limit (tens
+// of watt-hours in µWh), and the percentage ratio below is clamped to 0.0..=100.0
+// immediately before its cast to u8, so it always fits.
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
@@ -509,17 +477,16 @@ pub fn on_battery() -> bool {
               percentage ratio is clamped to 0.0..=100.0 immediately before the cast"
 )]
 fn snapshot_in(root: &Path) -> BatterySnapshot {
-    // Energy-weighted aggregate. `energy_*` is µWh and `charge_*` is µAh;
-    // either works as a weight as long as we do not mix the two units
-    // within one machine, and machines do not mix them.
+    // Energy-weighted aggregate; `energy_*` is µWh and `charge_*` is µAh, and either
+    // works as a weight as long as the two are not mixed within one machine.
     let mut now_total: u64 = 0;
     let mut full_total: u64 = 0;
     let mut percent_fallback: Vec<u8> = Vec::new();
     let mut states: Vec<BatteryState> = Vec::new();
 
     for dir in supplies_of_type(root, "Battery") {
-        // A battery that is present but not `present` (a removed pack in
-        // a dual-bay laptop) contributes nothing.
+        // A battery that is present but not `present` (a removed pack in a dual-bay
+        // laptop) contributes nothing.
         if read_u64(&dir, "present").is_some_and(|p| p == 0) {
             continue;
         }
@@ -530,8 +497,8 @@ fn snapshot_in(root: &Path) -> BatterySnapshot {
                 now_total = now_total.saturating_add(n);
                 full_total = full_total.saturating_add(f);
             }
-            // No energy counters: some firmware exposes only `capacity`.
-            // Keep it as a fallback rather than dropping the battery.
+            // No energy counters: some firmware exposes only `capacity`. Keep it as a
+            // fallback rather than dropping the battery.
             _ => {
                 if let Some(c) = read_u64(&dir, "capacity") {
                     percent_fallback.push(c.min(100) as u8);
@@ -545,8 +512,8 @@ fn snapshot_in(root: &Path) -> BatterySnapshot {
     }
 
     let percent = if full_total > 0 {
-        // Round rather than truncate: a 99.6%-full battery reading "99"
-        // for minutes before it says "100" looks like a stuck charge.
+        // Round rather than truncate: a 99.6 %-full battery reading "99" for minutes
+        // before it says "100" looks like a stuck charge.
         ((now_total as f64 / full_total as f64) * 100.0)
             .round()
             .clamp(0.0, 100.0) as u8
@@ -569,8 +536,8 @@ fn snapshot_in(root: &Path) -> BatterySnapshot {
 fn on_battery_in(root: &Path) -> bool {
     let mains = supplies_of_type(root, "Mains");
     if mains.is_empty() {
-        // No AC adapter node at all. If there is a battery, we are on it;
-        // if there is not, this is a desktop and it is not on battery.
+        // No AC adapter node at all: with a battery we are on it, and without one this is
+        // a desktop.
         return !supplies_of_type(root, "Battery").is_empty();
     }
     !mains
@@ -578,7 +545,6 @@ fn on_battery_in(root: &Path) -> bool {
         .any(|d| read_u64(d, "online").is_some_and(|v| v == 1))
 }
 
-/// Every `/sys/class/power_supply/*` entry whose `type` matches.
 fn supplies_of_type(root: &Path, want: &str) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(root) else {
         return Vec::new();
@@ -588,8 +554,8 @@ fn supplies_of_type(root: &Path, want: &str) -> Vec<PathBuf> {
         .map(|e| e.path())
         .filter(|p| read_trimmed(p, "type").as_deref() == Some(want))
         .collect();
-    // Deterministic order so a two-battery machine aggregates the same
-    // way on every poll (readdir order is not stable).
+    // Deterministic order so a two-battery machine aggregates the same way on every
+    // poll (readdir order is not stable).
     out.sort();
     out
 }
@@ -605,8 +571,6 @@ fn read_u64(dir: &Path, attr: &str) -> Option<u64> {
     read_trimmed(dir, attr)?.parse().ok()
 }
 
-/// Map the kernel's `status` string onto the UPower-shaped enum the rest
-/// of the crate speaks.
 fn state_of(status: &str) -> BatteryState {
     match status {
         "Charging" => BatteryState::Charging,
@@ -617,11 +581,10 @@ fn state_of(status: &str) -> BatteryState {
     }
 }
 
-/// Collapse per-pack states into one.
-///
-/// Any pack charging means the machine is gaining runtime, which is the
-/// signal the indicator and the low-battery latch both care about; that
-/// is why charging outranks discharging rather than the majority winning.
+/// Collapse per-pack states into one. Any pack charging means the machine is
+/// gaining runtime, the signal the indicator and the low-battery latch care
+/// about, which is why charging outranks discharging rather than the majority
+/// winning.
 fn composite_state(states: &[BatteryState]) -> BatteryState {
     if states.contains(&BatteryState::Charging) {
         return BatteryState::Charging;
@@ -640,8 +603,7 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// Build a fixture power-supply tree. Each supply is
-    /// `(name, [(attr, value)])`.
+    /// Build a fixture power-supply tree: each supply is `(name, [(attr, value)])`.
     fn tree(supplies: &[(&str, &[(&str, &str)])]) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         for (name, attrs) in supplies {
@@ -750,8 +712,8 @@ mod tests {
     #[test]
     fn multiple_packs_aggregate_by_energy_and_composite_state() {
         {
-            // 10/10 Wh full + 0/40 Wh empty is 20% of the machine's energy,
-            // not the 50% a naive mean of the two percentages would report.
+            // 10/10 Wh full + 0/40 Wh empty is 20 % of the machine's energy, not the 50 % a
+            // naive mean of the two percentages would report.
             let t = tree(&[
                 (
                     "BAT0",
@@ -877,9 +839,9 @@ mod tests {
         }
     }
 
-    /// Time left and time to full come from the level now and the rate the
-    /// driver reports, in matching units, signed or not; a battery that is
-    /// neither draining nor charging has neither.
+    /// Time left and time to full come from the level now and the rate the driver
+    /// reports, in matching units, signed or not; a battery that is neither draining
+    /// nor charging has neither.
     #[test]
     fn time_left_and_to_full_follow_the_drivers_rate() {
         let read = |files: &[(&str, &str)], on_ac: bool| {
@@ -925,10 +887,10 @@ mod tests {
         assert_eq!(unknown_rate.time_to_empty(), None);
     }
 
-    /// Qualcomm's battmgr (Snapdragon laptops) publishes no `capacity`, only
-    /// energy now, full and design, and a stop threshold of 0 while none is
-    /// set: the level is computed, the worn pack's health shows its loss in
-    /// watt hours, and charging is not capped.
+    /// Qualcomm's battmgr (Snapdragon laptops) publishes no `capacity`, only energy
+    /// now, full and design, and a stop threshold of 0 while none is set: the level
+    /// is computed, the worn pack's health shows its loss in watt hours, and charging
+    /// is not capped.
     #[test]
     fn a_battmgr_battery_shows_its_level_its_wear_and_no_cap() {
         let root = tempfile::tempdir().unwrap();

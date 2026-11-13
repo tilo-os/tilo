@@ -1314,7 +1314,10 @@ impl BatchApply {
 
         self.insert_runs_of_ops(doc);
 
-        debug_assert!(doc.ops.validate_op_order());
+        // TILO(apply-cost): a walk of every op of the document, so only where the crate's other
+        // whole-document checks run (its own tests, `slow_path_assertions`); as a debug assertion it made every apply O(document).
+        #[cfg(any(test, feature = "slow_path_assertions"))]
+        assert!(doc.ops.validate_op_order());
         Ok(())
     }
 

@@ -10,8 +10,6 @@ use crate::resource::MailShell;
 
 const ME: &str = "hiring@studio.example";
 
-/// A Mail window over an account whose inbox the test server holds, the
-/// first fetch settled.
 fn connected_window() -> (TestApp<MailShell>, FakeImap, tempfile::TempDir) {
     let rt = ui::rt::app();
     let imap = rt
@@ -44,7 +42,6 @@ Date: Thu, 29 Oct 2026 07:00:00 +0000\r\n\r\nHello.\r\n",
         .unwrap();
     let deadline = ui::testing::hang_deadline();
     // The window's first sync connects with the engine it was built with;
-    // the test servers answer the one this window reaches.
     app.with_surface(|mail: &mut super::MailApp| mail.reach_test_servers())
         .unwrap();
     // A window that reaches its server fetches when asked; it is asked
@@ -75,13 +72,10 @@ Date: Thu, 29 Oct 2026 07:00:00 +0000\r\n\r\nHello.\r\n",
         app.settle();
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    // Draw the settled window once, as a window that was shown does.
     app.settle();
     (app, imap, kept)
 }
 
-/// What a pass over the document would write: its heads and how many of
-/// the transaction's operations wait to be committed.
 fn mark(app: &TestApp<MailShell>) -> (Vec<automerge::ChangeHash>, usize) {
     app.read_document(|doc| {
         let mut doc = doc.clone();
@@ -89,13 +83,6 @@ fn mark(app: &TestApp<MailShell>) -> (Vec<automerge::ChangeHash>, usize) {
     })
 }
 
-/// The native host runs a model pass — sync, then the action directory is
-/// published again — whenever this holds (`native_runner`: `is_connected()
-/// && root_widget.needs_idle_sync()`). A connected Mail over an inbox whose
-/// whole is on the device must not hold it: the list painting the end of its
-/// rows asks for the older page `load_older` would post, and once the server
-/// said the folder is whole there is none, so nothing is left to ask for
-/// until something really changes.
 #[test]
 fn an_idle_connected_window_asks_for_no_pass() {
     let (mut app, imap, _kept) = connected_window();
@@ -110,7 +97,6 @@ fn an_idle_connected_window_asks_for_no_pass() {
         .unwrap();
     app.settle();
     // Whatever the first sync left (the notice going, a fade's last frames)
-    // runs out: the window stops asking for frames.
     let deadline = ui::testing::hang_deadline();
     let mut quiet = 0;
     while quiet < 50 {
@@ -145,10 +131,6 @@ fn an_idle_connected_window_asks_for_no_pass() {
     drop(imap);
 }
 
-/// The quiet above is the server saying the folder is whole, not the older
-/// page being forgotten: a folder whose server still holds pages asks for
-/// the next one, so an idle window with mail left to read does the work it
-/// is owed and no more.
 #[test]
 fn a_connected_window_asks_for_the_pages_its_server_still_holds() {
     let (mut app, imap, _kept) = connected_window();
@@ -182,9 +164,6 @@ fn a_connected_window_asks_for_the_pages_its_server_still_holds() {
     drop(imap);
 }
 
-/// A store that refuses to keep the account chosen says so once. The refusal
-/// is news, not a standing condition: a window that asked again on every
-/// pass would put the notice back up forever and never go idle.
 #[test]
 fn a_refused_account_save_is_said_once_and_the_window_goes_idle() {
     let (mut app, imap, kept) = connected_window();
@@ -193,7 +172,6 @@ fn a_refused_account_save_is_said_once_and_the_window_goes_idle() {
         b"damaged fixture vault",
     )
     .unwrap();
-    // The choice this window has not kept yet, as after picking an account.
     app.with_surface(|mail: &mut super::MailApp| {
         mail.nav.dismiss_toast();
         mail.persisted_active_account = None;

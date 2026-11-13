@@ -1,6 +1,7 @@
-//! Settings and Files acceptance against the production socket service and Drive
-//! adapter. Only OAuth/browser and the remote HTTP provider are local fixtures;
-//! the writable-directory portal is the shared recording host, not a compositor.
+//! Settings and Files acceptance against the production socket service and
+//! Drive adapter. Only OAuth/browser and the remote HTTP provider are local
+//! fixtures; the writable-directory portal is the shared recording host, not a
+//! compositor.
 use super::*;
 use std::sync::Arc;
 use std::time::Instant;
@@ -607,7 +608,6 @@ fn exercise_import_transitions(
             .select_services(true, false, FilesMode::Import)
             .unwrap();
         pane.sign_in.as_mut().unwrap().submit();
-        // Drive the real daemon while the Settings preparation worker waits.
         let deadline = Instant::now() + tilo_test_env::hang_bound();
         let completed = loop {
             service.pump();

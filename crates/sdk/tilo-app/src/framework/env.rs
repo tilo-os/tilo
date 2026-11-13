@@ -28,13 +28,17 @@ pub struct RecordEnv<R: Resource> {
     pub(crate) effects: Effects<R>,
 }
 
-/// One of the documents the app's windows started in the workspace
-/// ([`RecordEnv::window_documents`]).
+/// One of the documents the app's workspace holds, as the app's windows show
+/// them ([`RecordEnv::window_documents`]).
 pub struct WindowDocument<R: Resource> {
     /// The record it is.
     pub record: ui_core::record::RecordId,
     /// What it holds, as last kept.
     pub state: Rc<R::State>,
+    /// What the workspace's index calls it, when it names it: a document an
+    /// app window on another device or an agent in a hosted workspace made
+    /// is one no window here named.
+    pub name: Option<String>,
     /// When it last changed, in milliseconds since the epoch; `0` when no
     /// change of it says.
     pub changed_ms: u64,
@@ -52,6 +56,7 @@ impl<R: Resource> Clone for WindowDocument<R> {
         Self {
             record: self.record.clone(),
             state: Rc::clone(&self.state),
+            name: self.name.clone(),
             changed_ms: self.changed_ms,
         }
     }
@@ -158,15 +163,17 @@ impl<R: Resource> RecordEnv<R> {
         self.run.opener.clone()
     }
 
-    /// The documents this app's windows started in this workspace, each as
-    /// last kept, the most recently changed first, without the one this
-    /// window shows: what an app whose windows each show a document of their
-    /// own ([`ResourceApp::WINDOW_RESOURCE`](super::ResourceApp::WINDOW_RESOURCE))
-    /// lists, so a document made in a window that was closed is reached
-    /// again. Open one here with [`Self::open_here`] naming
-    /// [`WindowDocument::uri`]. Reads every one of them, so ask when the
-    /// list is shown, not on every frame. Empty in a past version and where
-    /// the window keeps no records in a workspace.
+    /// The documents this app's workspace holds, each as last kept, the most
+    /// recently changed first, without the one this window shows: what an app
+    /// whose windows each show a document of their own
+    /// ([`ResourceApp::WINDOW_RESOURCE`](super::ResourceApp::WINDOW_RESOURCE))
+    /// lists, so a document is reached again wherever it was made — in a
+    /// window here that was closed, a window on another device, or by an
+    /// agent in a hosted workspace (one the workspace names in its index,
+    /// through [`WindowDocument::name`]). Open one here with
+    /// [`Self::open_here`] naming [`WindowDocument::uri`]. Reads every one of
+    /// them, so ask when the list is shown, not on every frame. Empty in a
+    /// past version and where the window keeps no records in a workspace.
     pub fn window_documents(&self) -> Vec<WindowDocument<R>> {
         if self.is_past() {
             return Vec::new();
@@ -177,10 +184,10 @@ impl<R: Resource> RecordEnv<R> {
         let kind = ui_core::record::RecordKind::new(R::KIND);
         let shown = self.run.launched.record.as_ref();
         let mut documents: Vec<WindowDocument<R>> = store
-            .window_records(&kind)
+            .workspace_records(&kind)
             .into_iter()
-            .filter(|(record, _)| Some(record) != shown)
-            .filter_map(|(record, mut doc)| {
+            .filter(|(record, _, _)| Some(record) != shown)
+            .filter_map(|(record, mut doc, name)| {
                 let changed_s = doc
                     .get_heads()
                     .iter()
@@ -197,6 +204,7 @@ impl<R: Resource> RecordEnv<R> {
                 Some(WindowDocument {
                     record,
                     state,
+                    name,
                     changed_ms: u64::try_from(changed_s).unwrap_or(0).saturating_mul(1000),
                 })
             })
@@ -218,11 +226,12 @@ impl<R: Resource> RecordEnv<R> {
 
     /// The dispatcher of the resource nested in this one at `id`, whose
     /// edits are this resource's action `wrap(edit)`: a rich-text body, a
-    /// draft, a SQL buffer. See [`Dispatcher::child`].
+    /// draft, a SQL buffer. It is published with this resource, at `id`, so
+    /// an agent or a script addresses it too. See [`Dispatcher::child`].
     pub fn child<C: Resource>(
         &self,
         id: &str,
-        wrap: impl Fn(C::Action) -> R::Action + 'static,
+        wrap: impl Fn(C::Action) -> R::Action + Send + Sync + 'static,
     ) -> Dispatcher<C> {
         self.dispatch.child(id, wrap)
     }
@@ -258,20 +267,11 @@ impl<R: Resource> RecordEnv<R> {
         &self,
         state: Rc<super::chain::ChainState<P>>,
     ) -> Option<super::Chain<P>> {
-        let applying = Rc::downgrade(&state);
         let me = self.dispatch.me()?.to_owned();
-        let dispatch = self.dispatch.for_workspace_record::<P>(
-            state.id(),
-            self.dispatch.is_past(),
-            move |action| {
-                let state = applying.upgrade().ok_or_else(|| {
-                    tilo_actions::ActionError::Refused("the chain is closed".into())
-                })?;
-                state
-                    .apply_as(action, &tilo_actions::ActionInvoker::actor(&me))
-                    .map(drop)
-            },
-        );
+        let dispatch = super::chain::dispatching(&state, &me, |apply| {
+            self.dispatch
+                .for_workspace_record::<P>(state.id(), self.dispatch.is_past(), apply)
+        });
         Some(super::Chain::new(state, dispatch))
     }
 

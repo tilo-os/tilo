@@ -2,24 +2,7 @@
     clippy::manual_midpoint,
     reason = "migration stack lint debt is scoped to this target"
 )]
-
-//! Maps — Tilo native app (CRDT-native, built on the `ui` toolkit).
-//!
-//! An OpenStreetMap-style maps app with search (Nominatim), turn-by-turn
-//! routing (OSRM) across car/bike/foot, and public-transport journey
-//! planning (Transitous/MOTIS). The map itself is a custom Vello-drawn
-//! canvas: a stylised vector basemap, a drawn route polyline, and place
-//! markers, all coloured from the OS `Theme`.
-//!
-//! [`MapsShell`] is the app every host runs and mounts ([`definition`]). A
-//! live window fetches real data on background threads; a `--shots`
-//! capture renders the bundled sample city from its scenario's fixture and
-//! actions, so the screenshot is fully populated offline. Finding places is
-//! the platform search ([`place_search`]).
-
-// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
-// Panic-producing lints remain denied; shared crates retain the full lint set
-// because a fault there can affect the session or every app.
+// App-local arithmetic checks are relaxed in an isolated process; panic lints stay denied.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,

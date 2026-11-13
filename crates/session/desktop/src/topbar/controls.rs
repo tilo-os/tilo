@@ -9,8 +9,8 @@ use super::{
 
 impl TopBarChrome {
     /// The bar control under the pointer, from the hit rects the last paint laid down: plain at
-    /// rest, it lifts while the pointer is over it. An open ask's card under the band is the bar's
-    /// too, so its chips lift as the bar's do.
+    /// rest, it lifts while the pointer is over it. An open ask is the bar's too, so its chips lift
+    /// as the bar's do.
     pub fn hovered_control(&self) -> Option<String> {
         let point = self.last_cursor?;
         if !self.rect.contains(point) && !self.ask.pill.contains(point) {
@@ -33,7 +33,13 @@ impl TopBarChrome {
         if self.is_compact() {
             return controls;
         }
-        controls.push(Self::CONTROL_QUICK_SETTINGS.to_string());
+        // The bell inside the cluster is its own target: it opens the notification centre, and
+        // the rest of the cluster opens quick settings. A host with no quick settings has only the
+        // bell, and its cluster is named for what it opens.
+        controls.push(Self::CONTROL_NOTIFICATIONS.to_string());
+        if !self.bell.only {
+            controls.push(Self::CONTROL_QUICK_SETTINGS.to_string());
+        }
         if self.collaborators_visible() {
             controls.push(Self::CONTROL_COLLABORATORS.to_string());
         }
@@ -69,11 +75,12 @@ impl TopBarChrome {
             Self::CONTROL_TILO_MARK => self.tilo_mark_rect,
             Self::CONTROL_WORKSPACE_SETTINGS => self.ws_pill_rect,
             Self::CONTROL_STRIP_NAME => self.ws_strip_rect,
+            Self::CONTROL_NOTIFICATIONS => self.bell_hit_rect,
             Self::CONTROL_QUICK_SETTINGS => self.tray_hit_rect,
             Self::CONTROL_PROFILE => self.own_avatar_rect,
             Self::CONTROL_INVITE => self.invite_rect,
-            // The people button opens everyone here; the faces beside it each open one person, so
-            // they are not this control.
+            // Who is here, as one control: the faces (each opening its person in the panel, the
+            // badge everyone), or the people button where no face had room.
             Self::CONTROL_COLLABORATORS => {
                 let people = if self.people_button_rect.is_zero_area() {
                     self.avatar_stack_rect
@@ -158,7 +165,9 @@ impl TopBarChrome {
                 "topbar-strip-name",
                 &[("strip", self.strip_name().unwrap_or_default().into())],
             ),
-            Self::CONTROL_QUICK_SETTINGS if self.bell.only => t("topbar-open-notifications"),
+            Self::CONTROL_NOTIFICATIONS => self
+                .bell_name()
+                .unwrap_or_else(|| t("topbar-open-notifications")),
             Self::CONTROL_QUICK_SETTINGS => t("topbar-open-quick-settings"),
             Self::CONTROL_INVITE => t("topbar-invite"),
             Self::CONTROL_COLLABORATORS => {
@@ -280,7 +289,11 @@ impl TopBarChrome {
         } else if self.ws_pill_rect.contains(p) {
             ChromeIntent::ToggleWorkspaceMenu { at: None }
         } else if self.own_avatar_rect.contains(p) {
-            self.avatar_intent()
+            // The person's own card, whatever waits on their avatar: the card offers what a folded
+            // ask asks, so a press on their face never lands on anything but the card.
+            ChromeIntent::ToggleProfile
+        } else if self.bell_hit_rect.contains(p) {
+            ChromeIntent::ToggleNotifications
         } else if self.tray_hit_rect.contains(p) {
             ChromeIntent::ToggleQuickSettings
         } else if self.media_hit_rect().contains(p) {
@@ -383,7 +396,8 @@ impl TopBarChrome {
             Self::CONTROL_TILO_MARK if self.tilo_mark.is_some() => ChromeIntent::ToggleTiloMenu,
             Self::CONTROL_WORKSPACE_SETTINGS => ChromeIntent::ToggleWorkspaceMenu { at: None },
             Self::CONTROL_STRIP_NAME => ChromeIntent::ShowStrips,
-            Self::CONTROL_PROFILE => self.avatar_intent(),
+            Self::CONTROL_PROFILE => ChromeIntent::ToggleProfile,
+            Self::CONTROL_NOTIFICATIONS => ChromeIntent::ToggleNotifications,
             Self::CONTROL_QUICK_SETTINGS | Self::CONTROL_MEDIA => ChromeIntent::ToggleQuickSettings,
             Self::CONTROL_COLLABORATORS => ChromeIntent::ToggleCollaborators,
             Self::CONTROL_INVITE => ChromeIntent::Invite,

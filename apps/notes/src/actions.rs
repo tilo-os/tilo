@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use tilo_actions::EncodedAction;
 use tilo_document::RichTextAction;
-use ui::tilo_resource::{Atom, Resource, Stamped, items};
+use ui::tilo_resource::{Atom, Bytes, Resource, Stamped, items};
 use ui::widget::marks::{Mark, MarkSpan};
 use ui::widget::{BlockContent, BlockKind};
 
@@ -283,7 +283,7 @@ pub fn duplicate_action(page: PageId) -> Action {
 pub fn place_image_action(page: PageId, bytes: Vec<u8>, alt: Option<&str>) -> Action {
     stamped(NotebookAction::PlaceImage(notebook::notebook::PlaceImage {
         page: page_id(page),
-        bytes,
+        bytes: Bytes::to_keep(bytes),
         alt: alt.map(str::to_owned),
     }))
 }
@@ -292,7 +292,7 @@ pub fn place_image_action(page: PageId, bytes: Vec<u8>, alt: Option<&str>) -> Ac
 #[must_use]
 pub fn keep_image_action(bytes: Vec<u8>) -> Action {
     stamped(NotebookAction::KeepImage(notebook::notebook::KeepImage {
-        bytes,
+        bytes: Bytes::to_keep(bytes),
     }))
 }
 
@@ -332,7 +332,7 @@ pub fn import_markdown_action(
         notebook::notebook::ImportMarkdown {
             title: title.to_owned(),
             markdown: markdown.to_owned(),
-            images,
+            images: images.into_iter().map(Bytes::to_keep).collect(),
             note: note.map(page_id),
         },
     ))
@@ -435,6 +435,9 @@ impl InlineMarkSpan {
             },
             Mark::Transclusion(page) => InlineMark::Transclusion {
                 page: page.to_string(),
+            },
+            Mark::Embed(reference) => InlineMark::Mention {
+                id: reference.clone(),
             },
             Mark::ExternalLink(url) => InlineMark::ExternalLink { url: url.clone() },
             Mark::ResourceLink(href) => InlineMark::ResourceLink { href: href.clone() },

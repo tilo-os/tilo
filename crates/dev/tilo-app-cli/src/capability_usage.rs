@@ -45,16 +45,13 @@ fn table() -> Result<&'static Table> {
         .map_err(|error| anyhow::anyhow!("app_capability_usage.toml: {error}"))
 }
 
-/// One place that shows a capability in use.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Use {
-    /// Relative to the app directory.
     pub path: PathBuf,
     pub line: usize,
     pub what: String,
 }
 
-/// Every capability the app's shipped code uses, with the sites that show it.
 pub fn used(app_dir: &Path) -> Result<BTreeMap<String, Vec<Use>>> {
     let table = table()?;
     let mut uses: BTreeMap<String, Vec<Use>> = BTreeMap::new();
@@ -83,7 +80,6 @@ pub fn undeclared(app_dir: &Path, declared: &[&str]) -> Result<Vec<(String, Vec<
         .collect())
 }
 
-/// The diagnostic for one undeclared capability.
 #[must_use]
 pub fn render(capability: &str, sites: &[Use], manifest: &str) -> String {
     let site = sites.first().map_or_else(String::new, |site| {

@@ -126,13 +126,33 @@ impl PageGuide {
     }
 }
 
+/// Build the guide's sheet as it stands: it loads with the page's other
+/// sheets ([`crate::over_page::SHEETS`]), which nothing before the person's
+/// first look at one needs.
+pub(crate) fn follow(
+    guide: &mut PageGuide,
+    show: &mut dyn FnMut(Option<ui::widget::Element>),
+    missing: bool,
+) -> bool {
+    guide.follow(show, missing)
+}
+
 impl OverSheet for PageGuide {
     fn follow_sheet(
         &mut self,
         show: &mut dyn FnMut(Option<ui::widget::Element>),
         missing: bool,
     ) -> bool {
-        self.follow(show, missing)
+        // Down and never drawn, the guide has nothing to show and nothing
+        // was asked of it: keys are only caught while it is up. Asked up
+        // before its code is in, it shows once the code is, as the page lays
+        // out again.
+        if !self.state.up() && self.built.is_none() {
+            return false;
+        }
+        crate::over_page::SHEETS
+            .get()
+            .is_some_and(|code| (code.guide)(self, show, missing))
     }
 
     fn drawn(&self) -> bool {

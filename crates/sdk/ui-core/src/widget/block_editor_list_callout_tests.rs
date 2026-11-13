@@ -434,9 +434,24 @@ fn a_block_that_paints_a_surface_clears_the_prose_around_it() {
 }
 
 #[test]
+fn an_embed_stands_the_same_gap_from_the_line_above_it_and_the_one_below() {
+    let theme = Theme::dark();
+    let spacing = theme.tokens.spacing;
+    let mut editor = page(vec![
+        Block::paragraph("Before"),
+        Block::paragraph("![Groceries](groceries.png)"),
+        Block::paragraph("After"),
+    ]);
+    lay_out_and_draw(&mut editor, &theme);
+    assert_eq!(above(&editor, 1, &theme), spacing.s6, "above the card");
+    assert_eq!(above(&editor, 2, &theme), spacing.s6, "below the card");
+}
+
+#[test]
 fn a_heading_opens_its_section_with_room_and_its_first_block_sits_close_under_it() {
     let theme = Theme::dark();
     let spacing = theme.tokens.spacing;
+    let rhythm = spacing.rhythm;
     let mut editor = page(vec![
         Block::paragraph("Before"),
         Block::heading(2, "Section"),
@@ -446,13 +461,17 @@ fn a_heading_opens_its_section_with_room_and_its_first_block_sits_close_under_it
     lay_out_and_draw(&mut editor, &theme);
     assert_eq!(
         above(&editor, 1, &theme),
-        spacing.s6,
-        "room above a heading"
+        rhythm.group,
+        "the widest gap the rhythm has stands over a heading"
     );
     assert_eq!(
         above(&editor, 2, &theme),
-        spacing.s3,
-        "the section's first block sits close under its heading"
+        rhythm.tight,
+        "the section's first block sits at the closest gap under its heading"
+    );
+    assert!(
+        above(&editor, 1, &theme) > above(&editor, 2, &theme) * 2.0,
+        "a heading stands clearly nearer its own block than the line over it"
     );
     assert_eq!(
         above(&editor, 3, &theme),

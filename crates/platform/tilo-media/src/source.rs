@@ -1,17 +1,13 @@
 //! Where the bytes come from, and how to reach them.
 //!
-//! A [`Source`] is a codec-agnostic reference to playable media. It resolves to
-//! a `GStreamer` URI for the decode backend, and to a plain byte reader for the
-//! prefetch path. A [`Source::Workspace`] path points **through** the
-//! P2P FUSE mount at `/var/workspace` — reading it pulls the bytes down on
-//! demand (projection-first, hydration-on-read), so a consumer must never
-//! assume the bytes are already local just because the path resolves.
+//! A [`Source`] resolves to a `GStreamer` URI for the decode backend and to a byte
+//! reader for the prefetch path. A [`Source::Workspace`] path points **through** the
+//! P2P FUSE mount at `/var/workspace`: reading it pulls the bytes down on demand, so a
+//! consumer must never assume they are already local.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-/// Root of the Tilo P2P FUSE filesystem. A [`Source::Workspace`] path is
-/// resolved against this (or `$TILO_WORKSPACE_ROOT` when set for tests and development).
 pub const WORKSPACE_ROOT: &str = "/var/workspace";
 
 /// A reference to playable media. Unified across the local disk, the P2P FUSE
@@ -19,7 +15,6 @@ pub const WORKSPACE_ROOT: &str = "/var/workspace";
 /// same `Source` regardless of where the bytes live.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
-    /// An ordinary file on the local disk.
     LocalFile(PathBuf),
     /// A path on the P2P FUSE mount (`/var/workspace`). May be given absolute
     /// (already under the mount) or workspace-relative; both resolve to the
@@ -29,7 +24,9 @@ pub enum Source {
     /// A directly-playable stream URL — an `http(s)://` progressive file, or a
     /// InnerTube-resolved googlevideo URL. Streamed by the decode backend (its
     /// HTTP source element); the prefetch reader does not fetch it itself.
-    Remote { url: String },
+    Remote {
+        url: String,
+    },
 }
 
 impl Source {
@@ -51,9 +48,6 @@ impl Source {
         }
     }
 
-    /// The source for `uri`: a `file://` URI is the local file it names,
-    /// anything else a stream the engine fetches. A page has no local files:
-    /// the media element fetches every URI itself.
     pub fn for_uri(uri: &str) -> Source {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(path) = url::Url::parse(uri)
@@ -68,8 +62,6 @@ impl Source {
         }
     }
 
-    /// The absolute on-disk path these bytes resolve to, for the local and
-    /// workspace variants. `None` for [`Source::Remote`] (no local path).
     pub fn abs_path(&self) -> Option<PathBuf> {
         match self {
             Source::LocalFile(p) => Some(p.clone()),
@@ -84,10 +76,6 @@ impl Source {
         }
     }
 
-    /// Whether the content can be read/decoded right now. Remote is always
-    /// "ready" (the network fetch happens in the pipeline); a file variant is
-    /// ready once its resolved path exists on disk — for a workspace path that
-    /// means the FUSE has hydrated (or is projecting a cached) file.
     pub fn is_ready(&self) -> bool {
         match self {
             Source::Remote { .. } => true,
@@ -98,8 +86,6 @@ impl Source {
         }
     }
 
-    /// The URI to hand a `GStreamer` `playbin`. File variants become `file://`
-    /// URIs on their resolved absolute path; a remote source passes through.
     pub fn to_uri(&self) -> std::io::Result<String> {
         if let Source::Remote { url } = self {
             Ok(url.clone())
@@ -135,20 +121,11 @@ impl Source {
         Ok(Box::new(f))
     }
 
-    /// The total byte length of a file source, if known (a stat on the mount).
-    /// `None` for remote streams and unhydrated / missing files.
     pub fn byte_len(&self) -> Option<u64> {
         let abs = self.abs_path()?;
         std::fs::metadata(abs).ok().map(|m| m.len())
     }
 
-    /// A playable source over media the app holds as bytes: a file the user
-    /// picked with `pick_contents`, or a download. `name` supplies the type
-    /// from its extension.
-    ///
-    /// On the web this is a page-local `blob:` URL. On Linux and macOS the
-    /// bytes are written once to the temporary directory, named by their
-    /// hash, and played from there.
     pub fn from_contents(name: &str, bytes: &[u8]) -> std::io::Result<Source> {
         let extension = Path::new(name)
             .extension()
@@ -159,7 +136,6 @@ impl Source {
     }
 }
 
-/// The MIME type a page element needs for a media file extension.
 #[cfg(web_page)]
 fn mime_for_extension(extension: &str) -> &'static str {
     match extension {
@@ -204,8 +180,6 @@ fn contents_source(extension: &str, bytes: &[u8]) -> std::io::Result<Source> {
     Ok(Source::LocalFile(path))
 }
 
-/// Turn a native filesystem path into a percent-encoded file URL.
-/// Resolving lexically avoids requiring the file to be hydrated or even exist.
 #[cfg(any(unix, windows))]
 pub fn path_to_file_uri(path: &Path) -> std::io::Result<String> {
     let absolute = std::path::absolute(path)?;
@@ -219,7 +193,6 @@ pub fn path_to_file_uri(path: &Path) -> std::io::Result<String> {
         })
 }
 
-/// The native path a `file:` URI names: the inverse of [`path_to_file_uri`].
 #[cfg(any(unix, windows))]
 pub fn file_uri_to_path(uri: &str) -> std::io::Result<PathBuf> {
     let invalid = |message: String| std::io::Error::new(std::io::ErrorKind::InvalidInput, message);
@@ -229,10 +202,6 @@ pub fn file_uri_to_path(uri: &str) -> std::io::Result<PathBuf> {
         .map_err(|()| invalid("The file URI does not name a local file".into()))
 }
 
-/// Hosts without a native filesystem have no file URLs.
-///
-/// # Errors
-/// Always returns `Unsupported`.
 #[cfg(not(any(unix, windows)))]
 pub fn file_uri_to_path(_uri: &str) -> std::io::Result<PathBuf> {
     Err(std::io::Error::new(
@@ -241,10 +210,6 @@ pub fn file_uri_to_path(_uri: &str) -> std::io::Result<PathBuf> {
     ))
 }
 
-/// Hosts without a native filesystem have no file URLs.
-///
-/// # Errors
-/// Always returns `Unsupported`.
 #[cfg(not(any(unix, windows)))]
 pub fn path_to_file_uri(_path: &Path) -> std::io::Result<String> {
     Err(std::io::Error::new(
@@ -291,7 +256,6 @@ mod tests {
             assert_eq!(rel.abs_path().unwrap(), dir.join("clips/a.mp4"));
             assert!(!rel.is_ready(), "not hydrated yet — the byte is not local");
 
-            // Hydrate it (write the file) and it reports ready + readable.
             std::fs::create_dir_all(dir.join("clips")).unwrap();
             std::fs::write(dir.join("clips/a.mp4"), b"hello bytes").unwrap();
             assert!(rel.is_ready());
@@ -319,7 +283,6 @@ mod tests {
             assert_eq!(s.to_uri().unwrap(), "file:///home/a/My%20Clip.mp4");
             assert!(s.abs_path().unwrap().ends_with("My Clip.mp4"));
         }
-        // Phase `unix_file_url_preserves_non_utf8_path_bytes`.
         {
             use std::os::unix::ffi::OsStrExt;
             let path = Path::new(std::ffi::OsStr::from_bytes(b"/media/clip\xff #%.mp4"));

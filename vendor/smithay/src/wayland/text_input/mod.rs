@@ -161,8 +161,14 @@ where
                     },
                 );
                 handle.add_instance(&instance);
-                if input_method_handle.has_instance() {
-                    handle.enter();
+                // A text-input made while its client has the keyboard is
+                // entered at once; the ones it already has were before.
+                let client = wayland_server::Resource::id(&instance);
+                if let Some(focus) = handle
+                    .focus()
+                    .filter(|focus| wayland_server::Resource::id(focus).same_client_as(&client))
+                {
+                    instance.enter(&focus);
                 }
             }
             zwp_text_input_manager_v3::Request::Destroy => {

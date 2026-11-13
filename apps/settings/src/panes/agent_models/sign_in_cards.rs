@@ -17,7 +17,6 @@ use provider_settings_ui::widgets::{
     Item, SettingsSection, StatusTone, note, row, rows, section, semantic_status_pill, value_row,
 };
 
-/// Native sign-in actions augment the shared provider row at the same public door.
 pub(super) fn sign_in_provider_row(row: LiveRow, profile: &ProviderProfile) -> LiveRow {
     if let Some(service) = agent_sign_in::Service::of(profile) {
         return row.operation(
@@ -65,8 +64,6 @@ pub(super) fn sign_in_provider_row(row: LiveRow, profile: &ProviderProfile) -> L
 }
 
 impl AgentModelsModel {
-    /// Sign in to `service` for the provider `provider`, or to add one;
-    /// `reply` answers once it is signed in and saved.
     pub(super) fn sign_in_to(
         &mut self,
         service: &str,
@@ -108,19 +105,16 @@ impl AgentModelsModel {
         Ok(())
     }
 
-    /// Stop the sign-in under way. A provider being added leaves no grant.
     pub(super) fn cancel_sign_in(&mut self) {
         if let Some(mut setup) = self.sign_in.take() {
             setup.cancel();
             if !setup.existing {
-                // Nothing may have been sealed yet; there is nothing to report.
                 self.forget_grant(&setup.profile_id, false);
             }
         }
         self.changed = true;
     }
 
-    /// Take the sign-in's news; save the provider once it is signed in.
     pub(super) fn poll_sign_in(&mut self) {
         let Some(setup) = self.sign_in.as_mut() else {
             return;
@@ -156,9 +150,6 @@ impl AgentModelsModel {
         }
     }
 
-    /// Save what a finished sign-in brought: a new provider with its grant
-    /// or key, or the new key of an existing one. Answers the sign-in's
-    /// action when saved.
     fn save_sign_in(&mut self, mut setup: SignInSetup, signed: SignedIn) -> Result<(), String> {
         let reply = setup.reply.take();
         let id = setup.profile_id.clone();
@@ -277,8 +268,6 @@ impl AgentModelsModel {
             body.push(row(provider_settings_ui::widgets::error_caption(message)));
         }
         body.push(Self::sign_in_controls(actions, profile, waiting));
-        // Vertex AI's model is typed above; every other one is chosen from
-        // what the provider lists.
         if !google || vertex_target(&profile.endpoint).is_none() {
             self.panel
                 .profile_models(body, profile, self.panel.can_admin());
@@ -361,8 +350,6 @@ impl AgentModelsModel {
         ))
     }
 
-    /// The setups under way, the hosted providers and their request limits,
-    /// then the providers that sign in and the offers to add one.
     pub(super) fn push_provider_cards(
         &self,
         actions: &Actions<Settings>,
@@ -371,7 +358,6 @@ impl AgentModelsModel {
         if let Some(setup) = self.vertex.as_ref().filter(|setup| !setup.existing) {
             cards.push(setup.section(actions));
         }
-        // Also for signing in again: GitHub's code is shown here.
         if let Some(setup) = self.sign_in.as_ref() {
             cards.push(setup.section(actions));
         }
@@ -452,7 +438,6 @@ mod tests {
     use account_custody::{Capability, Custodian, GrantState, OAuthIssuer, OAuthUse};
     use std::sync::Arc;
 
-    /// A browser that follows the sign-in page to its redirect.
     struct Browser;
     impl crate::panes::accounts::BrowserOpener for Browser {
         fn open(&self, url: &str) -> ui::portal::LaunchChannel {
@@ -523,7 +508,6 @@ mod tests {
             "{text:#?}"
         );
 
-        // A sign-in cancelled before it finished saves nothing.
         pane.sign_in_to("chatgpt", None, None).unwrap();
         let cancelled = pane.sign_in.as_ref().unwrap().profile_id.clone();
         pane.cancel_sign_in();

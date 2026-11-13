@@ -426,6 +426,7 @@ fn run_activities(json_path: Option<String>, device: &str) -> Result<(), String>
         bar: Rect::new(0.0, 0.0, 1600.0, 44.0),
         banners: None,
         readout: None,
+        caret: None,
     };
     let timer = |value: String| {
         Summary::new(Kind::Timer, "Tea", value)

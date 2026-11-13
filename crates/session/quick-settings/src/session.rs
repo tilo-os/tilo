@@ -38,10 +38,14 @@ pub(crate) const SLEEP: &str = "power:sleep";
 pub(crate) const SYSTEM_UPDATE: &str = "system-update";
 /// The session's reading of its displays and how bright each is.
 pub(crate) const DISPLAYS: &str = "session:displays";
+/// The person's display settings on this device, as the settings service publishes them.
+pub(crate) const DISPLAY_SETTINGS: &str = "settings:settings.display";
 /// The notification centre's reading of what it keeps.
 pub(crate) const NOTIFICATIONS: &str = "session:notifications";
 /// The session's reading of the clipboard history.
 pub(crate) const CLIPBOARD: &str = "session:clipboard";
+/// The session's reading of which controls the panel shows, and in what order.
+pub(crate) const QUICK_SETTINGS: &str = "session:quick-settings";
 /// The session's reading of the person's devices.
 pub(crate) const DEVICES: &str = "session:devices";
 /// The session's own screen: locking it, the power menu.
@@ -58,7 +62,7 @@ pub(crate) const CHROME: &str = "desktop:chrome";
 /// app that plays a song opens through the chrome. A resource is opened
 /// before its actions are asked of it, so the screen and the night light are
 /// here even where the panel only presses them or only shows the switch.
-pub(crate) const WATCHED: [&str; 16] = [
+pub(crate) const WATCHED: [&str; 17] = [
     NETWORK,
     BLUETOOTH,
     VPN,
@@ -70,6 +74,7 @@ pub(crate) const WATCHED: [&str; 16] = [
     DISPLAYS,
     NOTIFICATIONS,
     CLIPBOARD,
+    QUICK_SETTINGS,
     DEVICES,
     SCREEN,
     NIGHT_LIGHT,
@@ -94,8 +99,9 @@ impl Watch {
 
     /// Ask the session for every resource the panel shows that is not
     /// reached yet and whose retry is due, and have `wake` woken at each
-    /// reading any of them publishes. Opening waits for the first reading, so
-    /// this runs off the frame thread. Whether one opened.
+    /// reading any of them publishes. A resource is followed whether or not
+    /// its service is up now: one that starts later publishes, and the panel
+    /// shows its part of the device then. Whether one was reached.
     pub(crate) fn open(&mut self, wake: &WakeHandle) -> bool {
         let mut opened = false;
         for resource in WATCHED {
@@ -109,22 +115,26 @@ impl Watch {
                 continue;
             }
             self.again.retain(|(waiting, _)| *waiting != resource);
-            match SessionResource::open(resource) {
+            match SessionResource::follow(resource, wake.clone()) {
                 Ok(watched) => {
-                    watched.attach(wake.clone());
                     self.opened.push((resource, watched));
                     opened = true;
                 }
                 Err(error) => {
-                    // A service that is not there yet is asked for again: the
-                    // panel shows its part of the device once it publishes.
-                    tracing::debug!(%error, %resource, "the session publishes no reading yet");
+                    // The session's command bridge is not there yet: ask for
+                    // it again, as nothing of it is followed until then.
+                    tracing::debug!(%error, %resource, "the session's reading is not reached");
                     self.again
                         .push((resource, now.checked_add(RETRY).unwrap_or(now)));
                 }
             }
         }
         opened
+    }
+
+    /// When a resource not reached yet is asked for again, if one waits.
+    pub(crate) fn retry_at(&self) -> Option<Instant> {
+        self.again.iter().map(|(_, at)| *at).min()
     }
 
     /// Whether the session's `resource` is reached.

@@ -67,7 +67,8 @@ fn said_about(about: host.Resource) -> List<host.Resource> {
 ///
 /// It takes the resource as the host's `Resource`, any resource of the workspace, so an app
 /// that has something to discuss places it in one line: a task's page and a note's view
-/// `use` this app and call `thread(t)`.
+/// `use` this app and call `thread(t)`. It reads what was said about it and nothing of what it
+/// holds, so what is edited about it elsewhere leaves the thread as it stands.
 view thread(about: host.Resource) {
     state draft: RichText = RichText("")
     state editing: Option<Comment> = .none
@@ -75,19 +76,21 @@ view thread(about: host.Resource) {
     let all = comments.items
     let said = all.filter(c -> created(c)?.from == about)
     let unread = said.find(c -> not unseen(c).is_empty())
+    let spoke = speakers(said)
     section("Discussion") {
         for c in said {
             if let u = unread {
                 if u == c {
-                    ui.UnreadDivider()
+                    ui.SectionDivider(tone: .accent)
                 }
             }
-            comment_row(c, editing, revised)
+            comment_row(c, spoke, editing, revised)
         }
         std.composer(
             draft,
-            "Comment on this {meta(about).noun}",
+            "Add a comment",
             comment(comments, draft).made_from(about),
+            speakers: spoke,
         )
     }
 }
@@ -95,7 +98,13 @@ view thread(about: host.Resource) {
 /// One comment of a thread: who said it and when over what they said — in an editor while its
 /// author changes it — and what they can do to it while they are over it. What it says stands
 /// at the name's left edge, not the face's, as a conversation's lines and a history's steps do.
-view comment_row(c: Comment, editing: State<Option<Comment>>, revised: State<RichText>) {
+/// `spoke` is who the thread's `@` drawer offers, its own people first.
+view comment_row(
+    c: Comment,
+    spoke: List<Principal>,
+    editing: State<Option<Comment>>,
+    revised: State<RichText>,
+) {
     let made = created(c)
     row(gap: .tight, align: .start) {
         avatar(made?.who)
@@ -111,7 +120,7 @@ view comment_row(c: Comment, editing: State<Option<Comment>>, revised: State<Ric
                 }
             }
             if editing == c {
-                rich_input(bind: revised, placeholder: "Edit comment") {
+                rich_input(bind: revised, placeholder: "Edit comment", speakers: spoke) {
                     on submit: edit(c, revised).then(set(editing, .none))
                 }
                 row {

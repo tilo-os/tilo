@@ -33,8 +33,6 @@ struct Evidence {
     closes: usize,
     owner_changed: bool,
 }
-/// The owner bus path itself, which the fixture binds: no host keyring or
-/// routing seam stands in for it.
 fn start_owner_bus() -> PrivateBus {
     let uid = unsafe { libc::getuid() };
     assert!(uid != 0 && unsafe { libc::geteuid() } == uid);

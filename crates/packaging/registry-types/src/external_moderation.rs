@@ -31,7 +31,6 @@ pub struct ExternalModerationOperation {
 }
 
 impl ExternalModerationOperation {
-    /// Stable action identifier; neither role nor action is caller-selected.
     #[must_use]
     pub fn action(&self) -> &'static str {
         match self.mutation {
@@ -145,7 +144,6 @@ fn text(value: &str, min: usize, max: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Identity-signed delegation to a destination-specific moderation key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModerationCredential {

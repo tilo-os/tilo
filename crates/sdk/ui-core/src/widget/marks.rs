@@ -45,6 +45,11 @@ pub enum Mark {
     /// `![[Page Title]]` — a block-level live projection of another page.
     /// The UUID, rather than the visible title, is the durable identity.
     Transclusion(PageId),
+    /// `![[Record Title]]` — a block-level live projection of a resource by the catalogue's
+    /// reference to it ([`tilo_reference::embed`]): the same thing a [`Mark::Transclusion`] is
+    /// for a host's own page, for a record any app keeps, which is found again by its reference
+    /// however it is renamed. The marked text is the title the record had when it was written.
+    Embed(String),
     /// `[label](https://example.test)` — a host-opened external URI.
     ExternalLink(String),
     /// A `link` whose target names another resource of this desktop: the
@@ -86,6 +91,7 @@ impl Mark {
                 | (Mark::Strikethrough, Mark::Strikethrough)
                 | (Mark::Link(_), Mark::Link(_))
                 | (Mark::Transclusion(_), Mark::Transclusion(_))
+                | (Mark::Embed(_), Mark::Embed(_))
                 | (Mark::ExternalLink(_), Mark::ExternalLink(_))
                 | (Mark::ResourceLink(_), Mark::ResourceLink(_))
                 | (Mark::Mention(_), Mark::Mention(_))
@@ -347,6 +353,8 @@ pub struct MarkSegment {
     pub external_link: bool,
     /// The `tilo://open#…` address a [`Mark::ResourceLink`] names.
     pub resource_link: Option<String>,
+    /// The reference a [`Mark::Embed`] covering this segment names.
+    pub embed: Option<String>,
     /// The participant a mention covering this segment refers to.
     pub mention: Option<String>,
 }
@@ -363,6 +371,7 @@ impl MarkSegment {
             link: None,
             external_link: false,
             resource_link: None,
+            embed: None,
             mention: None,
         }
     }
@@ -411,6 +420,7 @@ pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
                     Mark::Underline => seg.underline = true,
                     Mark::Strikethrough => seg.strikethrough = true,
                     Mark::Link(id) | Mark::Transclusion(id) => seg.link = Some(*id),
+                    Mark::Embed(reference) => seg.embed = Some(reference.clone()),
                     Mark::ExternalLink(_) => seg.external_link = true,
                     Mark::ResourceLink(href) => seg.resource_link = Some(href.clone()),
                     Mark::Mention(id) => seg.mention = Some(id.clone()),

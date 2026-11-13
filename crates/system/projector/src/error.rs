@@ -1,8 +1,4 @@
 //! The broker's one error type.
-//!
-//! Every variant displays as the plain message the broker has always printed:
-//! the shell shows a failed command's stderr to the user, so the category is
-//! for callers that branch, never extra text in front of the message.
 
 use std::io;
 

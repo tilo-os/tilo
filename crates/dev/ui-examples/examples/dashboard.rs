@@ -1,23 +1,10 @@
 //! Interactive dashboard — a "very complex" example application
 //! to eyeball the incremental-rendering work from the 2026-05-23
 //! perf plan. Opens a single window with:
-//!
-//!   - 11 animating widgets in the header (3 `ProgressBars` +
-//!     8 Spinners) — exercises `needs_animation_frame` + the
-//!     gate.
-//!   - 8 panels × 20 rows = ~160 cached leaves (Text + Button
-//!     + Avatar + Badge in rotation) — exercises the per-widget
-//!       `Scene::append` path.
-//!   - A footer with extra Avatars / Badges + a `ToggleGroup` so
-//!     a click target is always within reach.
-//!
 //! Run with:
 //! ```
 //! cargo run -p ui-examples --release --example ui-lab -- dashboard
 //! ```
-//!
-//! Set `TILO_UI_PERF=1` to see per-frame phase timings printed
-//! to stderr (the App's redraw cycle is instrumented in `app.rs`).
 
 use std::fmt::Write as _;
 

@@ -10,11 +10,6 @@ use crate::num;
 use crate::paint_context::PaintContext;
 use crate::word_processor::Heading;
 
-/// The document-outline surface and its frame-local interaction geometry.
-///
-/// Heading derivation and scrolling remain editor concerns. This component owns
-/// whether the surface is visible, how entries are presented, and which heading
-/// a pointer press selects.
 #[derive(Default)]
 pub(super) struct OutlinePane {
     open: bool,
@@ -46,8 +41,6 @@ impl OutlinePane {
             .map(|(_, id)| id.as_str())
     }
 
-    /// Track the pointer for the rows' hover lift; returns whether the
-    /// hovered row changed.
     pub fn pointer_moved(&mut self, point: Point) -> bool {
         let before = self
             .pointer
@@ -56,7 +49,6 @@ impl OutlinePane {
         before.as_deref() != self.heading_at(point)
     }
 
-    /// Where heading `id`'s row was drawn this frame.
     #[cfg(test)]
     pub fn heading_rect(&self, id: &str) -> Option<Rect> {
         self.hits
@@ -70,11 +62,6 @@ impl OutlinePane {
         self.hits.clear();
     }
 
-    /// Paint the outline on the navigation panel `panel` (painted by its
-    /// drawer; `theme` is the theme of that ground): an "Outline" section
-    /// header and one navigation row per
-    /// heading, indented by its level, with the heading the caret is in
-    /// lifted.
     pub fn draw(
         &mut self,
         context: &mut PaintContext<'_>,

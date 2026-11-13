@@ -9,3 +9,7 @@ graph-load-error = The screens could not be loaded: { $error }
 about-title = About
 about-body = A second screen, added with tilo-app add screen about and registered with the router.
 about-back = Back
+
+## What the record and its actions are called
+example-projects = Project
+example-projects-create = Create a project

@@ -11,7 +11,6 @@ pub use tilo_pycompat::{
     Dumps, equals_number, int_of, repr, repr_str, split, splitlines, str_of, strip, truthy,
 };
 
-/// The first `count` characters of `text` (`text[:count]`).
 pub fn truncate(text: &str, count: usize) -> &str {
     match text.char_indices().nth(count) {
         Some((at, _)) => text.split_at(at).0,
@@ -19,12 +18,10 @@ pub fn truncate(text: &str, count: usize) -> &str {
     }
 }
 
-/// `len(text)`: characters, not bytes.
 pub fn char_len(text: &str) -> usize {
     text.chars().count()
 }
 
-/// `urllib.parse.urlsplit(url)`, the parts the helper reads.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct SplitUrl {
     pub scheme: String,
@@ -45,10 +42,6 @@ const C0_CONTROL_OR_SPACE: &[char] = &[
     '\u{1b}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{1f}', ' ',
 ];
 
-/// Split `url` into scheme, network location, path, query and fragment.
-///
-/// # Errors
-/// A network location with unbalanced IPv6 brackets.
 pub fn urlsplit(url: &str) -> Result<SplitUrl, UrlValueError> {
     let cleaned: String = url
         .trim_start_matches(C0_CONTROL_OR_SPACE)
@@ -114,19 +107,16 @@ impl SplitUrl {
         (hostname, Some(port).filter(|p| !p.is_empty()))
     }
 
-    /// `.username`: `None` without an `@`.
     pub fn username(&self) -> Option<&str> {
         self.userinfo()
             .map(|info| info.split_once(':').map_or(info, |(user, _)| user))
     }
 
-    /// `.password`: `None` without an `@` or a `:` before it.
     pub fn password(&self) -> Option<&str> {
         self.userinfo()
             .and_then(|info| info.split_once(':').map(|(_, password)| password))
     }
 
-    /// `.hostname`: lower-cased, `None` when empty.
     pub fn hostname(&self) -> Option<String> {
         let (hostname, _) = self.hostinfo();
         if hostname.is_empty() {
@@ -138,10 +128,6 @@ impl SplitUrl {
         })
     }
 
-    /// `.port`.
-    ///
-    /// # Errors
-    /// A port that is not ASCII digits or is above 65535.
     pub fn port(&self) -> Result<Option<u16>, UrlValueError> {
         let (_, port) = self.hostinfo();
         let Some(port) = port else { return Ok(None) };
@@ -165,8 +151,6 @@ impl SplitUrl {
     }
 }
 
-/// `urlsplit(url).hostname` as the helper's messages show it (`None` when
-/// there is none or the URL does not split).
 pub fn hostname_for_message(url: &str) -> String {
     urlsplit(url)
         .ok()

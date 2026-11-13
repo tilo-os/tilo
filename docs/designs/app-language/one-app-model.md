@@ -65,7 +65,7 @@ chrome and never opens a window.
 ## 4. Storage, actions, identity, permissions
 
 As apps.md §8 decided:
-- A Rust app's model and actions compile to the same WebAssembly module kind the document host runs for tilolang packages.
+- A Rust app's model and actions run as an instance kind of the workspace's tilolang host.
 - Its views are a client of the one launcher-made connection, and hold no identity, keys or transport.
 - Permission checks leave the app.
 
@@ -73,59 +73,20 @@ This design adds nothing there.
 
 ### The runner's one source
 
-What a Rust app's runner needs of storage is two things, and it should not
-know which keeps them:
+What a Rust app's runner needs of storage is two things: **the state of its
+resources**, as its model types read them, and **a way to submit actions** on
+them, with the arguments a control supplies. Both are the record the host
+opened for the window (`TypedRoot::sync` reads it, `Edits::apply` changes it),
+for every launch: a window keeps its own record today, whichever host started
+it.
 
-- **the state of its resources**, as its model types read them;
-- **a way to submit actions** on them, with the arguments a control supplies.
-
-That pair is `tilo_app::framework::Source` (`framework/source.rs`). A root
-reads its state through it and its dispatcher submits through it, so a view
-syncs and edits the same way whichever keeps the record:
-
-| | `Source::Document` | `Source::Connection(Connection)` |
-|---|---|---|
-| The state a view reads | the `AutoCommit` the host lent the pass (`TypedRoot::sync`) | the session's published reading, rebuilt through the app's own model type (`TypedRoot::adopt`, `tilo_resource::state_from_reading`) |
-| Where an edit goes | the host's door, as today (`Edits::apply`, the document the pass lent) | the session's door, `Connection::submit`, attributed to the person's gesture (`Ask::in_person`) |
-| Who keeps the record | the app's own host: a device with no session (runtime compiled into the app, §3), a capture, a test | the session's document host (`tilo-model-host::ModelService`) |
-
-`Source::Connection` is used exactly when the session launched the app: the
-app's process opens no record, holds no key and reaches no transport, and the
-document it would have kept is the session's. It is not a second runner: the
-same `ResourceRoot`, `Dispatcher`, views and bindings run on both, and the
-model's `#[action]`s and `#[view]`s are the app's code unchanged.
-
-**What the person sees.** Nothing different. The window draws the same
-views; an edit shows at once in the window (the view keeps the state the
-reaction left, as it does for a collaborator's change) and the reading the
-session publishes follows it. What changes is who the edit is: the session
-records it as the person acting in this app's view, in the record's history
-and for undo, because the gesture and the record both arrived over a
-connection the session made.
-
-**A view syncs from state, not from a document.** `TypedRoot::sync` reads the
-state out of the document, and `TypedRoot::follow_change` wakes the bound
-readers; a source that keeps no document here hands over the state already
-read (`TypedRoot::adopt`) and reports the change as everything. So a view is
-a function of the state wherever the state came from, and only `Source`
-knows the difference.
-
-**How a launch becomes a `Source::Connection`.** The launcher names the
-resource the session keeps (`ui::application::HOSTED_RESOURCE_ENV`); the app
-that declares `ResourceApp::HOSTED_BY_SESSION` opens no record
-(`HostContext::prepare_hosted`) and builds its root over
-`Connection::launcher()`. A host that runs the app inside itself — a test's
-document host, a capture's fixture — supplies its own connection instead
-(`HostContext::provide_connection`), and the same root, the same views and the
-same submissions run.
-
-**Whether a launch is hosted follows from the session, not the app.** The
-session asks its services whether one runs the app's model
-(`Service::hosted`) and names the address that service publishes the record
-at; the launcher hands it across the sandbox's cleared environment
-(`TILO_HOSTED_RESOURCE`) as the plan carries it. So an app the session serves
-opens no document with no code of its own saying so, and the same binary on a
-device with no session keeps its record as it always did.
+**Where an app's model will run.** Not in the session beside the window, and
+not on a second code path in the app: the model and verbs run as an instance
+kind of the per-workspace host, and every window of the app, the person's and
+an agent's alike, reaches that instance the way a window reaches any other
+host. Until that instance kind exists, the window's own record is the only
+path, and there is no launch an app can be told to take that keeps no record
+of its own.
 
 ## 5. What a Rust developer writes
 
@@ -157,7 +118,7 @@ Order, each step keeping every app working, and each ending by deleting the code
 1. **Types:** every `#[resource]` publishes its `ResourceType`. `LiveRow` becomes typed item resources.
 2. **Views:** `#[view]` functions producing described components over the patch stream; the shell places them by resource and view.
 3. **Windows:** the SDK's window chrome becomes the app's root view. `ResourceApp::view` is removed.
-4. **Storage and actions:** apps.md §8, steps 1–7.
+4. **Storage and actions:** apps.md §8, steps 1–6.
 
 Each step migrates every app at once, or with a ratchet that fails for an app still on the old way.
 Tube goes first in each step, and proves it with the canvas query "youtube videos of <creator>",

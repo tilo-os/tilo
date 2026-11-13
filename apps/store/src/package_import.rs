@@ -1,6 +1,7 @@
 //! Local package review against the same independently verified Store offers.
 //! An archive can describe itself; it cannot authorize its publisher or identity.
 
+use crate::resource::CATALOG;
 use std::sync::Arc;
 
 use app_host::install::InstallExpectation;
@@ -19,15 +20,14 @@ pub struct ImportedPackage {
     pub local: Option<app_host::local_package::LocalReview>,
 }
 
-/// Review a package without installing or trusting anything it says about itself.
 pub fn review(bytes: Vec<u8>, offers: &[StoreItem]) -> Result<ImportedPackage, String> {
     if bytes.is_empty() || bytes.len() > MAX_IMPORT_BYTES {
-        return Err(ui::i18n!("store-package-size-refused"));
+        return Err(CATALOG.t("store-package-size-refused"));
     }
     let archive = app_host::local_package::review_archive(&bytes).map_err(|error| match error {
-        app_host::local_package::ArchiveReviewError::Invalid => ui::i18n!("store-package-invalid"),
+        app_host::local_package::ArchiveReviewError::Invalid => CATALOG.t("store-package-invalid"),
         app_host::local_package::ArchiveReviewError::NotApplication => {
-            ui::i18n!("store-package-app-only")
+            CATALOG.t("store-package-app-only")
         }
     })?;
     for item in offers {
@@ -81,7 +81,7 @@ pub fn review(bytes: Vec<u8>, offers: &[StoreItem]) -> Result<ImportedPackage, S
             });
         }
     }
-    Err(ui::i18n!("store-package-offer-required"))
+    Err(CATALOG.t("store-package-offer-required"))
 }
 
 /// Review an unlisted archive through the launcher-issued host capability.
@@ -93,19 +93,19 @@ pub fn review_local(
     host: &app_host::client::BlockingClient,
 ) -> Result<ImportedPackage, String> {
     if bytes.is_empty() || bytes.len() > MAX_IMPORT_BYTES {
-        return Err(ui::i18n!("store-package-size-refused"));
+        return Err(CATALOG.t("store-package-size-refused"));
     }
     let checked = host.review_local(&bytes)?;
     let package = &checked.manifest.package;
     let expected = app_host::local_package::local_expectation(&checked, bytes.len() as u64)
-        .map_err(|_| ui::i18n!("store-package-invalid"))?;
+        .map_err(|_| CATALOG.t("store-package-invalid"))?;
     let item = StoreItem {
         bot: None,
         awaiting_developer: false,
         listing: crate::model::Listing::default(),
         id: package.id.clone(),
         name: package.name.clone().unwrap_or_else(|| package.id.clone()),
-        description: ui::i18n!("store-package-local-description"),
+        description: CATALOG.t("store-package-local-description"),
         tagline: String::new(),
         supported_languages: Vec::new(),
         categories: Vec::new(),
@@ -115,7 +115,7 @@ pub fn review_local(
         source_url: None,
         install_ref_path: None,
         source: StoreSource::Tilo {
-            registry_name: ui::i18n!("store-package-local-source"),
+            registry_name: CATALOG.t("store-package-local-source"),
         },
         trust: StoreTrust::TrustedAttestor,
         versions: vec![crate::StoreItemVersion {
@@ -160,12 +160,12 @@ impl Input {
         use std::io::Read as _;
         let mut reader: Box<dyn std::io::Read> = match self {
             Self::Path(path) => Box::new(
-                std::fs::File::open(path).map_err(|_| ui::i18n!("store-package-unavailable"))?,
+                std::fs::File::open(path).map_err(|_| CATALOG.t("store-package-unavailable"))?,
             ),
             Self::Content(content, hash) => Box::new(
                 content
                     .open(&hash)
-                    .ok_or_else(|| ui::i18n!("store-package-unavailable"))?,
+                    .ok_or_else(|| CATALOG.t("store-package-unavailable"))?,
             ),
             Self::Bytes(bytes) => return Ok(bytes),
         };
@@ -174,7 +174,7 @@ impl Input {
             .by_ref()
             .take((MAX_IMPORT_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
-            .map_err(|_| ui::i18n!("store-package-unavailable"))?;
+            .map_err(|_| CATALOG.t("store-package-unavailable"))?;
         Ok(bytes)
     }
 }
@@ -184,8 +184,6 @@ pub(crate) mod tests {
     use super::*;
     use tilo_app_package::DiscardBlobs;
 
-    /// The architecture this test runs on, as a manifest names it and as a
-    /// registry target names it.
     fn native_target() -> (&'static str, &'static str, &'static str) {
         #[cfg(target_arch = "aarch64")]
         {

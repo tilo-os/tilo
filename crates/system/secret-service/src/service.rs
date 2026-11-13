@@ -1,17 +1,6 @@
 //! The D-Bus face of the store: `org.freedesktop.Secret.*` as libsecret
 //! speaks it, plus the small `so.tilo.Secrets1` management interface that
 //! Settings and the desktop portal use.
-//!
-//! The service never prompts. A store whose identity is unavailable answers
-//! `IsLocked` and `Unlock` simply reports nothing unlocked; there is no
-//! unlock dialog to loop on, because no secret the person types opens it.
-//!
-//! Every method attributes its caller (see [`CallerResolver`]) and the
-//! store answers for that caller alone: another application's items are not
-//! found, not merely refused. Property reads are attributed too: a
-//! collection's `Items` lists exactly the items the reader may see, and an
-//! item's `Label`, `Attributes`, `Created` and `Modified` are refused to a
-//! reader who may not see the item. Item paths also hold 128 random bits.
 
 #![allow(
     clippy::unused_async,
@@ -34,7 +23,7 @@ use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Type, Value};
 use zbus::{Connection, ObjectServer, interface};
 use zeroize::Zeroizing;
 
-use crate::app::{AppId, UnknownCaller, identify_proven_process, proc_root, trusted_managers};
+use crate::app::{CallerId, UnknownCaller, identify_proven_process, proc_root, trusted_managers};
 use crate::store::{ItemRef, NewItem, Store, StoreError};
 use crate::vault::{Access, LOGIN_COLLECTION, SESSION_COLLECTION};
 
@@ -53,7 +42,7 @@ pub trait CallerResolver: Send + Sync + 'static {
     fn identify<'a>(
         &'a self,
         sender: Option<&'a str>,
-    ) -> Pin<Box<dyn Future<Output = std::result::Result<AppId, UnknownCaller>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<CallerId, UnknownCaller>> + Send + 'a>>;
 
     /// `sender` proved it holds the device identity and named `program` as
     /// its executable (see [`crate::app`]): the program stands in for the
@@ -61,7 +50,6 @@ pub trait CallerResolver: Send + Sync + 'static {
     /// that never examines processes ignores it.
     fn proven(&self, _sender: &str, _program: PathBuf) {}
 
-    /// `sender` left the bus: forget what it proved.
     fn forget(&self, _sender: &str) {}
 }
 
@@ -95,7 +83,8 @@ impl CallerResolver for BusResolver {
     fn identify<'a>(
         &'a self,
         sender: Option<&'a str>,
-    ) -> Pin<Box<dyn Future<Output = std::result::Result<AppId, UnknownCaller>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = std::result::Result<CallerId, UnknownCaller>> + Send + 'a>>
+    {
         Box::pin(async move {
             let name = zbus::names::BusName::try_from(sender.ok_or(UnknownCaller::Unreadable)?)
                 .map_err(|_| UnknownCaller::Unreadable)?;
@@ -128,13 +117,10 @@ impl CallerResolver for BusResolver {
     }
 }
 
-/// Which callers may use the management interface.
 #[derive(Clone, Debug)]
 pub struct Managers {
-    /// May list, revoke and forget applications.
-    pub settings: Vec<AppId>,
-    /// May ask for a sandboxed app's master secret on its behalf.
-    pub portal: Vec<AppId>,
+    pub settings: Vec<CallerId>,
+    pub portal: Vec<CallerId>,
 }
 
 impl Managers {
@@ -145,13 +131,12 @@ impl Managers {
         let settings = trusted_managers();
         let portal = ["binary:/usr/bin/shell", "binary:/usr/bin/tilo-session"]
             .into_iter()
-            .filter_map(AppId::parse)
+            .filter_map(CallerId::parse)
             .collect();
         Self { settings, portal }
     }
 }
 
-/// What a session encrypts with.
 enum SessionKey {
     Plain,
     Dh(TransportKey),
@@ -163,7 +148,6 @@ struct SessionEntry {
     key: SessionKey,
 }
 
-/// Everything the interface objects share.
 pub struct Core {
     store: Arc<Store>,
     resolver: Arc<dyn CallerResolver>,
@@ -175,10 +159,8 @@ pub struct Core {
     challenges: Mutex<HashMap<String, [u8; CHALLENGE_LEN]>>,
 }
 
-/// Length of a `CallerChallenge`.
 const CHALLENGE_LEN: usize = 32;
 
-/// The `(oayays)` secret of the API.
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct WireSecret(pub OwnedObjectPath, pub Vec<u8>, pub Vec<u8>, pub String);
 
@@ -235,7 +217,6 @@ fn object(path: &str) -> Result<OwnedObjectPath> {
     OwnedObjectPath::try_from(path).map_err(|_| SecretError::Failed("object path".into()))
 }
 
-/// The collection or alias name in `path`.
 fn parse_collection(path: &str) -> Option<&str> {
     let rest = path.strip_prefix(ROOT)?.strip_prefix('/')?;
     let (kind, name) = rest.split_once('/')?;
@@ -269,21 +250,21 @@ impl Core {
         })
     }
 
-    async fn caller(&self, header: &Header<'_>) -> Result<AppId> {
+    async fn caller(&self, header: &Header<'_>) -> Result<CallerId> {
         let sender = sender_of(header);
         Ok(self.resolver.identify(sender.as_deref()).await?)
     }
 
     /// The caller of a property read. A read that carries no message
     /// header (a signal's own emission) names no one and is refused.
-    async fn property_caller(&self, header: Option<&Header<'_>>) -> zbus::fdo::Result<AppId> {
+    async fn property_caller(&self, header: Option<&Header<'_>>) -> zbus::fdo::Result<CallerId> {
         let header = header.ok_or_else(|| zbus::fdo::Error::AccessDenied("no caller".into()))?;
         self.caller(header)
             .await
             .map_err(|error| zbus::fdo::Error::AccessDenied(error.to_string()))
     }
 
-    async fn manager(&self, header: &Header<'_>, allowed: &[AppId]) -> Result<AppId> {
+    async fn manager(&self, header: &Header<'_>, allowed: &[CallerId]) -> Result<CallerId> {
         let caller = self.caller(header).await?;
         allowed
             .contains(&caller)
@@ -347,7 +328,7 @@ impl Core {
         session: &ObjectPath<'_>,
         sender: &str,
         item: &ItemRef,
-        caller: &AppId,
+        caller: &CallerId,
     ) -> Result<WireSecret> {
         let (secret, content_type) = self.store.read_secret(caller, item)?;
         let (parameters, value) = self.encrypt(session.as_str(), sender, secret.expose())?;
@@ -627,7 +608,6 @@ impl ServiceIface {
         sync_objects(server, &self.core).await?;
         match self.core.store.read_alias(&name) {
             Ok(_) => Ok(object(&alias_path(&name))?),
-            // Even while locked, the two aliases libsecret uses exist.
             Err(StoreError::Locked(_)) if name == "default" || name == SESSION_COLLECTION => {
                 Ok(object(&alias_path(&name))?)
             }
@@ -718,7 +698,6 @@ impl SessionIface {
 
 struct CollectionIface {
     core: Arc<Core>,
-    /// A collection name or an alias; resolved on every call.
     name: String,
 }
 
@@ -813,7 +792,6 @@ impl CollectionIface {
         Ok((object(&path)?, object(NO_PROMPT)?))
     }
 
-    /// The items the reading application may see, and no others.
     #[zbus(property)]
     async fn items(
         &self,
@@ -838,7 +816,6 @@ impl CollectionIface {
                 }
                 Ok(paths)
             }
-            // Locked: there is nothing to list yet.
             Err(StoreError::Locked(_)) => Ok(Vec::new()),
             Err(error) => Err(store_property_error(&error)),
         }
@@ -890,7 +867,6 @@ struct ItemIface {
 }
 
 impl ItemIface {
-    /// What the reading application may know of this item.
     async fn info(&self, header: Option<&Header<'_>>) -> zbus::fdo::Result<crate::store::ItemInfo> {
         let caller = self.core.property_caller(header).await?;
         self.core
@@ -1015,13 +991,13 @@ fn access_name(access: Access) -> &'static str {
     }
 }
 
-fn parse_identity(text: &str) -> Result<AppId> {
-    AppId::parse(text).ok_or_else(|| SecretError::InvalidArgs("not an application identity".into()))
+fn parse_identity(text: &str) -> Result<CallerId> {
+    CallerId::parse(text)
+        .ok_or_else(|| SecretError::InvalidArgs("not an application identity".into()))
 }
 
 #[interface(name = "so.tilo.Secrets1")]
 impl ManagementIface {
-    /// `(locked, reason, imported from an older keyring)`.
     async fn status(&self) -> (bool, String, String) {
         let locked = self.core.store.locked();
         let migration = self

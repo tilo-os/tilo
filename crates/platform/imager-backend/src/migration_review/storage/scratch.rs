@@ -1,6 +1,6 @@
-//! Explicit writable scratch custody. Filesystem magic alone is not a proof of
-//! physical backing; the admitting broker retains its independently granted
-//! storage/medium lease. No source path or TMPDIR selects this capability.
+//! Explicit writable scratch custody. Filesystem magic alone does not prove physical backing: the
+//! admitting broker retains its independently granted storage lease, and no source path or TMPDIR
+//! selects this capability.
 use super::super::super::{
     destination_security,
     migration::{PinnedDirectory, changed},
@@ -66,7 +66,6 @@ impl Allocation {
             }
         }
         // Account even if a concurrent external writer invalidates the floor:
-        // this owned allocation is still live until its descriptor is dropped.
         *charged = total;
         self._charge.bytes = rounded;
         self.logical_bytes = length;
@@ -74,8 +73,7 @@ impl Allocation {
         scratch.require_free(0)
     }
 }
-/// Bounded metadata being written through an independently held private
-/// destination. This is a space charge only, never path or write authority.
+/// A space charge only, never path or write authority.
 pub struct MetadataReservation {
     charge: Charge,
 }
@@ -101,16 +99,12 @@ impl MetadataReservation {
         self.charge.bytes = bytes;
         Ok(())
     }
-    /// Only exact held, verified private plan files may enter this accounting.
-    /// Their bytes already consume physical space, so add equal charged and
-    /// admitted amounts: available quota remains unchanged, not reset.
+    /// Their bytes already consume physical space, so charged and admitted amounts rise equally and
+    /// available quota stays unchanged.
     pub fn retain_file(&mut self, file: &File) -> io::Result<()> {
         self.retain_existing(file, true)
     }
-    /// The existing root journal is mutable and exclusively locked, unlike
-    /// immutable segments. Legacy hardlink publication may retain an owned
-    /// temporary alias after a crash. This accounts one actual inode, and
-    /// neither removes aliases nor admits a path or checkpoint.
+    /// Counts one actual inode; it neither removes aliases nor admits a path or checkpoint.
     pub fn retain_locked_journal(&mut self, file: &advisory_lock::FileLock) -> io::Result<()> {
         self.retain_existing(file, false)
     }
@@ -217,8 +211,8 @@ impl InventoryScratch {
             },
         })
     }
-    /// Peak retained original records plus validation merge inputs/output and
-    /// both offset indexes. Individual runs still reserve their exact size.
+    /// Peak retained original records plus validation merge inputs and outputs and both offset
+    /// indexes; individual runs still reserve their exact size.
     pub fn validation_allowance(records: u64, entries: u64) -> io::Result<u64> {
         records
             .checked_mul(3)
@@ -229,8 +223,8 @@ impl InventoryScratch {
             })
             .ok_or_else(|| changed("Inventory scratch allowance overflow"))
     }
-    // Caller already holds an explicit writable namespace grant. This does not
-    // infer worker credentials from the source owner or create new authority.
+    // The caller already holds an explicit writable namespace grant; this infers no worker
+    // credentials and creates no new authority.
     pub fn review(directory: Arc<PinnedDirectory>, allowance: u64) -> io::Result<Arc<Self>> {
         if allowance == 0 {
             return Err(changed("Inventory scratch allowance missing"));
@@ -249,8 +243,8 @@ impl InventoryScratch {
         value.require_free(allowance)?;
         Ok(value)
     }
-    /// Receiver scratch belongs to an already granted private workspace. Keep
-    /// restoration and both atomic promotion journal copies out of its quota.
+    /// Receiver scratch belongs to an already granted private workspace; keep restoration and both
+    /// promotion journal copies out of its quota.
     pub fn review_for_restore(
         directory: Arc<PinnedDirectory>,
         stored_bytes: u64,
@@ -276,9 +270,8 @@ impl InventoryScratch {
                 .ok_or_else(|| changed("Archive restoration reserve overflow"))
         };
         let count = u64::try_from(entries).map_err(io::Error::other)?;
-        // Stored archive bytes include data and extended metadata. Reserve one
-        // additional allocation block per inode plus quarantine directory; sparse
-        // logical holes are not copied-byte reservations.
+        // Stored archive bytes include data and extended metadata. Reserve one allocation block per
+        // inode plus the quarantine directory; sparse holes are not copied-byte reservations.
         let minimum_free = round(stored_bytes)?
             .checked_add(
                 count
@@ -296,9 +289,7 @@ impl InventoryScratch {
             .checked_sub(minimum_free)
             .filter(|n| *n > 0)
             .ok_or_else(|| changed("Archive workspace lacks restoration and index capacity"))?;
-        // Path duplication, binary JSON encoding and sparse extent hashes expand
-        // bounded authenticated metadata. This is a quota ceiling, never a
-        // preallocation: each run reserves only its actual encoded bytes.
+        // A quota ceiling, never a preallocation: each run reserves only its actual encoded bytes.
         let encoded_bound = u64::try_from(metadata_bytes)
             .map_err(io::Error::other)?
             .checked_mul(128)
@@ -366,8 +357,8 @@ impl InventoryScratch {
     pub fn check_custody(&self) -> io::Result<()> {
         self.validate()
     }
-    // Only after the authentic archive has independently verified its restored
-    // bytes may receiver metadata reuse the already-realized data reservation.
+    // Only after the authentic archive independently verified its restored bytes may receiver metadata
+    // reuse the already-realized data reservation.
     pub fn release_verified_restoration(&self) -> io::Result<()> {
         self.validate()?;
         if let Some((_, journal)) = self.restoration {
@@ -402,8 +393,8 @@ impl InventoryScratch {
         }
         Ok(())
     }
-    // Only the caller's existing canonical installer custody may justify this
-    // exception. SourceInventory owns its exact exclusion proof, not a path filter.
+    // Only existing canonical installer custody justifies this exception; `SourceInventory` owns
+    // its exact exclusion proof, not a path filter.
     pub(in crate::migration_review) fn validate_excluded_source(
         &self,
         source: &PinnedDirectory,
@@ -412,9 +403,8 @@ impl InventoryScratch {
         self.validate()?;
         source.validate()?;
         excluded.validate()?;
-        // contains_identity inspects this directory's retained ancestry. The
-        // source must not be inside scratch; scratch is deliberately inside the
-        // exact admitted exclusion, which is itself inside the source.
+        // `contains_identity` inspects this directory's retained ancestry: the source must not be
+        // inside scratch, which is itself inside the exact admitted exclusion, inside the source.
         if source.contains_identity(&self.directory.identity)
             || !excluded.contains_identity(&source.identity)
             || !self.directory.contains_identity(&excluded.identity)
@@ -505,11 +495,11 @@ impl InventoryScratch {
             .checked_add(rounded)
             .filter(|value| *value <= limit)
             .ok_or_else(|| changed("Inventory scratch allowance exhausted"))?;
-        // Re-read available space after acquiring the shared quota lock. A
-        // concurrent run allocation must not consume the restoration floor.
+        // Re-read available space after acquiring the shared quota lock, so a concurrent run cannot
+        // consume the restoration floor.
         self.require_free(rounded)?;
-        // O_TMPFILE creates a 0600 anonymous inode through the held directory.
-        // No named-file race, ambient ancestor or temporary cleaner participates.
+        // `O_TMPFILE` creates a 0600 anonymous inode through the held directory: no named-file race
+        // or temporary cleaner participates.
         let descriptor = unsafe {
             libc::openat(
                 self.directory.file.as_raw_fd(),
@@ -530,8 +520,8 @@ impl InventoryScratch {
         {
             return Err(changed("Inventory scratch file custody changed"));
         }
-        // Reserve real blocks before the run is written. A concurrent writer
-        // may exhaust free space; failure never becomes a source/target receipt.
+        // Reserve real blocks before the run is written; a concurrent writer may exhaust free space,
+        // and that failure never becomes a receipt.
         let length = i64::try_from(bytes).map_err(io::Error::other)?;
         if length != 0 {
             let error = unsafe { libc::posix_fallocate(file.as_raw_fd(), 0, length) };

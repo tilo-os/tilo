@@ -98,10 +98,8 @@ impl InstallationRecord {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CapsuleProgram {
-    /// Stable opaque identifier used by Tilo search and launch actions.
     pub id: String,
     pub display_name: String,
-    /// Relative to the prefix root, normally `drive_c/Program Files/...`.
     pub prefix_relative_executable: PathBuf,
     /// Identity metadata captured by the trusted installer/importer. Live
     /// clients select this program by opaque ID and cannot replace this query.
@@ -179,8 +177,6 @@ impl CapsuleState {
 
 #[derive(Clone, Debug)]
 pub struct CapsuleStore {
-    /// Canonical, daemon-configured storage root. It is an informational
-    /// path; security-sensitive traversal is always rooted at `root_fd`.
     root: PathBuf,
     /// Keeps the originally opened root directory alive. All managed paths
     /// below are opened relative to this descriptor with `O_NOFOLLOW`, so a
@@ -273,7 +269,6 @@ impl CapsuleStore {
         Ok(programs)
     }
 
-    /// Enumerate capsule states that carry a durable install journal.
     pub fn installations(&self) -> Result<Vec<CapsuleState>, CapsuleError> {
         let capsules = match Self::open_child_dir(self.root_fd.as_ref(), "capsules", false) {
             Ok(capsules) => capsules,
@@ -599,10 +594,6 @@ impl CapsuleStore {
         self.root.join("capsules").join(id)
     }
 
-    /// Open the prefix and home directories through anchored, no-follow
-    /// descriptors. The returned descriptors are held by the command plan;
-    /// the executor passes these handles directly to Bubblewrap rather than
-    /// reopening attacker-replaceable pathnames.
     pub(crate) fn open_launch_paths(&self, id: &str) -> Result<LaunchPaths, CapsuleError> {
         let capsule = self.capsule_directory(id, false)?;
         let data = Self::open_child_dir(&capsule, "data", false)?;
@@ -632,10 +623,6 @@ impl CapsuleStore {
         }
     }
 
-    /// Reasserts the managed Windows drive shape on every launch. Wine's
-    /// default `Z:` link would reveal the entire sandbox namespace. Removing
-    /// that managed symlink, retaining the private `C:`, and exposing grants
-    /// through `Q:` keeps system paths out of normal Windows file pickers.
     fn prepare_managed_paths(&self, id: &str) -> Result<(), CapsuleError> {
         let capsule = self.capsule_directory(id, true)?;
         let data = Self::open_child_dir(&capsule, "data", true)?;
@@ -693,7 +680,6 @@ pub(crate) struct LaunchPaths {
 }
 
 impl LaunchPaths {
-    // Discovery runs in this process and can safely use its retained handle.
     fn prefix_source(&self) -> PathBuf {
         fd_path(&self.prefix)
     }

@@ -1,9 +1,10 @@
 //! Keyboard focus on the desktop surface, inside the frame pipeline the browser desktop runs: the
-//! window the person is in owns the keyboard. Tab cycles through that app's controls and never
-//! reaches the desktop's chrome, a window brought forward (opened, clicked, switched to) takes
-//! focus, a click anywhere in a window, partly off screen too, aims typing there, and an app's own
-//! search button opens search over its window. What each search reaches — one app's window, a
-//! window group's applications, or the workspace — and where the hit it offers opens are here too.
+//! window the person is in owns the keyboard. Tab cycles through that window's bar and app and
+//! never reaches the other windows or the desktop's chrome, a window brought forward (opened,
+//! clicked, switched to) takes focus, a click anywhere in a window, partly off screen too, aims
+//! typing there, and an app's own search button opens search over its window. What each search
+//! reaches — one app's window, a window group's applications, or the workspace — and where the hit
+//! it offers opens are here too.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -20,7 +21,7 @@ use tilo_desktop_model::{
     DesktopTree, IdMinter, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
 };
 use tilo_desktop_surface::{
-    DesktopHandle, DesktopSurface, SearchHost, SearchHostFeed, TileSource, seed_tree,
+    DesktopHandle, DesktopSurface, HostAction, SearchHost, SearchHostFeed, TileSource, seed_tree,
 };
 use ui::application::{
     AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
@@ -397,6 +398,13 @@ impl SearchHost for DeskHost {
         self.0.scopes.borrow_mut().push(scope.clone());
         SearchHostFeed {
             sources: vec![tilo_desktop_search::Held::new(Plan)],
+            // A workspace app's row the workspace's action host publishes: an event's `Invite`,
+            // which has nothing to act on with no event selected.
+            published: vec![tilo_desktop_search::providers::PublishedActions::of(
+                "so.tilo.calendar",
+                "workspace",
+                &[unselected_event()],
+            )],
             ..SearchHostFeed::default()
         }
     }
@@ -404,6 +412,26 @@ impl SearchHost for DeskHost {
     fn performs(&self, _: &tilo_desktop_search::Target) -> bool {
         false
     }
+}
+
+/// An event Calendar publishes with its `Invite` action, which cannot run while no event is
+/// selected: the row that used to stand ahead of the workspace's own invite.
+fn unselected_event() -> tilo_actions::ResourceSpec {
+    let mut invite = tilo_actions::ActionSpec::immediate_encoded(
+        "invite",
+        "Invite",
+        tilo_actions::ExecutionLocus::ClientLocal,
+        tilo_actions::EncodedAction {
+            type_id: "test.invite".into(),
+            payload: Vec::new(),
+        },
+    );
+    invite.type_mut().contract.availability = tilo_actions::Availability::Unavailable {
+        code: "selection_empty".into(),
+        reason: "Select an event first".into(),
+    };
+    tilo_actions::ResourceSpec::new("calendar.event:1", "calendar.event", "Standup")
+        .with_action(invite)
 }
 
 /// What the host finds beyond the desktop: a plan another workspace holds.
@@ -440,6 +468,71 @@ impl tilo_desktop_search::Source for Plan {
     }
 }
 
+/// An app that answers a bare letter as a shortcut, as a calendar's week view does: "n" opens its
+/// new-event dialog, and the letters after it land in the dialog's title. A window with no field of
+/// its own focused is where such a shortcut is pressed, so this one keeps no field at all.
+struct CalendarLike {
+    tab: u64,
+    typed: Typed,
+    /// The title the dialog opened over this window holds, while it is open: what the letters after
+    /// the shortcut went into, and `None` while no dialog was opened.
+    dialog: Option<String>,
+    rect: Rect,
+}
+
+impl Widget for CalendarLike {
+    fn name(&self) -> &'static str {
+        "KeyboardCalendar"
+    }
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _: &ui::Theme,
+        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.widget_leaf(Style::default(), nodes, self)
+    }
+    ui::rect_geometry!();
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return;
+        };
+        if key.state != ElementState::Pressed {
+            return;
+        }
+        let Some(text) = key.text.as_deref() else {
+            return;
+        };
+        match &mut self.dialog {
+            // The dialog's title field has the keyboard: the rest of the word lands in it.
+            Some(title) => title.push_str(text),
+            None if text.eq_ignore_ascii_case("n") => {
+                NEW_EVENT.with(|opened| opened.set(opened.get().saturating_add(1)));
+                self.dialog = Some(String::new());
+            }
+            // Every other letter is nothing this app does.
+            None => return,
+        }
+        let title = self.dialog.clone().unwrap_or_default();
+        self.typed
+            .borrow_mut()
+            .insert(format!("event-title-{}", self.tab), title);
+        *ctx.handled = true;
+    }
+}
+
+impl AppWidget for CalendarLike {
+    fn app_kind(&self) -> AppKind {
+        AppKind::Editor
+    }
+    fn app_title(&self) -> &'static str {
+        "Calendar"
+    }
+    fn app_icon(&self) -> IconDescriptor {
+        IconDescriptor::Glyph("C")
+    }
+}
+
 impl AppWidget for Root {
     fn app_kind(&self) -> AppKind {
         AppKind::Editor
@@ -459,6 +552,10 @@ thread_local! {
     static PRESSED: RefCell<HashMap<u64, Rc<std::cell::Cell<usize>>>> = RefCell::new(HashMap::new());
     /// Whether the next built app takes typing that is not its own.
     static GREEDY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether the next window's app is the one that answers a bare letter as a shortcut
+    /// ([`CalendarLike`]), and how often that shortcut opened its dialog.
+    static AS_CALENDAR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static NEW_EVENT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// What the apps' search was asked, and whether it has answered.
     static SEARCH: RefCell<SearchLog> = RefCell::default();
 }
@@ -488,6 +585,20 @@ fn factory(
     let search = ui::search::search_button(ui::search::SearchRequest::this_app());
     let pressed = Rc::new(std::cell::Cell::new(0));
     PRESSED.with_borrow_mut(|all| all.insert(tab, Rc::clone(&pressed)));
+    if AS_CALENDAR.with(|calendar| calendar.replace(false)) {
+        let mut registry = tilo_actions::ActionRegistry::new();
+        registry.register::<Open>(OPEN_TYPE);
+        return Ok(AppComponent::new(
+            context,
+            Box::new(CalendarLike {
+                tab,
+                typed,
+                dialog: None,
+                rect: Rect::ZERO,
+            }),
+            registry,
+        ));
+    }
     let greedy = GREEDY
         .with(|greedy| greedy.replace(false))
         .then(|| Rc::clone(&typed));
@@ -570,7 +681,7 @@ impl TileSource for Source {
         TileHost::from_component(component)
     }
 
-    fn launch(&mut self, _: &Workspace, id: u64, app: &str) -> Option<Tab> {
+    fn launch(&mut self, _: &Workspace, id: u64, app: &str, _beside: Option<u64>) -> Option<Tab> {
         match app {
             APP => Some(keyboard_tab(id)),
             NOTES => Some(notes_tab(id)),
@@ -789,8 +900,13 @@ impl Desk {
 
     /// Frames until every source of the open search has answered. A source answers on a worker, and
     /// its answer wakes the desk: a test pumps what the wake asks for and draws the frame it
-    /// brings, as a host does. An application's own answer is the host's to look for on its clock,
-    /// so this does not wait for one.
+    /// brings, as a host does.
+    ///
+    /// Two things a search waits for elsewhere are not waited for here. An application's own answer
+    /// is the host's to look for on its clock. And the rows are not cut to the card's room: this
+    /// desk draws no card over its windows, so no layout ever gives the palette the room its rows
+    /// stand in, and the rows a test reads are the ones cut to the guess the palette keeps until a
+    /// host gives it one.
     fn settle_search(&mut self) {
         let background = ui::background::Background::current();
         let now = ui::time::now();
@@ -800,7 +916,7 @@ impl Desk {
             let busy = {
                 let palette = self.handle.search_palette();
                 let palette = palette.borrow();
-                palette.filling_in() || palette.answering()
+                palette.answering()
             };
             if !busy {
                 return;
@@ -881,30 +997,41 @@ impl Drop for Desk {
 }
 
 #[test]
-fn tab_cycles_through_the_focused_app_and_never_reaches_the_desktop_chrome() {
+fn tab_cycles_through_the_focused_window_and_never_reaches_the_desktop_chrome() {
     let mut desk = Desk::new(2, 450);
     let first = desk.tabs[0];
-    // The first window is focused: its app's search button, two fields and late-built button are
-    // where Tab goes, in turn.
-    let app = "DesktopSurface[0]/GroupRow[0]/WindowGroup[0]/TileHost[0]/";
-    let mut visited = std::collections::HashSet::new();
-    for _ in 0..8 {
+    // The first window is focused: its bar's controls and its app's search button, two fields and
+    // late-built button are where Tab goes, in turn, round and round.
+    let window = "DesktopSurface[0]/GroupRow[0]/WindowGroup[0]/";
+    let app = format!("{window}TileHost[0]/");
+    let mut visited = Vec::new();
+    for _ in 0..24 {
         desk.driver.key("Tab");
         let focused = desk.focus_path();
         assert!(
-            focused.as_ref().is_some_and(|path| path.starts_with(app)),
-            "Tab stays in the focused window's app, not its bar or the next window: {focused:?}"
+            focused
+                .as_ref()
+                .is_some_and(|path| path.starts_with(window)),
+            "Tab stays in the focused window, not the next window or the desktop: {focused:?}"
         );
         visited.extend(focused);
     }
+    let distinct: std::collections::HashSet<&String> = visited.iter().collect();
+    let (in_app, in_bar): (Vec<&String>, Vec<&String>) = distinct
+        .into_iter()
+        .partition(|path| path.starts_with(&app));
     assert_eq!(
-        visited.len(),
+        in_app.len(),
         4,
         "Tab reaches each of the app's controls: {visited:?}"
     );
+    assert!(
+        !in_bar.is_empty(),
+        "and the window's bar, whose controls have no other keyboard route: {visited:?}"
+    );
     // And typing goes where Tab put focus.
     let field = format!("field-{first}-2");
-    for _ in 0..4 {
+    for _ in 0..visited.len() {
         if desk.focused_name().as_deref() == Some(field.as_str()) {
             break;
         }
@@ -982,6 +1109,182 @@ fn an_apps_own_search_button_opens_search_over_its_window() {
     assert!(
         desk.handle.search_open(),
         "the app's search button opens the desktop's search"
+    );
+}
+
+#[test]
+fn the_desk_says_who_holds_the_keyboard() {
+    let mut desk = Desk::new(2, 450);
+    assert_eq!(
+        desk.handle.input_owner().as_deref(),
+        Some(APP),
+        "the focused window's application holds it"
+    );
+    desk.driver.click_named("search-open").unwrap();
+    desk.settle();
+    assert_eq!(
+        desk.handle.input_owner().as_deref(),
+        Some("system-search"),
+        "search takes the keyboard while its palette is up"
+    );
+    desk.handle.close_search();
+    desk.settle();
+    assert_eq!(
+        desk.handle.input_owner().as_deref(),
+        Some(APP),
+        "and gives it back to the window under it when it closes"
+    );
+    // A host that saw a press beside the card asks again: closing a closed search opens nothing.
+    desk.handle.close_search();
+    desk.settle();
+    assert!(
+        !desk.handle.search_open(),
+        "dismissing twice never opens a search"
+    );
+}
+
+/// Search owns the keyboard while it is up, as the desk says who holds it: a window's app is
+/// offered no key. A bare letter is a shortcut in the app behind the card — a calendar's week view
+/// opens its new-event dialog on "n" — so one that reached it opened a dialog over the search and
+/// took the rest of the word into the dialog's title instead of the query.
+#[test]
+fn the_open_search_takes_every_key_from_the_window_under_it() {
+    AS_CALENDAR.with(|calendar| calendar.set(true));
+    let mut desk = Desk::new(1, 450);
+    let tab = desk.tabs[0];
+    assert_eq!(
+        desk.handle.input_owner().as_deref(),
+        Some(APP),
+        "the window's calendar has the keyboard before search opens"
+    );
+    desk.handle.open_search(Scope::Workspace, None);
+    desk.settle();
+    assert!(desk.handle.search_open());
+    // What the person types is the search's.
+    desk.type_search("Notes");
+    assert_eq!(
+        desk.handle.search_rows().0,
+        "Notes",
+        "the query holds what was typed"
+    );
+    // The same keys handed to the desk itself — the frame the palette opened in, or a host that
+    // routes the press — are the search's too: no shortcut fires and no dialog takes the rest.
+    desk.driver.type_text("Notes");
+    assert_eq!(
+        NEW_EVENT.with(std::cell::Cell::get),
+        0,
+        "no app shortcut fires while search is open"
+    );
+    assert_eq!(
+        desk.typed(&format!("event-title-{tab}")),
+        "",
+        "and no dialog opened over the search to take the letters after it"
+    );
+    assert_eq!(
+        desk.handle.search_rows().0,
+        "Notes",
+        "the search still holds the query it was given"
+    );
+}
+
+/// A host's own verb — the page's "Invite people", or anything only the page can do — is a row of
+/// the search over everything, and Enter on it hands the id back and closes the search: the card
+/// does not stay up over the sheet the host opens.
+#[test]
+fn a_host_verbs_row_hands_its_id_back_and_closes_the_search() {
+    let mut desk = Desk::new(1, 450);
+    desk.handle.set_host_actions(vec![HostAction {
+        id: "invite-people".into(),
+        title: "Invite people".into(),
+        subtitle: Some("Bring someone into this workspace".into()),
+        icon: None,
+        destructive: false,
+        unasked: true,
+        source: None,
+    }]);
+    desk.handle.open_search(Scope::Workspace, None);
+    desk.settle();
+    desk.type_search("invite people");
+    let (_, rows) = desk.handle.search_rows();
+    assert!(
+        rows.iter().any(|row| row.title == "Invite people"),
+        "the host's verb is a row: {rows:?}"
+    );
+    let choosable = rows
+        .iter()
+        .position(|row| row.title == "Invite people")
+        .expect("the row stands");
+    for _ in 0..choosable {
+        desk.key_search(NamedKey::ArrowDown);
+    }
+    desk.key_search(NamedKey::Enter);
+    desk.settle();
+    assert_eq!(
+        desk.handle.take_host_choices(),
+        ["invite-people"],
+        "the host is asked to perform it"
+    );
+    assert!(
+        !desk.handle.search_open(),
+        "and the search closes over what the host opens"
+    );
+}
+
+/// An app's action with nothing to act on now takes no row, so "invite" offers the workspace's own
+/// invite first and Enter carries it out: the card never stands on a row that can only say why it
+/// cannot run.
+#[test]
+fn an_action_that_cannot_run_now_takes_no_row_and_the_runnable_one_is_first() {
+    let mut desk = Desk::new(1, 450);
+    desk.with_host();
+    desk.handle.set_host_actions(vec![HostAction {
+        id: "invite-people".into(),
+        title: "Invite people".into(),
+        subtitle: Some("Bring someone into this workspace".into()),
+        icon: None,
+        destructive: false,
+        unasked: true,
+        source: None,
+    }]);
+    desk.handle.open_search(Scope::Workspace, None);
+    desk.settle();
+    desk.type_search("invite");
+    let (_, rows) = desk.handle.search_rows();
+    let titles: Vec<&str> = rows.iter().map(|row| row.title.as_str()).collect();
+    assert_eq!(
+        titles.first().copied(),
+        Some("Invite people"),
+        "the row that runs comes first: {titles:?}"
+    );
+    assert!(
+        !titles.contains(&"Invite"),
+        "the event's Invite, with no event selected, takes no row: {titles:?}"
+    );
+    desk.key_search(NamedKey::Enter);
+    desk.settle();
+    assert_eq!(
+        desk.handle.take_host_choices(),
+        ["invite-people"],
+        "Enter carries out the row that stands first"
+    );
+}
+
+/// The chord that opens search is the desk's, never the window's under it: an app that takes every
+/// key it is handed is not handed the chord, so no app's own Control+K runs on the press that opened
+/// the search.
+#[test]
+fn the_search_chord_is_never_the_windows() {
+    GREEDY.with(|greedy| greedy.set(true));
+    let mut desk = Desk::new(1, 450);
+    let tab = desk.tabs[0];
+    desk.driver.set_modifiers(&["ctrl".into()]);
+    desk.driver.key("k");
+    desk.driver.set_modifiers(&[]);
+    desk.settle();
+    assert_eq!(
+        desk.typed(&format!("greedy-{tab}")),
+        "",
+        "the window's app is offered nothing of the chord"
     );
 }
 
@@ -1070,8 +1373,9 @@ fn an_apps_action_chosen_in_search_over_everything_runs_in_its_window() {
     );
 }
 
-/// Search over one app's window asks that window's app and nothing else: not the desk's host, and
-/// not the desk's own commands; the hit it offers opens inside the app.
+/// Search over one app's window asks that window's app, and its host for the entries the app
+/// published for that window alone: not the desk's own commands, and never another app's rows. The
+/// hit the app offers opens inside it.
 #[test]
 fn search_over_an_apps_window_asks_that_app_and_not_the_desk() {
     SEARCH.with_borrow_mut(|search| search.answered = true);
@@ -1081,8 +1385,8 @@ fn search_over_an_apps_window_asks_that_app_and_not_the_desk() {
     desk.settle();
     assert!(desk.handle.search_open());
     assert!(
-        host.scopes.borrow().is_empty(),
-        "an app's search is its window's: the host was asked {:?}",
+        matches!(host.scopes.borrow().as_slice(), [Scope::InApp(_)]),
+        "an app's search asks the host for that app's window: {:?}",
         host.scopes.borrow()
     );
     desk.type_search("lofi");
@@ -1106,6 +1410,30 @@ fn search_over_an_apps_window_asks_that_app_and_not_the_desk() {
         desk.driver.control_failures().is_empty(),
         "{:?}",
         desk.driver.control_failures()
+    );
+}
+
+/// An app that runs in a process of its own publishes its entries into the session's index and
+/// gives the desk no tree to read: what its window holds is found there, and the row opens the
+/// thing it names.
+#[test]
+fn a_windows_search_finds_what_the_session_holds_for_its_app() {
+    SEARCH.with_borrow_mut(|search| search.answered = true);
+    let mut desk = Desk::new(2, 450);
+    let host = desk.with_host();
+    desk.driver.click_named("search-open").unwrap();
+    desk.settle();
+    assert!(desk.handle.search_open());
+    assert!(
+        matches!(host.scopes.borrow().as_slice(), [Scope::InApp(_)]),
+        "the host is asked for the app the window shows: {:?}",
+        host.scopes.borrow()
+    );
+    desk.type_search("quarterly");
+    let (_, rows) = desk.handle.search_rows();
+    assert!(
+        rows.iter().any(|row| row.title == "Quarterly plan"),
+        "what the app published for its window is found: {rows:?}"
     );
 }
 

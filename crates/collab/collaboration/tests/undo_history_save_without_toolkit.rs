@@ -61,7 +61,7 @@ fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
     let mut doc = store.load_or_new();
     // Every change of the record is its original persistent writer's, as
     // the toolkit's record store sets it.
-    doc.set_actor(store.actor().clone());
+    doc.set_actor(store.actor());
     let mut history = UndoLog::new(&mut doc);
     let mut writer = store.writer();
     // A new record holds no edits of its own, so it has nothing to save.
@@ -122,7 +122,7 @@ fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
         .load_complete()
         .unwrap()
         .expect("the record was saved");
-    reloaded.set_actor(store.actor().clone());
+    reloaded.set_actor(store.actor());
     assert_eq!(reloaded.get_heads(), heads);
     assert_eq!(title(&reloaded).as_deref(), Some("Draft"));
     assert_eq!(step_authors(&mut reloaded), ["ada", "ada", "ada"]);

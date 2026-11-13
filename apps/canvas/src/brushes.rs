@@ -39,11 +39,9 @@ pub enum Preset {
     Charcoal,
     /// A broad nib held at an angle: thick across it, thin along it.
     Calligraphy,
-    /// Takes paint off its layer.
     Eraser,
     /// Whole square artwork cells, with no pressure or softened edges.
     Pixel,
-    /// Clears whole square artwork cells.
     PixelEraser,
 }
 
@@ -67,7 +65,6 @@ pub struct Dynamics {
 }
 
 impl Preset {
-    /// Every preset, in the picker's order.
     pub const ALL: [Self; 10] = [
         Self::Round,
         Self::Pen,
@@ -100,7 +97,6 @@ impl Preset {
         Self::ALL.into_iter().find(|preset| preset.name() == name)
     }
 
-    /// The preset a mark is drawn with.
     pub fn of(style: &Style) -> Self {
         style
             .brush
@@ -156,7 +152,6 @@ impl Preset {
         }
     }
 
-    /// How much the ground's tooth shows in what the preset lays.
     fn grain(self) -> f64 {
         match self {
             Self::Pencil => 0.85,
@@ -167,7 +162,6 @@ impl Preset {
 }
 
 impl Dynamics {
-    /// The dynamics `preset` handles with, as `params` override them.
     pub fn of(preset: Preset, params: &BTreeMap<String, f64>) -> Self {
         let mut dynamics = preset.defaults();
         for (name, field) in [
@@ -234,13 +228,10 @@ fn point_of(point: &[f64]) -> (f64, f64, f64) {
     )
 }
 
-/// `points` with the hand's wobble taken out. The stroke is first laid
-/// along its smooth curve at an even spacing, so a stroke of a few points
-/// keeps its shape; then the wobble is blurred out of it, the ends staying
-/// put, while curves much rounder than the wobble keep their size.
+/// `points` with the hand's wobble taken out: laid along its smooth curve at
+/// an even spacing, then blurred, the ends held and [`corners`] left sharp.
 /// `amount` 1 evens out wobble up to about ten units across; a half, about
-/// five. The stroke's [`corners`] stay where they are, sharp: each run
-/// between them is smoothed on its own. `size` is the brush's.
+/// five. `size` is the brush's.
 pub fn smoothed(points: &[Vec<f64>], amount: f64, size: f64) -> Vec<Vec<f64>> {
     let mut out: Vec<Vec<f64>> = Vec::new();
     for run in runs(points, amount, size) {
@@ -251,8 +242,6 @@ pub fn smoothed(points: &[Vec<f64>], amount: f64, size: f64) -> Vec<Vec<f64>> {
     out
 }
 
-/// `points` split at the stroke's [`corners`] into runs, each starting on
-/// the corner the one before ends on.
 fn runs(points: &[Vec<f64>], amount: f64, size: f64) -> Vec<Vec<Vec<f64>>> {
     let mut runs = Vec::new();
     let mut from = 0;
@@ -308,7 +297,6 @@ pub fn corners(points: &[Vec<f64>], amount: f64, size: f64) -> Vec<usize> {
             _ => previous,
         }
     };
-    // How far the stroke turns at `index` between `reach` before and after.
     let turn = |index: usize, reach: f64| {
         let (Some(point), Some(distance)) = (at.get(index), arc.get(index)) else {
             return 0.0;
@@ -358,7 +346,6 @@ pub fn corners(points: &[Vec<f64>], amount: f64, size: f64) -> Vec<usize> {
     corners.into_iter().map(|(index, _)| index).collect()
 }
 
-/// One run of a stroke between corners, smoothed: see [`smoothed`].
 fn smoothed_run(points: &[Vec<f64>], amount: f64) -> Vec<Vec<f64>> {
     // Passes of a [1, 2, 1] kernel blur by about the square root of half
     // their number, in steps: 72 passes is six.
@@ -441,7 +428,6 @@ fn smoothed_run(points: &[Vec<f64>], amount: f64) -> Vec<Vec<f64>> {
         .collect()
 }
 
-/// `values` blurred by `passes` of a `[1, 2, 1]` kernel, the ends held.
 fn blur(values: &[(f64, f64, f64)], passes: usize) -> Vec<(f64, f64, f64)> {
     let mut values = values.to_vec();
     let mut before = values.clone();
@@ -471,7 +457,6 @@ pub fn simplified(points: &[Vec<f64>], tolerance: f64) -> Vec<Vec<f64>> {
         .collect()
 }
 
-/// The indices of the points [`simplified`] keeps, first to last.
 pub fn kept(points: &[Vec<f64>], tolerance: f64) -> Vec<usize> {
     if points.len() <= 2 {
         return (0..points.len()).collect();
@@ -562,8 +547,6 @@ fn tapered(distance: f64, total: f64, size: f64, taper: f64) -> f64 {
     0.08 + 0.92 * start.min(end)
 }
 
-/// A stroke worked out for drawing: its samples and how wide it is at
-/// each.
 struct Laid {
     samples: Vec<Sample>,
     /// Half the width at each sample, in units.
@@ -913,9 +896,7 @@ pub struct Dabs {
 /// coarsely.
 const MAX_PIXELS: f64 = 6.0e6;
 
-/// What a dabbed stroke is laid with.
 pub struct DabInput<'a> {
-    /// The lines the stroke is laid as ([`pieces`]).
     pub pieces: &'a [Piece],
     pub style: &'a Style,
     /// Pixels per unit wanted.
@@ -928,7 +909,6 @@ pub struct DabInput<'a> {
     pub to_artwork: ui::vello::kurbo::Affine,
 }
 
-/// Stamp a dabbed preset's dabs along the stroke.
 pub fn dab(input: &DabInput<'_>) -> Option<Dabs> {
     let preset = Preset::of(input.style);
     let dynamics = Dynamics::of(preset, &input.style.params);
@@ -983,7 +963,6 @@ pub fn dab(input: &DabInput<'_>) -> Option<Dabs> {
     })
 }
 
-/// How one dab touches the paper.
 struct Tip {
     /// The share of the radius the edge fades over.
     soft: f64,
@@ -993,7 +972,6 @@ struct Tip {
     spray: bool,
 }
 
-/// The paint a dabbed stroke lays, `0..=1` per pixel.
 struct Grid {
     cover: Vec<f32>,
     width: usize,
@@ -1104,7 +1082,6 @@ impl Grid {
     }
 }
 
-/// A `SplitMix64` hash of `value`.
 fn mix(value: u64) -> u64 {
     let mut z = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -1134,7 +1111,6 @@ fn noise(x: f64, y: f64, seed: u64) -> f64 {
     top + (bottom - top) * ty
 }
 
-/// One line a stroke is laid as: its points and its size.
 pub type Piece = (Vec<Vec<f64>>, f64);
 
 /// The lines a stroke mark is laid as: itself, or every twig its `forks`
@@ -1210,7 +1186,6 @@ pub fn centreline(points: &[Vec<f64>], size: f64, smoothing: f64) -> BezPath {
     path
 }
 
-/// The stroke `points` of a stroke mark, with its size.
 pub fn stroke_of(mark: &Mark) -> Option<(&[Vec<f64>], f64)> {
     match &mark.shape {
         Shape::Stroke { points, size, .. } => Some((points.as_slice(), *size)),

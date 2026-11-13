@@ -77,39 +77,36 @@ impl ZoneKind {
         ZoneKind::ALL.iter().copied().find(|z| z.name() == name)
     }
 
-    /// The zone as people read it: sentence case, with the acronym kept.
-    pub fn title(self) -> &'static str {
+    /// The message that names this zone as people read it: sentence case,
+    /// with the acronym kept. The zone's own name stays what firewalld calls
+    /// it, so the catalogue carries it and a window paints the translation.
+    pub fn title_message(self) -> &'static str {
         match self {
-            ZoneKind::Drop => "Drop",
-            ZoneKind::Block => "Block",
-            ZoneKind::Public => "Public",
-            ZoneKind::External => "External",
-            ZoneKind::Dmz => "DMZ",
-            ZoneKind::Work => "Work",
-            ZoneKind::Home => "Home",
-            ZoneKind::Internal => "Internal",
-            ZoneKind::Trusted => "Trusted",
+            ZoneKind::Drop => "firewall-zone-drop-title",
+            ZoneKind::Block => "firewall-zone-block-title",
+            ZoneKind::Public => "firewall-zone-public-title",
+            ZoneKind::External => "firewall-zone-external-title",
+            ZoneKind::Dmz => "firewall-zone-dmz-title",
+            ZoneKind::Work => "firewall-zone-work-title",
+            ZoneKind::Home => "firewall-zone-home-title",
+            ZoneKind::Internal => "firewall-zone-internal-title",
+            ZoneKind::Trusted => "firewall-zone-trusted-title",
         }
     }
 
-    /// One-line description shown under the zone title in the summary.
-    pub fn description(self) -> &'static str {
+    /// The catalogue message describing this zone, shown under its title in
+    /// the summary.
+    pub fn description_message(self) -> &'static str {
         match self {
-            ZoneKind::Drop => {
-                "Incoming traffic is dropped without a reply. Outgoing traffic is allowed."
-            }
-            ZoneKind::Block => "Incoming connections are refused. Outgoing traffic is allowed.",
-            ZoneKind::Public => {
-                "For untrusted public networks. Only the services you allow are reachable."
-            }
-            ZoneKind::External => "For the outside of a router that masquerades your network.",
-            ZoneKind::Dmz => "For public-facing hosts with limited access to the internal network.",
-            ZoneKind::Work => "For work networks where you mostly trust the other computers.",
-            ZoneKind::Home => "For home networks where you mostly trust the other computers.",
-            ZoneKind::Internal => {
-                "For internal networks where you mostly trust the other computers."
-            }
-            ZoneKind::Trusted => "All network connections are accepted.",
+            ZoneKind::Drop => "firewall-zone-drop-description",
+            ZoneKind::Block => "firewall-zone-block-description",
+            ZoneKind::Public => "firewall-zone-public-description",
+            ZoneKind::External => "firewall-zone-external-description",
+            ZoneKind::Dmz => "firewall-zone-dmz-description",
+            ZoneKind::Work => "firewall-zone-work-description",
+            ZoneKind::Home => "firewall-zone-home-description",
+            ZoneKind::Internal => "firewall-zone-internal-description",
+            ZoneKind::Trusted => "firewall-zone-trusted-description",
         }
     }
 
@@ -162,12 +159,13 @@ impl Target {
         }
     }
 
-    /// What happens to traffic no rule matched, as a sentence-case value.
-    pub fn outcome(self) -> &'static str {
+    /// The message naming what happens to traffic no rule matched, as a
+    /// sentence-case value.
+    pub fn outcome_message(self) -> &'static str {
         match self {
-            Target::Default | Target::Reject => "Rejected",
-            Target::Accept => "Accepted",
-            Target::Drop => "Dropped",
+            Target::Default | Target::Reject => "firewall-target-rejected",
+            Target::Accept => "firewall-target-accepted",
+            Target::Drop => "firewall-target-dropped",
         }
     }
 
@@ -225,11 +223,11 @@ impl Action {
             Action::Deny => "deny",
         }
     }
-    /// The action as a sentence-case word.
-    pub fn title(self) -> &'static str {
+    /// The message naming the action as a sentence-case word.
+    pub fn title_message(self) -> &'static str {
         match self {
-            Action::Allow => "Allow",
-            Action::Deny => "Deny",
+            Action::Allow => "firewall-action-allow-title",
+            Action::Deny => "firewall-action-deny-title",
         }
     }
     pub const ALL: [Action; 2] = [Action::Allow, Action::Deny];
@@ -273,7 +271,10 @@ impl Matcher {
     pub fn title(&self) -> String {
         match self {
             Matcher::Service(s) => ServiceCatalog::name_of(s).to_string(),
-            Matcher::Port { port, .. } => format!("Port {port}"),
+            Matcher::Port { port, .. } => crate::locales::CATALOG.t_args(
+                "firewall-rule-port-title",
+                &[("port", ui::i18n::ArgValue::Text(port.clone()))],
+            ),
         }
     }
 

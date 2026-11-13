@@ -1,13 +1,5 @@
 //! The service's socket: one thread accepts, one thread per connection
 //! reads its requests, and one writes what the hub pushes.
-//!
-//! The socket lives in the session's services directory, which no app
-//! sandbox can reach. An app reaches the service only through the
-//! connection its launcher opened and authenticated with a [`Handoff`]
-//! before the sandbox started, so the handoff's app id and grants are the
-//! launcher's word, not the app's. Anything else that can open the socket
-//! is one of the person's own unconfined programs, which could read `/proc`
-//! itself.
 
 use std::collections::HashMap;
 use std::io::BufReader;
@@ -23,21 +15,26 @@ use crate::protocol::{
     Grant, Grants, Handoff, Refusal, Reply, Request, read_handoff, read_message, write_message,
 };
 
-/// Replies queued for one connection's writer.
 const REPLY_QUEUE: usize = 4;
 
-/// Asks the person for a grant, and remembers what they answered.
 pub trait Prompter: Send + Sync {
     /// Whether the person already allowed `grant` for this app in this room
     /// (a choice made earlier, kept as they asked).
     fn granted(&self, handoff: &Handoff, grant: Grant) -> bool;
 
-    /// Put the permission prompt in front of the person and wait for the
-    /// answer. Blocks the asking connection's thread, never the service.
-    fn ask(&self, handoff: &Handoff, grant: Grant) -> bool;
+    /// Put the permission prompt in front of the person: whether they allowed
+    /// it, once they answered. The asking connection's thread waits for it,
+    /// never the service, nor whoever puts the prompt up.
+    fn ask(&self, handoff: &Handoff, grant: Grant) -> mpsc::Receiver<bool>;
 }
 
-/// No one to ask: every question is answered no.
+#[must_use]
+pub fn answered(allowed: bool) -> mpsc::Receiver<bool> {
+    let (answer, answered) = mpsc::channel();
+    let _ = answer.send(allowed);
+    answered
+}
+
 pub struct NoPrompter;
 
 impl Prompter for NoPrompter {
@@ -45,24 +42,21 @@ impl Prompter for NoPrompter {
         false
     }
 
-    fn ask(&self, _handoff: &Handoff, _grant: Grant) -> bool {
-        false
+    fn ask(&self, _handoff: &Handoff, _grant: Grant) -> mpsc::Receiver<bool> {
+        answered(false)
     }
 }
 
-/// A running service.
 pub struct Server {
     path: PathBuf,
     /// The socket as this server left it: another server may have replaced
     /// it since, and its socket is not this one's to unlink.
     socket: (u64, u64),
-    /// Closed to wake the acceptor out of its wait.
     wake: Option<UnixStream>,
     acceptor: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Server {
-    /// Serve `hub` at `path`, asking `prompter` for grants.
     pub fn bind(path: &Path, hub: Hub, prompter: Arc<dyn Prompter>) -> std::io::Result<Self> {
         if path.exists() {
             std::fs::remove_file(path)?;
@@ -125,7 +119,6 @@ impl Server {
         })
     }
 
-    /// Where it listens.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
@@ -144,13 +137,11 @@ impl Drop for Server {
     }
 }
 
-/// Which file at `path` is, as the filesystem numbers it.
 fn socket_of(path: &Path) -> std::io::Result<(u64, u64)> {
     let metadata = std::fs::metadata(path)?;
     Ok((metadata.dev(), metadata.ino()))
 }
 
-/// Serve a connection that starts with the launcher's handoff.
 pub fn serve_handed_off(stream: UnixStream, hub: &Hub, prompter: &dyn Prompter) {
     let mut reader = BufReader::new(match stream.try_clone() {
         Ok(read) => read,
@@ -252,9 +243,11 @@ impl Connection<'_> {
                 self.subscriptions.remove(&subscription);
             }
             Request::AskGrant { request, grant } => {
-                // Only what the manifest declares can be asked for.
                 let declared = self.handoff.ceiling.with(grant) == self.handoff.ceiling;
-                if declared && !self.grants.holds(grant) && prompter.ask(self.handoff, grant) {
+                if declared
+                    && !self.grants.holds(grant)
+                    && prompter.ask(self.handoff, grant).recv().unwrap_or(false)
+                {
                     // A command line is part of a process row: allowing it
                     // allows the list it belongs to.
                     self.grants = self.grants.with(grant);
@@ -352,7 +345,6 @@ impl Connection<'_> {
                 snapshot: Box::new(snapshot),
             });
         });
-        // Replacing an id drops the subscription it named.
         let live = self
             .hub
             .subscribe(Spec::every(interval_ms, processes), self.grants, sink);

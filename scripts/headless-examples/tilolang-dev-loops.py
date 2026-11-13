@@ -46,7 +46,6 @@ the medians also show the loop under load; the load average is printed with ever
 """
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -340,8 +339,10 @@ def stop(proc):
 
 def unattach(state: Path):
     """Leave no stale mount of a session that died, so the same state starts again."""
-    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / (
-        "tilo-nested-" + hashlib.sha256(str(state).encode()).hexdigest()[:12])
+    # The launcher picks the runtime directory (a login's XDG_RUNTIME_DIR, or one of its own
+    # where there is none); asking it keeps one derivation of that path.
+    runtime = Path(subprocess.run([str(SESSION), "--print-runtime", "--state", str(state)],
+                                  capture_output=True, text=True, check=True).stdout.strip())
     for line in Path("/proc/self/mounts").read_text().splitlines():
         mount = line.split()[1]
         if mount.startswith(str(runtime) + "/"):

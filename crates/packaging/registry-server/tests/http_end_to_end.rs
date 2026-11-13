@@ -1,9 +1,6 @@
-//! End-to-end HTTP tests — start the registry server on an ephemeral
-//! port, drive it with reqwest as an
-//! on-device client would, and assert the wire behaviour.
-//!
-//! These tests verify the whole loop: signature construction ↔
-//! JSON round-trip ↔ server-side verify ↔ disk write ↔ GET.
+//! End-to-end HTTP tests: start the registry server on an ephemeral port, drive it with reqwest as
+//! an on-device client would, and assert the wire behaviour of the whole loop, from signature
+//! construction through the server's verify and disk write to GET.
 
 #![allow(
     clippy::unwrap_used,
@@ -27,9 +24,8 @@ use registry_types::{
     sign_external_moderation,
 };
 
-/// Start a server against a fresh tempdir. Returns the bound
-/// address + the tempdir handle (kept alive by the caller so the
-/// dir isn't cleaned up mid-test) + the owner + first publisher
+/// Start a server against a fresh tempdir. Returns the bound address, the tempdir handle (kept
+/// alive by the caller so the dir isn't cleaned up mid-test), the owner and the first publisher
 /// key.
 struct Harness {
     tmp: tempfile::TempDir,
@@ -39,8 +35,7 @@ struct Harness {
     allowlist: PublisherAllowlist,
     publisher: SigningKey,
     owner: SigningKey,
-    /// Second publisher who is NOT allowlisted — used for the
-    /// negative test.
+    /// Second publisher who is NOT allowlisted, for the negative test.
     outsider: SigningKey,
 }
 
@@ -78,8 +73,8 @@ async fn spawn_server_with(publisher_can_add_new: bool, options: ServeOptions) -
 
     let state = AppState::with_options(storage.clone(), identity, options);
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-    // The socket listens once this returns: a connect queues in its backlog
-    // until the accept loop takes it.
+    // The socket listens once this returns: a connect queues in its backlog until the accept loop
+    // takes it.
     let bound = bind_and_run(addr, state.clone()).await.expect("bind");
 
     Harness {
@@ -153,7 +148,6 @@ fn signed_report(
     reason = "one scenario, one labelled phase per merged case"
 )]
 async fn moderation_http_is_signed_authorised_and_bounded() {
-    // phase: moderation_http_is_signed_idempotent_authorized_and_verifiable
     {
         let h = spawn_server(true).await;
         let entry = sample_entry(&h.publisher, 100);
@@ -257,7 +251,6 @@ async fn moderation_http_is_signed_authorised_and_bounded() {
             reqwest::StatusCode::OK
         );
     }
-    // phase: oversized_moderation_body_is_rejected_before_parse_or_disk_write
     {
         let h = spawn_server(true).await;
         let response = tilo_net::http::client()
@@ -370,7 +363,6 @@ fn url(addr: SocketAddr, path: &str) -> String {
     reason = "one scenario, one labelled phase per merged case"
 )]
 async fn server_serves_identity_snapshot_and_staged_blobs() {
-    // phase: health_endpoint_returns_ok
     {
         let h = spawn_server(true).await;
         let client = tilo_net::http::client().build().expect("http client");
@@ -384,7 +376,6 @@ async fn server_serves_identity_snapshot_and_staged_blobs() {
             .expect("decode");
         assert_eq!(body, serde_json::json!({"ok": true}));
     }
-    // phase: server_refuses_a_tampered_or_expired_published_snapshot
     {
         let h = spawn_server(true).await;
         let mut snapshot = h.storage.load_snapshot().unwrap().unwrap();
@@ -403,11 +394,7 @@ async fn server_serves_identity_snapshot_and_staged_blobs() {
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
     }
-    // phase: an_authentic_expired_snapshot_is_served_so_devices_can_say_it_expired
-    // On 2026-10-21 the channel authorization lapsed, the snapshot expired,
-    // and the server's 503 failed readiness on every replica: devices saw an
-    // unreachable registry instead of an expired catalogue. The signed bytes
-    // are served; the client refuses them by their expiry and says so.
+    // The signed bytes are served; the client refuses them by their expiry and says so.
     {
         let h = spawn_server(true).await;
         let mut snapshot = h.storage.load_snapshot().unwrap().unwrap();
@@ -450,7 +437,6 @@ async fn server_serves_identity_snapshot_and_staged_blobs() {
             "{metrics}"
         );
     }
-    // phase: registry_handshake_uses_stored_identity
     {
         let h = spawn_server(true).await;
         let client = tilo_net::http::client().build().expect("http client");
@@ -466,10 +452,9 @@ async fn server_serves_identity_snapshot_and_staged_blobs() {
         assert_eq!(body.description, "for tests");
         assert_eq!(body.protocol_version, registry_types::PROTOCOL_VERSION);
     }
-    // phase: payload_blobs_of_a_staged_package_are_served_by_hash
-    // A reviewed package's payload blobs are served by hash, so a client that
-    // downloaded the thin package fetches only what its store lacks — and a
-    // blob the registry never reviewed is not there to fetch.
+    // A reviewed package's payload blobs are served by hash, so a client that downloaded the thin
+    // package fetches only what its store lacks, and a blob the registry never reviewed is not
+    // there to fetch.
     {
         let h = spawn_server(true).await;
         let identity = tilo_app_package::SigningIdentity::generate();
@@ -559,10 +544,9 @@ async fn server_serves_identity_snapshot_and_staged_blobs() {
                 .is_err()
         );
 
-        // phase: stored_objects_are_served_as_checked_compressed_twins
-        // Storing an object writes its zstd twin; the twin is served as an
-        // immutable `application/zstd` body with no Content-Encoding, and
-        // only while it decompresses to the object it is named for.
+        // Storing an object writes its zstd twin; the twin is served as an immutable
+        // `application/zstd` body with no Content-Encoding, and only while it decompresses to the
+        // object it is named for.
         let binary_hex = binary.to_hex();
         let decompress = |body: &[u8], limit: usize| {
             let mut out = Vec::new();
@@ -637,7 +621,6 @@ async fn server_serves_identity_snapshot_and_staged_blobs() {
     reason = "one scenario, one labelled phase per merged case"
 )]
 async fn change_requests_stay_private_until_approval_and_are_validated() {
-    // phase: signed_post_stays_private_until_approval
     {
         let h = spawn_server(true).await;
         let entry = sample_entry(&h.publisher, 100);
@@ -711,7 +694,6 @@ async fn change_requests_stay_private_until_approval_and_are_validated() {
             .expect("decode");
         assert_eq!(single, list);
     }
-    // phase: add_then_update_bumps_stored_entry
     {
         let h = spawn_server(true).await;
 
@@ -770,7 +752,6 @@ async fn change_requests_stay_private_until_approval_and_are_validated() {
         );
         assert_eq!(stored.entries[0].updated_at_unix, 200);
     }
-    // phase: update_rejects_when_updated_at_not_strictly_greater
     {
         let h = spawn_server(true).await;
         let client = tilo_net::http::client().build().expect("http client");
@@ -786,7 +767,7 @@ async fn change_requests_stay_private_until_approval_and_are_validated() {
             .expect("v1 accepted");
         approve(&h, "so.tilo.editor");
 
-        // Same timestamp — server must reject with 409.
+        // Same timestamp: the server must reject with 409.
         let v_same = sample_entry(&h.publisher, 100);
         let resp = client
             .post(url(h.addr, "/entries"))
@@ -800,7 +781,6 @@ async fn change_requests_stay_private_until_approval_and_are_validated() {
             .expect("v_same");
         assert_eq!(resp.status(), reqwest::StatusCode::CONFLICT);
     }
-    // phase: delete_keeps_entry_public_until_approval
     {
         let h = spawn_server(true).await;
         let client = tilo_net::http::client().build().expect("http client");
@@ -848,7 +828,6 @@ async fn change_requests_stay_private_until_approval_and_are_validated() {
             .expect("get");
         assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
     }
-    // phase: bad_json_returns_400
     {
         let h = spawn_server(true).await;
         let client = tilo_net::http::client().build().expect("http client");
@@ -861,7 +840,6 @@ async fn change_requests_stay_private_until_approval_and_are_validated() {
             .expect("send");
         assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
     }
-    // phase: oversized_change_request_returns_413_without_touching_disk
     {
         let h = spawn_server(true).await;
         let response = tilo_net::http::client()
@@ -880,13 +858,12 @@ async fn change_requests_stay_private_until_approval_and_are_validated() {
 
 #[tokio::test]
 async fn unauthorised_change_requests_are_refused_with_403() {
-    // phase: unauthorised_publisher_gets_403
     {
         let h = spawn_server(true).await;
         let client = tilo_net::http::client().build().expect("http client");
 
-        // Build a request signed by the outsider — a valid Ed25519
-        // signature, but the pubkey is not in the allowlist.
+        // Build a request signed by the outsider: a valid Ed25519 signature, but the pubkey is not
+        // in the allowlist.
         let entry = sample_entry(&h.outsider, 100);
         let req = sign_change_request(EntryAction::Add, entry, &h.outsider);
 
@@ -899,7 +876,6 @@ async fn unauthorised_change_requests_are_refused_with_403() {
         assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
         assert!(h.storage.load_pending_submissions().unwrap().is_empty());
     }
-    // phase: tampered_signature_gets_403
     {
         let h = spawn_server(true).await;
         let client = tilo_net::http::client().build().expect("http client");
@@ -919,10 +895,9 @@ async fn unauthorised_change_requests_are_refused_with_403() {
         assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
         assert!(h.storage.load_pending_submissions().unwrap().is_empty());
     }
-    // phase: add_denied_when_publisher_cannot_add_new
     {
-        // Same publisher as normal, but the allowlist says
-        // can_add_new = false — they may only edit their own rows.
+        // Same publisher as normal, but the allowlist says can_add_new = false: they may only edit
+        // their own rows.
         let h = spawn_server(false).await;
         let client = tilo_net::http::client().build().expect("http client");
 
@@ -936,7 +911,6 @@ async fn unauthorised_change_requests_are_refused_with_403() {
             .expect("send");
         assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
     }
-    // phase: publisher_cannot_hijack_another_publishers_entry
     {
         let h = spawn_server(true).await;
         let client = tilo_net::http::client().build().expect("http client");
@@ -955,15 +929,8 @@ async fn unauthorised_change_requests_are_refused_with_403() {
             .error_for_status()
             .expect("v1 accepted");
 
-        // A different allowlisted publisher (we'll add one on the fly)
-        // tries to update the same package_id. Simulate by asking the
-        // storage layer to add the outsider as a full member.
+        // A different allowlisted publisher tries to update the same package_id.
         let second = SigningKey::generate(&mut UnwrapErr(SysRng));
-        // Use the CLI-equivalent path: modify allowlist via server
-        // restart is heavy; instead sign a change with a mismatched
-        // publisher pubkey — the entry-level sig now doesn't verify
-        // because the entry declares publisher_pubkey_hex = first
-        // publisher but we sign with second's key. Server must reject.
         let mut hijack = sample_entry(&h.publisher, 200); // note: still claims first publisher
         hijack.description = "hijacked".into();
         let req = sign_change_request(EntryAction::Update, hijack, &second);
@@ -973,8 +940,8 @@ async fn unauthorised_change_requests_are_refused_with_403() {
             .send()
             .await
             .expect("send");
-        // 403 — the change-level sig doesn't match the declared publisher
-        // pubkey, so verify_change_request refuses before touching disk.
+        // 403: the change-level sig doesn't match the declared publisher pubkey, so
+        // verify_change_request refuses before touching disk.
         assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
     }
 }
@@ -1029,9 +996,8 @@ async fn package_ids_must_lie_in_a_verified_namespace() {
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
 }
 
-/// An allowlisted publisher whose row names no namespace — a hand-written or
-/// pre-namespace `publishers.toml` row — owns nothing, so it cannot claim Tilo's
-/// own `so.tilo.store`.
+/// An allowlisted publisher whose row names no namespace (a hand-written or pre-namespace
+/// `publishers.toml` row) owns nothing, so it cannot claim Tilo's own `so.tilo.store`.
 #[tokio::test]
 async fn publisher_without_namespace_cannot_add_so_tilo_entry() {
     let h = spawn_server(true).await;
@@ -1085,8 +1051,8 @@ fn signed_package(dir: &std::path::Path, key: &SigningKey) -> Vec<u8> {
     tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap()
 }
 
-/// An allowlisted publisher uploads its own signed package; the registry keeps
-/// it privately, and review reads it from there without a network fetch.
+/// An allowlisted publisher uploads its own signed package; the registry keeps it privately, and
+/// review reads it from there without a network fetch.
 #[tokio::test]
 async fn publishers_upload_their_own_packages_for_review() {
     let h = spawn_server(true).await;
@@ -1176,9 +1142,8 @@ async fn publishers_upload_their_own_packages_for_review() {
     assert_eq!(reviewed[0].1, bytes);
 }
 
-/// A browser page on a configured origin may read the catalogue and blobs;
-/// any other origin, and every POST, gets no CORS grant. An unchanged
-/// catalogue revalidates to an empty 304.
+/// A browser page on a configured origin may read the catalogue and blobs; any other origin, and
+/// every POST, gets no CORS grant. An unchanged catalogue revalidates to an empty 304.
 #[tokio::test]
 async fn cors_grants_exact_origins_get_only_and_snapshots_revalidate() {
     let page = "http://localhost:4321";
@@ -1317,9 +1282,9 @@ fn p50(samples: &mut [std::time::Duration]) -> std::time::Duration {
     samples.get(samples.len() / 2).copied().unwrap_or_default()
 }
 
-/// What a client of a busy store waits for: the catalogue, and a missing
-/// blob asked for while other clients fetch the catalogue. Prints the
-/// numbers; the regression checks are the counters in the next test.
+/// What a client of a busy store waits for: the catalogue, and a missing blob asked for while other
+/// clients fetch the catalogue. Prints the numbers; the regression checks are the counters in the
+/// next test.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "measurement; run with --ignored --nocapture"]
 async fn entries_and_missing_blob_latency_with_a_large_catalogue() {
@@ -1343,8 +1308,7 @@ async fn entries_and_missing_blob_latency_with_a_large_catalogue() {
         warm.push(started.elapsed());
     }
 
-    // Eight clients fetch the catalogue while a ninth asks for a blob the
-    // store does not have.
+    // Eight clients fetch the catalogue while a ninth asks for a blob the store does not have.
     let mut busy = Vec::new();
     for _ in 0..10 {
         let fetches: Vec<_> = (0..8)
@@ -1373,9 +1337,8 @@ async fn entries_and_missing_blob_latency_with_a_large_catalogue() {
     );
 }
 
-/// The catalogue is read, verified and encoded once per published revision,
-/// however many clients ask and in whichever form, and every client gets
-/// the whole body.
+/// The catalogue is read, verified and encoded once per published revision, however many clients
+/// ask and in whichever form, and every client gets the whole body.
 #[tokio::test]
 async fn the_catalogue_is_verified_once_per_published_revision() {
     let h = spawn_server(true).await;

@@ -5,8 +5,6 @@
 //! than something observable only by running it. `tinker shell --explain`
 //! prints the same vector used for the session.
 //!
-//! Defaults, all of which are deliberate:
-//!
 //! * uid 0 inside, mapped to the invoking user outside;
 //! * the host root filesystem is not visible at all — the layer's root is the
 //!   base image plus its own overlay;
@@ -24,33 +22,23 @@ use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-/// A host path exposed inside a layer session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Share {
     pub host: PathBuf,
-    /// Where it appears inside the layer. Defaults to the same path.
     pub guest: PathBuf,
     pub writable: bool,
 }
 
-/// Everything that decides what a session can do.
 #[derive(Debug, Clone)]
 pub struct SessionSpec {
-    /// Base root filesystem, the overlay's bottom-most lower directory.
     pub base: PathBuf,
-    /// Lower directories stacked above the base, base-most first.
     pub lower_layers: Vec<PathBuf>,
-    /// Where this session's writes go, and its diff is read from.
     pub upper: PathBuf,
     pub work: PathBuf,
-    /// Becomes `/root` inside.
     pub home: PathBuf,
-    /// Shown as the hostname inside, so the prompt can say where you are.
     pub layer_name: String,
     pub shares: Vec<Share>,
-    /// `false` unshares the network namespace.
     pub network: bool,
-    /// Command to run; empty means an interactive login shell.
     pub command: Vec<OsString>,
 }
 
@@ -75,7 +63,6 @@ impl SessionSpec {
         }
     }
 
-    /// The full `bwrap` argument vector, excluding `bwrap` itself.
     pub fn to_bwrap_args(&self) -> Vec<OsString> {
         let mut a: Vec<OsString> = Vec::new();
         macro_rules! push {
@@ -224,7 +211,6 @@ mod tests {
             .collect()
     }
 
-    /// Index of the first occurrence of `needle`.
     fn pos(v: &[String], needle: &str) -> usize {
         v.iter()
             .position(|s| s == needle)

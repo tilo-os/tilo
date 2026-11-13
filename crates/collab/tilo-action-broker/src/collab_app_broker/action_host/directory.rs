@@ -245,6 +245,17 @@ impl AppBrokerState {
         // Runs on the broker's local set in the same turn the owner answered,
         // so nothing can change between resolution and admission.
         resolved.then(move |reply| {
+            // An action of a record another device hosts runs there: nothing
+            // is admitted here, and the host's receipt is the answer.
+            if let Some(forward) =
+                state.directory_forward(&caller, &root, &request, origin.as_ref(), reply.as_ref())
+            {
+                if let Ok(mut ledger) = state.remote_invocations.lock() {
+                    ledger.abandon(&request.invocation);
+                }
+                super::answer_with(state.send_to_host(&caller, forward), completer);
+                return;
+            }
             // A caller that stopped waiting (its admission deadline passed)
             // has already been told the action did not start; keep it so.
             let staged = if completer.is_abandoned() {
@@ -380,17 +391,24 @@ impl AppBrokerState {
 }
 
 /// A directory row, already validated and permission-checked on the local
-/// set, as a catalogue row.
+/// set, as a catalogue row; one that does not convert refuses the page with
+/// its reason instead of leaving it a row short.
 fn directory_row(
     root: &ActionDirectoryRoot,
     row: &runtime_collab::ActionDirectoryRow,
-) -> Option<CatalogueRow> {
-    let action = if row.action.is_some() {
-        Some(descriptor(&published_directory_action(row).ok()?))
-    } else {
-        None
-    };
-    Some(CatalogueRow {
+) -> Result<CatalogueRow, ActionHostError> {
+    let action = row
+        .action
+        .as_ref()
+        .map(|_| published_directory_action(row).map(|action| descriptor(&action)))
+        .transpose()
+        .map_err(|error| ActionHostError::Unavailable {
+            reason: format!(
+                "{} published an unusable directory row: {error}",
+                root.app_id
+            ),
+        })?;
+    Ok(CatalogueRow {
         provider: root.peer_id.to_string(),
         app_id: root.app_id.clone(),
         parent_resource: row.parent_resource.clone(),
@@ -416,8 +434,8 @@ fn directory_page(
             rows: page
                 .rows
                 .iter()
-                .filter_map(|row| directory_row(root, row))
-                .collect(),
+                .map(|row| directory_row(root, row))
+                .collect::<Result<_, _>>()?,
             revision: page.revision,
             providers: Vec::new(),
             next_cursor: page.next_cursor,
@@ -432,7 +450,7 @@ fn directory_page(
             };
             match resolution {
                 runtime_collab::ActionDirectoryResolution::Found { row, .. } => {
-                    page.rows.extend(directory_row(root, &row));
+                    page.rows.push(directory_row(root, &row)?);
                 }
                 runtime_collab::ActionDirectoryResolution::StaleRevision => {
                     page.stale_cursor = true;

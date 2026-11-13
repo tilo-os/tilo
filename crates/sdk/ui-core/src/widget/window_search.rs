@@ -40,6 +40,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{EffectiveMotion, MotionSource};
+use crate::widget::DrawChild;
 use crate::widget::find_bar::{FindAbilities, FindOptions, FindSession, Findable, with_findable};
 use crate::widget::search_field::{FilterCount, apply_filter, with_filterable};
 use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize, SearchField, Widget};
@@ -64,8 +65,8 @@ pub enum InPlace {
     Document,
     /// A list ([`Filterable`](crate::widget::Filterable)): it narrows to what matches.
     List,
-    /// The app's views ([`Queryable`]): the window shows a query view of the
-    /// app's resources.
+    /// The app's views ([`Queryable`]): the window narrows what its views list
+    /// to what matches, and finds in the document it shows beside them, if any.
     Query,
 }
 
@@ -107,9 +108,11 @@ pub fn with_queryable(widget: &mut dyn Widget, visit: &mut dyn FnMut(&mut dyn Qu
 
 impl InPlace {
     /// What `root`'s widgets offer: views that are queries win, since such an
-    /// app searches all of itself in place; then a document over a list,
-    /// since a window showing both (a sidebar of notes and the open note) is
-    /// read in its document.
+    /// app narrows what it lists to the search in place — and the document it
+    /// shows beside them is found in too
+    /// ([`SearchDriver::drive`]); then a document over a list, since a window
+    /// showing both (a sidebar of notes and the open note) is read in its
+    /// document; then a list, which narrows.
     pub fn of(root: &mut dyn Widget) -> Self {
         if with_queryable(root, &mut |_| ()) {
             Self::Query
@@ -244,60 +247,11 @@ impl SearchDriver {
         match self.in_place {
             InPlace::Nothing => {}
             InPlace::Document => {
-                let session = &mut self.session;
-                let abilities = &mut self.abilities;
-                let adopted = &mut self.adopted;
-                let cover = self.cover.filter(|_| !finishing);
-                let cover_moved = self.cover_told != cover;
-                self.cover_told = cover;
-                let mut shown = query.to_owned();
-                with_findable(root, &mut |target: &mut dyn Findable| {
-                    *abilities = FindAbilities::of(target);
-                    let options = abilities.allow(options);
-                    if cover_moved {
-                        // Told before anything is revealed, so what this
-                        // drive reveals stands clear of it.
-                        target.set_find_cover(cover);
-                    }
-                    if finishing {
-                        session.clear(target);
-                        touched = true;
-                        return;
-                    }
-                    let mut revealed = false;
-                    if let Some(own) = target.take_own_find() {
-                        // The document went to a match on its own: the
-                        // search runs its query from that match on.
-                        let options = abilities.allow(own.options);
-                        session.search(target, &own.query, options, Some(own.current));
-                        shown.clone_from(&own.query);
-                        *adopted = Some((own.query, options));
-                        touched = true;
-                        revealed = true;
-                    } else if session.is_stale(query, options) {
-                        session.search(target, query, options, Some(0));
-                        touched = true;
-                        revealed = true;
-                    } else if session.content_moved(target) {
-                        session.refresh(target, query, options);
-                        touched = true;
-                    }
-                    if let Some(forward) = step {
-                        session.step(target, forward);
-                        touched = true;
-                        revealed = true;
-                    }
-                    if cover_moved && !revealed {
-                        // The options opened over the current match, or
-                        // closed: it is shown again, clear of them.
-                        touched |= session.reveal_current(target);
-                    }
-                    if let Some((total, current)) = target.take_engine_results() {
-                        session.set_results(total, current);
-                        touched = true;
-                    }
-                });
+                let (shown, document_touched) =
+                    self.drive_document(root, query, options, step, finishing);
+                touched |= document_touched;
                 self.count = (!shown.is_empty() && !finishing).then(|| {
+                    let session = &self.session;
                     let (current, total) = session.position().unwrap_or((0, session.matches()));
                     FilterCount::new(current, total)
                 });
@@ -344,6 +298,19 @@ impl SearchDriver {
                     self.applied = Some(query.to_owned());
                     self.count = count.filter(|_| !query.is_empty());
                 }
+                // The frame narrowed what it lists, and a page standing beside it is found in
+                // too: the words are the same, so the page shows them where they are read.
+                let (document, document_touched) =
+                    self.drive_document(root, query, options, step, finishing);
+                touched |= document_touched;
+                if !finishing && !document.is_empty() && self.session.matches() > 0 {
+                    // Where the person is in the page wins the field's count, where the page
+                    // holds the words: it is the one the steps move through. Else the count is
+                    // the rows the frame narrowed to.
+                    let session = &self.session;
+                    let (current, total) = session.position().unwrap_or((0, session.matches()));
+                    self.count = Some(FilterCount::new(current, total));
+                }
             }
         }
         if finishing {
@@ -351,6 +318,78 @@ impl SearchDriver {
             self.forget();
         }
         touched
+    }
+
+    /// Carry `query` to the document the window shows, when it shows one: what is typed is
+    /// found in it, the steps move through its matches and a replacement lands where the person
+    /// reads. Returns the text the search shows (empty while there is no document) and whether
+    /// anything the document shows changed.
+    fn drive_document(
+        &mut self,
+        root: &mut dyn Widget,
+        query: &str,
+        options: FindOptions,
+        step: Option<bool>,
+        finishing: bool,
+    ) -> (String, bool) {
+        let session = &mut self.session;
+        let abilities = &mut self.abilities;
+        let adopted = &mut self.adopted;
+        let cover = self.cover.filter(|_| !finishing);
+        let cover_moved = self.cover_told != cover;
+        self.cover_told = cover;
+        // The text the search shows: what the document holds, and none while no document
+        // stands in the window to be found in.
+        let mut shown = String::new();
+        let mut touched = false;
+        with_findable(root, &mut |target: &mut dyn Findable| {
+            query.clone_into(&mut shown);
+            *abilities = FindAbilities::of(target);
+            let options = abilities.allow(options);
+            if cover_moved {
+                // Told before anything is revealed, so what this
+                // drive reveals stands clear of it.
+                target.set_find_cover(cover);
+            }
+            if finishing {
+                session.clear(target);
+                touched = true;
+                return;
+            }
+            let mut revealed = false;
+            if let Some(own) = target.take_own_find() {
+                // The document went to a match on its own: the
+                // search runs its query from that match on.
+                let options = abilities.allow(own.options);
+                session.search(target, &own.query, options, Some(own.current));
+                shown.clone_from(&own.query);
+                *adopted = Some((own.query, options));
+                touched = true;
+                revealed = true;
+            } else if session.is_stale(query, options) {
+                session.search(target, query, options, Some(0));
+                touched = true;
+                revealed = true;
+            } else if session.content_moved(target) {
+                session.refresh(target, query, options);
+                touched = true;
+            }
+            if let Some(forward) = step {
+                session.step(target, forward);
+                touched = true;
+                revealed = true;
+            }
+            if cover_moved && !revealed {
+                // The options opened over the current match, or
+                // closed: it is shown again, clear of them.
+                touched |= session.reveal_current(target);
+            }
+            if let Some((total, current)) = target.take_engine_results() {
+                session.set_results(total, current);
+                touched = true;
+            }
+        });
+        (shown, touched)
     }
 
     /// Replace the current match of the document's search for `query` under
@@ -364,7 +403,9 @@ impl SearchDriver {
         with: &str,
         all: bool,
     ) -> bool {
-        if self.in_place != InPlace::Document || query.is_empty() {
+        // A frame whose search narrows what it lists searches the page beside it as well, so a
+        // replacement reaches the page from either.
+        if !matches!(self.in_place, InPlace::Document | InPlace::Query) || query.is_empty() {
             return false;
         }
         let session = &mut self.session;
@@ -555,6 +596,9 @@ pub struct WindowSearch {
     requests: Vec<WindowSearchRequest>,
     motion: EffectiveMotion,
     platform: PlatformConventions,
+    /// The theme the field's controls are placed in, as last laid out: the
+    /// search places its own field, so it keeps the type it measured in.
+    layout_theme: Theme,
 }
 
 impl Default for WindowSearch {
@@ -605,6 +649,7 @@ impl WindowSearch {
             adopted_serial: None,
             finishing: false,
             requests: Vec::new(),
+            layout_theme: Theme::default(),
             motion: EffectiveMotion::default(),
             platform: PlatformConventions::default(),
         }
@@ -677,6 +722,16 @@ impl WindowSearch {
     #[must_use]
     pub fn query_min_width(theme: &Theme) -> f64 {
         field_min(theme)
+    }
+
+    /// The least room an open search keeps: its query at the narrowest and the parts that never
+    /// give way — the control that closes it and the options a document's search holds, which
+    /// keep the mode and Replace. A window's bar keeps its search this much room to reach back
+    /// over the app's slots, so a narrow window's query stays typeable.
+    #[must_use]
+    pub fn least_span(theme: &Theme) -> f64 {
+        let sibling = f64::from(theme.tokens.spacing.s2);
+        field_min(theme) + 2.0 * (CONTROL_PX + sibling)
     }
 
     /// Whether the replacement field holds the keyboard.
@@ -789,7 +844,8 @@ impl WindowSearch {
             *rect = *rect + shift;
         }
         let field = self.field_rect;
-        self.field.apply_layout_external(field);
+        let theme = self.layout_theme.clone();
+        self.field.apply_layout_external(field, &theme);
     }
 
     /// The resting control's square.
@@ -1434,6 +1490,7 @@ impl WindowSearch {
     /// from the resting control, the parts after it fade in at their place.
     fn layout(&mut self, progress: f64, text: &mut TextRenderer, theme: &Theme) {
         self.parts.clear();
+        self.layout_theme = theme.clone();
         let gap = f64::from(theme.tokens.spacing.s1);
         let sibling = f64::from(theme.tokens.spacing.s2);
         let height = ControlSize::Small.height(theme);
@@ -1521,7 +1578,7 @@ impl WindowSearch {
         let drawn_x0 = self.anchor.x0 + (start - self.anchor.x0) * p;
         let drawn_w = CONTROL_PX + (field_w - CONTROL_PX) * p;
         self.field_rect = Rect::new(drawn_x0, y0, drawn_x0 + drawn_w, y1);
-        self.field.apply_layout_external(self.field_rect);
+        self.field.apply_layout_external(self.field_rect, theme);
         // The parts stand where the open search puts them, fading in.
         let mut x = start + field_w + sibling;
         let square = |x: f64| Rect::new(x, y0, x + CONTROL_PX, y1);
@@ -1804,7 +1861,8 @@ impl Widget for WindowSearch {
                 &cover,
             );
         }
-        self.field.draw(scene, transform, text, theme, presence);
+        self.field
+            .draw_child(scene, transform, text, theme, presence);
         if self.parts_opacity > 0.0 {
             let bounds = self
                 .parts

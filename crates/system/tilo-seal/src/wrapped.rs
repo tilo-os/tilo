@@ -1,13 +1,4 @@
 //! One framed, password-wrapped ciphertext artifact.
-//!
-//! Layout: the kind's magic (8 bytes), the wrapped-content-key length
-//! (u32 little endian) and its password envelope, then the content length
-//! (u32 little endian) and its envelope under that key. Frame kinds differ
-//! only in their magic, wrap domain and bounds; version 1 writes only the
-//! canonical Argon2id policy, so a framed artifact costs one bounded KDF.
-//!
-//! The content key is fresh per artifact and never written unwrapped: the
-//! artifact carries no source custody key and no plaintext.
 
 use zeroize::Zeroize as _;
 
@@ -21,17 +12,13 @@ pub fn migration_password(password: &[u8]) -> bool {
             .is_ok_and(|text| text.chars().count() >= MIN_PASSWORD_CHARS)
 }
 
-/// Shortest accepted migration password, in characters.
 pub const MIN_PASSWORD_CHARS: usize = 15;
 /// Longest accepted migration password, in bytes.
 pub const MAX_PASSWORD_BYTES: usize = 4096;
 
-/// Why a framed artifact was not written or opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameError {
-    /// Framing, bounds, key source or the Argon2 policy were not canonical.
     Malformed,
-    /// The password, binding or ciphertext did not authenticate.
     Unauthenticated,
 }
 
@@ -54,7 +41,6 @@ pub struct Frame {
 }
 
 impl Frame {
-    /// A frame kind; `max_wrapped` and `max_content` bound each envelope.
     pub const fn new(
         magic: &'static [u8; 8],
         wrap_domain: &'static [u8],
@@ -141,7 +127,6 @@ impl Frame {
         if content_len > self.max_content || start.checked_add(content_len) != Some(bytes.len()) {
             return Err(FrameError::Malformed);
         }
-        // Reject untrusted expensive KDF costs before deriving any key.
         let parsed = envelope::Envelope::parse(wrapped).map_err(|_| FrameError::Unauthenticated)?;
         if !matches!(parsed.source, envelope::KeySource::Password { params, salt } if params == PasswordParams::DEFAULT && salt.len() == envelope::SALT_LEN)
         {
@@ -248,7 +233,6 @@ mod tests {
         }
         assert_eq!(KIND.open(PASSWORD, b"", &bytes), Err(FrameError::Malformed));
         let mut expensive = bytes.clone();
-        // The wrap envelope starts at 12; its Argon2 memory field at 8.
         expensive[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
         for changed in [
             expensive,

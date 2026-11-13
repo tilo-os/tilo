@@ -1,31 +1,17 @@
 //! The hosts a tool build needs: the package repositories an `env-runtime`
-//! image is configured with.
-//!
-//! A build sandbox gets exactly these, through the same stub and filter as
-//! an environment's grants. `baseurl` hosts are taken as they are. A
-//! `metalink` or `mirrorlist` names a service that answers with a list of
-//! mirrors on other hosts: its own host is allowed, and the mirrors it
-//! lists are added with [`metalink_mirror_hosts`] once the document is
-//! fetched (or the build pins a `baseurl`).
+//! image is configured with. A build sandbox gets exactly those.
 
 use std::path::Path;
 
 use crate::policy::{EgressPolicy, HostPattern};
 
-/// What a runtime image's repositories reach.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoHosts {
-    /// Hosts of `baseurl`, `metalink` and `mirrorlist` URLs of enabled
-    /// repositories.
     pub hosts: Vec<HostPattern>,
-    /// The `metalink`/`mirrorlist` URLs, with `$releasever` and `$basearch`
-    /// expanded, for a builder that fetches them to learn the mirrors.
     pub mirror_lists: Vec<String>,
 }
 
 impl RepoHosts {
-    /// Read `etc/yum.repos.d/*.repo` (and `etc/dnf/vars`, `etc/os-release`
-    /// for the variables) under `runtime_root`, for `arch`.
     pub fn read(runtime_root: &Path, arch: &str) -> std::io::Result<Self> {
         let vars = DnfVars::read(runtime_root, arch);
         let mut out = Self::default();
@@ -48,12 +34,10 @@ impl RepoHosts {
         Ok(out)
     }
 
-    /// The policy a build sandbox gets: these hosts.
     pub fn policy(&self) -> EgressPolicy {
         EgressPolicy::hosts(self.hosts.clone())
     }
 
-    /// Add the mirrors a fetched metalink/mirrorlist document names.
     pub fn add_mirrors(&mut self, document: &str) {
         for host in metalink_mirror_hosts(document) {
             if let Ok(p) = HostPattern::parse(&host) {
@@ -92,7 +76,6 @@ impl RepoHosts {
     }
 }
 
-/// One `[section]` of a `.repo` file: its keys, continuation lines joined.
 #[derive(Debug, Default)]
 struct Section(Vec<(String, String)>);
 
@@ -120,7 +103,6 @@ fn sections(text: &str) -> Vec<Section> {
             continue;
         };
         if raw.starts_with([' ', '\t']) {
-            // A continuation of the previous value (a multi-line baseurl).
             if let Some((_, v)) = section.0.last_mut() {
                 v.push(' ');
                 v.push_str(raw.trim());
@@ -136,7 +118,6 @@ fn sections(text: &str) -> Vec<Section> {
     out
 }
 
-/// `$releasever`, `$basearch`, `$arch` and the image's own `etc/dnf/vars`.
 #[derive(Debug, Default)]
 struct DnfVars(Vec<(String, String)>);
 
@@ -162,8 +143,8 @@ impl DnfVars {
                 }
             }
         }
-        // Longest names first, so `$releasever_major` is not read as
-        // `$releasever` followed by `_major`.
+        // Longest names first, so `$releasever_major` is not read as `$releasever`
+        // followed by `_major`.
         vars.sort_by_key(|v| std::cmp::Reverse(v.0.len()));
         Self(vars)
     }
@@ -179,7 +160,6 @@ impl DnfVars {
     }
 }
 
-/// The host of a URL: `https://host:port/path` → `host`.
 fn url_host(url: &str) -> Option<String> {
     let (_, rest) = url.split_once("://")?;
     let authority = rest.split(['/', '?', '#']).next()?;
@@ -192,8 +172,6 @@ fn url_host(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
-/// The hosts of the mirror URLs a metalink (`<url …>https://…</url>`) or a
-/// plain mirrorlist (one URL per line) names.
 pub fn metalink_mirror_hosts(document: &str) -> Vec<String> {
     let mut hosts = Vec::new();
     for piece in document.split('<') {

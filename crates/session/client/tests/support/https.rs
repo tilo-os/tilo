@@ -1,0 +1,91 @@
+//! A native [`HttpClient`] for tests: HTTP/1.1 over rustls to one host,
+//! trusting exactly the certificate whose SHA-256 the host published.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use http_body_util::BodyExt as _;
+use rustls::pki_types::ServerName;
+use sha2::Digest as _;
+use tilo_relay_client::https::{HttpClient, HttpFuture};
+use tilo_relay_client::{Answer, AnswerFuture};
+
+/// HTTPS to `addr`, pinned to one certificate.
+pub struct DevHttps {
+    addr: SocketAddr,
+    connector: tokio_rustls::TlsConnector,
+}
+
+impl DevHttps {
+    pub fn new(addr: SocketAddr, sha256_hex: &str) -> Arc<Self> {
+        let sha256 = hex::decode(sha256_hex).unwrap();
+        let mut config = tilo_net::pinned_client_config(move |certificate| {
+            sha2::Sha256::digest(certificate).as_slice() == sha256.as_slice()
+        })
+        .unwrap();
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        Arc::new(Self {
+            addr,
+            connector: tokio_rustls::TlsConnector::from(Arc::new(config)),
+        })
+    }
+
+    async fn request(&self, path: &str, body: Vec<u8>) -> Result<Answer, String> {
+        let tcp = tokio::net::TcpStream::connect(self.addr)
+            .await
+            .map_err(|error| error.to_string())?;
+        let tls = self
+            .connector
+            .connect(ServerName::try_from("localhost").unwrap(), tcp)
+            .await
+            .map_err(|error| error.to_string())?;
+        let (mut sender, connection) =
+            hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(tls))
+                .await
+                .map_err(|error| error.to_string())?;
+        tokio::spawn(connection);
+        let request = hyper::Request::post(path)
+            .header(hyper::header::HOST, "localhost")
+            .header(hyper::header::CONTENT_TYPE, "application/octet-stream");
+        let request = request
+            .body(http_body_util::Full::new(bytes::Bytes::from(body)))
+            .map_err(|error| error.to_string())?;
+        let response = sender
+            .send_request(request)
+            .await
+            .map_err(|error| error.to_string())?;
+        let status = response.status().as_u16();
+        let retry_after_secs = response
+            .headers()
+            .get(hyper::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(tilo_relay_client::https::retry_after);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .map_err(|error| error.to_string())?
+            .to_bytes()
+            .to_vec();
+        Ok(Answer {
+            status,
+            retry_after_secs,
+            body,
+        })
+    }
+}
+
+impl HttpClient for DevHttps {
+    fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_> {
+        let path = path.to_owned();
+        Box::pin(async move {
+            let answer = self.request(&path, body).await?;
+            Ok((answer.status, answer.body))
+        })
+    }
+
+    fn post_answer(&self, path: &str, body: Vec<u8>) -> AnswerFuture<'_> {
+        let path = path.to_owned();
+        Box::pin(async move { self.request(&path, body).await })
+    }
+}

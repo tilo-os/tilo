@@ -1,21 +1,10 @@
-//! The IANA time-zone database, as an engine library beside the shared
-//! runtime (`libtilo_timezone_engine.so`).
+//! The IANA time-zone database, as its own library in the runtime bundle
+//! (`libtilo_timezone_engine.so`).
 //!
-//! Calendar and Clocks are the apps that name zones (`chrono-tz`): its
-//! tables of every zone's rules are about 0.4 MB, much of it pointers the
-//! loader relocates. Inside `libruntime_dylib.so` every app process mapped
-//! and relocated them. Here they are a library of their own in the runtime
-//! bundle that only those two apps name `DT_NEEDED`, and neither tapp
-//! carries a copy; the runtime keeps `chrono` and `phf`, which other apps use.
-//!
-//! Like `runtime-dylib`, this crate re-exports the crate it provides, which
-//! records it as provided by this library for the apps' `-C prefer-dynamic`
-//! link. Outside the thin build (`thin`) it is empty: see the manifest.
+//! Like `runtime-dylib` it re-exports what it provides, which records it
+//! as provided by this library for the apps' `-C prefer-dynamic` link.
+//! Outside the thin build it is empty.
 
-// Load the runtime explicitly, as thin apps do: rustc ignores an `--extern`
-// nothing names, and without it in the crate graph this library would link
-// its own copy of every crate the runtime already provides, which the app's
-// link then refuses (each crate may show up once).
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
@@ -26,15 +15,13 @@ pub use chrono_tz;
 /// instants through their rules, in and out of daylight saving time and at
 /// a half-hour offset.
 ///
-/// The engine's check binary and the apps' `--probe-timezone-engine` call
-/// it, so a release proves the library loads and runs against the runtime
-/// it ships with, and that the apps load it themselves.
+/// The engine's check binary and the app's `--probe-…` call it, so a release
+/// proves the library loads and runs against its runtime.
 #[cfg(feature = "thin")]
 pub fn self_check() -> Result<String, String> {
     use chrono::{Offset, TimeZone, Utc};
     use chrono_tz::{TZ_VARIANTS, Tz};
 
-    // (zone, year, month, day, the zone's offset from UTC in seconds at noon UTC)
     let cases: [(&str, i32, u32, u32, i32); 4] = [
         ("Europe/Vienna", 2026, 1, 15, 3600),
         ("Europe/Vienna", 2026, 7, 1, 7200),

@@ -59,6 +59,8 @@ class ParseTests(unittest.TestCase):
                 '[[group]]\nname = "x"\ninputs = ["os/"]\nsuites = ["os/a.sh"]\nextra = 1\n',
                 '[[unrequired]]\nsuite = "os/a.sh"\nreason = " "\n',
                 '[[covered]]\nsuite = "os/a.sh"\n',
+                '[[covered]]\nsuite = "os/a.sh"\ncheck = "Not A Check"\n',
+                '[[covered]]\nsuite = "os/a.sh"\nby = "os/tests/b.py"\ncheck = "sdk-python"\n',
             ):
                 with self.subTest(text=text), self.assertRaises(ValueError):
                     suites.parse(text)
@@ -161,6 +163,32 @@ class AuditTests(unittest.TestCase):
         with self.subTest(phase='python unittest suites must run when executed'):
             problems = self.audit({"os/tests/b.py": "import helper, unittest\nclass T(unittest.TestCase): pass\n"})
             self.assertTrue(any("unittest.main" in problem for problem in problems), problems)
+
+    def test_a_t_check_covers_the_suites_it_runs_in_its_own_image(self):
+        manifest = MANIFEST + '''
+[[covered]]
+suite = "sdks/test_a.py"
+check = "sdk-python"
+'''
+        files = {
+            "sdks/test_a.py": "import pytest\n",
+            "t.toml": '[[check]]\nname = "sdk-python"\nrun = "bash tools/ci/sdk-python.sh"\n',
+        }
+        self.assertEqual(self.audit(files, manifest), [])
+        # A check that only names an `on`, or is default = false, runs there and when asked:
+        # it gates no change, so it cannot prove a suite runs.
+        for declaration in ('on = ["stable"]\n', 'default = false\n',
+                            'on = ["stable"]\ndefault = false\n'):
+            with self.subTest(declaration=declaration):
+                problems = self.audit(
+                    dict(files, **{"t.toml": '[[check]]\nname = "sdk-python"\nrun = "true"\n' + declaration}),
+                    manifest)
+                self.assertTrue(any("is not a check t.toml runs for a change" in problem
+                                    for problem in problems), problems)
+        with self.subTest(phase="a check t.toml does not declare"):
+            problems = self.audit(
+                dict(files, **{"t.toml": '[[check]]\nname = "other"\nrun = "true"\n'}), manifest)
+            self.assertTrue(any("sdk-python" in problem for problem in problems), problems)
 
     def test_cargo_integration_driver_is_a_covering_gate(self):
         manifest = MANIFEST.replace('by = "os/tests/b.py"', 'by = "crates/native/tests/oracle.rs"')

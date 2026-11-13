@@ -9,7 +9,11 @@
 //! popover under the bar closes on a press anywhere else, and that press is
 //! the compositor's to deliver.
 
-use tilo_compositor::{CursorIcon, HostLayer, KeyClaim, SurfaceHost};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use tilo_session_core::surface::{HostLayer, SurfaceHost};
+
 use tilo_desktop::overlays::Overlays;
 
 /// The session's reader of presses outside the overlays.
@@ -55,25 +59,12 @@ impl SurfaceHost for SlotsHost {
         self.overlays.press_ended();
     }
 
-    fn claim_key(
-        &mut self,
-        _key: &tilo_compositor::HostKey,
-        _locked: bool,
-        _inhibited: bool,
-    ) -> KeyClaim {
-        KeyClaim::Pass
-    }
-
     fn prepare_frame(&mut self) -> bool {
         false
-    }
-
-    fn cursor(&self) -> CursorIcon {
-        CursorIcon::Default
     }
 }
 
 /// Mount the session's reader of presses outside the overlays over `compositor` .
 pub(crate) fn mount(compositor: &mut tilo_compositor::Compositor, overlays: &Overlays) {
-    compositor.add_host(Box::new(SlotsHost::new(overlays.clone())));
+    compositor.add_host(Rc::new(RefCell::new(SlotsHost::new(overlays.clone()))));
 }

@@ -660,6 +660,10 @@ pub(crate) trait SurfaceDriver: SurfacePublication {
     /// Whether `event` only scrolls the view, with nothing for the host to
     /// present first.
     fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool;
+    /// Whether the record the surface shows moved since the surface showed
+    /// it: the next sync presents it, and what the window reads of the
+    /// record changes then.
+    fn owes_presentation(&self) -> bool;
     /// Present what changed, then sync the surface.
     fn sync(&mut self, state: &AppModel, path: &ModelPath);
     /// Start `op` as one of the surface's effects, if it is one.
@@ -696,10 +700,14 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
     }
 
     fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool {
-        (self.live.revision(), self.live.loads()) == self.presented
+        !self.owes_presentation()
             && self.staging.borrow().is_none()
             && self.dispatch.read_only() == self.read_only
             && self.surface.view_only_scroll(event)
+    }
+
+    fn owes_presentation(&self) -> bool {
+        (self.live.revision(), self.live.loads()) != self.presented
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -829,6 +837,13 @@ impl Decorator for HostedSurface {
 
     fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool {
         self.host.view_only_scroll(event)
+    }
+
+    /// The record moved since the surface showed it: the frame's sync presents it, and what the
+    /// window reads of the record changes then, so the frame that finds no other reason to sync
+    /// runs for this one.
+    fn needs_idle_sync(&self) -> bool {
+        self.host.owes_presentation() || self.host.surface().needs_idle_sync()
     }
 
     // The host adds no structure of its own: a change its surface can

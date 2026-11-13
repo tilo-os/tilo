@@ -1,16 +1,11 @@
-//! Weather's copy, through the toolkit's Fluent catalogues.
-//!
-//! The catalogue is embedded with `include_str!`, so a live window, a
-//! `--shots` capture and a unit test resolve the same strings with no file
-//! I/O: the forecast's freshness line, the sections' names and the readings
-//! assistive technology hears. The person's language comes from the usual
-//! POSIX variables; a message a language lacks falls back to `en-US`.
+//! Weather's copy, through the toolkit's Fluent catalogues. The catalogue is
+//! embedded, so a live window, a capture and a unit test resolve the same
+//! strings with no file IO. A message a language lacks falls back to `en-US`.
 
 use ui::i18n::ArgValue;
 
 ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
 
-/// One named variable for [`t_args`], as `(name, value)`.
 pub fn arg(name: &str, value: impl Into<ArgValue>) -> (&str, ArgValue) {
     (name, value.into())
 }
@@ -19,8 +14,6 @@ pub fn arg(name: &str, value: impl Into<ArgValue>) -> (&str, ArgValue) {
 mod tests {
     use super::*;
 
-    /// The German catalogue ships with the app, so a person reading German
-    /// reads the forecast's own copy in German too.
     #[test]
     fn the_german_catalogue_words_the_forecast_pages_copy() {
         CATALOG.set_locale("de-DE");

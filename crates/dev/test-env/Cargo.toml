@@ -6,7 +6,7 @@ publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "Serialised, self-restoring process environment, XDG fixtures, scenarios and hang-bounded waits for tests"
+description = "Serialised, self-restoring process environment, XDG fixtures, scenarios, a loopback relay and hang-bounded waits for tests"
 
 # Test support only: depend on this from [dev-dependencies], never from a
 # production dependency table.
@@ -17,6 +17,7 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 tempfile.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
+getrandom.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
@@ -29,6 +30,9 @@ document = ["dep:automerge", "dep:serde_json", "dep:tilo-automerge"]
 # `SpawnUnderEnvLockAsync`: `tokio::process::Command` started under the
 # environment lock, for a package whose tests start processes from Tokio.
 tokio = ["dep:tokio"]
+# `relay`: a packet relay on this machine's loopback, for a package whose
+# tests need an iroh endpoint with a home relay and no internet.
+iroh-relay = ["dep:iroh-relay", "dep:iroh"]
 
 [dependencies.tokio]
 workspace = true
@@ -45,6 +49,15 @@ optional = true
 
 [dependencies.tilo-automerge]
 workspace = true
+optional = true
+
+[dependencies.iroh]
+workspace = true
+optional = true
+
+[dependencies.iroh-relay]
+version = "1.0.3"
+features = ["server"]
 optional = true
 
 [lints]

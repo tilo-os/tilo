@@ -21,7 +21,7 @@ fn the_committed_description_is_what_the_door_publishes() {
     assert!(
         committed == expected,
         "{} is not what the session publishes; regenerate it with \
-         UPDATE_SNAPSHOTS=1 cargo nextest run -p tilo-session --test session_package, \
+         UPDATE_SNAPSHOTS=1 cargo nextest run -p tilo-session --test it session_package::, \
          or write what it publishes:\n<<<description\n{expected}description>>>",
         session_package::PATH
     );

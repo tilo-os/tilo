@@ -324,6 +324,19 @@ impl ActionParam {
         self
     }
 
+    /// Call this parameter `title` where people read it (a form's field, a
+    /// consent sheet's row): its schema's `title`, in the reader's language.
+    #[must_use]
+    pub fn titled(mut self, title: impl Into<String>) -> Self {
+        let mut schema = match self.schema.as_deref() {
+            Some(serde_json::Value::Object(schema)) => schema.clone(),
+            _ => serde_json::Map::new(),
+        };
+        schema.insert("title".to_owned(), serde_json::Value::String(title.into()));
+        self.schema = Some(std::sync::Arc::new(serde_json::Value::Object(schema)));
+        self
+    }
+
     /// Retain an immutable schema already shared by the current type generation.
     /// Wire serialization and strict argument validation are unchanged.
     #[must_use]
@@ -1217,9 +1230,8 @@ fn validate_string_schema(
             .ok_or_else(|| "has a non-string schema format".to_string())?;
         let valid = match format {
             "date-time" => looks_like_rfc3339(text),
-            "date" => {
-                text.len() == 10 && chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok()
-            }
+            // RFC 3339's full-date is the date of a date-time.
+            "date" => text.len() == 10 && looks_like_rfc3339(&format!("{text}T00:00:00Z")),
             "uuid" => uuid::Uuid::parse_str(text).is_ok(),
             "uri" => text.split_once(':').is_some_and(|(scheme, rest)| {
                 !scheme.is_empty()
@@ -1352,11 +1364,19 @@ fn schema_alternative_of(param: &ActionParam, value: &ArgValue) -> bool {
     param
         .schema
         .as_deref()
-        .and_then(|schema| schema.get("oneOf"))
+        .is_some_and(|schema| has_alternative(schema, json_type))
+}
+
+/// Whether one of `schema`'s alternatives, or theirs (an optional value's
+/// alternatives), is of `json_type`.
+fn has_alternative(schema: &serde_json::Value, json_type: &str) -> bool {
+    schema
+        .get("oneOf")
         .and_then(serde_json::Value::as_array)
         .is_some_and(|alternatives| {
             alternatives.iter().any(|alternative| {
                 alternative.get("type").and_then(serde_json::Value::as_str) == Some(json_type)
+                    || has_alternative(alternative, json_type)
             })
         })
 }
@@ -1685,10 +1705,8 @@ const SCHEMA_ANNOTATIONS: &[&str] = &[
 /// expression or an unsupported format: callers must be able to trust every
 /// schema they enumerate.
 ///
-/// [`SCHEMA_ASSERTIONS`] and [`SCHEMA_ANNOTATIONS`] are stated a second time
-/// by `tilo-ai-bench`, which has to check the shapes that app's quality cases
-/// declare without linking this crate; a test in each crate pins this list
-/// byte for byte so neither can grow a keyword the other refuses.
+/// [`SCHEMA_ASSERTIONS`] and [`SCHEMA_ANNOTATIONS`] are pinned, word for
+/// word, by a test here: a keyword cannot be added without a check behind it.
 pub(crate) fn validate_schema_definition(schema: &serde_json::Value) -> Result<(), String> {
     let object = schema
         .as_object()

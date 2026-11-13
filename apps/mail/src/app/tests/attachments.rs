@@ -52,7 +52,6 @@ fn attachment_save_offers_only_the_downloaded_bytes_and_reports_truthfully() {
         "only the view, with the host's chooser, saves an attachment"
     );
 
-    // A save is reported only once the host wrote it.
     let resource = format!("mail.attachment:{message_id}:{index}");
     let saved = app
         .state()

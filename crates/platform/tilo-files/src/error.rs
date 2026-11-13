@@ -5,28 +5,22 @@ use std::io;
 
 use crate::caps::{Feature, Unsupported};
 
-/// Why a file operation failed. Every backend reports the same variants for
-/// the same situation, so callers match on them rather than on OS codes.
+/// Why a file operation failed. Every backend reports the same variants for the same situation, so
+/// callers match on them across targets.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FsError {
     NotFound,
     AlreadyExists,
-    /// A path component that must be a directory is a file.
     NotADirectory,
-    /// The operation needs a file and the path names a directory.
     IsADirectory,
     DirectoryNotEmpty,
     PermissionDenied,
-    /// The path cannot be used for this operation, such as replacing the
-    /// root of a [`Dir`](crate::Dir) with a file.
     InvalidPath(&'static str),
-    /// This target, or this kind of [`Dir`](crate::Dir), cannot do it.
     Unsupported {
         feature: Feature,
         reason: &'static str,
     },
-    /// Anything else, with the platform's description.
     Io(String),
 }
 

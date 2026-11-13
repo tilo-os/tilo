@@ -183,10 +183,7 @@ fn keyboard_shortcuts_drive_the_visible_triage_actions() {
             .filter_map(|row| row.name.as_deref())
             .collect();
         assert!(rows.contains(&"Open message: Enter"), "{rows:?}");
-        assert!(
-            rows.contains(&"Preview without marking read: P"),
-            "{rows:?}"
-        );
+        assert!(rows.contains(&"Preview: P"), "{rows:?}");
         assert!(dispatch(&mut app, &esc_event(), &mut doc));
         assert!(!app.shortcuts.visible(), "Escape dismisses the modal sheet");
     }

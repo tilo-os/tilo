@@ -151,6 +151,25 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
         }
     }
 
+    /// The hint on screen has nowhere to stand now (a card over the desk covers what it points at,
+    /// or leaves it no room beside it): it goes, as one whose anchor went, and may come back once
+    /// it has been away.
+    pub fn dismiss(&mut self, now: Instant) {
+        let Some(current) = self.current else {
+            return;
+        };
+        if !matches!(current.phase, Phase::Shown(_)) {
+            return;
+        }
+        if let Some(track) = self.tracks.get_mut(current.index) {
+            track.left = Some(now);
+        }
+        self.current = Some(Current {
+            index: current.index,
+            phase: Phase::Leaving(now),
+        });
+    }
+
     /// Advance to `now`. `holds` says whether a fact holds right now;
     /// `quiet` is why no hint may begin now, if anything; `anchored` whether
     /// the host can place a hint at all (its anchor is on screen); the

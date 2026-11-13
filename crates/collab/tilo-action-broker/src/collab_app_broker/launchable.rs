@@ -523,6 +523,45 @@ mod tests {
         surface
     }
 
+    /// The folder entry `surface_with_an_entry` publishes as its own resource.
+    const ENTRY: &str = "7d2b";
+
+    /// A surface publishing one of the record's collection's entries as the
+    /// resource its own actions are offered on, beside the record's copy of
+    /// them addressed by the entry's id.
+    fn surface_with_an_entry(peer_id: u64, workspace: &str) -> PublishedSurface {
+        let name = || {
+            tilo_actions::ActionParam::required_owned(
+                "name",
+                tilo_actions::ParamType::Text,
+                "Its new name",
+            )
+        };
+        let mut rename = action("rename", tilo_actions::ConfirmationPolicy::None);
+        rename.params = vec![
+            tilo_actions::ActionParam::required_owned(
+                "entry",
+                tilo_actions::ParamType::Text,
+                "Which entry",
+            ),
+            name(),
+        ];
+        let entry = PublishedAction {
+            resource: format!("files.app/entries/{ENTRY}"),
+            resource_kind: "files.app.entries".into(),
+            resource_label: "Harbour plan".into(),
+            params: vec![name()],
+            ..rename.clone()
+        };
+        PublishedSurface {
+            peer_id,
+            app_id: APP.into(),
+            route: CrdtRoute::app(APP, workspace),
+            actions: vec![rename, entry],
+            live: true,
+        }
+    }
+
     fn retained_records(catalogue: &LaunchableCatalogue) -> Vec<(String, String)> {
         let mut records = catalogue
             .surfaces()
@@ -738,6 +777,25 @@ mod tests {
         action: &str,
         confirmation: Option<Confirmation>,
     ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
+        invoke_with(
+            host,
+            caller,
+            provider,
+            &tilo_actions::ActionAddress::new("files.app", action),
+            InvokeArgument::None,
+            confirmation,
+        )
+    }
+
+    /// [`invoke`], on the `address` and with the `argument` the caller names.
+    fn invoke_with(
+        host: &Arc<AppBrokerState>,
+        caller: &Caller,
+        provider: &str,
+        address: &tilo_actions::ActionAddress,
+        argument: InvokeArgument,
+        confirmation: Option<Confirmation>,
+    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
         host.action_invoke(
             caller,
             None,
@@ -747,9 +805,9 @@ mod tests {
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: provider.to_string(),
-                    address: tilo_actions::ActionAddress::new("files.app", action),
+                    address: address.clone(),
                 },
-                argument: InvokeArgument::None,
+                argument,
                 context: None,
                 confirmation,
                 revision: None,
@@ -762,7 +820,7 @@ mod tests {
         .flatten()
         .unwrap_or_else(|| {
             Err(ActionHostError::Unavailable {
-                reason: format!("the admission of {action} never arrived"),
+                reason: format!("the admission of {address:?} never arrived"),
             })
         })
     }
@@ -1021,7 +1079,7 @@ mod tests {
                 serde_json::json!({"path": [{"field": "notes"}], "op": "remove-item", "id": "n1"})
             )
             .err(),
-            Some(ActionHostError::ConfirmationRequired),
+            Some(ActionHostError::confirmation_required()),
             "removing a note asks, as a delete verb does"
         );
     }
@@ -1076,7 +1134,7 @@ mod tests {
 
         assert_eq!(
             invoke(&state, &agent, "5", "new-window", None).err(),
-            Some(ActionHostError::ConfirmationRequired)
+            Some(ActionHostError::confirmation_required())
         );
         assert_eq!(
             invoke(
@@ -1087,7 +1145,7 @@ mod tests {
                 Some(Confirmation::Confirmed)
             )
             .err(),
-            Some(ActionHostError::ConfirmationRequired),
+            Some(ActionHostError::confirmation_required()),
             "an agent never confirms by its own word"
         );
         assert!(app.try_recv().is_err(), "nothing ran");
@@ -1131,7 +1189,7 @@ mod tests {
         request.invocation = tilo_actions::InvocationId::new();
         assert_eq!(
             call(&request).err(),
-            Some(ActionHostError::ConfirmationRequired)
+            Some(ActionHostError::confirmation_required())
         );
         let mut other_binding = state.witness_binding("agent:scribe", &workspace, &request);
         other_binding.action = "empty-trash".into();
@@ -1140,7 +1198,69 @@ mod tests {
         ));
         assert_eq!(
             call(&request).err(),
-            Some(ActionHostError::ConfirmationRequired)
+            Some(ActionHostError::confirmation_required())
+        );
+    }
+
+    /// An agent renaming one of a record's items says that item's name in the
+    /// view it acts in, by the label the app published for the item: the view
+    /// reads "Editing Harbour plan", never only the app it is in.
+    #[test]
+    fn an_agents_step_on_an_item_names_the_item() {
+        use crate::test_support::{Grants as _, KindSet, Subject};
+        let mut workspace = workspace();
+        workspace.allow_agent("scribe", KindSet::UNDOABLE);
+        workspace.allow_app(Subject::agent("scribe"), APP, KindSet::UNDOABLE);
+        let (state, workspace, fanout) = broker_with_fanout(&workspace);
+        state
+            .surfaces
+            .lock()
+            .expect("surfaces")
+            .insert(5, surface_with_an_entry(5, &workspace));
+        let mut app = state.capture_invocations_for_test(5);
+        let (seen, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        let _subscription = fanout.subscribe_workspaces(
+            vec![workspace.clone()],
+            Box::new(move |event, _| {
+                let _ = seen.send(event.clone());
+            }),
+        );
+
+        // The item is addressed by its id, on the record's own copy of the
+        // item's action, as an agent addresses it.
+        let agent = Caller::local_person("owner")
+            .in_workspace(&workspace)
+            .delegated_to("scribe");
+        invoke_with(
+            &state,
+            &agent,
+            "5",
+            &tilo_actions::ActionAddress::new("files.app", "rename"),
+            InvokeArgument::Json(
+                serde_json::json!({"entry": ENTRY, "name": "Harbour plan for Friday"})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+            None,
+        )
+        .expect("the agent acts");
+        assert_eq!(app.try_recv().expect("delivered").actor, "agent:scribe");
+        let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
+            payload: ui::collaboration::PresencePayload::Interaction(interaction),
+            ..
+        }) = heard.try_recv()
+        else {
+            panic!("the agent's step shows in its view");
+        };
+        assert_eq!(interaction.action.id, "rename");
+        assert_eq!(
+            interaction.resource.id, "files.app",
+            "the record it acts in"
+        );
+        assert_eq!(
+            interaction.resource.label, "Harbour plan",
+            "the item it acts on, by the label its app published"
         );
     }
 
@@ -1396,7 +1516,7 @@ mod tests {
         );
         assert_eq!(
             invoke(&state, &owner, &target.provider, "empty-trash", None),
-            Err(ActionHostError::ConfirmationRequired),
+            Err(ActionHostError::confirmation_required()),
             "the app's own contract admits what it offers"
         );
     }
@@ -1596,7 +1716,8 @@ mod tests {
     /// alias (as the session's windowless Tasks does): an application target
     /// written with the app's own resource id reaches it, handed over under
     /// the alias it published, rather than waiting for a publisher of the
-    /// plain id that never comes.
+    /// plain id that never comes; so does one naming the alias of a window
+    /// of the app that closed.
     #[test]
     fn an_application_target_reaches_an_instance_publishing_an_alias() {
         let (state, workspace) = broker(&workspace());
@@ -1640,6 +1761,23 @@ mod tests {
             ),
             Some((9, tilo_actions::ActionAddress::new(&alias, "new-window"))),
             "the instance publishing the alias is the one ready"
+        );
+        // A target kept from a window of the app that has since closed names
+        // that window's alias; the running instance takes it under its own.
+        let ended = format!(
+            "{}0b7c4e52-1f0a-4d7e-9a43-6c1d2e8f7a90:{}",
+            tilo_actions::BOUND_RESOURCE_PREFIX,
+            hex::encode("files.app")
+        );
+        assert_eq!(
+            state.ready_delivery(
+                APP,
+                &workspace,
+                None,
+                &tilo_actions::ActionAddress::new(&ended, "new-window"),
+            ),
+            Some((9, tilo_actions::ActionAddress::new(&alias, "new-window"))),
+            "an alias of an instance that ended reaches the one running"
         );
         invoke(&state, &owner, &target.provider, "new-window", None)
             .expect("the instance publishing the alias takes it");
@@ -1714,6 +1852,99 @@ mod tests {
             windowless.try_recv().is_err(),
             "the windowless instance took no open"
         );
+    }
+
+    /// The workspace's `start` of `APP`, as `caller` asks it: its answer.
+    fn start(
+        state: &Arc<AppBrokerState>,
+        caller: &Caller,
+        workspace: &str,
+    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
+        state
+            .action_invoke(
+                caller,
+                None,
+                None,
+                &InvokeRequest {
+                    on_behalf_of: None,
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: RemoteActionTarget {
+                        provider: tilo_actions::remote::workspace_provider(workspace),
+                        address: tilo_actions::ActionAddress::new(
+                            format!("{}{APP}", tilo_actions::remote::APPLICATION_RESOURCE_PREFIX),
+                            tilo_actions::remote::APPLICATION_START_ACTION,
+                        ),
+                    },
+                    argument: InvokeArgument::None,
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                    wait_ms: None,
+                    appearance: None,
+                },
+            )
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| {
+                Err(ActionHostError::Unavailable {
+                    reason: "the start never answered".into(),
+                })
+            })
+    }
+
+    /// The peer an app's `start` answered with.
+    fn started_peer(receipt: &tilo_actions::remote::InvocationReceipt) -> Option<u64> {
+        match &receipt.status {
+            tilo_actions::remote::ReceiptStatus::Completed { output } => output
+                .value
+                .as_ref()?
+                .get(super::super::workspace_open::OPENED_PEER_FIELD)?
+                .as_u64(),
+            _ => None,
+        }
+    }
+
+    /// A workspace's `start` of a closed app (an agent's step that shows
+    /// nothing, asking for the app first) runs it with no window and answers
+    /// with that instance; asked again while it runs, it answers with the
+    /// same one and starts nothing.
+    #[test]
+    fn a_start_runs_the_app_without_a_window_and_names_that_instance() {
+        let (state, workspace) = broker(&workspace());
+        let launches = app_comes_up_later(&state);
+        let (_windowless, asked) = app_runs_windowless(&state, 9);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
+
+        let receipt = start(&state, &owner, &workspace).expect("started");
+        assert_eq!(started_peer(&receipt), Some(9), "{receipt:?}");
+        assert!(
+            launches.lock().expect("launches").is_empty(),
+            "no window was launched"
+        );
+        assert_eq!(
+            *asked.lock().expect("asked"),
+            [(APP.to_owned(), workspace.clone())]
+        );
+
+        let again = start(&state, &owner, &workspace).expect("running");
+        assert_eq!(started_peer(&again), Some(9));
+        assert_eq!(asked.lock().expect("asked").len(), 1, "asked for once");
+    }
+
+    /// Where the host runs no app without a window, its `start` launches a
+    /// window as an action of it would, and names that.
+    #[test]
+    fn a_start_where_nothing_runs_without_a_window_launches_as_before() {
+        let (state, workspace) = broker(&workspace());
+        let (_streams, launches) = app_comes_up_as(&state, 8);
+        state
+            .launchable
+            .replace_windowless_for_test(Arc::new(|_, _| Ok(None)));
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
+        let receipt = start(&state, &owner, &workspace).expect("launched");
+        assert_eq!(*launches.lock().expect("launches"), [APP]);
+        assert_eq!(started_peer(&receipt), Some(8), "{receipt:?}");
     }
 
     /// An app the host runs no windowless instance of launches as before.
@@ -1997,7 +2228,7 @@ mod tests {
         );
         assert_eq!(
             invoke(&state, &owner, &provider, "empty-trash", None),
-            Err(ActionHostError::ConfirmationRequired),
+            Err(ActionHostError::confirmation_required()),
             "the manifest's confirmation is asked for before the launch"
         );
         assert!(
@@ -2098,7 +2329,7 @@ mod tests {
 
         assert_eq!(
             invoke(&state, &owner, &provider, "empty-trash", None),
-            Err(ActionHostError::ConfirmationRequired)
+            Err(ActionHostError::confirmation_required())
         );
         assert_eq!(
             invoke(

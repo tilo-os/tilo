@@ -7,6 +7,10 @@
 //! reference reads for this reader: their own inline view of it, resolved where the text was
 //! read, under their permissions. The component draws only what it is given.
 //!
+//! A paragraph projecting a reference (`transclusion`, an embed) carries that reference's
+//! first content as the entry's [`preview`](Embed::preview): one level deep, every reference
+//! inside it a link, so a note embedding a note that embeds a note never opens out twice.
+//!
 //! A window's patches are encoded without field names (postcard), so every field is always
 //! written: none is skipped when empty.
 
@@ -64,6 +68,22 @@ pub struct Embed {
     /// The `mention` mark's value naming what it refers to.
     pub reference: String,
     pub view: InlineView,
+    /// What the reference shows of itself where the text projects it (an embed): the start of
+    /// its own content, one level deep — a reference inside it is a [`Run`] naming what it
+    /// names, drawn as a link and never expanded again. Absent for a reference the text only
+    /// links.
+    #[serde(default)]
+    pub preview: Option<Vec<Run>>,
+}
+
+/// A stretch of a projected reference's content: its text, and what it refers to when it
+/// refers to something (drawn as a link, never opened out).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Run {
+    pub text: String,
+    #[serde(default)]
+    pub reference: Option<String>,
 }
 
 /// A reference as it reads inline: the reader's inline view of its type.
@@ -116,7 +136,11 @@ impl RichText {
                     )
             })
             .chain(self.embeds.iter().flat_map(|embed| {
-                std::iter::once(embed.reference.as_str()).chain(embed.view.strings())
+                std::iter::once(embed.reference.as_str())
+                    .chain(embed.view.strings())
+                    .chain(embed.preview.iter().flatten().flat_map(|run| {
+                        std::iter::once(run.text.as_str()).chain(run.reference.as_deref())
+                    }))
             }))
     }
 }

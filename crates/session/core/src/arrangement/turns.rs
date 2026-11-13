@@ -39,7 +39,82 @@ pub(super) struct TurnAnchor {
     pub(super) room: Option<CanvasRect>,
 }
 
+/// An ask sent from the canvas whose turn Chat's record does not hold yet: where it stands once it
+/// does. The send reaches Chat on a later pass, and Chat mints the message, so the turn is found
+/// by what the person said ([`Arrangement::stand_asked`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct AwaitedTurn {
+    /// Who asked.
+    asked: String,
+    /// What they said.
+    text: String,
+    /// The strip the caret was in, else the canvas.
+    strip: Option<u64>,
+    /// Where they asked.
+    at: (i64, i64),
+    /// The rectangle they dragged, when they dragged one.
+    size: Option<(i64, i64)>,
+}
+
+/// What a session reads an ask's turn back from, once Chat holds it: the turn whose question says
+/// the text, among those the canvas has not stood yet (the second of two asks with the same words
+/// is a turn of its own), with the resource the session publishes it as from then on.
+pub type FindTurn<'a> = &'a dyn Fn(
+    &str,
+    &std::collections::BTreeSet<String>,
+) -> Option<(Asked, tilo_actions::ResourceSpec)>;
+
 impl Arrangement {
+    /// Keep the ask the person sent from the canvas until Chat's record holds its turn: the turn
+    /// then stands where they asked ([`Self::stand_asked`]).
+    pub(super) fn await_turn(
+        &self,
+        asked: &str,
+        text: &str,
+        strip: Option<u64>,
+        at: (i64, i64),
+        size: Option<(i64, i64)>,
+    ) {
+        self.awaiting.borrow_mut().push(AwaitedTurn {
+            asked: asked.to_owned(),
+            text: text.trim().to_owned(),
+            strip,
+            at,
+            size,
+        });
+    }
+
+    /// Whether an ask sent from the canvas still waits for its turn.
+    #[must_use]
+    pub fn awaits_turns(&self) -> bool {
+        !self.awaiting.borrow().is_empty()
+    }
+
+    /// Stand each turn an ask from the canvas opened that `find` now reads in Chat's record, where
+    /// the person asked (canvas.md §3); the asks Chat does not hold yet keep waiting. Answers how
+    /// many stood.
+    pub fn stand_asked(&mut self, find: FindTurn<'_>, busy: Busy) -> usize {
+        let awaiting = std::mem::take(&mut *self.awaiting.borrow_mut());
+        let mut stood = 0;
+        for ask in awaiting {
+            let found = find(&ask.text, &self.stood.borrow());
+            let Some((turn, published)) = found else {
+                self.awaiting.borrow_mut().push(ask);
+                continue;
+            };
+            self.stood.borrow_mut().insert(turn.turn.clone());
+            // Published from this pass on, and placed now: the door's tree takes it in later.
+            self.catalog.borrow_mut().remember_resource(&published);
+            match self.place_turn(&ask.asked, &turn, ask.strip, ask.at, ask.size, busy) {
+                Ok(_) => stood += 1,
+                Err(why) => {
+                    tracing::warn!(%why, turn = %turn.turn, "the asked turn does not stand")
+                }
+            }
+        }
+        stood
+    }
+
     /// Stand the turn an ask opened where the person asked (canvas.md §3): its `turn` view at the
     /// caret — at the measure an answer reads at for a click, or across the top of the rectangle
     /// they dragged — and the turn kept as its conversation's anchor, so the places the agent's

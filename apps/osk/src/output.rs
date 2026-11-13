@@ -26,12 +26,9 @@
 
 use crate::inject::{Keypress, Symbol};
 
-/// One ordered instruction for the focused text field.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OskOutput {
-    /// Replace the composing (preedit) text with this string. Empty clears it.
     SetPreedit(String),
-    /// Replace the composing text with this string and make it final.
     Commit(String),
     /// Press a key, with the modifiers held for it. The keyboard never emits
     /// one while text is still composing: the composition is committed (or
@@ -40,19 +37,15 @@ pub enum OskOutput {
 }
 
 impl OskOutput {
-    /// Press `symbol` with no modifiers.
     #[must_use]
     pub fn key(symbol: Symbol) -> Self {
         Self::Key(symbol.into())
     }
 }
 
-/// The Wayland connection a [`Step`] travels on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Channel {
-    /// `input-method-v2`: preedit and commit strings.
     InputMethod,
-    /// `virtual-keyboard-v1`: editing keysyms.
     Keys,
 }
 
@@ -60,12 +53,8 @@ pub enum Channel {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
     Preedit(String),
-    /// `commit_string` + `commit` on the input method.
     Commit(String),
-    /// Tap a keysym on the virtual keyboard, with its modifiers held.
     Key(Keypress),
-    /// Round-trip on this channel before issuing anything on the other one, so
-    /// the compositor has applied everything already sent.
     Barrier(Channel),
 }
 
@@ -81,8 +70,6 @@ impl OrderedRouter {
         Self::default()
     }
 
-    /// The steps that deliver `output`, including the barrier needed when it
-    /// travels on a different connection than the previous output.
     pub fn route(&mut self, output: OskOutput) -> Vec<Step> {
         let (channel, step) = match output {
             OskOutput::SetPreedit(text) => (Channel::InputMethod, Step::Preedit(text)),
@@ -101,9 +88,6 @@ impl OrderedRouter {
     }
 }
 
-/// Delivers [`OskOutput`]s through keysyms alone, for compositors that offer a
-/// virtual keyboard but no input method. The composed word is typed as it
-/// grows and trimmed with Backspace as it shrinks or changes.
 #[derive(Debug, Default)]
 pub struct PreeditEmulator {
     shown: String,
@@ -114,7 +98,6 @@ impl PreeditEmulator {
         Self::default()
     }
 
-    /// The keys that bring the field in line with `output`.
     pub fn keypresses(&mut self, output: &OskOutput) -> Vec<Keypress> {
         match output {
             OskOutput::Key(keypress) => {
@@ -129,7 +112,6 @@ impl PreeditEmulator {
         }
     }
 
-    /// The keysyms that bring the field in line with `output`.
     pub fn symbols(&mut self, output: &OskOutput) -> Vec<Symbol> {
         match output {
             OskOutput::SetPreedit(text) => self.retype(text),
@@ -139,8 +121,6 @@ impl PreeditEmulator {
                 symbols
             }
             OskOutput::Key(keypress) => {
-                // The keyboard commits before any key; whatever was shown is
-                // final text from here on.
                 self.shown.clear();
                 vec![keypress.symbol]
             }
@@ -183,7 +163,6 @@ impl TextMirror {
         }
     }
 
-    /// Committed text followed by the composing text.
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -294,7 +273,6 @@ mod tests {
             vk.symbols(&commit("they ")),
             vec![Symbol::Unicode('y'), Symbol::Space]
         );
-        // After a commit nothing is composing: a new word starts from scratch.
         assert_eq!(vk.symbols(&pre("a")), vec![Symbol::Unicode('a')]);
         assert_eq!(vk.symbols(&pre("")), vec![Symbol::BackSpace]);
         assert_eq!(

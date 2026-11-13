@@ -1,11 +1,10 @@
 //! Merging several engines' rankings into one.
 //!
-//! Ported from metasearch2's `merge_engine_responses` in
-//! `src/engines/ranking.rs` (CC0-1.0, see `PROVENANCE.md`): a result at
-//! position `n` on an engine scores `weight / n`, the same page found by
-//! several engines adds their scores, and the page keeps the title and
-//! snippet of the most trusted engine that found it. Pages are the same when
-//! their [`crate::urls::dedup_key`] is.
+//! Ported from metasearch2's `merge_engine_responses` (CC0-1.0, see `PROVENANCE.md`): a
+//! result at position `n` on an engine scores `weight / n`, several engines finding the
+//! same page add their scores, and the page keeps the title and snippet of the most
+//! trusted engine that found it. Pages are the same when their
+//! [`crate::urls::dedup_key`] is.
 
 use std::collections::HashMap;
 
@@ -13,19 +12,16 @@ use serde::Serialize;
 
 use crate::engines::{Engine, EngineResult};
 
-/// One merged result.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SearchResult {
     pub title: String,
     pub url: String,
     pub snippet: String,
-    /// The engines that found it, most trusted first.
     pub engines: Vec<Engine>,
     #[serde(skip)]
     pub score: f64,
 }
 
-/// Merge each engine's ranked results, best first.
 pub fn merge(responses: &[(Engine, Vec<EngineResult>)]) -> Vec<SearchResult> {
     let mut merged: Vec<SearchResult> = Vec::new();
     let mut by_key: HashMap<String, usize> = HashMap::new();
@@ -37,7 +33,6 @@ pub fn merge(responses: &[(Engine, Vec<EngineResult>)]) -> Vec<SearchResult> {
             let key = crate::urls::dedup_key(&result.url);
             if let Some(existing) = by_key.get(&key).and_then(|&i| merged.get_mut(i)) {
                 if existing.engines.contains(engine) {
-                    // An engine listing one page twice ranks it once.
                     continue;
                 }
                 let best = existing

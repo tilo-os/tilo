@@ -29,8 +29,7 @@ impl Removal {
         }
     }
 
-    /// Returns only after the browser reports a terminal outcome, never merely
-    /// after admission. Transport and action failures leave the selection visible.
+    /// Returns only on a terminal outcome; failures leave the selection visible.
     pub fn poll(&mut self, remote: &RemoteActions) -> Option<Result<(), String>> {
         if self.reply.as_ref().is_some_and(EffectReply::is_cancelled) {
             if let Some(call) = &self.invocation {

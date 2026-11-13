@@ -1,32 +1,25 @@
-//! The existing owner root signer, shared by enrollment and host retirement.
+//! The person's root, held by this device, for enrollment and host retirement.
 
 use anyhow::{Context, bail};
-use ed25519_dalek::Signer as _;
-use tilo_user_identity::IdentityPaths;
+use tilo_user_identity::{IdentityPaths, StatementSigner};
 
-/// Person-root signing through the existing file or secure identity provider.
-pub trait RootSigner {
-    /// Public person key authenticated by the signer.
-    fn public_key(&self) -> [u8; 32];
-    /// Sign a protocol digest without exporting the private root.
+/// The person's root held here, on top of the identity crate's signer: every
+/// statement this crate issues is signed through [`StatementSigner`], and the
+/// pairing handshake's answer, which is domain-separated bytes rather than a
+/// statement's digest, is signed by [`RootSigner::sign_message`].
+pub trait RootSigner: StatementSigner {
+    /// Ed25519-sign `message` as the person's root, without exporting it.
     fn sign_message(&self, message: &[u8]) -> anyhow::Result<[u8; 64]>;
 }
 
 impl RootSigner for ed25519_dalek::SigningKey {
-    fn public_key(&self) -> [u8; 32] {
-        self.verifying_key().to_bytes()
-    }
-
     fn sign_message(&self, message: &[u8]) -> anyhow::Result<[u8; 64]> {
+        use ed25519_dalek::Signer as _;
         Ok(self.sign(message).to_bytes())
     }
 }
 
 impl RootSigner for runtime_identity::SigningIdentity {
-    fn public_key(&self) -> [u8; 32] {
-        self.group_public_key()
-    }
-
     fn sign_message(&self, message: &[u8]) -> anyhow::Result<[u8; 64]> {
         self.sign(message)
             .map_err(|error| anyhow::anyhow!("sign with the identity record: {error}"))
@@ -70,6 +63,33 @@ pub fn load_root(
         );
     }
     Ok(Box::new(identity))
+}
+
+/// Sign a revocation of `device` with `root` and append it to the relay
+/// state's revocation log at `state_root`, where every start of the host reads
+/// it. Returns the entry as signed, and whether the log changed.
+///
+/// # Errors
+///
+/// Returns an error if the entry cannot be signed, or the log cannot be read
+/// or replaced.
+pub fn revoke_device(
+    state_root: &std::path::Path,
+    root: &dyn RootSigner,
+    device: [u8; 32],
+    reason: tilo_user_identity::RevocationReason,
+) -> anyhow::Result<(tilo_user_identity::RevocationEntry, bool)> {
+    let mut entry = tilo_user_identity::RevocationEntry {
+        user_public_key: root.public_key(),
+        revoked_device_public_key: device,
+        revoked_at_ns: tilo_clock::unix_now_ns(),
+        reason,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut entry, root).context("sign the revocation")?;
+    let appended = crate::store::append_revocation(state_root, &entry)
+        .with_context(|| format!("append to {}", state_root.display()))?;
+    Ok((entry, appended))
 }
 
 #[cfg(test)]

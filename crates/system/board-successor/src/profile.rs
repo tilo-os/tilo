@@ -1,13 +1,8 @@
-//! The installed hardware profile, read exactly as
-//! `os/dev/hardware_profile.py`, the image builders' module, reads
-//! it: `read_profile`, `development_origin`, `validate_target_imgref`,
-//! `trusted_path` and `resolve_profile` with what they call.
-//!
-//! The installer resolves its update origin here too
-//! (`tilo-board-successor install-update-origin`); the module stays for the
-//! image builders. A change to what it
-//! accepts must be made in both; `tests/profile.rs` holds both to the same
-//! fixtures.
+//! The installed hardware profile, read exactly as `os/dev/hardware_profile.py`, the
+//! image builders' module, reads it: `read_profile`, `development_origin`,
+//! `validate_target_imgref`, `trusted_path` and `resolve_profile` with what they call.
+//! A change to what it accepts must be made in both; `tests/profile.rs` holds both to
+//! the same fixtures.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -43,26 +38,24 @@ const OPTIONAL_V2: [&str; 9] = [
     "dmi",
     "hardening_defaults",
 ];
-/// The hardening actions `tilo harden` offers as `--accept` values, each with
-/// the kernel options that have to be built in for the feature it removes to be
-/// unusable on the board, which is the only reason a board may default one on.
+/// The hardening actions `tilo harden` offers as `--accept` values, each with the
+/// kernel options that have to be built in for the feature it removes to be unusable
+/// on the board, which is the only reason a board may default one on.
 const HARDENING_ACTIONS: [(&str, &[&str]); 2] = [
     ("camera", &["CONFIG_MEDIA_SUPPORT"]),
     ("microphone", &["CONFIG_SND", "CONFIG_MEDIA_SUPPORT"]),
 ];
-/// The DMI system identity of a board whose firmware describes its devices,
-/// which has no device tree for a model-bound quirk to match on.
+/// The DMI system identity of a board whose firmware describes its devices, which has
+/// no device tree for a model-bound quirk to match on.
 const DMI_FIELDS: [&str; 2] = ["sys_vendor", "product_name"];
-/// Where the kernel keeps a record of a panic, what resets a hung machine,
-/// and which detector panics first. Every definition declares all three.
+/// Where the kernel keeps a record of a panic, what resets a hung machine, and which
+/// detector panics first. Every definition declares all three.
 const CRASH_RECORD_FIELDS: [&str; 3] = ["storage", "watchdog", "lockup"];
 const CRASH_BACKENDS: [&str; 4] = ["ramoops", "efi-variable", "block", "none"];
 const CRASH_WATCHDOGS: [&str; 3] = ["hardware", "module", "none"];
 const CRASH_LOCKUP: [&str; 3] = ["buddy", "nmi", "none"];
-/// Kernel arguments that make the watchdog reset a machine nobody feeds.
 const CRASH_WATCHDOG_ARGS: [&str; 3] =
     ["systemd.watchdog_sec=", "sbsa_gwdt.action=1", "nowayout=1"];
-/// The argument that makes a stuck CPU panic rather than only log, per detector.
 const CRASH_LOCKUP_ARGS: [(&str, &[&str]); 2] = [
     (
         "buddy",
@@ -100,8 +93,6 @@ const PROFILE_FIELDS: [&str; 6] = [
 ];
 const INTERNAL_KEYBOARD_FIELDS: [&str; 5] =
     ["name", "bus", "vendor", "product", "devicetree_compatible"];
-/// Fedora firmware RPMs a board layer may remove, each with the subtrees of
-/// /usr/lib/firmware it owns.
 const FIRMWARE_PACKAGE_TREES: [(&str, &[&str]); 10] = [
     ("nvidia-gpu-firmware", &["nvidia"]),
     ("amd-gpu-firmware", &["amdgpu", "radeon"]),
@@ -166,8 +157,8 @@ pattern!(
     r"[A-Za-z0-9_.-]{1,64}(?:=[A-Za-z0-9_.,:/-]{1,128})*"
 );
 
-/// The image root the profile is read from, and who must own its inputs
-/// (root in the image; the tests' own user in a fixture).
+/// The image root the profile is read from, and who must own its inputs (root in the
+/// image; the tests' own user in a fixture).
 #[derive(Debug, Clone)]
 pub struct Root {
     pub path: PathBuf,
@@ -175,7 +166,6 @@ pub struct Root {
 }
 
 impl Root {
-    /// `/`, owned by root.
     #[must_use]
     pub fn system() -> Self {
         Self {
@@ -188,9 +178,9 @@ impl Root {
         self.path.join(relative)
     }
 
-    /// `trusted_path`: every component from the root down must be a real
-    /// directory (the last a regular file when `regular`), owned by the
-    /// owner and not group- or world-writable.
+    /// `trusted_path`: every component from the root down must be a real directory
+    /// (the last a regular file when `regular`), owned by the owner and not group- or
+    /// world-writable.
     pub fn trusted_path(&self, relative: &str, regular: bool) -> Result<PathBuf> {
         let parts: Vec<&str> = relative
             .split('/')
@@ -253,7 +243,6 @@ fn json_text(bytes: &[u8]) -> Result<Value> {
     serde_json::from_str(text).map_err(|e| Error::Value(e.to_string()))
 }
 
-/// `value[key]` on a dict, `KeyError`/`TypeError` otherwise.
 pub(crate) fn index<'a>(value: &'a Value, key: &str) -> Result<&'a Value> {
     match value {
         Value::Object(map) => map.get(key).ok_or_else(|| Error::Value(format!("'{key}'"))),
@@ -263,7 +252,6 @@ pub(crate) fn index<'a>(value: &'a Value, key: &str) -> Result<&'a Value> {
     }
 }
 
-/// `value.get(key, default)` on a dict; `AttributeError` otherwise.
 pub(crate) fn get<'a>(value: &'a Value, key: &str) -> Result<Option<&'a Value>> {
     match value {
         Value::Object(map) => Ok(map.get(key)),
@@ -294,7 +282,6 @@ fn names<'a>(list: &[&'a str]) -> BTreeSet<&'a str> {
     list.iter().copied().collect()
 }
 
-/// The profile's fields, or `None` when the image has no hardware profile.
 pub fn read_profile(root: &Root) -> Result<Option<Map<String, Value>>> {
     if !root.present(PROFILE_PATH) {
         require(
@@ -338,8 +325,7 @@ pub fn read_profile(root: &Root) -> Result<Option<Map<String, Value>>> {
     Ok(Some(data))
 }
 
-/// `read_definition`: a regular file of at most 64 KiB, then
-/// [`validate_definition`].
+/// `read_definition`: a regular file of at most 64 KiB, then [`validate_definition`].
 ///
 /// # Errors
 /// See [`validate_definition`].
@@ -375,7 +361,6 @@ fn relative_path(value: &Value) -> Result<usize> {
     Ok(parts.len())
 }
 
-/// `PurePath(text).suffix`.
 fn suffix(text: &str) -> &str {
     let name = text.rsplit('/').next().unwrap_or(text);
     match name.rfind('.') {
@@ -403,7 +388,6 @@ fn optional_list<'a>(
     }
 }
 
-/// `validate_definition`.
 pub fn validate_definition(data: Value) -> Result<Map<String, Value>> {
     let Value::Object(data) = data else {
         return Err(Error::value(
@@ -499,8 +483,8 @@ pub fn validate_definition(data: Value) -> Result<Map<String, Value>> {
     Ok(data)
 }
 
-/// `validate_hardening_defaults`: a board may default a hardening action on only
-/// when its kernel carries the driver behind the feature that action removes.
+/// `validate_hardening_defaults`: a board may default a hardening action on only when
+/// its kernel carries the driver behind the feature that action removes.
 fn validate_hardening_defaults(data: &Map<String, Value>) -> Result<()> {
     let entries = optional_list(
         data,
@@ -543,8 +527,8 @@ fn validate_hardening_defaults(data: &Map<String, Value>) -> Result<()> {
     Ok(())
 }
 
-/// `validate_crash_record`: the board says where its crash record goes, what
-/// resets it and what panics first, and its kernel arguments agree.
+/// `validate_crash_record`: the board says where its crash record goes, what resets it
+/// and what panics first, and its kernel arguments agree.
 fn validate_crash_record(
     data: &Map<String, Value>,
     kernel_args: &BTreeSet<&str>,
@@ -630,9 +614,9 @@ fn validate_crash_record(
     )
 }
 
-/// The firmware mapping, system firmware and removable firmware packages of
-/// a definition: bounded, unique, non-overlapping, and never removing what
-/// the definition names.
+/// The firmware mapping, system firmware and removable firmware packages of a
+/// definition: bounded, unique, non-overlapping, and never removing what the definition
+/// names.
 fn validate_firmware(data: &Map<String, Value>) -> Result<()> {
     let field = |key: &str| data.get(key).unwrap_or(&Value::Null);
     let firmware = match field("firmware") {
@@ -792,8 +776,8 @@ fn validate_internal_keyboards(data: &Map<String, Value>) -> Result<()> {
     Ok(())
 }
 
-/// `validate_dmi`: the DMI system identity a firmware-described board matches
-/// on, kept out of a board that already has a device tree to name it.
+/// `validate_dmi`: the DMI system identity a firmware-described board matches on, kept
+/// out of a board that already has a device tree to name it.
 fn validate_dmi(data: &Map<String, Value>) -> Result<()> {
     let Some(dmi) = data.get("dmi") else {
         return Ok(());
@@ -819,8 +803,8 @@ fn validate_dmi(data: &Map<String, Value>) -> Result<()> {
     )
 }
 
-/// `validate_target_imgref(value, root=root)`: a development image's bound
-/// origin, a tilo-vm image under its dev flavour and repository policy, or a
+/// `validate_target_imgref(value, root=root)`: a development image's bound origin, a
+/// tilo-vm image under its dev flavour and repository policy, or a
 /// signature-required release repository.
 pub fn validate_target_imgref(value: &Value, root: &Root) -> Result<()> {
     if let Some(bound) = development_origin(root)? {
@@ -882,7 +866,6 @@ pub fn validate_target_imgref(value: &Value, root: &Root) -> Result<()> {
     )
 }
 
-/// What `development_target` returns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DevelopmentTarget {
     pub repository: String,
@@ -890,8 +873,8 @@ pub struct DevelopmentTarget {
     pub tls_required: bool,
 }
 
-/// `development_target(value, architecture)`: one explicitly selected
-/// development repository, never production.
+/// `development_target(value, architecture)`: one explicitly selected development
+/// repository, never production.
 pub fn development_target(
     value: &Value,
     architecture: Option<&Value>,
@@ -1067,14 +1050,13 @@ pub fn development_origin(root: &Root) -> Result<Option<Value>> {
     Ok(Some(target.clone()))
 }
 
-/// `resolve_profile`: the pinned device tree this image's hardware profile
-/// binds to kernel `kver`, or `None` when the image has no profile or its
-/// model boots with the firmware's own device tree.
+/// `resolve_profile`: the pinned device tree this image's hardware profile binds to
+/// kernel `kver`, or `None` when the image has no profile or its model boots with the
+/// firmware's own device tree.
 ///
 /// # Errors
-/// A profile the module refuses, a kernel version or architecture that does
-/// not match it, or a DTB that is missing, malformed or differs from its
-/// pinned SHA-256.
+/// A profile the module refuses, a kernel version or architecture that does not match
+/// it, or a DTB that is missing, malformed or differs from its pinned SHA-256.
 pub fn resolve_profile(root: &Root, kver: &str, architecture: &str) -> Result<Option<PathBuf>> {
     let Some(data) = read_profile(root)? else {
         return Ok(None);
@@ -1136,10 +1118,10 @@ pub fn resolve_profile(root: &Root, kver: &str, architecture: &str) -> Result<Op
 /// The update origin an installer records when no image pins one.
 pub const DEFAULT_TARGET_IMGREF: &str = "registry.tilo.so/tilo/tilo:latest";
 
-/// `install_update_origin(root, override)`: the origin the installed system
-/// follows. A hardware profile's reviewed reference wins and an `override`
-/// may only repeat it; without a profile, the override, the development
-/// image's bound origin or the official default, validated against `root`.
+/// `install_update_origin(root, override)`: the origin the installed system follows. A
+/// hardware profile's reviewed reference wins and an `override` may only repeat it;
+/// without a profile, the override, the development image's bound origin or the
+/// official default, validated against `root`.
 pub fn install_update_origin(root: &Root, override_ref: &str) -> Result<String> {
     let bound_development = development_origin(root)?;
     let Some(profile) = read_profile(root)? else {

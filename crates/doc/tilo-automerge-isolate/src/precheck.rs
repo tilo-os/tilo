@@ -12,7 +12,6 @@
 use crate::{Limits, Rejected};
 
 const MAGIC: [u8; 4] = [0x85, 0x6f, 0x4a, 0x83];
-/// Document, change, compressed change and bundle.
 const KNOWN_CHUNK_TYPES: std::ops::RangeInclusive<u8> = 0..=3;
 #[cfg(target_os = "linux")]
 pub(crate) const DOCUMENT: u8 = 0;
@@ -26,8 +25,6 @@ pub(crate) struct Chunk<'a> {
     pub(crate) bytes: &'a [u8],
 }
 
-/// The chunks of input that passed [`check`]. Stops at the first frame that
-/// does not parse.
 pub(crate) fn chunks(mut bytes: &[u8]) -> impl Iterator<Item = Chunk<'_>> {
     std::iter::from_fn(move || {
         let (_, after) = bytes.split_first_chunk::<8>()?;
@@ -115,8 +112,6 @@ mod tests {
     use automerge::transaction::Transactable;
     use automerge::{AutoCommit, ROOT};
 
-    /// A saved document followed by one change chunk, and where the first
-    /// chunk ends.
     fn saved_with_end() -> (Vec<u8>, usize) {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "k", "v").unwrap();

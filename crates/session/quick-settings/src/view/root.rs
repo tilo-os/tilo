@@ -68,6 +68,9 @@ fn slider_block(cx: &ViewCx<QuickSettings>, sliders: &Sliders) -> Element {
 /// that opens where it plays.
 fn slider_row(cx: &ViewCx<QuickSettings>, face: &SliderFace, sliders: &Sliders) -> Element {
     let leading: Element = match face.kind {
+        // With no device to set, the speaker says what the row would set and
+        // takes no press.
+        SliderKind::Volume if !face.available => Box::new(glyph(Icon::Volume2)),
         SliderKind::Volume => {
             let mute = Button::icon_only(
                 "qs-volume-mute",
@@ -79,8 +82,7 @@ fn slider_row(cx: &ViewCx<QuickSettings>, face: &SliderFace, sliders: &Sliders) 
                 &t("qs-volume-mute"),
             )
             .role(ButtonRole::Plain)
-            .toggled(sliders.muted)
-            .with_enabled(face.available);
+            .toggled(sliders.muted);
             Box::new(cx.actions().bind_effect_invocation(
                 mute,
                 &QsEffect::SetMuted {
@@ -94,8 +96,20 @@ fn slider_row(cx: &ViewCx<QuickSettings>, face: &SliderFace, sliders: &Sliders) 
         .with_intrinsic_height()
         .with_no_padding()
         .with_rhythm(Rhythm::Tight);
-    track = track.push(slider(cx, face));
-    if !face.device.is_empty() {
+    // With no device to set, the words of the face stand where the track
+    // would: no knob where nothing can move, and the row is one track tall,
+    // as a row with a device is.
+    track = track.push(if face.available {
+        slider(cx, face)
+    } else {
+        Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_id(format!("{}-room", face.id))
+                .with_child(Box::new(Facts::new(face.device.clone()))),
+        )
+    });
+    if face.available && !face.device.is_empty() {
         track = track.push(Box::new(
             Container::new()
                 .with_no_padding()
@@ -154,8 +168,7 @@ fn slider(cx: &ViewCx<QuickSettings>, face: &SliderFace) -> Element {
         .with_accessible_name(&face.name)
         .range(0.0, 1.0)
         .step(0.05)
-        .commits_on_release()
-        .with_enabled(face.available);
+        .commits_on_release();
     let actions = cx.actions();
     Box::new(match &face.kind {
         SliderKind::Brightness => actions.bind_effect(slider, QsEffect::SET_BRIGHTNESS),

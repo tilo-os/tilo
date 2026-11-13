@@ -1,6 +1,5 @@
 //! Pagination: flowing blocks, tables and images onto pages, and the page
 //! geometry it works in.
-
 use super::block_layout::{
     LIST_INDENT_STEP, align as block_align, bullet_glyph, cell_rc, cell_table, font as parse_font,
     indent as block_indent_attr, line_spacing as block_line_spacing, list_level,
@@ -29,23 +28,13 @@ use super::{
     TableLayoutContext, TableRow, VIEWPORT_BLOCK_WINDOW, VIRTUALIZE_BODY_AFTER, layout_line_tops,
 };
 
-/// Frame-level geometry resolved once per frame by
-/// [`Editor::draw_frame_chrome`] and threaded through `draw`'s
-/// other per-pass helpers below — split out so `draw` itself stays under the
-/// line-count limit.
-/// The canvas clip as a vertical band in the coordinates of a laid text item
-/// whose top is at `ly` (before the canvas transform), with a margin for
-/// decorations drawn just outside their line box. Decorations of lines outside
-/// the band cannot reach the clip. A degenerate transform yields NaN bounds,
-/// which cull nothing.
+/// The canvas clip as a vertical band in the coordinates of a laid text item whose top is
+/// at `ly`, with a margin for decorations drawn just outside their line box.
 pub(super) fn layout_clip_band(fg: &FrameGeometry, ly: f64) -> (f32, f32) {
     let local = fg.ctf.inverse().transform_rect_bbox(fg.canvas_clip);
     ((local.y0 - ly - 8.0) as f32, (local.y1 - ly + 8.0) as f32)
 }
 
-/// The spans that can intersect the visible source range (see
-/// `RichTextLayout::source_range_within`); the others have no rectangle in
-/// the band. Order is preserved.
 pub(super) fn spans_within(
     spans: &[(usize, usize)],
     visible: Option<(usize, usize)>,
@@ -60,26 +49,21 @@ pub(super) fn spans_within(
     }
 }
 
-/// The top-left content y for page `i`, in unscaled content space.
 fn page_content_top(fg: &FrameGeometry, i: usize) -> f64 {
     fg.page_top + num::f64_of_usize(i) * fg.page_pitch + fg.m.top
 }
 
-/// The bottom text-margin y for page `i`, in unscaled content space.
 fn page_content_bottom(fg: &FrameGeometry, i: usize) -> f64 {
     fg.page_top + num::f64_of_usize(i) * fg.page_pitch + fg.letter_h - fg.m.bottom
 }
 
-/// Map estimated continuous body flow into the page stack, including margins
-/// and inter-page gaps. Window selection and initial pagination must use the
-/// same coordinate system or their error grows with every preceding page.
+/// Map estimated body flow into the page stack; window selection and pagination must agree.
 pub(super) fn flow_to_page_stack(flow: f64, letter_h: f64, margins: Edges) -> f64 {
     let band_h = (letter_h - margins.top - margins.bottom).max(1.0);
     let flow = flow.max(0.0);
     (flow / band_h).floor() * (letter_h + PAGE_GAP) + margins.top + flow % band_h
 }
 
-/// Page margins and gaps map to the nearest body-flow boundary.
 pub(super) fn page_stack_to_flow(stack: f64, letter_h: f64, margins: Edges) -> f64 {
     let band_h = (letter_h - margins.top - margins.bottom).max(1.0);
     let pitch = letter_h + PAGE_GAP;
@@ -87,8 +71,6 @@ pub(super) fn page_stack_to_flow(stack: f64, letter_h: f64, margins: Edges) -> f
     (stack / pitch).floor() * band_h + (stack % pitch - margins.top).clamp(0.0, band_h)
 }
 
-/// How a page `page_w` wide shows the document's margins: in proportion
-/// on a narrow or enlarged editing sheet, as they are on a print page.
 pub(super) fn margin_scale(page_w: f64, mobile: bool, accessible: bool) -> f64 {
     if mobile || accessible {
         (page_w / MAX_PAGE_W).min(1.0)
@@ -128,23 +110,19 @@ pub(super) fn responsive_page_geometry(
 }
 
 impl PageCursor {
-    /// The current page.
     fn page(&self) -> usize {
         self.flow.page()
     }
 
-    /// The running content y, in unscaled content space.
     fn y(&self, fg: &FrameGeometry) -> f64 {
         page_content_top(fg, self.flow.page()) + self.flow.y()
     }
 
-    /// Move the running content y to `y` on the current page.
     fn set_y(&mut self, fg: &FrameGeometry, y: f64) {
         self.flow.set_y(y - page_content_top(fg, self.flow.page()));
     }
 
-    /// Move the `laid` entries of blocks the flow carried to the next page
-    /// along with the block being placed (a heading kept with its text).
+    /// Move the slices of a heading carried to the next page with its block.
     fn follow_carry(&self, fg: &FrameGeometry, laid: &mut [Laid], carry: Option<Carry>) {
         let Some(carry) = carry else {
             return;
@@ -165,9 +143,6 @@ impl PageCursor {
 }
 
 impl Editor {
-    /// Pass 1 of [`Self::draw`]: shape blocks top-to-bottom and paginate them
-    /// across discrete page sheets. Runs of consecutive `cell` blocks sharing a
-    /// table id lay out as a grid; everything else stacks normally.
     pub(super) fn paginate_blocks(
         &mut self,
         text_renderer: &mut TextRenderer,
@@ -175,14 +150,10 @@ impl Editor {
     ) -> PaginationResult {
         let virtualized = self.body_order.len() > VIRTUALIZE_BODY_AFTER;
         let mut blocks = std::mem::take(&mut self.blocks);
-        // An input-method composition is shaped inside its paragraph, so the
-        // text after the caret moves aside and wraps with it. The block is
-        // swapped for its composed view only while it is laid out.
+        // A composition is shaped inside its paragraph, so the text after the caret moves aside.
         let composing = self.compose_caret_block(&mut blocks);
         let mut laid: Vec<Laid> = Vec::with_capacity(blocks.len());
-        // Keep the current layouts separate from a bounded recently visited
-        // window. Returning to it can reuse shaping, while the canonical key
-        // below still checks text, marks, style and wrapping before reuse.
+        // A bounded recently visited window outside the layouts in use, reusable when returned to.
         let mut old_cache = std::mem::take(&mut self.layout_cache);
         let previous_current: std::collections::HashSet<String> = if virtualized {
             old_cache.keys().cloned().collect()
@@ -197,11 +168,7 @@ impl Editor {
         self.dbg_layout_hits = 0;
         self.dbg_layout_misses = 0;
         let cell_pad = 8.0f64;
-        // Pagination cursor: the shared page flow (page breaks, widow/orphan
-        // splits, headings kept with their text), the currently-active
-        // floated image (subsequent paragraphs on its page are narrowed to
-        // flow beside it — coarse wrap, see `FloatReserve`), and the
-        // per-level ordered-list counters.
+        // The page flow, the active float and the per-level list counters.
         let band_h = (page_content_bottom(fg, 0) - page_content_top(fg, 0)).max(1.0);
         let estimated_before = if virtualized {
             num::f64_of_usize(self.body_window_start) * ESTIMATED_BLOCK_EXTENT
@@ -224,10 +191,7 @@ impl Editor {
         };
         let mut bi = 0;
         while let Some(b) = blocks.get(bi) {
-            // Coarse-wrap only narrows *paragraph* blocks beside a float. A table or
-            // another image cannot share the float column, so before laying one out
-            // push the cursor below the active float and retire it — they stack under
-            // the image as a full-width block rather than overlapping it.
+            // A float narrows paragraphs only: a table or another image goes below it, full width.
             let next_is_paragraph = !b.kind.eq("image") && cell_table(b).is_none();
             if !next_is_paragraph
                 && let Some(f) = cur.active_float.take()
@@ -260,9 +224,7 @@ impl Editor {
             }
         }
 
-        // A virtual window only shapes the viewport band. Its tail still needs
-        // a stable estimated page extent for scrollbar geometry, but it must not
-        // cause a full-document render or cache allocation.
+        // A virtual window shapes only the viewport band, but its tail needs an estimated extent.
         let estimated_last_page = if virtualized {
             num::usize_of_f64(
                 ((num::f64_of_usize(self.body_order.len()) * ESTIMATED_BLOCK_EXTENT) / band_h)
@@ -276,7 +238,6 @@ impl Editor {
                 .into_iter()
                 .filter(|(id, _)| !new_cache.contains_key(id))
                 .collect();
-            // Prefer the immediately previous viewport over older history.
             unused.sort_by_key(|(id, _)| !previous_current.contains(id));
             self.recent_layout_cache = unused.into_iter().take(VIEWPORT_BLOCK_WINDOW).collect();
         }
@@ -292,9 +253,6 @@ impl Editor {
         }
     }
 
-    /// Swap the caret block in `blocks` for its view with the input method's
-    /// composition laid in, returning its index, the committed block and the
-    /// composition; `None` (and `blocks` untouched) while nothing composes.
     fn compose_caret_block(
         &self,
         blocks: &mut [BlockView],
@@ -309,9 +267,6 @@ impl Editor {
         Some((index, std::mem::replace(block, composed), core))
     }
 
-    /// Put the committed block taken by [`Self::compose_caret_block`] back,
-    /// and record on its laid slices the committed text and the composition
-    /// their shaped layout shows.
     fn restore_composed_block(
         laid: &mut [Laid],
         blocks: &mut [BlockView],
@@ -326,11 +281,7 @@ impl Editor {
         }
     }
 
-    /// One table (a run of consecutive `cell` blocks sharing a table id):
-    /// measure every row first, then place the table as one block that
-    /// splits between rows, never mid-row — an over-tall single row first on
-    /// a page overflows it. Returns the block index just past the table's
-    /// last cell.
+    /// One table: measured row by row, then placed as one block that splits between rows only.
     fn paginate_table(
         &mut self,
         blocks: &[BlockView],
@@ -341,9 +292,6 @@ impl Editor {
         cur: &mut PageCursor,
     ) -> usize {
         let Some(tid) = blocks.get(bi).and_then(cell_table) else {
-            // The caller only calls this when `cell_table(b).is_some()`; if
-            // that ever changes (or `bi` is out of range), skip this one
-            // block rather than losing the pagination cursor.
             return bi + 1;
         };
         let mut bi = bi;
@@ -356,7 +304,6 @@ impl Editor {
         let ncols = cells.iter().map(|c| cell_rc(c).1).max().unwrap_or(0) + 1;
         let nrows = cells.iter().map(|c| cell_rc(c).0).max().unwrap_or(0) + 1;
         let col_w = f64::from(fg.content_w) / num::f64_of_usize(ncols);
-        // Measure every row first: the table breaks between rows, as lines.
         let rows = self.measure_table_rows(cells, ncols, nrows, col_w, layout);
         let mut boxes = Vec::with_capacity(rows.len());
         let mut table_h = 0.0;
@@ -364,7 +311,6 @@ impl Editor {
             boxes.push((table_h, *row_h));
             table_h += row_h;
         }
-        // A manual page break on the first cell breaks before the table.
         let block = PageBlock::new(table_h)
             .breaking_before(cells.first().is_some_and(block_page_break_before))
             .fragmented(Fragmentation::ANYWHERE);
@@ -372,7 +318,6 @@ impl Editor {
         cur.follow_carry(fg, laid, placed.carry);
         let laid_start = laid.len();
         for (r, (row_h, row_items)) in rows.into_iter().enumerate() {
-            // No header repeat on a continued page.
             let (page, top) = placed.locate(&boxes, r);
             let ry = page_content_top(fg, page) + top;
             for (c, cell_h, cell) in row_items {
@@ -404,10 +349,8 @@ impl Editor {
         bi
     }
 
-    /// Measure every row of a table before laying it out, so the whole table
-    /// can paginate as one unit (it is never split mid-row across a page
-    /// boundary): the shaped (or cache-reused) layout for each populated
-    /// cell, and each row's height (the tallest cell, or a minimum).
+    /// Measure every row before laying the table out, as every line is measured before a
+    /// paragraph splits.
     fn measure_table_rows<'a>(
         &mut self,
         cells: &'a [BlockView],
@@ -465,15 +408,8 @@ impl Editor {
         rows
     }
 
-    /// Resolve one image block's decoded intrinsic size and the on-screen
-    /// display size to draw it at: an explicit `width`/`height` attr (set by
-    /// importers or a resize handle) wins; otherwise the decoded intrinsic
-    /// size is fit to the content column. Either way the final width is
-    /// clamped to the content column and the height follows the chosen
-    /// aspect ratio, so a requested-but-too-wide image scales down without
-    /// distorting. Also seeds `new_cache` with the block's trivial empty
-    /// layout (used only so pointer hit-testing resolves to offset 0; cheap
-    /// enough to re-shape every frame rather than cache incrementally).
+    /// An image's decoded size fitted to the content column: an explicit `width`/`height`
+    /// wins, and the width is clamped so a too-wide image scales down without distorting.
     fn resolve_image_display_size(
         &mut self,
         b: &BlockView,
@@ -507,9 +443,6 @@ impl Editor {
                 _ => (f64::from(fg.content_w).min(280.0), 90.0),
             },
         };
-        // Image blocks carry a trivial empty layout (used only so pointer
-        // hit-testing resolves to offset 0); it is cheap, so just re-shape
-        // it every frame rather than caching it incrementally.
         let empty = RichTextLayout::shape_styled(
             &mut text_renderer.font_system,
             &[RichSpan::new("")],
@@ -555,9 +488,6 @@ impl Editor {
         });
     }
 
-    /// One image block: resolve its decoded size, paginate it (a floated
-    /// image reserves a column beside it instead of a full-width slot; see
-    /// `FloatReserve`), and push its `Laid` entry.
     fn paginate_image(
         &mut self,
         b: &BlockView,
@@ -569,11 +499,8 @@ impl Editor {
     ) {
         cur.ol_counts.clear();
         let image = self.resolve_image_display_size(b, fg, text_renderer, new_cache);
-        // A user-positioned page object is intentionally out of normal flow:
-        // text retains its natural cursor while the object is painted at its
-        // durable page-relative coordinates. Imported `anchor=page` objects
-        // without those coordinates keep the legacy centred-flow treatment
-        // below, avoiding a layout change merely from opening an old file.
+        // A page-positioned object is out of flow; an imported one without coordinates keeps the
+        // centred slot.
         let transient_position = self
             .object_drag
             .as_ref()
@@ -597,14 +524,11 @@ impl Editor {
                     page,
                 },
             );
-            // Keep enough sheets alive to show a deliberately later placement,
-            // but leave `y` untouched so a free object cannot create phantom
-            // blank paragraphs in the document flow.
+            // Enough sheets to show a later placement, but `y` untouched so no phantom paragraphs
+            // appear in the flow.
             cur.max_object_page = cur.max_object_page.max(page);
             return;
         }
-        // Break to the next page on a manual page break, or if the image
-        // would not fit.
         let placed = cur
             .flow
             .place(&PageBlock::new(image.height).breaking_before(block_page_break_before(b)));
@@ -613,12 +537,8 @@ impl Editor {
         let page = placed.page;
         let item_top = page_content_top(fg, page) + placed.top;
         if image_floats(b) {
-            // Floated image (anchor=paragraph/page, wrap=left/right): instead
-            // of a full-width vertical slot, pin it to the left or right edge
-            // of the content column and reserve that column so following
-            // paragraphs flow beside it (coarse wrap — `FloatReserve`). The flow
-            // does NOT advance past the image: the next blocks start level
-            // with its top and are narrowed until they clear its bottom.
+            // A floated image keeps the flow at its top: the next blocks start level with it
+            // and are narrowed until they clear its bottom.
             let left = image_wrap(b) == "left";
             let img_x = if left {
                 fg.content_x
@@ -641,12 +561,8 @@ impl Editor {
                 bottom: item_top + image.height,
                 page,
             });
-            // Leave the flow at the image top so following text wraps beside it.
             cur.flow.set_y(placed.top);
         } else {
-            // Inline (default), or anchored with wrap none/both: a full-width
-            // vertical slot. A non-inline-anchored image with no one-sided
-            // wrap is centered in the column; inline images stay left-aligned.
             let centered = image_anchor(b) != "inline";
             let img_x = if centered {
                 fg.content_x + ((f64::from(fg.content_w) - image.width) / 2.0).max(0.0)
@@ -667,10 +583,6 @@ impl Editor {
         }
     }
 
-    /// Resolve one paragraph-like block's style, list indent/bullet, coarse
-    /// float-wrap reserve, and shaped (or cache-reused) layout — everything
-    /// [`Self::paginate_paragraph`] needs before it can decide where the
-    /// block lands.
     fn resolve_paragraph_shape(
         &mut self,
         b: &BlockView,
@@ -679,18 +591,12 @@ impl Editor {
         old_cache: &mut HashMap<String, (u64, RichTextLayout)>,
         cur: &mut PageCursor,
     ) -> ParagraphShape {
-        // Resolve the block's style (component-instance model). `size`
-        // and `base_bold` are the style default; per-run `size` marks
-        // override them in `block_runs`.
         let st = self.sheet.get(&block_style_key(b));
         let (size, base_bold) = (st.size, st.bold);
-        // List items indent by nesting level; the bullet/number sits just
-        // left of the text. Ordered items number per level.
         let (indent, bullet) = if b.kind == "list_item" {
             let level = list_level(b);
             let indent = f64::from(st.indent) + num::f64_of_usize(level) * LIST_INDENT_STEP;
-            // Keep the ordered counters sized to the current depth; entering
-            // a shallower level drops the deeper counters so they restart.
+            // Entering a shallower level drops the deeper counters, so they restart.
             cur.ol_counts.truncate(level + 1);
             if cur.ol_counts.len() <= level {
                 cur.ol_counts.resize(level + 1, 0);
@@ -710,22 +616,13 @@ impl Editor {
             (indent, Some(bullet))
         } else {
             cur.ol_counts.clear();
-            // Style indent + the paragraph's own ruler indent attr.
             (f64::from(st.indent) + block_indent_attr(b), None)
         };
-        // Coarse float-wrap: if a floated image is active on this page and
-        // this block's top still falls within the image band, narrow the
-        // text column by the reserved width and (for a left float) push the
-        // text origin right so it sits beside the image. The block is shaped
-        // at the reduced width, so all its line geometry already reflects the
-        // narrowing — draw + hit-test only need the shared x-origin offset.
         let (float_reserve, float_offset) = match cur.active_float {
             Some(f)
                 if f.page == cur.page()
                     && cur.y(fg) + f64::from(st.space_before) + 0.5 < f.bottom =>
             {
-                // Subtract the reserved column from the wrap width; for a
-                // left float, shift the text origin right by the same amount.
                 (f.reserve_w, if f.left { f.reserve_w } else { 0.0 })
             }
             _ => (0.0, 0.0),
@@ -735,8 +632,7 @@ impl Editor {
         let (runs, underlines, strikes) = block_runs(b, self.review.is_visible());
         let align = block_align(b, style_align(&st.align));
         let family = parse_font(&st.font);
-        // The paragraph's line-spacing multiplier (1.0 = single) scales the
-        // shaped line advance, so it is part of the shape key.
+        // Line spacing is part of the shape key: it scales the line advance.
         let line_mult = block_line_spacing(b);
         let key = shape_key(&ShapeKeyInput {
             spans: &runs,
@@ -749,9 +645,6 @@ impl Editor {
             family,
             line_height_mult: line_mult,
         });
-        // Reuse the shaped layout if nothing affecting shaping changed
-        // (text, marks, resolved style, wrap width, or line spacing), else
-        // re-shape.
         let layout = match old_cache.remove(&b.id) {
             Some((k, lay)) if k == key => {
                 self.dbg_layout_hits += 1;
@@ -759,9 +652,7 @@ impl Editor {
             }
             previous => {
                 self.dbg_layout_misses += 1;
-                // An edited block keeps the shaped lines it did not change
-                // (its other paragraphs, or the untouched chunks of a huge
-                // paragraph); any style or width change reshapes it all.
+                // An edited block keeps its unchanged shaped lines; a style or width change reshapes.
                 RichTextLayout::shape_styled_reusing(
                     &mut text_renderer.font_system,
                     &runs,
@@ -785,11 +676,6 @@ impl Editor {
         }
     }
 
-    /// One paragraph-like block (a normal paragraph, heading, or list item):
-    /// resolve its style/shape, decide whether it fits whole on the current
-    /// page or needs to be split into per-page slices, and push its `Laid`
-    /// entry/entries. Handles the paragraph side of float bookkeeping — a
-    /// floated image only narrows blocks on its own page.
     fn paginate_paragraph(
         &mut self,
         b: &BlockView,
@@ -804,11 +690,7 @@ impl Editor {
             context.cursor,
         );
         let cur = &mut *context.cursor;
-        // Place with the style's space-before as the leading gap (dropped at
-        // the top of a fresh page so the first paragraph hugs the top margin).
-        // A manual page break forces a fresh page; a block that does not fit
-        // splits at line boundaries under its layout's widow/orphan policy,
-        // and a heading moves on with the text it introduces.
+        // Space-before is dropped at the top of a page; a too-tall block splits at line boundaries.
         let block = PageBlock::new(f64::from(ps.layout.height()))
             .with_lead(f64::from(ps.st.space_before))
             .breaking_before(block_page_break_before(b))
@@ -820,10 +702,7 @@ impl Editor {
             lines.clone()
         });
         cur.follow_carry(fg, context.laid, placed.carry);
-        // If the page advanced past the float (page-break), the float no
-        // longer applies to this block — drop the x-origin offset so the
-        // block lays full-width on its new page. (The float only ever
-        // narrows blocks on its own page.)
+        // Past the float's page the block lays full width again.
         let float_offset = if cur.active_float.is_some_and(|f| f.page == placed.page) {
             ps.float_offset
         } else {
@@ -838,7 +717,6 @@ impl Editor {
         };
         let laid_start = context.laid.len();
         if placed.fragments.is_empty() {
-            // The whole block fits on one page: one unclipped `Laid`.
             let item_top = page_content_top(fg, placed.page) + placed.top;
             context.laid.push(Laid {
                 id: b.id.clone(),
@@ -865,12 +743,7 @@ impl Editor {
         cur.flow_laid.push(laid_start..context.laid.len());
         cur.flow.skip(f64::from(ps.st.space_after));
         context.new_cache.insert(b.id.clone(), (ps.key, ps.layout));
-        // Float bookkeeping: a float only narrows blocks on its own page and
-        // only while text is still beside the image. Clear it once the page
-        // has advanced past the float, or once this block has flowed down to
-        // (or past) the image's bottom — and in that latter case make sure
-        // the cursor sits at least at the image bottom so the next full-width
-        // block clears the image vertically rather than overlapping it.
+        // A float applies only on its own page and only while text is still beside the image.
         if let Some(f) = cur.active_float {
             if cur.page() > f.page {
                 cur.active_float = None;
@@ -882,12 +755,8 @@ impl Editor {
         }
     }
 
-    /// A paragraph-like block split across pages: one `Laid` slice per
-    /// fragment. Each slice shares the one cached layout (one id, one cache
-    /// entry); only the *visual* rendering is split. A slice's `layout_y`
-    /// maps the layout origin so line geometry (`selection_rects`/
-    /// `caret_geometry`/`hit`) still resolves, and its `clip` band keeps
-    /// lines from other slices off this page.
+    /// A block split across pages: one `Laid` slice per fragment, all sharing one cached layout.
+    /// A slice's `layout_y` and `clip` band keep its lines on its own page.
     fn emit_paragraph_slices(
         b: &BlockView,
         fg: &FrameGeometry,
@@ -904,7 +773,6 @@ impl Editor {
                 continue;
             };
             let slice_top = page_content_top(fg, fragment.page) + fragment.top;
-            // layout_y maps the fragment's first line's internal top to `slice_top`.
             let layout_y = slice_top - first_top;
             let slice_bottom = layout_y + last_top + last_h;
             let band = Rect::new(pl.text_x, slice_top, pl.text_x + pl.width, slice_bottom);
@@ -919,7 +787,6 @@ impl Editor {
                 height: slice_bottom - slice_top,
                 layout_y,
                 clip: Some(band),
-                // The bullet/number belongs to the block's first line only.
                 bullet: if index == 0 { pl.bullet.clone() } else { None },
                 ink: pl.ink,
                 image_hash: None,
@@ -931,9 +798,6 @@ impl Editor {
         }
     }
 
-    /// Pass 1's aftermath: the document's total extent, the clamped scroll
-    /// offset, and shifting `laid` (+ its cell/clip rects) into screen space so
-    /// hit-testing needs no further offset. Returns `(num_pages, sy)`.
     pub(super) fn finish_scroll(
         &mut self,
         fg: &FrameGeometry,
@@ -941,20 +805,13 @@ impl Editor {
         cur_page: usize,
         y: f64,
     ) -> (usize, f64) {
-        // Total document extent below `fg.page_top`: the stacked page sheets + gaps,
-        // widened if an over-tall block overflowed its page's text band.
         let num_pages = cur_page + 1;
         let pages_extent =
             num::f64_of_usize(num_pages) * fg.letter_h + num::f64_of_usize(cur_page) * PAGE_GAP;
         let extent = pages_extent.max(y - fg.page_top);
 
-        // Scrolling: clamp the offset to the overflow, then shift the laid-out
-        // content (+ pages) into screen space so hit-testing needs no offset.
-        // `scroll_y` is an offset in unscaled content space; on screen the content
-        // is magnified by `zoom`, so the visible window covers `fg.canvas.height() /
-        // zoom` of content — divide by zoom so the overflow (and thus max scroll)
-        // grows when zoomed in and shrinks when zoomed out.
-        // What the status band says and what one key pages by.
+        // `scroll_y` is unscaled content space; zoom magnifies it, so the visible window covers
+        // `canvas.height() / zoom` of content.
         self.pages = num_pages;
         self.page_pitch = fg.page_pitch;
         self.scroll_viewport = fg.canvas.height() / self.zoom.factor();

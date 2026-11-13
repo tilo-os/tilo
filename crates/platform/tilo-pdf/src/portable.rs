@@ -1,15 +1,13 @@
 //! The portable engine: hayro, a memory-safe PDF rasteriser, in this process.
 //!
-//! It answers the same requests as the pdfium backend from the same types:
-//! page geometry, rendering, the characters of a page for the text layer,
-//! links, annotations and the outline. What it does not do yet:
+//! It answers the same requests as the pdfium backend from the same types,
+//! reading a form's fields but not drawing them. What it does not do yet:
 //!
-//! - annotation appearances and form widgets are not drawn (page content
-//!   only), and [`Engine::form_fields`] is empty;
+//! - annotation appearances and form widgets are not drawn (page content only);
 //! - export, images wrapped as pages and encrypted documents answer
 //!   [`Error::Unavailable`];
-//! - a region render crops a full-page render at the same scale (cached for
-//!   the tiles that follow) instead of rasterising only the region.
+//! - a region render crops a full-page render at the same scale (cached for the
+//!   tiles that follow) instead of rasterising only the region.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -30,19 +28,35 @@ use crate::Bitmap;
 use crate::error::{Error, Result};
 use crate::geom::{PageGeometry, Point, Rect, Rotation};
 use crate::model::{
-    AnnotationInfo, AnnotationKind, Destination, DocumentInfo, FormField, Link, MAX_RENDER_PIXELS,
-    Metadata, OutlineEntry, RenderOptions, ReplyType, Rgba, parse_default_appearance,
+    AnnotationInfo, AnnotationKind, Destination, DocumentInfo, FieldKind, FieldWidget, FormField,
+    Link, MAX_RENDER_PIXELS, Metadata, OutlineEntry, RenderOptions, ReplyType, Rgba,
+    parse_default_appearance,
 };
 use crate::text::{MAX_PAGE_CHARS, RawChar};
 
-/// Outline entries read before the rest is ignored: a cyclic or hostile
-/// outline cannot make this loop forever.
+/// Outline entries read before the rest is ignored, so a hostile outline cannot
+/// loop forever.
 const MAX_OUTLINE_ENTRIES: usize = 10_000;
+
+const MAX_FORM_FIELDS: usize = 10_000;
+
+const MAX_FORM_WIDGETS: usize = 20_000;
+const MAX_FORM_OPTIONS: usize = 10_000;
+
+/// How deep a field tree is walked: deeper nesting is not a form.
+const MAX_FIELD_DEPTH: usize = 64;
+
+// Form field flag bits, as the PDF spec numbers them from one.
+const FIELD_FLAG_READ_ONLY: u32 = 1;
+const FIELD_FLAG_REQUIRED: u32 = 1 << 1;
+const FIELD_FLAG_MULTILINE: u32 = 1 << 12;
+const FIELD_FLAG_RADIO: u32 = 1 << 15;
+const FIELD_FLAG_PUSH_BUTTON: u32 = 1 << 16;
+const FIELD_FLAG_COMBO: u32 = 1 << 17;
 
 struct Doc {
     pdf: Pdf,
     pages: Vec<PageGeometry>,
-    /// Page object → index, for destinations that name a page by reference.
     page_ids: HashMap<ObjectIdentifier, usize>,
     /// The last full-page render, which the tiles of one view crop from.
     last_render: Option<FullRender>,
@@ -57,7 +71,6 @@ struct FullRender {
     pixels: Arc<Vec<u8>>,
 }
 
-/// Documents open in the portable engine.
 #[derive(Default)]
 pub(crate) struct Engine {
     docs: HashMap<u64, Doc>,
@@ -82,8 +95,8 @@ fn geometry_of(page: &Page<'_>) -> PageGeometry {
     PageGeometry { user_box, rotation }
 }
 
-/// A PDF text string: UTF-16 with a byte-order mark, UTF-8 with one, or
-/// `PDFDocEncoding` (read as Latin-1, which agrees on every printable code).
+/// A PDF text string: UTF-16 or UTF-8 with a byte-order mark, else
+/// `PDFDocEncoding`, read as Latin-1.
 fn text_string(bytes: &[u8]) -> String {
     if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
         let units: Vec<u16> = rest
@@ -153,7 +166,6 @@ fn pixels_for(value: f32) -> Result<u16> {
     Ok(rounded as u16)
 }
 
-/// Rotate a tightly packed RGBA image clockwise by `turns` quarter turns.
 fn rotate(pixels: &[u8], width: u32, height: u32, turns: u8) -> (Vec<u8>, u32, u32) {
     let turns = turns % 4;
     if turns == 0 {
@@ -514,7 +526,18 @@ impl Engine {
     }
 
     pub(crate) fn form_fields(&self, id: u64) -> Result<Vec<FormField>> {
-        self.doc(id).map(|_| Vec::new())
+        let doc = self.doc(id)?;
+        let Some(fields) = catalog(&doc.pdf)
+            .and_then(|c| c.get::<Dict<'_>>(b"AcroForm"))
+            .and_then(|form| form.get::<Array<'_>>(b"Fields"))
+        else {
+            return Ok(Vec::new());
+        };
+        let mut walk = FormWalk::new(doc);
+        for field in fields.iter::<Dict<'_>>() {
+            walk.walk(&field, "", &Inherited::default(), 0);
+        }
+        Ok(walk.out)
     }
 
     pub(crate) fn outline(&self, id: u64) -> Result<Vec<OutlineEntry>> {
@@ -579,6 +602,87 @@ fn annotation_kind(subtype: &str) -> AnnotationKind {
         "Redact" => AnnotationKind::Redact,
         other => AnnotationKind::Other(other.to_owned()),
     }
+}
+
+/// The kind `/FT` and `/Ff` describe together: a button is a push button or a
+/// radio group by its flags, a choice a combo box or a list box.
+fn field_kind(field_type: Option<&str>, flags: u32) -> FieldKind {
+    match field_type {
+        Some("Tx") => FieldKind::Text,
+        Some("Btn") if flags & FIELD_FLAG_PUSH_BUTTON != 0 => FieldKind::PushButton,
+        Some("Btn") if flags & FIELD_FLAG_RADIO != 0 => FieldKind::RadioButton,
+        Some("Btn") => FieldKind::CheckBox,
+        Some("Ch") if flags & FIELD_FLAG_COMBO != 0 => FieldKind::ComboBox,
+        Some("Ch") => FieldKind::ListBox,
+        Some("Sig") => FieldKind::Signature,
+        _ => FieldKind::Unknown,
+    }
+}
+
+/// A field's value as a reader shows it: a name (a button's state, a choice's
+/// export value) or a text string. A multi-select choice holds a list, of
+/// which the first is what one value string can carry.
+fn field_value(value: Object<'_>) -> String {
+    match value {
+        Object::Name(name) => name.as_str().to_owned(),
+        Object::String(text) => text_string(text.as_bytes()),
+        Object::Array(items) => items
+            .iter::<Object<'_>>()
+            .next()
+            .map(field_value)
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+/// A choice field's options as a reader lists them: an option is the string
+/// itself, or an `[export, display]` pair whose display text is shown.
+fn choice_options(options: &Array<'_>) -> Vec<String> {
+    options
+        .iter::<Object<'_>>()
+        .take(MAX_FORM_OPTIONS)
+        .map(|option| match option {
+            Object::Array(pair) => pair
+                .iter::<Object<'_>>()
+                .nth(1)
+                .map(field_value)
+                .unwrap_or_default(),
+            other => field_value(other),
+        })
+        .collect()
+}
+
+/// The widgets a terminal field is drawn with: the field itself when it has its
+/// own `/Rect`, plus every kid that is a widget rather than a field.
+fn field_widgets<'a>(field: &Dict<'a>, kids: &[Dict<'a>]) -> Vec<Dict<'a>> {
+    let mut widgets = Vec::new();
+    if field.contains_key(b"Rect") {
+        widgets.push(field.clone());
+    }
+    widgets.extend(
+        kids.iter()
+            .filter(|kid| !kid.contains_key(b"T") && kid.contains_key(b"Rect"))
+            .cloned(),
+    );
+    widgets
+}
+
+/// A button widget's export value — the state its appearance stream names
+/// apart from `Off` — and whether its `/AS` selects that state.
+fn widget_state(widget: &Dict<'_>) -> (String, bool) {
+    let export = widget
+        .get::<Dict<'_>>(b"AP")
+        .and_then(|appearances| appearances.get::<Dict<'_>>(b"N"))
+        .and_then(|states| {
+            states
+                .keys()
+                .find(|state| state.as_str() != "Off")
+                .map(|state| state.as_str().to_owned())
+        })
+        .unwrap_or_default();
+    let checked =
+        !export.is_empty() && dict_name(widget, b"AS").as_deref() == Some(export.as_str());
+    (export, checked)
 }
 
 impl Doc {
@@ -727,6 +831,150 @@ impl Doc {
     }
 }
 
+/// What a field takes from its ancestors when it sets none of it: `/FT`, `/Ff`,
+/// `/V` and `/Opt` come from the nearest ancestor that has them.
+#[derive(Clone, Default)]
+struct Inherited {
+    field_type: Option<String>,
+    flags: Option<u32>,
+    value: Option<String>,
+    options: Option<Vec<String>>,
+}
+
+/// One pass over a form's field tree. A field object is walked once and every
+/// count has a ceiling, so a cyclic or hostile tree ends.
+struct FormWalk<'a> {
+    doc: &'a Doc,
+    pages_of_annots: HashMap<ObjectIdentifier, usize>,
+    seen: HashSet<ObjectIdentifier>,
+    fields: usize,
+    widgets: usize,
+    out: Vec<FormField>,
+}
+
+impl<'a> FormWalk<'a> {
+    fn new(doc: &'a Doc) -> Self {
+        let mut pages_of_annots = HashMap::new();
+        for (index, page) in doc.pdf.pages().iter().enumerate() {
+            let Some(annots) = page.raw().get::<Array<'_>>(b"Annots") else {
+                continue;
+            };
+            for annot in annots.raw_iter() {
+                if let Some(id) = annot.as_obj_ref() {
+                    pages_of_annots
+                        .entry(ObjectIdentifier::from(id))
+                        .or_insert(index);
+                }
+            }
+        }
+        Self {
+            doc,
+            pages_of_annots,
+            seen: HashSet::new(),
+            fields: 0,
+            widgets: 0,
+            out: Vec::new(),
+        }
+    }
+
+    fn walk(&mut self, field: &Dict<'_>, parent: &str, inherited: &Inherited, depth: usize) {
+        if self.fields >= MAX_FORM_FIELDS || depth > MAX_FIELD_DEPTH {
+            return;
+        }
+        if let Some(id) = field.obj_id()
+            && !self.seen.insert(id)
+        {
+            return;
+        }
+        self.fields = self.fields.saturating_add(1);
+        let name = dict_text(field, b"T");
+        let qualified = match (parent.is_empty(), name.is_empty()) {
+            (_, true) => parent.to_owned(),
+            (true, false) => name,
+            (false, false) => format!("{parent}.{name}"),
+        };
+        let inherited = Inherited {
+            field_type: dict_name(field, b"FT").or_else(|| inherited.field_type.clone()),
+            flags: field.get::<u32>(b"Ff").or(inherited.flags),
+            value: field
+                .get::<Object<'_>>(b"V")
+                .map(field_value)
+                .or_else(|| inherited.value.clone()),
+            options: field
+                .get::<Array<'_>>(b"Opt")
+                .map(|options| choice_options(&options))
+                .or_else(|| inherited.options.clone()),
+        };
+        let kids: Vec<Dict<'_>> = field
+            .get::<Array<'_>>(b"Kids")
+            .map(|kids| kids.iter::<Dict<'_>>().collect())
+            .unwrap_or_default();
+        let named: Vec<Dict<'_>> = kids
+            .iter()
+            .filter(|kid| !dict_text(kid, b"T").is_empty())
+            .cloned()
+            .collect();
+        if !named.is_empty() {
+            // A named kid is a field of its own, so this one holds fields
+            // rather than a value: only the leaves become fields a caller
+            // reads.
+            for kid in named {
+                self.walk(&kid, &qualified, &inherited, depth.saturating_add(1));
+            }
+            return;
+        }
+        let flags = inherited.flags.unwrap_or(0);
+        let kind = field_kind(inherited.field_type.as_deref(), flags);
+        let mut widgets = Vec::new();
+        for widget in field_widgets(field, &kids) {
+            if self.widgets >= MAX_FORM_WIDGETS {
+                break;
+            }
+            let Some(page) = self.widget_page(&widget) else {
+                // A widget no page lists or names has nowhere to be drawn.
+                continue;
+            };
+            let (Some(geometry), Some(rect)) = (
+                self.doc.pages.get(page),
+                widget.get::<hayro::hayro_syntax::object::Rect>(b"Rect"),
+            ) else {
+                continue;
+            };
+            self.widgets = self.widgets.saturating_add(1);
+            let (export_value, checked) = match kind {
+                FieldKind::CheckBox | FieldKind::RadioButton => widget_state(&widget),
+                _ => (String::new(), false),
+            };
+            widgets.push(FieldWidget {
+                page,
+                rect: geometry.rect_to_display(user_rect(rect)),
+                export_value,
+                checked,
+            });
+        }
+        self.out.push(FormField {
+            name: qualified,
+            kind,
+            value: inherited.value.unwrap_or_default(),
+            options: inherited.options.unwrap_or_default(),
+            read_only: flags & FIELD_FLAG_READ_ONLY != 0,
+            required: flags & FIELD_FLAG_REQUIRED != 0,
+            multiline: kind == FieldKind::Text && flags & FIELD_FLAG_MULTILINE != 0,
+            widgets,
+        });
+    }
+
+    fn widget_page(&self, widget: &Dict<'_>) -> Option<usize> {
+        if let Some(id) = widget.obj_id()
+            && let Some(page) = self.pages_of_annots.get(&id)
+        {
+            return Some(*page);
+        }
+        let page = widget.get::<Dict<'_>>(b"P")?.obj_id()?;
+        self.doc.page_ids.get(&page).copied()
+    }
+}
+
 fn name_tree_lookup<'a>(node: &Dict<'a>, name: &[u8], depth: usize) -> Option<Object<'a>> {
     if depth > 32 {
         return None;
@@ -757,8 +1005,8 @@ fn name_tree_lookup<'a>(node: &Dict<'a>, name: &[u8], depth: usize) -> Option<Ob
     None
 }
 
-/// Collects the page's glyphs in content order as [`RawChar`]s, inserting
-/// the word spaces the content stream leaves implicit in glyph positions.
+/// Collects a page's glyphs in content order as [`RawChar`]s, inserting the word
+/// spaces the content stream leaves implicit in glyph positions.
 #[derive(Default)]
 struct TextDevice {
     chars: Vec<RawChar>,
@@ -903,7 +1151,6 @@ mod tests {
 
     #[test]
     fn quarter_turns_rotate_clockwise() {
-        // 2×1: red, blue.
         let px = [255, 0, 0, 255, 0, 0, 255, 255];
         let (out, w, h) = rotate(&px, 2, 1, 1);
         assert_eq!((w, h), (1, 2));

@@ -1,15 +1,9 @@
-//! `tilo-ush` — one binary, three roles, dispatched on `argv[0]`.
+//! `tilo-ush`: one binary, three roles, dispatched on `argv[0]`.
 //!
-//! - `ush` on the host: build a guest from an environment and run a shell in it.
-//! - `pkg`, `perm`, `scan`, `guard`, `quarantine`, `restart` inside a guest:
-//!   the runtime's own commands, symlinks to this binary on the guest's `PATH`.
-//! - `tilo`, `app`, `store`, `system` inside a guest: brokered back to the
-//!   logged-in host session so they update real app/system state.
-//! - `tilo-ush serve`: the session supervisor an app asks for a guest.
-//!
-//! One binary because the guest has to run the *same* build that built its
-//! confinement, and because `pkg` inside a guest and the supervisor outside it
-//! are two halves of one protocol — splitting them would let the halves drift.
+//! `ush` on the host builds a guest from an environment and runs a shell in it; `pkg`,
+//! `perm`, `scan`, `guard`, `quarantine` and `restart` are the runtime's own commands
+//! inside a guest, symlinks to this binary on the guest's `PATH`; `tilo`, `app` and the
+//! file actions are the host-brokered ones.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -31,7 +25,6 @@ fn main() -> ExitCode {
         .unwrap_or_default();
     let rest = argv.get(1..).unwrap_or(&[]);
 
-    // Inside a guest the runtime is reached through its own name.
     let result = match prog_name.as_str() {
         "pkg" => guest::pkg(rest),
         "perm" => guest::perm(rest),
@@ -44,9 +37,8 @@ fn main() -> ExitCode {
         name if ush::agent_door::CONNECT_COMMANDS.contains(&name) => {
             ush::agent_door::connect_main(rest)
         }
-        // The file actions: GNU's names, answered here so each invocation is
-        // one action of the environment record's, checked against its grants
-        // and undone from its History.
+        // GNU's names, answered here so each invocation is one action of the environment
+        // record's, checked against its grants and undone from its History.
         "cp" | "mv" | "rm" | "mkdir" | "rmdir" | "ln" | "truncate" | "touch" | "append" => {
             guest::file_action(&prog_name, rest)
         }
@@ -72,8 +64,6 @@ fn main() -> ExitCode {
     }
 }
 
-/// `tilo-ush <subcommand>` — the spelling used when the binary is invoked by
-/// its own name rather than through a shim.
 fn dispatch(args: &[String]) -> anyhow::Result<i32> {
     let rest = args.get(1..).unwrap_or(&[]);
     match args.first().map(String::as_str) {
@@ -90,8 +80,6 @@ fn dispatch(args: &[String]) -> anyhow::Result<i32> {
         }
         Some("ush" | "run") => host(rest),
         Some("sh") => Ok(ush::shell_host::main(rest)),
-        // The guest's first process when it serves a Tilo-side shell's
-        // programs (`ush::guest_exec`).
         Some("exec-serve") => Ok(ush::guest_exec::serve_main(rest)),
         Some("pkg") => guest::pkg(rest),
         Some("perm") => guest::perm(rest),
@@ -140,8 +128,6 @@ Inside a guest:
                                    restore (see `version --help`)
 ";
 
-// host side
-
 fn host(args: &[String]) -> anyhow::Result<i32> {
     let mut opts = SessionOptions::default();
     let mut script: Option<String> = None;
@@ -180,7 +166,6 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
                 {
                     anyhow::bail!("invalid inherited editor descriptor");
                 }
-                // SAFETY: this explicit startup argument transfers one inherited FD.
                 let fd = unsafe { OwnedFd::from_raw_fd(fd) };
                 opts.editor = Some(Arc::new(runtime_portal::editor::Socket::adopt(fd)?));
                 i = i.saturating_add(2);
@@ -194,7 +179,6 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
                 i = i.saturating_add(2);
             }
             "--" => {
-                // A program, as the supervisor passes one for a served session.
                 opts.command = args.get(i.saturating_add(1)..).unwrap_or(&[]).to_vec();
                 break;
             }
@@ -214,7 +198,6 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
         let builder = Arc::new(SharedBuilds::new(builder(), Arc::clone(&images)));
         let mut session = Session::new(store, opts, images, builder);
         if let Some(script) = script {
-            // ush's own shell runs the script here, on the Tilo side.
             return session.run_tilo_side(Some(&script));
         }
         session.run()
@@ -231,8 +214,6 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
     }
 }
 
-/// Where images come from on this device: the package store, or fixture
-/// trees under `TILO_USH_IMAGES` in tests.
 fn images() -> Arc<dyn Images> {
     ush::images::on_this_device()
 }
@@ -279,8 +260,6 @@ fn cmd_serve(args: &[String]) -> anyhow::Result<i32> {
     Ok(0)
 }
 
-/// `$XDG_RUNTIME_DIR/tilo/services/ush.sock` — the path `tilo-launcher` looks in
-/// for a `[sandbox.services]` entry named `ush`.
 fn default_service_socket() -> PathBuf {
     tilo_paths::xdg::runtime_dir_or_default().join("tilo/services/ush.sock")
 }
@@ -371,8 +350,6 @@ Examples:\n  tilo app u browser\n  tilo system status\n  tilo update\n\n\
 Unavailable providers are skipped by `tilo update`; explicit provider commands\n\
 explain when the host does not offer them.\n";
 
-    /// A legacy app's command inside a guest: a symlink in the guest's bin
-    /// directory that is none of the runtime's own names.
     pub fn is_legacy_shim(name: &str) -> bool {
         !name.is_empty()
             && name != "tilo-ush"
@@ -381,8 +358,6 @@ explain when the host does not offer them.\n";
             && Path::new(ush::GUEST_BROKER_SOCK).exists()
     }
 
-    /// `code .` in an environment: the app runs in the legacy VM, in this
-    /// directory when it is shared, and its windows open in the current strip.
     pub fn legacy_launch(app: &str, args: &[String]) -> anyhow::Result<i32> {
         let cwd = std::env::current_dir()?;
         let request = Request::LegacyLaunch {
@@ -557,8 +532,6 @@ explain when the host does not offer them.\n";
         )
     }
 
-    /// The guest's first process: installs Landlock inside the namespace, where
-    /// the rules name paths the guest will actually use, then becomes the shell.
     pub fn init(args: &[String]) -> anyhow::Result<i32> {
         use std::os::fd::AsFd as _;
         use std::os::unix::process::CommandExt;
@@ -862,13 +835,10 @@ explain when the host does not offer them.\n";
         }
     }
 
-    /// Tear the guest down so the supervisor can build it again. There is no
-    /// way to remount a namespace from inside it, so a restart is literally a
-    /// new guest: the broker records the request, this ends the current one,
-    /// and the supervisor loops. Every process in the guest's pid namespace
-    /// is ended — hung up first, so shells save their history, then killed —
-    /// and the sandbox's init (pid 1, which the kernel shields from signals
-    /// sent inside its own namespace) exits with its last child.
+    /// Tear the guest down so the supervisor can build it again: a namespace cannot be
+    /// remounted from inside it, so a restart is a new guest. Every process in the guest's pid
+    /// namespace is hung up first, so shells save their history, then killed; the sandbox's init
+    /// exits with its last child.
     pub fn restart() -> anyhow::Result<i32> {
         use std::io::Write as _;
         ask(&Request::Restart)?;
@@ -879,7 +849,6 @@ explain when the host does not offer them.\n";
         let in_guest =
             std::fs::read_to_string("/proc/1/comm").is_ok_and(|comm| comm.trim() == "bwrap");
         if !in_guest {
-            // SAFETY: `getppid` cannot fail; the parent is the shell that ran this.
             unsafe { libc::kill(libc::getppid(), libc::SIGHUP) };
             return Ok(0);
         }
@@ -892,7 +861,6 @@ explain when the host does not offer them.\n";
             libc::kill(-1, libc::SIGHUP);
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
-        // SAFETY: as above.
         unsafe { libc::kill(-1, libc::SIGKILL) };
         Ok(0)
     }
@@ -916,8 +884,6 @@ explain when the host does not offer them.\n";
         }))
     }
 
-    /// Carry out `action` for the command `name`, through the broker inside
-    /// a guest, here outside one.
     fn run_file_action(
         name: &str,
         action: ush::file_actions::FileAction,
@@ -929,7 +895,6 @@ explain when the host does not offer them.\n";
         }))
     }
 
-    /// Run a file command answering on this process's own streams.
     fn with_command_io<T>(f: impl FnOnce(&mut ush::file_actions::command::Io<'_>) -> T) -> T {
         use std::io::IsTerminal as _;
 
@@ -947,9 +912,6 @@ explain when the host does not offer them.\n";
         f(&mut io)
     }
 
-    /// `history [--json]` — what this environment's file actions removed or
-    /// replaced and kept aside, each with its id; `history restore ID` puts
-    /// one back, as the record's `restore` action inside a guest.
     pub fn file_history(args: &[String]) -> anyhow::Result<i32> {
         use ush::file_actions::{FileAction, Recoverable, RestoreOp, cli};
 
@@ -980,18 +942,13 @@ explain when the host does not offer them.\n";
         Ok(0)
     }
 
-    /// `version`: a file's own history, with the verbs an agent already
-    /// knows. Nothing here keeps a store of its own — the mount's history is
-    /// the history, which is the same one the file manager's History view
-    /// shows. It reports a refusal as an exit code, never as an error, because
-    /// a caller reads the answer either way.
+    /// `version`: a file's own history. Nothing here keeps a store of its own — the mount's
+    /// history is the one the file manager's History view shows. A refusal is an exit code, never
+    /// an error, because a caller reads the answer either way.
     pub fn version(args: &[String]) -> i32 {
         ush::version::run(args)
     }
 
-    /// Where the recoverable store is, decided by the same rule the broker
-    /// uses: the environment's own `/var` inside a guest, the person's data
-    /// directory outside one.
     fn store_dir(outside_home: &Path) -> PathBuf {
         if broker_socket().exists() {
             PathBuf::from(ush::file_actions::RECOVERABLE_DIR)
@@ -1010,8 +967,6 @@ explain when the host does not offer them.\n";
 
         #[test]
         fn the_file_verbs_are_the_runtimes_own_names_in_a_guest() {
-            // Each one is a shim in the guest's bin directory, and none of
-            // them is mistaken for a legacy app's command.
             for name in [
                 "cp", "mv", "rm", "mkdir", "rmdir", "ln", "truncate", "touch", "append",
             ] {
@@ -1138,7 +1093,6 @@ explain when the host does not offer them.\n";
 
         #[test]
         fn management_parser_rejects_extra_arguments_and_unsupported_mutations() {
-            // phase: management_parser_rejects_ignored_extra_arguments
             {
                 for (program, args) in [
                     ("app", argv(&["list", "--json", "extra"])),
@@ -1153,7 +1107,6 @@ explain when the host does not offer them.\n";
                     );
                 }
             }
-            // phase: unsupported_mutations_never_become_broker_requests
             {
                 for args in [
                     argv(&["install", "browser"]),

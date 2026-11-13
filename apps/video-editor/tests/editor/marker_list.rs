@@ -100,12 +100,7 @@ fn a_clip_marker_is_listed_with_the_timeline_ones_and_deletes_from_its_clip() {
 fn markers_are_listed_and_added_with_nothing_selected_even_in_an_empty_project() {
     let mut app = editor_with(&Project::new("Blank"));
     assert!(
-        node(
-            &mut app,
-            Role::Label,
-            "No clip selected. Click a clip in the timeline to edit it."
-        )
-        .is_some(),
+        node(&mut app, Role::Label, "No clip selected").is_some(),
         "the empty state is still spoken"
     );
     press(&mut app, Role::Button, "Add marker at playhead");

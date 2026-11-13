@@ -95,7 +95,6 @@ pub struct Message {
 
 #[resource(
     kind = "tilo.messages",
-    label = "Messages",
     read_content = Messages::read,
     answer = answer,
 )]

@@ -1,7 +1,5 @@
-//! The backends that answer synchronously: native directories, memory and,
-//! on the web, the page's mirror of a profile's app files.
-//! [`Dir`](crate::Dir)'s async operations and [`blocking`](crate::blocking)
-//! both call these.
+//! The backends that answer synchronously: native directories, memory, and on the web
+//! the page's mirror of a profile's app files.
 
 use std::path::PathBuf;
 
@@ -17,8 +15,8 @@ pub(crate) enum Local {
     Mirror(crate::web::View),
 }
 
-/// The page's thread cannot wait for a lock, and the mirror cannot take a
-/// lock other tabs see without waiting.
+/// The page's thread cannot wait for a lock, and the mirror cannot take a lock other tabs see without
+/// waiting.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn no_blocking_locks() -> FsError {
     FsError::Unsupported {
@@ -165,8 +163,6 @@ impl Local {
         }
     }
 
-    /// Waits for the lock: in the kernel natively, on the task's waker in
-    /// memory.
     pub(crate) async fn lock(&self, path: &VPath, mode: LockMode) -> Result<Held, FsError> {
         match self {
             Self::Disk(root) => disk::lock(root, path, mode).map(|lock| Held::Disk { _lock: lock }),
@@ -179,7 +175,6 @@ impl Local {
         }
     }
 
-    /// Waits for the lock on this thread.
     pub(crate) fn lock_blocking(&self, path: &VPath, mode: LockMode) -> Result<Held, FsError> {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         {
@@ -195,7 +190,6 @@ impl Local {
         }
     }
 
-    /// Takes the lock only if nobody holds a conflicting one.
     pub(crate) fn try_lock(&self, path: &VPath, mode: LockMode) -> Result<Option<Held>, FsError> {
         match self {
             Self::Disk(root) => disk::try_lock(root, path, mode)

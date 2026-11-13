@@ -33,7 +33,7 @@ fn pane(app: &mut HeadlessApp<VideoEditor>) -> String {
             .iter()
             .find(|(id, _)| *id == at)
             .and_then(|(_, n)| n.label())
-            .filter(|l| ["Media bin", "Transport", "Timeline", "Inspector"].contains(l))
+            .filter(|l| ["Media bin", "Playback", "Timeline", "Inspector"].contains(l))
         {
             return label.to_string();
         }
@@ -45,7 +45,7 @@ fn playhead(app: &mut HeadlessApp<VideoEditor>) -> String {
     app.harness()
         .a11y_nodes()
         .into_iter()
-        .find(|(_, n)| n.label() == Some("Transport"))
+        .find(|(_, n)| n.label() == Some("Playback"))
         .and_then(|(_, n)| n.value().map(ToString::to_string))
         .unwrap()
 }

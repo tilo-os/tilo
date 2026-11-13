@@ -6,8 +6,8 @@ device-consent-question = { $device ->
    *[microphone] Darf { $app } das Mikrofon verwenden?
 }
 device-consent-detail = { $device ->
-    [camera] Tilo merkt sich diese Entscheidung für { $app } in diesem Arbeitsbereich, bis du sie widerrufst. Ohne deine Erlaubnis erhält die App nichts von der Kamera.
-   *[microphone] Tilo merkt sich diese Entscheidung für { $app } in diesem Arbeitsbereich, bis du sie widerrufst. Ohne deine Erlaubnis erhält die App nichts vom Mikrofon.
+    [camera] Ohne deine Erlaubnis erhält { $app } nichts von der Kamera. Deine Entscheidung gilt in diesem Arbeitsbereich, bis du sie widerrufst.
+   *[microphone] Ohne deine Erlaubnis erhält { $app } nichts vom Mikrofon. Deine Entscheidung gilt in diesem Arbeitsbereich, bis du sie widerrufst.
 }
 device-consent-allow = Erlauben
 device-consent-deny = Nicht erlauben
@@ -22,7 +22,7 @@ device-grant-denied = { $device ->
 }
 device-grant-workspace = im Arbeitsbereich { $workspace }
 device-grant-revoke = Widerrufen
-device-grant-revoke-description = Diese Entscheidung vergessen: eine laufende Aufnahme endet, und beim nächsten Mal wird erneut gefragt.
+device-grant-revoke-description = Diese Entscheidung vergessen: eine laufende Aufnahme endet, und die App fragt beim nächsten Mal erneut.
 agent-confirm-question = Darf dein Agent „{ $action }“ in { $app } verwenden?
 agent-confirm-detail = Das erlaubt nur diese eine Aktion; dein Agent fragt beim nächsten Mal erneut.
 agent-confirm-allow = Erlauben

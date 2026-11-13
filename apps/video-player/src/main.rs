@@ -1,4 +1,4 @@
-//! video-player — thin binary entry point. All logic lives in the library.
+//! Video Player's entry point.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 

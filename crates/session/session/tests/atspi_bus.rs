@@ -13,7 +13,7 @@
 //! launcher, so it is ignored by default:
 //!
 //! ```sh
-//! cargo test -p tilo-session --test atspi_bus -- --ignored --nocapture
+//! cargo test -p tilo-session --test it atspi_bus:: -- --ignored --nocapture
 //! ```
 //!
 //! The test starts its own session bus, so it never reaches the caller's real
@@ -29,8 +29,6 @@
     reason = "test fixtures: a failed step is the assertion, and the session \
               outlives every call made into it"
 )]
-
-mod common;
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
@@ -195,7 +193,7 @@ fn atspi_address() -> Option<String> {
 
 /// Step the session until `done` holds.
 fn until(session: &mut Session, what: &str, mut done: impl FnMut(&mut Session) -> bool) {
-    common::wait_for(session, what, |session| done(session).then_some(()));
+    crate::common::wait_for(session, what, |session| done(session).then_some(()));
 }
 
 #[test]

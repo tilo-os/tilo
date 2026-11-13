@@ -32,7 +32,7 @@ class StagedSourceClosure(unittest.TestCase):
                         dependency = directory + '/' + name.split('.')[0] + '.py'
                         if (qualifier.ROOT / dependency).is_file():
                             self.assertIn(dependency, files, (relative, name))
-        self.assertIn('scripts/headless-examples/_control.py', files)
+        self.assertIn('scripts/headless-examples/real_apps.py', files)
         prerequisites = qualifier.fixed_module(qualifier.ROOT /
             'os/scripts/installer-receive-fixture/prerequisite-image.py', 'test_prerequisites')
         self.assertLessEqual(set(prerequisites.ASSETS), files)
@@ -51,8 +51,7 @@ class StagedSourceClosure(unittest.TestCase):
             for name, digest in sources.items():
                 self.assertEqual(qualifier.facts(stage / name)['sha256'], digest)
                 self.assertEqual((stage / name).stat().st_mode & 0o777, 0o644)
-        for name in ('os/scripts/installer-source-fixture/secret_owner.py',
-                     'scripts/headless-examples/_control.py'):
+        for name in ('os/scripts/installer-source-fixture/secret_owner.py',):
             with tempfile.TemporaryDirectory() as temporary:
                 altered = dict(sources, **{name: '0' * 64})
                 with self.assertRaises(ValueError):

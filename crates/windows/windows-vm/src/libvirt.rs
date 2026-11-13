@@ -9,7 +9,6 @@ use crate::{
     GraphicsAssignment,
 };
 
-/// The kind in the metadata marker that makes a domain Tilo's appliance.
 const METADATA_KIND: &str = "windows-appliance";
 const INSTALL_MEDIA: &str = "/var/lib/tilo/windows/install-media.iso";
 const GUEST_TOOLS_MEDIA: &str = "/var/lib/tilo/windows/tilo-guest-tools.iso";
@@ -47,7 +46,6 @@ pub struct EgressLease {
 }
 
 pub trait VmBackend: Send + Sync {
-    /// Defines the singleton if absent and rejects a same-named foreign domain.
     fn ensure_singleton(&self, config: &ApplianceConfig) -> Result<(), VmBackendError>;
     fn state(&self, config: &ApplianceConfig) -> Result<DomainState, VmBackendError>;
     fn start(&self, config: &ApplianceConfig) -> Result<(), VmBackendError>;
@@ -400,8 +398,6 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
         CpuMode::HostPassthrough => "mode='host-passthrough' check='none' migratable='off'",
         CpuMode::HostModel => "mode='host-model' check='partial'",
     };
-    // Keep the appliance within Windows client socket limits. Without an
-    // explicit topology, libvirt can expose each allocated vCPU as a socket.
     let cpu = format!(
         "<cpu {cpu_attributes}><topology sockets='1' cores='{}' threads='1'/></cpu>",
         config.performance.vcpus,

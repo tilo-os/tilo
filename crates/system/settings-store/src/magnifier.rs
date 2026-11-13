@@ -6,37 +6,29 @@
 
 use serde_json::{Map, Value};
 
-/// The section holding the magnifier keys.
 pub const SECTION: &str = "accessibility";
 /// Current zoom factor; [`OFF`] means the magnifier is off.
 pub const ZOOM_KEY: &str = "magnifier_zoom";
-/// The zoom the toggle turns back on to.
 pub const LAST_ZOOM_KEY: &str = "magnifier_last_zoom";
-/// [`MagnifierView::as_str`] of the chosen view.
 pub const VIEW_KEY: &str = "magnifier_view";
 
 /// Zoom factor meaning "off".
 pub const OFF: u8 = 1;
-/// The zoom a first toggle turns on at.
 pub const DEFAULT_ZOOM: u8 = 2;
-/// The strongest zoom offered.
 pub const MAX_ZOOM: u8 = 6;
 
 /// The label Settings shows for each zoom level, weakest first; [`OFF`] leads.
 pub const ZOOM_LABELS: [&str; 6] = ["Off", "2×", "3×", "4×", "5×", "6×"];
 
-/// Every zoom level, weakest first; [`OFF`] leads.
 pub fn zoom_levels() -> impl Iterator<Item = u8> {
     OFF..=MAX_ZOOM
 }
 
-/// The label Settings shows for `zoom`: "Off" or "3×".
 pub fn zoom_label(zoom: u8) -> &'static str {
     let position = usize::from(zoom.clamp(OFF, MAX_ZOOM).saturating_sub(OFF));
     ZOOM_LABELS.get(position).copied().unwrap_or("Off")
 }
 
-/// Parse a [`zoom_label`] back to its zoom.
 pub fn zoom_from_label(label: &str) -> Option<u8> {
     zoom_levels().find(|zoom| zoom_label(*zoom) == label)
 }
@@ -57,7 +49,6 @@ pub enum MagnifierView {
 impl MagnifierView {
     pub const ALL: [Self; 2] = [Self::Lens, Self::FullScreen];
 
-    /// The persisted value.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Lens => "lens",
@@ -65,7 +56,6 @@ impl MagnifierView {
         }
     }
 
-    /// Parse [`Self::as_str`]; anything else is the lens.
     pub fn parse(value: &str) -> Self {
         match value {
             "full_screen" => Self::FullScreen,
@@ -73,7 +63,6 @@ impl MagnifierView {
         }
     }
 
-    /// The label Settings shows.
     pub fn label(self) -> &'static str {
         match self {
             Self::Lens => "Lens",
@@ -81,7 +70,6 @@ impl MagnifierView {
         }
     }
 
-    /// Parse [`Self::label`].
     pub fn from_label(label: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|view| view.label() == label)
     }
@@ -107,7 +95,6 @@ impl From<MagnifierView> for &'static str {
     }
 }
 
-/// The magnifier state the frame paints from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MagnifierState {
     pub zoom: u8,
@@ -115,7 +102,6 @@ pub struct MagnifierState {
 }
 
 impl MagnifierState {
-    /// Read the state from an `accessibility` section; missing or malformed values are off.
     pub fn from_section(section: &Map<String, Value>) -> Self {
         Self {
             zoom: zoom_in_section(section, ZOOM_KEY).unwrap_or(OFF),
@@ -140,21 +126,16 @@ fn zoom_in_section(section: &Map<String, Value>, key: &str) -> Option<u8> {
         .map(|zoom| zoom.clamp(OFF, MAX_ZOOM))
 }
 
-/// A magnifier shortcut.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MagnifierStep {
-    /// Off turns on at the last zoom used; on turns off.
     Toggle,
-    /// One level stronger; from off, turns on at the weakest magnification.
     ZoomIn,
-    /// One level weaker; the weakest magnification steps to off.
     ZoomOut,
 }
 
 impl MagnifierStep {
     pub const ALL: [Self; 3] = [Self::Toggle, Self::ZoomIn, Self::ZoomOut];
 
-    /// The step's name, as an action takes it.
     pub const fn id(self) -> &'static str {
         match self {
             Self::Toggle => "toggle",
@@ -163,7 +144,6 @@ impl MagnifierStep {
         }
     }
 
-    /// The step [`Self::id`] names.
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|step| step.id() == id)
     }
@@ -185,8 +165,6 @@ pub fn remembered_zoom(remembered: u8) -> u8 {
     }
 }
 
-/// Apply `step` to the current `zoom`, given the zoom the toggle remembers. Returns the new zoom
-/// and the new remembered zoom.
 pub fn step(zoom: u8, remembered: u8, step: MagnifierStep) -> (u8, u8) {
     let zoom = zoom.clamp(OFF, MAX_ZOOM);
     let remembered = remembered_zoom(remembered);

@@ -245,6 +245,25 @@ impl WasmPeer {
                     None => return Err(js_error("the host does not govern this workspace")),
                 }
             }
+            // Whether the workspace lets this page's person invite here: the question its
+            // governance decides inviting by, asked before anything only an inviter may see.
+            "mayInvite" => {
+                let node = tilo_action_policy::roles::governance_action(
+                    &room,
+                    tilo_action_policy::roles::governance::INVITE,
+                );
+                Value::Bool(answered(
+                    self.rooms_request(WorkspacesRequest::Permits {
+                        workspace: room.clone(),
+                        node: node.to_string(),
+                    })
+                    .await?,
+                    |reply| match reply {
+                        WorkspacesReply::Permits(may) => Some(may),
+                        _ => None,
+                    },
+                )?)
+            }
             "waitList" => entries(
                 self.rooms_request(WorkspacesRequest::WaitList { workspace: room })
                     .await?,

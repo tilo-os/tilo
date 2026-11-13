@@ -1,31 +1,15 @@
 //! The page text layer: glyph geometry in reading order, selection, copy and
 //! search.
 //!
-//! An engine reports what it extracted from the content stream as
-//! [`RawChar`]s, in its own order. [`TextLayer::from_raw`] turns that into a
-//! layer a reader can use, independently of which engine produced it:
+//! An engine reports what it extracted as [`RawChar`]s in its own order;
+//! [`TextLayer::from_raw`] turns that into a layer whichever engine produced
+//! it: ligatures and presentation forms expanded to the characters they stand
+//! for with their box split between them (copied text is NFC), lines and blocks
+//! from geometry and a recursive XY-cut, a line's direction from its strong
+//! characters, and search across line breaks and hyphenation.
 //!
-//! - **Copy-correct Unicode.** Presentation-form ligatures (`ﬁ`, `ﬄ`, …) and
-//!   Arabic presentation forms are expanded to the characters they stand
-//!   for, each getting its share of the glyph box, so selecting half of a
-//!   ligature and copying yields the right letters. Copied text is NFC.
-//! - **Lines and reading order.** Glyphs are grouped into lines by geometry;
-//!   lines into blocks by recursive XY-cut, so a multi-column page reads
-//!   column by column and a drag inside one column never picks up its
-//!   neighbour. A line's direction comes from its strong characters, so
-//!   right-to-left scripts copy in logical order even when an engine hands
-//!   them over in visual order.
-//! - **Selection.** By caret positions between two points, by a character
-//!   range, by word/line, or by a box. Every selection yields per-line
-//!   highlight rectangles and its copy text; soft hyphens at line ends are
-//!   removed when the selection spans the break.
-//! - **Search.** Case- (and optionally diacritic-) insensitive, matching
-//!   across line breaks and hyphenation, resolving to character ranges and
-//!   hit rectangles.
-//!
-//! Character positions (`usize`) index [`TextLayer::chars`], i.e. they are
-//! reading-order positions. [`TextChar::source`] keeps the engine's own char
-//! index for each position.
+//! Character positions (`usize`) index [`TextLayer::chars`], reading-order
+//! positions; [`TextChar::source`] keeps the engine's own index.
 
 use std::ops::Range;
 
@@ -47,12 +31,10 @@ pub mod raw_flags {
     pub const MAP_ERROR: u8 = 4;
 }
 
-/// One character exactly as an engine extracted it, in engine order.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RawChar {
     /// The Unicode scalar the engine mapped the glyph to (0 when unmapped).
     pub unicode: u32,
-    /// The engine's index of this character on the page.
     pub index: u32,
     /// Tight glyph bounds in display space; empty for generated characters.
     pub bbox: Rect,
@@ -60,7 +42,6 @@ pub struct RawChar {
     /// the box selection highlights and hit-tests against.
     pub loose: Rect,
     pub font_size: f32,
-    /// [`raw_flags`] bits.
     pub flags: u8,
 }
 
@@ -78,17 +59,13 @@ pub mod char_flags {
     pub const EXPANDED: u8 = 8;
 }
 
-/// One character of the layer, in reading order.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextChar {
     pub ch: char,
-    /// Box in display space; empty for line breaks.
     pub rect: Rect,
     /// The engine char index this character came from.
     pub source: u32,
-    /// Index into [`TextLayer::lines`].
     pub line: u32,
-    /// [`char_flags`] bits.
     pub flags: u8,
 }
 
@@ -104,7 +81,6 @@ impl TextChar {
     }
 }
 
-/// A visual line: a run of characters sharing a baseline region.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextLine {
     /// Range of positions in [`TextLayer::chars`] (excluding the trailing
@@ -113,7 +89,6 @@ pub struct TextLine {
     pub rect: Rect,
     /// Base direction from the line's strong characters.
     pub rtl: bool,
-    /// Index into [`TextLayer::blocks`].
     pub block: u32,
 }
 
@@ -121,7 +96,6 @@ pub struct TextLine {
 /// group) as found by the XY-cut.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextBlock {
-    /// Range of indices into [`TextLayer::lines`].
     pub lines: Range<usize>,
     pub rect: Rect,
 }
@@ -133,13 +107,11 @@ pub struct Selection {
 }
 
 impl Selection {
-    /// A selection of one range (empty ranges yield an empty selection).
     #[must_use]
     pub fn from_range(range: Range<usize>) -> Self {
         Self::from_ranges(vec![range])
     }
 
-    /// A selection from arbitrary ranges; they are sorted and merged.
     #[must_use]
     pub fn from_ranges(mut ranges: Vec<Range<usize>>) -> Self {
         ranges.retain(|r| r.start < r.end);
@@ -164,14 +136,12 @@ impl Selection {
         self.ranges.is_empty()
     }
 
-    /// The covering range from the first to the last selected position.
     #[must_use]
     pub fn span(&self) -> Option<Range<usize>> {
         Some(self.ranges.first()?.start..self.ranges.last()?.end)
     }
 }
 
-/// Options for [`TextLayer::search`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchOptions {
     pub case_sensitive: bool,
@@ -180,7 +150,6 @@ pub struct SearchOptions {
     pub ignore_diacritics: bool,
 }
 
-/// One search hit on a page.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextMatch {
     /// Reading-order positions covered by the hit.
@@ -189,7 +158,6 @@ pub struct TextMatch {
     pub rects: Vec<Rect>,
 }
 
-/// The analysed text of one page. See the module documentation.
 #[derive(Clone, Debug, Default)]
 pub struct TextLayer {
     chars: Vec<TextChar>,
@@ -206,7 +174,6 @@ pub struct TextLayer {
     unrotated: PageSize,
 }
 
-/// A character between extraction and layout.
 #[derive(Clone, Copy, Debug)]
 struct Unit {
     ch: char,
@@ -221,19 +188,18 @@ struct Unit {
 pub const MAX_PAGE_CHARS: usize = 200_000;
 
 impl TextLayer {
-    /// Analyse an engine's characters (engine order) into a layer. The
-    /// characters' boxes are in display space of an unrotated page.
-    ///
-    /// Returns `None` when the page exceeds [`MAX_PAGE_CHARS`].
+    /// Analyse an engine's characters (engine order) into a layer; their boxes are
+    /// in display space of an unrotated page. `None` when the page exceeds
+    /// [`MAX_PAGE_CHARS`].
     #[must_use]
     pub fn from_raw(raw: &[RawChar]) -> Option<Self> {
         Self::from_raw_rotated(raw, Rotation::None, PageSize::default())
     }
 
-    /// As [`Self::from_raw`] for a page displayed with its own `rotation`:
-    /// the characters' boxes are in the page's space before that rotation
-    /// (of size `unrotated`), which is where its lines run horizontally.
-    /// Every box the layer returns is in display space.
+    /// As [`Self::from_raw`] for a page displayed with its own `rotation`: the
+    /// characters' boxes are in the page's space before it (of size `unrotated`),
+    /// where lines run horizontally. Every box the layer returns is in display
+    /// space.
     #[must_use]
     pub fn from_raw_rotated(
         raw: &[RawChar],
@@ -289,7 +255,6 @@ impl TextLayer {
         (layer.chars.len() <= MAX_PAGE_CHARS.saturating_mul(2)).then_some(layer)
     }
 
-    /// Characters in reading order.
     #[must_use]
     pub fn chars(&self) -> &[TextChar] {
         &self.chars
@@ -305,7 +270,6 @@ impl TextLayer {
         &self.blocks
     }
 
-    /// The whole page text in reading order, lines separated by `'\n'`.
     #[must_use]
     pub fn text(&self) -> &str {
         &self.text
@@ -353,7 +317,6 @@ impl TextLayer {
         self.nearest_in_line(self.lines.get(index)?, p)
     }
 
-    /// The nearest character of `line` to `p` (layout space).
     fn nearest_in_line(&self, line: &TextLine, p: Point) -> Option<usize> {
         let mut best: Option<(usize, f32)> = None;
         for pos in line.chars.clone() {
@@ -412,7 +375,6 @@ impl TextLayer {
         Selection::from_range(a.min(b)..a.max(b))
     }
 
-    /// Selection of a reading-order character range (clamped to the page).
     #[must_use]
     pub fn select_range(&self, range: Range<usize>) -> Selection {
         let end = range.end.min(self.chars.len());
@@ -480,7 +442,6 @@ impl TextLayer {
         out.nfc().collect()
     }
 
-    /// Highlight rectangles for `selection`: one band per line segment.
     #[must_use]
     pub fn rects_for(&self, selection: &Selection) -> Vec<Rect> {
         let mut bands = Vec::new();
@@ -552,7 +513,6 @@ impl TextLayer {
         !before && !after
     }
 
-    /// Folded characters paired with the position each came from.
     fn search_haystack(&self, opts: SearchOptions) -> Vec<(char, usize)> {
         let mut hay: Vec<(char, usize)> = Vec::with_capacity(self.chars.len());
         let mut pos = 0usize;
@@ -612,11 +572,10 @@ fn fold_query(query: &str, opts: SearchOptions) -> Vec<char> {
 
 /// The characters a glyph's Unicode value stands for when copied.
 ///
-/// Alphabetic presentation forms (Latin/Armenian/Hebrew ligatures, U+FB00–
-/// U+FB4F) and Arabic presentation forms (U+FB50–U+FDFF, U+FE70–U+FEFF) are
-/// compatibility-decomposed to their base letters; every other character
-/// is kept as is (full NFKC would also rewrite superscripts, full-width
-/// forms and similar characters the author chose deliberately).
+/// Alphabetic presentation forms (U+FB00–U+FB4F) and Arabic ones (U+FB50–
+/// U+FDFF, U+FE70–U+FEFF) decompose to their base letters; anything else is
+/// kept, where full NFKC would also rewrite superscripts and full-width forms
+/// the author chose.
 #[must_use]
 pub fn copy_expansion(ch: char) -> Vec<char> {
     let cp = u32::from(ch);
@@ -771,10 +730,9 @@ fn split_shared_boxes(units: &mut [Unit]) {
 }
 
 /// Some producers map every glyph of a multi-glyph cluster to the cluster's
-/// text, so a separately drawn dot or mark (common in Arabic Naskh fonts)
-/// copies as a second letter. Drop a character that repeats a nearby
-/// character of the same value and lies inside its box while being clearly
-/// narrower: it is part of that letter's drawing, not text of its own.
+/// text, so a separately drawn dot (common in Arabic Naskh fonts) copies as a
+/// second letter. Drop a character that repeats a nearby one, lies inside its
+/// box and is clearly narrower: it is part of that letter's drawing.
 fn drop_mark_duplicates(units: &mut Vec<Unit>) {
     const WINDOW: usize = 12;
     let mut keep = vec![true; units.len()];
@@ -831,7 +789,6 @@ fn drop_redundant_spaces(units: &mut Vec<Unit>) {
     units.retain(|_| flags.next().unwrap_or(true));
 }
 
-/// A line under construction: unit indices in engine order.
 #[derive(Clone, Debug)]
 struct LineBuild {
     units: Vec<usize>,
@@ -902,14 +859,13 @@ fn finish_line(lines: &mut Vec<LineBuild>, mut members: Vec<usize>, units: &[Uni
     });
 }
 
-/// Engines normally report logical order. When a line's characters instead
-/// advance against its direction (visual order), reverse it back.
+/// Engines normally report logical order; when a line's characters advance
+/// against its direction instead (visual order), reverse it back.
 ///
-/// For a right-to-left line in visual order the whole line is reversed and
-/// then every embedded left-to-right run (Latin words, digits) is reversed
-/// again; a left-to-right line only has its right-to-left runs reversed.
-/// This is the inverse of the Unicode bidi reordering for the two-level case
-/// that covers real documents.
+/// A right-to-left line is reversed whole and then each embedded left-to-right
+/// run (Latin words, digits) again; a left-to-right line only has its
+/// right-to-left runs reversed. This inverts the two-level Unicode bidi
+/// reordering that real documents use.
 fn to_logical_order(line: &mut LineBuild, units: &[Unit]) {
     let positions: Vec<(usize, f32, char)> = line
         .units
@@ -1261,7 +1217,6 @@ mod tests {
 
     #[test]
     fn copied_text_expands_ligatures_and_presentation_forms_and_drops_soft_hyphens() {
-        // Phase `ligature_glyph_copies_as_its_letters_and_splits_its_box`.
         {
             let raw = vec![
                 glyph('\u{FB01}', 0, 0.0, 0.0, 10.0),
@@ -1277,7 +1232,6 @@ mod tests {
             assert_eq!(layer.text_for(&sel), "f");
             assert_eq!(layer.search("fi", SearchOptions::default()).len(), 1);
         }
-        // Phase `soft_hyphen_at_line_end_is_dropped_on_copy_and_search`.
         {
             let mut raw = run("exam", 0, 0.0, 0.0);
             let mut hyphen = glyph('-', 4, 24.0, 0.0, 4.0);
@@ -1291,7 +1245,6 @@ mod tests {
             let hit = &layer.search("example", SearchOptions::default())[0];
             assert_eq!(hit.rects.len(), 2, "hit spans two lines");
         }
-        // Phase `arabic_presentation_forms_copy_as_base_letters`.
         {
             // U+FEDF U+FEE0 are initial/medial LAM presentation forms.
             assert_eq!(copy_expansion('\u{FEDF}'), vec!['\u{0644}']);
@@ -1302,10 +1255,9 @@ mod tests {
 
     #[test]
     fn text_layers_restore_reading_order_across_columns_and_scripts() {
-        // Phase `two_columns_read_column_by_column`.
         {
             let mut raw = Vec::new();
-            // Engine order interleaves the columns row by row, as some producers do.
+            // Interleaved row by row, as some producers emit columns.
             raw.extend(run("left one", 0, 0.0, 0.0));
             raw.extend(run("right one", 100, 200.0, 0.0));
             raw.extend(run("left two", 200, 0.0, 14.0));
@@ -1313,11 +1265,9 @@ mod tests {
             let layer = TextLayer::from_raw(&raw).unwrap();
             assert_eq!(layer.text(), "left one\nleft two\nright one\nright two");
             assert_eq!(layer.blocks().len(), 2);
-            // A drag within the left column selects only left-column text.
             let sel = layer.select_between(Point::new(0.5, 5.0), Point::new(47.0, 19.0));
             assert_eq!(layer.text_for(&sel), "left one\nleft two");
         }
-        // Phase `title_above_columns_reads_first`.
         {
             let mut raw = Vec::new();
             raw.extend(run("Title spanning both", 0, 0.0, 0.0));
@@ -1328,9 +1278,8 @@ mod tests {
             let layer = TextLayer::from_raw(&raw).unwrap();
             assert_eq!(layer.text(), "Title spanning both\na1\na2\nb1\nb2");
         }
-        // Phase `visual_order_rtl_line_is_restored_to_logical_order`.
         {
-            // "سلام" drawn right-to-left but reported left-to-right (visual).
+            // The word drawn right-to-left but reported left-to-right (visual order).
             let logical: Vec<char> = "سلام".chars().collect();
             let raw: Vec<RawChar> = logical
                 .iter()
@@ -1342,7 +1291,6 @@ mod tests {
             assert_eq!(layer.text(), "سلام");
             assert!(layer.lines()[0].rtl);
         }
-        // Phase `logical_order_rtl_line_is_kept`.
         {
             let raw: Vec<RawChar> = "שלום"
                 .chars()
@@ -1351,14 +1299,12 @@ mod tests {
                 .collect();
             let layer = TextLayer::from_raw(&raw).unwrap();
             assert_eq!(layer.text(), "שלום");
-            // In a right-to-left line the caret right of the first glyph is 0.
             assert_eq!(layer.caret_at(Point::new(105.5, 5.0)), 0);
         }
     }
 
     #[test]
     fn search_and_ranges_pick_words_lines_and_folded_matches() {
-        // Phase `search_is_case_and_optionally_diacritic_insensitive`.
         {
             let raw = run("Café CAFE", 0, 0.0, 0.0);
             let layer = TextLayer::from_raw(&raw).unwrap();
@@ -1374,7 +1320,6 @@ mod tests {
             };
             assert_eq!(layer.search("caf", ww).len(), 0);
         }
-        // Phase `word_and_line_ranges`.
         {
             let raw = run("hello world", 0, 0.0, 0.0);
             let layer = TextLayer::from_raw(&raw).unwrap();

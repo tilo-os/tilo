@@ -149,6 +149,7 @@ impl Described for TextInput {
             .with_change(change)
             .disabled(!enabled)
             .with_read_only(read_only);
+        input.change_before = previous;
         if let Some(text) = text {
             input = input
                 .with_plain_chrome()
@@ -216,6 +217,7 @@ impl Described for TextInput {
             let note = change_note(&by, previous.as_deref());
             (by.identity, note)
         });
+        self.change_before = previous;
         let edits = value.clone();
         self.set_on_change_view(move |text| edits.edited(Value::Text(text.to_owned())));
         let placeholder = placeholder.unwrap_or_default();

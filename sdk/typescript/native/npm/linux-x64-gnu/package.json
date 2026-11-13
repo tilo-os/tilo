@@ -1,0 +1,23 @@
+{
+  "name": "tilo-sdk-native-linux-x64-gnu",
+  "version": "0.1.0",
+  "description": "tilo-sdk-native's binary for Linux on x86-64 with glibc.",
+  "license": "MIT OR Apache-2.0",
+  "main": "tilo-sdk-native.linux-x64-gnu.node",
+  "files": [
+    "tilo-sdk-native.linux-x64-gnu.node",
+    "tilo-automerge-worker"
+  ],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,4 +1,4 @@
-//! The home relay switches of Devices & Sync, against a stand-in host.
+//! The home relay switches of Sync between devices, against a stand-in host.
 
 use std::sync::Arc;
 
@@ -8,9 +8,6 @@ use super::{DeviceMeshEffect, DeviceMeshModel};
 pub(super) const PERSONAL_WORKSPACE: &str = "4d6f1a2c-0000-4000-8000-000000000001";
 pub(super) const STUDIO_WORKSPACE: &str = "4d6f1a2c-0000-4000-8000-000000000002";
 
-/// Whether the home relay hosts a workspace is the host's answer, from
-/// the workspace's hosts: the switch shows it, and flipping one asks the
-/// host for exactly that workspace, then reads what its hosts are now.
 #[test]
 fn a_workspace_is_put_on_the_home_relay_through_the_host() {
     use ui::tilo_actions::remote::{InvokeArgument, home_relay_hosting};
@@ -64,7 +61,6 @@ fn a_workspace_is_put_on_the_home_relay_through_the_host() {
     let InvokeArgument::Json(arguments) = &set.argument else {
         panic!("the choice names its workspace");
     };
-    // The host's `set` step reads the workspace under the key `room`.
     assert_eq!(arguments["room"], STUDIO_WORKSPACE);
     assert_eq!(arguments["on"], true);
     assert_eq!(
@@ -82,10 +78,6 @@ fn a_workspace_is_put_on_the_home_relay_through_the_host() {
     );
 }
 
-/// Each workspace the home relay may host is a live row, named as the
-/// workspace, offering the switch with it bound and `on` asked: what
-/// the palette, an agent or the control socket invokes, and what the switch
-/// itself is bound through.
 #[test]
 fn each_workspace_offers_the_home_relay_switch_on_its_row() {
     use ui::tilo_actions::remote::home_relay_hosting;
@@ -128,7 +120,6 @@ fn each_workspace_offers_the_home_relay_switch_on_its_row() {
         "the workspace is the row's; only `on` is asked"
     );
 
-    // Invoked as the row offers it: its bound workspace, and the caller's `on`.
     let mut arguments: serde_json::Map<_, _> = switch.bound().iter().cloned().collect();
     arguments.insert("on".into(), true.into());
     let effect = DeviceMeshEffect::decode(&switch.id, &arguments).unwrap();

@@ -43,7 +43,6 @@ impl Read for Trickle {
 
 #[test]
 fn frames_encode_with_an_explicit_prefix_and_read_back_completely() {
-    // Phase `prefix_byte_order_is_explicit`.
     {
         assert_eq!(LE.encode(&[7, 8, 9]).unwrap(), [3, 0, 0, 0, 7, 8, 9]);
         assert_eq!(BE.encode(&[7, 8, 9]).unwrap(), [0, 0, 0, 3, 7, 8, 9]);
@@ -56,7 +55,6 @@ fn frames_encode_with_an_explicit_prefix_and_read_back_completely() {
             [1, 2, 3, 4]
         );
     }
-    // Phase `write_matches_encode_and_reads_back`.
     {
         for framing in [LE, BE] {
             let mut wire = Vec::new();
@@ -75,21 +73,18 @@ fn frames_encode_with_an_explicit_prefix_and_read_back_completely() {
             assert!(framing.read(&mut reader).unwrap().is_none());
         }
     }
-    // Phase `short_and_interrupted_reads_are_completed`.
     {
         let wire = LE.encode(b"hello").unwrap();
         let mut reader = Trickle::new(&wire);
         assert_eq!(LE.read(&mut reader).unwrap().unwrap(), b"hello");
         assert!(LE.read(&mut reader).unwrap().is_none());
     }
-    // Phase `read_len_leaves_the_payload_to_the_caller`.
     {
         let mut wire = Cursor::new(BE.encode(b"abc").unwrap());
         assert_eq!(BE.read_len(&mut wire).unwrap(), Some(3));
         assert_eq!(wire.position(), 4);
         assert_eq!(BE.read_len(&mut Cursor::new([])).unwrap(), None);
     }
-    // Phase `read_into_reuses_the_buffer`.
     {
         let mut wire = LE.encode(b"longer").unwrap();
         wire.extend(LE.encode(b"ab").unwrap());
@@ -104,7 +99,6 @@ fn frames_encode_with_an_explicit_prefix_and_read_back_completely() {
         assert!(!LE.read_into(&mut reader, &mut buf).unwrap());
         assert!(buf.is_empty());
     }
-    // Phase `frame_reader_yields_each_payload`.
     {
         let mut wire = BE.encode(b"first").unwrap();
         wire.extend(BE.encode(b"2nd").unwrap());
@@ -118,7 +112,6 @@ fn frames_encode_with_an_explicit_prefix_and_read_back_completely() {
 
 #[test]
 fn frame_limits_truncation_and_empty_policy_are_enforced() {
-    // Phase `eof_inside_a_frame_is_truncation`.
     {
         for wire in [&[5_u8][..], &[5, 0, 0], &[5, 0, 0, 0, b'h', b'i']] {
             let error = LE.read(&mut Cursor::new(wire)).unwrap_err();
@@ -126,7 +119,6 @@ fn frame_limits_truncation_and_empty_policy_are_enforced() {
             assert_eq!(io::Error::from(error).kind(), io::ErrorKind::UnexpectedEof);
         }
     }
-    // Phase `oversized_prefix_is_rejected_before_the_payload_is_read`.
     {
         let mut wire = Cursor::new(vec![17, 0, 0, 0, 1, 2, 3]);
         let error = LE.read(&mut wire).unwrap_err();
@@ -138,7 +130,6 @@ fn frame_limits_truncation_and_empty_policy_are_enforced() {
             Err(FrameError::Truncated)
         ));
     }
-    // Phase `oversized_payload_is_refused_without_writing`.
     {
         let mut wire = Vec::new();
         let error = LE.write(&mut wire, &[0; 17]).unwrap_err();
@@ -148,7 +139,6 @@ fn frame_limits_truncation_and_empty_policy_are_enforced() {
         LE.write(&mut wire, &[0; 16]).unwrap();
         assert_eq!(wire.len(), 20);
     }
-    // Phase `empty_frames_can_be_forbidden`.
     {
         let strict = LE.reject_empty();
         assert!(matches!(
@@ -164,7 +154,6 @@ fn frame_limits_truncation_and_empty_policy_are_enforced() {
             b""
         );
     }
-    // Phase `closed_and_decode_errors_convert_to_io_kinds`.
     {
         assert_eq!(
             io::Error::from(FrameError::Closed).kind(),
@@ -174,7 +163,6 @@ fn frame_limits_truncation_and_empty_policy_are_enforced() {
         assert_eq!(passthrough.kind(), io::ErrorKind::BrokenPipe);
         assert_eq!(FrameError::EmptyFrame.kind(), io::ErrorKind::InvalidData);
     }
-    // Phase `with_max_len_keeps_order_and_empty_policy`.
     {
         let handoff = BE.reject_empty().with_max_len(4);
         assert_eq!(handoff.byte_order(), ByteOrder::BigEndian);

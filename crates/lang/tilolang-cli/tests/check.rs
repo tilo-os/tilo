@@ -12,6 +12,9 @@
 use std::path::Path;
 use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
+use tilolang::ids::SeededEntropy;
+use tilolang::source::{compile_dirs, dependency_order_with};
+use tilolang_tilo::catalogue;
 
 mod support;
 
@@ -128,6 +131,55 @@ fn writing_the_source_catalogue_keeps_a_translations_stale_words_reported() {
     std::fs::write(&translation, increment).unwrap();
     let (passed, stderr) = check(&dir, true);
     assert!(passed, "every translated word is the source's:\n{stderr}");
+}
+
+/// An app's read effects are actions of its resource in the catalogue: a package calls one and
+/// reads a field of the value it answers with, typed by the surface the app publishes.
+#[test]
+fn a_native_app_read_action_answers_with_its_published_type() {
+    let scratch = tempfile::tempdir().unwrap();
+    let dir = scratch.path().join("reader");
+    std::fs::create_dir(&dir).unwrap();
+    let source = |field: &str| {
+        format!(
+            "app so.tilo.test.reader \"Reader\"\n\nuse so.tilo.pdf as pdf\n\n\
+             action file_of(d: pdf.Document) -> Text {{\n    let form = pdf.read_form_fields(d)\n    form.{field}\n}}\n"
+        )
+    };
+    std::fs::write(dir.join("app.tl"), source("file")).unwrap();
+    compile_against_apps(&dir)
+        .unwrap_or_else(|error| panic!("the form's file reads as text: {error}"));
+
+    // A field the PDF's form does not answer with is a compile error, as a typed value's.
+    std::fs::write(dir.join("app.tl"), source("pages")).unwrap();
+    let error = compile_against_apps(&dir).expect_err("a form has no pages");
+    assert!(error.contains("pages"), "{error}");
+}
+
+/// Compile the package at `dir` against the PDF viewer's published surface, as `tilolang check`
+/// compiles against a native app beside a package.
+///
+/// The app answers under an id a package names: an app id is dotted identifiers, so the real
+/// one's hyphen (`so.tilo.pdf-viewer`) is no `use` a program writes. The surface is the app's
+/// own, committed file.
+fn compile_against_apps(dir: &Path) -> Result<(), String> {
+    let scratch = dir.parent().expect("the package has a directory");
+    let app = scratch.join("pdf");
+    std::fs::create_dir_all(&app).map_err(|error| error.to_string())?;
+    std::fs::write(
+        app.join(catalogue::MANIFEST_FILE),
+        "[package]\nid = \"so.tilo.pdf\"\nname = \"PDF Viewer\"\n",
+    )
+    .map_err(|error| error.to_string())?;
+    let surface =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/pdf-viewer/surface.toml");
+    std::fs::copy(surface, app.join(catalogue::SURFACE_FILE)).map_err(|error| error.to_string())?;
+    let natives = catalogue::native_apps(&[scratch.to_path_buf()])?;
+    let provided: Vec<String> = natives.iter().map(|meta| meta.app.clone()).collect();
+    let dirs = dependency_order_with(dir, &[], &provided)?;
+    compile_dirs(&dirs, &natives, &mut SeededEntropy(0))
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 /// Runs `check` on `dir`, writing with `--write-ids` when `write`: whether it passed, and what

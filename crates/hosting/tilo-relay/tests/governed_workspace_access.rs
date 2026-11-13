@@ -72,7 +72,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     let state = tempfile::tempdir().unwrap();
     let host_cert = host.cert.clone();
     let host_key = host.sk.clone();
-    let relay = Relay::start(
+    let relay = crate::common::start_relay(
         RelayConfig {
             state_root: state.path().to_path_buf(),
             ..RelayConfig::default()
@@ -263,7 +263,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     drop(bob_client);
     relay.shutdown().await;
 
-    let restarted = Relay::start(
+    let restarted = crate::common::start_relay(
         RelayConfig {
             state_root: state.path().to_path_buf(),
             ..RelayConfig::default()

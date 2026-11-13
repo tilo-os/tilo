@@ -18,6 +18,14 @@ pub fn len(text: &str) -> usize {
     text.graphemes(true).count()
 }
 
+/// How many words a text holds: its runs of non-whitespace, which is how a person counts the
+/// words of what they wrote (`a text of words` is four, and punctuation alone is a word of
+/// its own).
+#[must_use]
+pub fn words(text: &str) -> usize {
+    text.split_whitespace().count()
+}
+
 /// Where `needle` first stands, counted in graphemes from the start.
 #[must_use]
 pub fn find(text: &str, needle: &str) -> Option<usize> {
@@ -156,6 +164,16 @@ mod tests {
             "a",
             "a no-break space is whitespace too"
         );
+    }
+
+    #[test]
+    fn words_are_a_text_s_runs_of_non_whitespace() {
+        assert_eq!(words(""), 0);
+        assert_eq!(words(" \n\t "), 0);
+        assert_eq!(words("one"), 1);
+        assert_eq!(words("one two  three\nfour"), 4);
+        assert_eq!(words("—"), 1, "a run of punctuation is a word");
+        assert_eq!(words("👩‍👩‍👧‍👦 x"), 2, "a family is one word");
     }
 
     #[test]

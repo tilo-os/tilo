@@ -1,6 +1,5 @@
-//! The selected-file adapter over the existing `WorkspaceFs` protocol.
-//! It creates no mount and grants no filesystem authority. A canonical signed
-//! worker supplies its already admitted channel and target presentation facts.
+//! The selected-file adapter over `WorkspaceFs`: no mount and no filesystem
+//! authority of its own, only the channel and ids its worker supplies.
 use fuser::{
     Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags,
     KernelConfig, LockOwner, OpenFlags, ReplyAttr, ReplyData, ReplyDirectory, ReplyEmpty,
@@ -23,9 +22,8 @@ pub struct SelectedFilesystem {
     gid: u32,
 }
 impl SelectedFilesystem {
-    /// Construct a presentation adapter, never source or mount authority.
-    /// The worker's native admission remains responsible for actual credentials,
-    /// the FUSE channel, namespace confinement and complete mount retirement.
+    /// Presentation only: the worker's admission still owns the credentials,
+    /// the FUSE channel, namespace confinement and unmounting.
     pub fn new(
         source: SelectedFileConnection,
         name: OsString,
@@ -59,7 +57,6 @@ impl SelectedFilesystem {
         if ino != ROOT && ino != FILE {
             return Err(io::ErrorKind::NotFound.into());
         }
-        // Even the synthetic directory is revoked when its source is revoked.
         let metadata = match handle {
             Some(handle) if ino == FILE => self.source.metadata_handle(handle.0)?,
             _ => self.source.metadata()?,

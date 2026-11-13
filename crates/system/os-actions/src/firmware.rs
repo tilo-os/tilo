@@ -1,8 +1,5 @@
-//! Firmware inventory and upgrades through fwupd.
-//!
-//! `fwupdmgr` is only a client for the system fwupd daemon.  The daemon
-//! validates signed LVFS metadata and firmware and polkit owns authorization;
-//! this module never downloads an arbitrary URL or elevates a shell command.
+//! Firmware inventory and upgrades through fwupd. Its daemon validates signed LVFS
+//! metadata and firmware, and polkit owns authorization.
 
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::process::CommandExt as _;
@@ -18,8 +15,7 @@ const MAX_FIRMWARE_EVENTS: usize = 8192;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FirmwareUpdate {
-    /// fwupd's stable device identifier, used to scope installation to the
-    /// exact inventory shown to the person approving the transaction.
+    /// fwupd's stable device identifier, which scopes an install to the inventory the person approved.
     pub device_id: Option<String>,
     pub device: String,
     pub current_version: Option<String>,
@@ -52,32 +48,22 @@ pub enum FirmwareEvent {
     Failed(String),
 }
 
-/// Query updates already offered by fwupd's configured remotes.
 pub fn get_firmware_updates() -> Result<Vec<FirmwareUpdate>, String> {
     let json = run_capture("fwupdmgr", &["get-updates", "--json"])?;
     parse_updates(&json)
 }
 
-/// Refresh signed metadata from configured fwupd remotes.
 pub fn refresh_firmware_metadata() -> Result<(), String> {
     run("fwupdmgr", &["refresh"])
 }
 
-/// Read fwupd's own transaction history. This is authoritative lifecycle
-/// state, not a Tilo-maintained success counter.
 pub fn get_firmware_history() -> Result<Vec<FirmwareHistoryEntry>, String> {
     let json = run_capture("fwupdmgr", &["get-history", "--json"])?;
     parse_history(&json)
 }
 
-/// Start a long-running fwupd transaction without blocking the compositor or
-/// Settings event loop. fwupd remains the verifier and policy authority; Tilo
-/// only reports its lifecycle and never passes force/downgrade flags.
-///
-/// # Errors
-///
-/// Returns an error message if `updates` is empty, the battery is below 20% and not on AC
-/// power, an update is missing a device id, or the worker thread fails to start.
+/// Starts a transaction without blocking the caller; fwupd stays the verifier and policy authority, and
+/// Tilo never passes force or downgrade flags.
 pub fn start_firmware_install(
     updates: &[FirmwareUpdate],
 ) -> Result<Receiver<FirmwareEvent>, String> {
@@ -114,8 +100,8 @@ pub fn start_firmware_install(
                     run_fwupd_transaction(device_id, |event| {
                         let event = match event {
                             FirmwareEvent::Progress { percent, message } => {
-                                // Blend this device's own progress into the overall total: each
-                                // device owns an equal 100/total-percent slice of the run.
+                                // Blend this device's own progress into the overall total: each device
+                                // owns an equal 100/total-percent slice of the run.
                                 let overall = index
                                     .saturating_mul(100)
                                     .saturating_add(usize::from(percent))

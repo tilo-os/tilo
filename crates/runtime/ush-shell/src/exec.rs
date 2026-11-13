@@ -9,7 +9,6 @@ use crate::host::Program;
 use crate::io::{Input, Output};
 use crate::shell::{Exec, Fd, Flow, MAX_CALL_DEPTH, Shell};
 
-/// What a simple command's name resolved to.
 enum Resolved {
     Special(crate::builtins::Builtin),
     Function(Arc<ast::FunctionBody>),
@@ -19,7 +18,6 @@ enum Resolved {
     Other,
 }
 
-/// The descriptor a redirection names, or `default` when it names none.
 fn fd_of(fd: Option<i32>, default: u32) -> u32 {
     fd.and_then(|n| u32::try_from(n).ok()).unwrap_or(default)
 }
@@ -651,7 +649,6 @@ impl Shell {
         Resolved::Other
     }
 
-    /// How `type` and `command -v` describe `name`.
     pub(crate) fn describe(&self, name: &str) -> Option<&'static str> {
         if self.aliases.contains_key(name) {
             return Some("alias");
@@ -817,8 +814,6 @@ impl Shell {
         }
     }
 
-    /// An alias's text in place of the command's name, re-read with the
-    /// rest of the command.
     fn alias_for(&self, simple: &ast::SimpleCommand) -> Option<String> {
         if self.aliases.is_empty() || simple.prefix.is_some() {
             return None;
@@ -838,7 +833,6 @@ impl Shell {
         Some(format!("{value} {rest}"))
     }
 
-    /// Carry out one assignment.
     pub(crate) fn assign(&mut self, a: &ast::Assignment) -> Exec {
         let result = match (&a.name, &a.value) {
             (ast::AssignmentName::VariableName(name), ast::AssignmentValue::Scalar(v)) => {
@@ -1079,7 +1073,6 @@ impl Shell {
         }
     }
 
-    /// `<`, `>`, `>>`, `>|`, `<&` and `>&` with a file or a descriptor.
     fn redirect_file(
         &mut self,
         fd: Option<i32>,

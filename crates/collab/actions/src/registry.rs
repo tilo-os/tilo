@@ -11,7 +11,6 @@ use serde::de::DeserializeOwned;
 use crate::action::{Action, ActionError, EncodedAction};
 
 type Decoder = Box<dyn Fn(&[u8]) -> Result<Box<dyn Action>, ActionError> + Send + Sync>;
-type ContentReader = Box<dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync>;
 
 /// Decodes one action type's payload ([`ActionRegistry::register_decoder`]).
 pub type DecodePayload = fn(&[u8]) -> Result<Box<dyn Action>, serde_json::Error>;
@@ -21,9 +20,11 @@ pub type DecodePayload = fn(&[u8]) -> Result<Box<dyn Action>, serde_json::Error>
 #[derive(Default)]
 pub struct ActionRegistry {
     decoders: HashMap<String, Decoder>,
-    /// Where the large parts of a recorded action are read from by hash
-    /// ([`crate::content`]): the content store of the device replaying.
-    content: Option<ContentReader>,
+    /// Where the large parts of a recorded action are read from, by
+    /// reference ([`crate::content`]): the content store of the record whose
+    /// change names them, which asks the record's route for what this device
+    /// lacks.
+    content: Option<tilo_content::ContentStore>,
 }
 
 impl ActionRegistry {
@@ -95,15 +96,26 @@ impl ActionRegistry {
         ))
     }
 
-    /// Read the large parts of recorded actions from `read` (the device's
-    /// content store), so a change whose action names content replays.
-    /// Without one, the thread's reader ([`crate::keep_content_in`]) is used.
-    pub fn set_content(&mut self, read: impl Fn(&str) -> Option<Vec<u8>> + Send + Sync + 'static) {
-        self.content = Some(Box::new(read));
+    /// Read the large parts of recorded actions from `store` — the content
+    /// store of the record they were made on, which keeps them sealed and
+    /// asks the record's route for the ones this device lacks — so a change
+    /// whose action names content decodes here, on whatever thread the
+    /// registry is used. The host connects it where it builds the registry
+    /// ([`crate::content::register`] does the same for code the window runs
+    /// in place).
+    pub fn connect_content(&mut self, store: tilo_content::ContentStore) {
+        self.content = Some(store);
+    }
+
+    /// The content store recorded actions read their parts from.
+    #[must_use]
+    pub fn content(&self) -> Option<&tilo_content::ContentStore> {
+        self.content.as_ref()
     }
 
     /// The recorded action `recorded` as it ran, its content parts read
-    /// from this registry's content reader.
+    /// from this registry's content store ([`Self::connect_content`]), or
+    /// from the running window's store when none is connected.
     ///
     /// # Errors
     /// [`MissingContent`](crate::MissingContent) for content not here yet
@@ -115,12 +127,14 @@ impl ActionRegistry {
         if recorded.content_parts().is_empty() {
             return Ok(Ok(recorded.clone()));
         }
-        let here = crate::content::read_here;
-        let read: &dyn Fn(&str) -> Option<Vec<u8>> = match &self.content {
-            Some(read) => read.as_ref(),
-            None => &here,
-        };
-        recorded.resolve_content(read)
+        match self
+            .content
+            .clone()
+            .or_else(crate::content::recording_store)
+        {
+            Some(store) => recorded.resolve_content(&|reference| store.read(reference)),
+            None => recorded.resolve_content(&|_| None),
+        }
     }
 
     /// Whether a decoder is registered for `type_id`.

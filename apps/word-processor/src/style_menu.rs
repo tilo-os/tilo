@@ -10,7 +10,6 @@ use vello::kurbo::{Affine, Point};
 use ui::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 
 use crate::i18n::t;
@@ -84,7 +83,7 @@ impl StyleMenu {
     ) {
         self.menu.set_text_scale(theme.text_scale);
         if self.is_open() {
-            Widget::draw(
+            ui::widget::DrawChild::draw_child(
                 &mut self.menu,
                 scene,
                 transform,

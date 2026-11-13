@@ -19,7 +19,7 @@ pub(crate) fn host_ty(name: &str) -> Ty {
 
 impl Checker<'_> {
     /// The one positional argument of a built-in, checked as a resource.
-    fn resource_arg(&mut self, what: &str, args: &[ast::Arg], span: Span) -> Option<Ex> {
+    pub(super) fn resource_arg(&mut self, what: &str, args: &[ast::Arg], span: Span) -> Option<Ex> {
         let [a] = args else {
             self.err(
                 "E022",
@@ -337,6 +337,39 @@ impl Checker<'_> {
         )
     }
 
+    /// `seen_by(c, m)`: the members whose reading of `c` ends at `m` — who has read to that
+    /// line, the person looking aside. A conversation shows their faces there, once each, where
+    /// their read mark stands, without counting anything of its own.
+    pub(super) fn builtin_seen_by(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let [c, item] = args else {
+            self.err(
+                "E022",
+                span,
+                "`seen_by` takes a conversation and one of its items: `seen_by(c, m)`",
+            );
+            return Ex::error();
+        };
+        if item.name.is_some() {
+            self.err(
+                "E022",
+                item.value.span,
+                "`seen_by` takes its arguments by position: `seen_by(c, m)`",
+            );
+        }
+        let Some(c) = self.resource_arg("seen_by", std::slice::from_ref(c), span) else {
+            return Ex::error();
+        };
+        let Some((_, item_ty)) = self.conversation_of("seen_by", &c, span) else {
+            return Ex::error();
+        };
+        let item = self.expr_as(&item.value, &Ty::Record(item_ty));
+        Ex::host(
+            Imp::SeenBy,
+            vec![c, item],
+            Ty::List(Box::new(Ty::Principal)),
+        )
+    }
+
     /// `mentions(c)`: how many of `c`'s items name the person looking, that they have not seen:
     /// a channel's mention count beside its unread count (`unseen(c)`), from the same versions
     /// and seen mark, so a caught-up channel counts none without reading a message.
@@ -490,20 +523,64 @@ impl Checker<'_> {
         Ex::error()
     }
 
-    /// The people a rich input's `@` drawer offers, which the system gives every rich input
-    /// (chat.md, "Completion drawers"): who spoke last in `subject` (the resource the view
-    /// shows) and its members; without a subject, nobody first and the workspace's members.
-    pub(super) fn drawer_people(subject: Option<Ex>) -> (Ex, Ex) {
+    /// `speakers(items)`: the people who spoke in the conversation of `items` — who made the
+    /// last of them — most recent first, each once, at most five (or `max`). What a composer's
+    /// `@` drawer offers under "In this conversation", read from the items themselves, so
+    /// nothing a conversation is about is read to say who is in it.
+    pub(super) fn builtin_speakers(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let people = Ty::List(Box::new(Ty::Principal));
+        let (items, max) = match args {
+            [a] => (a, None),
+            [a, m] => (a, Some(m)),
+            _ => {
+                self.err(
+                    "E022",
+                    span,
+                    "`speakers` takes the items of a conversation, and at most how many people: \
+                     `speakers(said)`",
+                );
+                return Ex::error();
+            }
+        };
+        if items.name.is_some() || max.is_some_and(|m| m.name.is_some()) {
+            self.err(
+                "E022",
+                span,
+                "`speakers` takes its items by position: `speakers(said)`",
+            );
+        }
+        let list = self.expr(&items.value, None);
+        match &list.ty {
+            Ty::List(t) | Ty::Collection(t) if matches!(**t, Ty::Record(_)) => {}
+            Ty::Error => return Ex::error(),
+            other => {
+                let t = self.show(other);
+                self.err(
+                    "E020",
+                    items.value.span,
+                    format!(
+                        "`speakers` takes the items of a conversation, resources of one record \
+                         type; this is {t}"
+                    ),
+                );
+                return Ex::error();
+            }
+        }
+        let max = match max {
+            Some(m) => self.expr_as(&m.value, &Ty::Int),
+            None => Ex::new(Ek::Int(crate::checker::DRAWER_SPEAKERS), Ty::Int),
+        };
+        Ex::host(Imp::Speakers, vec![list, max], people)
+    }
+
+    /// Who a rich input's `@` drawer offers after the conversation's own: the members who can
+    /// read what a mention in it names (`subject`, the resource the view shows), or the
+    /// workspace's members. The system gives them to every rich input that names none.
+    pub(super) fn drawer_people(subject: Option<Ex>) -> Ex {
         let people = Ty::List(Box::new(Ty::Principal));
         match subject {
-            Some(r) => (
-                Ex::host(Imp::Speakers, vec![r.clone()], people.clone()),
-                Ex::host(Imp::Members, vec![r], people),
-            ),
-            None => (
-                Ex::host(Imp::ListNew, Vec::new(), people.clone()),
-                Ex::host(Imp::WorkspaceMembers, Vec::new(), people),
-            ),
+            Some(r) => Ex::host(Imp::Members, vec![r], people),
+            None => Ex::host(Imp::WorkspaceMembers, Vec::new(), people),
         }
     }
 

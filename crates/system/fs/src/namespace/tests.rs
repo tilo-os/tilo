@@ -5,169 +5,6 @@ fn h(b: u8) -> Hash {
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "verify two signed AtomicSave namespace publications, stable identity and durable replay"
-)]
-fn atomic_save_namespace_keeps_document_node_across_two_publications() {
-    use ed25519_dalek::SigningKey;
-    use fs_protocol::{
-        ContentHash, FileMutationOperation, FileMutationParticipant,
-        FileMutationTransactionManifest, FileProvenance, FileVersionId, FileVersionV1,
-    };
-    use getrandom::{SysRng, rand_core::UnwrapErr};
-
-    let mut ns = Namespace::new("atomic-save").unwrap();
-    let mut document_ino = ns.create_file(ROOT_INO, "report.txt", None, 1, 1).unwrap();
-    let document = ns.record_id_for(document_ino).unwrap();
-    let document_node = ns.id_for_ino(document_ino).unwrap().to_owned();
-    let parent = ns.record_id_for(ROOT_INO).unwrap();
-    let mut prior = FileVersionId::new();
-    assert!(ns.set_content_revision(
-        document_ino,
-        &ContentRevisionV1 {
-            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-            record_id: document,
-            version_id: prior,
-            content_hash: None,
-            byte_len: 1,
-            metadata_hash: ContentHash([1; 32]),
-        },
-        1,
-    ));
-    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let actor = FileActor {
-        person: collab_types::Ed25519PublicKey([9; 32]),
-        device: collab_types::Ed25519PublicKey(key.verifying_key().to_bytes()),
-    };
-    let workspace = Uuid::new_v4();
-    for at in [2_u64, 3] {
-        let temporary_ino = ns.create_file(ROOT_INO, "save-temp", None, 1, at).unwrap();
-        let temporary = ns.record_id_for(temporary_ino).unwrap();
-        let temp_prior = FileVersionId::new();
-        assert!(ns.set_content_revision(
-            temporary_ino,
-            &ContentRevisionV1 {
-                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                record_id: temporary,
-                version_id: temp_prior,
-                content_hash: None,
-                byte_len: at,
-                metadata_hash: ContentHash([2; 32]),
-            },
-            at,
-        ));
-        let participant = |record_id, expected_version, role, name: &str| {
-            let version = FileVersionV1 {
-                id: FileVersionId::new(),
-                record_id,
-                parents: vec![expected_version],
-                actor,
-                timestamp_ms: at,
-                content_hash: None,
-                metadata_hash: ContentHash([u8::try_from(at).unwrap(); 32]),
-                provenance: if role == FileMutationParticipantRole::AtomicSaveDocument {
-                    FileProvenance::Edit
-                } else {
-                    FileProvenance::Delete
-                },
-            };
-            let mut result = FileMutationParticipant {
-                record_id,
-                role,
-                expected_version,
-                proposed_binding: FileBindingV1 {
-                    schema_version: FILE_BINDING_VERSION,
-                    record_id,
-                    parent: Some(parent),
-                    name: name.into(),
-                    kind: FileNodeKind::File,
-                    tombstoned: role == FileMutationParticipantRole::AtomicSaveTemporary,
-                    actor,
-                    observed_at_ms: at,
-                },
-                proposed_content_revision: Some(ContentRevisionV1 {
-                    schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-                    record_id,
-                    version_id: version.id,
-                    content_hash: None,
-                    byte_len: at,
-                    metadata_hash: version.metadata_hash,
-                }),
-                proposed_version: version,
-                projection_hash: ContentHash([0; 32]),
-            };
-            result.projection_hash = result.computed_projection_hash().unwrap();
-            result
-        };
-        let mut participants = vec![
-            participant(
-                document,
-                prior,
-                FileMutationParticipantRole::AtomicSaveDocument,
-                "report.txt",
-            ),
-            participant(
-                temporary,
-                temp_prior,
-                FileMutationParticipantRole::AtomicSaveTemporary,
-                "save-temp",
-            ),
-        ];
-        participants.sort_by_key(|participant| participant.record_id);
-        let transaction = FileMutationTransaction::signed(
-            FileMutationTransactionManifest {
-                schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V4,
-                transaction_id: Uuid::new_v4(),
-                workspace_id: workspace,
-                actor,
-                timestamp_ms: at,
-                operation: FileMutationOperation::AtomicSave {
-                    parent_record: parent,
-                    document_name: "report.txt".into(),
-                    temporary_name: "save-temp".into(),
-                    document_record: document,
-                    temporary_record: temporary,
-                    prior_document_version: prior,
-                },
-                participants,
-            },
-            &key,
-        )
-        .unwrap();
-        let document_participant = transaction
-            .manifest
-            .participants
-            .iter()
-            .find(|participant| participant.record_id == document)
-            .unwrap();
-        assert_eq!(document_participant.proposed_version.parents, [prior]);
-        let expected = document_participant.proposed_content_revision.unwrap();
-        assert!(
-            ns.apply_mutation_transaction(&transaction)
-                .unwrap()
-                .is_some()
-        );
-        assert_eq!(
-            ns.lookup(ROOT_INO, "report.txt").unwrap().ino.0,
-            document_ino
-        );
-        assert_eq!(ns.record_id_for(document_ino), Some(document));
-        assert_eq!(ns.content_revision_for(document_ino), Some(expected));
-        assert!(ns.lookup(ROOT_INO, "save-temp").is_none());
-        assert!(ns.ino_for_record_id(temporary).is_none());
-        assert_eq!(ns.apply_mutation_transaction(&transaction), Ok(None));
-        let saved = ns.save();
-        ns = Namespace::from_bytes("atomic-save", &saved).unwrap();
-        document_ino = ns.lookup(ROOT_INO, "report.txt").unwrap().ino.0;
-        assert_eq!(ns.id_for_ino(document_ino), Some(document_node.as_str()));
-        assert_eq!(ns.record_id_for(document_ino), Some(document));
-        assert_eq!(ns.content_revision_for(document_ino), Some(expected));
-        prior = expected.version_id;
-    }
-}
-
-#[test]
 fn tree_operations_create_move_trash_and_persist() {
     {
         let mut ns = Namespace::new("a").unwrap();
@@ -294,9 +131,6 @@ fn signed_bindings_and_replacements_are_verified_exact_and_fail_closed() {
         let file_record = ns.record_id_for(file).unwrap();
         let occupied_record = ns.record_id_for(occupied).unwrap();
         assert_eq!(ns.apply_signed_binding(&occupied_binding), Ok(true));
-        // Two stable records asked for one name. The smaller record id
-        // keeps it; the other becomes a deterministic conflict sibling, so
-        // both survive and every replay order converges on the same tree.
         let (winner, loser_record) = if file_record < occupied_record {
             (file, occupied_record)
         } else {
@@ -314,12 +148,8 @@ fn signed_bindings_and_replacements_are_verified_exact_and_fail_closed() {
         assert_eq!(ns.apply_signed_binding(&deleted), Ok(true));
         assert_eq!(ns.apply_signed_binding(&deleted), Ok(false));
         assert!(ns.lookup(right, "after.txt").is_none());
-        // Deleting the winner releases the name the loser asked for.
         assert_eq!(ns.lookup(right, "occupied.txt").unwrap().ino.0, occupied);
     }
-    // Phase `complete_replacement_transaction_moves_source_tombstones_victim_and_replays`.
-    // This scenario intentionally covers every durable phase and replay of a
-    // two-record replacement transaction in one linear assertion trace.
     {
         use ed25519_dalek::SigningKey;
         use fs_protocol::{
@@ -442,7 +272,7 @@ fn signed_bindings_and_replacements_are_verified_exact_and_fail_closed() {
         )
         .unwrap();
         let delta = ns
-            .apply_replacement_transaction(&transaction)
+            .apply_replacement_transaction(&transaction.manifest)
             .unwrap()
             .unwrap();
         assert!(!delta.is_empty());
@@ -452,54 +282,10 @@ fn signed_bindings_and_replacements_are_verified_exact_and_fail_closed() {
         );
         assert!(ns.lookup(ROOT_INO, "source.txt").is_none());
         assert!(ns.ino_for_record_id(victim_record).is_none());
-        assert_eq!(ns.apply_replacement_transaction(&transaction), Ok(None));
-    }
-    {
-        let mut ns = Namespace::new("owner").unwrap();
-        let ino = ns
-            .create_file(ROOT_INO, "verified.bin", Some(&h(1)), 1, 1)
-            .unwrap();
-        assert!(ns.set_thumb(ino, &h(2)));
-        let record_id = ns.record_id_for(ino).unwrap();
-        ns.enable_signed_content_authority();
-        assert_eq!(ns.hash_for(ino), None);
-        assert_eq!(ns.getattr(ino).unwrap().size, 0);
-        assert_eq!(ns.thumb_hash(ino), None);
-        assert!(ns.live_paths_for_blob(h(1)).is_empty());
-
-        let revision = ContentRevisionV1 {
-            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-            record_id,
-            version_id: fs_protocol::FileVersionId::new(),
-            content_hash: Some(fs_protocol::ContentHash([3; 32])),
-            byte_len: 3,
-            metadata_hash: fs_protocol::ContentHash([4; 32]),
-        };
-        assert!(ns.install_verified_content_revision(revision));
-        assert!(ns.install_verified_thumbnail(record_id, Some(h(4))));
-
-        let id = ns.id_for_ino(ino).unwrap().to_string();
-        ns.set_field(&id, "hash", hash_to_hex(&h(9)));
-        ns.set_field(&id, "size", 999_u64);
-        ns.set_field(&id, "thumb", hash_to_hex(&h(9)));
-        let mut forged = revision;
-        forged.version_id = fs_protocol::FileVersionId::new();
-        forged.content_hash = Some(fs_protocol::ContentHash([9; 32]));
-        forged.byte_len = 999;
-        ns.set_field(
-            &id,
-            CONTENT_REVISION_KEY,
-            ScalarValue::Bytes(revision_to_bytes(&forged).unwrap()),
+        assert_eq!(
+            ns.apply_replacement_transaction(&transaction.manifest),
+            Ok(None)
         );
-
-        assert_eq!(ns.hash_for(ino), Some(h(3)));
-        assert_eq!(ns.getattr(ino).unwrap().size, 3);
-        assert_eq!(ns.thumb_hash(ino), Some(h(4)));
-        assert_eq!(ns.content_revision_for(ino), Some(revision));
-        assert!(ns.live_paths_for_blob(h(9)).is_empty());
-        assert_eq!(ns.live_paths_for_blob(h(3)), vec!["/verified.bin"]);
-        assert!(!ns.set_content(ino, Some(&h(8)), 8, 8));
-        assert!(!ns.set_thumb(ino, &h(8)));
     }
     {
         let mut ns = Namespace::new("owner").unwrap();
@@ -516,16 +302,6 @@ fn signed_bindings_and_replacements_are_verified_exact_and_fail_closed() {
             ns.indexed_record(record_id).is_none(),
             "an ambiguous durable record identity must be withheld, not routed to an arbitrary node"
         );
-        ns.enable_signed_content_authority();
-        let revision = ContentRevisionV1 {
-            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-            record_id,
-            version_id: fs_protocol::FileVersionId::new(),
-            content_hash: Some(fs_protocol::ContentHash([3; 32])),
-            byte_len: 3,
-            metadata_hash: fs_protocol::ContentHash([4; 32]),
-        };
-        assert!(!ns.install_verified_content_revision(revision));
         assert_eq!(ns.hash_for(first), None);
         assert_eq!(ns.hash_for(duplicate), None);
     }
@@ -900,7 +676,6 @@ fn concurrent_namespace_changes_merge_and_converge() {
         let snap = a.save();
         let mut b = Namespace::from_bytes("b", &snap).unwrap();
 
-        // A moves X under Y; B moves Y under X (concurrently).
         let a_y = a.lookup(ROOT_INO, "Y").unwrap().ino.0;
         a.rename(ROOT_INO, "X", a_y, "X", 5);
         let b_x = b.lookup(ROOT_INO, "X").unwrap().ino.0;
@@ -983,7 +758,6 @@ fn concurrent_namespace_changes_merge_and_converge() {
         assert_eq!(b.lookup(ROOT_INO, "delta.txt").unwrap().size, 7);
     }
     {
-        // Diverge from a shared base doc; each side's changes reach the other.
         let mut a = Namespace::new("a").unwrap();
         a.create_file(ROOT_INO, "base", Some(&h(1)), 1, 1).unwrap();
         let mut b = Namespace::from_bytes("b", &a.save()).unwrap();
@@ -1031,7 +805,6 @@ fn documents_import_export_and_merge_semantically() {
         ));
         let before = ns.export_document(ino, &tilo_content::NoContent).unwrap();
 
-        // invalid UTF-8 is rejected by the markdown codec
         assert!(
             !ns.import_document(
                 ino,
@@ -1048,7 +821,6 @@ fn documents_import_export_and_merge_semantically() {
         );
     }
     {
-        // The point of model B: concurrent edits to the same document merge at the text level, not a conflict copy.
         let mut a = Namespace::new("a").unwrap();
         let ino = a.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
         let bid = a.document_insert_block(ino, None, "paragraph").unwrap();
@@ -1058,7 +830,6 @@ fn documents_import_export_and_merge_semantically() {
         let mut b = Namespace::from_bytes("b", &snap).unwrap();
         let bino = b.lookup(ROOT_INO, "doc.md").unwrap().ino.0;
 
-        // concurrent in-place edits to the same paragraph
         a.document_splice(ino, &bid, 5, 0, " dear");
         b.document_splice(bino, &bid, 11, 0, " (B)");
 
@@ -1090,8 +861,6 @@ fn saving_a_document_keeps_its_block_ids() {
     let before = ids(&ns);
     assert!(!before.is_empty(), "the save must have written blocks");
 
-    // A second save of the same file: nothing changed, so nothing may be
-    // rewritten — every block keeps the id it had.
     assert!(ns.import_document(
         ino,
         b"# Title\n\nHello world\n",
@@ -1121,11 +890,8 @@ fn saving_a_document_keeps_a_peer_concurrent_edit() {
     let snap = a.save();
     let mut b = Namespace::from_bytes("b", &snap).unwrap();
     let bino = b.lookup(ROOT_INO, "doc.md").unwrap().ino.0;
-    // B edits the second paragraph in place while A is away.
     b.document_splice(bino, &second, 6, 0, " paragraph");
 
-    // A saves the file again, from its own stale copy: the whole-document
-    // write must merge into B's edit rather than replace the document.
     assert!(a.import_document(
         ino,
         b"first\n\nsecond\n",
@@ -1187,8 +953,6 @@ fn record_indexes_track_structure_and_page_tails_directly() {
         assert!(a.lookup(dir, "moved").is_some());
         assert!(a.lookup(ROOT_INO, "f2").is_none());
 
-        // Concurrent same-name creates on two replicas: the lowest id wins
-        // the name, exactly as the unindexed scan chose.
         let mut b = a.clone_doc();
         b.author = "b".into();
         a.create_file(ROOT_INO, "same", Some(&h(2)), 1, 9).unwrap();
@@ -1216,11 +980,6 @@ fn record_indexes_track_structure_and_page_tails_directly() {
     }
 }
 
-/// The index and structural walk `ns` built incrementally equal the ones a
-/// from-scratch rebuild makes, after any local or merged placement change:
-/// every node's placement and record binding, every row with its path, their
-/// order, the digest and revision built from that order, and which record
-/// ids are ambiguous.
 pub(super) fn assert_indexes_match_rebuild(ns: &Namespace) {
     let mut rebuilt = ns.clone();
     rebuilt.rebuild_record_index();
@@ -1244,10 +1003,6 @@ pub(super) fn assert_indexes_match_rebuild(ns: &Namespace) {
     );
 }
 
-/// `inode_view` is the one-lock read FUSE `read` and `getattr` are served
-/// from. It must answer exactly what the separate accessors it replaced
-/// answer, through remote renames, moves, content changes and deletes
-/// applied by the production merge path.
 #[test]
 fn inode_view_matches_the_separate_accessors_after_remote_apply() {
     let mut source = Namespace::new("source").unwrap();
@@ -1329,15 +1084,13 @@ fn assert_view_matches_accessors(ns: &Namespace, ino: u64) {
             assert_eq!(view.path, expected_path, "path of {ino}");
             assert_eq!(
                 view.document,
-                ns.document_codec(ino).is_some()
-                    && ns.content_authority() == ContentAuthority::LegacyNamespace,
+                ns.document_codec(ino).is_some(),
                 "document of {ino}"
             );
         }
     }
 }
 
-// test-only helper to merge using a fresh loaded copy
 impl Namespace {
     fn clone_doc(&mut self) -> Namespace {
         Namespace::from_bytes(self.author.clone(), &self.save()).unwrap()
@@ -1354,10 +1107,6 @@ fn signed_create_keeps_stable_identity_and_never_renames_unsigned_nodes() {
     let root_record = origin.record_id_for(ROOT_INO).unwrap();
     let root_binding = origin.signed_binding_for(ROOT_INO, actor, 1).unwrap();
 
-    // A log-only rebuild starts from an empty namespace whose provisional
-    // root identity is not the workspace's. The signed root binding adopts
-    // the established identity instead of refusing every child as an
-    // unknown parent.
     let mut rebuilt = Namespace::new("rebuilt").unwrap();
     assert_ne!(rebuilt.record_id_for(ROOT_INO), Some(root_record));
     assert_eq!(rebuilt.apply_signed_binding(&root_binding), Ok(true));
@@ -1383,8 +1132,6 @@ fn signed_create_keeps_stable_identity_and_never_renames_unsigned_nodes() {
     );
     assert_eq!(rebuilt.apply_signed_binding(&binding), Ok(false));
 
-    // A node with no stable record id is unsigned state. It keeps its name;
-    // the signed record that competes for it is the one that moves.
     let unsigned = rebuilt
         .create_file(ROOT_INO, "contested.txt", Some(&h(7)), 1, 3)
         .unwrap();
@@ -1412,8 +1159,6 @@ fn signed_create_keeps_stable_identity_and_never_renames_unsigned_nodes() {
         .into_iter()
         .filter(|(_, _, name)| name != "." && name != "..")
         .collect::<Vec<_>>();
-    // An unsigned node is not addressable by record identity, so it is
-    // observed through the tree listing. It keeps the contested name.
     let (contested_ino, _, _) = entries
         .iter()
         .find(|(_, _, name)| name.as_bytes() == b"contested.txt")
@@ -1427,8 +1172,6 @@ fn signed_create_keeps_stable_identity_and_never_renames_unsigned_nodes() {
         .expect("signed record keeps a conflict sibling");
     assert_eq!(*conflict_ino, signed_ino);
 
-    // The same record log creates the same node key on a second empty
-    // namespace, so the two projections merge rather than duplicate.
     let mut again = Namespace::new("again").unwrap();
     assert_eq!(again.apply_signed_binding(&root_binding), Ok(true));
     assert_eq!(again.apply_signed_binding(&binding), Ok(true));

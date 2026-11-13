@@ -1,4 +1,6 @@
-//! Early host compatibility uses the canonical native setup surface, without installation custody.
+//! Early host compatibility uses the canonical native setup surface, without
+//! installation custody.
+
 use super::{Destination, InstallerPreview, Page};
 use crate::setup::view::{FullOsCheck, SetupApp};
 
@@ -9,9 +11,6 @@ pub(super) struct Compatibility {
 }
 
 impl Compatibility {
-    /// A production-route test paints the same read-only facts the native
-    /// surface reports; the ordinary compatibility drain still advances the
-    /// journey, so no page or prepared identity is assigned.
     #[cfg(test)]
     pub(super) fn accept_read_only_check_for_test(&mut self, check: FullOsCheck) {
         self.pending = false;
@@ -39,8 +38,6 @@ impl InstallerPreview {
         self.compatibility = Compatibility::default();
         self.direct.active = false;
         self.composed = None;
-        // These are display facts, not a grant to write. The final native
-        // review and privileged helper retain their independent revalidation.
         self.storage.accept(result.facts);
         let gib = crate::setup::internal_install_flow::target_extent_bytes(&result.plan) >> 30;
         if let Err(error) = self.storage.set_size(gib) {
@@ -109,8 +106,6 @@ mod tests {
             .apply(InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         assert!(!another.compatibility.pending);
-        // The destination is identified on its own page before any identity,
-        // data or medium choice; a model name is not a grant.
         assert_eq!(another.journey.page, Page::Target);
         assert!(!another.target.ready());
         assert!(another.storage.facts.is_none());

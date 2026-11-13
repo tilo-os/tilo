@@ -58,7 +58,6 @@ fn pe(sections: &[(&str, &[u8])]) -> Vec<u8> {
     data
 }
 
-/// The file offset of section `index`'s header in a [`pe`] fixture.
 fn header(index: usize) -> usize {
     328 + 40 * index
 }
@@ -75,7 +74,6 @@ fn cmdline() -> Vec<u8> {
     .into_bytes()
 }
 
-/// The editor under its installed name, and a UKI to edit.
 struct Fixture {
     _tmp: tempfile::TempDir,
     tool: PathBuf,
@@ -184,7 +182,6 @@ fn blank_and_set_keep_every_offset() {
     );
     let after = fixture.bytes();
     assert_eq!(after.len(), before.len());
-    // Not even the virtual size moves.
     assert_eq!(outside(&after, 1), outside(&before, 1));
     assert_eq!(
         after[header(1)..header(1) + 40],
@@ -333,7 +330,6 @@ fn boot_digest_hashes_the_virtual_kernel_and_initramfs() {
         succeeded(&fixture.run(&["boot-digest"])),
         format!("{expected}\n")
     );
-    // Slack after the virtual size, and the command line, are not identity.
     let mut data = fixture.bytes();
     let raw = field(&data, header(2) + 20);
     data[raw + 6] = b'!';
@@ -369,7 +365,6 @@ fn usage_and_missing_sections_are_refusals() {
         .output_locked()
         .unwrap();
     refused(&output, "boot-digest needs one UKI path");
-    // Under its own name the binary is still the ESP writer.
     let output = Command::new(helper()).arg("show").output_locked().unwrap();
     assert_eq!(output.status.code(), Some(2));
 }

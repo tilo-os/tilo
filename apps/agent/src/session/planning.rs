@@ -7,6 +7,11 @@
 //! the run's internals ("no api key", a rules-only survey) — and every one of
 //! them is reported through [`super::Session::report_task`], so it is a
 //! reported phase of the turn rather than a line in a log nobody reads.
+//!
+//! The words are the catalogue's ([`crate::i18n`]), in the person's language.
+
+use crate::i18n::{t, t_args};
+use ui::i18n::ArgValue;
 
 /// Where a run's steps came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,20 +36,19 @@ impl Planner {
     /// The note a person reads when the run starts deciding.
     pub(super) fn announcing(&self) -> String {
         match self {
-            Self::Model { provider, model } => {
-                format!("Planning with {model} from {provider}.")
-            }
+            Self::Model { provider, model } => t_args(
+                "agent-plan-model",
+                &[
+                    ("model", ArgValue::from(model.clone())),
+                    ("provider", ArgValue::from(provider.clone())),
+                ],
+            ),
             Self::Words {
                 reason: Words::Asked,
-            } => "This run is planned without a model, so its steps are matched to the actions \
-                  this workspace's apps publish."
-                .to_owned(),
+            } => t("agent-plan-words-asked"),
             Self::Words {
                 reason: Words::NoModel,
-            } => "No model is set up to plan this run, so its steps are matched to the actions \
-                  this workspace's apps publish. Choose a model in Settings, under Agent models, to \
-                  have one plan instead."
-                .to_owned(),
+            } => t("agent-plan-words-no-model"),
         }
     }
 
@@ -58,18 +62,20 @@ impl Planner {
 /// What to say when a run's steps could not be chosen: why no single action
 /// answered the request, and — when no model planned it — the step that
 /// would let one.
+///
+/// A run that asked for a model and has none says exactly that, once: the
+/// words of the request were not matched to any action, and listing the
+/// actions they came nearest says nothing a person can act on. What they can
+/// act on is the one thing that makes the request playable.
 pub(super) fn unmatched(plan: &Planner, why: &str) -> String {
     match plan {
         Planner::Model { .. } => why.to_owned(),
         Planner::Words {
             reason: Words::NoModel,
-        } => format!(
-            "{why} No model is set up to plan one, so choose a model in Settings, under Agent \
-             models, or name the app to work in."
-        ),
+        } => t("agent-plan-no-model"),
         Planner::Words {
             reason: Words::Asked,
-        } => format!("{why} Name the app to work in, or say what to do in it."),
+        } => t_args("agent-plan-unmatched-asked", &[("why", why.into())]),
     }
 }
 
@@ -78,18 +84,15 @@ pub(super) fn unmatched(plan: &Planner, why: &str) -> String {
 /// model-planned run: its result is the model's own reply, and the agent
 /// writes no line in its place.
 pub(super) fn finished(plan: &Planner, actions: usize) -> Option<String> {
+    let actions = ArgValue::from(actions);
     match plan {
         Planner::Model { .. } => None,
         Planner::Words {
             reason: Words::NoModel,
-        } => Some(format!(
-            "Done: {actions} action(s) matched to the request's words, without a model."
-        )),
+        } => Some(t_args("agent-done-words-no-model", &[("actions", actions)])),
         Planner::Words {
             reason: Words::Asked,
-        } => Some(format!(
-            "Done: {actions} action(s) matched to the request's words."
-        )),
+        } => Some(t_args("agent-done-words-asked", &[("actions", actions)])),
     }
 }
 
@@ -100,18 +103,13 @@ pub(super) fn finished(plan: &Planner, actions: usize) -> Option<String> {
 pub(super) fn no_model(reason: &crate::model::Route) -> crate::session::Failure {
     use crate::model::{Fallback, Route};
     match reason {
-        Route::Keywords(Fallback::NoKey) => crate::session::Failure::said(
-            "No model is set up to plan this run. Choose one in Settings, under Agent models, \
-             then run this again.",
-        ),
-        Route::Keywords(Fallback::Disabled) => crate::session::Failure::said(
-            "This agent runs with models turned off, so nothing can plan this run. Start it \
-             again with a model turned on.",
-        ),
-        Route::Keywords(Fallback::Failed(error)) => crate::session::Failure::spoken(
-            "The model didn't answer, so this run couldn't be planned. Try again in a moment.",
-            error,
-        ),
+        Route::Keywords(Fallback::NoKey) => crate::session::Failure::said(t("agent-plan-no-model")),
+        Route::Keywords(Fallback::Disabled) => {
+            crate::session::Failure::said(t("agent-plan-models-off"))
+        }
+        Route::Keywords(Fallback::Failed(error)) => {
+            crate::session::Failure::spoken(&t("agent-plan-model-failed"), error)
+        }
     }
 }
 
@@ -127,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_without_a_model_says_so_and_names_the_door() {
+    fn a_run_without_a_model_says_so_once_and_names_the_door() {
         let plan = Planner::Words {
             reason: Words::NoModel,
         };
@@ -135,9 +133,17 @@ mod tests {
         assert!(plan.announcing().contains("Agent models"));
         let unmatched = unmatched(
             &plan,
-            "No published action carries the words of the request.",
+            "That could mean reveal message or copy link. Which one?",
         );
-        assert!(unmatched.contains("No model is set up"));
+        assert!(
+            unmatched.contains("no model is set up"),
+            "the missing model is said plainly: {unmatched}"
+        );
+        assert!(unmatched.contains("Agent models"));
+        assert!(
+            !unmatched.contains("That could mean"),
+            "the reply does not list actions the words came nearest: {unmatched}"
+        );
         assert!(
             !unmatched.contains("permission"),
             "a missing model never reads as a missing permission: {unmatched}"
@@ -172,7 +178,37 @@ mod tests {
                 1
             )
             .as_deref(),
-            Some("Done: 1 action(s) matched to the request's words, without a model.")
+            Some("Done: one action matched to the request's words, without a model.")
+        );
+    }
+
+    /// A run on a German desktop says all of it in German, and names the
+    /// Settings page by the name that page has there.
+    #[test]
+    fn a_german_desktop_reads_the_run_in_german() {
+        let _german = crate::i18n::chosen("de-DE");
+        crate::i18n::follow();
+        let plan = Planner::Words {
+            reason: Words::NoModel,
+        };
+        let announcing = plan.announcing();
+        assert!(announcing.contains("kein Modell"), "{announcing}");
+        assert!(announcing.contains("Agentenmodelle"), "{announcing}");
+        let unmatched = unmatched(&plan, "egal");
+        assert!(
+            unmatched.contains("Einstellungen") && unmatched.contains("Agentenmodelle"),
+            "{unmatched}"
+        );
+        let asked = Planner::Words {
+            reason: Words::Asked,
+        };
+        assert_eq!(
+            finished(&asked, 1).as_deref(),
+            Some("Fertig: eine Aktion den Wörtern der Anfrage zugeordnet.")
+        );
+        assert_eq!(
+            finished(&asked, 2).as_deref(),
+            Some("Fertig: 2 Aktionen den Wörtern der Anfrage zugeordnet.")
         );
     }
 }

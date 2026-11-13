@@ -65,20 +65,29 @@ pub(crate) fn reading_declarations(ctx: &BookResourceCtx) -> Vec<ActionDecl<Eboo
     let mut declarations = Vec::new();
     declarations.extend(
         bookmark(&ctx.bookmark)
-            .declaration("bookmark-page", "Toggle bookmark")
+            .declaration(
+                "bookmark-page",
+                ui::tilo_resource::word!("ebook-library-bookmark-page"),
+            )
             .map(|decl| {
                 decl.describe("Bookmark the page the reader is on, or remove its bookmark.")
             }),
     );
     declarations.extend(
         note(&ctx.page_note)
-            .declaration("note-page", "Add note")
+            .declaration(
+                "note-page",
+                ui::tilo_resource::word!("ebook-library-note-page"),
+            )
             .map(|decl| decl.describe("Add a note to the page the reader is on.")),
     );
     if let Some(plan) = &ctx.selection_highlight {
         declarations.extend(
             highlight(plan)
-                .declaration("highlight-selection", "Highlight selection")
+                .declaration(
+                    "highlight-selection",
+                    ui::tilo_resource::word!("ebook-library-highlight-selection"),
+                )
                 .map(|decl| {
                     decl.describe("Highlight the selected passage, or remove its highlight.")
                 }),
@@ -87,7 +96,10 @@ pub(crate) fn reading_declarations(ctx: &BookResourceCtx) -> Vec<ActionDecl<Eboo
     if let Some(draft) = &ctx.selection_note {
         declarations.extend(
             note(draft)
-                .declaration("note-selection", "Add note to selection")
+                .declaration(
+                    "note-selection",
+                    ui::tilo_resource::word!("ebook-library-note-selection"),
+                )
                 .map(|decl| decl.describe("Add a note to the selected passage.")),
         );
     }

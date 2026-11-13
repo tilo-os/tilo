@@ -85,7 +85,6 @@ pub fn parse_size(text: &str) -> Result<u64> {
 pub struct Sections {
     /// Machine code (`.text` and friends).
     pub code: u64,
-    /// Constants, strings and unwind tables.
     pub read_only: u64,
     /// Symbol tables, relocations and the GOT: the cost of dynamic linking.
     pub linking: u64,
@@ -161,10 +160,8 @@ pub struct PayloadFile {
     pub sections: Option<Sections>,
 }
 
-/// Where a package's bytes go, and whether they fit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SizeReport {
-    /// Largest first.
     pub files: Vec<PayloadFile>,
     pub archive: u64,
     pub limit: u64,
@@ -218,7 +215,6 @@ impl SizeReport {
         })
     }
 
-    /// Every ceiling the package exceeds, as sentences.
     #[must_use]
     pub fn overruns(&self) -> Vec<String> {
         let mut overruns = Vec::new();
@@ -248,7 +244,6 @@ impl SizeReport {
         overruns
     }
 
-    /// A few lines for the terminal.
     #[must_use]
     pub fn render(&self) -> String {
         let mut text = String::from("[tilo-app] size");

@@ -1,31 +1,13 @@
-//! The audio graph client: enumerate the PipeWire/WirePlumber node graph, move
-//! a single application's stream between output devices, adjust per-stream
-//! volume/mute, switch the default device, and diff two enumerations to react
-//! to hotplug.
+//! The audio graph client: enumerate the `PipeWire`/`WirePlumber` node graph,
+//! move one application's stream between output devices, set per-stream volume and
+//! mute, switch the default device, and diff two enumerations to react to hotplug.
 //!
-//! ## Implementation
-//!
-//! Enumeration reads `pw-dump` (the graph as JSON), routing writes the
-//! `WirePlumber` `target.object` metadata via `pw-metadata`, and per-node
-//! volume/mute + the default device go through `wpctl`. Every one of those is
-//! the native `PipeWire` path, reached through the daemon's command-line tools
-//! rather than by linking `libpipewire-0.3`. This keeps the crate buildable
-//! without `PipeWire` development headers; the tools are needed at runtime. On a
-//! machine with no `PipeWire`, the enumerator returns an empty graph.
-//!
-//! ## The routing mechanism
-//!
-//! `WirePlumber` exposes "moving streams" as metadata on the `default` metadata
-//! store: setting the key `target.object` on a stream node's id to a target
-//! device's `object.serial` relinks the stream to that device; deleting the key
-//! returns the stream to following the default device. This is what
-//! `linking.allow-moving-streams` gates, and what the settings pane drives so
-//! the music app can play to the headphones while the browser stays on the
-//! speakers.
-//!
-//! Parsing, command construction, and hotplug diff are pure functions. The
-//! shelling-out [`RealGraphControl`] and [`RealEnumerator`] implementations
-//! invoke the command-line tools.
+//! Enumeration reads `pw-dump`, routing writes `WirePlumber`'s `target.object`
+//! metadata through `pw-metadata`, and per-node volume, mute and the default device
+//! go through `wpctl`: the daemon's tools rather than a link to `libpipewire-0.3`,
+//! so the crate builds without `PipeWire` headers. Setting `target.object` on a
+//! stream's id to a device's `object.serial` relinks the stream, and deleting the
+//! key returns it to the default device; `linking.allow-moving-streams` gates it.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::process::Command;
@@ -42,46 +24,33 @@ pub mod group_tap;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod record;
 
-/// How long one `wpctl`/`pw-metadata` change may take.
 #[cfg(not(target_arch = "wasm32"))]
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// `node.name` of the private sink a speaker group plays from while it is
-/// this device's output (the shell's speaker-group tap). It is how a set is
-/// played, never an output of its own: Sound lists the set instead.
+// `node.name` of the private sink a speaker group plays from while it is this
+// device's output. It is how a set is played, never an output of its own: Sound
+// lists the set instead.
 pub const SPEAKER_GROUP_SINK: &str = "tilo-speaker-group";
 
-/// `node.name` of the software sink a session without sound hardware plays
-/// through. It carries no device's name, so the surfaces that list outputs
-/// name it themselves.
+// `node.name` of the software sink a session without sound hardware plays through.
+// It carries no device's name, so the surfaces that list outputs name it
+// themselves.
 pub const SESSION_SINK: &str = "tilo-sink";
 
-/// A sink (output) or source (input) device in the audio graph.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioDevice {
-    /// `PipeWire` node id — the handle `wpctl set-default <id>` takes.
     pub id: u32,
-    /// `object.serial` — the stable handle stream routing (`target.object`)
-    /// takes. Distinct from `id`: a device keeps its `node.name` across a
-    /// hotplug cycle but is assigned a fresh serial each time it appears.
     pub serial: u32,
-    /// `node.name` — the machine identifier the default-device metadata stores
-    /// (e.g. `alsa_output.pci-0000_66_00.6.analog-stereo`).
     pub name: String,
-    /// Human-readable label (`node.nick`, else `node.description`, else
-    /// `node.name`).
     pub description: String,
-    /// Whether this device is the current system default for its class.
     pub is_default: bool,
-    /// Perceptual volume in `0.0..=1.0` (the cube root of the raw linear
-    /// channel volume, matching what `wpctl` displays), if known.
     pub volume: Option<f32>,
     pub muted: Option<bool>,
-    /// Number of channels reported by Props.channelVolumes. Balance and
-    /// channel-test controls must not appear unless this is at least two.
+    // From Props.channelVolumes; balance and channel-test controls must not appear
+    // below two.
     pub channels: usize,
-    /// Active Bluetooth codec when the `PipeWire` `BlueZ` node advertises it.
-    /// Informational: codec selection is exposed only through available profiles.
+    // The active Bluetooth codec, when the `PipeWire` `BlueZ` node advertises it.
+    // Informational: codec selection is exposed only through available profiles.
     pub codec: Option<String>,
 }
 
@@ -93,8 +62,6 @@ pub struct DeviceProfile {
     pub available: bool,
 }
 
-/// A `PipeWire` Device (sound card / Bluetooth transport) and the profiles the
-/// daemon says can actually be selected with `wpctl set-profile`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioHardwareDevice {
     pub id: u32,
@@ -103,24 +70,13 @@ pub struct AudioHardwareDevice {
     pub profiles: Vec<DeviceProfile>,
 }
 
-/// A per-application stream node (one app's playback or capture).
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioStream {
-    /// `PipeWire` node id — the handle routing / `wpctl set-volume|set-mute`
-    /// take.
     pub id: u32,
     pub serial: u32,
-    /// Best-effort application label (`application.name`, falling back to
-    /// `node.name`).
     pub app: String,
-    /// What the stream is playing, when the app advertised it (`media.name`).
     pub media_name: Option<String>,
-    /// `true` for a playback stream (`Stream/Output/Audio`, feeds a sink),
-    /// `false` for a capture stream (`Stream/Input/Audio`, reads a source).
     pub playback: bool,
-    /// The device node id this stream is currently linked to, if any — a
-    /// playback stream's sink, or a capture stream's source. Derived from the
-    /// graph's `Link` objects.
     pub target_id: Option<u32>,
     pub volume: Option<f32>,
     pub muted: Option<bool>,
@@ -137,7 +93,6 @@ impl AudioStream {
     }
 }
 
-/// The enumerated audio graph: devices and per-application streams.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AudioGraph {
     pub sinks: Vec<AudioDevice>,
@@ -148,7 +103,6 @@ pub struct AudioGraph {
 }
 
 impl AudioGraph {
-    /// The current default sink, if the graph advertised one.
     pub fn default_sink(&self) -> Option<&AudioDevice> {
         self.sinks.iter().find(|d| d.is_default)
     }
@@ -158,17 +112,14 @@ impl AudioGraph {
     pub fn sink_by_id(&self, id: u32) -> Option<&AudioDevice> {
         self.sinks.iter().find(|d| d.id == id)
     }
-    /// A sink by human description (the label the picker shows).
     pub fn sink_by_description(&self, desc: &str) -> Option<&AudioDevice> {
         self.sinks.iter().find(|d| d.description == desc)
     }
 
-    /// A stable, cheap fingerprint of the graph's *topology* — the set of
-    /// devices (by name) and streams (by id+app) present — deliberately
-    /// excluding volume/mute so a volume drift does not read as a structural
-    /// change. Two enumerations with the same signature carry the same rows,
-    /// so the UI need not rebuild; a different signature means a device or app
-    /// appeared or disappeared (hotplug / a stream started or stopped).
+    /// A cheap fingerprint of the graph's topology — devices by name, streams by id
+    /// and app — deliberately excluding volume and mute, so a volume drift is not a
+    /// structural change. Equal signatures mean the UI need not rebuild; a different
+    /// one means a device or app appeared or went.
     pub fn topology_signature(&self) -> String {
         let dev = |ds: &[AudioDevice]| {
             ds.iter()
@@ -196,10 +147,6 @@ impl AudioGraph {
         )
     }
 
-    /// Diff two enumerations into the devices that appeared and disappeared —
-    /// the hotplug delta a caller reacts to (offer the new headset, drop the
-    /// unplugged one). Identity is `node.name`, which is stable for the same
-    /// physical device across an unplug/replug.
     pub fn diff(old: &AudioGraph, new: &AudioGraph) -> GraphDelta {
         let by_name = |ds: &[AudioDevice]| ds.iter().map(|d| d.name.clone()).collect::<Vec<_>>();
         let added = |old: &[AudioDevice], new: &[AudioDevice]| {
@@ -218,7 +165,6 @@ impl AudioGraph {
     }
 }
 
-/// The device add/remove delta between two [`AudioGraph`] enumerations.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GraphDelta {
     pub added_sinks: Vec<AudioDevice>,
@@ -228,7 +174,6 @@ pub struct GraphDelta {
 }
 
 impl GraphDelta {
-    /// Whether any device appeared or disappeared.
     pub fn is_empty(&self) -> bool {
         self.added_sinks.is_empty()
             && self.removed_sinks.is_empty()
@@ -237,41 +182,27 @@ impl GraphDelta {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Parsing `pw-dump`
-// ---------------------------------------------------------------------------
-
-/// Coerce a JSON value that `PipeWire` renders as a bare number (sometimes a
-/// string) into a `u32` node id / serial.
 fn as_u32(v: &Value) -> Option<u32> {
     v.as_u64()
         .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
         .and_then(|n| u32::try_from(n).ok())
 }
 
-/// The perceptual volume `wpctl` shows is the cube root of `PipeWire`'s raw
-/// linear channel volume; invert that so an enumerated `channelVolumes` matches
-/// the slider position a user set. `wpctl set-volume` takes the perceptual
-/// value back, so the round trip is exact.
+/// `wpctl` shows the cube root of `PipeWire`'s raw linear channel volume; invert
+/// that so an enumerated `channelVolumes` matches the slider position a user set.
+/// `wpctl set-volume` takes the perceptual value back, so the round trip is exact.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "a cube-root perceptual volume is a small, near-1.0 ratio; f32's \
               range is never at risk"
 )]
 fn perceptual_from_channel_volumes(cv: &[f64]) -> Option<f32> {
-    // Treat the loudest channel as the device's base volume. Reading the
-    // first channel made a right-balanced sink appear quieter on every graph
-    // refresh; a persistent balance policy would then attenuate it again and
-    // again. Pulse/WirePlumber likewise expose the loud side as the overall
-    // volume while balance describes the channel ratio.
     cv.iter()
         .copied()
         .reduce(f64::max)
         .map(|v| (v.max(0.0)).cbrt() as f32)
 }
 
-/// Read a node's first `Props` param that carries channel volumes, yielding
-/// `(perceptual_volume, muted)`.
 fn node_volume_mute(obj: &Value) -> (Option<f32>, Option<bool>) {
     let props = obj
         .get("info")
@@ -304,11 +235,10 @@ fn node_channel_count(obj: &Value) -> usize {
         .map_or(0, Vec::len)
 }
 
-/// Parse a `pw-dump` JSON document into an [`AudioGraph`]. Robust against the
-/// surrounding graph: it reads the default-device metadata, the `Link` objects
-/// (to resolve where each stream is actually routed), and the audio `Node`s,
-/// ignoring video, MIDI, clients, ports, factories and the rest. An empty or
-/// malformed document yields an empty graph — never fabricated entries.
+/// Parse a `pw-dump` JSON document into an [`AudioGraph`]: the default-device
+/// metadata, the `Link` objects (where each stream is routed) and the audio
+/// `Node`s, ignoring video, MIDI, clients, ports and factories. An empty or
+/// malformed document yields an empty graph.
 pub fn parse_pw_dump(json: &str) -> AudioGraph {
     let root: Value = serde_json::from_str(json).unwrap_or(Value::Null);
     let objs = root.as_array().cloned().unwrap_or_default();
@@ -322,7 +252,6 @@ pub fn parse_pw_dump(json: &str) -> AudioGraph {
     )
 }
 
-/// Pass 1 — the default sink/source node names from the "default" metadata.
 fn default_device_names(objs: &[Value]) -> (Option<String>, Option<String>) {
     let mut default_sink_name: Option<String> = None;
     let mut default_source_name: Option<String> = None;
@@ -347,9 +276,6 @@ fn default_device_names(objs: &[Value]) -> (Option<String>, Option<String>) {
     (default_sink_name, default_source_name)
 }
 
-/// Pass 2 — the links, as (output.node, input.node) pairs. A playback
-/// stream's output links into its sink; a capture stream's input links from
-/// its source.
 fn collect_links(objs: &[Value]) -> Vec<(u32, u32)> {
     let mut links: Vec<(u32, u32)> = Vec::new();
     for o in objs {
@@ -370,8 +296,6 @@ fn collect_links(objs: &[Value]) -> Vec<(u32, u32)> {
     links
 }
 
-/// Pass 3 — the audio nodes: sinks, sources, and streams (plus hardware
-/// Devices, for their selectable profiles).
 fn build_graph(
     objs: &[Value],
     links: &[(u32, u32)],
@@ -402,8 +326,6 @@ fn build_graph(
     graph
 }
 
-/// Parse one `PipeWire:Interface:Device` object into its selectable-profile
-/// summary. `None` when it carries no usable id.
 fn parse_hardware_device(o: &Value) -> Option<AudioHardwareDevice> {
     let id = o.get("id").and_then(as_u32)?;
     let props = o.get("info").and_then(|i| i.get("props"));
@@ -459,17 +381,10 @@ fn parse_hardware_device(o: &Value) -> Option<AudioHardwareDevice> {
     })
 }
 
-/// `node.name` prefix of every node the session's echo-cancellation client
-/// creates (os/usr/share/pipewire/tilo-echo-cancel.conf).
 pub const ECHO_CANCEL_NODE_PREFIX: &str = "tilo_echo_cancel_";
 
-/// The echo-cancelled microphone calls are routed to.
 pub const ECHO_CANCEL_SOURCE_NAME: &str = "tilo_echo_cancel_source";
 
-/// Parse one audio `Node` object and push it into `graph` as a device
-/// (sink/source) or a stream (playback/record), whichever `media.class` says
-/// it is. Ignored (no push) when it carries no usable id or an unrecognised
-/// `media.class`.
 fn push_node(
     o: &Value,
     links: &[(u32, u32)],
@@ -483,8 +398,8 @@ fn push_node(
     let props = o.get("info").and_then(|i| i.get("props"));
     let getp = |k: &str| props.and_then(|p| p.get(k));
     let media_class = getp("media.class").and_then(|v| v.as_str()).unwrap_or("");
-    // Serial is a PipeWire object identity; a reusable node id is not a substitute.
-    // The public graph currently supports u32 serials. Larger values are omitted.
+    // Serial is a `PipeWire` object identity; a reusable node id is not a
+    // substitute. Values above `u32` are omitted.
     let Some(serial) = getp("object.serial").and_then(as_u32) else {
         return;
     };
@@ -493,8 +408,8 @@ fn push_node(
         .unwrap_or("")
         .to_string();
     // The echo-cancelled microphone and its internal streams are a session
-    // transform over the real devices, not a device or an app: listing them
-    // would offer a microphone that records itself as the default.
+    // transform over the real devices, not a device or an app: listing them would
+    // offer a microphone that records itself as the default.
     if name.starts_with(ECHO_CANCEL_NODE_PREFIX) {
         return;
     }
@@ -502,8 +417,6 @@ fn push_node(
 
     match media_class {
         "Audio/Sink" | "Audio/Source" => {
-            // The short name a device gives itself, else its fuller
-            // description, else its machine name.
             let description = ["node.nick", "node.description"]
                 .iter()
                 .find_map(|key| {
@@ -549,8 +462,6 @@ fn push_node(
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(str::to_string);
-            // A playback stream links out→sink; a capture stream links
-            // source→in. Resolve the device end accordingly.
             let target_id = if playback {
                 links
                     .iter()
@@ -582,20 +493,14 @@ fn push_node(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Command construction (pure) + the shelling-out production impls
-// ---------------------------------------------------------------------------
-
-/// `wpctl set-default <id>` — switch the default sink or source. The default
-/// metadata records the device's `node.name`, so a stream following the default
-/// follows the switch.
+/// `wpctl set-default <id>`. The default metadata records the device's
+/// `node.name`, so a stream following the default follows the switch.
 pub fn wpctl_set_default_args(node_id: u32) -> Vec<String> {
     vec!["set-default".into(), node_id.to_string()]
 }
 
-/// `pw-metadata -n default <stream-id> target.object <serial>` — move a stream
-/// node to a specific device. `WirePlumber` observes the metadata and relinks the
-/// stream, so this is the real graph edit, not a display hint.
+/// `pw-metadata -n default <stream-id> target.object <serial>`: `WirePlumber` sees
+/// the metadata and relinks the stream, so this is the real graph edit.
 pub fn pw_metadata_route_args(stream_id: u32, target_serial: u32) -> Vec<String> {
     vec![
         "-n".into(),
@@ -606,8 +511,8 @@ pub fn pw_metadata_route_args(stream_id: u32, target_serial: u32) -> Vec<String>
     ]
 }
 
-/// `pw-metadata -n default -d <stream-id> target.object` — clear a stream's
-/// explicit target so it follows the default device again.
+/// `pw-metadata -n default -d <stream-id> target.object`: clear a stream's explicit
+/// target so it follows the default device again.
 pub fn pw_metadata_unroute_args(stream_id: u32) -> Vec<String> {
     vec![
         "-n".into(),
@@ -618,9 +523,6 @@ pub fn pw_metadata_unroute_args(stream_id: u32) -> Vec<String> {
     ]
 }
 
-/// `wpctl set-volume <id> <fraction>` — set any node's (device *or* stream)
-/// perceptual volume. Taking a node id is what makes per-application volume
-/// possible: the same call that sets the sink's volume sets one app's.
 pub fn wpctl_set_volume_args(node_id: u32, perceptual: f32) -> Vec<String> {
     let frac = perceptual.clamp(0.0, 1.5); // wpctl allows >1.0 (boost); cap sanely
     vec![
@@ -630,7 +532,6 @@ pub fn wpctl_set_volume_args(node_id: u32, perceptual: f32) -> Vec<String> {
     ]
 }
 
-/// `wpctl set-mute <id> 1|0` — mute/unmute any node.
 pub fn wpctl_set_mute_args(node_id: u32, muted: bool) -> Vec<String> {
     vec![
         "set-mute".into(),
@@ -647,27 +548,19 @@ pub fn wpctl_set_profile_args(device_id: u32, profile_index: u32) -> Vec<String>
     ]
 }
 
-/// Side-effect interface for editing the audio graph. The production impl
-/// ([`RealGraphControl`]) shells out to `wpctl` / `pw-metadata`; tests inject a
-/// recorder so the settings pane's dispatch can be asserted without a daemon.
+/// Side-effect interface for editing the audio graph. Production
+/// ([`RealGraphControl`]) shells out to `wpctl` and `pw-metadata`; tests inject a
+/// recorder, so the settings pane's dispatch can be asserted without a daemon.
 pub trait GraphControl: Send + Sync {
-    /// Switch the default sink (output).
     fn set_default_sink(&self, node_id: u32) -> Result<(), String>;
-    /// Switch the default source (input).
     fn set_default_source(&self, node_id: u32) -> Result<(), String>;
-    /// Route a stream node to a device by the device's `object.serial`.
     fn route_stream(&self, stream_id: u32, target_serial: u32) -> Result<(), String>;
-    /// Clear a stream's explicit target (follow the default device).
     fn unroute_stream(&self, stream_id: u32) -> Result<(), String>;
-    /// Set a node's perceptual volume (`0.0..=1.0`).
     fn set_node_volume(&self, node_id: u32, perceptual: f32) -> Result<(), String>;
     fn set_node_mute(&self, node_id: u32, muted: bool) -> Result<(), String>;
-    /// Switch a hardware device to one of its enumerated profiles.
     fn set_device_profile(&self, device_id: u32, profile_index: u32) -> Result<(), String>;
 }
 
-/// Run `bin` with `args`, mapping a missing binary or non-zero exit to the
-/// daemon's error string — the same best-effort shape `os_actions` uses.
 #[cfg(not(target_arch = "wasm32"))]
 fn run(bin: &str, args: &[String]) -> Result<(), String> {
     let mut command = Command::new(bin);
@@ -686,16 +579,14 @@ fn run(_: &str, _: &[String]) -> Result<(), String> {
     Err("PipeWire audio graph control is unsupported on this platform".to_owned())
 }
 
-/// `pw-dump --monitor`, running in a process tree of its own: it prints each
-/// change to the graph as one JSON array on the stdout [`Self::start`] hands
-/// back, for as long as it runs. Dropping it kills the whole tree and reaps it,
-/// so a reader that goes away leaves no `pw-dump` behind.
+/// `pw-dump --monitor` in a process tree of its own: each change to the graph as
+/// one JSON array on the stdout [`Self::start`] hands back. Dropping it kills and
+/// reaps the tree, so a reader that goes away leaves no `pw-dump` behind.
 pub struct GraphMonitorProcess {
     child: std::process::Child,
 }
 
 impl GraphMonitorProcess {
-    /// Start it; `None` when `pw-dump` cannot run here.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn start() -> Option<(Self, std::process::ChildStdout)> {
         use std::process::Stdio;
@@ -715,7 +606,6 @@ impl GraphMonitorProcess {
         Some((Self { child }, stdout))
     }
 
-    /// No `PipeWire` here.
     #[cfg(target_arch = "wasm32")]
     pub fn start() -> Option<(Self, std::process::ChildStdout)> {
         None
@@ -730,8 +620,6 @@ impl Drop for GraphMonitorProcess {
     }
 }
 
-/// Production [`GraphControl`]: `wpctl` for defaults + per-node volume/mute,
-/// `pw-metadata` for stream routing.
 pub struct RealGraphControl;
 
 impl GraphControl for RealGraphControl {
@@ -762,7 +650,7 @@ impl GraphControl for RealGraphControl {
 }
 
 /// A no-op [`GraphControl`] for contexts with no daemon to drive (a `--shots`
-/// render, or a test that only exercises composition). Records nothing.
+/// render, or a test that only exercises composition).
 pub struct NoopGraphControl;
 
 impl GraphControl for NoopGraphControl {
@@ -789,16 +677,16 @@ impl GraphControl for NoopGraphControl {
     }
 }
 
-/// Source of a fresh [`AudioGraph`] snapshot. The production impl
-/// ([`RealEnumerator`]) shells `pw-dump`; a test injects a scripted sequence so
-/// the hotplug path can be driven deterministically.
+/// Source of a fresh [`AudioGraph`]. Production ([`RealEnumerator`]) shells
+/// `pw-dump`; a test injects a scripted sequence, so the hotplug path can be driven
+/// deterministically.
 pub trait AudioEnumerator: Send + Sync {
     fn enumerate(&self) -> AudioGraph;
 }
 
-/// Production [`AudioEnumerator`]: `pw-dump` → [`parse_pw_dump`]. Returns an
-/// empty graph when `pw-dump` is missing or fails, so a host with no `PipeWire`
-/// shows nothing rather than fabricated devices.
+/// Production [`AudioEnumerator`]: `pw-dump` → [`parse_pw_dump`]. Empty when
+/// `pw-dump` is missing or fails, so a host with no `PipeWire` shows nothing rather
+/// than fabricated devices.
 pub struct RealEnumerator;
 
 impl AudioEnumerator for RealEnumerator {
@@ -807,29 +695,22 @@ impl AudioEnumerator for RealEnumerator {
     }
 }
 
-/// Convenience: enumerate the live graph once via [`RealEnumerator`].
 pub fn enumerate() -> AudioGraph {
     RealEnumerator.enumerate()
 }
 
-/// Read the live graph once with `pw-dump`, telling a read that failed apart
-/// from a graph with no devices in it.
+/// Read the live graph once with `pw-dump`, telling a read that failed apart from a
+/// graph with no devices in it.
 ///
 /// # Errors
 ///
-/// When `pw-dump` cannot run here, exits unsuccessfully, prints more than a
-/// graph can hold or does not finish in time.
+/// When `pw-dump` cannot run here, exits unsuccessfully, prints more than a graph
+/// can hold, or does not finish in time.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn try_enumerate() -> Result<AudioGraph, String> {
     dump().map(|json| parse_pw_dump(&json))
 }
 
-/// The live graph and the streams using the camera or the microphone, from
-/// one `pw-dump`: a reader that shows both pays one process for them.
-///
-/// # Errors
-///
-/// As [`try_enumerate`].
 #[cfg(not(target_arch = "wasm32"))]
 pub fn try_read() -> Result<(AudioGraph, Vec<capture::MediaUse>), String> {
     let json = dump()?;
@@ -858,13 +739,11 @@ pub fn dump() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// There is no audio graph to read on this target.
 #[cfg(target_arch = "wasm32")]
 pub fn try_enumerate() -> Result<AudioGraph, String> {
     Err("there is no audio graph on this target".into())
 }
 
-/// Shorthand for the boxed control the settings pane holds.
 pub fn real_control() -> Arc<dyn GraphControl> {
     Arc::new(RealGraphControl)
 }
@@ -930,13 +809,10 @@ mod tests {
                 .find(|s| s.app == "LibreWolf")
                 .expect("librewolf");
             assert!(lw.playback);
-            // LibreWolf is linked to the default sink (node 51).
             assert_eq!(lw.target_id, Some(51));
             assert!(lw.media_name.as_deref().unwrap().contains("YouTube"));
             assert!(lw.label().contains("LibreWolf — "));
 
-            // pw-play was explicitly moved onto the Headphones sink (node 91) — the
-            // per-app routing this feature exists to do, read back from the graph.
             let pw = g
                 .playback_streams
                 .iter()
@@ -950,8 +826,6 @@ mod tests {
         }
         {
             let g = parse_pw_dump(FIXTURE);
-            // The pw-play stream's raw channelVolumes were 0.125; cube root is
-            // exactly 0.5 — the perceptual value wpctl shows and set-volume takes.
             let pw = g
                 .playback_streams
                 .iter()
@@ -971,9 +845,8 @@ mod tests {
         }
         {
             let before = parse_pw_dump(FIXTURE);
-            // Drop the Headphones sink → simulate an unplug; the graph now has one
-            // sink. Reparse a fixture without node 91 by filtering the string is
-            // awkward, so build the "after" graph by hand from `before`.
+            // Drop the Headphones sink, as an unplug would. The "after" graph is built by
+            // hand from `before`, since filtering the fixture string is awkward.
             let mut after = before.clone();
             after.sinks.retain(|d| d.description != "Headphones");
             let delta = AudioGraph::diff(&before, &after);
@@ -981,7 +854,6 @@ mod tests {
             assert_eq!(delta.removed_sinks[0].description, "Headphones");
             assert!(delta.added_sinks.is_empty());
 
-            // And the reverse — replug — reports it as added.
             let replug = AudioGraph::diff(&after, &before);
             assert_eq!(replug.added_sinks.len(), 1);
             assert_eq!(replug.added_sinks[0].description, "Headphones");
@@ -1014,20 +886,11 @@ mod tests {
         }
     }
 
-    /// A faithful, trimmed capture of a real `pw-dump` from a running
-    /// `PipeWire` 1.6 / `WirePlumber` host: two sinks (the built-in analog stereo,
-    /// default; and a second "Headphones" device), the default source, and two
-    /// playback streams — `LibreWolf` following the default sink, and a `pw-play`
-    /// stream that was moved onto the Headphones sink via `target.object`. The
-    /// field shapes (`media.class`, `object.serial`, `Link` props,
-    /// `info.params.Props[].channelVolumes`/`mute`, the default metadata) are
-    /// exactly as `pw-dump` emits them.
     const FIXTURE: &str = include_str!("audio_pw_dump_fixture.json");
 
     #[test]
     fn audio_control_args_target_the_right_keys() {
         {
-            // Moving stream 84 to a sink whose object.serial is 269.
             assert_eq!(
                 pw_metadata_route_args(84, 269),
                 vec!["-n", "default", "84", "target.object", "269"],

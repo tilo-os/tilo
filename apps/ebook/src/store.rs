@@ -15,8 +15,13 @@ use crate::search_provider::AUTHOR_FACET;
 /// The type of a book in the store's answers.
 pub(crate) const STORE_BOOK: &str = "books.store-book";
 
-/// What the store's section is called.
-pub(crate) const STORE_LABEL: &str = "Project Gutenberg";
+/// The catalogue message naming the store's section.
+pub(crate) const STORE_LABEL: &str = "ebook-store-name";
+
+/// The store's name, as a window paints it.
+fn store_name() -> String {
+    crate::resource::CATALOG.t(STORE_LABEL)
+}
 
 /// Where the catalogue is searched.
 const SEARCH_URL: &str = "https://www.gutenberg.org/ebooks/search.opds/";
@@ -126,7 +131,10 @@ pub(crate) fn fetch(url: &str, query: &[(&str, &str)], limit: usize) -> Result<V
 /// Why a book did not arrive from the store: it could not be reached, so
 /// trying again once online is the way on.
 pub(crate) fn unreachable_message() -> String {
-    format!("Couldn\u{2019}t get the book from {STORE_LABEL}. Try again when you\u{2019}re online.")
+    format!(
+        "Couldn\u{2019}t get the book from {}. Try again when you\u{2019}re online.",
+        store_name()
+    )
 }
 
 /// Fetch catalogue book `url` into `path`, unless an earlier fetch left it
@@ -241,7 +249,7 @@ impl RemoteSource for Gutenberg {
     }
 
     fn label(&self) -> String {
-        STORE_LABEL.into()
+        store_name()
     }
 
     fn accepts(&self, query: &QuerySpec) -> bool {
@@ -279,7 +287,10 @@ impl RemoteSource for Gutenberg {
         let body =
             fetch(SEARCH_URL, &[("query", words.as_str())], MAX_PAGE_BYTES).map_err(|error| {
                 tracing::debug!(%error, "books: the store did not answer");
-                RemoteError(format!("{STORE_LABEL} can\u{2019}t be reached right now."))
+                RemoteError(format!(
+                    "{} can\u{2019}t be reached right now.",
+                    store_name()
+                ))
             })?;
         if cancel.is_cancelled() {
             return Ok(());
@@ -323,7 +334,7 @@ impl RemoteSource for SampleStore {
     }
 
     fn label(&self) -> String {
-        STORE_LABEL.into()
+        store_name()
     }
 
     fn accepts(&self, query: &QuerySpec) -> bool {

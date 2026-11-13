@@ -49,6 +49,19 @@ impl PageErrors {
         let Ok(error) = PageError::parse(body) else {
             return;
         };
+        // A page that stopped on its failure screen: what it told the
+        // person, and the host it could not open the workspace at.
+        if error.kind() == "failed" {
+            tracing::warn!(
+                workspace = ?cut(workspace),
+                cause = ?cut(&error.message),
+                host = ?cut(&error.source),
+                page = ?cut(&error.page),
+                build = ?cut(&error.build),
+                "a page could not open its workspace",
+            );
+            return;
+        }
         // Debug formatting: a page's message is text a field cannot break
         // the line with.
         tracing::warn!(
@@ -150,6 +163,29 @@ mod tests {
             "page=\"/\"",
             "build=\"7\"",
             "line=12",
+        ] {
+            assert!(lines[0].contains(said), "no {said} in {line}");
+        }
+    }
+
+    #[test]
+    fn a_page_that_stopped_says_its_cause_and_the_host_it_could_not_reach() {
+        let failed = serde_json::json!({
+            "kind": "failed", "message": "unreachable: TypeError: Failed to fetch",
+            "source": "https://127.0.0.1:24100", "page": "/", "build": "7",
+        })
+        .to_string()
+        .into_bytes();
+        let line = logged(|reports| reports.report("coffee", &failed));
+        let lines: Vec<&str> = line.lines().collect();
+        assert_eq!(lines.len(), 1, "{line}");
+        for said in [
+            "WARN",
+            "a page could not open its workspace",
+            "workspace=\"coffee\"",
+            "cause=\"unreachable: TypeError: Failed to fetch\"",
+            "host=\"https://127.0.0.1:24100\"",
+            "build=\"7\"",
         ] {
             assert!(lines[0].contains(said), "no {said} in {line}");
         }

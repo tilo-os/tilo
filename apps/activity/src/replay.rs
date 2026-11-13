@@ -186,17 +186,13 @@ fn frame_view(frame: &wire::Frame, index: usize, total: usize, note: Option<&str
         &[
             ("position", index.saturating_add(1).into()),
             ("total", total.into()),
-            ("when", ago(frame.at_ms).into()),
         ],
     );
-    let mut parts: Vec<Element> = vec![Box::new(Section::titled(
-        position,
-        vec![Box::new(
-            ListRow::new("activity-replay-change", frame.summary.clone())
-                .subtitle(frame.author.name.clone())
-                .avatar(frame.author.name.clone(), frame.author.identity.clone()),
-        )],
-    ))];
+    let mut row = ListRow::new("activity-replay-change", frame.summary.clone())
+        .subtitle(ui::wire_author_line(&frame.author))
+        .meta(ago(frame.at_ms));
+    row = ui::author_face(row, &frame.author);
+    let mut parts: Vec<Element> = vec![Box::new(Section::titled(position, vec![Box::new(row)]))];
     if frame.workspaces.is_empty() {
         parts.push(Box::new(
             EmptyState::new(tr("activity-replay-no-workspace")).with_id("activity-replay-gone"),

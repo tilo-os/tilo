@@ -1,6 +1,6 @@
-//! Session-owned public Mesa shaders, copied into each app's private cache.
-//! A seed is an optional optimization: malformed or incompatible bytes never
-//! make an app launch fail. The driver still selects its own identity namespace.
+//! Session-owned public Mesa shaders, copied into each app's private cache. A seed is
+//! an optional optimization: malformed or incompatible bytes never make an app launch
+//! fail.
 
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
@@ -149,8 +149,7 @@ fn readonly_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     std::fs::set_permissions(path, permissions)
 }
 
-/// Publish bounded completed public shader archives. The input is the trusted
-/// renderer's private single-file cache, never an application's writable cache.
+/// Publish bounded completed public shader archives.
 pub fn publish(cache: &Path, root: &Path, fingerprint: &str) -> io::Result<()> {
     std::fs::create_dir_all(root)?;
     directory(root)?;
@@ -213,7 +212,6 @@ pub fn publish(cache: &Path, root: &Path, fingerprint: &str) -> io::Result<()> {
 
 fn replace(stage: &tempfile::TempDir, target: &Path) -> io::Result<()> {
     // An interrupted replacement is a cold-cache fallback, never a launch error.
-    // Only this dedicated seed directory is replaced; normal writable caches stay.
     if target.exists() || target.is_symlink() {
         if target.symlink_metadata()?.is_dir() {
             std::fs::remove_dir_all(target)?;
@@ -225,9 +223,7 @@ fn replace(stage: &tempfile::TempDir, target: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Copy a verified seed generation into the normal size-limited private Mesa
-/// cache. Archives from another Mesa/LLVM/CPU/device namespace remain unused by
-/// Mesa, which compiles the missing shaders normally.
+/// Copy a verified seed generation into the normal size-limited private Mesa cache.
 pub fn prepare(source: &Path, private: &Path) -> io::Result<()> {
     let (manifest, files) = load(source)?;
     std::fs::create_dir_all(private)?;
@@ -274,8 +270,7 @@ pub fn prepare(source: &Path, private: &Path) -> io::Result<()> {
     replace(&stage, &private.join("mesa_shader_cache_sf"))
 }
 
-/// Refresh the existing session's read-only seed from its validated persistent
-/// public archive. This does not copy any user's scenes or private app data.
+/// Refresh the existing session's read-only seed from its validated persistent public archive.
 pub fn restore(source: &Path, session: &Path) -> io::Result<()> {
     let (manifest, files) = load(source)?;
     std::fs::create_dir_all(session)?;

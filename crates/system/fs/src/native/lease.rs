@@ -1,33 +1,17 @@
-//! Single-writer leases for files modified in place (`storage.md` §11.2).
+//! Single-writer leases for files modified in place.
 //!
-//! A file becomes lease-class the first time it is modified in place: its
-//! inode survives the change and the new version keeps some of the previous
-//! one's bytes where they were, in shared extents or, for a small file whose
-//! every block was rewritten, in identical sectors ([`kept_bytes_in_place`]):
-//! a write inside the file, not a truncate-and-rewrite or a
-//! replace-by-rename. Detection is behavioural and knows no file types.
-//!
-//! The lease itself lives in the namespace (`crate::namespace::WriteLease`),
-//! so every device sees who holds it in causal order with the file's
-//! changes. On this device:
-//!
-//! - a lease-class file whose lease nobody holds is gated with
-//!   [`WriteGate::Ask`]: the first write of a session acquires the lease
-//!   before it proceeds, and the gate is then lifted so the holder's I/O
-//!   raises no events;
-//! - a file whose live lease another device holds is gated with
-//!   `WriteGate::Deny(EBUSY)`: readers read, a writer gets `EBUSY`;
-//! - a held lease is renewed while the file is being written and released
-//!   shortly after the last write — never before the versions written
-//!   under it are published — which hands it to the next writer; a device
-//!   that goes offline loses it when it expires;
-//! - a free lease comes from the workspace's lease authority (its always-on
-//!   host) when one is reachable, so two devices asking at once get one
-//!   answer; unreachable, the writer takes it optimistically, and a granted
-//!   tenancy of the same epoch wins over it;
-//! - every version written under a lease is tagged with its tenancy
-//!   ([`crate::namespace::VersionFence`]), so a version from an epoch its
-//!   author did not hold never replaces the holder's.
+//! A file becomes lease-class the first time it is modified in place: the new
+//! version keeps some of the previous one's bytes where they were, in shared
+//! extents or, for a small file whose every block was rewritten, in identical
+//! sectors ([`kept_bytes_in_place`]). The lease lives in the namespace
+//! (`crate::namespace::WriteLease`), so every device sees who holds it in causal
+//! order with the file's changes. On this device a lease nobody holds is gated with
+//! [`WriteGate::Ask`] and the first write acquires it; a lease another device holds
+//! gates the file with `WriteGate::Deny(EBUSY)`; a held lease is renewed while the
+//! file is written and released after the last write, once the versions under it
+//! are published. Every version written under a lease is tagged with its tenancy
+//! ([`crate::namespace::VersionFence`]), so a version from an epoch its author did
+//! not hold never replaces the holder's.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -43,19 +27,14 @@ use crate::namespace::{VersionFence, WriteLease};
 /// Sector size of the byte comparison in [`kept_bytes_in_place`].
 const SECTOR: usize = 512;
 
-/// Whether `new`, which kept the inode of `old`, overwrote some of `old`'s
-/// bytes and left others where they were: the observable result of a write
-/// inside the file. `changed` is the extent diff of the two (every range
-/// `new` may have rewritten).
+/// Whether `new`, which kept the inode of `old`, overwrote some of `old`'s bytes
+/// and left others where they were. `changed` is the extent diff of the two.
 ///
-/// Shared extents prove this without reading anything, and are the whole
-/// answer for most files. A small file whose every block was rewritten in
-/// place shares none: an update of a two-page `SQLite` database rewrites its
-/// header page (the change counter) and its one table page. For such a file
-/// the rewritten ranges inside the previous size are compared sector by
-/// sector: a sector that holds the same non-zero bytes at the same offset
-/// was kept, and at least one other sector must differ (a rewrite with the
-/// same bytes wrote nothing new). A sector of zeros proves nothing.
+/// Shared extents answer most files without reading. A small file whose every
+/// block was rewritten in place shares none, so its rewritten ranges are compared
+/// sector by sector: a sector holding the same non-zero bytes at the same offset
+/// was kept, and at least one other sector must differ. A sector of zeros proves
+/// nothing.
 pub fn kept_bytes_in_place(
     old: &std::fs::File,
     new: &std::fs::File,
@@ -137,7 +116,6 @@ enum Gate {
 #[derive(Default)]
 pub struct WriteGates {
     by_path: Mutex<HashMap<PathBuf, Gate>>,
-    /// Files gated with `Ask`, by `(st_dev, st_ino)`, with their path.
     asking: Mutex<HashMap<(u64, u64), PathBuf>>,
 }
 
@@ -174,13 +152,10 @@ impl WriteGates {
 
 #[derive(Default)]
 struct Shared {
-    /// Paths whose lease the policy took; the keeper lifts their gates.
     taken: Vec<PathBuf>,
-    /// Paths written under a held lease, with the time of the last write.
     writes: HashMap<PathBuf, Instant>,
 }
 
-/// The [`WritePolicy`] installed on the placeholder hydrator.
 pub struct LeasePolicy {
     fs: Arc<QuickFS>,
     me: [u8; 32],
@@ -236,7 +211,6 @@ impl WritePolicy for LeasePolicy {
     }
 }
 
-/// Keeps gates and held leases in step with the namespace.
 pub struct LeaseKeeper {
     fs: Arc<QuickFS>,
     placeholders: Arc<Placeholders>,
@@ -245,16 +219,13 @@ pub struct LeaseKeeper {
     timing: LeaseTiming,
     shared: Arc<Mutex<Shared>>,
     lease_class: HashSet<PathBuf>,
-    /// Gates in force, with the inode each was placed on: a file replaced
-    /// by a newer version is a new inode and is gated again.
+    /// Gates in force, with the inode each was placed on: a file replaced by a newer
+    /// version is a new inode and is gated again.
     gates: HashMap<PathBuf, (Gate, (u64, u64))>,
     renewed: HashMap<PathBuf, Instant>,
     notified: HashSet<(PathBuf, u64)>,
-    /// The gates, shared with the projector.
     write_gates: Arc<WriteGates>,
-    /// This device arbitrates the workspace's leases.
     authority: bool,
-    /// Lease requests already answered.
     answered: HashSet<(fs_protocol::FileRecordId, [u8; 32], u64)>,
 }
 
@@ -293,14 +264,12 @@ impl LeaseKeeper {
         }
     }
 
-    /// Makes this device the workspace's lease authority.
     pub fn serve_as_authority(&mut self) {
         self.authority = true;
         self.fs.claim_lease_authority(self.me);
         println!("arbitrating write leases for this workspace");
     }
 
-    /// Answers other devices' lease requests, as the lease authority.
     pub fn arbitrate(&mut self) {
         if !self.authority {
             return;
@@ -334,7 +303,6 @@ impl LeaseKeeper {
         &self.lease_class
     }
 
-    /// Marks `rel` lease-class. Returns whether it is new.
     pub fn classify(&mut self, rel: &Path) -> bool {
         self.lease_class.insert(rel.to_path_buf())
     }
@@ -388,8 +356,6 @@ impl LeaseKeeper {
         }
     }
 
-    /// Notes that a writer of `rel` closed the file (from the journal): the
-    /// lease is released at the next tick.
     pub fn note_close(&self, rel: &Path) {
         if let Ok(mut s) = self.shared.lock()
             && let Some(at) = s.writes.get_mut(rel)
@@ -400,7 +366,6 @@ impl LeaseKeeper {
         }
     }
 
-    /// Notes a local write to `rel` (from the journal).
     pub fn note_write(&self, rel: &Path) {
         if let Ok(mut s) = self.shared.lock()
             && let Some(at) = s.writes.get_mut(rel)
@@ -445,8 +410,6 @@ impl LeaseKeeper {
         {
             asking.remove(&key);
         }
-        // A failure means the file is gone (or not there yet): the next tick
-        // tries again.
         if let (Ok(()), Some(g), Some(k)) = (result, gate, key) {
             self.gates.insert(rel.to_path_buf(), (g, k));
         } else {
@@ -454,10 +417,9 @@ impl LeaseKeeper {
         }
     }
 
-    /// Brings gates, renewals and releases up to date. Called about once a
-    /// second and after every epoch. A lease is not released while
-    /// `unpublished` names its file: the next holder must start from the
-    /// versions written under it.
+    /// Brings gates, renewals and releases up to date, about once a second and after
+    /// every epoch. A lease is not released while `unpublished` names its file: the
+    /// next holder must start from the versions written under it.
     pub fn tick(&mut self, now_ms: u64, unpublished: &HashSet<PathBuf>) {
         self.arbitrate();
         let taken: Vec<PathBuf> = self
@@ -478,7 +440,6 @@ impl LeaseKeeper {
             let lease = leases.get(&rel).copied();
             match lease {
                 Some(l) if l.holder != self.me && l.is_live(now_ms) => {
-                    // Gated first: the notice means the file is read-only.
                     self.set_gate(&rel, Some(Gate::Deny));
                     if self.notified.insert((rel.clone(), l.epoch)) {
                         eprintln!(
@@ -540,7 +501,6 @@ impl LeaseKeeper {
         }
     }
 
-    /// Releases every lease this device holds (clean shutdown).
     pub fn release_all(&mut self, now_ms: u64) {
         for (rel, lease) in self.fs.write_leases_by_path() {
             if lease.holder == self.me && lease.is_live(now_ms) {
@@ -558,7 +518,6 @@ mod tests {
 
     use super::kept_bytes_in_place;
 
-    /// The one changed range `start..end`, as the extent diff reports it.
     fn span(start: u64, end: u64) -> Vec<std::ops::Range<u64>> {
         std::iter::once(start..end).collect()
     }
@@ -569,8 +528,6 @@ mod tests {
         f
     }
 
-    /// Two 4 KiB pages: a header page with a counter and a schema at its
-    /// end, and a table page with rows at its end.
     fn database(counter: u8, rows: &[u8]) -> Vec<u8> {
         let mut db = vec![0u8; 8192];
         db[..16].copy_from_slice(b"SQLite format 3\0");

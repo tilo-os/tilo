@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use ui::framework::Refused;
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::prelude::*;
 use ui::theme::{Preset, ThemeDocument};
@@ -19,6 +20,7 @@ use ui::widget::{
 };
 
 use crate::apply::AppearanceChoice;
+use crate::locales::CATALOG;
 use crate::preview::{Show, ThemePreview};
 use crate::studio::{Rung, Studio, Theme};
 
@@ -380,6 +382,29 @@ fn t(key: &str) -> String {
     crate::locales::CATALOG.t(key)
 }
 
+/// The catalogue key of a dropdown option, named by the word it stands for.
+/// A dropdown stores the row it shows, so its rows are the catalogue's words:
+/// the studio's own English name is what picks them, in every language.
+fn option_ftl(english: &str) -> &'static str {
+    match english {
+        "Dark" => "themes-option-dark",
+        "Light" => "themes-option-light",
+        "Accent" => "themes-option-accent",
+        "Monochrome" => "themes-option-monochrome",
+        "Your colour" => "themes-option-your-colour",
+        "Chosen hue" => "themes-option-chosen-hue",
+        "Always" => "themes-option-always",
+        "With the typeface" => "themes-option-with-the-typeface",
+        "Frosted" => "themes-option-frosted",
+        _ => "themes-option-solid",
+    }
+}
+
+/// One of the editor's dropdown rows, in the window's language.
+fn option(english: &str) -> String {
+    t(option_ftl(english))
+}
+
 fn destination(page: &Page) -> String {
     page.theme()
         .map_or_else(|| PRESETS.to_owned(), |id| format!("{THEME}{id}"))
@@ -429,7 +454,7 @@ fn sidebar(ui: &Ui) -> Element {
         }
     };
     let mut list = NavList::new(Vec::new())
-        .with_accessible_name(crate::APP_TITLE)
+        .with_accessible_name(crate::locales::CATALOG.t("themes-app-title"))
         .follow(source)
         .on_view(NAV_ID, select);
     // "New theme" opens a draft of a preset, and Delete removes the row's
@@ -646,19 +671,23 @@ fn choice<T>(
 where
     T: ui::tilo_resource::Settable + PartialEq + Clone + Send + Sync + 'static,
 {
-    let [first, second] = options;
+    let [first, second] = options.map(option);
     let read = role.clone();
     let shown = on.clone();
-    let state = editing.value(cx, move |theme| {
-        String::from(if read.get(theme) == Some(&shown) {
-            first
-        } else {
-            second
-        })
+    let rows = [first.clone(), second];
+    let state = editing.value(cx, {
+        let rows = rows.clone();
+        move |theme| {
+            if read.get(theme) == Some(&shown) {
+                rows[0].clone()
+            } else {
+                rows[1].clone()
+            }
+        }
     });
     editing.set(
         cx,
-        Dropdown::from_state(vec![first.to_owned(), second.to_owned()], &state),
+        Dropdown::from_state(rows.to_vec(), &state),
         role,
         move |picked: String| {
             if picked == first {
@@ -686,13 +715,19 @@ fn preview_show(picked: &str) -> Show {
 /// Dark or light: switching flips the ladder, so it is the studio's verb.
 fn polarity(cx: &ViewCx<Studio>, editing: &Editing) -> Dropdown {
     let state = editing.value(cx, |theme| {
-        String::from(if theme.dark { "Dark" } else { "Light" })
+        if theme.dark {
+            option("Dark")
+        } else {
+            option("Light")
+        }
     });
     let id = editing.id.clone();
+    let dark = option("Dark");
+    let light = option("Light");
     editing.bind(
         cx,
-        Dropdown::from_state(vec!["Dark".to_owned(), "Light".to_owned()], &state),
-        move |picked: String| Studio::SWITCH_POLARITY.with((id.clone(), picked == "Dark")),
+        Dropdown::from_state(vec![dark.clone(), light], &state),
+        move |picked: String| Studio::SWITCH_POLARITY.with((id.clone(), picked == dark)),
     )
 }
 
@@ -766,9 +801,12 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, editing: &Editing) -> Element {
                 return String::new();
             };
             if findings.is_empty() {
-                String::from("Every pairing meets its contrast floor.")
+                CATALOG.t("themes-contrast-every-pairing-meets")
             } else {
-                format!("Too little contrast: {}", findings.join("; "))
+                CATALOG.t_args(
+                    "themes-contrast-low",
+                    &[("findings", ArgValue::Text(findings.join("; ")))],
+                )
             }
         })
         .with_id("contrast-findings")

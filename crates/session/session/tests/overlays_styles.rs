@@ -22,14 +22,12 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
-
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
 use tilo_session::{Options, Session};
-use tilo_surface_host::DeskReading;
+use tilo_session_core::shell::DeskReading;
 use tilo_surface_host::shell_part::DESK_RESOURCE;
 
 const WIDTH: i32 = 1280;
@@ -76,12 +74,12 @@ fn desk(session: &Session) -> DeskReading {
 
 #[track_caller]
 fn until(session: &mut Session, done: impl FnMut(&mut Session) -> bool) {
-    common::until(session, "the shell's answer", done);
+    crate::common::until(session, "the shell's answer", done);
 }
 
 /// A press on the shell's control named `name` once it stands still: what a person does.
 fn press(session: &mut Session, name: &str) {
-    common::press(session, name);
+    crate::common::press(session, name);
 }
 
 /// The person's appearance mode, as the settings' own section publishes it.
@@ -153,7 +151,9 @@ fn show_style(session: &mut Session, style: &str) {
         session
             .run_shell_setting("apply", vec![Value::from("windows_desktop")])
             .unwrap_or_else(|why| panic!("the desk shows {style}: {why}"));
-        until(session, |session| common::preset_menu(session).is_none());
+        until(session, |session| {
+            crate::common::preset_menu(session).is_none()
+        });
     } else {
         let label = match style {
             "strips" => "Strips",
@@ -161,7 +161,7 @@ fn show_style(session: &mut Session, style: &str) {
             "spaces" => "Spaces",
             other => panic!("no such style {other}"),
         };
-        common::show_preset(session, label);
+        crate::common::show_preset(session, label);
     }
     // Frames for the new style's views to run and place their controls.
     for _ in 0..30 {
@@ -189,7 +189,7 @@ fn styles() -> [(&'static str, &'static str); 4] {
 fn quick_settings_opens_and_toggles_dark_mode_in_every_style() {
     let _settled = ui::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().unwrap();
-    common::app_store();
+    crate::common::app_store();
     let mut session = session();
     until(&mut session, |session| {
         session
@@ -244,7 +244,7 @@ fn quick_settings_opens_and_toggles_dark_mode_in_every_style() {
 fn a_notice_rises_as_a_banner_and_opens_the_centre_in_every_style() {
     let _settled = ui::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().unwrap();
-    common::app_store();
+    crate::common::app_store();
     let mut session = session();
     until(&mut session, |session| {
         session
@@ -326,7 +326,7 @@ fn a_notice_rises_as_a_banner_and_opens_the_centre_in_every_style() {
 fn the_launcher_lists_apps_filters_and_opens_notes_on_enter() {
     let _settled = ui::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().unwrap();
-    common::app_store();
+    crate::common::app_store();
     let mut session = session();
     until(&mut session, |session| {
         session
@@ -350,7 +350,7 @@ fn the_launcher_lists_apps_filters_and_opens_notes_on_enter() {
             session.shell_control("Notes").is_some()
         });
         // Typing narrows to Notes: the only app row left named before the desk's own doors.
-        let field = common::LAUNCHER_SEARCH;
+        let field = crate::common::LAUNCHER_SEARCH;
         press(&mut session, field);
         type_text(&mut session, "no");
         until(&mut session, |session| {

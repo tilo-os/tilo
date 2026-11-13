@@ -542,16 +542,16 @@ mod tests {
     fn a_name_that_looks_like_a_members_carries_its_service() {
         let alice = alice();
         assert_eq!(bridge(Some(&alice)).label(&["Bo"]), "alice");
-        assert_eq!(bridge(Some(&alice)).label(&["Alice"]), "alice · Discord");
+        assert_eq!(bridge(Some(&alice)).label(&["Alice"]), "alice, via Discord");
         let cyrillic = Appearance::new("\u{430}lice", None, alice.persona.clone()).unwrap();
         assert_eq!(
             bridge(Some(&cyrillic)).label(&["alice"]),
-            "\u{430}lice · Discord"
+            "\u{430}lice, via Discord"
         );
         let bare = Appearance::new("alice", None, None).unwrap();
         assert_eq!(
             bridge(Some(&bare)).label(&["Alice"]),
-            "alice · Discord Bridge"
+            "alice, via Discord Bridge"
         );
         // Linked to the member it looks like, it is that member.
         let linked = |person| Author::Bot {
@@ -565,7 +565,7 @@ mod tests {
         assert_eq!(linked("Alice").label(&["Alice"]), "alice");
         assert_eq!(
             linked("Bo").label(&["Alice", "Bo"]),
-            "alice · Discord",
+            "alice, via Discord",
             "a persona linked to one member still may not look like another"
         );
         assert!(looks_alike("paypal", "pаypаl"));

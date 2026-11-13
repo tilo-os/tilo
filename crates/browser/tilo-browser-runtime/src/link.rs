@@ -46,14 +46,32 @@ fn route(json: &str) -> Result<Link, JsValue> {
 /// Parse `url` under the page's entry (`entryJson`, `{base}`) into
 /// `{mode, target}` JSON. A link carrying secrets is refused here like any
 /// other: the inline scrubber removed them before any module ran.
+///
+/// A link whose workspace reads but whose part inside it is damaged (a
+/// document id that is no id) names that workspace's desktop, with
+/// `damaged`: what of the link was not used, in words for the person
+/// ([`Link::parse_or_workspace`]).
 #[wasm_bindgen(js_name = parseLink)]
 pub fn parse_link(url: &str, entry_json: &str) -> Result<String, JsValue> {
     let entries = WebEntries::new(vec![entry(entry_json)?]);
-    let link = Link::parse(url, &entries).map_err(|e| link_error(&e))?;
+    let (link, damaged) = Link::parse_or_workspace(url, &entries).map_err(|e| link_error(&e))?;
     if !link.secrets.is_empty() {
         return Err(refuse("This address still carries a secret"));
     }
-    serde_json::to_string(&RouteJson::from(&link)).map_err(refuse)
+    route_json(&link, damaged.as_ref()).map_err(refuse)
+}
+
+/// `link` as the page's `{mode, target}` JSON, saying what of the link was
+/// `damaged` when only its workspace was read.
+fn route_json(
+    link: &Link,
+    damaged: Option<&tilo_reference::link::LinkError>,
+) -> Result<String, serde_json::Error> {
+    let mut json = serde_json::to_value(RouteJson::from(link))?;
+    if let (Some(damaged), Some(fields)) = (damaged, json.as_object_mut()) {
+        fields.insert("damaged".into(), damaged.to_string().into());
+    }
+    serde_json::to_string(&json)
 }
 
 /// Write `{mode, target}` JSON as a URL under the entry.

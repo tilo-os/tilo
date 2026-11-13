@@ -18,7 +18,7 @@ use super::{RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordOwners,
 use crate::permissions::UserId;
 
 impl RecordOwners {
-    /// The owner of `package_id`'s records in `workspace` that a window of
+    /// The owner of `app_id`'s records in `workspace` that a window of
     /// another app opens beside its own. Like [`Self::open_person`] it
     /// never joins a native component's construction.
     ///
@@ -26,10 +26,10 @@ impl RecordOwners {
     /// Rejects an invalid package or workspace.
     pub fn open_beside(
         &mut self,
-        package_id: &str,
+        app_id: &str,
         workspace: &str,
     ) -> Result<RecordStore, RecordOpenError> {
-        self.open_with(package_id, workspace, false)
+        self.open_with(app_id, workspace, false)
     }
 }
 
@@ -158,7 +158,9 @@ impl WorkspaceRecords {
         };
         let store = (self.open)(owner)?;
         let checkout = RecordCheckout::new(id, RecordKind::new(kind));
-        match store.try_open_record(&checkout) {
+        // A list names far more records than anyone opens: it never asks the
+        // workspace for one it does not hold.
+        match store.open_if_held(&checkout) {
             Ok(_) => Ok(true),
             Err(RecordOpenError::MissingRecord) => Ok(false),
             Err(error) => Err(error),

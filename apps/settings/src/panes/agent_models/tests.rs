@@ -52,10 +52,6 @@ fn with_subject(phase: Option<LocalModelPhase>) -> LocalModelSnapshot {
     }
 }
 
-/// What `read` finds on the Agent Models page of a Settings window showing
-/// `model`: the page the window builds over it, its controls bound to the
-/// actions the window publishes. The model is lent to the window's area
-/// meanwhile and handed back as the window left it.
 pub(super) fn rendered<T>(model: &mut AgentModelsModel, read: impl FnOnce(&dyn Widget) -> T) -> T {
     let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
     let held = app
@@ -71,7 +67,6 @@ pub(super) fn rendered<T>(model: &mut AgentModelsModel, read: impl FnOnce(&dyn W
     found
 }
 
-/// Every line the Agent Models page showing `model` announces.
 pub(super) fn announced(model: &mut AgentModelsModel) -> Vec<String> {
     rendered(model, provider_settings_ui::widgets::announced_text)
 }
@@ -84,13 +79,8 @@ pub(super) fn rendered_names(model: &mut AgentModelsModel) -> Vec<String> {
     })
 }
 
-/// An in-process model has its own card with the recommendation's
-/// licence confirmation, a link opens it at that confirmation without
-/// downloading anything, and the install action is itself the
-/// acceptance of the revision it was offered with.
 #[test]
 fn in_process_models_are_set_up_with_the_same_confirmation() {
-    // Case `setup_confirms_before_install`.
     {
         let control = mock(with_subject(None));
         let mut model = model_over(control.clone());
@@ -131,7 +121,6 @@ fn in_process_models_are_set_up_with_the_same_confirmation() {
         );
     }
 
-    // Case `a_link_reveals_the_card_at_its_confirmation`.
     {
         let control = mock(with_subject(None));
         let mut model = model_over(control.clone());
@@ -145,7 +134,6 @@ fn in_process_models_are_set_up_with_the_same_confirmation() {
         assert!(model.reveal("no-such-model").is_err());
     }
 
-    // Case `each_model_is_a_row_with_its_install`.
     {
         let model = model_over(mock(with_subject(None)));
         let profile = tempfile::tempdir().unwrap();
@@ -174,8 +162,6 @@ fn in_process_models_are_set_up_with_the_same_confirmation() {
     }
 }
 
-/// A ready in-process model offers only Remove, a destructive action the
-/// host confirms, and never joins the local chat profile.
 #[test]
 fn ready_in_process_models_offer_only_a_confirmed_remove() {
     let ready = LocalModelPhase::Ready {
@@ -317,8 +303,6 @@ fn collect_accessibility(widget: &dyn Widget, nodes: &mut Vec<ui::a11y::AccessNo
     }
 }
 
-/// A hosted provider whose key this device's vault lacks says so and
-/// offers to take one; once the vault holds it, it says it is stored.
 #[test]
 fn a_hosted_provider_without_a_key_here_asks_for_one() {
     let (_app, mut pane) = hosted_model(mock(snapshot(None)));
@@ -381,9 +365,6 @@ fn a_legacy_key_requires_an_explicit_endpoint_and_offers_removal() {
     );
 }
 
-/// Google Vertex AI is added only once signed in, with the project,
-/// location and model chosen; it shows its sign-in rather than a key,
-/// and removing it forgets its own grant and no other.
 #[test]
 fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
     use account_custody::TokenSet;
@@ -520,9 +501,6 @@ fn shows_its_sign_in_and_forgets_only_its_grant(
     );
 }
 
-/// Cancelling the setup of a provider being added leaves no grant. The
-/// vault forgetting it may not answer for seconds, so a cancel on the UI
-/// thread forgets on a worker.
 #[test]
 fn cancelling_a_vertex_setup_forgets_its_grant() {
     let vault = tempfile::tempdir().unwrap();
@@ -561,7 +539,6 @@ fn cancelling_a_vertex_setup_forgets_its_grant() {
     assert!(!agent_vertex::signed_in(&custodian, &id));
 }
 
-/// Wait for the grants `pane` forgets on a worker to be forgotten.
 pub(super) fn forgotten(pane: &mut AgentModelsModel) {
     tilo_test_env::wait_until("the grants to be forgotten", || {
         pane.take_forgotten();
@@ -569,9 +546,6 @@ pub(super) fn forgotten(pane: &mut AgentModelsModel) {
     });
 }
 
-/// A model over `control` storing the providers through the sections a
-/// Settings window keeps: what it stores lands in them once the window
-/// settles.
 pub(super) fn hosted_model(
     control: Arc<MockControl>,
 ) -> (
@@ -602,8 +576,6 @@ pub(super) fn mock(snapshot: LocalModelSnapshot) -> Arc<MockControl> {
     })
 }
 
-/// No fabricated recommendations; installs are of the reported
-/// package, and progress is bounded and readable.
 #[test]
 fn the_catalog_is_honest_and_installs_what_it_reported() {
     let fallback = fallback_snapshot();
@@ -652,7 +624,6 @@ fn the_catalog_is_honest_and_installs_what_it_reported() {
     assert_eq!(access.value.as_deref(), Some("75%"));
 }
 
-/// Only the controls a model's phase allows reach the manager.
 #[test]
 fn local_model_lifecycle_exposes_only_safe_controls() {
     assert_eq!(
@@ -714,8 +685,6 @@ fn local_model_lifecycle_exposes_only_safe_controls() {
     );
 }
 
-/// The local profile follows the manager's ready endpoint, not a fixed
-/// port.
 #[test]
 fn local_profile_uses_the_ready_manager_endpoint_not_port_8000() {
     let mut package = package();
@@ -857,8 +826,6 @@ fn model_request_limits_use_the_published_settings_effects() {
     assert!(app.harness().component_contract_violations().is_empty());
 }
 
-/// Providers are the person's settings: added, renamed, made default
-/// and removed through effects, which refuse a provider that is gone.
 #[test]
 fn providers_are_the_persons_settings() {
     let (mut app, mut pane) = hosted_model(mock(snapshot(None)));
@@ -881,8 +848,6 @@ fn providers_are_the_persons_settings() {
     let stored = pane.providers.config();
     assert_eq!(stored.default_profile.as_deref(), Some(id.as_str()));
     assert_eq!(stored.profiles[0].label, "Work");
-    // What the page stored is the sections': the default this device's,
-    // the hosted provider the person's.
     app.settle();
     assert_eq!(
         app.settings::<AgentProviders>()
@@ -965,10 +930,6 @@ impl LocalModelControl for StalledManager {
     }
 }
 
-/// A click is answered and the window keeps drawing while the model
-/// manager takes its time to report: neither the snapshot asked after
-/// the change nor the one a busy model's polling asks holds the window,
-/// and the snapshot lands once the manager answers.
 #[test]
 fn a_stalled_model_manager_never_holds_the_window() {
     use ui::framework::testing::TestApp;
@@ -982,7 +943,6 @@ fn a_stalled_model_manager_never_holds_the_window() {
         let mut model = model.borrow_mut();
         model.follow_local_profile = false;
         model.control = Arc::new(StalledManager(stalled));
-        // A model downloading: the pane asks the manager again soon.
         model.snapshot = one_model(
             "Busy Model",
             LocalModelPhase::Downloading {
@@ -1036,7 +996,6 @@ fn a_stalled_model_manager_never_holds_the_window() {
     }
 }
 
-/// Wait for a background read to end, as the warm-up's wake would.
 fn until_finished(finished: impl Fn() -> bool) {
     let deadline = tilo_test_env::hang_deadline();
     while !finished() {
@@ -1045,8 +1004,6 @@ fn until_finished(finished: impl Fn() -> bool) {
     }
 }
 
-/// The warm-up asks the manager off the UI thread once; the model is
-/// built from that answer, and nothing is asked again once it is.
 #[test]
 fn the_area_builds_its_model_from_the_read_it_started() {
     let profile = tempfile::tempdir().unwrap();
@@ -1070,8 +1027,6 @@ fn the_area_builds_its_model_from_the_read_it_started() {
     assert!(!area.start_read(), "a built model is not read again");
 }
 
-/// What the read asked is what the model shows: the manager's answer,
-/// or why it could not answer.
 #[test]
 fn a_model_shows_what_its_read_asked() {
     let profile = tempfile::tempdir().unwrap();

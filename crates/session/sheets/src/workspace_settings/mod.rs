@@ -47,7 +47,7 @@ const WIDTH: f64 = 760.0;
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct WorkspaceSettings {}
 
-#[resource(kind = "workspace-settings.lens", label = "Workspace settings")]
+#[resource(kind = "workspace-settings.lens")]
 impl WorkspaceSettings {}
 
 /// What the sheet asks of the shell. Every change to the workspace is

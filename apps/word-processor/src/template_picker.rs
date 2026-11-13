@@ -1,8 +1,5 @@
-//! "New from template" menu for the word processor.
-//!
-//! The picker adapts the shared [`ContextMenu`] into a typed template outcome.
-//! Document replacement stays with the editor, while menu lifecycle, rendering,
-//! and the row-to-template mapping stay together here.
+//! The "New from template" menu: the shared [`ContextMenu`] with a typed outcome.
+//! Replacing the document stays with the editor.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -15,7 +12,6 @@ use ui::widget::context_menu::{ContextMenu, MenuItem};
 
 use crate::Template;
 
-/// Owns the template menu's lifecycle, drawing, hit-testing, and typed outcome.
 pub(crate) struct TemplatePicker {
     menu: ContextMenu,
     templates: &'static [Template],
@@ -39,8 +35,6 @@ impl TemplatePicker {
         self.menu.is_open()
     }
 
-    /// Open the menu under `anchor` (the New button), kept inside
-    /// `viewport`.
     pub(crate) fn open_anchored(&mut self, anchor: Rect, viewport: Rect) {
         *self = Self::default();
         self.menu.open_anchored(anchor, viewport);
@@ -54,7 +48,6 @@ impl TemplatePicker {
         self.menu.close();
     }
 
-    /// The shared menu owns pointer tracking and keyboard navigation.
     pub(crate) fn menu_mut(&mut self) -> &mut ContextMenu {
         &mut self.menu
     }
@@ -65,8 +58,6 @@ impl TemplatePicker {
             .and_then(|index| self.templates.get(index).copied())
     }
 
-    /// Consume a click while open. A click outside the menu dismisses it;
-    /// clicking a row returns its typed template and also closes the menu.
     pub(crate) fn click(&mut self, point: Point) -> Option<Template> {
         let selected = self
             .menu
@@ -116,11 +107,8 @@ impl TemplatePicker {
 mod tests {
     use super::*;
 
-    /// Rows follow the canonical template order, a click returns a typed template and closes, a scaled
-    /// picker keeps rows mapped, and an outside click dismisses without a selection.
     #[test]
     fn the_template_picker_maps_rows_to_templates_at_every_scale() {
-        // Phase: rows_follow_the_canonical_template_order.
         {
             let picker = TemplatePicker::default();
             assert_eq!(picker.templates, Template::all());
@@ -128,7 +116,6 @@ mod tests {
             assert!(picker.labels().iter().all(|label| !label.is_empty()));
         }
 
-        // Phase: click_returns_a_typed_template_and_closes.
         {
             let mut picker = TemplatePicker::default();
             picker.open_anchored(
@@ -140,7 +127,6 @@ mod tests {
             assert!(!picker.is_open());
         }
 
-        // Phase: scaled_picker_keeps_rows_mapped_to_their_templates.
         {
             let mut picker = TemplatePicker::default();
             picker.set_text_scale(2.0);
@@ -155,7 +141,6 @@ mod tests {
             assert_eq!(picker.click(report), Some(Template::Report));
         }
 
-        // Phase: outside_click_dismisses_without_a_selection.
         {
             let mut picker = TemplatePicker::default();
             picker.open_anchored(

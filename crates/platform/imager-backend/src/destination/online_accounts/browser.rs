@@ -1,13 +1,9 @@
 //! Open authorization pages in the signed, installed Browser under Cage.
 //!
-//! The installer and Browser run as greetd, never root. `tilo-launcher exec`
-//! selects the installed package and applies its ordinary runtime verification,
-//! bubblewrap, Landlock and seccomp policy. Browser's existing `net.mode = host`
-//! shares the installer's network namespace: tilo-oauth's canonical loopback
-//! listener is reachable without a callback proxy or additional capability.
-//!
-//! Keep this opener alive for the account actor's lifetime. Opening another
-//! request replaces its previous Browser; dropping it closes that Browser.
+//! The installer and Browser run as greetd, never root, and `tilo-launcher exec` applies the ordinary
+//! runtime verification and sandbox policy. Browser's host network mode reaches tilo-oauth's loopback
+//! listener without a proxy. Keep the opener alive for the account actor's lifetime; opening another
+//! request replaces the previous Browser.
 
 use std::ffi::OsString;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
@@ -24,25 +20,18 @@ const STARTUP_GRACE: Duration = Duration::from_millis(750);
 const OPEN_DEADLINE: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(25);
 
-/// Synchronous boundary for an account actor; implementations must not log URLs.
 pub trait BrowserOpener: Send + Sync {
-    /// Hand an authorization URL to Browser, without waiting for authorization.
-    ///
-    /// # Errors
-    /// A bounded, non-secret description of a launch failure.
+    /// Hands an authorization URL to Browser without waiting for authorization; a failed launch comes
+    /// back as a bounded, non-secret description.
     fn open(&self, url: &str) -> Result<(), BrowserError>;
 
-    /// Return focus to the installer after callback, cancellation or failure.
-    /// Test openers without a window need not implement this.
-    ///
-    /// # Errors
-    /// A bounded launch-supervisor failure.
+    /// Returns focus to the installer after callback, cancellation or failure; a test opener without
+    /// a window need not implement this.
     fn close(&self) -> Result<(), BrowserError> {
         Ok(())
     }
 }
 
-/// Deliberately contains neither URLs, child output nor underlying I/O errors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BrowserError {
     Privileged,
@@ -70,12 +59,8 @@ impl std::fmt::Display for BrowserError {
 
 impl std::error::Error for BrowserError {}
 
-/// One supervised Browser, with one bounded pending request and no child logs.
-///
-/// No shell, host browser, URI portal, `xdg-open`, sudo or fallback is used.
-/// Successful `open` means the launcher survived the startup grace period, not
-/// that a page rendered or that OAuth completed. The account actor must still
-/// await tilo-oauth's state-checked callback and handle its deadline/cancellation.
+/// No shell, host browser, URI portal, `xdg-open`, sudo or fallback is used. A successful `open`
+/// means the launcher survived the startup grace period, not that a page rendered or OAuth finished.
 pub struct LiveBrowserOpener {
     requests: SyncSender<Request>,
 }
@@ -92,7 +77,6 @@ struct OpenRequest {
 }
 
 impl LiveBrowserOpener {
-    /// Capture the current Cage session and start its unprivileged supervisor.
     pub fn new() -> Result<Self, BrowserError> {
         unprivileged()?;
         let runtime = std::env::var_os("XDG_RUNTIME_DIR")
@@ -160,7 +144,6 @@ impl BrowserOpener for LiveBrowserOpener {
 }
 
 fn unprivileged() -> Result<(), BrowserError> {
-    // Check both: a setuid caller must not start an authorization session either.
     if rustix::process::getuid().is_root() || rustix::process::geteuid().is_root() {
         Err(BrowserError::Privileged)
     } else {
@@ -215,8 +198,8 @@ struct LaunchSession {
 }
 
 fn session_environment() -> Vec<(OsString, OsString)> {
-    // Do not inherit launcher-registration gates, developer package/runtime
-    // overrides, browser flags, proxy credentials or arbitrary loader settings.
+    // Do not inherit launcher-registration gates, developer flags, proxy credentials or arbitrary
+    // loader settings.
     [
         "HOME",
         "XDG_RUNTIME_DIR",
@@ -275,7 +258,6 @@ fn supervise(requests: &Receiver<Request>, session: &LaunchSession) {
                         browser = Some(child);
                         startup(&mut browser, request.deadline)
                     });
-                // The actor may have disappeared while launch was in progress.
                 if request.reply.send(result).is_err() || result.is_err() {
                     stop(&mut browser);
                 }
@@ -318,13 +300,12 @@ fn startup(browser: &mut Option<Child>, deadline: Instant) -> Result<(), Browser
 
 fn stop(browser: &mut Option<Child>) {
     if let Some(mut child) = browser.take() {
-        // try_wait may already have reaped a failed startup. Never signal a
-        // PID after reaping it: the kernel can have reused that process group.
+        // Never signal a PID after reaping it: the kernel can have reused that process group.
         if child.try_wait().is_ok_and(|status| status.is_some()) {
             return;
         }
-        // An unreaped direct child pins its PID. The child created its own
-        // process group; never signal the installer's or Cage's process group.
+        // An unreaped direct child pins its PID, and it created its own process group; never signal
+        // the installer's or Cage's group.
         if let Some(pid) = i32::try_from(child.id())
             .ok()
             .and_then(rustix::process::Pid::from_raw)
@@ -332,7 +313,6 @@ fn stop(browser: &mut Option<Child>) {
             let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
         }
         let _ = child.kill();
-        // Reaping happens only on the supervisor, never on the account actor.
         let _ = child.wait();
     }
 }
@@ -462,8 +442,8 @@ mod tests {
     #[test]
     fn browser_policy_keeps_the_canonical_oauth_loopback_reachable() {
         let manifest = include_str!("../../../../../../apps/browser/tilo-app.toml");
-        // The installed signed manifest is consumed by the launcher, not edited
-        // or overridden here. Host mode already supplies --share-net.
+        // The installed signed manifest is consumed by the launcher, not edited or overridden here;
+        // host mode already supplies --share-net.
         assert!(manifest.contains("[sandbox.net]\nmode = \"host\""));
         assert!(manifest.contains("landlock   = \"strict\""));
         assert!(manifest.contains("seccomp    = \"tilo-web-engine\""));

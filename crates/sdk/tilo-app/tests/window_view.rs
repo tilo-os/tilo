@@ -11,6 +11,7 @@ use tilo_app::application_view::{
 };
 use tilo_app::prelude::*;
 use tilo_app::view::ThawError;
+use ui_core::widget::DrawChild;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Shelf {
@@ -22,7 +23,7 @@ pub struct Book {
     pub title: String,
 }
 
-#[resource(kind = "test.shelf", label = "Shelf")]
+#[resource(kind = "test.shelf", catalogue = "tests/locales")]
 impl Shelf {
     /// Add a book.
     #[action]
@@ -96,7 +97,8 @@ impl Widget for OpenBook {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.inner.draw(scene, transform, text, theme, presence);
+        self.inner
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     fn name(&self) -> &'static str {

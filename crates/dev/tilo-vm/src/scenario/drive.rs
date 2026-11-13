@@ -1,11 +1,7 @@
-//! Drive the installer wizard through its published actions.
-//!
-//! The driver reads the installer's state, performs the actions of whatever
-//! step it is on, and repeats. It never assumes the step order: a medium
-//! customised by Tilo Imager skips screens whose choices it already carries,
-//! and the loop simply finds itself further along. It never sees a secret
-//! it did not supply itself: the recovery key stays on the guest's screen
-//! and clipboard, and the passphrase is sent once and never read back.
+//! Drive the installer wizard through its published actions: read the
+//! installer's state, perform the actions of the step it is on, and repeat. It
+//! never assumes the step order, so a medium that already carries choices finds
+//! itself further along.
 
 use std::time::Duration;
 
@@ -13,10 +9,8 @@ use super::console::{Console, ConsoleError};
 use super::{Layout, Secret, Unlock};
 use serde_json::{Map, Value, json};
 
-/// The console provider name the installer answers under.
 pub const INSTALLER: &str = "installer";
 
-/// What the scenario installs, in the installer's own terms.
 pub struct Choices {
     pub layout: Layout,
     pub filesystem: Option<String>,
@@ -31,22 +25,15 @@ pub struct Choices {
     pub disk_secret: Option<Secret>,
 }
 
-/// What the install reported, secret-free.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Installed {
-    /// Steps in the order the driver found them.
     pub steps: Vec<String>,
-    /// The object the destructive confirmation named.
     pub target: String,
-    /// The composefs digest the live installer booted and installed.
     pub composefs: Option<String>,
-    /// Human milestones the installer showed while installing.
     pub stages: Vec<String>,
-    /// Status polls until the install finished.
     pub polls: u32,
 }
 
-/// Why driving stopped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DriveError {
     /// An action was refused or failed; `message` is the installer's own.
@@ -55,15 +42,19 @@ pub enum DriveError {
         code: String,
         message: String,
     },
-    /// The console stopped answering.
     Console(String),
     /// The wizard stayed on one step, or reached a state the scenario cannot
     /// continue from.
-    Stuck { step: String, detail: String },
-    /// The installer reported a failed install; `log` is its redacted tail.
-    InstallFailed { log: Vec<String> },
-    /// The install ran past its time limit.
-    Timeout { waited: Duration },
+    Stuck {
+        step: String,
+        detail: String,
+    },
+    InstallFailed {
+        log: Vec<String>,
+    },
+    Timeout {
+        waited: Duration,
+    },
 }
 
 impl std::fmt::Display for DriveError {
@@ -99,7 +90,6 @@ pub trait Pace {
     fn sleep(&mut self, duration: Duration);
 }
 
-/// Real time.
 pub struct RealPace;
 
 impl Pace for RealPace {
@@ -108,7 +98,6 @@ impl Pace for RealPace {
     }
 }
 
-/// How often the install's progress is polled.
 pub const POLL: Duration = Duration::from_secs(5);
 
 fn args(value: Value) -> Map<String, Value> {
@@ -187,14 +176,6 @@ pub fn choose_target(state: &Value) -> Result<String, DriveError> {
     }
 }
 
-/// Walk the wizard from wherever it is to a finished install, then confirm
-/// the recovery key was dealt with and power the VM off through the
-/// installer's own Finish action.
-///
-/// # Errors
-///
-/// [`DriveError`] with the installer's own reason when a step cannot be
-/// completed, the install fails, or it runs past `install_timeout`.
 #[expect(
     clippy::too_many_lines,
     reason = "one match arm per wizard step keeps the steps side by side"
@@ -249,14 +230,10 @@ pub fn install(
                 }
                 invoke(console, INSTALLER, "next", json!({}))?;
             }
-            // media: the optional extra video and audio formats. A scenario
-            // installs what the medium ships and nothing it would fetch.
             "network" | "media" => {
                 invoke(console, INSTALLER, "next", json!({}))?;
             }
             "accounts" => {
-                // This scenario has no online account credentials. Use the
-                // published offline choice rather than filling private inputs.
                 invoke(console, INSTALLER, "continue-offline", json!({}))?;
             }
             "disk" => disk_step(console, &state, choices, pace)?,
@@ -447,8 +424,6 @@ fn wait_for_install(
         installed.polls = poll;
         let state = match console.state() {
             Ok(state) => state,
-            // The guest is busy copying gigabytes; one missed poll is not a
-            // failure, a silent console for the whole budget is.
             Err(ConsoleError::Unreachable(_)) => {
                 pace.sleep(POLL);
                 continue;
@@ -533,8 +508,6 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
 
-    /// A scripted installer: answers `state_dump` from its model and applies
-    /// invocations the way the real one does, refusing out-of-step actions.
     struct FakeInstaller {
         step: &'static str,
         method: String,
@@ -714,7 +687,6 @@ mod tests {
             json!({"hostname":"tilo-desktop", "layout":"German (QWERTZ)", "timezone":"Europe/Berlin", "locale":"de_DE.UTF-8"})
         );
         assert!(fake.calls.contains(&"begin@installer.review".into()));
-        // Preconfigured media may skip keyboard. Refuse an incompatible choice before disk writes.
         let mut skipped = FakeInstaller::new();
         skipped.step = "network";
         let error = install(
@@ -755,11 +727,8 @@ mod tests {
         )));
     }
 
-    /// The whole wizard is driven through actions in whatever order it presents; distinct credentials
-    /// reach distinct published installer actions; a skipped screen is simply not visited.
     #[test]
     fn the_installer_wizard_is_driven_through_its_actions() {
-        // Phase: the_whole_wizard_is_driven_through_actions_in_whatever_order_it_presents.
         {
             let mut fake = FakeInstaller::new();
             let mut lines = Vec::new();
@@ -802,7 +771,6 @@ mod tests {
             );
         }
 
-        // Phase: distinct_credentials_reach_distinct_published_installer_actions.
         {
             let mut fake = FakeInstaller::new();
             let mut chosen = choices(Unlock::Passphrase);
@@ -835,7 +803,6 @@ mod tests {
             }));
         }
 
-        // Phase: a_skipped_screen_is_simply_not_visited.
         {
             let mut fake = FakeInstaller::new();
             fake.step = "disk";
@@ -851,11 +818,8 @@ mod tests {
         }
     }
 
-    /// A failed install reports the installer log and a timeout is bounded; a TPM PIN request without
-    /// verified boot fails instead of downgrading; the target choice refuses to guess.
     #[test]
     fn the_installer_drive_fails_closed_instead_of_guessing() {
-        // Phase: a_failed_install_reports_the_installer_log_and_a_timeout_is_bounded.
         {
             let mut fake = FakeInstaller::new();
             fake.install_polls = VecDeque::from(["running", "failed"]);
@@ -884,7 +848,6 @@ mod tests {
             assert!(pace.0 <= 5, "the loop is bounded by the time budget");
         }
 
-        // Phase: a_tpm_pin_request_without_verified_boot_fails_instead_of_downgrading.
         {
             let mut fake = FakeInstaller::new();
             let error = install(
@@ -905,7 +868,6 @@ mod tests {
             );
         }
 
-        // Phase: target_choice_refuses_to_guess.
         {
             let one = json!({"storage": {"disks": [
                 {"device": "/dev/vda", "installer_medium": true},

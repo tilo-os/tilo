@@ -10,6 +10,7 @@
 //! [`TimePicker::from_state`], or be observed with `on_change` for an
 //! app-owned durable mutation.
 
+use crate::i18n::widget_text;
 use crate::widget::{AppModel, ModelPath};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -738,7 +739,7 @@ impl Widget for TimePicker {
             AccessNode::new(Role::ComboBox)
                 .with_semantic_key(&self.id)
                 .with_action_target(&self.id)
-                .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
+                .with_optional_name(self.accessible_name.as_ref().map(|name| widget_text(name)))
                 .with_value(value)
                 .with_state(
                     AccessState::new()

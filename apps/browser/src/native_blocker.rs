@@ -5,8 +5,8 @@ use std::sync::Arc;
 use ui::lock::MutexRecover as _;
 use ui::webview::{SharedEngine, WebViewCommand};
 
-// Small first-run safety net authored for Tilo. Full maintained lists are
-// loaded from cache and refreshed below; this is not advertised as a full list.
+// Small first-run safety net authored for Tilo; the maintained lists are loaded from
+// cache and refreshed below.
 const BASELINE: &str = "! Tilo first-run baseline\n||doubleclick.net^\n||googlesyndication.com^\n||googleadservices.com^\n||adnxs.com^\n||adsrvr.org^\n||scorecardresearch.com^\n||outbrain.com^\n||taboola.com^\n";
 const MAX_LIST: u64 = 8 * 1024 * 1024;
 const MAX_TOTAL: usize = 30 * 1024 * 1024;
@@ -40,29 +40,23 @@ pub struct Status {
 
 /// What the filter list is doing, as the site panel says it.
 ///
-/// The state is kept, not the sentence: a refresh finishes on the worker's
-/// own thread, where the language the person chose is not installed, and the
-/// panel draws it on the frame's. [`FilterMessage::text`] is that sentence.
+/// The state is kept, not the sentence: a refresh finishes on the worker's own thread,
+/// where the language the person chose is not installed, and the panel draws it on the
+/// frame's. [`FilterMessage::text`] is that sentence.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum FilterMessage {
-    /// The rules built into Browser are the ones in force.
     #[default]
     BuiltIn,
     Updating,
     Updated,
-    /// The rules kept on this device, while a refresh runs or after one
-    /// failed to reach the network.
     Cached,
-    /// The refresh failed, in the worker's own words for why.
     Failed {
         detail: String,
     },
-    /// The refresh could not start at all.
     WorkerUnavailable,
 }
 
 impl FilterMessage {
-    /// The sentence the site panel shows for this state.
     pub fn text(&self) -> String {
         match self {
             Self::BuiltIn => crate::CATALOG.t("browser-filters-built-in"),
@@ -180,8 +174,8 @@ pub fn refresh(engine: &SharedEngine, force: bool) {
     if !begin_refresh(state()) {
         return;
     }
-    // Restore independently of cache freshness or network success. A failed
-    // startup refresh must not erase the previous successful download time.
+    // Restore independently of cache freshness or network success: a failed startup
+    // refresh must not erase the previous successful download time.
     if let Some(directory) = crate::blocker::cache_dir() {
         let mut status = state().lock_recover();
         status.updated = status
@@ -194,7 +188,6 @@ pub fn refresh(engine: &SharedEngine, force: bool) {
         .name("chromium-filter-loader".into())
         .spawn(move || {
             let directory = crate::blocker::cache_dir();
-            // Test endpoints are opt-in and restricted to explicitly isolated app roots.
             let endpoint = crate::storage::explicit_root()
                 .and_then(|_| std::env::var("TILO_BROWSER_FILTER_ENDPOINT").ok())
                 .filter(|s| {
@@ -239,7 +232,6 @@ pub fn refresh(engine: &SharedEngine, force: bool) {
                     status.message = FilterMessage::Failed { detail: error };
                 }
             }
-            // The panel may read the state as soon as it is woken.
             drop(status);
             wake.wake();
         });
@@ -249,11 +241,10 @@ pub fn refresh(engine: &SharedEngine, force: bool) {
         status.message = FilterMessage::WorkerUnavailable;
     }
 }
-/// Hand `engine` the cached rules, then `then` (the window's first
-/// navigation, which the rules must precede), then start a refresh. The
-/// cache is read on a thread of its own: the window may be drawn on the
-/// compositor's frame loop, which never waits on the disk. Where no thread
-/// can be started the engine still gets the baseline rules and `then`.
+/// Hand `engine` the cached rules, then `then` (the window's first navigation, which the
+/// rules must precede), then start a refresh. The cache is read on a thread of its own,
+/// since the window may be drawn on the compositor's frame loop. Where no thread can be
+/// started the engine still gets the baseline rules and `then`.
 pub fn start(engine: &SharedEngine, then: Option<WebViewCommand>) {
     let worker = Arc::clone(engine);
     let next = then.clone();
@@ -286,8 +277,6 @@ mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    /// This test module's test `name` as libtest names it in whichever
-    /// crate compiles the module in: its path without the crate's name.
     fn own_test(name: &str) -> String {
         let path = module_path!();
         let path = path.split_once("::").map_or(path, |(_, path)| path);
@@ -330,11 +319,9 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o755)).unwrap();
-        // macOS assesses a newly written executable on its first launch, and
-        // while the system is busy (as it is under a parallel test run) that
-        // has been measured at over thirty seconds — longer than the engine
-        // waits for a host to come up. Launch the helper once beforehand, so
-        // what is bounded below is the engine's start-up, not the assessment.
+        // macOS assesses a newly written executable on its first launch, and under a
+        // parallel test run that has been measured at over thirty seconds, longer than
+        // the engine waits for a host. Launch the helper once beforehand.
         assert!(
             std::process::Command::new(&host)
                 .arg("--warm")
@@ -389,7 +376,6 @@ mod tests {
         drop(engine);
     }
 
-    /// Baseline protection, cached lists, refresh failures, concurrency and private root cleanup.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -494,8 +480,8 @@ mod tests {
             crate::storage::configure(None).unwrap();
             let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
             start(&engine, None);
-            // The refresh starts on the cache reader's thread, once the
-            // cached rules are handed over.
+            // The refresh starts on the cache reader's thread, once the cached rules are
+            // handed over.
             tilo_test_env::wait_until("the refresh to finish", || {
                 let status = status();
                 !status.busy && status != Status::default()
@@ -561,7 +547,6 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        // libtest exits 0 when `--exact` selects nothing; require the child ran.
         assert!(
             String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed"),
             "the child ran no test: {}",

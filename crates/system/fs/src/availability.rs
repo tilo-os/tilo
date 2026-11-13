@@ -1,95 +1,25 @@
 //! Durable local availability policy for collaborative file records.
 //!
-//! Availability is deliberately keyed by [`FileRecordId`], never by a path:
-//! paths are mutable presentation metadata, while pin and eviction decisions
-//! must survive renames and moves.  This module records policy and evidence;
-//! the content store remains responsible for retaining or deleting bytes.
+//! Keyed by [`FileRecordId`], never by a path: paths are mutable presentation metadata, while pin
+//! and eviction decisions must survive renames and moves. This records policy and evidence; the
+//! content store retains or deletes bytes.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
-use collab_types::{Ed25519PublicKey, Signature, verify_event};
 use fs_protocol::projection::{
     AVAILABILITY_PROJECTION_VERSION, MAX_PROJECTED_ERROR_BYTES, ProjectedFreshness,
     ProjectedReplicaEvidence,
 };
 use fs_protocol::{
-    AvailabilityPolicy, AvailabilityProjectionV1, ContentHash, FileActor, FileRecordId,
-    FileVersionId, ProjectedTransfer, Residency, TransferPhase, TransferProgress,
+    AvailabilityPolicy, AvailabilityProjectionV1, FileRecordId, FileVersionId, ProjectedTransfer,
+    Residency, TransferPhase, TransferProgress,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// On-disk schema written by [`AvailabilityRegistry`].
 pub const AVAILABILITY_SCHEMA_VERSION: u16 = 2;
-pub const MAX_REPLICA_OBSERVATIONS_PER_RECORD: usize = 64;
-
-/// One cryptographically verified receipt from a distinct certified device.
-/// The signed fields are retained so restart never turns an aggregate counter
-/// into evidence whose origin can no longer be audited.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ReplicaObservation {
-    pub protocol_version: u16,
-    pub workspace_id: uuid::Uuid,
-    pub record_id: FileRecordId,
-    pub person: Ed25519PublicKey,
-    pub device: Ed25519PublicKey,
-    pub version_id: FileVersionId,
-    pub content_hash: Option<ContentHash>,
-    pub byte_len: u64,
-    pub metadata_hash: ContentHash,
-    pub nonce: [u8; 32],
-    pub issued_at_ms: u64,
-    pub expires_at_ms: u64,
-    pub observed_at_ms: u64,
-    pub signature: Signature,
-}
-
-#[derive(Serialize)]
-struct ReplicaObservationView<'a> {
-    domain: &'static str,
-    protocol_version: u16,
-    workspace_id: uuid::Uuid,
-    revision: &'a fs_protocol::ContentRevisionV1,
-    nonce: [u8; 32],
-    actor: FileActor,
-    issued_at_ms: u64,
-    expires_at_ms: u64,
-}
-
-impl ReplicaObservation {
-    fn verify_persisted(&self) -> bool {
-        let revision = fs_protocol::ContentRevisionV1 {
-            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-            record_id: self.record_id,
-            version_id: self.version_id,
-            content_hash: self.content_hash,
-            byte_len: self.byte_len,
-            metadata_hash: self.metadata_hash,
-        };
-        let view = ReplicaObservationView {
-            domain: crate::replica_ack::SIGNATURE_DOMAIN,
-            protocol_version: self.protocol_version,
-            workspace_id: self.workspace_id,
-            revision: &revision,
-            nonce: self.nonce,
-            actor: FileActor {
-                person: self.person,
-                device: self.device,
-            },
-            issued_at_ms: self.issued_at_ms,
-            expires_at_ms: self.expires_at_ms,
-        };
-        self.protocol_version == crate::replica_ack::REPLICA_ACK_PROTOCOL_VERSION
-            && !self.workspace_id.is_nil()
-            && self.nonce != [0; 32]
-            && verify_event(&view, &self.signature, &self.device).is_ok()
-    }
-}
-
-/// Whether the record represents a directory or a file-like object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecordKind {
@@ -97,47 +27,42 @@ pub enum RecordKind {
     Directory,
 }
 
-/// Last transfer failure. It is retained separately from the current phase so
-/// a retry can show both live progress and the previous diagnostic.
+/// Last transfer failure, kept apart from the current phase so a retry shows both progress and
+/// the previous diagnostic.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferError {
     pub message: String,
     pub occurred_at_ms: u64,
 }
 
-/// Transfer state shown by Files and maintained by hydration/replication.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferState {
     pub phase: TransferPhase,
     pub progress: Option<TransferProgress>,
     pub last_error: Option<TransferError>,
-    /// Consecutive automatic hydration failures for the current version.
-    /// Persisting this prevents a restart from turning an unavailable peer
-    /// into a tight retry loop.
+    /// Consecutive automatic hydration failures for the current version; persisting this keeps a
+    /// restart from turning an unavailable peer into a tight retry loop.
     #[serde(default)]
     pub retry_count: u32,
-    /// Absolute wall-clock deadline for the next automatic attempt. An
-    /// explicit user retry clears this field.
+    /// Absolute wall-clock deadline for the next automatic attempt; an explicit retry clears it.
     #[serde(default)]
     pub retry_at_ms: Option<u64>,
 }
 
-/// Replica evidence for exactly one immutable version of this record.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplicaEvidence {
-    /// Peers that recently acknowledged possessing the complete version and
-    /// were reachable when the observation was made. The replication layer
-    /// must count only authenticated, authorized, non-revoked replicas.
+    /// Peers that recently acknowledged possessing the complete version and were reachable then.
+    /// Only authenticated, authorized, non-revoked replicas count.
     pub reachable: u32,
-    /// Recently acknowledged durable replicas (which may later be offline),
-    /// after applying the workspace's acceptable-host policy.
+    /// Recently acknowledged durable replicas, which may since be offline, after applying the
+    /// workspace's acceptable-host policy.
     pub durable: u32,
-    /// The version to which both counts apply. `None` is never eviction proof.
+    /// The version both counts apply to. `None` is never eviction proof.
     pub acknowledged_version: Option<FileVersionId>,
 }
 
-/// Freshness timestamps kept distinct because metadata, local bytes, and
-/// replica observations advance independently.
+/// Freshness timestamps, kept apart because metadata, local bytes and replica observations
+/// advance independently.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Freshness {
     pub metadata_observed_at_ms: Option<u64>,
@@ -145,13 +70,11 @@ pub struct Freshness {
     pub replicas_observed_at_ms: Option<u64>,
 }
 
-/// Durable availability state for one stable collaborative-file record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordAvailability {
     pub record_id: FileRecordId,
     pub kind: RecordKind,
-    /// Stable parent record, not a path. This makes directory pins apply to
-    /// descendants created after the directory was pinned.
+    /// Stable parent record, not a path, so a directory pin reaches descendants created after it.
     pub parent: Option<FileRecordId>,
     /// Current immutable version. Replica evidence must name this exact value.
     pub current_version: Option<FileVersionId>,
@@ -159,11 +82,9 @@ pub struct RecordAvailability {
     pub transfer: TransferState,
     pub policy: AvailabilityPolicy,
     pub replicas: ReplicaEvidence,
-    /// Verified receipts keyed semantically by certified device.
-    pub replica_observations: Vec<ReplicaObservation>,
     pub freshness: Freshness,
-    /// Historical versions intentionally retained only on this device. IDs,
-    /// rather than a count, let history/GC remove the precise retention reason.
+    /// Historical versions retained only on this device. IDs rather than a count, so history and
+    /// GC can remove the precise retention reason.
     pub retained_versions: Vec<FileVersionId>,
 }
 
@@ -178,7 +99,6 @@ impl RecordAvailability {
             transfer: TransferState::default(),
             policy: AvailabilityPolicy::Automatic,
             replicas: ReplicaEvidence::default(),
-            replica_observations: Vec::new(),
             freshness: Freshness::default(),
             retained_versions: Vec::new(),
         }
@@ -186,14 +106,10 @@ impl RecordAvailability {
 }
 
 impl RecordAvailability {
-    /// The record's [`AvailabilityProjectionV1`] under its direct policy.
-    /// Use [`Self::projection_with_policy`] when directory-pin inheritance has
-    /// already been resolved by the registry.
     pub fn projection(&self) -> AvailabilityProjectionV1 {
         self.projection_with_policy(self.policy)
     }
 
-    /// Pure in-memory conversion suitable for a FUSE `getxattr` callback.
     pub fn projection_with_policy(
         &self,
         effective_policy: AvailabilityPolicy,
@@ -207,9 +123,8 @@ impl RecordAvailability {
                 (Some(message), truncated, Some(error.occurred_at_ms))
             });
 
-        // Counts without an observation time, or for any version other than
-        // the current one, are not current evidence. Preserve the last replica
-        // observation timestamp separately, but report the counts as unknown.
+        // Counts without an observation time, or for any version but the current one, are not
+        // current evidence: report them as unknown, keeping the last observation timestamp.
         let replica_evidence_is_current = self.current_version.is_some()
             && self.replicas.acknowledged_version == self.current_version
             && self.freshness.replicas_observed_at_ms.is_some();
@@ -271,12 +186,11 @@ struct RegistryDocument {
     records: Vec<RecordAvailability>,
 }
 
-/// Replica requirements used for a normal, non-destructive eviction.
+/// What an eviction of local bytes would cost.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EvictionRequirements {
     pub minimum_reachable: u32,
     pub minimum_durable: u32,
-    /// Maximum age of the explicit replica acknowledgement.
     pub maximum_replica_age_ms: u64,
 }
 
@@ -294,8 +208,8 @@ impl Default for EvictionRequirements {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EvictionDecision {
     Allowed,
-    /// Caller explicitly accepted permanent data loss. UI must present this as
-    /// destructive rather than as ordinary cache eviction.
+    /// Caller explicitly accepted permanent data loss; UI presents this as destructive rather than
+    /// as ordinary cache eviction.
     AllowedDestructiveOverride,
     Denied(EvictionBlocker),
 }
@@ -340,49 +254,30 @@ pub enum AvailabilityError {
     AncestryCycle(FileRecordId),
     #[error("transfer progress exceeds its declared total")]
     InvalidTransferProgress,
-    #[error("replica observation refers to an unknown record {0:?}")]
-    UnknownRecord(FileRecordId),
-    #[error("the local device cannot count itself as a remote replica")]
-    SelfReplicaObservation,
-    #[error("replica observation is stale, expired, or from the future")]
-    StaleReplicaObservation,
-    #[error("replica observation does not name the record's current version")]
-    ReplicaVersionMismatch,
-    #[error("replica observation replays or predates that device's last receipt")]
-    ReplicaReplay,
-    #[error("record exceeds {MAX_REPLICA_OBSERVATIONS_PER_RECORD} replica observations")]
-    TooManyReplicaObservations,
     #[error("current content revision is invalid")]
     InvalidCurrentRevision,
 }
 
-/// Crash-safe per-device registry for local availability state.
 pub struct AvailabilityRegistry {
     path: PathBuf,
     records: BTreeMap<FileRecordId, RecordAvailability>,
-    /// Inside [`Self::batch`]: mutations are validated and persisted once,
-    /// when the batch ends.
+    /// Inside [`Self::batch`]: mutations are validated and persisted once, when the batch ends.
     deferred: bool,
-    /// Bumped by every commit that changes what pinned hydration acts on;
-    /// see [`Self::hydration_generation`].
+    /// Bumped by every commit that changes what pinned hydration acts on; see
+    /// [`Self::hydration_generation`].
     hydration_generation: u64,
-    /// Announces each bump of `hydration_generation`, so the pinned
-    /// hydration worker waits for one instead of polling.
     hydration_watch: tokio::sync::watch::Sender<u64>,
-    /// Records whose committed state changed since
-    /// [`Self::take_changed_records`] last took them, kept only while
-    /// someone subscribes through [`Self::subscribe_changes`].
+    /// Records whose committed state changed since [`Self::take_changed_records`] last took them,
+    /// kept while someone subscribes through [`Self::subscribe_changes`].
     changed: BTreeSet<FileRecordId>,
-    /// Announces that `changed` grew, so the mount can tell the folders
-    /// those files are in (`crate::change_signal`).
     changes_watch: tokio::sync::watch::Sender<()>,
     #[cfg(test)]
     persists: std::sync::atomic::AtomicU64,
 }
 
-/// The part of a record pinned hydration reacts to. Transfer bookkeeping,
-/// replica evidence and freshness stamps are deliberately absent: they are
-/// either written by the hydration worker itself or never change its plan.
+/// The part of a record pinned hydration reacts to. Transfer bookkeeping, replica evidence and
+/// freshness stamps are absent: they are written by the hydration worker itself or never change
+/// its plan.
 fn hydration_view(
     record: &RecordAvailability,
 ) -> (
@@ -402,13 +297,8 @@ fn hydration_view(
 }
 
 impl AvailabilityRegistry {
-    /// Open an existing registry or create an empty in-memory registry when
-    /// the file is absent. The first mutation creates parent directories.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the registry cannot be read, decoded, or fully
-    /// validated.
+    /// Open an existing registry, or an empty in-memory one when the file is absent. The first
+    /// mutation creates parent directories.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, AvailabilityError> {
         let path = path.into();
         if !path.exists() {
@@ -460,38 +350,32 @@ impl AvailabilityRegistry {
         self.records.values()
     }
 
-    /// Changes whenever a commit alters a record's policy, kind, parent,
-    /// current version or residency, or adds a record. Transfer progress,
-    /// replica receipts and freshness stamps leave it alone, so a pinned
-    /// hydration worker can compare it to learn, without walking the
-    /// namespace, that nothing it acts on changed since its last pass.
+    /// Changes whenever a commit alters a record's policy, kind, parent, current version or
+    /// residency, or adds a record. Transfer progress, replica receipts and freshness stamps leave
+    /// it alone, so the pinned hydration worker learns from it that nothing it acts on changed.
     #[must_use]
     pub fn hydration_generation(&self) -> u64 {
         self.hydration_generation
     }
 
-    /// A receiver that sees every later change
-    /// of [`Self::hydration_generation`]: a pin, an unpin, a new version or a
-    /// residency change, from any writer of this registry.
+    /// A receiver that sees every later change of [`Self::hydration_generation`], from any writer
+    /// of this registry.
     #[must_use]
     pub fn subscribe_hydration(&self) -> tokio::sync::watch::Receiver<u64> {
         self.hydration_watch.subscribe()
     }
 
-    /// A receiver told of each committed change to any record, from any
-    /// writer of this registry; [`Self::take_changed_records`] says which.
+    /// A receiver told of each committed change to any record; [`Self::take_changed_records`] says
+    /// which.
     #[must_use]
     pub fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.changes_watch.subscribe()
     }
 
-    /// The records whose committed state changed since this was last asked,
-    /// while anyone subscribed through [`Self::subscribe_changes`].
     pub fn take_changed_records(&mut self) -> BTreeSet<FileRecordId> {
         std::mem::take(&mut self.changed)
     }
 
-    /// Note that `ids` were committed changed, for whoever subscribes.
     fn note_changed(&mut self, ids: impl IntoIterator<Item = FileRecordId>) {
         if self.changes_watch.receiver_count() == 0 {
             return;
@@ -508,51 +392,31 @@ impl AvailabilityRegistry {
         self.hydration_watch.send_replace(self.hydration_generation);
     }
 
-    /// Durable writes of the whole registry so far.
     #[cfg(test)]
     #[must_use]
     pub fn persist_count(&self) -> u64 {
         self.persists.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Content ids of current versions another device acknowledged holding
-    /// with a signed replica receipt: what the cache budget gives up first,
-    /// because a host keeps them to fetch again. A receipt counts after it
-    /// expires; content ids are immutable, and this only orders the cache,
-    /// it never permits dropping what the budget or a pin would keep.
+    /// Content ids of current versions another device proved it holds.
+    ///
+    /// Nothing acknowledges replicas since the tree became the record, so this is empty.
     #[must_use]
-    pub fn held_elsewhere(&self) -> HashSet<[u8; 32]> {
-        self.records
-            .values()
-            .filter_map(|record| {
-                let version = record.current_version?;
-                record
-                    .replica_observations
-                    .iter()
-                    .find(|receipt| receipt.version_id == version)?
-                    .content_hash
-                    .map(|hash| hash.0)
-            })
-            .collect()
+    pub fn held_elsewhere(&self) -> std::collections::HashSet<[u8; 32]> {
+        std::collections::HashSet::new()
     }
 
-    /// Whether any record explicitly promises offline residency. Descendants
-    /// inherit that promise, so one explicit row is enough to require a
-    /// namespace reconciliation; with none, the periodic worker can stay
-    /// idle without walking and sorting the complete workspace.
+    /// Whether any record explicitly promises offline residency. Descendants inherit the promise,
+    /// so one explicit row requires a namespace reconciliation; with none, the periodic worker can
+    /// stay idle.
     pub fn has_pinned_policy(&self) -> bool {
         self.records
             .values()
             .any(|record| record.policy == AvailabilityPolicy::Pinned)
     }
 
-    /// Cancel durable automatic-hydration state below a pin that was removed.
-    /// The explicit unpin action pays this cost once, allowing the periodic
-    /// worker to take the zero-scan fast path whenever no pins remain.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if clearing the durable transfer state cannot persist.
+    /// Cancel durable automatic-hydration state below a pin that was removed, so the periodic
+    /// worker can take the zero-scan fast path whenever no pins remain.
     pub fn clear_automatic_transfer_subtree(
         &mut self,
         root: FileRecordId,
@@ -602,15 +466,9 @@ impl AvailabilityRegistry {
         Ok(true)
     }
 
-    /// Set `policy` on a record, given its `ancestry`: every record from the
-    /// workspace root down to it, with its kind and parent. Each ancestor's
-    /// kind and parent are recorded too, so a directory's pin reaches what is
-    /// created in it later. Unpinning cancels the automatic transfers below
-    /// the record. An empty ancestry changes nothing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the ancestry is invalid or state cannot persist.
+    /// Set `policy` on a record, given its `ancestry`: every record from the workspace root down to
+    /// it, with its kind and parent. Recording each ancestor's kind and parent lets a directory's
+    /// pin reach what is created in it later. Unpinning cancels the automatic transfers below.
     pub fn set_policy_along(
         &mut self,
         ancestry: &[(FileRecordId, RecordKind, Option<FileRecordId>)],
@@ -638,14 +496,8 @@ impl AvailabilityRegistry {
         Ok(())
     }
 
-    /// Install the authenticated current revision before accepting replica
-    /// evidence for it. Ordinary whole-workspace records use the same durable
-    /// availability path as record-scoped shares; without this row a valid NAS
-    /// acknowledgement would be discarded as `UnknownRecord`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the supplied revision is invalid or state cannot persist.
+    /// Install the authenticated current revision before accepting replica evidence for it;
+    /// without this row a valid acknowledgement would be discarded as `UnknownRecord`.
     pub fn track_current_revision(
         &mut self,
         revision: fs_protocol::ContentRevisionV1,
@@ -676,7 +528,6 @@ impl AvailabilityRegistry {
             record.residency = Residency::NotResident;
             record.transfer = TransferState::default();
             record.replicas = ReplicaEvidence::default();
-            record.replica_observations.clear();
             record.freshness.local_verified_at_ms = None;
             record.freshness.replicas_observed_at_ms = None;
         }
@@ -684,16 +535,9 @@ impl AvailabilityRegistry {
         Ok(true)
     }
 
-    /// Runs `apply`'s mutations and commits them with one validation and one
-    /// durable write of the registry, instead of one of each per mutation:
-    /// receipts for a thousand records cost one write, not a thousand
-    /// rewrites of the whole registry. When validation or persistence of the
-    /// batch fails, memory and disk are left exactly as before it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the resulting registry is invalid or cannot be
-    /// persisted.
+    /// Runs `apply`'s mutations and commits them with one validation and one durable write, so
+    /// receipts for a thousand records cost one write. A failed batch leaves memory and disk as
+    /// they were.
     pub fn batch<T>(&mut self, apply: impl FnOnce(&mut Self) -> T) -> Result<T, AvailabilityError> {
         let before = self.records.clone();
         self.deferred = true;
@@ -726,8 +570,8 @@ impl AvailabilityRegistry {
         Ok(value)
     }
 
-    /// Insert or replace a record and durably commit the complete registry.
-    /// Invalid ancestry leaves both memory and disk unchanged.
+    /// Insert or replace a record and durably commit the whole registry; invalid ancestry leaves
+    /// memory and disk unchanged.
     pub fn put(&mut self, record: RecordAvailability) -> Result<(), AvailabilityError> {
         let id = record.record_id;
         let previous = self.records.insert(id, record);
@@ -759,49 +603,6 @@ impl AvailabilityRegistry {
         Ok(())
     }
 
-    /// Persist a freshly verified remote receipt and rebuild the aggregate UI
-    /// projection from distinct, unexpired devices. Exact replay and an older
-    /// receipt from the same device fail closed.
-    pub fn observe_replica(
-        &mut self,
-        record_id: FileRecordId,
-        local_device: Ed25519PublicKey,
-        observation: ReplicaObservation,
-        now_ms: u64,
-    ) -> Result<(), AvailabilityError> {
-        if observation.device == local_device {
-            return Err(AvailabilityError::SelfReplicaObservation);
-        }
-        if observation.observed_at_ms != now_ms
-            || observation.issued_at_ms > now_ms
-            || observation.expires_at_ms < now_ms
-        {
-            return Err(AvailabilityError::StaleReplicaObservation);
-        }
-        let current = self
-            .records
-            .get(&record_id)
-            .ok_or(AvailabilityError::UnknownRecord(record_id))?;
-        if current.current_version != Some(observation.version_id) {
-            return Err(AvailabilityError::ReplicaVersionMismatch);
-        }
-        if current.replica_observations.iter().any(|prior| {
-            prior.device == observation.device && prior.issued_at_ms >= observation.issued_at_ms
-        }) {
-            return Err(AvailabilityError::ReplicaReplay);
-        }
-        let mut next = current.clone();
-        next.replica_observations
-            .retain(|prior| prior.device != observation.device && prior.expires_at_ms >= now_ms);
-        if next.replica_observations.len() >= MAX_REPLICA_OBSERVATIONS_PER_RECORD {
-            return Err(AvailabilityError::TooManyReplicaObservations);
-        }
-        next.replica_observations.push(observation);
-        refresh_replica_projection(&mut next, now_ms);
-        self.put(next)
-    }
-
-    /// Effective policy, including any pinned stable directory ancestor.
     pub fn effective_policy(
         &self,
         record_id: FileRecordId,
@@ -830,14 +631,14 @@ impl AvailabilityRegistry {
         }
     }
 
-    /// Evaluate cache eviction using explicit, version-bound replica evidence.
-    /// This does not remove bytes; the store integration must do that only
-    /// after an allowed decision and then persist the new residency state.
+    /// Whether local bytes may be released without losing the last copy: another device's replica
+    /// acknowledgement must be bound to exactly this version. Nothing acknowledges replicas since
+    /// the tree became the record, so only a caller who accepts losing the bytes may release them.
     pub fn eviction_decision(
         &self,
         record_id: FileRecordId,
-        now_ms: u64,
-        requirements: EvictionRequirements,
+        _now_ms: u64,
+        _requirements: EvictionRequirements,
         destructive_override: bool,
     ) -> EvictionDecision {
         if destructive_override {
@@ -859,41 +660,10 @@ impl AvailabilityRegistry {
         if !record.retained_versions.is_empty() {
             return EvictionDecision::Denied(EvictionBlocker::RetainedVersions);
         }
-        let Some(version) = record.current_version else {
+        if record.current_version.is_none() {
             return EvictionDecision::Denied(EvictionBlocker::CurrentVersionUnknown);
-        };
-        let valid = record
-            .replica_observations
-            .iter()
-            .filter(|receipt| {
-                receipt.version_id == version
-                    && receipt.issued_at_ms <= now_ms
-                    && receipt.expires_at_ms >= now_ms
-            })
-            .count();
-        let valid = u32::try_from(valid).unwrap_or(u32::MAX);
-        if record.replicas.acknowledged_version != Some(version) {
-            return EvictionDecision::Denied(EvictionBlocker::ReplicaVersionMismatch);
         }
-        if valid == 0 {
-            return EvictionDecision::Denied(EvictionBlocker::ReplicaAcknowledgementMissing);
-        }
-        let Some(acknowledged_at_ms) = record.freshness.replicas_observed_at_ms else {
-            return EvictionDecision::Denied(EvictionBlocker::ReplicaAcknowledgementMissing);
-        };
-        if acknowledged_at_ms > now_ms {
-            return EvictionDecision::Denied(EvictionBlocker::ReplicaAcknowledgementFromFuture);
-        }
-        if now_ms.saturating_sub(acknowledged_at_ms) > requirements.maximum_replica_age_ms {
-            return EvictionDecision::Denied(EvictionBlocker::ReplicaAcknowledgementStale);
-        }
-        if valid < requirements.minimum_reachable {
-            return EvictionDecision::Denied(EvictionBlocker::InsufficientReachableReplicas);
-        }
-        if valid < requirements.minimum_durable {
-            return EvictionDecision::Denied(EvictionBlocker::InsufficientDurableReplicas);
-        }
-        EvictionDecision::Allowed
+        EvictionDecision::Denied(EvictionBlocker::ReplicaAcknowledgementMissing)
     }
 
     fn persist(&self) -> Result<(), AvailabilityError> {
@@ -910,9 +680,8 @@ impl AvailabilityRegistry {
     }
 }
 
-/// Whether `record_id` is pinned, itself or through a stable ancestor, in a
-/// captured snapshot of `records`. Missing or cyclic ancestry is invalid
-/// durable state and counts as pinned, so it can never become permission to
+/// Whether `record_id` is pinned, itself or through a stable ancestor, in a captured snapshot of
+/// `records`. Missing or cyclic ancestry counts as pinned, so it can never become permission to
 /// release local data.
 pub(crate) fn pinned_in_snapshot(records: &[RecordAvailability], record_id: FileRecordId) -> bool {
     let mut current = Some(record_id);
@@ -933,53 +702,10 @@ pub(crate) fn pinned_in_snapshot(records: &[RecordAvailability], record_id: File
     false
 }
 
-fn refresh_replica_projection(record: &mut RecordAvailability, now_ms: u64) {
-    let Some(version) = record.current_version else {
-        record.replicas = ReplicaEvidence::default();
-        record.freshness.replicas_observed_at_ms = None;
-        return;
-    };
-    let valid = record
-        .replica_observations
-        .iter()
-        .filter(|receipt| {
-            receipt.version_id == version
-                && receipt.issued_at_ms <= now_ms
-                && receipt.expires_at_ms >= now_ms
-        })
-        .count();
-    let valid = u32::try_from(valid).unwrap_or(u32::MAX);
-    record.replicas = ReplicaEvidence {
-        reachable: valid,
-        durable: valid,
-        acknowledged_version: (valid > 0).then_some(version),
-    };
-    record.freshness.replicas_observed_at_ms = record
-        .replica_observations
-        .iter()
-        .filter(|receipt| receipt.version_id == version && receipt.expires_at_ms >= now_ms)
-        .map(|receipt| receipt.observed_at_ms)
-        .max();
-}
-
 fn validate_records(
     records: &BTreeMap<FileRecordId, RecordAvailability>,
 ) -> Result<(), AvailabilityError> {
     for record in records.values() {
-        if record.replica_observations.len() > MAX_REPLICA_OBSERVATIONS_PER_RECORD {
-            return Err(AvailabilityError::TooManyReplicaObservations);
-        }
-        let mut devices = BTreeSet::new();
-        for observation in &record.replica_observations {
-            if observation.record_id != record.record_id
-                || observation.version_id.0.is_nil()
-                || observation.issued_at_ms > observation.expires_at_ms
-                || !devices.insert(observation.device)
-                || !observation.verify_persisted()
-            {
-                return Err(AvailabilityError::StaleReplicaObservation);
-            }
-        }
         if record
             .transfer
             .progress
@@ -1012,65 +738,6 @@ fn validate_records(
         }
     }
     Ok(())
-}
-
-/// Signed replica receipts for tests across the crate.
-#[cfg(test)]
-pub(crate) mod test_receipts {
-    use super::{RecordAvailability, ReplicaEvidence, ReplicaObservation};
-    use collab_types::Ed25519PublicKey;
-    use ed25519_dalek::SigningKey;
-    use fs_protocol::{ContentHash, FileActor, FileVersionId};
-    use getrandom::{SysRng, rand_core::UnwrapErr};
-
-    /// Give `record` a signed receipt from a fresh device for `version`,
-    /// whose content is `content`, observed at `now_ms`.
-    pub(crate) fn acknowledge(
-        record: &mut RecordAvailability,
-        version: FileVersionId,
-        content: ContentHash,
-        now_ms: u64,
-    ) {
-        let device = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let revision = fs_protocol::ContentRevisionV1 {
-            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
-            record_id: record.record_id,
-            version_id: version,
-            content_hash: Some(content),
-            byte_len: 10,
-            metadata_hash: ContentHash([5; 32]),
-        };
-        let request =
-            crate::replica_ack::ReplicaAckRequestV1::new(uuid::Uuid::new_v4(), revision).unwrap();
-        let actor = FileActor {
-            person: Ed25519PublicKey(device.verifying_key().to_bytes()),
-            device: Ed25519PublicKey(device.verifying_key().to_bytes()),
-        };
-        let receipt =
-            crate::replica_ack::ReplicaAckV1::signed(&request, actor, now_ms, &device).unwrap();
-        record.replicas = ReplicaEvidence {
-            reachable: 1,
-            durable: 1,
-            acknowledged_version: Some(version),
-        };
-        record.freshness.replicas_observed_at_ms = Some(now_ms);
-        record.replica_observations = vec![ReplicaObservation {
-            protocol_version: receipt.protocol_version,
-            workspace_id: receipt.workspace_id,
-            record_id: receipt.revision.record_id,
-            person: receipt.actor.person,
-            device: receipt.actor.device,
-            version_id: receipt.revision.version_id,
-            content_hash: receipt.revision.content_hash,
-            byte_len: receipt.revision.byte_len,
-            metadata_hash: receipt.revision.metadata_hash,
-            nonce: receipt.nonce,
-            issued_at_ms: receipt.issued_at_ms,
-            expires_at_ms: receipt.expires_at_ms,
-            observed_at_ms: now_ms,
-            signature: receipt.signature,
-        }];
-    }
 }
 
 #[cfg(test)]
@@ -1126,37 +793,6 @@ mod tests {
         assert!(registry.take_changed_records().is_empty());
     }
 
-    fn safe_evidence(record: &mut RecordAvailability, version: FileVersionId, now_ms: u64) {
-        super::test_receipts::acknowledge(record, version, ContentHash([4; 32]), now_ms);
-    }
-
-    #[test]
-    fn content_is_held_elsewhere_only_for_a_receipt_of_its_current_version() {
-        let temp = TempDir::new().unwrap();
-        let mut registry =
-            AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-        let (held, replaced, unacknowledged) = (
-            FileRecordId::new(),
-            FileRecordId::new(),
-            FileRecordId::new(),
-        );
-        // A receipt for a version that has since been replaced names
-        // content the host may no longer keep for this record.
-        let mut record = file(replaced, FileVersionId::new());
-        safe_evidence(&mut record, FileVersionId::new(), 1_000);
-        registry.put(record).unwrap();
-        registry
-            .put(file(unacknowledged, FileVersionId::new()))
-            .unwrap();
-        assert!(registry.held_elsewhere().is_empty());
-
-        let version = FileVersionId::new();
-        let mut record = file(held, version);
-        safe_evidence(&mut record, version, 1_000);
-        registry.put(record).unwrap();
-        assert_eq!(registry.held_elsewhere(), HashSet::from([[4; 32]]));
-    }
-
     #[test]
     fn availability_registry_persists_by_stable_record_id_and_rejects_tampering() {
         {
@@ -1198,25 +834,6 @@ mod tests {
             let path = temp.path().join("availability.json");
             let id = FileRecordId::new();
             let version = FileVersionId::new();
-            let mut record = file(id, version);
-            safe_evidence(&mut record, version, 10);
-            let mut registry = AvailabilityRegistry::open(&path).unwrap();
-            registry.put(record).unwrap();
-            drop(registry);
-            let mut value: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-            value["records"][0]["replica_observations"][0]["byte_len"] = serde_json::json!(11);
-            tilo_files::native::atomic::write(&path, &serde_json::to_vec(&value).unwrap()).unwrap();
-            assert!(matches!(
-                AvailabilityRegistry::open(path),
-                Err(AvailabilityError::StaleReplicaObservation)
-            ));
-        }
-        {
-            let temp = TempDir::new().unwrap();
-            let path = temp.path().join("availability.json");
-            let id = FileRecordId::new();
-            let version = FileVersionId::new();
             let old_name = "draft.png";
 
             let mut registry = AvailabilityRegistry::open(&path).unwrap();
@@ -1224,8 +841,6 @@ mod tests {
             record.policy = AvailabilityPolicy::Pinned;
             registry.put(record).unwrap();
 
-            // A namespace rename changes only presentation metadata. There is no
-            // path/name key in this registry to migrate or accidentally duplicate.
             let new_name = "approved.png";
             assert_ne!(old_name, new_name);
             assert_eq!(
@@ -1275,7 +890,6 @@ mod tests {
                 .put(RecordAvailability::new(other_dir, RecordKind::Directory))
                 .unwrap();
 
-            // The child is created only after the directory was pinned.
             let mut child_record = file(child, FileVersionId::new());
             child_record.parent = Some(pinned_dir);
             registry.put(child_record.clone()).unwrap();
@@ -1284,7 +898,6 @@ mod tests {
                 Some(AvailabilityPolicy::Pinned)
             );
 
-            // Stable ancestry, rather than a path prefix, controls inherited pin.
             child_record.parent = Some(other_dir);
             registry.put(child_record).unwrap();
             assert_eq!(
@@ -1309,127 +922,6 @@ mod tests {
             record.policy = AvailabilityPolicy::Automatic;
             registry.put(record).unwrap();
             assert!(!registry.has_pinned_policy());
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn eviction_requires_a_fresh_exact_ack_unless_explicitly_overridden() {
-        // Phase `safe_eviction_requires_fresh_ack_for_the_exact_current_version`.
-        {
-            let temp = TempDir::new().unwrap();
-            let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
-            let id = FileRecordId::new();
-            let old_version = FileVersionId::new();
-            let current_version = FileVersionId::new();
-            let now = 50_000;
-            let requirements = EvictionRequirements {
-                minimum_reachable: 1,
-                minimum_durable: 1,
-                maximum_replica_age_ms: 1_000,
-            };
-
-            let mut record = file(id, current_version);
-            safe_evidence(&mut record, old_version, now);
-            registry.put(record.clone()).unwrap();
-            assert_eq!(
-                registry.eviction_decision(id, now, requirements, false),
-                EvictionDecision::Denied(EvictionBlocker::ReplicaVersionMismatch)
-            );
-
-            safe_evidence(&mut record, current_version, now - 1_001);
-            registry.put(record.clone()).unwrap();
-            assert_eq!(
-                registry.eviction_decision(id, now, requirements, false),
-                EvictionDecision::Denied(EvictionBlocker::ReplicaAcknowledgementStale)
-            );
-
-            safe_evidence(&mut record, current_version, now);
-            registry.put(record).unwrap();
-            assert_eq!(
-                registry.eviction_decision(id, now, requirements, false),
-                EvictionDecision::Allowed
-            );
-        }
-        {
-            let temp = TempDir::new().unwrap();
-            let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
-            let id = FileRecordId::new();
-            let version = FileVersionId::new();
-            let now = 100;
-            let requirements = EvictionRequirements::default();
-            let mut record = file(id, version);
-            safe_evidence(&mut record, version, now);
-
-            record.transfer.phase = TransferPhase::Downloading;
-            registry.put(record.clone()).unwrap();
-            assert_eq!(
-                registry.eviction_decision(id, now, requirements, false),
-                EvictionDecision::Denied(EvictionBlocker::ActiveTransfer)
-            );
-
-            record.transfer.phase = TransferPhase::Idle;
-            record.policy = AvailabilityPolicy::Pinned;
-            registry.put(record.clone()).unwrap();
-            assert_eq!(
-                registry.eviction_decision(id, now, requirements, false),
-                EvictionDecision::Denied(EvictionBlocker::Pinned)
-            );
-
-            record.policy = AvailabilityPolicy::Automatic;
-            record.retained_versions = vec![FileVersionId::new(), FileVersionId::new()];
-            registry.put(record).unwrap();
-            assert_eq!(
-                registry.eviction_decision(id, now, requirements, false),
-                EvictionDecision::Denied(EvictionBlocker::RetainedVersions)
-            );
-        }
-        {
-            let temp = TempDir::new().unwrap();
-            let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
-            let id = FileRecordId::new();
-            let version = FileVersionId::new();
-            let now = 10_000;
-            let requirements = EvictionRequirements {
-                minimum_reachable: 1,
-                minimum_durable: 1,
-                maximum_replica_age_ms: 1_000,
-            };
-            let mut record = file(id, version);
-            record.replicas.acknowledged_version = Some(version);
-            registry.put(record.clone()).unwrap();
-            assert_eq!(
-                registry.eviction_decision(id, now, requirements, false),
-                EvictionDecision::Denied(EvictionBlocker::ReplicaAcknowledgementMissing)
-            );
-
-            // Prototype-era aggregate counters, even if internally consistent,
-            // are not proof without a retained signed per-device receipt.
-            record.freshness.replicas_observed_at_ms = Some(now);
-            record.replicas.reachable = 1;
-            record.replicas.durable = 1;
-            registry.put(record).unwrap();
-            assert_eq!(
-                registry.eviction_decision(id, now, requirements, false),
-                EvictionDecision::Denied(EvictionBlocker::ReplicaAcknowledgementMissing)
-            );
-        }
-        // Phase `destructive_override_is_explicit_and_bypasses_safety_blocks`.
-        {
-            let temp = TempDir::new().unwrap();
-            let registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
-            assert_eq!(
-                registry.eviction_decision(
-                    FileRecordId::new(),
-                    0,
-                    EvictionRequirements::default(),
-                    true
-                ),
-                EvictionDecision::AllowedDestructiveOverride
-            );
         }
     }
 
@@ -1515,7 +1007,6 @@ mod tests {
                 durable: 1,
                 acknowledged_version: Some(version),
             },
-            replica_observations: Vec::new(),
             freshness: Freshness {
                 metadata_observed_at_ms: Some(7_000),
                 local_verified_at_ms: Some(7_500),
@@ -1527,7 +1018,6 @@ mod tests {
 
     #[test]
     fn projection_bounds_errors_and_rejects_inconsistent_values() {
-        // Phase `long_utf8_errors_are_truncated_safely_and_marked`.
         {
             let mut record = rich_record();
             record.transfer.last_error.as_mut().unwrap().message = "é".repeat(300);

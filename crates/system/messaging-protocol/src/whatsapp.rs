@@ -4,7 +4,6 @@
 
 use crate::{Error, Route, Service};
 
-/// Protocol observations stay separate from document/UI delivery state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Evidence {
     SentOnly,
@@ -14,7 +13,6 @@ pub enum Evidence {
     NoRecipientEvidence,
 }
 
-/// The SDK's processed receipt semantics, not Rust enum serialization labels.
 pub struct Receipt<'a> {
     pub account: &'a str,
     pub chat_jid: &'a str,

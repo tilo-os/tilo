@@ -15,8 +15,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use serde_json::{Map, Value, json};
 use tilo_session::{Options, Session};
 use tilo_settings_service::{SettingsService, setting_resource};
@@ -36,7 +34,7 @@ fn this_computers_person(home: &mut tilo_test_env::TestHome) -> (tempfile::TempD
         .ensure_directories()
         .expect("this computer's identity");
     let person = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
-    let device = ed25519_dalek::SigningKey::from_bytes(&[0x22; 32]);
+    let device = ed25519_dalek::SigningKey::from_bytes(&tilo_test_env::node_key());
     tilo_user_identity::persist::write_device_key(&paths.device_privkey, &device)
         .expect("this computer's device key");
     let mut cert = tilo_user_identity::DeviceCert {

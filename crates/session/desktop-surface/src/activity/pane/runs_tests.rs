@@ -616,3 +616,92 @@ fn one_document_of_a_connections_run_undoes_alone() {
         "only the record the person picked is undone"
     );
 }
+
+/// The workspace record the session keeps holds a root per package it runs, and each app's record
+/// is admitted over that one document. The app's own steps are its entry's and no other's, and an
+/// agent's run there is listed — and taken back from the Activity — though no app's process holds
+/// the record and no marker holds the run.
+#[test]
+fn an_agents_run_in_a_record_the_session_keeps_is_listed_and_undone_from_the_activity() {
+    const NOTES: &str = "so.tilo.lang.notes";
+    const NOTES_KIND: &str = "tl.so.tilo.lang.notes.Notebook";
+    const NOTES_ROOT: &str = "tl:so.tilo.lang.notes:notebook";
+    const CHAT_KIND: &str = "tl.so.tilo.lang.chat.Channel";
+    const CHAT_ROOT: &str = "tl:so.tilo.lang.chat:channel";
+    // The run an agent admitted at this desktop's door works in: one run of a task.
+    const RUN: &str =
+        "so.tilo.session/agent-door/243b7256ef6c400fa43d111a4988b8ca@ad46de5895801c1c";
+    // The person names a session-kept record as the app's own record of the workspace.
+    let primary = ui::RecordId::package_primary().as_str().to_owned();
+
+    let tree = WorkspaceTree::bootstrap_demo();
+    let host = Rc::new(Host::default());
+    let mut pane = WorkspaceActivityPane::new();
+    pane.set_host(Rc::clone(&host) as Rc<dyn ActivityHost>);
+    pane.view = ActivityView::Explore;
+
+    // One document, two apps' records: the agent renamed a note in one and wrote in the other.
+    let mut doc = AutoCommit::new();
+    doc.set_actor(ActorId::from(b"claude-code-agent".as_slice()));
+    let note = doc.put_object(ROOT, "note", ObjType::Text).unwrap();
+    doc.splice_text(&note, 0, 0, "Shopping").unwrap();
+    let context = tilo_actions::ActionContext::for_resource(NOTES_ROOT, NOTES_KIND, "Shopping")
+        .with_group(RUN, "Claude Code", ui::history_source::steps::TASK_RUN);
+    doc.commit_with(
+        CommitOptions::default()
+            .with_time(10)
+            .with_message(context.change_message().unwrap()),
+    );
+    let channel = doc.put_object(ROOT, "channel", ObjType::Text).unwrap();
+    doc.splice_text(&channel, 0, 0, "Morning").unwrap();
+    let other = tilo_actions::ActionContext::for_resource(CHAT_ROOT, CHAT_KIND, "Lounge")
+        .with_group(RUN, "Claude Code", ui::history_source::steps::TASK_RUN);
+    doc.commit_with(
+        CommitOptions::default()
+            .with_time(20)
+            .with_message(other.change_message().unwrap()),
+    );
+
+    let mut tree = tree;
+    pane.refresh(&mut tree);
+    pane.refresh_detached_records(
+        &mut tree,
+        vec![DetachedRecordHistory {
+            app: NOTES.to_owned(),
+            checkout: ui::RecordCheckout::package_primary(ui::RecordKind::new(NOTES_KIND)),
+            document: Some(doc),
+        }],
+    );
+    let served = pane.serve_runs(&wire::RunsQuery::default(), &tree);
+    let run = served
+        .runs
+        .iter()
+        .find(|run| run.id == RUN)
+        .unwrap_or_else(|| panic!("the agent's run is listed: {served:#?}"));
+    assert_eq!(
+        run.undo_blocked, None,
+        "the run is undone from the Activity: {run:#?}"
+    );
+    let [action] = run.actions.as_slice() else {
+        panic!("one action, in the note: {run:#?}");
+    };
+    assert_eq!(
+        (action.app_id.as_str(), action.record.as_str()),
+        (NOTES, primary.as_str()),
+        "the notes' record, and not the channel the same document holds"
+    );
+
+    // The person presses Undo run: the host is asked for the run in that record.
+    let arguments = serde_json::to_value(&run.range)
+        .unwrap()
+        .as_object()
+        .cloned()
+        .unwrap();
+    let outcome = pane
+        .serve_action(wire::UNDO_RUN, &arguments, &mut tree)
+        .expect("the run is in the history");
+    assert!(outcome.handled);
+    let undo = host.undos.borrow().first().cloned().expect("an undo");
+    assert_eq!(undo.task_id, RUN);
+    assert_eq!(undo.steps, vec![(NOTES.to_owned(), primary)]);
+}

@@ -499,6 +499,27 @@ fn label_stride(needed: f64, room: f64) -> usize {
 }
 
 impl CategoryMarks {
+    /// Where the legend's entries stand: under the chart's title, between the
+    /// content edges. `None` while the chart shows no legend, or when the
+    /// waterfall layout names no series.
+    fn legend_area(&self) -> Option<Rect> {
+        if !self.style.show_legend || self.style.layout == CategoryLayout::Waterfall {
+            return None;
+        }
+        let y = self.frame.rect.y0
+            + if self.frame.title.is_empty() {
+                10.0
+            } else {
+                38.0
+            };
+        Some(Rect::new(
+            self.frame.rect.x0 + 58.0,
+            y,
+            self.frame.rect.x1 - 12.0,
+            y,
+        ))
+    }
+
     /// The corners of `bar`: a stack is one bar, rounded only at its ends.
     fn radii(&self, bars: &[Bar], bar: Bar) -> RoundedRectRadii {
         let radius = self.style.corner_radius.min(bar.rect.width() / 3.0);
@@ -648,6 +669,14 @@ impl PlotMarks for CategoryMarks {
     fn series_of(&self, &(_, series): &(usize, usize)) -> Option<&str> {
         Some(self.series.get(series)?.id.as_str())
     }
+    fn place(&mut self, _tr: &mut TextRenderer, _theme: &Theme) {
+        self.toggles.place(
+            self.series
+                .iter()
+                .map(|series| (series.id.as_str(), series.name.as_str())),
+            self.legend_area(),
+        );
+    }
 
     #[allow(
         clippy::too_many_lines,
@@ -772,12 +801,6 @@ impl PlotMarks for CategoryMarks {
             );
         }
         if self.style.show_legend && self.style.layout != CategoryLayout::Waterfall {
-            let y = self.frame.rect.y0
-                + if self.frame.title.is_empty() {
-                    10.0
-                } else {
-                    38.0
-                };
             self.toggles.paint(
                 scene,
                 transform,
@@ -790,10 +813,7 @@ impl PlotMarks for CategoryMarks {
                         series.color_in(theme),
                     )
                 }),
-                Rect::new(self.frame.rect.x0 + 58.0, y, self.frame.rect.x1 - 12.0, y),
             );
-        } else {
-            self.toggles.clear_hits();
         }
         if let Some((category_index, series_index)) =
             self.frame.inspection.hovered.filter(|_| self.style.tooltip)

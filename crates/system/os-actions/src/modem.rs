@@ -1,15 +1,5 @@
-//! Mobile broadband: the modems `ModemManager` drives and the data
-//! connection `NetworkManager` keeps for them.
-//!
-//! `ModemManager` is asked over D-Bus for what only it knows (the SIMs and
-//! their locks, signal, operator, registration, network modes, traffic)
-//! and for what only it does (PIN, PUK, network mode, SIM slot). The data
-//! connection, its APN, roaming and metering are a `NetworkManager` profile,
-//! changed through [`tilo_nm`] as the rest of the network settings are.
-//!
-//! PINs and PUKs travel as D-Bus message bodies. They never appear in argv,
-//! an environment variable, `NetworkManager` profile storage, a log or Tilo
-//! settings, and live in zeroizing buffers on the way.
+//! Mobile broadband: the modems `ModemManager` drives and the data connection
+//! `NetworkManager` keeps for them, both over D-Bus.
 
 use std::collections::HashMap;
 
@@ -20,9 +10,7 @@ use tilo_nm::{NmClient, NmError, Profile, Settings};
 
 use crate::network::{MeteredPolicy, validate_uuid, with_nm};
 
-/// `ModemManager`'s bus name.
 pub const SERVICE: &str = "org.freedesktop.ModemManager1";
-/// Where `ModemManager` lists its modems.
 const ROOT: &str = "/org/freedesktop/ModemManager1";
 const MODEM_INTERFACE: &str = "org.freedesktop.ModemManager1.Modem";
 const MODEM_PREFIX: &str = "/org/freedesktop/ModemManager1/Modem/";
@@ -115,52 +103,34 @@ trait Bearer {
     fn stats(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
 }
 
-/// What `ModemManager` reports: every modem it drives, in path order.
-/// Empty on a machine without a modem.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MobileReading {
     pub modems: Vec<ModemInfo>,
 }
 
-/// One modem, as `ModemManager` reports it now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModemInfo {
-    /// Its `ModemManager` object path.
     pub path: String,
-    /// Manufacturer and model, as the modem names itself.
     pub name: String,
     pub state: ModemState,
-    /// Why the modem cannot work, when it failed.
     pub failure: Option<ModemFailure>,
-    /// What the active SIM asks for before the modem can be used.
     pub lock: SimLock,
     pub retries: UnlockRetries,
-    /// Whether the active SIM asks for its PIN at power-on; `None` when the
-    /// modem does not say.
     pub pin_enabled: Option<bool>,
-    /// Signal quality in percent, while registered.
     pub signal: Option<u8>,
-    /// The fastest access technology in use.
     pub technology: Option<Technology>,
-    /// The network operator the modem is registered with.
     pub operator: Option<String>,
     pub registration: Registration,
-    /// The network types the modem may use now.
     pub modes: Option<NetworkModes>,
-    /// Every combination of network types the modem can be told to use.
     pub supported_modes: Vec<NetworkModes>,
-    /// The SIMs, one per slot that holds one (or the one SIM of a modem
-    /// without slots).
+    /// One per slot that holds a SIM, or the one SIM of a modem without slots.
     pub sims: Vec<SimCard>,
-    /// The phone numbers of the active SIM.
     pub numbers: Vec<String>,
-    /// Bytes moved through the modem's data connections since
-    /// `ModemManager` started counting.
+    /// Since `ModemManager` started counting.
     pub traffic: Option<Traffic>,
 }
 
 impl ModemInfo {
-    /// The SIM in use.
     #[must_use]
     pub fn active_sim(&self) -> Option<&SimCard> {
         self.sims
@@ -169,7 +139,7 @@ impl ModemInfo {
             .or_else(|| self.sims.first())
     }
 
-    /// Whether the modem is ready to carry data: no SIM lock, not failed.
+    /// No SIM lock and not failed.
     #[must_use]
     pub fn usable(&self) -> bool {
         self.failure.is_none() && matches!(self.lock, SimLock::None)
@@ -240,11 +210,9 @@ impl ModemFailure {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SimLock {
     None,
-    /// The SIM's PIN.
     Pin,
-    /// The PUK and a new PIN, after too many wrong PINs.
     Puk,
-    /// A lock this settings page cannot lift (a network or carrier lock).
+    /// A lock this page cannot lift (a network or carrier lock).
     Other,
 }
 
@@ -257,8 +225,8 @@ impl SimLock {
 
     fn from_mm(value: u32) -> Self {
         match value {
-            // Unknown says nothing is asked for yet; PIN2 and PUK2 guard
-            // only fixed dialling, never data.
+            // Unknown says nothing is asked for yet; PIN2 and PUK2 guard only fixed dialling, never
+            // data.
             0 | Self::MM_NONE | Self::MM_SIM_PIN2 | Self::MM_SIM_PUK2 => Self::None,
             Self::MM_SIM_PIN => Self::Pin,
             Self::MM_SIM_PUK => Self::Puk,
@@ -267,14 +235,12 @@ impl SimLock {
     }
 }
 
-/// How many tries are left before the SIM locks harder.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UnlockRetries {
     pub pin: Option<u32>,
     pub puk: Option<u32>,
 }
 
-/// The fastest access technology a modem uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Technology {
     Gsm,
@@ -290,7 +256,6 @@ pub enum Technology {
 }
 
 impl Technology {
-    /// The fastest one in `ModemManager`'s access technology bits.
     fn from_mm(bits: u32) -> Option<Self> {
         const TABLE: &[(u32, Technology)] = &[
             (1 << 15, Technology::Nr5g),
@@ -310,7 +275,7 @@ impl Technology {
             .map(|(_, technology)| *technology)
     }
 
-    /// The name people see on their phones; the same in every language.
+    /// What people see on their phones, the same in every language.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
@@ -328,17 +293,13 @@ impl Technology {
     }
 }
 
-/// Where the modem stands with the mobile network.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Registration {
-    /// Not registered and not looking.
     Idle,
     Home,
     Roaming,
     Searching,
-    /// The network refused the SIM.
     Denied,
-    /// Only emergency calls.
     EmergencyOnly,
     Unknown,
 }
@@ -357,8 +318,7 @@ impl Registration {
     }
 }
 
-/// Network types a modem may use, and the one it prefers among them
-/// (`MMModemMode` bits).
+/// Network types a modem may use, and the one it prefers (`MMModemMode` bits).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NetworkModes {
     pub allowed: u32,
@@ -368,7 +328,7 @@ pub struct NetworkModes {
 impl NetworkModes {
     const GENERATIONS: [(u32, u8); 4] = [(1 << 4, 5), (1 << 3, 4), (1 << 2, 3), (1 << 1, 2)];
 
-    /// The generations allowed, fastest first (5, 4, 3, 2).
+    /// Fastest first: 5, 4, 3, 2.
     #[must_use]
     pub fn generations(self) -> Vec<u8> {
         Self::GENERATIONS
@@ -378,7 +338,6 @@ impl NetworkModes {
             .collect()
     }
 
-    /// The preferred generation, when one is.
     #[must_use]
     pub fn preferred_generation(self) -> Option<u8> {
         Self::GENERATIONS
@@ -387,8 +346,8 @@ impl NetworkModes {
             .map(|(_, generation)| *generation)
     }
 
-    /// A stable name for an action's parameter: `5g-4g-3g`, with
-    /// `-prefer-4g` when one is preferred.
+    /// A stable name for an action's parameter, e.g. `5g-4g-3g`, with `-prefer-4g` when one is
+    /// preferred.
     #[must_use]
     pub fn key(self) -> String {
         let mut key = self
@@ -404,26 +363,19 @@ impl NetworkModes {
     }
 }
 
-/// One SIM: a card in a slot, or an eSIM.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SimCard {
-    /// Its `ModemManager` object path.
     pub path: String,
-    /// The slot it is in, counting from 1, on a modem with several slots.
     pub slot: Option<u32>,
-    /// Whether the modem uses it now.
     pub active: bool,
-    /// The operator that issued it.
     pub operator: Option<String>,
-    /// The operator's MCC and MNC (`26201`), which picks the APN.
+    /// MCC and MNC (`26201`), which picks the APN.
     pub operator_code: Option<String>,
-    /// The ICCID printed on the card.
     pub iccid: Option<String>,
     pub kind: SimKind,
 }
 
 impl SimCard {
-    /// What a person calls it: the operator, else the slot.
     #[must_use]
     pub fn label(&self) -> String {
         self.operator.clone().unwrap_or_else(|| match self.slot {
@@ -433,18 +385,16 @@ impl SimCard {
     }
 }
 
-/// A physical card or an eSIM.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SimKind {
     Physical,
-    /// An eSIM; `profiles` says whether one is installed.
+    /// `profiles` says whether one is installed.
     Esim {
         profiles: Option<bool>,
     },
     Unknown,
 }
 
-/// Bytes received and sent.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Traffic {
     pub received: u64,
@@ -458,16 +408,11 @@ impl Traffic {
     }
 }
 
-/// Why a modem operation did not happen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModemError {
-    /// `ModemManager` is not running or not reachable.
     Unavailable(String),
-    /// The PIN or PUK was wrong.
     WrongCode,
-    /// The input was refused before anything was asked.
     Invalid(String),
-    /// `ModemManager` refused or failed.
     Failed(String),
 }
 
@@ -503,17 +448,17 @@ fn failed(error: &zbus::Error) -> ModemError {
     }
 }
 
-/// A change to a modem or its SIM. Codes are zeroed when it is dropped.
+/// A change to a modem or its SIM; codes are zeroed when it is dropped.
 pub enum ModemChange {
-    /// Unlock the SIM with its PIN.
-    SendPin { sim: String, pin: Zeroizing<String> },
-    /// Unlock a SIM locked after too many wrong PINs, setting a new PIN.
+    SendPin {
+        sim: String,
+        pin: Zeroizing<String>,
+    },
     SendPuk {
         sim: String,
         puk: Zeroizing<String>,
         new_pin: Zeroizing<String>,
     },
-    /// Ask for the PIN at power-on, or stop asking.
     SetPinLock {
         sim: String,
         pin: Zeroizing<String>,
@@ -524,10 +469,14 @@ pub enum ModemChange {
         old_pin: Zeroizing<String>,
         new_pin: Zeroizing<String>,
     },
-    /// Use these network types.
-    SetModes { modem: String, modes: NetworkModes },
-    /// Use the SIM in this slot (counting from 1).
-    UseSlot { modem: String, slot: u32 },
+    SetModes {
+        modem: String,
+        modes: NetworkModes,
+    },
+    UseSlot {
+        modem: String,
+        slot: u32,
+    },
 }
 
 impl std::fmt::Debug for ModemChange {
@@ -546,7 +495,7 @@ impl std::fmt::Debug for ModemChange {
     }
 }
 
-/// A SIM PIN: 4 to 8 digits.
+/// 4 to 8 digits.
 fn valid_pin(pin: &str) -> Result<(), ModemError> {
     if (4..=8).contains(&pin.len()) && pin.bytes().all(|b| b.is_ascii_digit()) {
         Ok(())
@@ -555,7 +504,7 @@ fn valid_pin(pin: &str) -> Result<(), ModemError> {
     }
 }
 
-/// A PUK: 8 digits.
+/// 8 digits.
 fn valid_puk(puk: &str) -> Result<(), ModemError> {
     if puk.len() == 8 && puk.bytes().all(|b| b.is_ascii_digit()) {
         Ok(())
@@ -572,7 +521,6 @@ fn valid_object(path: &str, prefix: &str) -> Result<(), ModemError> {
 }
 
 impl ModemChange {
-    /// Refuse malformed codes and objects before `ModemManager` is asked.
     fn validate(&self) -> Result<(), ModemError> {
         match self {
             Self::SendPin { sim, pin } | Self::SetPinLock { sim, pin, .. } => {
@@ -605,8 +553,7 @@ impl ModemChange {
     }
 }
 
-/// `ModemManager` over one bus connection: the system bus on a device, a
-/// private bus in the tests.
+/// Over one bus connection: the system bus on a device, a private bus in the tests.
 pub struct ModemManager {
     connection: zbus::Connection,
 }
@@ -620,7 +567,6 @@ impl ModemManager {
         Self { connection }
     }
 
-    /// `ModemManager` on the system bus.
     pub async fn system() -> Result<Self, ModemError> {
         zbus::Connection::system()
             .await
@@ -641,10 +587,6 @@ impl ModemManager {
             .map_err(|error| failed(&error))
     }
 
-    /// Every modem `ModemManager` drives, in path order.
-    ///
-    /// # Errors
-    /// When `ModemManager` is not running or does not answer.
     pub async fn read(&self) -> Result<MobileReading, ModemError> {
         let objects: ManagedObjects = zbus::Proxy::new(
             &self.connection,
@@ -754,7 +696,6 @@ impl ModemManager {
         })
     }
 
-    /// The SIMs in the modem's slots, or its one SIM.
     async fn sims(&self, modem: &ModemProxy<'_>) -> Vec<SimCard> {
         let slots = modem.sim_slots().await.unwrap_or_default();
         let primary = modem.primary_sim_slot().await.unwrap_or(0);
@@ -818,9 +759,8 @@ impl ModemManager {
         })
     }
 
-    /// Bytes through the modem's data connections, summed over its
-    /// bearers: the totals since `ModemManager` started where it keeps
-    /// them, else the current connection's.
+    /// Summed over the modem's bearers: the totals since `ModemManager` started where it keeps them,
+    /// else the current rate.
     async fn traffic(&self, modem: &ModemProxy<'_>) -> Option<Traffic> {
         let bearers = modem.bearers().await.ok()?;
         let mut traffic: Option<Traffic> = None;
@@ -850,10 +790,6 @@ impl ModemManager {
         traffic
     }
 
-    /// Carry out `change`.
-    ///
-    /// # Errors
-    /// A malformed code or object, a wrong code, or `ModemManager`'s refusal.
     pub async fn apply(&self, change: &ModemChange) -> Result<(), ModemError> {
         change.validate()?;
         let result = match change {
@@ -905,8 +841,7 @@ fn u64_of(value: Option<&OwnedValue>) -> Option<u64> {
     }
 }
 
-/// The number at the end of an object path, so `Modem/10` sorts after
-/// `Modem/9`.
+/// The number at the end of an object path, so `Modem/10` sorts after `Modem/9`.
 fn object_number(path: &str) -> (u64, String) {
     let number = path
         .rsplit('/')
@@ -916,7 +851,7 @@ fn object_number(path: &str) -> (u64, String) {
     (number, path.to_owned())
 }
 
-/// Run `future` to its end on the app runtime, from a worker thread.
+/// Runs `future` to its end on the app runtime, from a worker thread.
 fn block<T>(
     future: impl std::future::Future<Output = Result<T, ModemError>>,
 ) -> Result<T, ModemError> {
@@ -925,24 +860,15 @@ fn block<T>(
         .map_err(|error| ModemError::Unavailable(error.to_string()))?
 }
 
-/// The modems on this device, from `ModemManager` on the system bus.
-///
-/// # Errors
-/// When `ModemManager` is not running or does not answer.
 pub fn read_mobile() -> Result<MobileReading, ModemError> {
     block(async { ModemManager::system().await?.read().await })
 }
 
-/// Carry out `change` through `ModemManager` on the system bus.
-///
-/// # Errors
-/// A malformed code or object, a wrong code, or `ModemManager`'s refusal.
 pub fn apply_modem_change(change: &ModemChange) -> Result<(), ModemError> {
     change.validate()?;
     block(async { ModemManager::system().await?.apply(change).await })
 }
 
-/// The `NetworkManager` profile mobile data connects with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -951,27 +877,19 @@ pub fn apply_modem_change(change: &ModemChange) -> Result<(), ModemError> {
 pub struct MobileProfile {
     pub uuid: String,
     pub name: String,
-    /// Whether it connects by itself whenever the modem can.
     pub autoconnect: bool,
-    /// Whether it is connected now.
     pub active: bool,
-    /// The APN typed in; `None` while it is chosen automatically.
+    /// Typed in; `None` while it is chosen automatically.
     pub apn: Option<String>,
-    /// Whether `NetworkManager` picks the APN from the provider database.
     pub automatic_apn: bool,
-    /// Whether it may connect on another operator's network.
     pub roaming: bool,
     pub metered: MeteredPolicy,
 }
 
-/// What a new mobile data profile is called.
 pub const MOBILE_PROFILE_NAME: &str = "Mobile data";
 
-/// The profile mobile data uses: the one connected, else the one that
-/// connects by itself, else the one used last. `None` when there is none.
-///
-/// # Errors
-/// When `NetworkManager` cannot list the profiles.
+/// The one connected, else the one that connects by itself, else the one used last; `None` when there
+/// is none.
 pub fn read_mobile_profile() -> Result<Option<MobileProfile>, String> {
     with_nm(|nm| async move { mobile_profile(&nm).await })
 }
@@ -986,8 +904,6 @@ async fn mobile_profile(nm: &NmClient) -> Result<Option<MobileProfile>, NmError>
     }))
 }
 
-/// The mobile data profile among `profiles`, of which `is_active` says
-/// which are connected.
 fn choose_mobile_profile(
     profiles: &[Profile],
     is_active: impl Fn(&Profile) -> bool,
@@ -1007,7 +923,6 @@ fn choose_mobile_profile(
         .map(|(profile, _)| profile)
 }
 
-/// A mobile data profile's settings as Settings shows them.
 fn mobile_profile_of(settings: &Settings, active: bool) -> MobileProfile {
     let automatic_apn = settings.boolean("gsm", "auto-config").unwrap_or(false);
     MobileProfile {
@@ -1030,7 +945,7 @@ fn mobile_profile_of(settings: &Settings, active: bool) -> MobileProfile {
     }
 }
 
-/// An APN: what operators publish, never a control character.
+/// What operators publish: never a control character.
 fn valid_apn(apn: &str) -> Result<(), String> {
     if apn.is_empty()
         || apn.len() > 100
@@ -1043,9 +958,8 @@ fn valid_apn(apn: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Make the mobile data profile: the APN chosen from the provider database,
-/// connecting by itself. Its PIN is never stored: the SIM is unlocked
-/// through `ModemManager`.
+/// The APN comes from the provider database and the profile connects by itself. The PIN is never
+/// stored: the SIM is unlocked through the change instead.
 async fn create_mobile_profile(nm: &NmClient) -> Result<String, NmError> {
     let mut settings = Settings::default();
     settings.set("connection", "id", MOBILE_PROFILE_NAME);
@@ -1058,11 +972,8 @@ async fn create_mobile_profile(nm: &NmClient) -> Result<String, NmError> {
     nm.add(settings).await
 }
 
-/// The mobile data profile's uuid, making the profile when there is none,
-/// so its roaming, APN and metering can be set before data is first on.
-///
-/// # Errors
-/// What `NetworkManager` refused.
+/// Makes the profile when there is none, so roaming, APN and metering can be set before data is first
+/// on.
 pub fn mobile_profile_uuid() -> Result<String, String> {
     with_nm(|nm| async move {
         match mobile_profile(&nm).await? {
@@ -1072,12 +983,8 @@ pub fn mobile_profile_uuid() -> Result<String, String> {
     })
 }
 
-/// Turn mobile data on or off: the modem's radio, and the profile that
-/// connects through it. Turning it on makes the profile when there is none
-/// and connects it.
-///
-/// # Errors
-/// What `NetworkManager` refused.
+/// The modem's radio and the profile that connects through it; turning it on makes the profile when
+/// there is none.
 pub fn set_mobile_data(on: bool) -> Result<(), String> {
     with_nm(|nm| async move {
         nm.set_wwan_enabled(on).await?;
@@ -1104,11 +1011,6 @@ pub fn set_mobile_data(on: bool) -> Result<(), String> {
     })
 }
 
-/// Let the mobile data profile connect on another operator's network, or
-/// keep it to the home network.
-///
-/// # Errors
-/// A malformed profile id, or what `NetworkManager` refused.
 pub fn set_mobile_roaming(uuid: &str, allowed: bool) -> Result<(), String> {
     validate_uuid(uuid)?;
     with_nm(|nm| async move {
@@ -1120,10 +1022,6 @@ pub fn set_mobile_roaming(uuid: &str, allowed: bool) -> Result<(), String> {
     })
 }
 
-/// Use `apn`, or (`None`) the one the provider database names for the SIM.
-///
-/// # Errors
-/// A malformed profile id or APN, or what `NetworkManager` refused.
 pub fn set_mobile_apn(uuid: &str, apn: Option<&str>) -> Result<(), String> {
     validate_uuid(uuid)?;
     if let Some(apn) = apn {

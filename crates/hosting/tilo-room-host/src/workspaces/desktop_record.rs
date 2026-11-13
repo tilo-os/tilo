@@ -24,7 +24,7 @@ impl Workspaces {
         {
             return Ok(());
         }
-        let at = std::time::SystemTime::now();
+        let at = tilo_clock::wall();
         let mut candidate = governed.peer().clone();
         candidate.publication_mut().publish_document(
             DESKTOP_APP,

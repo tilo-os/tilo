@@ -1,17 +1,8 @@
-//! A local video player for Tilo, built on the shared [`media`] streaming layer
-//! and the reusable [`ui::widget::VideoPlayer`] widget.
-//!
-//! The binary is a thin entry point ([`crate`]'s `main`); all logic lives here.
-//! [`PlayerApp`] is the surface [`VideoPlayerShell`] mounts over the shared
-//! library resource.
+//! A local video player on the shared media streaming layer and the toolkit's
+//! [`ui::widget::VideoPlayer`] widget.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// An app runs as its own sandboxed process: a crash costs one app, not the desktop,
+// so wrapping arithmetic and casts are allowed here. The panic lints stay denied.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -31,7 +22,6 @@ pub use app::source::{source_for_argument, source_for_path};
 pub use resource::VideoPlayerShell;
 pub use shared::Library;
 
-/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(VideoPlayerShell)
 }

@@ -33,7 +33,6 @@ pub mod overview;
 pub mod overview_panel;
 pub mod overview_picture;
 pub mod overview_tilo;
-pub mod people_overlay;
 pub mod profile_card;
 pub mod records;
 pub mod resolver;

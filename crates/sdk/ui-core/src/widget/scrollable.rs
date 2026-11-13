@@ -150,6 +150,9 @@ pub struct Scrollable {
     /// event that only mutates this touches no descendant. Cleared by
     /// `mark_drawn`.
     scroll_dirty: bool,
+    /// The content moved since the layout pass last placed it: the paint
+    /// half of a scroll is [`Self::scroll_dirty`], this is the layout half.
+    scroll_unplaced: bool,
     show_scrollbar: bool,
     /// Whether an overflowing viewport itself participates in sequential
     /// keyboard focus. Forms generally want Tab to enter their first control
@@ -338,6 +341,7 @@ impl Scrollable {
             child_node: None,
             rect: Rect::ZERO,
             scroll_dirty: false,
+            scroll_unplaced: false,
             height_limit_dirty: false,
             show_scrollbar: true,
             sequential_focus: true,
@@ -530,6 +534,7 @@ impl Scrollable {
             self.max_height = height;
             self.height_limit_dirty = true;
             self.scroll_dirty = true;
+            self.scroll_unplaced = true;
         }
     }
 
@@ -752,6 +757,7 @@ impl Scrollable {
         // stored value at all", not "are these two offsets close".
         if self.offset_x.to_bits() != ox.to_bits() || self.offset_y.to_bits() != oy.to_bits() {
             self.scroll_dirty = true;
+            self.scroll_unplaced = true;
             self.cursor_initialized = false;
             self.wake();
         }
@@ -925,6 +931,7 @@ impl Scrollable {
         }
         if self.scroll_to.is_moving(now) {
             self.scroll_dirty = true;
+            self.scroll_unplaced = true;
         }
     }
 
@@ -1178,6 +1185,11 @@ impl crate::widget::Decorator for ViewportContent {
 }
 
 impl Widget for Scrollable {
+    /// Its content, in a native scroller of its region.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        cx.children();
+    }
+
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
@@ -1229,6 +1241,7 @@ impl Widget for Scrollable {
         // The give springing back moves the content like a glide does.
         if self.give_unplaced() {
             self.scroll_dirty = true;
+            self.scroll_unplaced = true;
         }
         // A jump in progress, like a glide, moves only this view.
         self.follow_scroll_to(crate::motion::frame_now());
@@ -1392,6 +1405,7 @@ impl Widget for Scrollable {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.scroll_unplaced = false;
         // Geometry may have moved beneath a stationary pointer. The next
         // same-position event must therefore be routed once again.
         self.cursor_initialized = false;
@@ -1637,6 +1651,7 @@ impl Widget for Scrollable {
                         self.settle_snap((0.0, 0.0), crate::tokens::MotionSource::Pointer);
                     }
                     self.scroll_dirty = true;
+                    self.scroll_unplaced = true;
                     *ctx.handled = true;
                     return;
                 }
@@ -1725,6 +1740,35 @@ impl Widget for Scrollable {
             && let Some(child_node) = self.child_node
         {
             child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
+        }
+        // A page key the focused content left alone (a note's paragraph, a
+        // form's field) pages the view holding it, as on any page; a view
+        // that cannot move further leaves it to the one around it.
+        if !*ctx.handled
+            && let WindowEvent::KeyboardInput { event: ke, .. } = event
+            && ke.state == ElementState::Pressed
+            && matches!(
+                ke.logical_key,
+                winit::keyboard::Key::Named(
+                    winit::keyboard::NamedKey::PageUp | winit::keyboard::NamedKey::PageDown
+                )
+            )
+            && !ctx.modifiers.state().intersects(
+                winit::keyboard::ModifiersState::CONTROL
+                    | winit::keyboard::ModifiersState::ALT
+                    | winit::keyboard::ModifiersState::SUPER,
+            )
+            && self
+                .child
+                .as_deref()
+                .is_some_and(crate::widget::context_menu_area::focus_within)
+        {
+            let before = (self.offset_x, self.offset_y);
+            self.on_navigation_key(&ke.logical_key);
+            if (self.offset_x, self.offset_y) != before {
+                *ctx.handled = true;
+                return;
+            }
         }
         // An already-focused editor can consume a press without requesting
         // focus again. Only use the pane as a fallback for an unhandled
@@ -1899,7 +1943,7 @@ impl Widget for Scrollable {
 
     /// A scroll demands `apply_layout` even though nothing changed size.
     fn is_layout_dirty(&self) -> bool {
-        self.scroll_dirty || self.child.as_ref().is_some_and(|c| c.is_layout_dirty())
+        self.scroll_unplaced || self.child.as_ref().is_some_and(|c| c.is_layout_dirty())
     }
 
     /// `scroll_dirty` alone must NOT force a full `compute_layout` — only a

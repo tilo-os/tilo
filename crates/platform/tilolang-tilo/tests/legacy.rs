@@ -167,7 +167,15 @@ fn saved(hex: &str) -> AutoCommit {
 }
 
 /// The workspace of a fixture, opened with its packages.
+/// The workspace `hex` with `packages` loaded, each believed to have been published under the
+/// ids it says it had before, as the installed catalogue believes an app the image ships.
 fn open(hex: &str, packages: &[(&str, &str)]) -> Replica {
+    for (source, _) in packages {
+        let (app, previously, _) = PackageSource::single(source).header_with_previously();
+        if let Some(app) = app {
+            tilolang_tilo::schema::register_previously(&app, &previously);
+        }
+    }
     Replica::new("ada", saved(hex), packages).0
 }
 
@@ -456,9 +464,8 @@ fn an_older_boards_cards_move_into_their_columns_by_its_migration_keeping_their_
         tilolang_tilo::authority::migration_principal(app, &meta.module_hash).0
     );
     assert!(
-        tilolang_tilo::names::unnamed(&authorship.invoker)
-            .starts_with("Board, updating to version "),
-        "{}",
+        tilolang_tilo::names::unnamed(&authorship.invoker) == "Board",
+        "history names Board, the app whose build made the change: {}",
         tilolang_tilo::names::unnamed(&authorship.invoker)
     );
     for done in &committed {

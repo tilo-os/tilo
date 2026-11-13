@@ -866,7 +866,7 @@ async fn run_owner_lanes(
                 let path = root.clone();
                 let Ok((next, result)) = blocking(workers.clone(), move || {
                     let result = (|| -> Result<Step<()>, StoreError> {
-                        let start = std::time::Instant::now();
+                        let start = tilo_clock::now();
                         let cursor = match discard.take() {
                             Some(cursor) => cursor,
                             None => crate::store::replay::WorkDiscard::new(path)?,
@@ -995,7 +995,7 @@ async fn run_owner_lanes(
             // per turn fell behind a workspace where every guest's arrival
             // replays to them: spools grow with the workspace, permits ran out,
             // and joins queued for seconds. Step for one slice instead.
-            let start = std::time::Instant::now();
+            let start = tilo_clock::now();
             loop {
                 if let Err(error) = state.reclaim_replay_step() {
                     tracing::warn!(%error, "replay reclamation failed");
@@ -1457,7 +1457,7 @@ where
     CF: Future<Output = Result<T, StoreError>> + Send + 'static,
 {
     let (tx, rx) = oneshot::channel();
-    let queued = std::time::Instant::now();
+    let queued = tilo_clock::now();
     let timed = crate::timing::start();
     // The operation and its preparation go into and out of the job's box and
     // the blocking pool on every quantum: on the heap, each move is a pointer.
@@ -1479,7 +1479,7 @@ where
                         let result = loop {
                             let shared = state.clone();
                             let quantum = blocking(workers.clone(), move || {
-                                let start = std::time::Instant::now();
+                                let start = tilo_clock::now();
                                 let mut state = shared.lock_recover();
                                 // Whatever this quantum makes durable is
                                 // ordered after every record its group holds.

@@ -2,11 +2,11 @@
 //! each workspace's shared desktop, the workspace's history, the windows left open, and what the
 //! sheets and settings asked for.
 
+use crate::platform::surfaces::WidgetHost;
 use tilo_session_core::presence::{Place, Step, Target};
 use tilo_sheets::Seat as _;
-use tilo_surface_host::WidgetHost;
 
-use crate::{Shared, arrangement, workspace_settings, workspaces};
+use crate::{Shared, arrangement, workspace_settings};
 
 impl Shared {
     /// Show each workspace's shared desktop as the workspace holds it, and write back what this
@@ -16,6 +16,10 @@ impl Shared {
         let Some(engine) = &self.engine else {
             return;
         };
+        // The apps a login's end takes with it leave the workspaces' desks as they were.
+        if crate::termination::asked() {
+            return;
+        }
         // Every workspace this device holds has had its record read, and
         // nothing of the workspaces moved since: there is nothing to read,
         // lay out or write.
@@ -39,15 +43,20 @@ impl Shared {
             .sync
             .as_ref()
             .map_or_else(String::new, |sync| sync.publisher().to_string());
+        #[cfg(target_os = "linux")]
+        let before = tree.clone();
         if self.desktops.follow(engine, &device, &mut tree) {
             // The tree this device drew is the tree it shows: what the record holds is already
             // placed, and swapping it in whole keeps the windows this device shows where its own
             // view left them.
             self.handle.replace_tree(tree.clone());
+            self.handle.set_opened_by(self.desktops.opened_by());
+            // A window someone else opened in the workspace is one this device shows through its
+            // own instance of the app, on the same record: the app is asked for it as a window
+            // this device left open is.
+            #[cfg(target_os = "linux")]
+            self.restore.borrow_mut().arrived(&before, &tree);
         }
-        // A window the person opens here is this device's to place: the record lacks it until the
-        // next write, and folding keeps it.
-        self.desktops.note_unrecorded(engine, &tree);
     }
 
     /// Run what waited for the person to finish their gesture or their typing: an arranging action
@@ -117,18 +126,23 @@ impl Shared {
             return;
         }
         // Their own gesture or typing is them, not the person they followed: the view is theirs
-        // again, and the workspace hears they follow nobody.
+        // again, and the workspace hears they follow nobody. The press that asked to follow is not
+        // them working, so it does not end what it began.
         if self.underway.get().holds() {
+            if sync.follow_asked() {
+                return;
+            }
             follow.follow(None);
             drop(follow);
             self.say_following_nobody();
             return;
         }
+        sync.forget_follow_asked();
         follow.follow(followed);
         let people = sync.people(
             &self.handle.read(Clone::clone),
-            &self.notes.records(),
-            &|_: &str| None,
+            &self.notes,
+            &|app: &str| Some(crate::app_names::app_name(app)),
         );
         let places: Vec<Place<'_>> = people
             .iter()
@@ -194,6 +208,32 @@ impl Shared {
         }
     }
 
+    /// Tell the person when someone mentions them in one of the workspaces' records, and open the
+    /// places they chose from those notices: the app's own `open` of the item, as the person's
+    /// choice runs it.
+    pub(crate) fn serve_mentions(&self) {
+        let Some(mentions) = &self.mentions else {
+            return;
+        };
+        mentions.step();
+        let chosen = mentions.take_chosen();
+        if chosen.is_empty() {
+            return;
+        }
+        let Some(apps) = &self.apps else {
+            return;
+        };
+        let workspace = self.active_workspace_id();
+        for place in chosen {
+            let target = crate::platform::notice::open_target(&workspace, &place);
+            if let Err(error) =
+                crate::search::AppActions::invoke(&**apps, target, serde_json::Map::new())
+            {
+                tracing::warn!(%error, app = %place.app, "a mention was not opened");
+            }
+        }
+    }
+
     /// The desktop's control hints: the person's record as their settings hold it, the reasons
     /// this session knows (following someone, setup standing over the desktop), and what they
     /// learned since.
@@ -219,7 +259,7 @@ impl Shared {
 
     /// Open what the person chose in the history: the app that holds it,
     /// showing it.
-    fn open_from_history(
+    pub(crate) fn open_from_history(
         &self,
         workspace_id: &tilo_desktop_model::WorkspaceId,
         target: &ui::HistoryResourceTarget,
@@ -253,9 +293,14 @@ impl Shared {
     /// The windows this device left open: ask for the next one once the one before it came, each
     /// into the tab it was in.
     pub(crate) fn follow_restore(&self) {
+        let engine = self.engine.clone();
+        let awaited = move |workspace: &str| {
+            let engine = engine.as_ref()?;
+            engine.awaited_host(tilo_desktop_model::WorkspaceId::parse(workspace)?)
+        };
         self.restore
             .borrow_mut()
-            .follow(&self.desktop, self.launch.as_deref());
+            .follow(&self.desktop, self.launch.as_deref(), &awaited);
     }
 
     /// Stand each place a service's `open` asked for since the last pass: a resource's own `open`
@@ -283,7 +328,7 @@ impl Shared {
                 &invoker.actor,
                 &address,
                 &arguments,
-                &mut tilo_surface_host::Look::none(),
+                &mut tilo_session_core::door::Look::none(),
             );
             if let Err(error) = run {
                 tracing::warn!(
@@ -296,25 +341,32 @@ impl Shared {
     }
 
     /// Carry out what the person chose in the sheets.
-    pub(crate) fn follow_sheets(&self, look: &mut tilo_surface_host::Look<'_>) {
+    pub(crate) fn follow_sheets(&self, look: &mut tilo_session_core::door::Look<'_>) {
         // What a place can show, as the arrangement published it: an agent's `find` leads with the
         // resource typing the text would place, so it reads the same catalogue the canvas places
         // through.
         let catalog = self.arrangement.borrow().targets();
         self.session_doors.keep_tabs(&self.handle);
-        self.session_doors.answer(
-            &self.doors,
-            &self.services,
-            &self.search,
-            &|resource| catalog.borrow().get(resource).is_some(),
-            look,
-        );
+        if let Some(engine) = &self.engine {
+            self.session_doors.keep_awaiting(&self.handle, engine);
+        }
+        // What a place can show, as a find's answer holds it: the borrow ends here, since an
+        // answer is heard on a later pass, off the pass that asked.
+        let shows: std::rc::Rc<dyn Fn(&str) -> bool> = {
+            let catalog = std::rc::Rc::clone(&catalog);
+            std::rc::Rc::new(move |resource| catalog.borrow().get(resource).is_some())
+        };
+        self.session_doors
+            .answer(&self.doors, &self.services, &self.search, &shows, look);
         // A service's `open` changes nothing of its record: opening is the session's arranging
         // step, and the places the services were asked for are stood through the arrangement's
         // own `open`, as an agent and a view asking the shell are one act
         // (`docs/designs/app-language/one-app-model.md` §3; shell.md §8, "The canvas composes
         // views; it opens nothing").
         self.open_asked_by_services();
+        // The finds the door asked on an earlier pass whose sources answered since: answered here,
+        // where the catalogue a place reads is, and never by the pass that asked them.
+        self.search.poll_finds();
         if let Some(power) = &self.power {
             for effect in power.take_asked() {
                 power.presentation().close();
@@ -322,12 +374,11 @@ impl Shared {
             }
         }
 
-        workspaces::follow_directory(
+        crate::directory::follow(
             self.directory.as_ref(),
-            &self.handle,
             &self.directory_store,
-            &self.notices,
-            &|joined| self.add_joined_workspace(joined),
+            &*self.telling(),
+            &crate::platform::directory::DeskDirectory(self),
         );
         workspace_settings::follow(
             self.workspace_settings.as_ref(),
@@ -339,9 +390,10 @@ impl Shared {
             &self.workspace_settings_feed(),
         );
         self.follow_invite();
-        self.refresh_invite();
         self.follow_delete_workspace();
+        self.follow_owner_deletions();
         self.follow_boot_join();
+        self.follow_hosted_browser();
         // A program of this login asking to work as an agent is a question of the person's: their
         // answer admits it, and the client is served from the next pass on.
         if !self.boot_join.borrow().waiting()

@@ -20,7 +20,6 @@ type Match = (
     HashMap<String, OwnedValue>,
 );
 
-/// The providers serving on a fresh session bus, and a client on the same bus.
 async fn client(host: &Host) -> (PrivateBus, zbus::Connection, zbus::Connection) {
     let search = Arc::new(search(host));
     search.refresh().await.unwrap();

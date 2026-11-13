@@ -208,8 +208,8 @@ pub fn may_command(
             .filter(|candidate| candidate.id == *group)
             .flat_map(|candidate| &candidate.tabs)
             .try_for_each(|tab| may_rearrange_window(standing, authors, tab.id)),
-        DesktopCommand::SaveShortcut { .. }
-        | DesktopCommand::DeleteShortcut { .. }
+        DesktopCommand::RetiredSaveShortcut { .. }
+        | DesktopCommand::RetiredDeleteShortcut { .. }
         | DesktopCommand::ClaimNamespace { .. }
         | DesktopCommand::SavePreset { .. }
         | DesktopCommand::AssignPreset { .. }

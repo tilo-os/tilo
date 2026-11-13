@@ -13,14 +13,11 @@ use std::collections::HashMap;
 use ui::held_images::HeldImages;
 use vello::peniko::ImageData;
 
-/// Sender pictures, by lower-case address.
 pub struct Avatars {
     pictures: HeldImages,
     store: ui::ImageStore,
     by_address: HashMap<String, String>,
-    /// The person's own picture and the addresses it shows for.
     own: Option<(std::collections::HashSet<String>, ImageData)>,
-    /// The contact directory revision the index was built from.
     directory_revision: Option<u64>,
 }
 
@@ -31,7 +28,6 @@ impl Default for Avatars {
 }
 
 impl Avatars {
-    /// No pictures yet: every sender shows initials.
     #[must_use]
     pub fn new() -> Self {
         let pictures = HeldImages::default();
@@ -45,7 +41,6 @@ impl Avatars {
         }
     }
 
-    /// The picture for mail from `address`, once it has loaded.
     #[must_use]
     pub fn image(&self, address: &str) -> Option<ImageData> {
         let address = address.trim().to_ascii_lowercase();
@@ -58,16 +53,11 @@ impl Avatars {
         self.store.get(held)
     }
 
-    /// Whether the index was built from directory revision `revision`.
     #[must_use]
     pub fn follows(&self, revision: u64) -> bool {
         self.directory_revision == Some(revision)
     }
 
-    /// Rebuild the index from Contacts' pictures (`directory`, at
-    /// `revision`) and the person's own picture (`own_photo`, their identity's)
-    /// for their `own` addresses. A mailbox several people share shows no
-    /// one's picture.
     pub fn follow(
         &mut self,
         directory: Option<(&tilo_contact_directory::ContactDirectory, u64)>,
@@ -133,8 +123,6 @@ mod tests {
         record.state().unwrap()
     }
 
-    /// A sender's picture comes from Contacts or the person's own identity,
-    /// never from a picture service; a shared mailbox shows initials.
     #[test]
     fn sender_pictures_come_from_contacts_and_the_own_identity_only() {
         let book = directory(&[
@@ -176,12 +164,10 @@ mod tests {
             avatars.image("sam@rivera.example").is_some(),
             "the person's own picture"
         );
-        // Every address resolves to held data: no URL is ever fetched.
         for held in avatars.by_address.values() {
             assert!(held.starts_with("held"), "{held}");
             assert!(avatars.pictures.holds(held));
         }
-        // Unknown senders have no picture to load.
         assert!(avatars.image("stranger@example.com").is_none());
     }
 }

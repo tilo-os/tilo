@@ -112,7 +112,7 @@ os._exit(0)
     assert_eq!(peer.pid(), child.id());
     let process = launcher
         .clone()
-        .with_executing(peer)
+        .with_executing(&peer)
         .expect("two exact live process handles");
     let stopped = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&stopped);

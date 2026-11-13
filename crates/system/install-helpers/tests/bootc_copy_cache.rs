@@ -1,5 +1,4 @@
-//! The VM retry cache reuses only one exact booted/cached image pair
-//! (formerly `os/tests/test_vm_bootc_copy_cache.py`).
+//! The VM retry cache reuses only one exact booted and cached image pair.
 
 #![allow(
     clippy::unwrap_used,
@@ -97,8 +96,8 @@ impl Host for Fixture {
     }
 
     fn owned_private_file(&self, path: &Path) -> bool {
-        // The opt-in fixture answers for the marker; the receipt is owned
-        // when it exists, as a root-run installer leaves it.
+        // The opt-in fixture answers for the marker; the receipt is owned when it
+        // exists, as a root-run installer leaves it.
         match self.enabled.get() {
             Some(enabled) if path == self.marker() => enabled,
             _ => self

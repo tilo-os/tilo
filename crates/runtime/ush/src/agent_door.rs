@@ -1,16 +1,13 @@
-//! The environment's own agent door: where a coding agent inside the guest
-//! reaches the desktop's actions (`tilo-runtime --connect`).
+//! The environment's own agent door: where a coding agent inside the guest reaches
+//! the desktop's actions (`tilo-runtime --connect`).
 //!
 //! The session's own door serves only programs outside every sandbox, so the
 //! supervisor asks the session for a door bound to this environment
-//! ([`runtime_portal::environment_door`]) as the session starts, binds it into
-//! the guest at [`tilo_paths::login::GUEST_AGENT_SOCKET`] and names it in
-//! [`tilo_paths::login::AGENT_SOCKET_ENV`]. The session serves a program there
-//! as an agent of this environment, in the environment's workspace, once the
-//! person allows it. The door is the lease's: it closes when the session ends.
-//!
-//! Outside a Tilo login, or when the session refuses, the guest simply has no
-//! door; nothing else about it changes.
+//! ([`runtime_portal::environment_door`]), binds it into the guest at
+//! [`tilo_paths::login::GUEST_AGENT_SOCKET`] and names it in
+//! [`tilo_paths::login::AGENT_SOCKET_ENV`]. The door belongs to the lease: it closes
+//! when the session ends. Outside a Tilo login, or when the session refuses, the guest
+//! has no door.
 
 use std::path::{Path, PathBuf};
 
@@ -42,7 +39,6 @@ fn workspace_of(store: &Store, id: &str) -> Option<String> {
     }
 }
 
-/// The session's own agent door, where this login's session listens.
 fn session_door() -> Option<PathBuf> {
     Some(
         tilo_paths::login::session_dir(
@@ -52,16 +48,11 @@ fn session_door() -> Option<PathBuf> {
     )
 }
 
-/// Ask the session for the door of `environment`, the environment `id`
-/// (`<workspace>/<record>`, [`crate::workspace::ENVIRONMENT_ENV`]) of
-/// `store`: the lease that keeps it open, or `None` when there is no session
-/// to ask or it refused.
 #[must_use]
 pub fn open_for(store: &Store, id: &str, environment: &Environment) -> Option<Lease> {
     open_at(&session_door()?, store, id, environment)
 }
 
-/// [`open_for`], asking the session whose door is `door`.
 #[must_use]
 pub fn open_at(door: &Path, store: &Store, id: &str, environment: &Environment) -> Option<Lease> {
     if !door.exists() {
@@ -89,9 +80,6 @@ pub fn open_at(door: &Path, store: &Store, id: &str, environment: &Environment) 
     }
 }
 
-/// The names a coding agent's MCP configuration runs inside a guest:
-/// `tilo-runtime --connect`, as it does on the host, served here by this
-/// runtime's own binary, since the environment's images carry no Tilo.
 pub const CONNECT_COMMANDS: [&str; 2] = ["tilo-runtime", "tilo-runtime-mcp"];
 
 /// `tilo-runtime --connect` inside a guest: relay this process's standard

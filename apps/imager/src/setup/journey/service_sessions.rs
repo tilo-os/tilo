@@ -1,4 +1,5 @@
 //! Explicit source/provider decisions, independent of bookmarks/history and files.
+
 #[cfg(all(test, target_os = "linux"))]
 #[path = "login_tests.rs"]
 mod login_tests;
@@ -30,7 +31,6 @@ impl SelectedSources {
         self.sources.is_empty()
     }
 }
-/// A detected source/service pair, borrowed for presentation only.
 pub(super) struct DetectedSource<'a> {
     pub(super) source: &'a CookieProfile,
     pub(super) service: Service,
@@ -56,7 +56,6 @@ impl Selection {
     fn from_discovery(mut discovered: service_profiles::Discovery) -> io::Result<Self> {
         let mut sources = std::mem::take(&mut discovered.sources);
         let mut unavailable = discovered.unavailable;
-        // Stable source IDs, not directory iteration order, select the default.
         sources.sort_by(|left, right| left.id.cmp(&right.id));
         let mut detected = Vec::new();
         let mut included = Vec::new();
@@ -105,8 +104,6 @@ impl Selection {
     pub(super) fn available(&self) -> bool {
         !self.detected.is_empty()
     }
-    /// One detected source/service pair with its exact presentation state.
-    /// The source stays private; presentation never receives a path.
     pub(super) fn detected_sources(&self) -> impl Iterator<Item = DetectedSource<'_>> {
         self.detected.iter().filter_map(|(id, service, presence)| {
             let source = self.sources.iter().find(|source| &source.id == id)?;
@@ -123,10 +120,6 @@ impl Selection {
             })
         })
     }
-    /// Reapply explicit decisions and collapsed groups to a fresh discovery of
-    /// the same granted home. A pair the person excluded stays excluded when
-    /// it is still present; newly discovered readable pairs keep the default
-    /// inclusion. A source that disappeared cannot be recreated from a label.
     pub(super) fn adopt(&mut self, previous: &Self) {
         self.collapsed.clone_from(&previous.collapsed);
         for (id, service, _) in self.detected.clone() {
@@ -141,7 +134,6 @@ impl Selection {
         }
         self.decided.clone_from(&previous.decided);
     }
-    /// Describe selected material, never authenticated accounts or working logins.
     pub(super) fn overview(&self, accounts_enabled: bool) -> String {
         if !accounts_enabled {
             return super::t("installer-service-sessions-accounts-excluded");
@@ -191,8 +183,6 @@ impl Selection {
                 &[("services", needs_access.into())],
             ));
         }
-        // Initial encrypted sources need attention. An explicit service choice,
-        // including exclusion, must not become a repeated access prompt.
         let found = [Service::Slack, Service::Discord]
             .into_iter()
             .filter(|service| {
@@ -327,7 +317,6 @@ impl Selection {
                 .collect(),
         }
     }
-    /// Public labels for exactly the explicitly selected source/provider pairs.
     pub(super) fn review_labels(&self, accounts_enabled: bool) -> Vec<String> {
         if !accounts_enabled {
             return Vec::new();
@@ -602,9 +591,6 @@ mod tests {
                 .unwrap();
             assert_eq!(declaration.sessions.len(), 1);
             assert_eq!(declaration.sessions[0].service, Service::Slack);
-            // Canonical import creates private custody only beneath an already
-            // owner-private parent; default tempfile directory modes are not
-            // that authority. Keep the wrong-identity target-absence check.
             let target = tempfile::Builder::new()
                 .permissions(std::fs::Permissions::from_mode(0o700))
                 .tempdir()
@@ -703,8 +689,6 @@ mod tests {
                     "refused inclusion does not hide attention"
                 );
                 assert_eq!(selection.report()["sources"][0]["selectable"], false);
-                // Preserve the independent real adapter refusal even though the
-                // ordinary selection action now prevents unsupported capture.
                 let unsupported = SelectedSources {
                     sources: vec![(
                         Arc::clone(
@@ -764,7 +748,6 @@ mod tests {
                     assert!(preview.belongings.sessions.decided.is_empty());
                 })
                 .unwrap();
-                // Recover the public report assertion subject after the actual action.
                 selection = Selection::from_discovery(
                     service_profiles::discover_without_slack_package(
                         home.path(),
@@ -814,8 +797,6 @@ mod tests {
                 .join(".mozilla/firefox/independent/cookies.sqlite"),
         )
         .unwrap();
-        // Actual source custody becomes inadmissible after metadata inventory.
-        // No discovery callback or permission mock substitutes for the real walk.
         std::fs::set_permissions(
             path.parent().unwrap(),
             std::fs::Permissions::from_mode(0o777),

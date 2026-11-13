@@ -1,5 +1,4 @@
 //! Exact legacy browser profiles discovered inside an already granted home.
-//! Metadata discovery never reads browser databases, cookies or credentials.
 use std::io;
 use std::path::{Component, Path};
 use std::sync::Arc;
@@ -27,14 +26,11 @@ pub struct ReviewedProfile {
     pub label: String,
     pub browser: BrowserKind,
     pub installation: Installation,
-    /// Whether this profile has a reviewed bookmarks/history export selection.
-    /// A profile with only other browser data remains visible in the inventory
-    /// but never becomes an empty authenticated plan entry.
+    /// A profile with only other browser data stays visible but never becomes an empty plan entry.
     pub exportable: bool,
     directory: Arc<PinnedDirectory>,
 }
 impl ReviewedProfile {
-    /// Revalidate the reviewed profile and its retained directory namespace.
     pub fn validate(&self) -> io::Result<()> {
         if self.exportable {
             self.profile.validate().map_err(invalid)?;
@@ -42,14 +38,9 @@ impl ReviewedProfile {
         self.directory.validate()?;
         storage(&self.directory)?.validate_namespace_control()
     }
-    /// Read a bounded, source-preserving inventory for this reviewed profile.
-    /// Counts are proven against the same fixed source files the reviewed
-    /// export path reads. Unsupported classes stay named instead of silently
-    /// disappearing behind one browser total.
-    ///
-    /// # Errors
-    /// Refuses changed or unsafe source authority. Individual unreadable data
-    /// classes are reported as unknown rather than as an empty success.
+    /// A bounded, source-preserving inventory for this profile, proven against the same files the
+    /// export path reads; unsupported classes stay named. Refuses changed or unsafe source authority,
+    /// and reports unreadable classes as unknown rather than as empty success.
     #[cfg(target_os = "linux")]
     pub fn inventory(&self) -> io::Result<ProfileInventory> {
         self.validate()?;
@@ -133,10 +124,9 @@ impl ReviewedProfile {
         if let Some(websites) = website_counts(&self.directory, self.profile.provider)? {
             output.websites = websites;
         }
-        // Saved sign-ins are metadata: the distinct origins and user names in
-        // the login store. Passwords stay encrypted in their source and the
-        // export path never carries them, so this count never claims a working
-        // sign-in was transferred.
+        // Saved sign-ins are metadata: the distinct origins and user names in the login store.
+        // Passwords stay encrypted in their source and never enter this path, so this count never
+        // claims a working sign-in was transferred.
         output.websites.accounts = accounts;
         output.websites.account_evidence = accounts.exact().is_some_and(|count| count > 0);
         output.exportable = self.exportable;
@@ -145,7 +135,6 @@ impl ReviewedProfile {
         Ok(output)
     }
 
-    /// Capture the selected domains from this reviewed profile.
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture_files(
         &self,
@@ -153,9 +142,6 @@ impl ReviewedProfile {
     ) -> io::Result<browser_continuity::snapshot::Snapshot> {
         self.capture_files_cancelled(selection, &std::sync::atomic::AtomicBool::new(false))
     }
-    /// Capture selected domains while observing cancellation and source identity.
-    ///
-    /// # Errors
     /// Refuses cancellation, changed selections or sources, unsafe namespaces and capture failures.
     pub fn capture_files_cancelled(
         &self,
@@ -203,7 +189,6 @@ impl ReviewedProfile {
     }
 }
 
-/// Discover only recognized sources supplied by the consented account inventory.
 /// Source roots outside the granted home and incomplete scans are refused.
 pub fn discover(home: &Path, candidates: &[Candidate]) -> io::Result<Vec<ReviewedProfile>> {
     let root = PinnedDirectory::open_absolute(home)?;
@@ -724,8 +709,6 @@ fn login_counts(
         Provider::Chromium => match open_database(directory, &["Login Data"])? {
             Some(database) => {
                 let passwords = query_count(&database.connection, "SELECT COUNT(*) FROM logins")?;
-                // Only the origin and user name are read. The encrypted value
-                // stays in the source snapshot and never enters this process.
                 let accounts = query_count(
                     &database.connection,
                     "SELECT COUNT(DISTINCT origin_url || char(0) || username_value) \
@@ -824,7 +807,6 @@ fn settings_count(directory: &Arc<PinnedDirectory>, provider: Provider) -> io::R
 
 #[cfg(not(target_os = "linux"))]
 impl ReviewedProfile {
-    /// Inventory inspection is unavailable where the native database reader is not built.
     pub fn inventory(&self) -> io::Result<ProfileInventory> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,

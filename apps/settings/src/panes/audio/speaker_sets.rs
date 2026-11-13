@@ -1,25 +1,17 @@
-//! The person's speaker sets as outputs of Sound: read from the shell's
-//! speaker lane, and chosen through it.
+//! The person's speaker sets as outputs of Sound: read from the shell's speaker
+//! lane, and chosen through it.
 
-/// One of the person's speaker sets, offered as an output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpeakerSetOutput {
     pub id: String,
     pub name: String,
     pub speakers: usize,
-    /// Everything this device plays plays on the set now.
     pub output_here: bool,
 }
 
-/// The person's speaker sets as Sound shows them, and their reading.
 pub(super) struct SpeakerSets {
-    /// The sets last read, each an output like any other.
     pub shown: Vec<SpeakerSetOutput>,
-    /// The sets read again, on the background executor.
     pub read: crate::device_read::DeviceRead<Vec<SpeakerSetOutput>>,
-    /// The sets want reading again: on opening, when the graph changed (a
-    /// set taking or leaving the output moves its sink), and after choosing
-    /// an output.
     pub due: bool,
 }
 
@@ -34,8 +26,6 @@ impl Default for SpeakerSets {
 }
 
 impl SpeakerSets {
-    /// Adopt a finished read, or start one when due; whether the sets shown
-    /// changed.
     pub fn poll(
         &mut self,
         speakers: &std::sync::Arc<dyn crate::speaker_setup::SpeakerService>,
@@ -53,7 +43,6 @@ impl SpeakerSets {
             if self.read.start(move || read_speaker_sets(service.as_ref())) {
                 return false;
             }
-            // No background executor runs here: read on this thread.
             read_speaker_sets(speakers.as_ref())
         };
         if read == self.shown {
@@ -64,8 +53,6 @@ impl SpeakerSets {
     }
 }
 
-/// The person's speaker sets, as the shell answers for them: none while
-/// media continuity is off or the shell cannot be asked.
 fn read_speaker_sets(service: &dyn crate::speaker_setup::SpeakerService) -> Vec<SpeakerSetOutput> {
     match service.call(ui::collaboration::SpeakerCommand::Snapshot) {
         Ok(ui::collaboration::SpeakerReply::Snapshot { snapshot }) if snapshot.media_enabled => {
@@ -84,7 +71,6 @@ fn read_speaker_sets(service: &dyn crate::speaker_setup::SpeakerService) -> Vec<
     }
 }
 
-/// Ask the shell for `command`; its refusal as the error.
 pub(super) fn speaker_call(
     service: &dyn crate::speaker_setup::SpeakerService,
     command: ui::collaboration::SpeakerCommand,
@@ -141,7 +127,6 @@ impl crate::speaker_setup::SpeakerService for SampleSpeakerSets {
     }
 }
 
-/// No speaker sets: what a model without the shell (a test) asks.
 pub(super) struct NoSpeakerSets;
 
 impl crate::speaker_setup::SpeakerService for NoSpeakerSets {

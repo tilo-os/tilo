@@ -93,7 +93,7 @@ pub struct Detail {
     pub color: String,
 }
 
-#[resource(kind = "test.notebook", label = "Notebook")]
+#[resource(kind = "test.notebook", catalogue = "tests/locales")]
 impl Notebook {
     /// Rename.
     #[action]
@@ -510,7 +510,7 @@ pub struct Sheet {
     pub grid: Grid<Counted>,
 }
 
-#[resource(kind = "test.sheet", label = "Sheet")]
+#[resource(kind = "test.sheet", catalogue = "tests/locales")]
 impl Sheet {
     /// Add a row.
     #[action]
@@ -684,7 +684,7 @@ pub struct Board {
     pub seen: Set<Counted>,
 }
 
-#[resource(kind = "test.board", label = "Board")]
+#[resource(kind = "test.board", catalogue = "tests/locales")]
 impl Board {
     /// Add a card, to the archive when asked.
     #[action]
@@ -862,7 +862,7 @@ pub struct Track {
     pub cues: Keyed<Cue>,
 }
 
-#[resource(kind = "test.track", label = "Track")]
+#[resource(kind = "test.track", catalogue = "tests/locales")]
 impl Track {
     /// Add a cue at a place.
     #[action]
@@ -1020,7 +1020,7 @@ pub struct Shelf {
     pub progress: Map<Counted>,
 }
 
-#[resource(kind = "test.shelf", label = "Shelf")]
+#[resource(kind = "test.shelf", catalogue = "tests/locales")]
 impl Shelf {
     /// Rename.
     #[action]

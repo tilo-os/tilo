@@ -1,8 +1,6 @@
-//! Two private, owned runtimes hand a real prepared package from this
-//! computer to a fresh destination identity. The package contains an actual
-//! Thunderbird selection with one folder excluded; the destination verifies
-//! the package, imports only the selected folder, and returns a receipt before
-//! the source reports completion.
+//! Two owned runtimes hand a real prepared package from this computer to a fresh
+//! destination identity.
+
 use super::belongings::Belongings;
 use super::prepared_media::PreparedMedia;
 use super::*;
@@ -186,11 +184,6 @@ fn a_real_prepared_package_reaches_a_new_identity_and_returns_a_verified_receipt
     });
     source.serve(bytes, key.clone(), digest).unwrap();
 
-    // The receiving computer is entirely fresh: no person, no device
-    // certificate. It asks the preparing computer to join that person's
-    // identity with this machine's own new key. After the person approves the
-    // code, the source signs the member certificate and exports the public
-    // identity; only then does the ordinary receiver run.
     let destination_system = home.join("destination-system");
     let destination_identity = home.join("destination-identity");
     let join_identity = destination_identity.join(".other-computer-join");
@@ -227,8 +220,6 @@ fn a_real_prepared_package_reaches_a_new_identity_and_returns_a_verified_receipt
         while let Some(state) = source.poll() {
             match state {
                 SourceState::JoinRequested { approval, .. } => {
-                    // The person compared the code on both screens and
-                    // approved this exact device for this exact package.
                     source.approve(&approval).unwrap();
                     joined = true;
                 }
@@ -277,11 +268,6 @@ fn a_real_prepared_package_reaches_a_new_identity_and_returns_a_verified_receipt
     )
     .unwrap();
     assert_eq!(review.manifest().units.mail().len(), 1);
-    // The package's canonical importer installs the person's custody into the
-    // real identity directory. The temporary joined record above never becomes
-    // a second identity for the same person. It must not replace an unrelated
-    // target identity or claim the package's person merely because the source
-    // approved the transfer.
     review
         .import_identity(&destination_identity, received.password.as_bytes())
         .unwrap();
@@ -336,8 +322,6 @@ fn a_real_prepared_package_reaches_a_new_identity_and_returns_a_verified_receipt
         "a receipt for another package must never complete this source"
     );
     receiver.acknowledge(&received).unwrap();
-    // The compositor releases its receiver immediately after acknowledging;
-    // the queued receipt must still reach the source and name this package.
     drop(receiver);
     let mut complete = false;
     read_until(tilo_test_env::hang_bound(), || {
@@ -476,7 +460,6 @@ fn a_wrong_join_approval_releases_no_identity_until_the_exact_request_is_approve
         }
         approval.is_some()
     });
-    // A token from no request, or another request, cannot release custody.
     let refused = tilo_handoff::transport::refused_approvals();
     source.approve(&uuid::Uuid::new_v4().to_string()).unwrap();
     read_until(tilo_test_env::hang_bound(), || {

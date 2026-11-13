@@ -22,6 +22,7 @@ use super::{
     KEY_RECOVERY_KEY_RESTORE, KEY_RECOVERY_KEY_SHOW, KEY_TOUR_BACK, KEY_TOUR_NEXT, KEY_TOUR_SKIP,
     OnboardingView, PickerPurpose,
 };
+use ui::widget::DrawChild;
 
 /// The instance the app is mounted as: past every tab id, so setup never
 /// names a window.
@@ -160,7 +161,7 @@ impl Hosted {
             return;
         }
         if let Some(app) = self.app.as_mut() {
-            app.draw(scene, transform, text_renderer, theme, presence);
+            app.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 

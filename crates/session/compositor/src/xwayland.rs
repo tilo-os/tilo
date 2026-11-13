@@ -555,8 +555,3 @@ impl XwmHandler for LoopData {
         }
     }
 }
-
-/// The `wl_surface` an X11 window draws into, once Xwayland told us.
-pub(crate) fn x11_wl_surface(window: &Window) -> Option<WlSurface> {
-    window.x11_surface().and_then(X11Surface::wl_surface)
-}

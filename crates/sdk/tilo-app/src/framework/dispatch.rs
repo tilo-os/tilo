@@ -156,6 +156,10 @@ pub struct Dispatcher<R: Resource> {
     /// The last immediate action and its serial, to tell whether the next
     /// continues it.
     last: Rc<RefCell<Option<Serialed<R>>>>,
+    /// What an action a person applies here is reported to the broker as:
+    /// for a child resource, its parent's action carrying it, which is what
+    /// applies; `None` for the resource's own actions, reported as invoked.
+    reported_as: Option<ReportedAs<R>>,
 }
 
 /// What a dispatcher keeps that does not name the resource's action type
@@ -176,6 +180,26 @@ impl Drop for DispatchCore {
 impl DispatchCore {
     fn of(state: DispatchState) -> Self {
         Self(std::mem::ManuallyDrop::new(state))
+    }
+
+    /// The kind the edits here apply as, when a record holds this resource
+    /// ([`Dispatcher::child`]): the record's own kind.
+    fn applied_as_kind(&self) -> Option<&'static str> {
+        self.applied_as.map(|(kind, _)| kind)
+    }
+
+    /// The nested editors the views opened ([`Dispatcher::child`]), at their
+    /// own addresses, to publish beside this resource.
+    pub(crate) fn nested_resources(&self) -> Vec<(String, tilo_actions::ResourceSpec)> {
+        self.nested.borrow().clone()
+    }
+
+    /// Name this resource `label`, as history, the palette and an agent read
+    /// it: the name its app gives the state it holds now.
+    pub(crate) fn name_resource(&self, label: &str) {
+        // Named again by every publication: only a new name is a change
+        // anyone reading it takes up.
+        self.resource_label.set_if_changed(label.to_owned());
     }
 }
 
@@ -275,10 +299,11 @@ pub(crate) struct DispatchState {
     /// The step the open undo step's changes record, decided before each
     /// change commits, so a coalesced step stays one step after a restart.
     gesture: Rc<Cell<Option<tilo_actions::ActionId>>>,
-    /// Where the resource's state comes from and where its actions go: the
-    /// document the host lends the pass, or the session over the app's one
-    /// connection ([`super::Source`]).
-    source: super::Source,
+    /// The nested editors the views opened ([`Dispatcher::child`]), each
+    /// published at its own address beside this resource: what the palette,
+    /// agents and scripts address. Kept once made, so an editor acts on its
+    /// record after it was last shown.
+    nested: Rc<RefCell<Vec<(String, tilo_actions::ResourceSpec)>>>,
 }
 
 impl Clone for DispatchCore {
@@ -317,10 +342,14 @@ impl Clone for DispatchCore {
             past: self.past,
             continuable: self.continuable.clone(),
             gesture: self.gesture.clone(),
-            source: self.source.clone(),
+            nested: Rc::clone(&self.nested),
         }))
     }
 }
+
+/// The published invocation a child's action is reported as.
+type ReportedAs<R> =
+    Rc<dyn Fn(&Invoke<R>) -> Option<ui_core::local_document_action::PublishedInvocation>>;
 
 /// What applying one action needs.
 type PermissionOf<R> = Rc<dyn Fn(&<R as Resource>::Action) -> ActionNeed>;
@@ -361,6 +390,7 @@ impl<R: Resource> Clone for Dispatcher<R> {
             submit_now: Rc::clone(&self.submit_now),
             group_now: self.group_now.clone(),
             last: Rc::clone(&self.last),
+            reported_as: self.reported_as.clone(),
         }
     }
 }
@@ -403,8 +433,8 @@ impl DispatchCore {
             past: false,
             continuable: Rc::default(),
             gesture: Rc::default(),
-            source: super::Source::Document,
             applied_as: None,
+            nested: Rc::default(),
         }))
     }
 
@@ -446,10 +476,8 @@ impl DispatchCore {
             past: self.past,
             continuable: Rc::default(),
             gesture: Rc::default(),
-            // Another record of an app in this process is the app's own,
-            // kept here: only the source of this one may be the session's.
-            source: super::Source::Document,
             applied_as: None,
+            nested: Rc::default(),
         })
     }
 
@@ -471,6 +499,8 @@ impl DispatchCore {
         address: ActionAddress,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) {
+        #[cfg(debug_assertions)]
+        not_painting();
         let on_behalf_of = match &self.custody {
             Some(custody) => {
                 if let Err(error) = custody.check() {
@@ -488,48 +518,6 @@ impl DispatchCore {
             (ControlInvocation { address, arguments }, on_behalf_of),
             self.asking.get(),
         ));
-    }
-
-    /// Whether the session keeps this resource's record, so submissions go
-    /// over the app's connection rather than into a document the host lent
-    /// ([`super::Source::Connection`]).
-    fn submits_over_connection(&self) -> bool {
-        self.source.is_connection()
-    }
-
-    /// Submit a control the app's view pressed, over the connection that
-    /// keeps the record, as the person's gesture (`one-app-model.md` §4).
-    pub(crate) fn submit_view_control(
-        &self,
-        address: &ActionAddress,
-        arguments: serde_json::Map<String, serde_json::Value>,
-    ) {
-        self.submit_remote(address, arguments, true);
-    }
-
-    /// Submit `address` with `arguments` over the connection, as the person's
-    /// gesture when `in_person`; the refusal is told in
-    /// [`Self::refuse`] as an edit applied now is.
-    fn submit_remote(
-        &self,
-        address: &ActionAddress,
-        arguments: serde_json::Map<String, serde_json::Value>,
-        in_person: bool,
-    ) {
-        let ask = super::Ask::new(
-            address.resource.clone(),
-            address.action.clone(),
-            arguments,
-            in_person,
-        );
-        match self
-            .source
-            .submit(&ask)
-            .unwrap_or_else(|| Err("this resource is kept here; it has no connection".to_owned()))
-        {
-            Ok(()) => {}
-            Err(reason) => self.refuse(&address.action, reason),
-        }
     }
 
     pub(crate) fn note_continuation(
@@ -960,18 +948,20 @@ impl DispatchCore {
     pub(crate) fn app_id(&self) -> &'static str {
         self.app_id
     }
-
-    /// Where this dispatcher's resource's state comes from and where its
-    /// edits go ([`super::Source`]).
-    pub(crate) fn source(&self) -> &super::Source {
-        &self.source
-    }
 }
 
 impl<R: Resource> Dispatcher<R> {
     /// What does not name the resource type.
     pub(crate) fn core(&self) -> &DispatchCore {
         &self.core
+    }
+
+    /// The kind of the record a caret here is anchored to: the record this
+    /// resource's edits apply as ([`Self::child`] names it), which is what
+    /// actions and History name the text as — a page's rich text is the
+    /// page's, never the text package's.
+    pub fn anchored_kind(&self) -> &'static str {
+        self.core.applied_as_kind().unwrap_or(R::KIND)
     }
 
     pub(crate) fn for_custody(
@@ -986,6 +976,7 @@ impl<R: Resource> Dispatcher<R> {
             submit_now: Rc::clone(&self.submit_now),
             group_now: self.group_now.clone(),
             last: Rc::clone(&self.last),
+            reported_as: self.reported_as.clone(),
         }
     }
 
@@ -1021,6 +1012,7 @@ impl<R: Resource> Dispatcher<R> {
                 )
             })),
             last: Rc::default(),
+            reported_as: None,
         }
     }
 
@@ -1075,14 +1067,6 @@ impl<R: Resource> Dispatcher<R> {
     /// the app's own record of the workspace).
     pub(crate) fn on_record(mut self, route: &str) -> Self {
         self.core.record = Rc::from(route);
-        self
-    }
-
-    /// Submissions go over `source`, the session's document host, rather
-    /// than into the document a host lends the pass
-    /// ([`super::Source::Connection`]).
-    pub(crate) fn over_source(mut self, source: super::Source) -> Self {
-        self.core.source = source;
         self
     }
 
@@ -1324,17 +1308,6 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     fn queue(&self, invoke: Invoke<R>) {
-        if self.core.submits_over_connection() {
-            // The session keeps the record: the action is the person's
-            // gesture at this view, admitted and committed by its door
-            // (`one-app-model.md` §4).
-            self.core.submit_remote(
-                &ActionAddress::new(self.core.resource_id.as_ref(), invoke.id),
-                invoke.arguments,
-                true,
-            );
-            return;
-        }
         self.core.queue_invocation(
             ActionAddress::new(self.core.resource_id.as_ref(), invoke.id),
             invoke.arguments,
@@ -1462,6 +1435,22 @@ impl<R: Resource> Dispatcher<R> {
         Ok(self.core.opener.call(parent, target, argument))
     }
 
+    /// Read `read`, a record of the window's workspace, through the host's
+    /// record door, continuing `parent` as [`Self::call_published`] does.
+    pub(crate) fn read_record(
+        &self,
+        parent: Option<tilo_actions::InvocationId>,
+        read: tilo_actions::remote::RecordReadRequest,
+    ) -> Result<ui_core::remote_actions::RecordReadCall, String> {
+        if self.core.past {
+            return Err("a past version reads nothing".into());
+        }
+        if let Some(custody) = &self.core.custody {
+            custody.check()?;
+        }
+        Ok(self.core.opener.read_record(parent, read))
+    }
+
     /// Invoke an action published on a nested resource, such as one item of
     /// a collection.
     pub(crate) fn invoke_at(
@@ -1470,10 +1459,6 @@ impl<R: Resource> Dispatcher<R> {
         arguments: serde_json::Map<String, serde_json::Value>,
     ) {
         if self.read_only() {
-            return;
-        }
-        if self.core.submits_over_connection() {
-            self.core.submit_remote(&address, arguments, true);
             return;
         }
         self.core.queue_invocation(address, arguments);
@@ -1775,23 +1760,12 @@ impl<R: Resource> Dispatcher<R> {
         context: ActionContext,
         confirmed: bool,
     ) -> Result<(), ActionError> {
+        #[cfg(debug_assertions)]
+        not_painting();
         let _nonlocal = self.capture_nonlocal();
         self.core.applies_now()?;
         if !self.may_apply(action) {
             return Err(self.not_allowed(action));
-        }
-        if self.core.submits_over_connection() {
-            // Nothing to apply to here: the session keeps the record, so the
-            // edit is the same typed action submitted over the connection
-            // (`one-app-model.md` §4). The view shows its own result until
-            // the session's reading follows it.
-            let invoke = Invoke::<R>::apply(action).map_err(ActionError::Encode)?;
-            self.core.submit_remote(
-                &ActionAddress::new(self.core.resource_id.as_ref(), invoke.id),
-                invoke.arguments,
-                true,
-            );
-            return Ok(());
         }
         // Applying now never skips the person's consent: an action that
         // needs confirming goes to the door, which asks first.
@@ -1849,6 +1823,7 @@ impl<R: Resource> Dispatcher<R> {
             submit_now: Rc::new(move |_, _, action: &C::Action, _| apply(action)),
             group_now: None,
             last: Rc::default(),
+            reported_as: None,
         }
     }
 
@@ -1872,6 +1847,7 @@ impl<R: Resource> Dispatcher<R> {
             submit_now: Rc::new(move |_, _, action: &C::Action, _| apply(action)),
             group_now: None,
             last: Rc::default(),
+            reported_as: None,
         }
     }
 
@@ -1884,21 +1860,28 @@ impl<R: Resource> Dispatcher<R> {
     /// [`apply_now`](Self::apply_now) take `C`'s own actions, coalesce into
     /// undo steps by `C`'s [`Resource::coalesces`], and history names them
     /// after `C`'s labels. Underneath, each applies as this resource's
-    /// action: the same permission check, history, undo and replay. Queued
-    /// invocations are addressed to the child resource `id`, so this
-    /// resource publishes the child at the same id with the same `wrap`
-    /// ([`tilo_resource::publish_child`] in [`Resource::children`]), which
-    /// is also what lets the palette, agents and scripts reach it.
+    /// action: the same permission check, history, undo and replay.
+    ///
+    /// The child is published with this one, at its own address `id`, with
+    /// `C`'s actions and the same `wrap`
+    /// ([`tilo_resource::publish_child`]): the palette, agents and scripts
+    /// reach it like any resource, and an invocation addressed to it resolves
+    /// and applies here. Publishing is the framework's, from this call, so no
+    /// resource can offer an editor it does not publish.
     #[must_use]
     pub fn child<C: Resource>(
         &self,
         id: &str,
-        wrap: impl Fn(C::Action) -> R::Action + 'static,
+        wrap: impl Fn(C::Action) -> R::Action + Send + Sync + 'static,
     ) -> Dispatcher<C> {
         let parent = Rc::clone(&self.submit_now);
         let parent_permission = Rc::clone(&self.permission_of);
-        let wrap = Rc::new(wrap);
-        let wrap_for_permission = Rc::clone(&wrap);
+        let wrap: std::sync::Arc<dyn Fn(C::Action) -> R::Action + Send + Sync> =
+            std::sync::Arc::new(wrap);
+        let wrap_for_permission = std::sync::Arc::clone(&wrap);
+        let wrap_for_report = std::sync::Arc::clone(&wrap);
+        let parent_report = self.clone();
+        self.publish_child::<C>(id, std::sync::Arc::clone(&wrap));
         Dispatcher {
             core: self.core.child(id, (C::KIND, C::LABEL)),
             group: Rc::default(),
@@ -1912,7 +1895,33 @@ impl<R: Resource> Dispatcher<R> {
                 parent(host, edits, &wrap(action.clone()), context)
             }),
             last: Rc::default(),
+            reported_as: Some(Rc::new(move |invoke: &Invoke<C>| {
+                let action = invoke.build(tilo_resource::origin_now_ms()).ok()?;
+                parent_report.reported(&Invoke::<R>::apply(&wrap_for_report(action)).ok()?)
+            })),
         }
+    }
+
+    /// Publish the nested editor `id` beside this resource, once per address:
+    /// built the first time a view opens it, and kept from then on.
+    fn publish_child<C: Resource>(
+        &self,
+        id: &str,
+        wrap: std::sync::Arc<dyn Fn(C::Action) -> R::Action + Send + Sync>,
+    ) {
+        let mut nested = self.core.nested.borrow_mut();
+        if nested.iter().any(|(published, _)| published == id) {
+            return;
+        }
+        let mut child =
+            tilo_resource::publish_child::<C, R>(id, C::LABEL, None, move |action| wrap(action));
+        // The child's actions are what it applies here; its views are the
+        // app's, offered while it shows the editor, and a host refuses a view
+        // operation nothing handles.
+        child
+            .actions
+            .retain(|spec| spec.kind == tilo_actions::OperationKind::Document);
+        nested.push((id.to_owned(), child));
     }
 
     fn capture_nonlocal(&self) -> Option<ui_core::local_document_action::Scope> {
@@ -1932,12 +1941,23 @@ impl<R: Resource> Dispatcher<R> {
             return None;
         }
         Some(ui_core::local_document_action::with_invocation(
-            ui_core::local_document_action::PublishedInvocation {
+            self.reported(invoke)?,
+        ))
+    }
+
+    /// The published invocation `invoke` is reported to the broker as.
+    fn reported(
+        &self,
+        invoke: &Invoke<R>,
+    ) -> Option<ui_core::local_document_action::PublishedInvocation> {
+        match &self.reported_as {
+            Some(reported_as) => reported_as(invoke),
+            None => Some(ui_core::local_document_action::PublishedInvocation {
                 resource: self.core.resource_id.to_string(),
                 action: invoke.id.to_owned(),
                 arguments: invoke.arguments.clone(),
-            },
-        ))
+            }),
+        }
     }
 
     /// End the gesture the last immediate actions belonged to: the pointer
@@ -1950,7 +1970,7 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     pub(crate) fn name_resource(&self, label: &str) {
-        self.core.resource_label.set(label.to_owned());
+        self.core.name_resource(label);
     }
 
     /// The id of the app whose resource this is, which presence keys name
@@ -2040,6 +2060,20 @@ fn asks<A: tilo_actions::Action>(action: &A) -> bool {
         tilo_actions::Action::change_kind(action),
         tilo_actions::Action::irreversible(action),
     )
+}
+
+/// Debug builds stop on a document write made while the window paints. A
+/// frame reads the document in `sync` and writes what it took up in
+/// `settle`, both before it paints: a write dispatched from `draw` lands
+/// after the frame decided what it shows, so it waits for an unrelated event
+/// or is never shown (and never synced). Take it up in `update` and write it
+/// in `settle`.
+#[cfg(debug_assertions)]
+fn not_painting() {
+    debug_assert!(
+        !ui_core::widget::painting(),
+        "a document write was dispatched from a widget's draw: take it up in update, and write it in settle"
+    );
 }
 
 /// The submissions each effect queued that have not landed yet, and the

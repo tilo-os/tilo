@@ -44,7 +44,7 @@ impl DisplayControl {
             source,
             certificate: Arc::new(tilo_identity_authority::device_certificate),
             may_administer: Arc::new(move |workspace: &str, person: &str| {
-                use tilo_action_broker::services::WorkspaceAuthority as _;
+                use tilo_broker_core::services::WorkspaceAuthority as _;
                 let mut may = false;
                 governing.with_workspace(workspace, &mut |held| {
                     use tilo_desktop::authority::WorkspaceAuthority as _;
@@ -73,7 +73,7 @@ impl DisplayControl {
         if !command.mutates() {
             return self.execute(command);
         }
-        let person = tilo_action_broker::collab_app_broker::principal_id_for_root(root);
+        let person = tilo_broker_core::principal_id_for_root(root);
         let certificate = (self.certificate)(workspace, &person)?;
         if certificate.user_public_key != root || certificate.device_public_key != device {
             return Err("The Settings worker is not on this accepted owner device.".into());

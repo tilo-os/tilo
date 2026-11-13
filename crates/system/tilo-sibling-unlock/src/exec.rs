@@ -7,7 +7,6 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use zeroize::Zeroizing;
 
-/// Runs `program` with `args`, feeding `stdin`, and returns its stdout.
 pub fn run<I, S>(program: &str, args: I, stdin: Option<&[u8]>) -> Result<Zeroizing<Vec<u8>>>
 where
     I: IntoIterator<Item = S>,

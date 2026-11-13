@@ -17,7 +17,7 @@ pub struct Entry {
     pub text: String,
 }
 
-#[resource(kind = "test.shopping", label = "Shopping")]
+#[resource(kind = "test.shopping", catalogue = "tests/locales")]
 impl Shopping {
     /// Add an entry.
     #[action]

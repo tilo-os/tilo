@@ -44,8 +44,6 @@ impl HelperRuntime {
         Ok(Some(Self { loader, libraries }))
     }
 
-    /// Direct entry before Landlock: no environment shell or script runs
-    /// ahead of the trusted helper that installs confinement.
     pub fn entry(&self) -> Vec<String> {
         vec![
             LOADER.into(),
@@ -114,8 +112,6 @@ pub fn native_loader_trusted() -> io::Result<()> {
     HelperRuntime::resolve(&crate::supervisor::runtime_binary()?).map(drop)
 }
 
-/// Read the native ELF64 `PT_INTERP`, with bounded offsets and lengths. Static
-/// helpers need no closure; other executable formats fail closed.
 fn interpreter(binary: &Path) -> io::Result<Option<PathBuf>> {
     let mut file = std::fs::File::open(binary)?;
     let mut header = [0_u8; 64];
@@ -211,11 +207,9 @@ fn trusted_loader_owner(path: &Path, metadata: &std::fs::Metadata) -> io::Result
     }
     let file = std::fs::File::open(path)?;
     let mut filesystem = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: the descriptor is live and statvfs writes exactly this structure.
     if unsafe { libc::fstatvfs(file.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: successful fstatvfs initialized every field of the structure.
     let filesystem = unsafe { filesystem.assume_init() };
     if filesystem.f_flag & libc::ST_RDONLY == 0 {
         return Ok(false);
@@ -243,8 +237,6 @@ fn trusted_loader_owner(path: &Path, metadata: &std::fs::Metadata) -> io::Result
 
 fn mount_id(file: &std::fs::File) -> io::Result<u64> {
     let mut metadata = std::mem::MaybeUninit::<libc::statx>::uninit();
-    // SAFETY: AT_EMPTY_PATH selects the live descriptor; statx initializes
-    // precisely this structure, and the empty path is nul-terminated.
     if unsafe {
         libc::statx(
             file.as_raw_fd(),
@@ -257,7 +249,6 @@ fn mount_id(file: &std::fs::File) -> io::Result<u64> {
     {
         return Err(io::Error::last_os_error());
     }
-    // SAFETY: successful statx initialized the structure.
     let metadata = unsafe { metadata.assume_init() };
     if metadata.stx_mask & libc::STATX_MNT_ID == 0 {
         return Err(io::Error::other("kernel did not identify the loader mount"));
@@ -319,7 +310,6 @@ mod tests {
         let uid = if caller == 0 { 1000 } else { caller };
         if caller == 0 {
             let path = std::ffi::CString::new(attacker.as_os_str().as_encoded_bytes()).unwrap();
-            // SAFETY: path is nul-terminated and chown borrows it for the call.
             assert_eq!(unsafe { libc::chown(path.as_ptr(), uid, uid) }, 0);
         }
         let unmapped = fixture.path().join("unmapped-loader");
@@ -329,7 +319,6 @@ mod tests {
             "native container must provide disposable fixture ownership"
         );
         let path = std::ffi::CString::new(unmapped.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY: path is nul-terminated and chown borrows it for the call.
         assert_eq!(unsafe { libc::chown(path.as_ptr(), 2000, 2000) }, 0);
         for case in [
             "immutable",
@@ -442,7 +431,6 @@ mod tests {
     impl Drop for ImmutableMount {
         fn drop(&mut self) {
             let target = std::ffi::CString::new(self.0.as_os_str().as_encoded_bytes()).unwrap();
-            // SAFETY: target is our disposable mount's nul-terminated path.
             assert_eq!(
                 unsafe { libc::umount2(target.as_ptr(), libc::MNT_DETACH) },
                 0,
@@ -465,7 +453,6 @@ mod tests {
             root.display()
         ))
         .unwrap();
-        // SAFETY: mount arguments are valid nul-terminated strings.
         assert_eq!(
             unsafe {
                 libc::mount(

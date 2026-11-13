@@ -15,9 +15,6 @@ use tilo_content::ContentStore;
 use crate::model::{LibraryPhoto, LocationProvenance, OpenImage, PhotoLocation};
 use crate::strings::tr;
 
-/// Conservative limits for one explicit directory import. They prevent a
-/// mounted photo archive or a malicious directory tree from monopolising the
-/// client while still comfortably covering a few hundred normal photographs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImportLimits {
     pub max_files: usize,
@@ -35,9 +32,6 @@ impl Default for ImportLimits {
     }
 }
 
-/// User-visible options for a real import. EXIF GPS is retained only because
-/// selecting this import is explicit; it is never reverse-geocoded, uploaded,
-/// or inferred from network/location services.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImportOptions {
     pub limits: ImportLimits,
@@ -53,9 +47,6 @@ impl Default for ImportOptions {
     }
 }
 
-/// Incremental state suitable for a shared progress widget. `current` is a
-/// local source path and must never be put in a resource, search index, or
-/// collaborative document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImportProgress {
     pub discovered: usize,
@@ -64,9 +55,6 @@ pub struct ImportProgress {
     pub current: Option<PathBuf>,
 }
 
-/// Actual metadata read from a photo container. `orientation` records the
-/// source container faithfully; the shared pixel decoder independently
-/// normalises it so every thumbnail, analysis and export sees upright pixels.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ExifMetadata {
     pub captured_at: Option<String>,
@@ -74,8 +62,6 @@ pub struct ExifMetadata {
     pub location: Option<PhotoLocation>,
 }
 
-/// One successful staged import. The source path is local diagnostic data,
-/// while `photo` is safe for the normal portable document action.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IndexedPhoto {
     pub source: PathBuf,
@@ -83,8 +69,6 @@ pub struct IndexedPhoto {
     pub exif: ExifMetadata,
 }
 
-/// A per-file failure that is intentionally non-fatal: an inaccessible or
-/// malformed image must not make the remaining selected photos disappear.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImportFailure {
     pub source: PathBuf,
@@ -102,8 +86,6 @@ impl ImportFailure {
     }
 }
 
-/// Terminal result of a bounded import. `cancelled` is explicit so a UI can
-/// distinguish a partial user cancellation from a successful short import.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ImportReport {
     pub photos: Vec<IndexedPhoto>,
@@ -113,15 +95,6 @@ pub struct ImportReport {
     pub limit_reached: bool,
 }
 
-/// Index one explicitly selected directory. Progress runs on the caller's
-/// worker thread; it is never emitted by the CRDT. Cancellation is checked
-/// before descent, after discovery, and before each bounded file read.
-///
-/// # Errors
-///
-/// Returns a user-facing message when `root` is not an absolute path to an
-/// accessible, real (non-symlink) directory. Per-item problems are reported
-/// in [`ImportReport::failures`] instead.
 #[expect(
     clippy::too_many_lines,
     reason = "the bounded walk keeps every refusal beside the check that makes it"
@@ -182,8 +155,6 @@ where
                 report.failures.push(failure);
                 continue;
             };
-            // Refusing links closes traversal loops and avoids silently
-            // importing an unrelated tree through a selected directory.
             if meta.symlink {
                 let message = tr("photos-import-link");
                 report
@@ -242,14 +213,6 @@ where
     Ok(report)
 }
 
-/// Index one real image file with the same byte and metadata bounds used by
-/// directory import. The returned record can be dispatched as `ImportPhoto`.
-///
-/// # Errors
-///
-/// Returns a user-facing message when the import was cancelled (exactly
-/// `"Import cancelled"`), or when the file cannot be read, exceeds the byte
-/// bounds, cannot be decoded, has no usable name, or cannot be stored.
 pub fn index_file(
     path: &Path,
     store: &ContentStore,
@@ -276,13 +239,14 @@ pub fn index_file(
     if cancelled.load(Ordering::Acquire) {
         return Err(tr("photos-import-cancelled"));
     }
-    // Decode once before staging. Header dimensions alone are not a promise
-    // that the complete payload is a safe image.
     let decoded = crate::pixels::decode(&bytes).ok_or_else(|| tr("photos-import-unsafe"))?;
-    let content = store.put(&bytes).map_err(|error| {
-        tracing::warn!(%error, "photos: could not store an imported original");
-        tr("photos-import-not-kept")
-    })?;
+    let content = store
+        .put(&bytes)
+        .map(|reference| ui::tilo_resource::Bytes::kept_as(&bytes, &reference))
+        .map_err(|error| {
+            tracing::warn!(%error, "photos: could not store an imported original");
+            tr("photos-import-not-kept")
+        })?;
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -308,8 +272,6 @@ pub fn index_file(
 /// The most of a file EXIF is read from; photographs past it have no EXIF.
 const EXIF_READ_LIMIT: u64 = 256 * 1024 * 1024;
 
-/// Read actual EXIF from a bounded-size image. Parsing failure is intentionally
-/// non-fatal: many valid PNG/WebP files simply have no EXIF container.
 #[must_use]
 pub fn read_exif(path: &Path) -> Option<ExifMetadata> {
     let bytes = crate::files::read_native(path, EXIF_READ_LIMIT)?;
@@ -580,8 +542,10 @@ mod tests {
                 (indexed.photo.image.width, indexed.photo.image.height),
                 (2, 3)
             );
-            let hash = &indexed.photo.image.content;
-            assert_eq!(store.read(hash).as_deref(), Some(source.as_slice()));
+            assert_eq!(
+                indexed.photo.image.content.read(&store).as_deref(),
+                Some(source.as_slice())
+            );
         }
     }
 

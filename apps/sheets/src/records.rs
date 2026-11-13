@@ -15,10 +15,8 @@ use crate::model::{Addr, addr_to_a1};
 use crate::resource::{CellWrite, MAX_WRITES};
 use crate::workbook::SheetSnapshot;
 
-/// How many header names a refusal lists.
 const NAMED_COLUMNS_LISTED: usize = 30;
 
-/// The headers records are keyed by, each with its column.
 pub(crate) struct Columns(Vec<(String, u32)>);
 
 fn fold(name: &str) -> String {
@@ -38,7 +36,6 @@ fn same_key(a: &str, b: &str) -> bool {
 }
 
 impl Columns {
-    /// `names`, a new sheet's header names, in columns from A.
     pub(crate) fn from_names(names: &[String]) -> Result<Self, Refusal> {
         let mut columns: Vec<(String, u32)> = Vec::new();
         for (col, name) in (0u32..).zip(names) {
@@ -57,8 +54,6 @@ impl Columns {
         Ok(Self(columns))
     }
 
-    /// The headers in the first row of a sheet whose cells show as `shown`;
-    /// `None` when that row is empty.
     fn of_sheet(shown: &[SearchableCell]) -> Option<Self> {
         let columns: Vec<(String, u32)> = shown
             .iter()
@@ -75,7 +70,6 @@ impl Columns {
         (!columns.is_empty()).then_some(Self(columns))
     }
 
-    /// The header row itself, for a sheet that has none yet.
     fn header_writes(&self) -> Vec<CellWrite> {
         self.0
             .iter()
@@ -111,7 +105,6 @@ impl Columns {
             })
     }
 
-    /// The leftmost header, which identifies a row when no `key` is named.
     fn first(&self) -> Option<&(String, u32)> {
         self.0.iter().min_by_key(|(_, col)| *col)
     }
@@ -123,7 +116,6 @@ impl Columns {
 /// # Errors
 /// A `[Header]` names no column, or a `[` is never closed.
 fn expand_formula(formula: &str, row: u32, columns: &Columns) -> Result<String, Refusal> {
-    /// The placeholder a record's formula names its own row by.
     const ROW: &str = "{row}";
     let number = row.saturating_add(1).to_string();
     let mut out = String::with_capacity(formula.len());
@@ -158,8 +150,6 @@ fn expand_formula(formula: &str, row: u32, columns: &Columns) -> Result<String, 
     Ok(out)
 }
 
-/// The write of JSON `value` into the cell at `addr`, as `set-cells` reads
-/// it; `None` for null, which leaves the cell.
 fn write_of(addr: Addr, value: &serde_json::Value) -> Result<Option<CellWrite>, Refusal> {
     Ok(cell_input(value)?.map(|(input, format)| CellWrite::at(addr, input, format)))
 }
@@ -203,8 +193,6 @@ fn object(
         .ok_or_else(|| Refusal::new("each record is an object of values keyed by header"))
 }
 
-/// A new sheet's first cells: `columns` as its header row and `records`
-/// under it.
 pub(crate) fn new_sheet_writes(
     columns: &[String],
     records: &[serde_json::Value],
@@ -215,8 +203,6 @@ pub(crate) fn new_sheet_writes(
     Ok(writes)
 }
 
-/// The keys of `records` in the order they first come: an empty sheet's
-/// headers when none are given.
 pub(crate) fn keys_in_order(records: &[serde_json::Value]) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
     for key in records
@@ -231,7 +217,6 @@ pub(crate) fn keys_in_order(records: &[serde_json::Value]) -> Vec<String> {
     keys
 }
 
-/// The record value of the header `header`, ignoring case.
 fn value_of<'a>(record: &'a serde_json::Value, header: &str) -> Option<&'a serde_json::Value> {
     record
         .as_object()?
@@ -241,13 +226,10 @@ fn value_of<'a>(record: &'a serde_json::Value, header: &str) -> Option<&'a serde
         .filter(|value| !value.is_null())
 }
 
-/// The input a key value writes, to compare with what a row holds.
 fn key_text(value: &serde_json::Value) -> Option<String> {
     cell_input(value).ok().flatten().map(|(input, _)| input)
 }
 
-/// The first sheet row after the last one used, at least the row under the
-/// headers.
 fn next_free_row(snap: &SheetSnapshot) -> u32 {
     snap.raw
         .keys()
@@ -257,19 +239,14 @@ fn next_free_row(snap: &SheetSnapshot) -> u32 {
         .max(1)
 }
 
-/// What a `set-records` call asks.
 pub(crate) struct RecordsRequest<'a> {
     pub records: &'a [serde_json::Value],
     /// Data row of the first record, 1 = the row under the headers.
     pub row: Option<u32>,
-    /// An empty sheet's headers.
     pub columns: Option<&'a [String]>,
-    /// The header whose values identify the rows to update.
     pub key: Option<&'a str>,
 }
 
-/// The writes of `request` into the sheet `snap`, whose cells show as
-/// `shown`.
 pub(crate) fn set_records_writes(
     snap: &SheetSnapshot,
     shown: &[SearchableCell],
@@ -291,7 +268,6 @@ pub(crate) fn set_records_writes(
                 snap.name
             )));
         }
-        // An empty sheet takes its header row from the records.
         let names = request
             .columns
             .map_or_else(|| keys_in_order(records), <[String]>::to_vec);
@@ -387,7 +363,6 @@ pub(crate) fn upsert_writes(
                 .all(|(_, col, text)| same_key(held(*col, *row), text))
         })
         .collect();
-    // A matched row keeps its key cells as written there.
     let (row, record, appended) = match found.as_slice() {
         [] => {
             let row = next_free_row(snap);

@@ -4,6 +4,7 @@
 )]
 
 use serde_json::json;
+use ui::framework::content;
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::DoorError;
 use ui::tilo_resource::{Invoke, Resource as _};
@@ -90,8 +91,18 @@ fn linked_shot() -> (Project, Uuid, Uuid) {
 /// Import `bytes` as `name` through the effect, answering its value.
 fn import(app: &mut TestApp<VideoEditor>, bytes: &[u8], name: &str) -> Result<Value, DoorError> {
     let hash = app.content().put(bytes).unwrap();
+    import_content(app, &format!("tilo.content:{hash}"), name)
+}
+
+/// Import the content `named` as `name` through the effect, answering its
+/// value.
+fn import_content(
+    app: &mut TestApp<VideoEditor>,
+    named: &str,
+    name: &str,
+) -> Result<Value, DoorError> {
     app.effect(&VideoEditorEffect::ImportContent {
-        content: format!("tilo.content:{hash}"),
+        content: named.to_owned(),
         name: Some(name.to_owned()),
         duration: None,
     })
@@ -125,6 +136,91 @@ fn workspace_content_lands_in_the_bin_once_with_the_length_its_container_says() 
         "the source is read by its content address: {}",
         item.path
     );
+}
+
+/// A workspace keeps its content sealed: import-content takes the reference
+/// that opens it, so the bin gets the picture and never the ciphertext kept
+/// under its address, and the source names that same reference for a render.
+/// A bare reference names it too, and a hash kept in the clear still imports
+/// as it did.
+#[test]
+fn a_sealed_reference_imports_the_content_it_opens() {
+    let mut app = editor(&Project::new("cut"));
+    let bytes = png(640, 360);
+    let reference = app
+        .content()
+        .sealing()
+        .put(&bytes)
+        .expect("the picture is kept");
+    assert!(content::is_sealed(&reference), "{reference}");
+    let address = content::content_address(&reference).expect("a reference");
+    assert_ne!(
+        app.content().read(&address).as_deref(),
+        Some(bytes.as_slice()),
+        "the store keeps ciphertext under the address"
+    );
+
+    let first = import_content(&mut app, &format!("tilo.content:{reference}"), "logo.png")
+        .expect("the picture imports");
+    assert_eq!(first["source"]["kind"], "image");
+    assert_eq!(
+        first["source"]["content"],
+        format!("tilo.content:{reference}")
+    );
+    app.settle();
+    let item = app.state().media.first().cloned().expect("a source");
+    assert_eq!(item.kind, MediaKind::Image);
+    assert_eq!((item.width, item.height), (640, 360));
+    assert_eq!(
+        item.path,
+        format!("tilo.content:{reference}"),
+        "the source names the reference that opens it"
+    );
+    assert_eq!(app.content().read(&reference), Some(bytes));
+
+    // The reference alone names it, as a plan that carried the content gives
+    // it, and answers the source already in the bin.
+    let again =
+        import_content(&mut app, &reference, "logo.png").expect("the bare reference imports");
+    assert_eq!(again["media"], first["media"]);
+
+    // A render reads the sources the record names, by their references.
+    let mut placed_project = Project::new("cut");
+    placed_project.media.push(item.clone());
+    let v1 = Uuid::new_v4();
+    placed_project.tracks.push(Track {
+        id: v1,
+        name: "V1".into(),
+        index: 1,
+        ..Track::default()
+    });
+    placed_project
+        .add_clip(v1, item.id, 0.0)
+        .expect("placed on V1");
+    assert_eq!(
+        crate::agent_render::placed_content(&placed_project),
+        vec![reference]
+    );
+}
+
+/// Content kept in the clear, as earlier versions kept it, still imports by
+/// its address.
+#[test]
+fn a_plain_address_still_imports_as_it_did() {
+    let bytes = png(640, 360);
+    let plain = content::ContentStore::memory_in_workspace();
+    let hash = plain.put(&bytes).expect("kept in the clear");
+    assert_eq!(hash, content::hash_bytes(&bytes));
+    let item = imported(
+        &Project::new("cut"),
+        &plain,
+        &format!("tilo.content:{hash}"),
+        Some("drawing.png"),
+        None,
+    )
+    .expect("an address imports");
+    assert_eq!(item.name, "drawing.png");
+    assert_eq!(item.path, format!("tilo.content:{hash}"));
 }
 
 #[test]

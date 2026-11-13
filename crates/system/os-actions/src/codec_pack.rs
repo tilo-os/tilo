@@ -1,10 +1,5 @@
-//! The media codecs extension, as the desktop sees it.
-//!
-//! A codec-specific view over the generic downloaded system extension
-//! ([`crate::extension`]) with the catalogue id [`ID`]: its software part
-//! plays and records more video and audio formats, and its hardware part
-//! ([`MESA_PART`]) adds hardware H.264/HEVC. First-login setup, Settings, the
-//! shell's notices and the installer hand-off share this module.
+//! The media codecs extension as the desktop sees it: a view over the generic
+//! downloaded extension ([`crate::extension`]) for the catalogue id [`ID`].
 
 use std::path::Path;
 
@@ -13,7 +8,6 @@ pub use crate::extension::{
     ExtensionAction as CodecAction, ExtensionState as PackState, PartState as MesaState, Progress,
 };
 
-/// The catalogue id of the media codecs extension.
 pub const ID: &str = "media-codecs";
 /// The hardware H.264/HEVC part (freeworld Mesa VA-API drivers).
 pub const MESA_PART: &str = "tilo-codecs-mesa";
@@ -26,10 +20,9 @@ pub fn id() -> ExtensionId {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CodecPackStatus {
     pub state: PackState,
-    /// The hardware part, which must match the base Mesa exactly.
+    /// Must match the base Mesa exactly.
     pub mesa: MesaState,
-    /// Whether the owner's opt-in is recorded (it survives failures and
-    /// offline periods until they remove the codecs).
+    /// The owner's opt-in, which survives failures and offline periods until they remove the codecs.
     pub desired: bool,
     pub last_error: String,
     pub progress: Option<Progress>,
@@ -51,13 +44,11 @@ impl From<ExtensionStatus> for CodecPackStatus {
 }
 
 impl CodecPackStatus {
-    /// Parse the helper's status JSON for the codecs extension.
     #[must_use]
     pub fn parse(json: &str) -> Self {
         ExtensionStatus::parse(json).into()
     }
 
-    /// The status on this machine, or "not installed" when there is none.
     #[must_use]
     pub fn read() -> Self {
         ExtensionStatus::read(&id()).into()
@@ -68,8 +59,7 @@ impl CodecPackStatus {
         ExtensionStatus::read_from(path).into()
     }
 
-    /// Whether the owner has already made the choice to install: first-login
-    /// setup does not ask again (the installer may have recorded it).
+    /// Whether the owner has made the choice; first-login setup does not ask again.
     #[must_use]
     pub fn opted_in(&self) -> bool {
         self.desired
@@ -79,7 +69,6 @@ impl CodecPackStatus {
             )
     }
 
-    /// The one status line the controls show.
     #[must_use]
     pub fn summary(&self) -> String {
         match (self.state, self.mesa) {
@@ -114,15 +103,13 @@ impl CodecPackStatus {
         }
     }
 
-    /// A background refresh that failed while the codecs kept working.
     #[must_use]
     pub fn refresh_problem(&self) -> Option<String> {
         (self.state == PackState::Installed && !self.last_error.is_empty())
             .then(|| format!("The last update of the formats failed: {}", self.last_error))
     }
 
-    /// When the new formats take effect, stated exactly. `None` while nothing
-    /// is installed.
+    /// When the new formats take effect; `None` while nothing is installed.
     #[must_use]
     pub fn when_it_applies(&self) -> Option<&'static str> {
         if self.state != PackState::Installed {
@@ -141,7 +128,6 @@ impl CodecPackStatus {
         })
     }
 
-    /// The actions the controls offer, primary first.
     #[must_use]
     pub fn offered_actions(&self) -> Vec<CodecAction> {
         match self.state {
@@ -155,7 +141,6 @@ impl CodecPackStatus {
         }
     }
 
-    /// The button label for `action` in this state.
     #[must_use]
     pub fn action_label(&self, action: CodecAction) -> &'static str {
         match (action, self.state) {
@@ -168,25 +153,17 @@ impl CodecPackStatus {
     }
 }
 
-/// Whether this system can install the codecs at all.
 #[must_use]
 pub fn available() -> bool {
     extension::available(&id())
 }
 
-/// Start the codecs extension's unit for `action` and wait until it finishes.
-///
-/// # Errors
-/// As [`extension::run`].
+/// Starts the extension's unit for `action` and waits until it finishes.
 pub fn run(action: CodecAction) -> Result<(), String> {
     extension::run(action, &id())
 }
 
-/// Call `on_change` whenever the helper rewrites the codecs status, until
-/// the returned watch is dropped.
-///
-/// # Errors
-/// As [`extension::watch`].
+/// Calls `on_change` whenever the helper rewrites the codecs status, until the watch is dropped.
 pub fn watch(
     on_change: impl Fn() + Send + 'static,
 ) -> Result<tilo_files::native::ChangeWatch, String> {

@@ -1,24 +1,13 @@
 //! Proof that hardware decode actually engages — by name, not by assertion.
 //!
-//! Run against the generated VP9 fixture. The test interrogates the
-//! `GStreamer` registry first, so its verdict is specific to the machine:
+//! The test interrogates the registry first, so its verdict fits the machine: where a
+//! hardware VP9 decoder exists it must be the element that got plugged, and where none
+//! does the test proves that and then still requires that software decode worked.
 //!
-//! * a hardware VP9 decoder exists → it **must** be the element that got
-//!   plugged, or the test fails;
-//! * no hardware VP9 decoder exists → the test proves that from the registry
-//!   (and prints it), then still requires that decode *worked* through a
-//!   software decoder.
-//!
-//! Neither branch is a skip. The second one is a real configuration — a build
-//! container without a GPU passed through, or `libcuda.so.1` not mounted (so
-//! `nvcodec` exposes zero features). On a host with `vavp9dec` or `nvvp9dec`
-//! the first branch applies.
-//!
-//! `h264_decodes_through_the_codec_block_where_the_machine_has_one` is the same
-//! proof for H.264, the codec a board's own codec block exists to decode. Its
-//! subject is generated where an H.264 encoder is installed and is a failure
-//! where none is, because the question only has an answer on a machine that
-//! can pose it.
+//! `h264_decodes_through_the_codec_block_where_the_machine_has_one` is the same proof
+//! for the codec a board's codec block exists to decode; its subject is generated where
+//! an H.264 encoder is installed and its absence is a failure, because the question
+//! only has an answer on a machine that can pose it.
 
 mod common;
 
@@ -27,8 +16,6 @@ mod real {
     use super::common::*;
     use tilo_media::{DecoderKind, EngineConfig, FramePayload, MediaEngine};
 
-    /// The decoder `GStreamer` chose for the fixture must be a hardware one
-    /// whenever this machine has a hardware decoder that can take the fixture.
     #[test]
     fn the_decoder_that_ran_is_the_hardware_one_when_the_machine_has_one() {
         let _registry = registry_policy_lock();
@@ -84,9 +71,6 @@ mod real {
         }
     }
 
-    /// Whatever decoder ran, the pipeline must have negotiated a memory type
-    /// that is *not* the old forced system-memory RGBA — the whole point of
-    /// the GPU-native acceptance mode.
     #[test]
     fn a_gpu_native_consumer_is_not_handed_forced_rgba() {
         let _registry = registry_policy_lock();
@@ -137,7 +121,6 @@ mod real {
         }
     }
 
-    /// The engine must never claim hardware decode before it has evidence.
     #[test]
     fn no_hardware_claim_is_made_before_a_decoder_has_been_plugged() {
         let engine = MediaEngine::with_config(EngineConfig::gpu().frames_only());
@@ -153,21 +136,6 @@ mod real {
         assert!(!report.is_dmabuf());
     }
 
-    /// A board whose `SoC` carries an H.264 codec block decodes H.264 through
-    /// it — or this test names the software decoder that ran instead.
-    ///
-    /// H.264 is the codec phone and camera footage arrives in, and on a laptop
-    /// whose GPU has no VA-API the `SoC`'s own block is the only fixed-function
-    /// decoder there is. So the subject is H.264, and the observation is the
-    /// same one every hardware claim in this file rests on: the element
-    /// `GStreamer` really plugged, read back from the running pipeline.
-    ///
-    /// Both branches assert. A machine with an H.264 hardware decoder must
-    /// have plugged it, and one that has none must prove that from the
-    /// registry and then show the CPU decoded the clip. The one outcome that
-    /// is neither — no H.264 encoder on this machine, so the clip cannot
-    /// exist — fails with that reason: a check that cannot observe its subject
-    /// must fail, never report a decode it did not perform.
     #[test]
     fn h264_decodes_through_the_codec_block_where_the_machine_has_one() {
         let clip = h264_fixture().unwrap_or_else(|reason| {
@@ -226,14 +194,6 @@ mod real {
         }
     }
 
-    /// When a decoder that exports dmabufs is available, the frame it produces
-    /// must be described completely enough to import: the right number of
-    /// plane fds, each with a stride, plus the fourcc and modifier.
-    ///
-    /// This is the only test that exercises the dmabuf description path, and
-    /// it earns its place — `DMA_DRM` caps carry a placeholder format with
-    /// **zero** planes, so reading the plane count straight off them yields a
-    /// frame that looks valid and carries no buffers at all.
     #[test]
     fn a_dmabuf_frame_is_described_completely_enough_to_import() {
         use tilo_media::{DmabufImage, HwPolicy};
@@ -322,8 +282,6 @@ mod real {
         );
     }
 
-    /// One session serves both the preview and thumbnail-style requests, and
-    /// a revisited time comes from the cache rather than a second decode.
     #[test]
     fn one_pipeline_serves_repeated_requests_for_the_same_source() {
         use tilo_media::SessionPool;
@@ -370,9 +328,6 @@ mod real {
     }
 }
 
-/// Without the decode feature there is no pipeline to interrogate, and this
-/// build's contract is that the synthesized fallback keeps working. Assert
-/// that contract rather than compiling to nothing.
 #[cfg(not(feature = "decode"))]
 mod hermetic {
     use tilo_media::MediaEngine;

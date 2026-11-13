@@ -13,8 +13,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{BufRead as _, BufReader, Write as _};
@@ -31,9 +29,9 @@ use tilo_app_launch::SessionEnvironment;
 use tilo_desktop_model::Workspace;
 use tilo_desktop_policy::Window;
 use tilo_notifications_service::Notifications;
-use tilo_session::mount::apps::Apps;
-use tilo_session::mount::drives::{Drives, Media, Medium};
-use tilo_session::{AppActions, AppLists, Launches, Lists, Options, SearchOptions, Session};
+use tilo_session::apps::Apps;
+use tilo_session::drives::{Drives, Media, Medium};
+use tilo_session::{AppActions, AppLists, Launches, Lists, Options, Session};
 
 /// The notes app, as its package names it: what an agent asks for.
 const NOTES: &str = "so.tilo.notes";
@@ -41,6 +39,8 @@ const NOTES: &str = "so.tilo.notes";
 const TERMINAL: &str = "so.tilo.terminal";
 /// The app the person's own lists are answered to.
 const FILES: &str = "so.tilo.file-explorer";
+/// Another app, with a window of its own beside Notes.
+const CLOCKS: &str = "so.tilo.clocks";
 
 /// Install the packages `(id, name)` in `home` 's own app store.
 fn packages(home: &mut tilo_test_env::TestHome, packages: &[(&str, &str)]) {
@@ -135,11 +135,8 @@ fn session(
         launch: Some(Rc::clone(&apps)),
         launches: Arc::clone(&opened),
         // The person's lists as the device reads them, read once: what the tools service serves
-        // Files is that same list.
-        search: SearchOptions {
-            apps: Some(std::sync::Arc::new(Lists::fixed(AppLists::read()))),
-            ..SearchOptions::default()
-        },
+        // Files and what search lists is that same list.
+        lists: Lists::fixed(AppLists::read()),
         drives,
         wake: tilo_service::LoopWake::default(),
         ..Options::default()
@@ -149,7 +146,7 @@ fn session(
 
 /// Run frames until `done` holds.
 fn until(session: &mut Session, what: &str, done: impl FnMut(&mut Session) -> bool) {
-    common::until(session, what, done);
+    crate::common::until(session, what, done);
 }
 
 /// The workspace in front, as the session holds it.
@@ -290,6 +287,91 @@ fn an_agent_opens_notes_in_a_workspace() {
     until(&mut session, "the app's window is on the desk", |session| {
         groups(session) == vec![vec!["Notes".to_owned()]]
     });
+}
+
+/// An agent whose `notes#open` asks for the place beside the view it works in, on a desk that
+/// already shows Notes: the person's own window comes forward, and nothing starts a second one.
+#[test]
+fn an_agents_open_brings_the_window_the_desk_already_shows_forward() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let records = home.home().join("starts");
+    packages(&mut home, &[(NOTES, "Notes"), (CLOCKS, "Clocks")]);
+    let launcher = launcher(&home, &records);
+    let (mut session, opened) = session(&home, &launcher, None);
+    session.step(Duration::from_millis(1)).unwrap();
+    let workspace = front(&session);
+
+    // The person's desk: Notes, and another app's window in front of it.
+    for (id, app) in [(11, NOTES), (12, CLOCKS)] {
+        session
+            .desktop()
+            .with_policy(|policy| policy.map(window(id, app)).unwrap());
+    }
+    until(&mut session, "both windows are on the desk", |session| {
+        groups(session) == vec![vec!["Notes".to_owned()], vec!["Clocks".to_owned()]]
+    });
+    let clocks = session
+        .desktop()
+        .with_policy(|policy| policy.tab_of(12))
+        .expect("the tab the other app's window stands in");
+    session
+        .desktop()
+        .with_policy(|policy| policy.focus_tab(clocks));
+    until(&mut session, "the other app is in front", |session| {
+        in_front(session, "Clocks")
+    });
+
+    // The agent has worked in Notes, so its open asks for the place beside that view: the place is
+    // where a window of the app stands, not that there is another one.
+    let asked = {
+        let opened = Arc::clone(&opened);
+        let place = LaunchPlace::Beside {
+            app_id: NOTES.to_owned(),
+        };
+        std::thread::spawn(move || opened.launch(NOTES, &workspace, None, &place))
+    };
+    // The pass that answers the ask is the desk's own: frames run until the window comes forward,
+    // and the asker is told once it is made.
+    until(
+        &mut session,
+        "the window the desk had comes forward",
+        |session| in_front(session, "Notes"),
+    );
+    asked
+        .join()
+        .expect("the asking thread")
+        .expect("the agent's open is made");
+    assert_eq!(
+        groups(&session),
+        vec![vec!["Notes".to_owned()], vec!["Clocks".to_owned()]],
+        "the app's window comes forward: no second window of it opens"
+    );
+    assert!(
+        !starts(&records)
+            .iter()
+            .any(|(args, _, _)| args.contains(&format!("--app-id {NOTES}"))),
+        "nothing starts the app again: {:?}",
+        starts(&records)
+    );
+}
+
+/// Whether the window titled `title` stands in front of its row.
+fn in_front(session: &Session, title: &str) -> bool {
+    session.handle().read(|tree| {
+        let Some(workspace) = tree.active_workspace() else {
+            return false;
+        };
+        workspace.strips.iter().any(|strip| {
+            let Some(front) = tree.active_group.get(&strip.id) else {
+                return false;
+            };
+            strip
+                .window_groups
+                .iter()
+                .any(|group| group.id == *front && group.tabs.iter().any(|tab| tab.title == title))
+        })
+    })
 }
 
 #[test]

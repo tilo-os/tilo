@@ -9,11 +9,8 @@
     clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
-tilo_automerge_isolate::test_worker!();
 
-mod common;
-
-use common::{addr, device, localhost_endpoint, workspace};
+use crate::common::{addr, device, localhost_endpoint, workspace};
 
 use ed25519_dalek::SigningKey;
 use iroh::endpoint::RecvStream;
@@ -51,16 +48,7 @@ const PATIENCE: Duration = Duration::from_secs(20);
 fn agent_device(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
     let (key, mut cert) = device(root, n);
     cert.device_label = format!("Agent: Scribe {n}");
-    cert.capabilities = DeviceCapabilities {
-        can_own_workspaces: false,
-        can_admit_devices: false,
-        can_act_as_host: false,
-        can_read_all_workspaces: false,
-        foreign: false,
-        can_administer_devices: false,
-        agent: None,
-        stand_in: false,
-    };
+    cert.capabilities = DeviceCapabilities::nothing();
     sign_device_cert(&mut cert, root).unwrap();
     (key, cert)
 }
@@ -697,13 +685,15 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
             request_id: uuid::Uuid::from_u128(3),
             source: b.1.device_public_key,
             target: engine.device(),
-            message: RemoteActionMessage::RecordRequest {
+            message: RemoteActionMessage::RecordRead {
                 correlation: 5,
-                query: tilo_actions::remote::RecordQuery {
-                    workspace: WORKSPACE.into(),
+                on_behalf_of: None,
+                read: tilo_actions::remote::RecordReadRequest {
                     app: "test.app".into(),
                     record: "tab:1".into(),
-                    offset: 0,
+                    joined: false,
+                    after: None,
+                    wait_ms: None,
                 },
             },
         },
@@ -714,7 +704,7 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
     let answer = send(&b_endpoint, engine.addr(), &wanted)
         .await
         .expect("a request nothing serves is answered");
-    let RemoteActionMessage::RecordResponse {
+    let RemoteActionMessage::RecordReading {
         correlation: 5,
         result: Err(error),
     } = answer
@@ -728,5 +718,47 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
     assert_eq!(dispatcher.callers().len(), 0);
 
     engine.close().await;
+    b_endpoint.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_asking_from_an_endpoint_keyed_apart_is_answered_once_named() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let a = device(&root, 2);
+    let b = device(&root, 3);
+    let roster = vec![a.1.clone(), b.1.clone()];
+    let dispatcher = Arc::new(TestHost::new());
+    let endpoint = localhost_endpoint(&a.0).await;
+    let plane = ActionPlane::new(a.0.clone(), dispatcher.clone());
+    plane.hold(Replica::new(workspace(WORKSPACE, &a, &roster)));
+    let serving = Router::builder(endpoint.clone())
+        .accept(ACTIONS_ALPN, plane.clone())
+        .spawn();
+
+    // B signs as its device but asks from an endpoint keyed by another key,
+    // as a Tilo relay does.
+    let apart = SigningKey::from_bytes(&[30; 32]);
+    let b_endpoint = localhost_endpoint(&apart).await;
+    let b_plane = ActionPlane::new(b.0.clone(), Arc::new(TestHost::new()));
+    let remote = b_plane.remote(&b_endpoint, &addr(&endpoint), WORKSPACE);
+    let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
+    assert_eq!(
+        queried(&remote, &caller).await,
+        Err(ActionHostError::NotPermitted),
+        "an endpoint nobody named asks as the device it is keyed by"
+    );
+    assert!(dispatcher.callers().is_empty());
+
+    plane.reach_device_at(b.1.device_public_key, apart.verifying_key().to_bytes());
+    let remote = b_plane.remote(&b_endpoint, &addr(&endpoint), WORKSPACE);
+    assert_eq!(queried(&remote, &caller).await, Ok(()));
+    assert_eq!(
+        dispatcher.callers()[0].device_public_key(),
+        Some(&b.1.device_public_key),
+        "answered as the device it named"
+    );
+
+    serving.shutdown().await.unwrap();
+    endpoint.close().await;
     b_endpoint.close().await;
 }

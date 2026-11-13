@@ -13,7 +13,6 @@ use crate::media_model::SourceIdentity;
 use std::fs::OpenOptions;
 use std::{io, path::Path};
 
-/// Native job geometry and immutable reviewed input, without app profile types.
 pub struct SystemWriteRequest {
     pub source: ReviewedSource,
     pub target: crate::media_model::TargetDrive,
@@ -22,12 +21,9 @@ pub struct SystemWriteRequest {
     pub provision_migration_data: bool,
 }
 
-/// App-specific setup authorization and formats. Native device custody and
-/// the lifecycle around these adapters stay in this module.
+/// Device custody and the lifecycle around these adapters stay in this module.
 pub trait WriteSetup {
-    /// Check authorization before any target preparation.
     fn output_preflight(&self) -> io::Result<()>;
-    /// Revalidate the migration sources independently of the target.
     fn validate_pending_source_disks(&self) -> io::Result<()>;
     fn write_descriptor(
         &self,
@@ -35,20 +31,13 @@ pub trait WriteSetup {
         should_cancel: &dyn Fn() -> bool,
         on_progress: &mut dyn FnMut(HelperProgress),
     ) -> JobResult;
-    /// Encode, persist and verify the installation profile.
-    ///
-    /// # Errors
     /// Returns encoding, destination I/O or read-back validation errors, or
     /// `io::ErrorKind::Interrupted` when cancelled.
     fn write_profile(&self, destination: &Path, should_cancel: &dyn Fn() -> bool)
     -> io::Result<()>;
-    /// Apply any staged setup handoff to the written destination.
     fn apply_handoff(&self, destination: &Path) -> io::Result<()>;
-    /// Provision protected migration output after writing and handoff.
-    ///
-    /// # Errors
-    /// Returns authorization, provisioning or validation errors, or
-    /// `io::ErrorKind::Interrupted` when cancelled.
+    /// Returns authorization, provisioning or validation errors, or `io::ErrorKind::Interrupted`
+    /// when cancelled.
     fn provision_after_write(&self, should_cancel: &dyn Fn() -> bool) -> io::Result<()>;
     fn release_handoff(&self);
 }
@@ -85,7 +74,6 @@ pub fn run_job_paths_bound(
         Err(e) if e.kind() == io::ErrorKind::Interrupted => return JobResult::Cancelled,
         Err(e) => return JobResult::WriteFailed(e.to_string()),
     };
-    // Verify phase over exactly the bytes we wrote.
     let verify = verify_readback_bound(src, dst, written, should_cancel, |bytes| {
         on_progress(HelperProgress {
             phase: HelperPhase::Verifying,
@@ -96,10 +84,8 @@ pub fn run_job_paths_bound(
         });
     });
     match verify {
-        // This is not yet the user-visible terminal success: installable media
-        // still needs its profile block written and read back, and the device
-        // still needs platform finalisation. `run_system_job` publishes the
-        // single terminal event only after all of those operations finish.
+        // The single terminal success comes later, after the profile is written and read back and
+        // the device is finalised; `run_system_job` publishes it.
         Ok(None) => JobResult::Verified,
         Ok(Some(off)) => JobResult::VerifyMismatch(off),
         Err(e) if e.kind() == io::ErrorKind::Interrupted => JobResult::Cancelled,
@@ -107,7 +93,6 @@ pub fn run_job_paths_bound(
     }
 }
 
-/// Execute through the descriptor supplied by the host authorization broker.
 #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
 pub fn run_udisks_job(
     target: &crate::media_model::TargetDrive,
@@ -176,7 +161,6 @@ pub fn run_udisks_job(
     result
 }
 
-/// Execute one complete native device transaction, retaining exclusion through finalization.
 #[allow(
     clippy::too_many_lines,
     reason = "one linear lifecycle keeps target exclusion held through setup effects and platform finalization"
@@ -192,9 +176,8 @@ pub fn run_system_job(
     let mut prepared = false;
     let mut write_frac = 0.0;
     let mut verify_frac = 0.0;
-    // Retain this guard until after finish_target. Separate elevated helpers
-    // rendezvous here before either one unmounts, offlines, writes, verifies,
-    // embeds a profile, or ejects the same physical target.
+    // Keep this guard until after finish_target: separate elevated helpers rendezvous here before
+    // either one unmounts, offlines, writes, verifies, embeds a profile, or ejects the same target.
     let mut target_lock = None;
     let mut relay_progress = |progress: HelperProgress| {
         write_frac = progress.write_frac;
@@ -265,11 +248,9 @@ pub fn run_system_job(
     };
     if prepared {
         if result.is_success() && request.installable && !request.provision_migration_data {
-            // The profile is written through a second open because the
-            // pathname backend's streaming verifier owns and then closes its
-            // descriptor.  Revalidate immediately before that open so a
-            // disconnect/replug cannot make the profile land on a replacement
-            // device which happens to reuse the same path.
+            // The profile is written through a second open because the streaming verifier owns and
+            // closes its descriptor. Revalidate immediately before that open, so a replug cannot put
+            // the profile on a replacement device that reuses the path.
             if let Err(error) = revalidate_target(&request.target) {
                 result = JobResult::VerifyFailed(format!(
                     "could not revalidate the drive before embedding the setup profile: {error}"
@@ -306,8 +287,8 @@ pub fn run_system_job(
         finish_target(&request.target, &result);
     }
     setup.release_handoff();
-    // Keep the per-device exclusion through platform finalization, then make
-    // its release point explicit before reporting the terminal event.
+    // Keep the per-device exclusion through platform finalization, then release it explicitly
+    // before the terminal event.
     drop(target_lock);
     let error = match &result {
         JobResult::Verified => None,

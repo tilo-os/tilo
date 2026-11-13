@@ -24,7 +24,6 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-/// A language the keyboard ships offline word data for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Language {
     #[default]
@@ -33,11 +32,8 @@ pub enum Language {
 }
 
 impl Language {
-    /// Every language with embedded word data.
     pub const ALL: [Self; 2] = [Self::English, Self::French];
 
-    /// The language's ISO 639-1 code, under which what the keyboard learned
-    /// in it is kept.
     pub fn code(self) -> &'static str {
         match self {
             Self::English => "en",
@@ -45,16 +41,12 @@ impl Language {
         }
     }
 
-    /// The language whose code is `code`.
     pub fn from_code(code: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
             .find(|language| language.code() == code)
     }
 
-    /// The language typed on the letter layout `name`: QWERTY types English
-    /// and AZERTY French. `None` for layouts with no word data (symbols,
-    /// dialpads).
     pub fn for_layout(name: &str) -> Option<Self> {
         match name {
             "qwerty" => Some(Self::English),
@@ -63,7 +55,6 @@ impl Language {
         }
     }
 
-    /// The embedded `word<TAB>weight` table.
     fn words_table(self) -> &'static str {
         match self {
             Self::English => include_str!("../data/words-en.txt"),
@@ -72,8 +63,6 @@ impl Language {
     }
 }
 
-/// `c` without its accent (`é` → `e`, `ç` → `c`). Letters with no single-letter
-/// base (`æ`, `œ`) and everything else are returned unchanged.
 pub fn fold_char(c: char) -> char {
     match c {
         'à' | 'â' | 'ä' => 'a',
@@ -87,7 +76,6 @@ pub fn fold_char(c: char) -> char {
     }
 }
 
-/// Whether `word` starts with `prefix`, ignoring accents on either side.
 pub fn starts_with_folded(word: &str, prefix: &str) -> bool {
     let mut word = word.chars().map(fold_char);
     prefix
@@ -105,43 +93,30 @@ fn cmp_folded(a: &str, b: &str) -> Ordering {
         .then_with(|| a.cmp(b))
 }
 
-/// One dictionary entry: the word plus its compact log-scaled frequency
-/// weight (higher = more common).
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub word: String,
     pub weight: u32,
 }
 
-/// A word-frequency dictionary loaded from embedded or custom data.
-///
-/// Construction parses the table once. Lookups are `O(log n)` via an
-/// accent-folded lexicographic index; prefix iteration yields a contiguous
-/// range of that index.
 #[derive(Clone, Debug)]
 pub struct Dictionary {
     /// Entries in frequency order (most common first). Stable; indices into
     /// this vector are used by `by_lex`.
     entries: Vec<Entry>,
-    /// Indices into `entries`, sorted by [`cmp_folded`]. Enables
-    /// binary-search prefix queries without duplicating the strings.
     by_lex: Vec<u32>,
-    /// Max weight, used to normalise frequencies into 0..1.
     max_weight: u32,
 }
 
 impl Dictionary {
-    /// Load the embedded dictionary of `language`.
     pub fn for_language(language: Language) -> Self {
         Self::from_str(language.words_table())
     }
 
-    /// Load the embedded English dictionary.
     pub fn english() -> Self {
         Self::for_language(Language::English)
     }
 
-    /// Load the embedded French dictionary.
     pub fn french() -> Self {
         Self::for_language(Language::French)
     }
@@ -202,7 +177,6 @@ impl Dictionary {
         }
     }
 
-    /// Number of words in the dictionary.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -216,9 +190,6 @@ impl Dictionary {
         &self.entries
     }
 
-    /// How often each non-ASCII letter occurs in running text of this
-    /// language: its occurrences summed over every word, weighted by the
-    /// word's estimated count. Ranks the long-press accents.
     pub fn accent_usage(&self) -> HashMap<char, f64> {
         let mut usage: HashMap<char, f64> = HashMap::new();
         for entry in &self.entries {
@@ -230,8 +201,6 @@ impl Dictionary {
         usage
     }
 
-    /// The compact frequency weight of `word` (case-insensitive), or `None`
-    /// if absent.
     pub fn weight(&self, word: &str) -> Option<u32> {
         // `lex_index_of` always returns a valid index into `entries` when it
         // returns `Some` (see its doc); `get` keeps that an invariant.
@@ -240,13 +209,10 @@ impl Dictionary {
             .map(|e| e.weight)
     }
 
-    /// Whether `word` (case-insensitive) is in the dictionary.
     pub fn contains(&self, word: &str) -> bool {
         self.weight(word).is_some()
     }
 
-    /// Frequency normalised into `0.0..=1.0` (relative to the most common
-    /// word), or `0.0` if absent. Useful for blending with geometric scores.
     pub fn frequency(&self, word: &str) -> f32 {
         match self.weight(word) {
             Some(w) => w as f32 / self.max_weight as f32,
@@ -271,7 +237,6 @@ impl Dictionary {
             .filter_map(move |&i| self.entries.get(i as usize))
     }
 
-    /// Top-`n` completions of `prefix`, ranked by frequency descending.
     pub fn complete(&self, prefix: &str, n: usize) -> Vec<&Entry> {
         let mut v: Vec<&Entry> = self.iter_prefix(prefix).collect();
         v.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.word.cmp(&b.word)));
@@ -279,12 +244,6 @@ impl Dictionary {
         v
     }
 
-    /// Mass of each letter that can follow `prefix` (case- and
-    /// accent-insensitive): for every word extending `prefix`, its estimated
-    /// corpus count is credited to the (accent-folded) character right after
-    /// the prefix. The count is recovered from
-    /// the log-scaled weight so frequent words dominate as they do in text.
-    /// Words equal to `prefix` end there and contribute nothing.
     pub fn next_char_weights(&self, prefix: &str) -> Vec<(char, f64)> {
         let prefix = prefix.to_lowercase();
         let skip = prefix.chars().count();
@@ -302,7 +261,6 @@ impl Dictionary {
         out
     }
 
-    /// Index into `entries` for an exact (already-lowercased) word.
     fn lex_index_of(&self, word: &str) -> Option<usize> {
         // Every value in `by_lex` is a valid index into `entries` (see the
         // field doc), so `get` here never actually misses.
@@ -316,7 +274,6 @@ impl Dictionary {
             .map(|&i| i as usize)
     }
 
-    /// `[lo, hi)` range in `by_lex` of words with the given prefix.
     fn lex_range(&self, prefix: &str) -> (usize, usize) {
         if prefix.is_empty() {
             return (0, self.by_lex.len());
@@ -344,8 +301,6 @@ impl Dictionary {
     }
 }
 
-/// Estimated corpus count behind a compact weight (`round(log10(count) *
-/// 1000)`, see `data/README.md`).
 pub fn weight_to_count(weight: u32) -> f64 {
     10f64.powf(f64::from(weight) / 1000.0)
 }
@@ -370,8 +325,6 @@ mod tests {
             assert!(d.contains("quick"));
             assert!(d.contains("hello"));
             assert!(d.contains("keyboard"));
-            // "the" is the most common English word — strictly more frequent than
-            // a mid-rank word like "quick".
             assert!(d.weight("the").unwrap() > d.weight("quick").unwrap());
             assert_eq!(d.weight("THE"), d.weight("the"));
             assert!(!d.contains("zzxqj"));
@@ -418,7 +371,6 @@ mod tests {
             let d = Dictionary::english();
             let top = d.complete("th", 5);
             assert!(!top.is_empty());
-            // "the" should be the top completion of "th".
             assert_eq!(top[0].word, "the");
             for w in top.windows(2) {
                 assert!(w[0].weight >= w[1].weight);

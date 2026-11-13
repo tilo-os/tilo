@@ -1,19 +1,9 @@
-//! The host side of a hosted VM's shared directories ([`files`]).
-//!
-//! Firecracker has no virtio-fs, so the guest agent mounts every shared
-//! directory as FUSE and asks this server for each operation over vsock.
-//! The server runs as its own process per VM (`tilo-legacy hosted
-//! files-serve`), started through `tilo-legacy confine-fs`, so Landlock
-//! holds it to the VM's shares exactly as it holds `virtiofsd`.
-//!
-//! Inside that, every path is resolved with `openat2(RESOLVE_BENEATH |
-//! RESOLVE_NO_MAGICLINKS)` from the share's root and never follows a
-//! final symbolic link: a guest that plants a link to `/etc` reaches the
-//! link, not `/etc`. Metadata changes go through the opened file
-//! (`/proc/self/fd`), never through a path that could be swapped in
-//! between. A read-only share refuses every change with `EROFS`.
-//!
-//! [`files`]: legacy_agent_protocol::files
+//! The host side of a hosted VM's shared directories ([`files`]): Firecracker has
+//! no virtio-fs, so the guest agent mounts each shared directory as FUSE and asks
+//! this server for each operation over vsock. Every path is resolved with
+//! `openat2(RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS)` from the share's root and
+//! never follows a final symbolic link; metadata changes go through the opened
+//! file, never through a path that could be swapped in between.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -361,7 +351,6 @@ impl ShareServer {
         }
     }
 
-    /// `path` opened beneath the root, its final link not followed.
     fn open_beneath(&self, path: &Path, flags: OFlags, mode: Mode) -> io::Result<OwnedFd> {
         let relative = if path.as_os_str().is_empty() {
             Path::new(".")
@@ -397,8 +386,6 @@ impl ShareServer {
         Ok(handle)
     }
 
-    /// The directory `parent` names, opened, and `name` checked as one
-    /// component in it.
     fn parent_dir<'a>(&self, parent: u64, name: &'a [u8]) -> io::Result<(OwnedFd, &'a OsStr)> {
         if !valid_component(name) {
             return Err(io::Error::from_raw_os_error(libc::EINVAL));
@@ -411,7 +398,6 @@ impl ShareServer {
         Ok((dir, OsStr::from_bytes(name)))
     }
 
-    /// The directory holding `path`, opened, and its last component.
     fn split<'a>(&self, path: &'a Path) -> io::Result<(OwnedFd, &'a OsStr)> {
         let name = path
             .file_name()
@@ -510,7 +496,6 @@ fn bad_handle() -> io::Error {
     io::Error::from_raw_os_error(libc::EBADF)
 }
 
-/// Whether `request` would change the share.
 const fn changes(request: &FsRequest) -> bool {
     match request {
         FsRequest::Open { write, .. } => *write,
@@ -652,7 +637,6 @@ mod tests {
             path: root.clone(),
             read_only: false,
         }];
-        // phase: a share the server was not given is refused at hello
         {
             let (host, guest) = UnixStream::pair().unwrap();
             let given = shares.clone();
@@ -667,7 +651,6 @@ mod tests {
             server.join().unwrap();
         }
         let (mut guest, server) = connect(shares, &root);
-        // phase: lookups, reads and listings stay inside the share
         {
             let src = guest.node(ROOT_NODE, "src");
             let main = guest.node(src, "main.rs");
@@ -710,7 +693,6 @@ mod tests {
                 assert_eq!(guest.lookup(ROOT_NODE, name), FsReply::Error(libc::EINVAL));
             }
         }
-        // phase: links out of the share lead nowhere
         {
             let escape = guest.node(ROOT_NODE, "escape");
             let FsReply::Attr(attr) = guest.ask(R::GetAttr { node: escape }) else {
@@ -757,7 +739,6 @@ mod tests {
                 b"host only"
             );
         }
-        // phase: writes, renames and removals land in the share
         {
             let FsReply::Created { attr, handle } = guest.ask(R::Create {
                 parent: ROOT_NODE,
@@ -835,7 +816,6 @@ mod tests {
         }
         drop(guest);
         server.join().unwrap();
-        // phase: a read-only share refuses every change
         {
             let read_only = vec![Served {
                 path: root.clone(),

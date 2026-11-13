@@ -461,13 +461,6 @@ mod tests {
             .collect()
     }
 
-    /// The image installs each app with the `[resources] kinds` of its
-    /// authored `tilo-app.toml`, and a governed workspace lets an app create only
-    /// records of a kind its signed manifest declares. A kind the app's code
-    /// holds but its manifest omits leaves the app unable to create its first
-    /// record there, so every kind declared in the app's sources, or in a
-    /// local crate it depends on directly such as a shared model, must be
-    /// listed. Kinds the SDK declares are the framework's, not the app's.
     #[test]
     fn every_app_manifest_declares_the_record_kinds_its_sources_hold() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))

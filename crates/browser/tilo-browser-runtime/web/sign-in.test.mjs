@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 import {
   allowFields, denyFields, MAX_GRANT_LIFETIME_MS, readSignInRequest, requestWords, signInOrigin, startSignInPage,
 } from './sign-in.mjs';
+import {runtimeFake} from './runtime-surface.mjs';
 
 const NOW = 1_800_000_000_000;
 const CHALLENGE = 'a'.repeat(64);
@@ -41,7 +42,33 @@ test('a service’s link asks what the route answers', () => {
     grantKey: KEY,
     grantScope: 'all',
     grantExpiresMs: NOW + 7 * DAY,
+    grantServerKey: false,
+    grantPages: false,
   });
+});
+
+test('a key that may operate web pages in Browser says so, and only a grant carries it', () => {
+  const operating = read({grant_pages: '1'});
+  assert.equal(operating.grantPages, true);
+  assert.match(requestWords(operating).pages, /without asking you each time/);
+  assert.match(requestWords(operating).pages, /Submitting still asks you/);
+  assert.match(requestWords(read()).pages, /asks you before every page action/);
+  // Nothing that asks for no grant carries the flag.
+  assert.equal(read({grant_key: null, grant_scope: null, grant_expires: null, grant_pages: '1'}).grantPages, false);
+});
+
+test('a server key reaches all workspaces and lasts until revoked, or as long as the person chose', () => {
+  const lasting = read({grant_kind: 'server_key', grant_expires: 'never'});
+  assert.equal(lasting.grantServerKey, true);
+  assert.equal(lasting.grantExpiresMs, null);
+  assert.equal(requestWords(lasting).until, 'Until you revoke it');
+  const chosen = read({grant_kind: 'server_key', grant_expires: String(NOW + 5 * MAX_GRANT_LIFETIME_MS)});
+  assert.equal(chosen.grantExpiresMs, NOW + 5 * MAX_GRANT_LIFETIME_MS);
+  assert.throws(() => read({grant_kind: 'server_key', grant_expires: String(NOW)}), /has expired/);
+  assert.throws(() => read({grant_kind: 'server_key', grant_scope: WORKSPACE}), /grant Tilo cannot give/);
+  assert.throws(() => read({grant_kind: 'agent'}), /grant Tilo cannot give/);
+  // Only a server key may last until revoked.
+  assert.throws(() => read({grant_expires: 'never'}), /grant Tilo cannot give/);
 });
 
 test('a link may name no grant at all: the page then proves the person alone', () => {
@@ -109,6 +136,7 @@ test('the card says who asks, through which service, what it reaches and until w
     service: 'Through door.example.',
     reaches: 'All your workspaces, and it may create new ones',
     until: untilText(NOW + 7 * DAY, 'en-GB'),
+    pages: 'It asks you before every page action.',
   });
   const one = requestWords(read({grant_scope: WORKSPACE}), {locale: 'en-GB'});
   assert.equal(one.reaches, `Only the workspace ${WORKSPACE}`);
@@ -118,6 +146,7 @@ test('the card says who asks, through which service, what it reaches and until w
     service: 'Tilo in this browser will prove to door.example that this is your device.',
     reaches: null,
     until: null,
+    pages: null,
   });
 });
 
@@ -162,7 +191,7 @@ class Element {
 }
 
 const NAMES = ['heading', 'request', 'service', 'reaches', 'reachesRow', 'scope', 'scopeRow', 'until', 'untilRow',
-  'message', 'actions', 'allow', 'cancel'];
+  'pages', 'pagesRow', 'message', 'actions', 'allow', 'cancel'];
 
 /** A store with the workspaces `entries` as this browser entered them, as
  * `rememberEntered` writes them. */
@@ -199,14 +228,14 @@ function page({
     },
   };
   const window = {document, location: {search}};
-  const runtime = {
+  const runtime = runtimeFake({
     async signInAnswer(person, signer, ask) {
       const asked = JSON.parse(ask);
       posted.push({person, signer, ask: asked});
       // What the runtime answers: a grant only where the link asked for one.
       return JSON.stringify(asked.grantKey ? {proof: 'proof-text', grant: 'grant-text'} : {proof: 'proof-text'});
     },
-  };
+  });
   const mounted = startSignInPage({
     window,
     elements,
@@ -232,6 +261,7 @@ function page({
     service: elements.service.textContent,
     reaches: elements.reachesRow.hidden ? '' : elements.reaches.textContent,
     until: elements.untilRow.hidden ? '' : elements.until.textContent,
+    pages: elements.pagesRow.hidden ? '' : elements.pages.textContent,
     actions: elements.actions.hidden ? 'none' : 'offered',
     message: elements.message.textContent,
   })};
@@ -264,6 +294,8 @@ test('allow signs what the link asked for and posts it to the service', async ()
     grantKey: KEY,
     grantScope: 'all',
     expiresAtMs: NOW + 7 * DAY,
+    serverKey: false,
+    operateBrowserPages: false,
   });
   const custody = posted.find(entry => entry.custody)?.custody;
   assert.equal(custody.profile, `tilo-identity:${ROOT}@door.example`);

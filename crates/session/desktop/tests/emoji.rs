@@ -23,7 +23,7 @@ use ui::emoji_catalogue::{self, RecentsStore};
 use ui::headless::FrameHarness;
 use ui::kurbo::{Affine, Rect};
 use ui::synthetic_input::{char_key, key_press, named_key};
-use ui::widget::Widget;
+use ui::widget::{DrawChild, Widget};
 use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -143,7 +143,7 @@ fn draw_chrome(frame: &mut FrameHarness) {
     let presence = ui::presence::PresenceCtx::default();
     let mut scene = ui::vello::Scene::new();
     with_chrome(frame, |chrome| {
-        chrome.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+        chrome.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
     });
 }
 
@@ -267,4 +267,24 @@ fn the_picker_opens_centred_without_a_caret_and_its_shortcut_closes_it() {
         link.take_picks().is_empty(),
         "closing the card picks nothing"
     );
+}
+
+/// The chrome holds the picker closed nearly all the time: closed, it asks the chrome for no
+/// frame, before it was ever opened and after it closed again. A picker that kept asking repainted
+/// the whole bar on every frame of the session, typing into a window included.
+#[test]
+fn the_chrome_rests_with_the_picker_closed() {
+    let recents = Rc::new(RefCell::new(Vec::new()));
+    let (mut frame, _handle, link) = chrome_with_picker(recents);
+    link.place_at(EmojiPlace::default());
+    let rests = |frame: &mut FrameHarness| with_chrome(frame, |chrome| !chrome.needs_redraw());
+    assert!(rests(&mut frame), "drawn once, the chrome owes no frame");
+
+    press_emoji_shortcut(&mut frame);
+    frame.relayout();
+    draw_chrome(&mut frame);
+    press_emoji_shortcut(&mut frame);
+    frame.relayout();
+    draw_chrome(&mut frame);
+    assert!(rests(&mut frame), "closed again, it owes nothing more");
 }

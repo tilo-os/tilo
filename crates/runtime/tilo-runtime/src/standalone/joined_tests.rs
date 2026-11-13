@@ -57,6 +57,7 @@ impl HostParts {
                     app_id,
                     cluster_id,
                     hash,
+                    ..
                 } = frame.message
                 else {
                     continue;
@@ -137,13 +138,7 @@ impl Joined {
         sign_device_cert(&mut cert, &root).unwrap();
         let joined = Self::open(
             directory.path(),
-            HostIdentity {
-                device_cert: cert,
-                device_signing_key: key.clone(),
-                workspace_device_certs: std::collections::HashMap::default(),
-                workspace_revocations: std::collections::HashMap::default(),
-                identity_paths: None,
-            },
+            HostIdentity::kept(cert, key.clone()),
             local_endpoint(&key).await,
             BTreeSet::new(),
             (
@@ -169,7 +164,7 @@ impl Joined {
             ),
             tilo_room_host::host::HostIdentity {
                 user_public_key: joined.custody.device_cert.user_public_key,
-                device_signing_key: joined.custody.device_signing_key.clone(),
+                device_signing_key: native_key(&joined.custody),
                 device_cert: joined.custody.device_cert.clone(),
                 revocations: RevocationList::new(),
             },
@@ -312,7 +307,14 @@ impl HostedWorkspace {
         let (payload, _) =
             IrohWorkspaceHostHintV1::authenticate_transport_hint(&self.hint).unwrap();
         let endpoint = local_endpoint(&self.governor_key).await;
-        let dialed = link.dial(&endpoint, payload.endpoint_addr).await.unwrap();
+        let dialed = link
+            .dial(
+                &endpoint,
+                payload.endpoint_addr,
+                payload.host_device_certificate.device_public_key,
+            )
+            .await
+            .unwrap();
         let running = link.clone();
         tilo_rt::app().spawn(async move {
             let _ = dialed.run(&running).await;
@@ -324,7 +326,10 @@ impl HostedWorkspace {
 fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor: &str) {
     let mut custody = joined.custody.clone();
     // In memory only: this probe compares what it holds, never a disk.
-    custody.identity_paths = None;
+    custody.custody = std::sync::Arc::new(tilo_identity_host::custody::Kept::new(
+        custody.device_cert.clone(),
+        std::sync::Arc::clone(&custody.signer),
+    ));
     let workspace_cert = custody.device_cert.clone();
     let default_root = SigningKey::from_bytes(&[95; 32]);
     custody.device_cert.user_public_key = default_root.verifying_key().to_bytes();
@@ -332,9 +337,21 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
     let default_actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
         custody.device_cert.user_public_key,
     );
-    custody
-        .workspace_device_certs
-        .insert(workspace_topic(workspace).unwrap(), workspace_cert);
+    custody = HostIdentity::held(
+        custody.device_cert.clone(),
+        std::sync::Arc::clone(&custody.signer),
+        std::sync::Arc::new(
+            tilo_identity_host::custody::Kept::new(
+                custody.device_cert.clone(),
+                std::sync::Arc::clone(&custody.signer),
+            )
+            .in_workspace(
+                workspace_topic(workspace).unwrap(),
+                workspace_cert,
+                Vec::new(),
+            ),
+        ),
+    );
     let mut probe = Joined {
         executions: super::super::execution::ExecutionPins::new(&joined.owner),
         owner: joined.owner.clone(),
@@ -374,10 +391,16 @@ fn assert_changed_custody_refused(joined: &Joined, workspace: WorkspaceId, actor
     let mut renewed = probe.custody.device_cert.clone();
     renewed.device_label = "a reissued certificate".into();
     sign_device_cert(&mut renewed, &default_root).unwrap();
-    probe
-        .custody
-        .workspace_device_certs
-        .insert(workspace_topic(workspace).unwrap(), renewed);
+    let kept = tilo_identity_host::custody::Kept::new(
+        probe.custody.device_cert.clone(),
+        std::sync::Arc::clone(&probe.custody.signer),
+    )
+    .in_workspace(workspace_topic(workspace).unwrap(), renewed, Vec::new());
+    probe.custody = HostIdentity::held(
+        probe.custody.device_cert.clone(),
+        std::sync::Arc::clone(&probe.custody.signer),
+        std::sync::Arc::new(kept),
+    );
     assert!(
         probe.recheck_mcp_executions(workspace).is_err(),
         "a custody the read confirms is not what the run was admitted with"
@@ -560,13 +583,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
     sign_device_cert(&mut device, &root_key).unwrap();
     let invitation = governing.invite(device.user_public_key);
 
-    let custody = HostIdentity {
-        device_cert: device.clone(),
-        device_signing_key: device_key.clone(),
-        workspace_device_certs: std::collections::HashMap::default(),
-        workspace_revocations: std::collections::HashMap::default(),
-        identity_paths: None,
-    };
+    let custody = HostIdentity::kept(device.clone(), device_key.clone());
     let own_workspace = WorkspaceId::parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
     let joined = Joined::open(
         directory.path(),
@@ -1140,13 +1157,7 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
     let invitation = governing.invite(device.user_public_key);
     let joined = Joined::open(
         directory.path(),
-        HostIdentity {
-            device_cert: device.clone(),
-            device_signing_key: device_key.clone(),
-            workspace_device_certs: std::collections::HashMap::default(),
-            workspace_revocations: std::collections::HashMap::default(),
-            identity_paths: None,
-        },
+        HostIdentity::kept(device.clone(), device_key.clone()),
         local_endpoint(&device_key).await,
         BTreeSet::new(),
         (
@@ -1230,6 +1241,7 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id.clone(),
         hash: hash.clone(),
+        have: Vec::new(),
     };
     governor.send(want).unwrap();
     let mut gathered = vec![0_u8; picture.len()];
@@ -1292,13 +1304,7 @@ async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_i
     let invitation = governing.invite(device.user_public_key);
     let joined = Joined::open(
         directory.path(),
-        HostIdentity {
-            device_cert: device.clone(),
-            device_signing_key: device_key.clone(),
-            workspace_device_certs: std::collections::HashMap::default(),
-            workspace_revocations: std::collections::HashMap::default(),
-            identity_paths: None,
-        },
+        HostIdentity::kept(device.clone(), device_key.clone()),
         local_endpoint(&device_key).await,
         BTreeSet::new(),
         (
@@ -1454,7 +1460,7 @@ async fn the_profile_workspace_is_placed_once_on_its_own_host_and_held() {
 async fn a_write_to_a_record_the_workspace_lacks_is_taken_only_in_a_declared_kind() {
     let workspace = WorkspaceId::new();
     let (joined, _directory) = Joined::test_hosting(workspace).await;
-    let key = joined.custody.device_signing_key.clone();
+    let key = native_key(&joined.custody);
     for (app, kind) in [
         ("dev.tilo.declared", None),
         ("dev.tilo.declared", Some("dev.tilo.other")),
@@ -1498,9 +1504,14 @@ async fn writes_to_a_workspace_the_desktop_session_governs_are_refused() {
         .commit(signed_write(
             workspace,
             "dev.tilo.declared",
-            &empty.custody.device_signing_key,
+            &native_key(&empty.custody),
         ))
         .await
         .unwrap_err();
     assert!(refused.contains("read only"), "{refused}");
+}
+
+/// The key `custody` holds in the clear, for a test that hands it to a host or writes it to disk.
+pub(super) fn native_key(custody: &HostIdentity) -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&custody.signer.endpoint_secret().expect("a native key"))
 }

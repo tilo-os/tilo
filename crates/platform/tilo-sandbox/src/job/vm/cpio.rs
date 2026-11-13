@@ -1,5 +1,5 @@
-//! The initramfs of a micro-VM step: an uncompressed `newc` cpio archive, which the kernel
-//! unpacks on top of its built-in one (that one has `/dev/console`).
+//! The initramfs of a micro-VM step: an uncompressed `newc` cpio archive, which the kernel unpacks
+//! on top of its built-in one (that one has `/dev/console`).
 
 use std::io::{self, Write};
 
@@ -24,7 +24,6 @@ impl<W: Write> Cpio<W> {
         self.entry(name, 0o040_755, &[])
     }
 
-    /// A regular file with permissions `perm`.
     pub fn file(&mut self, name: &str, perm: u32, data: &[u8]) -> io::Result<()> {
         self.entry(name, 0o100_000 | (perm & 0o7777), data)
     }

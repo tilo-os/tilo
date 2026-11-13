@@ -23,8 +23,8 @@ pub struct Said {
 
 #[resource(
     kind = "test.direct",
-    label = "Direct conversation",
-    app = "so.tilo.test-direct"
+    app = "so.tilo.test-direct",
+    catalogue = "tests/locales"
 )]
 impl Talk {
     /// Say something.

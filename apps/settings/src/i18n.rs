@@ -1,15 +1,12 @@
 //! Settings' Fluent catalogue.
 //!
 //! User-facing strings resolve by key through the toolkit's [`mod@ui::i18n`]
-//! manager. The catalogues are embedded with `include_str!`, so a `--shots`
-//! render, a unit test and a live session resolve the same copy. The locale
-//! follows the usual POSIX variables and falls back per message to `en-US`.
+//! manager. The catalogues are embedded with `include_str!`, so a render, a unit
+//! test and a live session resolve the same copy.
 
-ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US", "de-DE"]);
 
 /// The pages' and settings' names, shared with the desktop palette
-/// ([`settings_store::index`]). Every window offers them, so they ride along
-/// in its language instead of deciding it.
 static INDEX: ui::i18n::EmbeddedCatalog = {
     let catalog = ui::i18n::EmbeddedCatalog::new("en-US", settings_store::index::CATALOGUES)
         .with_system_locale()
@@ -29,7 +26,6 @@ fn ensure() {
     provider_settings_ui::i18n::CATALOG.ensure();
 }
 
-/// Native Settings copy takes precedence; shared provider copy fills missing keys.
 pub fn t(key: &str) -> String {
     ensure();
     let local = CATALOG.t(key);
@@ -50,14 +46,6 @@ pub fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
     }
 }
 
-/// The languages Settings, and so the desktop, can show: English and every
-/// language with an installed pack.
-pub fn languages() -> Vec<&'static str> {
-    CATALOG.languages()
-}
-
-/// The English names of a `(label, value)` table, as an effect's or verb's
-/// choices.
 pub fn english<T>(table: &'static [(&'static str, T)]) -> impl Iterator<Item = &'static str> {
     table.iter().map(|(label, _)| *label)
 }
@@ -70,7 +58,6 @@ mod tests {
     const SOURCE_FTL: &str = include_str!("../locales/en-US.ftl");
     const DE_FTL: &str = include_str!("../locales/de-DE.ftl");
 
-    /// `key -> pattern` for every message in a catalogue.
     fn messages(source: &str) -> BTreeMap<&str, &str> {
         source
             .lines()

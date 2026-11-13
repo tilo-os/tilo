@@ -2,9 +2,8 @@
 //! alike.
 //!
 //! A native app is read from the `surface.toml` it commits next to its manifest; a tilolang
-//! package is compiled and its generated surface read back the same way. Either way what is
-//! printed is the catalogue's description ([`tilolang_tilo::catalogue::package_of`]), which is
-//! also what a package that `use`s the app is checked against.
+//! package is printed from its own metadata, as it was compiled. Either way what is printed is
+//! what a package that `use`s the app compiles against.
 
 use std::path::{Path, PathBuf};
 
@@ -14,7 +13,7 @@ use tilolang::meta::PackageMeta;
 use tilolang_tilo::catalogue;
 
 /// The catalogue's package of the app in `dir`: a native app's committed surface, or the
-/// generated surface of the tilolang package there, compiled with the packages it uses (found in
+/// metadata of the tilolang package there, compiled with the packages it uses (found in
 /// `search`, else among its siblings).
 pub fn published(dir: &Path, search: &[PathBuf]) -> Result<PackageMeta, String> {
     if let Some(meta) = catalogue::native_app(dir)? {
@@ -27,8 +26,10 @@ pub fn published(dir: &Path, search: &[PathBuf]) -> Result<PackageMeta, String> 
         .ok_or_else(|| format!("{}: no package", dir.display()))?
         .compiled
         .meta;
-    let surfaces = tilolang_tilo::surface::package_surfaces(meta);
-    Ok(catalogue::package_of(&meta.app, &meta.title, &surfaces))
+    // The package's own declarations, as a package that `use`s it compiles against them: its
+    // generated surface names each action by the id a change of it names, which is no word an
+    // author reads here.
+    Ok(meta.clone())
 }
 
 /// What `tilolang describe` prints for the app in `dir`.

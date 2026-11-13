@@ -31,7 +31,7 @@ pub struct Desk {
     pub ops: Outbox<FileOp, String>,
 }
 
-#[resource(kind = "test.desk", label = "Desk", params = desk)]
+#[resource(kind = "test.desk", params = desk, catalogue = "tests/locales")]
 impl Desk {
     /// Add a note.
     #[action]
@@ -266,7 +266,7 @@ pub struct Planner {
     pub uploads: Outbox<Upload>,
 }
 
-#[resource(kind = "test.planner", label = "Planner", params = planner, queue = Planner::queue)]
+#[resource(kind = "test.planner", params = planner, queue = Planner::queue, catalogue = "tests/locales")]
 impl Planner {
     /// Add an event.
     #[action]
@@ -414,7 +414,7 @@ pub struct Runs {
     pub queue: Outbox<String>,
 }
 
-#[resource(kind = "test.runs", label = "Runs")]
+#[resource(kind = "test.runs", catalogue = "tests/locales")]
 impl Runs {
     /// Run a command.
     #[action]

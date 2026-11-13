@@ -145,7 +145,7 @@ fn store(root: &Path) -> Rc<dyn durable_store::DurableStore> {
 }
 
 fn key(index: usize) -> StorageKey {
-    StorageKey::record(PACKAGE, WORKSPACE, format!("record-{index:05}"))
+    StorageKey::document(PACKAGE, WORKSPACE, format!("record-{index:05}"))
 }
 
 /// Open `n` records that do not exist yet, each storing one empty document:

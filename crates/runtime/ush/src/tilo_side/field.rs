@@ -1,13 +1,10 @@
-//! The line at the session's prompt as Terminal's native editor field: the
-//! editor capability Terminal negotiated (`editor_protocol`), served by the
-//! shell's own line editor ([`ush_shell::field`]).
+//! The line at the session's prompt as Terminal's native editor field: the editor capability
+//! Terminal negotiated (`editor_protocol`), served by the shell's own line editor
+//! ([`ush_shell::field`]).
 //!
-//! The supervisor hands the capability only to the session process it
-//! started itself, which is this one: no program in the guest holds it, so
-//! the producer is Tilo's own by construction and needs no proof of which
-//! process it is. Requests are read on a thread of their own and queued;
-//! while the line editor waits for a key, a request wakes its read of the
-//! terminal ([`Keys`]).
+//! The supervisor hands the capability only to the session process it started, which is this
+//! one, so no program in the guest holds it. Requests are read on a thread of their own and
+//! queued; while the line editor waits for a key, a request wakes its read of the terminal.
 
 use std::collections::VecDeque;
 use std::io::{self, Read};
@@ -18,7 +15,6 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 use runtime_portal::editor;
 use ush_shell::field::{Field, Lease, Reply, Request, Status};
 
-/// The editor capability, as the line editor's field.
 pub struct SessionField {
     socket: Arc<editor::Socket>,
     incarnation: [u8; 16],
@@ -92,13 +88,11 @@ const fn status_out(status: Status) -> editor::Status {
     }
 }
 
-/// Nanoseconds on the monotonic clock Terminal reads leases by.
 fn monotonic_ns() -> u64 {
     let mut clock = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
     };
-    // SAFETY: a properly sized output and a supported clock.
     if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut clock) } != 0 {
         return 0;
     }
@@ -118,11 +112,9 @@ impl SessionField {
             getrandom::fill(&mut incarnation).map_err(io::Error::other)?;
         }
         let mut fds = [0; 2];
-        // SAFETY: pipe2 writes two descriptors into the array we own.
         if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } < 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: the kernel just returned these two descriptors.
         let (wake_read, wake_write) =
             unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
         socket.read_timeout(None)?;
@@ -142,8 +134,6 @@ impl SessionField {
         Ok(field)
     }
 
-    /// The session's terminal as the line editor reads it: woken by a
-    /// request while it listens.
     pub fn keys(self: &Arc<Self>, terminal: std::fs::File) -> Keys {
         Keys {
             terminal,
@@ -157,7 +147,6 @@ impl SessionField {
 
     fn wake(&self) {
         let byte = 1_u8;
-        // SAFETY: one byte from a local into a non-blocking pipe we own.
         unsafe { libc::write(self.wake_write.as_raw_fd(), (&raw const byte).cast(), 1) };
     }
 }
@@ -215,16 +204,12 @@ impl Field for SessionField {
             can_redo: reply.can_redo,
             text: reply.text.clone(),
         });
-        // An answer that cannot be sent leaves the app uncertain: the
-        // capability is retired rather than left half answered.
         if frame.and_then(|frame| self.socket.send(&frame)).is_err() {
             self.socket.retire();
         }
     }
 }
 
-/// The session's terminal, read by the line editor: a request from Terminal
-/// interrupts a read while the editor listens for one.
 pub struct Keys {
     terminal: std::fs::File,
     field: Arc<SessionField>,
@@ -249,7 +234,6 @@ impl Read for Keys {
                 return self.terminal.read(buf);
             }
             if woken.revents == 0 {
-                // A signal (Ctrl-C) ended the wait, as it ends a read.
                 return Err(io::ErrorKind::Interrupted.into());
             }
         }

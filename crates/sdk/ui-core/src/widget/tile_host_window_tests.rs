@@ -160,7 +160,7 @@ fn an_apps_dialog_centres_inside_its_window_not_the_screen() {
 /// An app that notes which window was current whenever the host reached
 /// it to run its callbacks or a wake.
 struct WindowProbe {
-    reached_in: std::rc::Rc<std::cell::RefCell<Vec<Option<usize>>>>,
+    reached_in: std::rc::Rc<std::cell::RefCell<Vec<Option<u64>>>>,
 }
 
 impl Widget for WindowProbe {
@@ -171,7 +171,7 @@ impl Widget for WindowProbe {
     ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
         self.reached_in
             .borrow_mut()
-            .push(crate::window_toolbar::current_window());
+            .push(crate::window_toolbar::window().map(|window| window.identity()));
         Ok(())
     }
     fn name(&self) -> &'static str {
@@ -215,7 +215,7 @@ fn a_wake_or_callback_runs_in_the_apps_own_window() {
     .unwrap();
     assert_eq!(*reached_in.borrow(), [Some(window.identity())]);
     assert_eq!(
-        crate::window_toolbar::current_window(),
+        crate::window_toolbar::window().map(|window| window.identity()),
         None,
         "the window stops being current once the visit returns"
     );

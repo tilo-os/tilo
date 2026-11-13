@@ -2,8 +2,9 @@
 """Keep date, time, number and size formatting in ``ui::format``.
 
 Every date, time, size and duration a person reads goes through the toolkit's
-formatter (``crates/sdk/ui-core/src/format.rs``), which follows their Region &
-Formats settings and the desktop's language. Formatting built by hand drifts:
+formatter (``crates/sdk/ui-core/src/format.rs``, and the toolkit-free
+``crates/sdk/tilo-formats`` it re-exports), which follows their Region & Formats
+settings and the desktop's language. Formatting built by hand drifts:
 one app shows ``Sep 18, 2026, 12:30PM``, another ``Jun 30, 2026, 13:42``. This
 check flags, in the production sources of the apps, the shell and session
 programs and the SDK:
@@ -37,8 +38,9 @@ from rust_source import is_test_file, line_number, production_source  # noqa: E4
 
 ROOT = Path(__file__).resolve().parents[2]
 SCOPES = (Path("apps"), Path("crates/session"), Path("crates/sdk"))
-# The formatter itself, and the clock it formats times of day with.
+# The formatter itself, its toolkit-free half, and the clock it formats times of day with.
 FORMATTER = (
+    Path("crates/sdk/tilo-formats/src"),
     Path("crates/sdk/ui-core/src/format.rs"),
     Path("crates/sdk/ui-core/src/format"),
     Path("crates/sdk/ui-core/src/clock.rs"),

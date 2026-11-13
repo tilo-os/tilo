@@ -1,10 +1,5 @@
 //! The handshake on a tunnel connection's control stream, and the codes a
 //! connection closes with.
-//!
-//! The client opens one bidirectional stream and sends a [`ClientHello`];
-//! the exit answers with an [`Offer`] or closes the connection with one of
-//! the [`close`] codes. Each message is a little-endian `u16` length and a
-//! postcard body.
 
 use std::net::Ipv4Addr;
 
@@ -12,18 +7,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::net::Ipv4Net;
 
-/// This handshake's version.
 pub const VERSION: u16 = 1;
 
-/// The largest handshake message either side reads.
 pub const MAX_MESSAGE_BYTES: usize = 4096;
 
-/// Why a client came.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Purpose {
-    /// To learn what the exit offers, without routing.
     Probe,
-    /// To route its traffic through the exit.
     Route,
 }
 
@@ -33,34 +23,21 @@ pub struct ClientHello {
     pub purpose: Purpose,
 }
 
-/// What an exit offers a client of the same person.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Offer {
-    /// The exit's address in the tunnel network, and its DNS server.
     pub gateway: Ipv4Addr,
-    /// The client's address, when it came to route.
     pub address: Option<Ipv4Addr>,
-    /// The exit's tunnel MTU.
     pub mtu: u16,
-    /// The networks the exit is attached to, for "only my home network".
     pub home_networks: Vec<Ipv4Net>,
 }
 
-/// The application codes a tunnel connection closes with.
 pub mod close {
-    /// The client is done.
     pub const BYE: u32 = 0;
-    /// The client is not one of the exit person's devices.
     pub const NOT_YOURS: u32 = 1;
-    /// The exit does not offer itself as a VPN.
     pub const EXIT_OFF: u32 = 2;
-    /// The person stopped this device using the exit.
     pub const STOPPED: u32 = 3;
-    /// A message broke the handshake.
     pub const PROTOCOL: u32 = 4;
-    /// The exit has no address left to give.
     pub const FULL: u32 = 5;
-    /// A newer connection of the same device replaced this one.
     pub const REPLACED: u32 = 6;
 }
 
@@ -80,7 +57,6 @@ pub fn frame<T: Serialize>(message: &T) -> Result<Vec<u8>, String> {
     Ok(framed)
 }
 
-/// Read one framed message from `stream`.
 pub async fn read<T: for<'de> Deserialize<'de>>(
     stream: &mut iroh::endpoint::RecvStream,
 ) -> Result<T, String> {

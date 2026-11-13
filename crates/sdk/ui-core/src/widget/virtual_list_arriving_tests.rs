@@ -240,3 +240,41 @@ fn a_paged_list_requests_its_window_and_keeps_each_row_while_it_arrives() {
         assert!(!Widget::needs_animation_frame(&list));
     });
 }
+
+/// A reader moving through the list hears a row that is still on its way as loading, not as an
+/// unnamed slot: the row is focusable from the moment its slot stands, so it says what it is
+/// until what it will show arrives.
+#[test]
+fn a_row_on_its_way_is_named_for_what_it_is() {
+    let model = RemoteRows {
+        ready: Rc::default(),
+        retried: Rc::default(),
+    };
+    let mut list = VirtualList::new(model, 30.0, |_, _, key| {
+        Box::new(ProbeRow::new(
+            format!("row {key}"),
+            30.0,
+            false,
+            Rc::default(),
+        ))
+    })
+    .with_viewport_height(120.0);
+    let _ = lay_out(&mut list, 300.0);
+
+    let semantics = Widget::accessibility(&list).expect("list semantics");
+    let loading = crate::i18n::widget_text("arriving-loading");
+    assert!(
+        semantics.children[0].state.busy,
+        "the first row is still on its way"
+    );
+    assert_eq!(
+        semantics.children[0].name.as_deref(),
+        Some(loading.as_str()),
+        "a row on its way is named as loading"
+    );
+    assert_eq!(
+        semantics.children[1].name.as_deref(),
+        Some("offline"),
+        "a row that could not be read is named by its reason"
+    );
+}

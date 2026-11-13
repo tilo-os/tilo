@@ -1,4 +1,4 @@
-//! `/usr/libexec/tilo-image-policy-check`: see the library.
+//! `/usr/libexec/tilo-image-policy-check`; see the library.
 
 use std::process::ExitCode;
 

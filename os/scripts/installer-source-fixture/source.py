@@ -370,7 +370,7 @@ class Main:
             spec = importlib.util.spec_from_file_location('source_existing_control_client', client_path)
             client = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(client)
-            reply = client.call(str(self.socket), {'op': 'quit'}, timeout=5)
+            reply = client.control_call(str(self.socket), {'op': 'quit'}, timeout=5)
             require('ok' in reply, 'normal source console did not accept quit')
             while observe_exit(self.child) is None:
                 require(time.monotonic() < self.deadline, 'normal source main retirement unknown')
@@ -390,7 +390,7 @@ class Main:
 
 
 def candidate_control_path():
-    return HERE.parents[2] / 'scripts/headless-examples/_control.py'
+    return HERE.parents[2] / 'scripts/headless-examples/real_apps.py'
 
 
 def user_stage(candidate, config_path):

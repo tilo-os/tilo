@@ -14,19 +14,14 @@ use zeroize::Zeroizing;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SystemVolume {
-    /// The LUKS2 device.
     pub device: PathBuf,
-    /// Its open device-mapper name, when it is open.
     pub mapping: Option<String>,
 }
 
-/// How the daemon finds the system volume.
 #[derive(Clone, Debug)]
 pub enum Locate {
-    /// The device under the mounted root.
     Root,
     Fixed(SystemVolume),
-    /// No encrypted system volume.
     Absent,
 }
 
@@ -55,7 +50,6 @@ fn root_volume(runner: &dyn Runner) -> Option<SystemVolume> {
     )
 }
 
-/// Where the initrd records the device it opened the root from.
 const ROOT_LINK: &str = "/run/tilo-root/device";
 
 fn root_volume_in(
@@ -96,7 +90,6 @@ fn mount_source(text: &str) -> Option<PathBuf> {
     path.starts_with("/dev/").then(|| PathBuf::from(path))
 }
 
-/// `major:minor` of the block device `path` is, or links to.
 fn block_device_number(path: &Path) -> Option<String> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     let meta = std::fs::metadata(path).ok()?;
@@ -128,7 +121,6 @@ fn crypt_backing(sys: &Path, majmin: &str) -> Option<(String, String)> {
     Some((name.trim().to_owned(), slave))
 }
 
-/// A credential that already opens the volume.
 pub enum Held {
     Passphrase(Zeroizing<Vec<u8>>),
     VolumeKey(Zeroizing<Vec<u8>>),
@@ -270,7 +262,6 @@ mod tests {
         std::fs::create_dir_all(root.join("slaves/vda3")).unwrap();
         std::fs::write(root.join("dm/name"), "root\n").unwrap();
         std::fs::write(root.join("dm/uuid"), "CRYPT-LUKS2-0123-root\n").unwrap();
-        // What the mount table says for each of them; not consulted any more.
         std::fs::create_dir_all(sys.path().join("dev/block/0:45")).unwrap();
         let volume = |mounts, link: &str| {
             root_volume_in(&Mounts(mounts), sys.path(), Path::new(link), &nodes)
@@ -341,7 +332,6 @@ mod tests {
             crypt_backing(sys.path(), "253:0"),
             Some(("root".into(), "vda3".into()))
         );
-        // composefs, or a plain partition: no mapping at all.
         assert_eq!(crypt_backing(sys.path(), "0:31"), None);
         assert_eq!(crypt_backing(sys.path(), "../253:0"), None);
         std::fs::write(root.join("dm/uuid"), "CRYPT-PLAIN-root\n").unwrap();

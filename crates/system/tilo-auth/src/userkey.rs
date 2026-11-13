@@ -7,7 +7,6 @@ const SYSTEM_VOLUME_DOMAIN: &[u8] = b"tilo-system-volume-v1";
 
 type HmacSha256 = hmac::Hmac<sha2::Sha256>;
 
-/// The root of a person's personal scope.
 #[derive(Clone)]
 pub struct UserKey(Zeroizing<[u8; KEY_LEN]>);
 
@@ -30,7 +29,6 @@ impl UserKey {
         &self.0
     }
 
-    /// The passphrase of this person's system-volume keyslot.
     pub fn system_volume_passphrase(&self) -> Zeroizing<String> {
         Zeroizing::new(hex::encode(self.derive(SYSTEM_VOLUME_DOMAIN).as_slice()))
     }

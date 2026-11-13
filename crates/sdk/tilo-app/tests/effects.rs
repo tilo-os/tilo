@@ -185,7 +185,7 @@ pub struct Mailbox {
     pub fetched: String,
 }
 
-#[resource(kind = "test.mailbox", label = "Mailbox")]
+#[resource(kind = "test.mailbox", catalogue = "tests/locales")]
 impl Mailbox {
     /// Queue a message for delivery.
     #[action(undo = Self::unsend)]
@@ -218,7 +218,7 @@ impl Mailbox {
 }
 
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.mailbox.effects")]
+#[effect(operation = "test.mailbox.effects", catalogue = "tests/locales")]
 pub enum MailEffect {
     /// Count the delivered messages.
     #[effect(returns, kind = "read")]
@@ -803,7 +803,7 @@ fn delayed_receipt_completion_cannot_exceed_its_original_read_admission() {
 
 /// A surface's own effects: answered with `&mut self`, completed with it.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.tally.effects")]
+#[effect(operation = "test.tally.effects", catalogue = "tests/locales")]
 pub enum TallyEffect {
     /// Tally.
     #[effect(job, returns)]
@@ -1081,7 +1081,7 @@ impl Widget for Counter {
 
 /// Effects a view answers on its [`Counter`] window.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.counter.effects")]
+#[effect(operation = "test.counter.effects", catalogue = "tests/locales")]
 pub enum CounterEffect {
     /// Count.
     Count {
@@ -1154,7 +1154,7 @@ fn a_view_answers_effects_on_its_window_and_refuses_them_while_it_is_closed() {
 /// Effects a view answers on its [`Counter`] window, which hosts their
 /// work: what finishes later counts on the window itself.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.hosted-counter.effects")]
+#[effect(operation = "test.hosted-counter.effects", catalogue = "tests/locales")]
 pub enum HostedCounterEffect {
     /// Count off the UI thread.
     #[effect(job, returns)]
@@ -1214,6 +1214,90 @@ fn a_window_that_hosts_its_work_gets_the_completions_of_its_effects_and_jobs() {
         "the effect's completion counts on the window"
     );
     assert_eq!(app.surface_mut::<Counter>().counted, 15);
+}
+
+/// What the [`GatedCounterApp`]'s job waits for before it counts: the test
+/// opens it once the window has rested.
+static GATE: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>> = std::sync::Mutex::new(None);
+
+thread_local! {
+    /// What the gated job counted, as its completion on the window left it.
+    static GATED_COUNT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// A window whose job works off the frame until the test lets it finish.
+struct GatedCounterApp;
+
+impl ResourceApp for GatedCounterApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-gated-counter";
+    const TITLE: &'static str = "Counter";
+
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        cx.window_jobs::<Counter>().start::<Counter>("gated", |cx| {
+            Ok(cx.thread(
+                |_| {
+                    let gate = GATE.lock().unwrap().take();
+                    if let Some(gate) = gate {
+                        let _ = gate.recv();
+                    }
+                    7
+                },
+                |counter: &mut Counter, by: u32, _| {
+                    counter.counted = counter.counted.saturating_add(by);
+                    GATED_COUNT.set(counter.counted);
+                    Ok(Effected::done())
+                },
+            ))
+        });
+        Box::new(Column::new().push(Box::new(Counter::default())))
+    }
+}
+
+/// How many times a window's app synced its view in `phases`.
+fn window_syncs(phases: &[tilo_app::tilo_resource::profiling::Sample]) -> usize {
+    phases
+        .iter()
+        .filter(|phase| phase.phase == "ui.component.sync")
+        .map(|phase| phase.calls)
+        .sum()
+}
+
+#[test]
+fn a_window_at_rest_syncs_again_when_its_jobs_result_lands() {
+    use tilo_app::tilo_resource::profiling::observe;
+    let (open, gate) = std::sync::mpsc::channel();
+    *GATE.lock().unwrap() = Some(gate);
+    GATED_COUNT.set(0);
+    let mut app = TestApp::<GatedCounterApp>::new().unwrap();
+    // While the job works nothing reaches the window: the frames its host
+    // runs for something else (its own document, as another window's key
+    // would) do not sync it.
+    app.idle();
+    let ((), waiting) = observe(|| {
+        for _ in 0..3 {
+            let _ = app.harness().state_mut();
+            app.idle();
+        }
+    });
+    assert_eq!(
+        window_syncs(&waiting),
+        0,
+        "the window rests while its job works"
+    );
+    assert_eq!(GATED_COUNT.get(), 0);
+    // The job finishes on its thread and wakes the window: the next frame
+    // syncs it, and the result is taken up there.
+    open.send(()).unwrap();
+    let mut landed = 0;
+    tilo_test_env::wait_until("the job's result to land on the window", || {
+        let ((), frame) = observe(|| {
+            app.idle();
+        });
+        landed += window_syncs(&frame);
+        GATED_COUNT.get() == 7
+    });
+    assert!(landed > 0, "the landing synced the window");
 }
 
 /// A window that mounts a child window while it runs, as some work it
@@ -1277,7 +1361,7 @@ impl Widget for Mounting {
 
 /// Effects that open and close the [`Mounting`] window's child.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.mounting.effects")]
+#[effect(operation = "test.mounting.effects", catalogue = "tests/locales")]
 pub enum MountingEffect {
     /// Mount the child window.
     OpenChild,
@@ -1490,7 +1574,7 @@ fn an_outbox_looks_again_when_the_outside_it_could_not_reach_changed() {
 }
 
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.mailbox.files")]
+#[effect(operation = "test.mailbox.files", catalogue = "tests/locales")]
 pub enum FileEffect {
     /// Import a message from a file.
     #[effect(job)]
@@ -1755,7 +1839,7 @@ fn a_job_nobody_invoked_says_how_far_it_is_until_it_ends() {
 }
 
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.mailbox.device")]
+#[effect(operation = "test.mailbox.device", catalogue = "tests/locales")]
 pub enum DeviceEffect {
     /// Choose a mail folder on this computer.
     #[effect(attended)]
@@ -1840,7 +1924,7 @@ fn a_launch_invokes_a_view_effect_even_for_a_viewer() {
 }
 
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.mailbox.disks")]
+#[effect(operation = "test.mailbox.disks", catalogue = "tests/locales")]
 pub enum DiskEffect {
     /// Erase a disk.
     #[effect(risk = "erase_risk")]

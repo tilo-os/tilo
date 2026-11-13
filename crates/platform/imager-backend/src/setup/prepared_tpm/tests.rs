@@ -18,7 +18,6 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
 use std::{
     process::{Child, Command, Stdio},
-    sync::atomic::{AtomicU16, Ordering},
     time::Duration,
 };
 use tilo_rollback::exec::Runner;
@@ -30,7 +29,9 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 struct Tpm {
     _state: tempfile::TempDir,
-    port: u16,
+    /// The data channel's socket under the state directory, its own and no
+    /// one else's: no port is picked, so none can be taken.
+    socket: PathBuf,
     child: Child,
 }
 
@@ -44,19 +45,15 @@ impl Tpm {
                 .is_ok_and(|status| status.success());
             assert!(ok, "the prepared TPM handoff test needs {tool} installed");
         }
-        let mut last = String::new();
-        for _ in 0..8 {
-            match Self::try_start() {
-                Ok(tpm) => return tpm,
-                Err(error) => last = error,
-            }
-        }
-        panic!("could not start swtpm after 8 attempts: {last}");
+        Self::start_on().unwrap_or_else(|error| panic!("could not start swtpm: {error}"))
     }
 
-    fn try_start() -> Result<Self, String> {
+    fn start_on() -> Result<Self, String> {
         let state = tempfile::tempdir().map_err(|error| error.to_string())?;
-        let (port, control) = free_port_pair();
+        // A data channel and the control channel tpm2-tools' `swtpm:` TCTI looks
+        // for beside it, both sockets under this TPM's own state directory.
+        let socket = state.path().join("tpm.sock");
+        let control = state.path().join("tpm.sock.ctrl");
         let setup_log = state.path().join("setup.log");
         let _ = Command::new("swtpm_setup")
             .args(["--tpm2", "--tpmstate"])
@@ -76,8 +73,8 @@ impl Tpm {
             .arg("socket")
             .arg("--tpm2")
             .arg(format!("--tpmstate=dir={}", state.path().display()))
-            .arg(format!("--server=type=tcp,port={port}"))
-            .arg(format!("--ctrl=type=tcp,port={control}"))
+            .arg(format!("--server=type=unixio,path={}", socket.display()))
+            .arg(format!("--ctrl=type=unixio,path={}", control.display()))
             .arg("--flags=not-need-init,startup-clear")
             .stdin(Stdio::null())
             .stdout(Stdio::from(
@@ -93,7 +90,7 @@ impl Tpm {
             .map_err(|error| error.to_string())?;
         let mut tpm = Self {
             _state: state,
-            port,
+            socket,
             child,
         };
         let mut last = String::new();
@@ -117,7 +114,7 @@ impl Tpm {
     }
 
     fn tcti(&self) -> String {
-        format!("swtpm:host=127.0.0.1,port={}", self.port)
+        format!("swtpm:path={}", self.socket.display())
     }
 }
 
@@ -126,30 +123,6 @@ impl Drop for Tpm {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
-}
-
-fn free_port_pair() -> (u16, u16) {
-    static SKEW: AtomicU16 = AtomicU16::new(0);
-    let skew = SKEW.fetch_add(2, Ordering::Relaxed);
-    for attempt in 0..64u16 {
-        let base = {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-            listener.local_addr().expect("local address").port()
-        };
-        let base = base
-            .checked_add(skew)
-            .and_then(|base| base.checked_add(attempt.saturating_mul(2)))
-            .unwrap_or(base);
-        if base >= u16::MAX - 1 {
-            continue;
-        }
-        if std::net::TcpListener::bind(("127.0.0.1", base)).is_ok()
-            && std::net::TcpListener::bind(("127.0.0.1", base.saturating_add(1))).is_ok()
-        {
-            return (base, base.saturating_add(1));
-        }
-    }
-    panic!("no adjacent free TCP port pair for swtpm");
 }
 
 struct Fixture {

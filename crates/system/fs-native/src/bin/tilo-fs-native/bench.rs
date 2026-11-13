@@ -1,14 +1,11 @@
-//! Local benchmarks for the exit criteria that do not need a network:
-//! resident I/O against raw (B1,
-//! B2), metadata storms (B3), capture cost and hashing throughput (K5, B7
-//! locally), placeholder time to first byte (B9 with a local source) and
-//! `git status` under capture (B8 locally).
+//! Local benchmarks for the exit criteria that do not need a network: resident
+//! I/O against raw, metadata storms, capture cost and hashing throughput,
+//! placeholder time to first byte with a local source, and `git status` under
+//! capture.
 //!
-//! "Raw" is the same operation on the same store volume with no fanotify
-//! group attached. "Tier 1" runs with the daemon's two groups live: the
-//! filesystem-wide journal mark (pumped by a thread, as the daemon would)
-//! and a pre-content group serving placeholders. Files in the Tier 1 runs
-//! were created as placeholders and hydrated before being measured.
+//! "Raw" is the same operation on the same store volume with no fanotify group
+//! attached. "Tier 1" runs with the daemon's two groups live: the
+//! filesystem-wide journal mark and the per-placeholder marks.
 
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
@@ -72,7 +69,6 @@ fn fill(buf: &mut [u8], offset: u64) {
     }
 }
 
-/// Median of the samples.
 fn median(mut v: Vec<f64>) -> f64 {
     v.sort_by(f64::total_cmp);
     v.get(v.len() / 2).copied().unwrap_or(0.0)
@@ -145,7 +141,6 @@ impl Daemon {
     }
 
     fn hydrator(&self) -> &Hydrator {
-        // Present until drop.
         self.hydrator
             .as_ref()
             .unwrap_or_else(|| unreachable_hydrator())

@@ -6,8 +6,6 @@ use crate::store::ContentStore;
 struct InterruptAfterJournal(AtomicUsize);
 impl LegacyImportAuthority for InterruptAfterJournal {
     fn authorize(&self, _: &LegacyImportRequest, _: &LegacyImportApproval) -> Result<()> {
-        // Mint, initial check, lock acquisition and pre-journal validation pass.
-        // The first copy is refused after the durable spent marker is written.
         ensure!(
             self.0.fetch_add(1, Ordering::SeqCst) < 4,
             "authority revoked"

@@ -10,9 +10,10 @@ indexed siblings (`Container[0]`, `Container[1]`, ...). The bare name
 (`Container`) resolves to the first sibling when there's only one;
 prefer the indexed form when in doubt.
 """
-from _control import call, socket_path_from_argv
+from real_apps import Session, control_socket_from_argv
 
-resp = call(socket_path_from_argv(), {"op": "list_targets"})
+session = Session.attach(control_socket_from_argv())
+resp = session.control({"op": "list_targets"})
 for entry in resp["targets"]:
     name = entry["name"]
     x, y, w, h = entry["rect"]

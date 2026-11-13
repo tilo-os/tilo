@@ -11,7 +11,6 @@ fn what_follows_an_extensions_keyword_reaches_it_and_enter_sends_it_there() {
     let shared: SharedEngine = window.clone();
     let mut controller = ExtensionController::new(true);
     let (finder, off) = ("f".repeat(32), "e".repeat(32));
-    // Their records, which requests find them by beside the toolbar's.
     controller.infos = [&finder, &off]
         .into_iter()
         .map(|id| ExtensionInfo {
@@ -45,11 +44,9 @@ fn what_follows_an_extensions_keyword_reaches_it_and_enter_sends_it_there() {
             })
             .collect::<Vec<_>>()
     };
-    // The keyword alone, and a turned-off extension's, are the omnibox's.
     assert_eq!(controller.omnibox_typed("kw", &shared), None);
     assert_eq!(controller.omnibox_typed("off cats", &shared), None);
     assert!(told().is_empty());
-    // The keyword with a space, whatever its case: the extension's.
     assert_eq!(controller.omnibox_typed("kw ca", &shared), Some(true));
     assert_eq!(
         told(),
@@ -91,7 +88,6 @@ fn what_follows_an_extensions_keyword_reaches_it_and_enter_sends_it_there() {
         ]
     );
 
-    // Enter: the extension is sent the words, and its rows are gone.
     let request = controller.omnibox_enter("kw cat").unwrap();
     assert_eq!(
         request,
@@ -108,7 +104,6 @@ fn what_follows_an_extensions_keyword_reaches_it_and_enter_sends_it_there() {
     );
     assert!(controller.omnibox_rows().is_none());
     assert_eq!(controller.omnibox_enter("cats"), None);
-    // One turned off takes nothing, nor more than the engine carries.
     assert!(
         controller
             .request(&ExtensionRequest::Send(off, "x".into()))
@@ -119,7 +114,6 @@ fn what_follows_an_extensions_keyword_reaches_it_and_enter_sends_it_there() {
             .request(&ExtensionRequest::Send(finder, "x".repeat(2049)))
             .is_err()
     );
-    // A private window has none.
     assert_eq!(
         ExtensionController::new(false).omnibox_typed("kw ca", &shared),
         None
@@ -170,7 +164,6 @@ fn a_script_or_an_agent_sends_an_extension_words_as_its_keyword_does() {
     assert_eq!(request, ExtensionRequest::Send(id.clone(), "rust".into()));
     controller.request(&request).unwrap();
     assert_eq!(queued(&controller), [format!("Send({id:?}, \"rust\")")]);
-    // Off, it offers none.
     controller.installed = vec![Installed {
         enabled: false,
         ..on

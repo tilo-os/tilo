@@ -1,16 +1,14 @@
 //! `tilo-installer-offline-target verify|import|receipt`: authenticates and
 //! imports the separately signed, offline installer target.
 //!
-//! The live medium is transport, not the installed image. `verify` runs
-//! before any disk mutation: the target's metadata, its OCI manifest and
-//! config, its Cosign signature and its CI SLSA provenance must all bind the
-//! one selected image, checked against the image's own Cosign key, and the
-//! verified facts are saved as a private receipt. `import` rechecks the
-//! layout against that receipt, copies the exact manifest into local
-//! container storage and prints the immutable image ID.
-//!
-//! An unsigned development target is admitted only by the VM-only
-//! development installer, after the transport checks of
+//! The live medium is transport, not the installed image. `verify` runs before
+//! any disk mutation: the target's metadata, its OCI manifest and config, its
+//! Cosign signature and its CI SLSA provenance must all bind the one selected
+//! image, checked against the image's own Cosign key, and the verified facts
+//! are saved as a private receipt. `import` rechecks the layout against that
+//! receipt, copies the exact manifest into local container storage and prints
+//! the immutable image ID. An unsigned development target is admitted only by
+//! the VM-only development installer, after the transport checks of
 //! [`crate::target_transport`].
 
 use std::ffi::OsString;
@@ -41,43 +39,35 @@ const MIB: u64 = 1024 * 1024;
 /// The installer the target is checked in. The provided methods are the
 /// production behaviour; tests replace them.
 pub trait Host {
-    /// Where the live medium stages the target.
     fn root(&self) -> PathBuf {
         PathBuf::from("/var/lib/tilo-installer/target-oci")
     }
 
-    /// The Cosign public key the image trusts.
     fn key(&self) -> PathBuf {
         PathBuf::from("/usr/share/tilo/cosign.pub")
     }
 
-    /// The image's Cosign verifier.
     fn cosign(&self) -> PathBuf {
         PathBuf::from("/usr/libexec/tilo-cosign")
     }
 
-    /// Where the verified facts are kept for `import` and the install proof.
     fn receipt(&self) -> PathBuf {
         PathBuf::from("/run/tilo-installer/offline-target.json")
     }
 
-    /// The marker only the VM-only development installer carries.
     fn dev_vm_marker(&self) -> PathBuf {
         PathBuf::from("/usr/share/tilo/unverified-vm-install")
     }
 
-    /// The running image's flavour.
     fn dev_flavour(&self) -> PathBuf {
         PathBuf::from("/usr/lib/tilo/image-flavour")
     }
 
-    /// Whether the install proof's dedicated virtio port is present.
     fn proof_port(&self) -> bool {
         fs::metadata("/dev/virtio-ports/org.tilo.vm-install-proof")
             .is_ok_and(|info| info.file_type().is_char_device())
     }
 
-    /// `os.access(path, os.X_OK)`.
     fn executable(&self, path: &Path) -> bool {
         rustix::fs::access(path, rustix::fs::Access::EXEC_OK).is_ok()
     }
@@ -104,7 +94,6 @@ pub trait Host {
     }
 }
 
-/// The live installer as it is.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct System;
 
@@ -167,7 +156,6 @@ fn split_reference(reference: &str) -> Option<(&str, &str)> {
     .then_some((repository_name, digest))
 }
 
-/// `[1-9][0-9]*`.
 fn is_generation(text: &str) -> bool {
     let mut bytes = text.bytes();
     bytes
@@ -345,8 +333,8 @@ fn check_config(blobs: &Path, parsed: &Value) -> Result<()> {
     )
 }
 
-/// The rows of Cosign's verification output: one JSON document (a list or
-/// an object), or one per line.
+/// The rows of Cosign's verification output: one JSON document (a list or an
+/// object), or one per line.
 pub fn wrappers(output: &str) -> Result<Vec<Map<String, Value>>> {
     let length = output.chars().count();
     require(
@@ -416,8 +404,8 @@ fn sub_list<'a>(
     }
 }
 
-/// The predicate of the SLSA v1 statement in `row` whose subject is the
-/// target, if `row` carries one.
+/// The predicate of the SLSA v1 statement in `row` whose subject is the target,
+/// if `row` carries one.
 fn target_predicate(row: &Map<String, Value>, target_hex: &str) -> Option<Map<String, Value>> {
     let payload = row.get("payload")?.as_str()?;
     let statement = crate::py::b64decode(payload).ok()?;
@@ -439,8 +427,8 @@ fn target_predicate(row: &Map<String, Value>, target_hex: &str) -> Option<Map<St
         .then(|| predicate.clone())
 }
 
-/// The firmware candidate and manifest a board target's provenance binds
-/// (both null for the generic image), if its parameters fit the profile.
+/// The firmware candidate and manifest a board target's provenance binds (both
+/// null for the generic image), if its parameters fit the profile.
 fn firmware_binding(
     metadata: &Map<String, Value>,
     external: &Map<String, Value>,
@@ -544,8 +532,8 @@ fn provenance_match(row: &Map<String, Value>, metadata: &Map<String, Value>) -> 
     Some(Value::Object(found))
 }
 
-/// The CI SLSA provenance in Cosign's attestation output that binds
-/// `metadata`: exactly one statement must.
+/// The CI SLSA provenance in Cosign's attestation output that binds `metadata`:
+/// exactly one statement must.
 pub fn checked_provenance(output: &str, metadata: &Map<String, Value>) -> Result<Value> {
     let matches: Vec<Value> = wrappers(output)?
         .iter()
@@ -758,11 +746,8 @@ pub fn import_image(host: &dyn Host) -> Result<String> {
     Ok(image_id)
 }
 
-/// `receipt`: what the installer backend needs from the verified preflight,
-/// as `UPDATE_ORIGIN=` and `DEVELOPMENT=0|1` lines.
-///
-/// # Errors
-/// No saved preflight, or one without an update origin.
+/// `receipt`: what the installer backend needs from the verified preflight, as
+/// `UPDATE_ORIGIN=` and `DEVELOPMENT=0|1` lines.
 pub fn receipt_facts(host: &dyn Host) -> Result<String> {
     let path = host.receipt();
     require(
@@ -808,11 +793,10 @@ fn view_descriptor(layout: &Path, target_digest: &str) -> Result<Map<String, Val
     Ok(descriptor)
 }
 
-/// Copies the target into local container storage as `destination`.
-///
-/// Cosign's saved layout also contains signature/attestation descriptors.
-/// A tiny one-descriptor view, in a private directory under `parent`, links
-/// to the same hashed blobs. Skopeo transfers directly into the local store;
+/// Copies the target into local container storage as `destination`. Cosign's
+/// saved layout also contains signature and attestation descriptors; a tiny
+/// one-descriptor view in a private directory under `parent` links to the same
+/// hashed blobs. Skopeo transfers directly into the local store, where
 /// `podman load` would stage another archive-sized copy in /var/tmp first.
 fn copy_to_storage(
     host: &dyn Host,
@@ -851,8 +835,8 @@ fn copy_to_storage(
     Ok(())
 }
 
-/// A development image carries a dev flavour, OpenSSH and its kernel
-/// modules, and its boot layout validates, without changing the image.
+/// A development image carries a dev flavour, OpenSSH and its kernel modules,
+/// and its boot layout validates, without changing the image.
 fn check_development_image(host: &dyn Host, image_id: &str) -> Result<()> {
     host.run(
         &[
@@ -919,8 +903,6 @@ options:
   -h, --help       show this help message and exit
 ";
 
-/// The command line: `verify` prints the verified facts, `import` the image
-/// ID, `receipt` the backend's facts, `dev-target-uki` is
 /// [`crate::dev_target_uki::main`]; a refusal exits 1, a usage error 2.
 pub fn main(host: &dyn Host, args: &[OsString]) -> ExitCode {
     if let Some(("dev-target-uki", rest)) = args

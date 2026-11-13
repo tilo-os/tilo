@@ -1,6 +1,5 @@
-//! The imager's controls, as slots in the window's bar
-//! ([`ui::window_toolbar`]): Rescan while the wizard asks for a drive. The
-//! steps' titles, Back and Continue are the wizard's own.
+//! The imager's controls as slots in the window's bar: Rescan while the wizard asks for
+//! a drive.
 
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, WindowToolbar};
 
@@ -11,19 +10,18 @@ use crate::resource::ImagerEffect;
 pub(crate) const RESCAN: &str = "imager.rescan";
 
 impl ImagerApp {
-    /// The window bar's slots for the step shown now.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         let mut toolbar = WindowToolbar::default();
         if self.step == Step::Drive && !self.prepared_delivery.needs_source_review() {
-            toolbar
-                .actions
-                .push(ToolbarAction::new(RESCAN, "refresh", "Rescan drives"));
+            toolbar.actions.push(ToolbarAction::new(
+                RESCAN,
+                "refresh",
+                crate::resource::CATALOG.t("imager-rescan-drives"),
+            ));
         }
         toolbar
     }
 
-    /// Run what the person did in the window's bar through the published
-    /// effect. Returns whether anything was asked.
     pub(super) fn take_window_toolbar_events(&mut self) -> bool {
         let mut asked = false;
         for event in ui::window_toolbar::take_events() {
@@ -54,8 +52,6 @@ mod tests {
     use crate::resource::Imager;
     use ui::prelude::TestApp;
 
-    /// The wizard on the sample drives and images, live: what the bar
-    /// asks reaches the published actions as in a window someone uses.
     struct SampleImager;
 
     impl ui::framework::ResourceApp for SampleImager {
@@ -87,8 +83,6 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// Rescan is the bar's while the wizard asks for a drive, and runs the
-    /// published rescan; the step draws its title but no Rescan of its own.
     #[test]
     fn rescan_is_the_window_bars_while_the_wizard_asks_for_a_drive() {
         let mut host = at(Step::Drive);

@@ -1,7 +1,5 @@
-//! Older versions through a compact snapshot's version index: the catalogue
-//! lists only the newest version, `app install --version` and
-//! `app rollback` fetch the signed index for the rest, and a tampered index or
-//! a replayed older snapshot is refused.
+//! Older versions through a compact snapshot's version index, and what a tampered or replayed index
+//! costs.
 
 #![allow(
     clippy::unwrap_used,
@@ -30,8 +28,6 @@ use crate::registry_to_installed::{
 const PACKAGE_ID: &str = "so.tilo.version-index-e2e";
 const OTHER_ID: &str = "so.tilo.version-index-other";
 
-/// Serves fixed bodies by exact request target (path and query), and logs
-/// every request target.
 #[derive(Clone, Default)]
 struct Routes {
     bodies: Arc<Mutex<HashMap<String, Vec<u8>>>>,
@@ -141,7 +137,6 @@ fn entry(package_id: &str, versions: Vec<RegistryVersion>, updated_at: u64) -> R
     entry
 }
 
-/// Both signed forms of one snapshot and the indexes the compact one names.
 struct Published {
     full: SignedRegistrySnapshot,
     compact: CompactRegistrySnapshot,
@@ -228,7 +223,6 @@ fn older_versions_install_and_roll_back_through_a_verified_version_index() {
         )],
         1,
     );
-    // Versions are listed newest first.
     let old = publish(
         vec![
             entry(PACKAGE_ID, vec![tapps[1].clone(), tapps[0].clone()], 2),
@@ -254,7 +248,6 @@ fn older_versions_install_and_roll_back_through_a_verified_version_index() {
 
     let _device = Device::new(Some(registry_config("local", &base_url, &owner)), &[]);
 
-    // The catalogue comes from the compact snapshot alone.
     let listing = app_cli::available();
     assert!(listing.unreachable.is_empty(), "{:?}", listing.unreachable);
     let newest = listing
@@ -323,8 +316,6 @@ fn older_versions_install_and_roll_back_through_a_verified_version_index() {
     let forward = app(&["rollback", PACKAGE_ID, "--to", "2.0.0"]);
     assert!(!forward.status.success(), "a rollback never goes forward");
 
-    // A tampered index is refused: other bytes, another entry's index, and a
-    // truncated or reordered copy of the right one.
     let good = current.indexes[0].bytes.clone();
     let mut flipped = good.clone();
     let middle = flipped.len() / 2;
@@ -347,8 +338,6 @@ fn older_versions_install_and_roll_back_through_a_verified_version_index() {
     routes.set(&index_path, good);
     app_cli::version_offers(PACKAGE_ID, "local").unwrap();
 
-    // A replayed older snapshot, signed and naming its own valid index, is
-    // still below the checkpoint, and the refusal says which way it goes.
     serve(&routes, &old);
     let error = app_cli::version_offers(PACKAGE_ID, "local").unwrap_err();
     assert!(
@@ -359,8 +348,6 @@ fn older_versions_install_and_roll_back_through_a_verified_version_index() {
     let replayed = app(&["install", OTHER_ID, "--version", "3.0.0"]);
     assert!(!replayed.status.success());
 
-    // A registry without the compact form serves the full snapshot, and the
-    // same checkpoint accepts it: both forms share the snapshot's identity.
     serve(&routes, &current);
     routes.set(
         "/entries?format=compact",

@@ -47,20 +47,17 @@ tube-home-error = Home couldn't refresh
 tube-offline-title = You're offline
 tube-offline-message = Reconnect to load videos. Your queue and history are still here.
 tube-unreached-title = Videos can't load here
-tube-sources-no-relay = The video sources don't let web pages read them, and this site has no fetch proxy to relay them. Your queue and history are still here.
+tube-sources-no-relay = Videos can't play in a web page yet. Your queue and history are still here.
 tube-sources-failed = No video source answered. Your queue and history are still here.
 tube-home-empty-title = Nothing to show yet
 tube-home-empty-message = Search for a video to start watching.
 tube-search = Search
 tube-search-for = Search YouTube for “{ $query }”
 tube-trending-empty-title = Nothing trending yet
-tube-trending-empty-message = Popular videos show here once the catalogue loads.
 tube-subscriptions-empty-title = No subscriptions yet
-tube-subscriptions-empty-message = Subscribe to creators and their new videos show here.
 tube-latest-videos = Latest videos
 tube-history-not-saving = Watch history isn't saving
 tube-history-empty-title = Nothing watched yet
-tube-history-empty-message = Videos you watch show up here.
 tube-queue-empty-title = Your queue is empty
 tube-queue-empty-message = Add videos from their watch page.
 tube-queue-waiting = { $count ->
@@ -123,26 +120,12 @@ tube-dearrow-titles = Replace titles
 tube-dearrow-thumbnails = Replace thumbnails
 
 ## Segment kinds and what Tube does with them
-tube-segment-sponsor = Sponsor
-tube-segment-sponsor-about = Paid promotion, paid referrals and direct advertisements.
-tube-segment-selfpromo = Self-promo
-tube-segment-interaction = Interaction reminder
-tube-segment-interaction-about = Reminders to like, subscribe or follow, with no other content.
-tube-segment-intro = Intro and intermission
-tube-segment-intro-about = A stretch without content: a pause, an animation or an intro.
-tube-segment-outro = End cards and credits
-tube-segment-outro-about = Credits and end cards once the video is over.
-tube-segment-preview = Preview and recap
-tube-segment-preview-about = A recap of earlier episodes or a preview of what comes next.
-tube-segment-music-offtopic = Non-music section
-tube-segment-music-offtopic-about = The parts of a music video that are not music.
-tube-segment-filler = Filler tangent
-tube-segment-filler-about = Tangents added only to make the video longer.
 
 ## Device sync
 tube-device-sync = Device sync
 tube-sync-unavailable-now = Device sync isn't available right now.
 tube-sync-not-built = This build of Tube doesn't include Grayjay device sync.
+tube-sync-available-note = Encrypted Grayjay sync is available when the desktop's secret store is unlocked.
 tube-sync-locked-title = Device sync is unavailable
 tube-sync-locked-message = Unlock the desktop's secret store, then reopen Tube to pair Grayjay devices.
 tube-sync-now = Sync now
@@ -175,7 +158,7 @@ tube-unplayable-youtube-said = YouTube refused to play it: "{ $reason }"
 tube-unplayable-no-source = None of Tube's sources had a stream for it.
 tube-try-again = Try again
 tube-live-in-app = Live streams play in the Tilo app for now
-tube-notice-playback-limit = Playback limit reached on this host. Try again later.
+tube-notice-playback-limit = Playback hit its limit here. Try again later.
 tube-notice-no-downloads = Tube can't save videos for offline viewing
 tube-notice-pairing-busy = Device pairing is busy or unavailable
 tube-notice-sync-busy = Device sync is busy or unavailable
@@ -213,3 +196,63 @@ tube-record = Watched a video
 tube-import = Brought in videos watched on another device
 tube-forget = Removed a video from the watch history
 tube-clear = Cleared the watch history
+
+## Facts, property labels and section titles
+tube-search-heading = Search: { $query }
+
+tube-queue-shared = Shared watch queue
+tube-video = Video
+tube-creator = Creator
+tube-playlist = Playlist
+
+## What the segment categories and the search types are called
+tube-category-sponsor = Sponsor
+tube-category-self-promo = Self-promo
+tube-category-interaction = Interaction reminder
+tube-category-intro = Intro
+tube-category-outro = Outro
+tube-category-preview = Preview
+tube-category-music-offtopic = Non-music section
+tube-category-filler = Filler
+tube-category-sponsor-blurb = Paid promotion, paid referrals and direct advertisements.
+tube-category-self-promo-blurb = Unpaid self-promotion, merch and donations.
+tube-category-interaction-blurb = Asking people to like and subscribe, without other content.
+tube-category-intro-blurb = An interval without actual content: a pause, an animation or an intro.
+tube-category-outro-blurb = Credits or the end of the video: endcards and outros.
+tube-category-preview-blurb = A quick recap of earlier episodes or a preview of what comes next.
+tube-category-music-offtopic-blurb = The parts of a music video without music, for listening to the music.
+tube-category-filler-blurb = Tangential scenes that only make the video longer.
+tube-skip-auto = Auto-skip
+tube-skip-show = Show
+tube-skip-off = Off
+tube-type-video = Video
+tube-type-playlist = Playlist
+tube-type-creator = Creator
+
+## Actions
+
+tube-effect-show-screen = Show a screen
+tube-effect-toggle-sidebar = Show or hide navigation
+tube-effect-filter-search = Filter search results
+tube-effect-open-video = Open video
+tube-effect-open-creator = Open creator
+tube-effect-open-playlist = Open playlist
+tube-effect-search = Search videos
+tube-effect-toggle-playback = Play or pause
+tube-effect-seek = Seek
+tube-effect-skip-segment = Skip segment
+tube-effect-share = Copy share link
+tube-effect-download = Download video
+tube-effect-mark-watched = Mark watched
+tube-effect-forget-watched = Remove from history
+tube-effect-clear-history = Clear watch history
+tube-effect-pair-device = Pair with an invitation
+tube-effect-sync-devices = Sync devices
+tube-effect-approve-device = Approve device
+tube-effect-revoke-device = Revoke device access
+tube-effect-set-preference = Set a playback preference
+tube-effect-set-preferred-quality = Set preferred quality
+tube-effect-set-segment-handling = Set segment handling
+
+## What the app is called in a window and in the launcher
+tube-app-title = Tube

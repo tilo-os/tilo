@@ -1,23 +1,13 @@
-//! Memoising the scan.
+//! Memoising the scan. The palette asks for the installed-application list on
+//! every keystroke and a full scan reads ~200 files, so the loop must never
+//! wait on the disk: the scan is a [`Watched`] value, read once and again on a
+//! worker whenever an application directory changes. A caller only ever takes
+//! the latest scan.
 //!
-//! The palette queries the installed-application list on every keystroke,
-//! and the compositor's loop asks for it while it saves the desktop; a full
-//! scan is ~200 files on a normal desktop. The loop must never wait on the
-//! disk, not for the scan and not for a `stat` asking whether the scan is
-//! stale. So the scan is a [`Watched`] value: read once, then again on a
-//! worker whenever an application directory changes (an app installed or
-//! removed, an entry edited in place). A caller only ever takes the latest
-//! scan.
-//!
-//! An entry for a downloaded program ([`crate::downloaded`]) says whether
-//! its file is still there, and that file lives outside the application
-//! directories. So the folders on the way to each such file are watched
-//! too, for that one name: deleting, moving or renaming the file (or a
-//! folder above it) reads the scan again, and the entry shows the file is
-//! gone without anyone having to try to start it. Each scan hands every
-//! entry whose file is gone to the hook the session set with
-//! [`on_missing_program`], which can find the file again (Tilo's filesystem
-//! knows where a record moved) and point the entry at it.
+//! A downloaded program's file lives outside those directories, so the folders
+//! on the way to it are watched too: deleting, moving or renaming it reads the
+//! scan again, and each scan hands every entry whose file is gone to the hook
+//! the session set with [`on_missing_program`].
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,14 +17,11 @@ use crate::scan::{Scan, scan_dirs};
 use tilo_files::native::Watched;
 use tilo_lock::MutexRecover as _;
 
-/// The scan of one environment's application directories, kept current.
 struct Cached {
     dirs: Vec<PathBuf>,
     desktop: Vec<String>,
-    /// The interface language the entries were named in.
     locales: Vec<String>,
     scan: Watched<Scan>,
-    /// The downloaded programs' folders being watched, and their watches.
     programs: std::sync::Arc<Mutex<ProgramWatches>>,
 }
 
@@ -44,8 +31,6 @@ struct ProgramWatches {
     _watches: Vec<tilo_files::native::ChangeWatch>,
 }
 
-/// Every folder between each program and the root, each with the one name
-/// in it that leads to the program.
 fn program_paths(scan: &Scan) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = scan
         .entries
@@ -58,9 +43,8 @@ fn program_paths(scan: &Scan) -> Vec<PathBuf> {
     out
 }
 
-/// Watch the way to each downloaded program in `scan`, replacing the
-/// watches of a previous scan when the programs changed. A change re-reads
-/// the scan on the watch's thread.
+/// Watch the way to each downloaded program, replacing the previous watches
+/// when the programs changed.
 fn watch_programs(scan: &Scan, slot: &Mutex<ProgramWatches>) {
     let programs = program_paths(scan);
     let mut held = slot.lock_recover();
@@ -98,10 +82,9 @@ fn watch_programs(scan: &Scan, slot: &Mutex<ProgramWatches>) {
     };
 }
 
-/// Read the current scan again, on this thread, now: for a writer in this
-/// process that must see its own change (an entry it just wrote), and for a
-/// downloaded program's file that changed. Reads the disk; never call it on
-/// the compositor's loop.
+/// Read the current scan again, on this thread, now: for a writer that must
+/// see its own change, and for a downloaded program's file that changed.
+/// Reads the disk; never call it on the compositor's loop.
 pub fn refresh() {
     let scan = cell()
         .lock_recover()
@@ -112,8 +95,6 @@ pub fn refresh() {
     }
 }
 
-/// Called with each downloaded program's entry whose file is gone, after
-/// every scan.
 type MissingHook = Box<dyn Fn(&crate::DesktopEntry) + Send + Sync>;
 
 fn missing_hook() -> &'static OnceLock<MissingHook> {
@@ -121,10 +102,9 @@ fn missing_hook() -> &'static OnceLock<MissingHook> {
     &HOOK
 }
 
-/// Have `hook` see each downloaded program's entry whose file is gone,
-/// after every scan, on the thread that scanned. It must not block: it
-/// hands the entry to a worker. Set once per process; a later call is
-/// ignored.
+/// Have `hook` see each downloaded program's entry whose file is gone, after
+/// every scan, on the thread that scanned. It must not block: it hands the
+/// entry to a worker. Set once per process; a later call is ignored.
 pub fn on_missing_program(hook: impl Fn(&crate::DesktopEntry) + Send + Sync + 'static) {
     let _ = missing_hook().set(Box::new(hook));
 }
@@ -150,25 +130,17 @@ fn cell() -> &'static Mutex<Option<Cached>> {
 }
 static REVISION: AtomicU64 = AtomicU64::new(0);
 
-/// The host's application entries, memoised, named in the language `locales`
-/// names ([`crate::locale::language_candidates`]): the person's interface
-/// language, which is part of what is cached, so a session reads its own names
-/// and a tool that asked in another language is read again rather than served
-/// the wrong one.
-///
-/// Cloning the scan on every call is deliberate: the alternative hands
-/// a lock guard to a caller that then does UI work under it, and the
-/// list is a few hundred small structs.
+/// The host's application entries, memoised, named in the interface language
+/// `locales` names, which is part of what is cached: a tool that asked in
+/// another language is read again rather than served the wrong one. Cloning
+/// the scan on every call is deliberate: a caller doing UI work must not hold
+/// the lock.
 pub fn cached_scan(locales: &[String]) -> Scan {
     cached_scan_snapshot(locales).1
 }
 
-/// Generation and records observed under the same cache lock. Filling a cold
-/// cache is a valid snapshot, not an invalidation racing its read.
-///
-/// Only the first call for an environment scans on the calling thread (the
-/// session asks at startup); every later one returns the worker's latest
-/// scan without touching the disk.
+/// The generation and records observed under the same cache lock, so filling a
+/// cold cache is a valid snapshot, not an invalidation racing its read.
 pub fn cached_scan_snapshot(locales: &[String]) -> (u64, Scan) {
     let dirs = crate::scan::application_dirs();
     let desktop = crate::scan::current_desktops();
@@ -239,11 +211,9 @@ fn unwatched() -> &'static Mutex<Option<Unwatched>> {
     UNWATCHED.get_or_init(|| Mutex::new(None))
 }
 
-/// Scan `dirs`, which cannot be watched (no inotify instance left, say), on
-/// this call. The generation moves only when the scan differs from the last
-/// one served: an index built from a scan stays current until the entries
-/// change, rather than going stale on its own next read and being rebuilt
-/// for ever.
+/// Scan `dirs`, which cannot be watched, on this call. The generation moves
+/// only when the scan differs from the last one served, so an index built from
+/// a scan stays current until the entries change.
 fn unwatched_snapshot(
     dirs: Vec<PathBuf>,
     desktop: Vec<String>,
@@ -272,15 +242,13 @@ fn unwatched_snapshot(
     (generation, scan)
 }
 
-/// Current desktop-entry source generation, without cloning the scan.
 #[must_use]
 pub fn cached_scan_generation() -> u64 {
     REVISION.load(Ordering::Relaxed)
 }
 
 /// Drop the memoised scan, so the next call scans again on its own thread.
-/// For tests, which share this process-wide state and change the
-/// environment under it; a live session follows its directories by itself.
+/// For tests, which share this process-wide state.
 pub fn invalidate() {
     let mut guard = cell().lock_recover();
     *guard = None;
@@ -293,8 +261,7 @@ mod tests {
     use super::*;
 
     /// Directories that cannot be watched are scanned on every call, and the
-    /// scan's generation moves only when what it found changed: an index
-    /// built from it is not stale the moment it is read again.
+    /// generation moves only when what it found changed.
     #[test]
     fn an_unwatched_scan_keeps_its_generation_until_its_entries_change() {
         let dirs = vec![PathBuf::from("/nonexistent/tilo-unwatched/applications")];

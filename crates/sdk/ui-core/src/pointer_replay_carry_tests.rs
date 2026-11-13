@@ -3,6 +3,7 @@
 //! there; and the headless host replays a pointer a relayout slid a control
 //! under.
 
+use crate::i18n::widget_text;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -441,7 +442,7 @@ fn a_secret_fields_reveal_toggle_carries_its_press_across_a_rebuild() {
                 .with_id("passphrase"),
         )
     };
-    let hide = crate::i18n!("text-input-hide-password");
+    let hide = widget_text("text-input-hide-password");
     let revealed = |mut scene: Stage, offset| {
         scene.press_rebuild_release(offset);
         scene.harness.relayout();

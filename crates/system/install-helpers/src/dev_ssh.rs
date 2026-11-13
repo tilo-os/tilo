@@ -1,10 +1,10 @@
 //! `tilo-install-dev-ssh --etc ETC --username USERNAME --key KEY`: applies
 //! explicit owner SSH keys to a self-installed development image.
 //!
-//! The installer calls this only for a dev self-install with a setup handoff.
-//! It does not create a personal identity or change onboarding state: it
-//! writes the account's `authorized_keys` file, a key-only `sshd` drop-in and
-//! the `sshd.service` enablement link, each labelled for its installed path.
+//! The installer calls this only for a dev self-install with a setup handoff. It
+//! does not create a personal identity or change onboarding state: it writes the
+//! account's `authorized_keys` file, a key-only `sshd` drop-in and the
+//! `sshd.service` enablement link, each labelled for its installed path.
 
 use std::fs::{self, DirBuilder, OpenOptions, Permissions};
 use std::io::Write as _;
@@ -15,7 +15,6 @@ use std::process::{Command as Process, Stdio};
 use crate::args::{Arg, Command};
 use crate::{Error, Result, py, require};
 
-/// The command line.
 pub const COMMAND: Command = Command {
     prog: "tilo-install-dev-ssh",
     usage: "usage: tilo-install-dev-ssh [-h] --etc ETC --username USERNAME --key KEY\n",
@@ -115,11 +114,8 @@ fn valid_username(name: &str) -> bool {
 }
 
 /// The request's keys, one OpenSSH public key per line, normalized to
-/// `TYPE BASE64\n` each.
-///
-/// # Errors
-/// A linked, oversized or non-ASCII file; options before a key; an
-/// unsupported or mislabelled key; more than [`MAX_KEYS`] or none.
+/// `TYPE BASE64\n` each. A linked, oversized or non-ASCII file, options before
+/// a key, an unsupported key, or more than [`MAX_KEYS`] and none is refused.
 pub fn public_keys(host: &dyn Host, path: &Path) -> Result<String> {
     let info = fs::symlink_metadata(path)?;
     require(
@@ -205,10 +201,6 @@ fn present(path: &Path) -> bool {
 
 /// Writes the owner keys, the key-only drop-in and the enablement link under
 /// the installed `etc` for `username`.
-///
-/// # Errors
-/// An invalid `/etc` or account, refused keys, a link in the way, an output
-/// that already exists, or a tool failing.
 pub fn apply(host: &dyn Host, etc: &Path, username: &str, key_path: &Path) -> Result<()> {
     require(
         !etc.is_symlink() && etc.is_dir() && valid_username(username),
@@ -253,9 +245,6 @@ pub fn apply(host: &dyn Host, etc: &Path, username: &str, key_path: &Path) -> Re
 }
 
 /// The command: `apply` on the production host.
-///
-/// # Errors
-/// As [`apply`].
 pub fn run(values: &crate::args::Values) -> Result<()> {
     let username = values.required("--username")?;
     apply(

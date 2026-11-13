@@ -1,29 +1,14 @@
-//! Putting a decoded picture on a display plane instead of into the scene.
+//! Putting a decoded picture on a display plane instead of into the scene: a
+//! hardware decoder already leaves its picture where the display engine can read
+//! it, so handing the dmabuf to an overlay plane and leaving a transparent hole in
+//! the desktop shows video without touching its pixels. On a device whose desktop
+//! renders on the CPU that is the difference between 1080p60 and a slideshow.
 //!
-//! A hardware decoder already leaves its picture where the display engine can
-//! read it: a dmabuf in NV12. Display controllers such as Rockchip's VOP2
-//! have overlay planes that scale and convert YUV on the way to the screen,
-//! so the cheapest way to show video is not to touch its pixels at all — hand
-//! the dmabuf to a plane and leave a transparent hole in the desktop where it
-//! shows through. On a device whose desktop renders on the CPU this is the
-//! difference between 1080p60 and a slideshow: mapping a decoder's
-//! write-combined buffer for a CPU colour conversion runs at a few frames a
-//! second.
-//!
-//! This module is the media side of that handoff, free of any display stack:
-//!
-//! * [`PlaneCaps`] describes a plane the way KMS reports it — the
-//!   `IN_FORMATS` blob ([`parse_in_formats`]), scaling limits, `zpos`, and the
-//!   `COLOR_ENCODING` / `COLOR_RANGE` values it accepts.
-//! * [`VideoSurfaceRequest`] is one video picture and where the scene wants it.
-//! * [`place`] decides, per frame, whether the picture can go on a plane
-//!   ([`Placement::Overlay`], with the clipped source/destination rectangles
-//!   KMS takes) or has to be composited ([`Placement::Composite`], with the
-//!   reason), and whether the plane sits above the desktop or below a hole in
-//!   it.
-//!
-//! The compositor owns the plane commit; everything here is pure so the
-//! decision is the same in a test as on the device.
+//! [`place`] decides per frame whether the picture can go on a plane
+//! ([`Placement::Overlay`], with the clipped source and destination rectangles KMS
+//! takes) or must be composited ([`Placement::Composite`], with the reason).
+//! Everything here is pure, so the decision is the same in a test as on the
+//! device.
 
 use crate::dmabuf::{
     ColorRange, DRM_FORMAT_MOD_INVALID, DRM_FORMAT_MOD_LINEAR, YuvMatrix, fourcc, fourcc_str,
@@ -32,10 +17,8 @@ use crate::dmabuf::{
 use crate::dmabuf::{DRM_FORMAT_NV12, DRM_FORMAT_P010};
 use crate::frame::Frame;
 
-/// 10-bit 4:2:0 packed as Rockchip's decoders write it (DRM's `NV15`).
 pub const DRM_FORMAT_NV15: u32 = fourcc(b'N', b'V', b'1', b'5');
 
-/// A rectangle in output pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rect {
     pub x: i32,
@@ -44,26 +27,20 @@ pub struct Rect {
     pub height: u32,
 }
 
-/// One pixel format a plane scans out and the modifiers it takes it in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlaneFormat {
     pub fourcc: u32,
     pub modifiers: Vec<u64>,
 }
 
-/// The `zpos` property of a plane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Zpos {
-    /// Current value.
     pub value: u64,
-    /// The settable range, or `None` when the property is immutable.
     pub range: Option<(u64, u64)>,
 }
 
-/// What a display plane can do, as KMS reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlaneCaps {
-    /// The KMS plane object id.
     pub id: u32,
     pub formats: Vec<PlaneFormat>,
     /// How far the plane shrinks a picture: 8 means down to one eighth.
@@ -72,12 +49,7 @@ pub struct PlaneCaps {
     /// How far it enlarges one. 1 means no upscaling.
     pub max_upscale: u32,
     pub zpos: Option<Zpos>,
-    /// The `COLOR_ENCODING` values the plane accepts. Empty when the property
-    /// is absent, in which case the hardware applies the KMS default,
-    /// BT.601.
     pub color_encodings: Vec<YuvMatrix>,
-    /// The `COLOR_RANGE` values it accepts. Empty means the KMS default,
-    /// limited range.
     pub color_ranges: Vec<ColorRange>,
 }
 
@@ -101,8 +73,6 @@ impl PlaneCaps {
         self.zpos.map_or(0, |z| z.value)
     }
 
-    /// Whether the plane can be put at a `zpos` below `primary` — needed to
-    /// show video through a hole while desktop UI stays on top.
     #[cfg(unix)]
     fn can_go_below(&self, primary: u64) -> bool {
         self.zpos_value() < primary
@@ -137,21 +107,15 @@ impl PlaneCaps {
     }
 }
 
-/// The primary plane the desktop is drawn into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PrimaryPlane {
     pub zpos: u64,
-    /// Whether the desktop can be drawn with per-pixel alpha (an `AR24`
-    /// framebuffer blended over planes below it), which is what a hole needs.
     pub alpha: bool,
 }
 
-/// One video picture and where the scene wants it shown.
 #[derive(Clone, Copy, Debug)]
 pub struct VideoSurfaceRequest<'a> {
     pub frame: &'a Frame,
-    /// Where the picture goes, in output pixels, before clipping to the
-    /// output.
     pub dst: Rect,
     /// Whether any desktop content is drawn over the picture — player
     /// controls, a notification, a menu. Such content has to stay visible,
@@ -159,7 +123,6 @@ pub struct VideoSurfaceRequest<'a> {
     pub ui_overlaps: bool,
 }
 
-/// Where the plane sits relative to the desktop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stacking {
     /// Above the primary plane. Only valid while nothing is drawn over the
@@ -170,19 +133,12 @@ pub enum Stacking {
     BelowHole,
 }
 
-/// How a picture goes on a plane: the values for the plane's KMS
-/// properties.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OverlayPlacement {
     pub plane_id: u32,
-    /// `SRC_X`, `SRC_Y`, `SRC_W`, `SRC_H` in 16.16 fixed point, in the
-    /// picture's own pixels.
     pub src_16_16: [u32; 4],
-    /// `CRTC_X`, `CRTC_Y`, `CRTC_W`, `CRTC_H`, clipped to the output.
     pub dst: Rect,
     pub stacking: Stacking,
-    /// The `COLOR_ENCODING` / `COLOR_RANGE` to set, or `None` when the plane
-    /// has no such property.
     pub color_encoding: Option<YuvMatrix>,
     pub color_range: Option<ColorRange>,
     /// Whether the plane converts with the picture's own matrix and range.
@@ -196,12 +152,11 @@ pub struct OverlayPlacement {
 pub enum CompositeReason {
     /// The picture is in system memory, not a dmabuf.
     NotDmabuf,
-    /// No free plane scans out this format and modifier.
-    Format { fourcc: u32, modifier: u64 },
-    /// The scale factor is beyond every plane that takes the format.
+    Format {
+        fourcc: u32,
+        modifier: u64,
+    },
     Scale,
-    /// Desktop content overlaps the video and no plane that takes it can go
-    /// below the desktop (or the desktop has no alpha to cut a hole with).
     NeedsUnderlay,
 }
 
@@ -222,10 +177,8 @@ impl std::fmt::Display for CompositeReason {
     }
 }
 
-/// The decision for one picture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Placement {
-    /// Entirely off the output: nothing to show and nothing to composite.
     Hidden,
     Overlay(OverlayPlacement),
     Composite(CompositeReason),
@@ -316,8 +269,6 @@ pub fn place(
     }
 }
 
-/// Whether chroma is subsampled in both axes, which makes odd source
-/// offsets unrepresentable.
 #[cfg(unix)]
 fn subsampled(fourcc: u32) -> bool {
     matches!(fourcc, DRM_FORMAT_NV12 | DRM_FORMAT_P010 | DRM_FORMAT_NV15)
@@ -329,16 +280,12 @@ fn scale_fits(plane: &PlaneCaps, src: [u32; 4], dst: Rect) -> bool {
     let axis = |s: u32, d: u32| -> bool {
         let s = u64::from(s);
         let d = u64::from(d);
-        // s / d <= max_downscale  and  d / s <= max_upscale, without division.
         s <= d.saturating_mul(u64::from(plane.max_downscale.max(1)))
             && d <= s.saturating_mul(u64::from(plane.max_upscale.max(1)))
     };
     axis(sw, dst.width) && axis(sh, dst.height)
 }
 
-/// Clip `dst` to the output and crop the source in proportion. Returns the
-/// source rectangle in whole picture pixels — even-aligned for subsampled
-/// formats — and the clipped destination, or `None` when nothing remains.
 pub fn clip(
     picture: (u32, u32),
     dst: Rect,
@@ -389,11 +336,6 @@ pub fn clip(
     Some((src, clipped))
 }
 
-/// Parse a KMS `IN_FORMATS` property blob (`struct drm_format_modifier_blob`)
-/// into the formats and modifiers a plane takes.
-///
-/// Returns an empty list for a blob that is truncated or names offsets past
-/// its own end, rather than reading beyond it.
 pub fn parse_in_formats(blob: &[u8]) -> Vec<PlaneFormat> {
     let u32_at = |off: usize| -> Option<u32> {
         let bytes = blob.get(off..off.checked_add(4)?)?;
@@ -404,8 +346,6 @@ pub fn parse_in_formats(blob: &[u8]) -> Vec<PlaneFormat> {
         Some(u64::from_ne_bytes(bytes.try_into().ok()?))
     };
     let parse = || -> Option<Vec<PlaneFormat>> {
-        // version, flags, count_formats, formats_offset, count_modifiers,
-        // modifiers_offset.
         let count_formats = u32_at(8)? as usize;
         let formats_offset = u32_at(12)? as usize;
         let count_modifiers = u32_at(16)? as usize;
@@ -565,7 +505,6 @@ mod tests {
         let (primary, planes) = vop2();
         let frame = nv12_frame(1920, 1080, DRM_FORMAT_MOD_LINEAR);
 
-        // A thumbnail 1/16 the size is beyond the 1/8 limit.
         let tiny = VideoSurfaceRequest {
             frame: &frame,
             dst: Rect {
@@ -650,7 +589,6 @@ mod tests {
 
     #[test]
     fn a_window_hanging_off_the_output_crops_its_source_in_proportion() {
-        // A 1920x1080 picture shown at 2x, half of it past the right edge.
         let (src, dst) = clip(
             (1920, 1080),
             Rect {
@@ -672,10 +610,8 @@ mod tests {
                 height: 1080
             }
         );
-        // x: the left half of the picture; y: from 50 down 540 rows.
         assert_eq!(src, [0, 50, 960, 540]);
 
-        // Odd crops are widened to even for 4:2:0.
         let (src, _) = clip(
             (1920, 1080),
             Rect {
@@ -718,7 +654,6 @@ mod tests {
         }
         blob.extend_from_slice(&DRM_FORMAT_NV12.to_ne_bytes());
         blob.extend_from_slice(&DRM_FORMAT_XRGB8888.to_ne_bytes());
-        // Linear: both formats (mask 0b11).
         blob.extend_from_slice(&0b11u64.to_ne_bytes());
         blob.extend_from_slice(&0u32.to_ne_bytes());
         blob.extend_from_slice(&0u32.to_ne_bytes());
@@ -743,7 +678,6 @@ mod tests {
                 },
             ]
         );
-        // Truncated: nothing rather than a read past the end.
         assert!(parse_in_formats(&blob[..30]).is_empty());
         assert!(parse_in_formats(&[]).is_empty());
     }

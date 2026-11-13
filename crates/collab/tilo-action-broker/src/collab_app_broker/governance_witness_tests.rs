@@ -164,7 +164,7 @@ fn owner_governance_rejects_witness_from_other_original_contexts() {
         ));
         assert_eq!(
             invoke(&state, &owner, &request),
-            Err(ActionHostError::ConfirmationRequired),
+            Err(ActionHostError::confirmation_required()),
             "a witness for another {changed} never confirms this invocation",
         );
         assert!(service.calls.lock().unwrap().is_empty());
@@ -194,7 +194,7 @@ fn owner_governance_consumes_exact_witness_once() {
     let (state, service, owner, mut request) = broker(true);
     assert_eq!(
         invoke(&state, &owner, &request),
-        Err(ActionHostError::ConfirmationRequired)
+        Err(ActionHostError::confirmation_required())
     );
     request.confirmation = Some(witness(&state, "owner", &request));
     let mut changed = request.clone();
@@ -203,7 +203,7 @@ fn owner_governance_consumes_exact_witness_once() {
     );
     assert_eq!(
         invoke(&state, &owner, &changed),
-        Err(ActionHostError::ConfirmationRequired)
+        Err(ActionHostError::confirmation_required())
     );
     invoke(&state, &owner, &request).unwrap();
     assert_eq!(
@@ -221,7 +221,7 @@ fn owner_governance_consumes_exact_witness_once() {
     request.invocation = tilo_actions::InvocationId::new();
     assert_eq!(
         invoke(&state, &owner, &request),
-        Err(ActionHostError::ConfirmationRequired)
+        Err(ActionHostError::confirmation_required())
     );
     request.confirmation = Some(Confirmation::Confirmed);
     invoke(&state, &owner, &request).unwrap();
@@ -234,21 +234,21 @@ fn owner_governance_witness_does_not_replace_current_policy_or_custody() {
     request.confirmation = Some(witness(&state, "someone-else", &request));
     assert_eq!(
         invoke(&state, &owner, &request),
-        Err(ActionHostError::ConfirmationRequired)
+        Err(ActionHostError::confirmation_required())
     );
     let mut other_address = request.clone();
     other_address.target.address.resource = "another-resource".into();
     request.confirmation = Some(witness(&state, "owner", &other_address));
     assert_eq!(
         invoke(&state, &owner, &request),
-        Err(ActionHostError::ConfirmationRequired)
+        Err(ActionHostError::confirmation_required())
     );
     other_address = request.clone();
     other_address.target.address.action = "different-action".into();
     request.confirmation = Some(witness(&state, "owner", &other_address));
     assert_eq!(
         invoke(&state, &owner, &request),
-        Err(ActionHostError::ConfirmationRequired)
+        Err(ActionHostError::confirmation_required())
     );
     let agent = Caller::local_agent("limited").in_workspace(owner.workspace().unwrap());
     request.confirmation = Some(witness(&state, "agent:limited", &request));
@@ -294,7 +294,7 @@ fn canonical_governance_rechecks_ask_and_deny_after_witness_issuance() {
         // Canonical governance checks confirmation before current policy.
         assert_eq!(
             invoke(&state, &person, &request),
-            Err(ActionHostError::ConfirmationRequired)
+            Err(ActionHostError::confirmation_required())
         );
         assert!(service.calls.lock().unwrap().is_empty());
 
@@ -342,12 +342,12 @@ fn expired_owner_witness_cannot_confirm_governance() {
     request.confirmation = Some(confirmation);
     assert_eq!(
         invoke(&state, &owner, &request),
-        Err(ActionHostError::ConfirmationRequired)
+        Err(ActionHostError::confirmation_required())
     );
     request.confirmation = Some(Confirmation::Witnessed("unregistered".into()));
     assert_eq!(
         invoke(&state, &owner, &request),
-        Err(ActionHostError::ConfirmationRequired)
+        Err(ActionHostError::confirmation_required())
     );
     assert!(service.calls.lock().unwrap().is_empty());
 }

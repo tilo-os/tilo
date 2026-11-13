@@ -43,8 +43,7 @@ impl CapturedResourcePlan {
     }
 }
 
-/// Cooperative cancellation shared with the trusted worker scheduler. The
-/// sandbox receives no token or descriptor and cannot cancel another job.
+/// Cooperative cancellation shared with the trusted worker scheduler.
 #[derive(Clone, Debug, Default)]
 pub struct CaptureCancellation(Arc<AtomicBool>);
 

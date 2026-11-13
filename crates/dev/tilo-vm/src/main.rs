@@ -12,7 +12,6 @@ fn main() -> ExitCode {
     let cli = Cli::parse().normalized();
     let cwd = std::env::current_dir().unwrap_or_default();
     let worktree = Worktree::detect(&cwd);
-    // Receipts go to the worktree's target/, or a per-user dir outside one.
     let base = worktree.as_ref().map_or_else(
         || {
             tilo_paths::data_local_dir()
@@ -27,7 +26,6 @@ fn main() -> ExitCode {
     let mut app = App {
         json: json_mode,
         target: cli.target,
-        // External tools (os/dev/vm.sh, cargo) run from the worktree root.
         runner: SystemRunner {
             cwd: worktree.as_ref().map(|w| w.root.clone()),
         },

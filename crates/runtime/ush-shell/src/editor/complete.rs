@@ -12,21 +12,14 @@
 
 use crate::shell::Shell;
 
-/// What completing the word before the cursor found.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Found {
-    /// Where the word being completed starts, in characters of the line.
     pub start: usize,
-    /// What the word becomes when it is the only candidate, or the part all
-    /// candidates share.
     pub insert: String,
-    /// Whether that is the only candidate, complete: a space follows it.
     pub whole: bool,
-    /// Every candidate, as listed to the person (`dir/` for a directory).
     pub candidates: Vec<String>,
 }
 
-/// What the word before the cursor is.
 #[derive(Debug, PartialEq, Eq)]
 enum Place {
     Command,
@@ -126,7 +119,6 @@ fn words(before: &str) -> (Vec<(usize, String)>, Option<char>, bool) {
         words.push(word);
     }
     if ended {
-        // The cursor is after a space: a new, empty word.
         words.push((before.chars().count(), String::new()));
         last_command_place = command_next;
     }
@@ -240,7 +232,6 @@ impl Shell {
         }
     }
 
-    /// The commands whose names start with `prefix`, sorted, each once.
     fn command_names(&self, prefix: &str) -> Vec<String> {
         let mut names: Vec<String> = crate::builtins::NAMES
             .iter()
@@ -307,10 +298,8 @@ impl Shell {
     }
 }
 
-/// How a candidate is typed into the line, inside the quote the word opened.
 type Insert = fn(&str, Option<char>) -> String;
 
-/// The longest start every one of `names` shares.
 fn shared_prefix(names: &[String]) -> String {
     let Some(first) = names.first() else {
         return String::new();

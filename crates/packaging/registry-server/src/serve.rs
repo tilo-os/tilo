@@ -1,50 +1,35 @@
-//! HTTP request handling — the routes the registry exposes.
-//!
-//! Routes:
-//!
+//! HTTP request handling: the routes the registry exposes. Routes:
 //! - `GET  /registry`             → `RegistryHandshake` JSON
 //! - `GET  /health`               → `{ "ok": true }`
-//! - `GET  /metrics`              → when the channel authorization and the
-//!   published snapshot expire, for the operator's alerts (`crate::metrics`)
-//! - `GET  /entries`              → owner-signed `SignedRegistrySnapshot`,
-//!   expired or not (clients judge freshness)
-//! - `GET  /entries?format=compact` → its `CompactRegistrySnapshot`, or the
-//!   full snapshot while no current compact form exists
+//! - `GET  /metrics`              → when the channel authorization and the published snapshot
+//!   expire, for the operator's alerts (`crate::metrics`)
+//! - `GET  /entries`              → owner-signed `SignedRegistrySnapshot`, expired or not (clients
+//!   judge freshness)
+//! - `GET  /entries?format=compact` → its `CompactRegistrySnapshot`, or the full snapshot while no
+//!   current compact form exists
 //! - `GET  /indexes/<blake3>.json` → a version index a compact snapshot names
 //! - `GET  /entries/<pkg-id>`     → the same signed snapshot, or 404
-//! - `POST /entries`              → queue an `EntryChangeRequest`, 202 on
-//!   success, 403 if the publisher isn't allowlisted or the signature
-//!   doesn't verify.
-//! - `POST /moderation/mutations` → verify and apply a signed report, reply,
-//!   appeal, or owner decision.
+//! - `POST /entries`              → queue an `EntryChangeRequest`, 202 on success, 403 if the
+//!   publisher isn't allowlisted or the signature doesn't verify.
+//! - `POST /moderation/mutations` → verify and apply a signed report, reply, appeal, or owner
+//!   decision.
 //! - `GET  /moderation/cases/<id>` → convenience projection (not a proof).
 //! - `GET  /moderation/transparency` → bounded public signed hash-chain page.
-//! - `GET  /blobs/<blake3>`       → a reviewed payload blob, or one chunk of
-//!   a reviewed blob kept as chunks.
-//! - `GET  /blobs/<blake3>.chunks` → the chunk list of a reviewed blob kept as
-//!   chunks (see `tilo_app_package::chunks`).
-//! - `GET  /thin/<root>.tapp`     → a reviewed package's thin form, by
-//!   package root.
+//! - `GET  /blobs/<blake3>`       → a reviewed payload blob, or one chunk of a reviewed blob kept
+//!   as chunks.
+//! - `GET  /blobs/<blake3>.chunks` → the chunk list of a reviewed blob kept as chunks (see
+//!   `tilo_app_package::chunks`).
+//! - `GET  /thin/<root>.tapp`     → a reviewed package's thin form, by package root.
 //! - `GET  /artifacts/<blake3>.tapp` → an operator-imported full package.
-//! - `GET  /blobs/<blake3>.zst`, `GET /artifacts/<blake3>.tapp.zst` → the
-//!   compressed twin of a payload object or imported package
-//!   (`tilo_app_package::compressed`), as `application/zstd`; 404 when it
-//!   has none, and the client takes the raw object.
-//!
-//! The last five, and `/indexes/`, are content addressed and served as
-//! immutable, with exactly one `Cache-Control`, so an edge cache in front
-//! may keep them forever. `/entries`
-//! carries the snapshot hash as its `ETag`, so a client revalidating an
-//! unchanged catalogue receives an empty `304`.
-//!
-//! Cross-origin reads are off by default. With configured origins
-//! ([`ServeOptions::cors_origins`]) a browser page on exactly those origins may
-//! read GET responses; no request method other than GET is ever granted, and
-//! credentials are never allowed.
-//!
-//! The dispatcher is kept small so the wire shape is auditable at
-//! a glance. Business logic (add / update / delete decisions) is
-//! in `apply_change`.
+//! - `GET  /blobs/<blake3>.zst`, `GET /artifacts/<blake3>.tapp.zst` → the compressed twin of a
+//!   payload object or imported package (`tilo_app_package::compressed`), as `application/zstd`;
+//!   404 when it has none, and the client takes the raw object. The last five, and `/indexes/`, are
+//!   content addressed and served as immutable, with exactly one `Cache-Control`, so an edge cache
+//!   in front may keep them forever. `/entries` carries the snapshot hash as its `ETag`, so a
+//!   client revalidating an unchanged catalogue receives an empty `304`. Cross-origin reads are off
+//!   by default. With configured origins ([`ServeOptions::cors_origins`]) a browser page on exactly
+//!   those origins may read GET responses; no request method other than GET is ever granted, and
+//!   credentials are never allowed.
 
 use std::sync::Arc;
 
@@ -70,7 +55,7 @@ use registry_types::application::PublisherApplication;
 
 const MAX_CHANGE_REQUEST_BYTES: usize = 1024 * 1024;
 
-/// Shared per-request state — cheap to clone (an `Arc`).
+/// Shared per-request state, cheap to clone (an `Arc`).
 #[derive(Clone)]
 pub struct AppState {
     inner: Arc<AppStateInner>,
@@ -86,17 +71,16 @@ struct AppStateInner {
     proofs: Arc<dyn ProofSource + Send + Sync>,
 }
 
-/// Serving policy beyond the data directory.
 #[derive(Clone, Debug, Default)]
 pub struct ServeOptions {
-    /// Exact origins (`scheme://host[:port]`) whose pages may read GET
-    /// responses cross-origin. Empty means no CORS headers at all.
+    /// Exact origins (`scheme://host[:port]`) whose pages may read GET responses cross-origin.
+    /// Empty means no CORS headers at all.
     pub cors_origins: Vec<String>,
 }
 
-/// Whether `origin` is a serialized web origin as a browser sends it in
-/// `Origin`: `http` or `https`, a lower-case DNS name or IPv4 address, an
-/// optional port, and nothing else — no path, wildcard or `null`.
+/// Whether `origin` is a serialized web origin as a browser sends it in `Origin`: `http` or
+/// `https`, a lower-case DNS name or IPv4 address, an optional port, and nothing else, with no
+/// path, wildcard or `null`.
 pub fn valid_cors_origin(origin: &str) -> bool {
     let Some(authority) = origin
         .strip_prefix("https://")
@@ -118,12 +102,10 @@ pub fn valid_cors_origin(origin: &str) -> bool {
 }
 
 impl AppState {
-    /// Build the shared state with default serving options.
     pub fn new(storage: Storage, identity: ServerIdentity) -> Self {
         Self::with_options(storage, identity, ServeOptions::default())
     }
 
-    /// Build the shared state.
     pub fn with_options(storage: Storage, identity: ServerIdentity, options: ServeOptions) -> Self {
         Self::with_proof_source(
             storage,
@@ -133,7 +115,6 @@ impl AppState {
         )
     }
 
-    /// Build the shared state, reading namespace proofs from `proofs`.
     pub fn with_proof_source(
         storage: Storage,
         identity: ServerIdentity,
@@ -165,25 +146,19 @@ impl AppState {
             .then(|| origin.to_string())
     }
 
-    /// How many times the published catalogue has been read and verified:
-    /// once per published revision, however many clients ask for it.
+    /// How many times the published catalogue has been read and verified: once per published
+    /// revision, however many clients ask for it.
     pub fn catalogue_loads(&self) -> u64 {
         self.inner.catalogue.loads()
     }
 
-    /// Owner's own view of the identity.
     pub fn identity(&self) -> &ServerIdentity {
         &self.inner.identity
     }
 }
 
-/// The one-and-only HTTP handler — dispatched to by
-/// `hyper::service_fn`.
-///
-/// # Errors
-///
-/// Never actually returns `Err` — every internal failure is caught and
-/// turned into a `500` response. The `Result<_, hyper::Error>` return
+/// The one HTTP handler, dispatched to by `hyper::service_fn`. # Errors Never actually returns
+/// `Err`: every internal failure becomes a `500` response, and the `Result<_, hyper::Error>` return
 /// type exists only because `hyper::service::service_fn` requires it.
 pub async fn handle(
     state: AppState,
@@ -295,8 +270,8 @@ fn header_text(req: &Request<Incoming>, name: header::HeaderName) -> Option<Stri
         .map(str::to_owned)
 }
 
-/// Serve `<64 hex>.tapp` from a loader that re-checks the bytes against the
-/// name, as an immutable response.
+/// Serve `<64 hex>.tapp` from a loader that re-checks the bytes against the name, as an immutable
+/// response.
 fn content_addressed(
     name: &str,
     load: impl FnOnce(&str) -> Result<Option<Vec<u8>>, StorageError>,
@@ -310,8 +285,7 @@ fn content_addressed(
     }
 }
 
-/// Run a handler step that reads whole storage files on the I/O pool, off
-/// the async workers.
+/// Run a handler step that reads whole storage files on the I/O pool, off the async workers.
 async fn read_file<F>(state: &AppState, op: F) -> Result<Response<Full<Bytes>>, HandlerError>
 where
     F: FnOnce(&AppState) -> Result<Response<Full<Bytes>>, HandlerError> + Send + 'static,
@@ -322,9 +296,8 @@ where
         .map_err(HandlerError::Blocking)?
 }
 
-/// Run a handler step with other blocking storage work — directory scans,
-/// and mutations that wait on the registry lock — on the runtime's blocking
-/// pool, off the async workers.
+/// Run a handler step with other blocking storage work (directory scans, and mutations that wait on
+/// the registry lock) on the runtime's blocking pool, off the async workers.
 async fn blocking<F>(state: &AppState, op: F) -> Result<Response<Full<Bytes>>, HandlerError>
 where
     F: FnOnce(&AppState) -> Result<Response<Full<Bytes>>, HandlerError> + Send + 'static,
@@ -571,8 +544,8 @@ fn handle_get_version_index(
     }
 }
 
-/// Which form of the snapshot a client asked for. Clients that do not ask get
-/// the full snapshot, which every released client understands.
+/// Which form of the snapshot a client asked for. Clients that do not ask get the full snapshot,
+/// which every released client understands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SnapshotFormat {
     Full,
@@ -580,7 +553,6 @@ pub enum SnapshotFormat {
 }
 
 impl SnapshotFormat {
-    /// The form named by a `format=` query parameter; anything else is full.
     pub fn requested(query: Option<&str>) -> Self {
         let compact =
             query.is_some_and(|query| query.split('&').any(|pair| pair == "format=compact"));
@@ -588,8 +560,7 @@ impl SnapshotFormat {
     }
 }
 
-/// The catalogue of the revision on disk, read and verified only when it is
-/// a new one.
+/// The catalogue of the revision on disk, read and verified only when it is a new one.
 async fn published(state: &AppState) -> Result<Arc<Published>, HandlerError> {
     state
         .inner
@@ -604,20 +575,19 @@ fn handle_get_entries(
     format: SnapshotFormat,
     if_none_match: Option<&str>,
 ) -> Response<Full<Bytes>> {
-    // An authentic snapshot is served whether or not it has expired: every
-    // client checks freshness itself, and only with the signed bytes can a
-    // device tell "the catalogue expired" from "the registry is unreachable".
-    // Refusing it here also failed readiness on every replica at once (the
-    // snapshot is shared state), so the ingress answered "no available
-    // server" for every route, `/registry` and uploads included.
+    // An authentic snapshot is served whether or not it has expired: every client checks freshness
+    // itself, and only with the signed bytes can a device tell "the catalogue expired" from "the
+    // registry is unreachable". Refusing it here also failed readiness on every replica at once
+    // (the snapshot is shared state), so the ingress answered "no available server" for every
+    // route, `/registry` and uploads included.
     if format == SnapshotFormat::Compact
         && let Some(compact) = &published.compact
     {
         return revalidated_json(compact, if_none_match);
     }
     match &published.full {
-        // Clients revalidate on every visit; the snapshot hash names the
-        // exact signed bytes, so an unchanged catalogue costs a 304.
+        // Clients revalidate on every visit; the snapshot hash names the exact signed bytes, so an
+        // unchanged catalogue costs a 304.
         FullSnapshot::Verified { encoded, .. } => revalidated_json(encoded, if_none_match),
         FullSnapshot::Refused => text_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -630,8 +600,7 @@ fn handle_get_entries(
     }
 }
 
-/// `body` as JSON with `ETag: "<hash>"`, or an empty `304` when the client
-/// already holds it.
+/// `body` as JSON with `ETag: "<hash>"`, or an empty `304` when the client already holds it.
 fn revalidated_json(
     encoded: &crate::catalogue::Encoded,
     if_none_match: Option<&str>,
@@ -666,8 +635,8 @@ fn revalidated_json(
 fn handle_get_entry(published: &Published, package_id: &str) -> Response<Full<Bytes>> {
     match &published.full {
         FullSnapshot::Verified { encoded, packages } if packages.contains(package_id) => {
-            // Return the complete signed object: a detached row would discard
-            // the owner's authorization and inclusion proof.
+            // Return the complete signed object: a detached row would discard the owner's
+            // authorization and inclusion proof.
             json_bytes_response(StatusCode::OK, encoded.body.clone())
         }
         FullSnapshot::Verified { .. } | FullSnapshot::Refused => {
@@ -680,7 +649,6 @@ fn handle_get_entry(published: &Published, package_id: &str) -> Response<Full<By
     }
 }
 
-/// The signed headers of a pending-entry read.
 struct PendingRead {
     publisher: Option<String>,
     signed_at: Option<String>,
@@ -698,8 +666,8 @@ impl PendingRead {
     }
 }
 
-/// A publisher's own pending change for `package_id`. Anyone else, and a
-/// publisher with nothing pending, gets the same 404.
+/// A publisher's own pending change for `package_id`. Anyone else, and a publisher with nothing
+/// pending, gets the same 404.
 fn handle_get_pending(
     state: &AppState,
     package_id: &str,
@@ -781,7 +749,6 @@ async fn handle_post_entries(
     blocking(state, move |state| verify_and_apply_change(state, change)).await
 }
 
-/// Verify a parsed change request against the allowlist and apply it.
 fn verify_and_apply_change(
     state: &AppState,
     change: EntryChangeRequest,
@@ -793,8 +760,7 @@ fn verify_and_apply_change(
         .map_err(HandlerError::Storage)?
         .all_pubkey_bytes();
 
-    // Verify the signature FIRST — no touching disk before the
-    // request is proven authorised.
+    // Verify the signature FIRST: no touching disk before the request is proven authorised.
     if let Err(e) = verify_change_request(&change, &allow_snapshot) {
         warn!(
             "rejecting change request for {}: {e:?}",
@@ -813,12 +779,9 @@ fn verify_and_apply_change(
         return Ok(text_response(code, &msg));
     }
 
-    // Business rules layered on top of the signature check.
     apply_change(state, change)
 }
 
-/// Apply a verified change request. Returns the resulting HTTP
-/// response so [`verify_and_apply_change`] just forwards.
 fn apply_change(
     state: &AppState,
     change: EntryChangeRequest,
@@ -878,10 +841,9 @@ fn moderation_status(error: &ModerationError) -> Option<StatusCode> {
     }
 }
 
-/// `PUT /uploads/<blake3>.tapp` or `PUT /uploads/<blake3>.program`: an
-/// allowlisted publisher's signed upload of a package it signed, or of a bot
-/// program, kept privately for review (`registry_types::upload`). Answers
-/// `201` with the URL a version binding these bytes names.
+/// `PUT /uploads/<blake3>.tapp` or `PUT /uploads/<blake3>.program`: an allowlisted publisher's
+/// signed upload of a package it signed, or of a bot program, kept privately for review
+/// (`registry_types::upload`). Answers `201` with the URL a version binding these bytes names.
 async fn handle_put_upload(
     state: &AppState,
     name: &str,
@@ -969,9 +931,9 @@ fn parse_upload_name(name: &str) -> Option<(String, UploadKind)> {
         .then(|| (digest.to_ascii_lowercase(), kind))
 }
 
-/// Keep a bot program for review. Only the canonical encoding of a Shortcut
-/// that passes the structural checks is kept: the entry signs these exact
-/// bytes, so the registry never re-encodes them.
+/// Keep a bot program for review. Only the canonical encoding of a Shortcut that passes the
+/// structural checks is kept: the entry signs these exact bytes, so the registry never re-encodes
+/// them.
 fn store_program_upload(
     state: &AppState,
     digest: &str,
@@ -1063,9 +1025,9 @@ fn publisher_row(state: &AppState, entry: &RegistryEntry) -> Option<crate::Publi
         .and_then(|allowlist| allowlist.get(&key).cloned())
 }
 
-/// A payload blob of a reviewed package, by BLAKE3 hash, so a client that
-/// downloaded a thin package fetches only the blobs it lacks. Content
-/// addressing makes the response self-verifying; clients check every blob.
+/// A payload blob of a reviewed package, by BLAKE3 hash, so a client that downloaded a thin package
+/// fetches only the blobs it lacks. Content addressing makes the response self-verifying; clients
+/// check every blob.
 fn handle_get_blob(state: &AppState, name: &str) -> Result<Response<Full<Bytes>>, HandlerError> {
     if let Some(blake3_hex) = name.strip_suffix(tilo_app_package::compressed::SUFFIX) {
         return Ok(
@@ -1101,9 +1063,8 @@ fn handle_get_blob(state: &AppState, name: &str) -> Result<Response<Full<Bytes>>
         .map_err(HandlerError::Storage)?
     {
         Some(bytes) => {
-            // `WebAssembly.compileStreaming` accepts only `application/wasm`,
-            // and a blob's name says nothing about its use, so the type comes
-            // from the WebAssembly 1.0 binary header.
+            // `WebAssembly.compileStreaming` accepts only `application/wasm`, and a blob's name
+            // says nothing about its use, so the type comes from the WebAssembly 1.0 binary header.
             let content_type = if bytes.starts_with(b"\0asm\x01\0\0\0") {
                 "application/wasm"
             } else {
@@ -1115,7 +1076,6 @@ fn handle_get_blob(state: &AppState, name: &str) -> Result<Response<Full<Bytes>>
     }
 }
 
-/// An imported package, or its compressed twin.
 fn handle_get_artifact(
     state: &AppState,
     name: &str,
@@ -1129,9 +1089,9 @@ fn handle_get_artifact(
     }
 }
 
-/// Relabel a content-addressed response as the compressed twin it carries.
-/// The body is a zstd frame, not an encoding of the response: no
-/// `Content-Encoding`, so nothing between here and the client decodes it.
+/// Relabel a content-addressed response as the compressed twin it carries. The body is a zstd
+/// frame, not an encoding of the response: no `Content-Encoding`, so nothing between here and the
+/// client decodes it.
 fn compressed_twin(mut response: Response<Full<Bytes>>) -> Response<Full<Bytes>> {
     if response.status() == StatusCode::OK {
         response.headers_mut().insert(
@@ -1142,8 +1102,8 @@ fn compressed_twin(mut response: Response<Full<Bytes>>) -> Response<Full<Bytes>>
     response
 }
 
-/// Content-addressed bytes: the URL names the content, so every cache may
-/// keep the response forever.
+/// Content-addressed bytes: the URL names the content, so every cache may keep the response
+/// forever.
 fn immutable_response(bytes: Vec<u8>) -> Response<Full<Bytes>> {
     immutable_response_as(bytes, "application/octet-stream")
 }

@@ -33,6 +33,36 @@ pub(crate) enum ConsentStep {
     Ask(Box<PendingConsent>),
 }
 
+/// An action one app asks to take of another: the app that offers it, and
+/// the action as offered.
+struct Offer {
+    app_id: String,
+    action: tilo_actions::ActionDescriptor,
+}
+
+/// What one grant question asks: in which workspace which app wants which
+/// app's action.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ConsentKey {
+    workspace: String,
+    app_id: String,
+    target_app: String,
+    resource: String,
+    action: String,
+}
+
+impl ConsentKey {
+    fn of(request: &AppActionConsentRequest) -> Self {
+        Self {
+            workspace: request.workspace.clone(),
+            app_id: request.app_id.clone(),
+            target_app: request.target_app.clone(),
+            resource: request.resource.clone(),
+            action: request.action.clone(),
+        }
+    }
+}
+
 /// A grant question on screen.
 pub(crate) struct PendingConsent {
     request: AppActionConsentRequest,
@@ -44,7 +74,7 @@ pub(crate) struct PendingConsent {
 
 impl AppBrokerState {
     /// Ask whoever answers for the person using an application from now on.
-    pub(crate) fn set_app_action_consent(&self, prompter: Arc<dyn AppActionConsentPrompter>) {
+    pub fn set_app_action_consent(&self, prompter: Arc<dyn AppActionConsentPrompter>) {
         if let Ok(mut current) = self.app_action_consent.write() {
             *current = Some(prompter);
         }
@@ -66,7 +96,7 @@ impl AppBrokerState {
         let Some((consent, target)) = self.consent_question(person, app_id, request) else {
             return ConsentStep::Serve;
         };
-        let key = (consent.workspace.clone(), consent.app_id.clone());
+        let key = ConsentKey::of(&consent);
         let Ok(mut pending) = self.app_action_consent_pending.lock() else {
             return ConsentStep::Refuse;
         };
@@ -100,27 +130,16 @@ impl AppBrokerState {
         };
         let workspace = person.workspace()?;
         let grants = self.services.app_action_grants.as_ref()?;
-        let row = self
-            .eager_catalogue(person, RowScope::Provider(&request.target.provider))
-            .0
-            .into_iter()
-            .find(|row| {
-                row.provider == request.target.provider
-                    && row
-                        .action
-                        .as_ref()
-                        .is_some_and(|descriptor| descriptor.address == request.target.address)
-            })?;
-        let descriptor = row.action?;
+        let offer = self.offer(person, request)?;
         // Governing the workspace is never one click away for an app.
         let governance = self
             .services
             .workspace_governance
             .as_ref()
-            .is_some_and(|governance| governance.app_id() == row.app_id);
-        if descriptor.contract.kind == tilo_actions::ActionKind::Outside
+            .is_some_and(|governance| governance.app_id() == offer.app_id);
+        if offer.action.contract.kind == tilo_actions::ActionKind::Outside
             || governance
-            || row.app_id == tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID
+            || offer.app_id == tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID
         {
             return None;
         }
@@ -147,30 +166,42 @@ impl AppBrokerState {
                     &standing,
                     &as_app,
                     now,
-                    &row.app_id,
+                    &offer.app_id,
                     (
-                        &descriptor.resource_kind,
-                        &descriptor.address.resource,
-                        &descriptor.address.action,
+                        &offer.action.resource_kind,
+                        &offer.action.address.resource,
+                        &offer.action.address.action,
                     ),
-                    &descriptor.contract,
+                    &offer.action.contract,
                 ))
             })
             .ok()??;
         if standing_allows {
             return None;
         }
-        let contract = &descriptor.contract;
+        let Offer {
+            app_id: target_app,
+            action,
+        } = offer;
+        let contract = &action.contract;
+        // What the call would run with, field by field, so the person sees what it changes.
+        let draft = match &request.argument {
+            tilo_actions::remote::InvokeArgument::Json(arguments) => {
+                Some(tilo_actions::Draft::render(&action, arguments))
+            }
+            _ => None,
+        }
+        .filter(|draft| !draft.fields.is_empty());
         let consent = AppActionConsentRequest {
             handle: format!("app-action:{}", request.invocation.0),
             workspace: workspace.to_string(),
             person: person_id.clone(),
             app_id: app_id.to_string(),
-            target_app: row.app_id,
-            resource: descriptor.address.resource.clone(),
-            action: descriptor.address.action.clone(),
-            resource_label: descriptor.resource_label.clone(),
-            action_label: descriptor.action_label.clone(),
+            target_app,
+            resource: action.address.resource.clone(),
+            action: action.address.action.clone(),
+            resource_label: action.resource_label.clone(),
+            action_label: action.action_label.clone(),
             risk: contract.risk,
             needs_confirmation: contract.advertised_confirmation()
                 != tilo_actions::ConfirmationPolicy::None
@@ -179,18 +210,43 @@ impl AppBrokerState {
             moderation: None,
             preview: None,
             scope: None,
-            draft: None,
+            draft,
         };
-        Some((consent, (descriptor.resource_kind.clone(), contract.need())))
+        Some((consent, (action.resource_kind.clone(), contract.need())))
+    }
+
+    /// The action `request` asks for, as the person using the asking app is
+    /// offered it: an instance's action in the catalogue, or what the app a
+    /// target names by its id offers.
+    fn offer(&self, person: &Caller, request: &InvokeRequest) -> Option<Offer> {
+        if let Some((workspace, app_id, action)) = self.application_offer(request) {
+            let action = action.filter(|_| person.workspace() == Some(workspace.as_str()))?;
+            return Some(Offer {
+                app_id,
+                action: action.descriptor(tilo_actions::ExecutionLocus::default()),
+            });
+        }
+        let row = self
+            .eager_catalogue(person, RowScope::Provider(&request.target.provider))
+            .0
+            .into_iter()
+            .find(|row| {
+                row.provider == request.target.provider
+                    && row
+                        .action
+                        .as_ref()
+                        .is_some_and(|descriptor| descriptor.address == request.target.address)
+            })?;
+        Some(Offer {
+            app_id: row.app_id,
+            action: row.action?,
+        })
     }
 
     /// The question `consent` asked is off the screen.
     fn finish_app_action_consent(&self, consent: &PendingConsent) {
         if let Ok(mut pending) = self.app_action_consent_pending.lock() {
-            pending.remove(&(
-                consent.request.workspace.clone(),
-                consent.request.app_id.clone(),
-            ));
+            pending.remove(&ConsentKey::of(&consent.request));
         }
     }
 

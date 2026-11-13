@@ -17,6 +17,9 @@
 //! - It succeeds with a [`CommandRan`], whatever the command's exit status:
 //!   the run happened. A refusal the program needed a VM for comes back typed,
 //!   for the shell's words to the person or agent who ran it.
+//! - It can be stopped: a cancel of the invocation ends the command in the
+//!   session's shell, and the [`CommandRan`] says it was
+//!   ([`cancelled`](CommandRan::cancelled)).
 //!
 //! Only the workspace's host may ask, as a device of the operator the
 //! member's own identity belongs to: a run is paid for by the account the
@@ -99,6 +102,10 @@ pub struct CommandRan {
     /// It printed more than the run keeps.
     #[serde(default)]
     pub truncated: bool,
+    /// It was stopped before it ended: the person's Ctrl+C, or the agent's
+    /// cancel of its invocation. What it printed until then is all here.
+    #[serde(default)]
+    pub cancelled: bool,
     pub started_ms: i64,
     pub ended_ms: i64,
     /// Why the host would not run a program it needed, typed.

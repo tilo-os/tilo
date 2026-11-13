@@ -1,11 +1,4 @@
 //! The greeter as the boot's sign-in screen (docs/security/sign-in.md §3.4).
-//!
-//! The greeter runs as a child in boot mode, with no capabilities, on the
-//! display and input devices this process opens for it, and talks to it over
-//! a socket pair ([`crate::link`]). Everything that decides stays here: the
-//! greeter shows what it is told and answers with the person picked and the
-//! secret typed. When it cannot start, or stops answering, the sign-in goes
-//! on on the console ([`ConsoleScreen`]).
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -24,36 +17,25 @@ use crate::link::{FromGreeter, Link, Power, ToGreeter};
 use crate::people::Person;
 use crate::screen::ConsoleScreen;
 
-/// The uid the greeter runs as: nobody, which owns nothing in the initramfs.
 const NOBODY: u32 = 65534;
 
-/// Where the greeter is started from and what it is given.
 pub struct Launch {
     pub program: PathBuf,
-    /// `/dev/dri`, whose first card with a connected display is shown on.
     pub dri: PathBuf,
-    /// `/sys/class/drm`, which says which cards have a display connected.
     pub drm_class: PathBuf,
-    /// `/dev/input`, whose event devices the greeter reads.
     pub input: PathBuf,
-    /// `/etc/group`, for the group that may play sound.
     pub group: PathBuf,
-    /// A directory the greeter may write: its home and runtime directory.
     pub runtime: PathBuf,
-    /// The volume's `tilo-comforts` token, or null.
     pub comforts: serde_json::Value,
 }
 
-/// The greeter while it runs.
 struct Running {
     link: Link,
-    /// `None` for a greeter in a test, which is not a process.
     child: Option<Child>,
 }
 
 impl Running {
     fn stop(self) {
-        // It holds nothing to save: what it showed is over.
         drop(self.link);
         if let Some(mut child) = self.child {
             let _ = child.kill();
@@ -78,7 +60,6 @@ pub struct GreeterScreen {
     /// The console, when the greeter goes away. It holds Plymouth, which
     /// gives the display up to the greeter and takes it back after.
     fallback: ConsoleScreen,
-    /// The people the greeter was shown, whose indices it answers with.
     listed: Vec<Person>,
     answer: Option<Answer>,
     systemctl: PathBuf,
@@ -314,7 +295,6 @@ fn hello(greeter: Running, comforts: &serde_json::Value) -> io::Result<Running> 
     }
 }
 
-/// The descriptors the greeter is handed.
 struct Handed {
     card: OwnedFd,
     inputs: Vec<(PathBuf, OwnedFd)>,
@@ -372,7 +352,6 @@ fn spawn(launch: &Launch) -> io::Result<Running> {
             for fd in &kept {
                 rustix::io::fcntl_setfd(BorrowedFd::borrow_raw(*fd), rustix::io::FdFlags::empty())?;
             }
-            // Nothing it runs may gain what it lacks.
             rustix::thread::set_no_new_privs(true)?;
             Ok(())
         });
@@ -396,7 +375,6 @@ fn gid_of(raw: u32) -> rustix::fs::Gid {
     rustix::fs::Gid::from_raw(raw)
 }
 
-/// The first card that drives a connected display, opened as its master.
 fn open_card(dri: &Path, drm_class: &Path) -> io::Result<OwnedFd> {
     let mut cards: Vec<String> = fs::read_dir(dri)?
         .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
@@ -429,7 +407,6 @@ fn open_card(dri: &Path, drm_class: &Path) -> io::Result<OwnedFd> {
     ))
 }
 
-/// Whether one of `card`'s connectors has a display on it, as sysfs says.
 fn connected(drm_class: &Path, card: &str) -> bool {
     let prefix = format!("{card}-");
     fs::read_dir(drm_class).is_ok_and(|entries| {
@@ -606,7 +583,6 @@ mod tests {
                             link.send_to_supervisor(&FromGreeter::Power(power)).unwrap();
                             continue;
                         }
-                        // Out of acts: the greeter goes away.
                         None => return told,
                     };
                     link.send_to_supervisor(&reply).unwrap();

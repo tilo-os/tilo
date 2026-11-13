@@ -17,7 +17,7 @@ use std::time::{Duration, SystemTime};
 use collab_types::crypto::VerifyError;
 use collab_types::{
     ArtifactId, AttestationId, ChannelEvent, ChannelId, Ed25519PublicKey, OpKind, Signature,
-    SignedOp, SpaceId, generate_keypair, sign_event, sign_op, verify_event, verify_op,
+    SignedOp, generate_keypair, sign_event, sign_op, verify_event, verify_op,
 };
 
 fn t(secs: u64) -> SystemTime {
@@ -66,7 +66,6 @@ fn an_event_signature_verifies_under_its_signer_only() {
             "genesis",
             ChannelEvent::Genesis {
                 channel_id: ChannelId::new(),
-                space: SpaceId::new(),
                 name: "g".into(),
                 owner: pk,
                 created_at: t(0),

@@ -2675,24 +2675,26 @@ mod tests {
         let shown = crate::provider::SampleProvider::new().catalogue().apps[0]
             .name
             .clone();
-        let bar = ui::window_toolbar::declared().expect("the window declares its slots");
-        assert_eq!(bar.location.map(|location| location.label), Some(shown));
-        let actions: Vec<&str> = bar
-            .actions
-            .iter()
-            .map(|action| action.name.as_str())
-            .collect();
-        assert_eq!(actions, ["Add Windows app"]);
-        let controls: Vec<String> = app
+        assert_eq!(
+            ui::window_toolbar::declared(),
+            None,
+            "the bar holds only what is the window's"
+        );
+        let names = app.harness().header_row_names();
+        for word in [shown.as_str(), "Add Windows app"] {
+            assert!(
+                names.iter().any(|name| name == word),
+                "{word} stands in the header row, which is the window's bar: {names:?}"
+            );
+        }
+        let added = app
             .harness()
             .controls()
             .into_iter()
             .filter_map(|control| control.name)
-            .collect();
-        assert!(
-            !controls.iter().any(|name| name == "Add Windows app"),
-            "the window draws no header of its own: {controls:?}"
-        );
+            .filter(|name| name == "Add Windows app")
+            .count();
+        assert_eq!(added, 1, "the window offers Add Windows app once");
     }
 
     #[test]

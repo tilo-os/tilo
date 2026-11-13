@@ -3,10 +3,9 @@
     reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
 )]
 use super::*;
+use ui::widget::DrawChild;
 
 impl VideoEditorApp {
-    /// The bin's ground — the sidebar region docked, the floating drawer as an
-    /// overlay — and the theme for what is drawn on it.
     pub(super) fn paint_bin_panel(
         scene: &mut Scene,
         tf: Affine,
@@ -28,11 +27,12 @@ impl VideoEditorApp {
         let heading = ctx.theme.text(TextRole::Subheading);
         let heading_y = text_baseline(band, &heading, ctx.text);
         let x0 = r.bin.x0 + PAD * ctx.scale;
+        let media = crate::resource::CATALOG.t("video-editor-media");
         text(
             ctx.scene,
             ctx.text,
             ctx.transform,
-            "Media",
+            &media,
             &heading,
             c.text_primary,
             x0,
@@ -41,7 +41,7 @@ impl VideoEditorApp {
         // How many sources the bin holds, as a quiet count beside its name.
         let count = self.project.media.len().to_string();
         let count_style = ctx.theme.text(TextRole::Subheading).numeric();
-        let count_x = x0 + text_width(ctx.text, "Media", &heading) + S2;
+        let count_x = x0 + text_width(ctx.text, &media, &heading) + S2;
         if count_x + text_width(ctx.text, &count, &count_style) < add.x0 - S2 {
             text(
                 ctx.scene,
@@ -54,11 +54,13 @@ impl VideoEditorApp {
                 heading_y,
             );
         }
-        let face = ButtonFace::new(add, "Title")
+        let title = crate::resource::CATALOG.t("video-editor-title-button");
+        let new_title = crate::resource::CATALOG.t("video-editor-new-title");
+        let face = ButtonFace::new(add, &title)
             .icon(Icon::Plus)
             .role(ButtonRole::Plain)
             .control_size(ControlSize::Small)
-            .accessible_name("New title")
+            .accessible_name(&new_title)
             .hovered(add.contains(self.last_mouse));
         Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
     }
@@ -96,8 +98,8 @@ impl VideoEditorApp {
         );
         let radius = f64::from(ctx.theme.tokens.radii.detail);
         let base = clip_color(ctx.theme, media.palette);
-        // The source's own picture on the media ground, as footage is shown
-        // everywhere else; audio draws its waveform there in its label colour.
+        // The source's own picture, as footage is shown everywhere else; audio draws its
+        // waveform there in its label colour.
         fill_round(
             ctx.scene,
             ctx.transform,
@@ -190,8 +192,6 @@ impl VideoEditorApp {
         let sub_h = line_height(ctx.text, &sub_style);
         let block_top = rect.y0 + (rect.height() - (name_h + S1 + sub_h)) / 2.0;
         let sub_top = block_top + name_h + S1;
-        // The source's length, trailing on the secondary line, so the name
-        // above it has the row's whole width.
         let length = VideoEditorApp::bin_length(media);
         let length_w = text_width(ctx.text, &length, &meta_style);
         let meta_top = sub_top + (sub_h - line_height(ctx.text, &meta_style)) / 2.0;
@@ -221,21 +221,28 @@ impl VideoEditorApp {
             );
         }
         let right = right - length_w - S2;
-        // One secondary fact — what the source is — or, when its bytes cannot
-        // be used, a warning badge saying why in its place.
         let problem = if self.media_is_unreadable(media_id) {
             Some((MEDIA_UNREADABLE, MEDIA_UNREADABLE_SHORT))
         } else if self.media_is_projected(media_id) {
             Some((MEDIA_NOT_LOCAL, MEDIA_NOT_LOCAL_SHORT))
         } else {
             None
-        };
+        }
+        .map(|(long, short)| {
+            (
+                crate::resource::CATALOG.t(long),
+                crate::resource::CATALOG.t(short),
+            )
+        });
         if let Some((long, short)) = problem {
             let room = right - text_x;
-            let label = [long, short]
+            // The phrase where the column holds it, the short form where it cannot — never
+            // nothing, because the badge is the disclosure.
+            let label = [&long, &short]
                 .into_iter()
                 .find(|l| ui::widget::BadgeFace::intrinsic_width(l, ctx.text, ctx.theme) <= room)
-                .unwrap_or(short);
+                .unwrap_or(&short);
+            let label = label.as_str();
             let w = ui::widget::BadgeFace::intrinsic_width(label, ctx.text, ctx.theme).min(room);
             let h = ui::widget::BadgeFace::height(ctx.theme);
             let cy = sub_top + sub_h / 2.0;
@@ -316,12 +323,13 @@ impl VideoEditorApp {
             if let Some(btn) = self.empty_bin_import_rect(r) {
                 let msg = theme.text(TextRole::Body);
                 let h = line_height(tr, &msg);
-                let w = text_width(tr, "No media yet", &msg);
+                let words = crate::resource::CATALOG.t("video-editor-no-media");
+                let w = text_width(tr, &words, &msg);
                 text(
                     scene,
                     tr,
                     tf,
-                    "No media yet",
+                    &words,
                     &msg,
                     theme.tokens.colors.text_dim,
                     area.center().x - w / 2.0,
@@ -333,7 +341,7 @@ impl VideoEditorApp {
                     tr,
                     theme,
                     btn,
-                    "Import media",
+                    &crate::resource::CATALOG.t("video-editor-import-media"),
                     ButtonRole::Primary,
                     btn.contains(self.last_mouse),
                 );
@@ -353,8 +361,6 @@ impl VideoEditorApp {
         scene.pop_layer();
     }
 
-    /// Draw feedback for a live bin→timeline drag: highlight the drop lane, mark
-    /// the insertion point at the drop time, and float a ghost chip at the cursor.
     #[expect(
         clippy::many_single_char_names,
         reason = "the paint pass's shorthands: colours c, regions r, pointer p, drop time t and its x"
@@ -373,8 +379,6 @@ impl VideoEditorApp {
         }
         let c = &theme.tokens.colors;
         let p = self.last_mouse;
-        // Drop-lane highlight + insertion marker at the snapped drop time: an
-        // insertion indicator, in your colour.
         if let Some((_, _, lane)) = self.bin_drop_lane(r) {
             fill_rect(
                 scene,
@@ -402,7 +406,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// Draw the in-flight inline rename field over its bin row's name band.
     pub(super) fn draw_bin_rename(
         &mut self,
         scene: &mut Scene,
@@ -436,14 +439,11 @@ impl VideoEditorApp {
         };
         if let Some((_, label)) = self.bin_rename.as_mut() {
             label.apply_layout_external(rect);
-            label.draw(scene, tf, tr, &panel, presence);
+            label.draw_child(scene, tf, tr, &panel, presence);
         }
     }
 }
 
-/// The floating surface a drawer or a summoned side panel stands on: the
-/// floating shadow, then the floating material with its edge at the panel
-/// radius. Returns the theme for what is drawn on it.
 pub(super) fn paint_floating_panel(
     scene: &mut Scene,
     tf: Affine,

@@ -9,7 +9,7 @@ use super::{ROOT, SystemTime, err};
 use crate::join::TransportHint;
 use automerge::transaction::Transactable as _;
 use automerge::{ObjType, ReadDoc as _, Value};
-use ed25519_dalek::SigningKey;
+use collab_types::signer::DeviceSigner;
 
 /// Key of the workspace's hosts in its governance document: a map from each
 /// host's device key (hex) to its signed address (JSON).
@@ -57,7 +57,7 @@ impl PeerGovernanceMut<'_> {
     pub fn author_workspace_host(
         self,
         hint: &TransportHint,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         if self.peer.governance().workspace_hosts().contains(hint) {
@@ -85,7 +85,7 @@ impl PeerGovernanceMut<'_> {
     pub fn author_workspace_host_removed(
         self,
         device: &[u8; 32],
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         if !self
@@ -111,7 +111,7 @@ impl PeerGovernanceMut<'_> {
     /// Apply `change` to the workspace's governance as the governor `key`.
     fn write(
         self,
-        key: &SigningKey,
+        key: &dyn DeviceSigner,
         now: SystemTime,
         change: impl FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
     ) -> Result<bool, String> {

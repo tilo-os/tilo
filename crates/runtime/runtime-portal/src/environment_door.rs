@@ -23,20 +23,12 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-/// The request's `op`.
 pub const OP: &str = "environment-door";
 
-/// The longest line either side writes.
 const MAX_LINE: u64 = 16 * 1024;
 
-/// How long the session may take to open the door: it answers on its loop's
-/// next pass.
 const ANSWER_WITHIN: Duration = Duration::from_secs(30);
 
-/// What `ush` asks the session for: a door for the environment `environment`
-/// (its id on this device, `<workspace>/<record>`), called `name`, working in
-/// `workspace` (a workspace id), or in the workspace in front of the person
-/// when it is `None`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
     pub op: String,
@@ -47,7 +39,6 @@ pub struct Request {
 }
 
 impl Request {
-    /// The request for `environment`, called `name`, in `workspace`.
     #[must_use]
     pub fn new(environment: &str, name: &str, workspace: Option<&str>) -> Self {
         Self {
@@ -58,9 +49,6 @@ impl Request {
         }
     }
 
-    /// `line`, when it is this request: the `op` it names, and an
-    /// environment named as an environment's id may be (a workspace id and a
-    /// record key, around a `/`).
     #[must_use]
     pub fn of(line: &[u8]) -> Option<Self> {
         let request: Self = serde_json::from_slice(line).ok()?;
@@ -86,18 +74,20 @@ impl Request {
     }
 }
 
-/// What the session answers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "kebab-case")]
 pub enum Reply {
-    /// The door is at `path`, for programs working in `workspace`.
-    Opened { path: PathBuf, workspace: String },
+    Opened {
+        path: PathBuf,
+        workspace: String,
+    },
     /// No door, and why.
-    Refused { reason: String },
+    Refused {
+        reason: String,
+    },
 }
 
 impl Reply {
-    /// This reply as the line the session writes.
     #[must_use]
     pub fn line(&self) -> Vec<u8> {
         let mut line = serde_json::to_vec(self).unwrap_or_default();
@@ -106,8 +96,6 @@ impl Reply {
     }
 }
 
-/// An environment's door, held open: dropping it closes the lease, and the
-/// session removes the door.
 #[derive(Debug)]
 pub struct Lease {
     _stream: UnixStream,
@@ -116,13 +104,11 @@ pub struct Lease {
 }
 
 impl Lease {
-    /// Where the session listens for the environment's programs.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// The workspace the environment's programs work in.
     #[must_use]
     pub fn workspace(&self) -> &str {
         &self.workspace

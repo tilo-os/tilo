@@ -47,11 +47,12 @@ tracing.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-image = { workspace = true, features = ["jpeg", "png", "webp"] }
 tilo-ocr = { path = "../../crates/media/ocr" }
 kamadak-exif = "0.6.1"
 
 [dev-dependencies]
+# Tests build their image fixtures.
+image = { workspace = true, features = ["jpeg", "png"] }
 # Tests see this package's samples. The key must not be the package name:
 # a dependency named `photos` claims `--features photos/thin` in the
 # collection build, and the app then links the whole runtime statically.

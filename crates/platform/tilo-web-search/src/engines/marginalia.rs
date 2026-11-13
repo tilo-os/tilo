@@ -25,8 +25,6 @@ pub(super) fn request(query: &str) -> Option<EngineRequest> {
 
 pub(super) fn parse(doc: &Document) -> Result<Vec<EngineResult>, EngineError> {
     Layout {
-        // Its page has no result-list wrapper; a page without one result
-        // section is not a results page this reader understands.
         container: "section.search-result",
         result: "section.search-result",
         title: Query::Text("h2"),

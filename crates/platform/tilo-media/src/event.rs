@@ -12,11 +12,7 @@ use std::sync::Arc;
 pub struct VideoFrame {
     pub width: u32,
     pub height: u32,
-    /// `width * height * 4` bytes, row-major, no stride padding.
     pub rgba: Arc<Vec<u8>>,
-    /// Presentation timestamp of this frame, in milliseconds from the start of
-    /// the stream. The widget uses it to keep the scrubber accurate when the
-    /// pipeline's position query lags the last pulled frame.
     pub pts_ms: u64,
 }
 
@@ -48,22 +44,20 @@ impl std::fmt::Debug for VideoFrame {
     }
 }
 
-/// An out-of-band signal from the engine, drained once per frame via
-/// [`crate::MediaEngine::poll`]. Ordering within a single `poll` is stable:
-/// a freshly-opened source always emits [`MediaEvent::DurationKnown`] before
-/// its first [`MediaEvent::Position`], and [`MediaEvent::Ended`] is always the
-/// last event of the poll in which the playhead reached the duration.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MediaEvent {
     /// Fetch/prefetch progress, 0..=100. Emitted only when the percentage
     /// changes, so a consumer can drive a buffered-range indicator without
     /// debouncing.
-    Buffering { percent: u8 },
-    /// The monotonic playhead advanced (or was seeked) to this millisecond.
-    Position { ms: u64 },
-    /// The total stream duration became known (once per open).
-    DurationKnown { ms: u64 },
-    /// The stream reached its end; playback has stopped at the duration.
+    Buffering {
+        percent: u8,
+    },
+    Position {
+        ms: u64,
+    },
+    DurationKnown {
+        ms: u64,
+    },
     Ended,
     /// A fatal pipeline error. The engine has stopped; the string is a
     /// human-readable reason for a status line, never a control-flow token.
@@ -72,18 +66,16 @@ pub enum MediaEvent {
     /// same poll as, and just before, the [`MediaEvent::Error`] that stops
     /// playback, so a player can offer to add formats instead of only showing
     /// the reason. `codec` is a human name ("H.264", "HEVC", "AAC").
-    MissingDecoder { codec: String },
-    /// The host relaying a page's source (its fetch proxy) streamed as much
-    /// as it allows this visitor or room for now. Comes in the same poll as,
-    /// and just before, the [`MediaEvent::Error`] that stops playback, so a
-    /// player can say that playback may resume later rather than that the
-    /// source is broken.
+    MissingDecoder {
+        codec: String,
+    },
+    /// The page's fetch proxy has streamed as much as it allows this visitor for
+    /// now. Comes in the same poll as, and just before, the [`MediaEvent::Error`]
+    /// that stops playback, so a player says playback may resume later rather than
+    /// that the source is broken.
     LimitReached,
 }
 
-/// The human name of the codec a stream of `media_type` (a caps name such as
-/// `video/x-h265`) carries; `mpeg_version` is the caps' `mpegversion`, which
-/// tells MPEG audio and video apart. Unknown types keep their caps name.
 #[must_use]
 pub fn codec_name(media_type: &str, mpeg_version: Option<i32>) -> String {
     let name = match (media_type, mpeg_version) {
@@ -132,7 +124,6 @@ mod tests {
 pub struct ElementPicture {
     pub width: u32,
     pub height: u32,
-    /// Counts the pictures the element showed: a new one, a new serial.
     pub serial: u64,
     pub element: std::rc::Rc<dyn std::any::Any>,
 }

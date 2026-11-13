@@ -1,6 +1,5 @@
 use ui::prelude::*;
 
-/// One created project.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Project {
     pub name: String,
@@ -17,9 +16,8 @@ pub struct Projects {
 
 /// The draft is edited at its path (`Projects::paths().draft`); creating a
 /// project from it is a verb.
-#[resource(kind = "generated.graph-project", label = "Project")]
+#[resource(kind = "generated.graph-project")]
 impl Projects {
-    /// Create a project from the draft.
     #[action]
     pub fn create(&mut self, cx: &mut ActionCx) -> Result<(), &'static str> {
         let name = self.draft.trim().to_owned();
@@ -43,7 +41,7 @@ fn screens(cx: &ViewCx<Projects>) -> Element {
     cx.route_graph_text(context.values(), "draft", Projects::paths().draft);
     match crate::screens::router_with("main", &Theme::default(), context) {
         Ok(router) => Box::new(router),
-        Err(error) => Box::new(Banner::error(ui::i18n::I18nManager::format(
+        Err(error) => Box::new(Banner::error(crate::locales::CATALOG.t_args(
             "graph-load-error",
             &[("error", error.to_string().as_str().into())],
         ))),
@@ -65,14 +63,11 @@ impl ResourceApp for App {
         let input = cx
             .input(cx.paths().draft)
             .with_id("name-input")
-            .with_placeholder(crate::locales::keys::GRAPH_PROJECT_NAME);
+            .with_placeholder("graph-project-name");
         let preview = cx
             .text(|projects| projects.draft.clone())
             .with_id("name-preview");
-        let create = cx.button(
-            crate::locales::keys::GRAPH_CREATE,
-            Projects::CREATE.invoke(),
-        );
+        let create = cx.button("graph-create", Projects::CREATE.invoke());
         let created = cx.each(
             |projects| &projects.projects,
             |row| Box::new(row.text(|project| project.name.clone())),
@@ -80,10 +75,7 @@ impl ResourceApp for App {
         Box::new(
             Column::new()
                 .push(screens(cx))
-                .push(Box::new(labeled_field(
-                    crate::locales::keys::GRAPH_PROJECT_NAME,
-                    input,
-                )))
+                .push(Box::new(labeled_field("graph-project-name", input)))
                 .push(Box::new(preview))
                 .push(Box::new(create))
                 .push(Box::new(created)),

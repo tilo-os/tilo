@@ -68,11 +68,14 @@ impl Fixture {
     fn install_identity(&self, paths: &IdentityPaths) {
         let cert = &self.joined.custody.device_cert;
         let id = hex::encode(cert.user_public_key);
+        // Both copies a provisioned device holds: the identity's own and the
+        // device's, which reading the custody looks through.
         tilo_user_identity::persist::write_device_cert(
             &paths.device_cert_for_user(&cert.user_public_key),
             cert,
         )
         .unwrap();
+        tilo_user_identity::persist::write_device_cert(&paths.device_cert, cert).unwrap();
         let store = tilo_identity_host::registry::IdentityRegistryStore::from_env().unwrap();
         let mut registry = store.load_reconciled().unwrap();
         registry.default_identity = Some(id.clone());
@@ -114,7 +117,7 @@ impl Fixture {
         self.install_identity(&paths);
         tilo_user_identity::persist::write_device_key(
             &paths.device_privkey,
-            &self.joined.custody.device_signing_key,
+            &super::tests::native_key(&self.joined.custody),
         )
         .unwrap();
         self.joined.install_custody_paths(paths);
@@ -188,12 +191,7 @@ async fn an_execution_ending_after_the_snapshot_cannot_hide_changed_custody() {
 async fn custody_that_cannot_be_read_keeps_the_run() {
     let fixture = Fixture::new().await;
     let execution = fixture.read_from_disk();
-    let paths = fixture
-        .joined
-        .custody
-        .identity_paths
-        .clone()
-        .expect("the fixture reads custody from disk");
+    let paths = identity_paths(fixture.directory.path());
     std::fs::remove_file(&paths.device_privkey).unwrap();
     let refusal = execution
         .check(&fixture.joined)
@@ -221,7 +219,7 @@ async fn custody_that_cannot_be_read_keeps_the_run() {
     // The identity material is back: the same run acts again.
     tilo_user_identity::persist::write_device_key(
         &paths.device_privkey,
-        &fixture.joined.custody.device_signing_key,
+        &super::tests::native_key(&fixture.joined.custody),
     )
     .unwrap();
     execution

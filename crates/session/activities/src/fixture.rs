@@ -45,6 +45,7 @@ pub fn feed(scenario: Option<&str>) -> Feed {
             )
         }),
         readout: None,
+        caret: None,
     };
     let cards = match scenario {
         Some("narrow") => vec![timer()],

@@ -3,6 +3,13 @@
 //! host's accessibility inputs, which on a page are what the person asked
 //! of every page through their browser and system: less motion, more
 //! contrast. A change to either draws every mount again in the new theme.
+//!
+//! A person who has chosen neither light nor dark, or chose Automatic, gets
+//! the browser's, so a page is light on a light system from its first frame,
+//! whichever way the mount shows it. Settings shows them Automatic chosen
+//! there (the appearance section's default on a page), which on a page is
+//! following the system; the themes chosen for light and for dark still show
+//! in their mode.
 
 use std::cell::Cell;
 
@@ -23,23 +30,21 @@ thread_local! {
     static GENERATION: Cell<u64> = const { Cell::new(0) };
     /// Whether light or dark follows the browser's colour scheme while the
     /// person has not chosen one ([`follow_browser_scheme`]).
-    #[cfg(target_arch = "wasm32")]
     static FOLLOW_SCHEME: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Have light or dark follow the browser's colour scheme (the person's
 /// system setting, as every page sees it) for as long as the person has
-/// not chosen one in their settings. A page shown as HTML does: its text,
-/// fields and scrollbars are the browser's, which follow that scheme too.
-#[cfg(target_arch = "wasm32")]
+/// not chosen one in their settings. A page does, whichever way it shows
+/// its mounts: [`install`] asks for it before the first frame.
 pub(crate) fn follow_browser_scheme() {
     if !FOLLOW_SCHEME.with(|follow| follow.replace(true)) {
         changed();
     }
 }
 
-/// `settings` with light or dark from the browser (`dark`) when they name
-/// neither: no mode and no theme for one.
+/// `settings` with light or dark from the browser (`dark`) when they leave it
+/// open: no mode, or Automatic.
 pub(crate) fn with_browser_scheme(
     mut settings: serde_json::Map<String, serde_json::Value>,
     dark: bool,
@@ -48,9 +53,10 @@ pub(crate) fn with_browser_scheme(
         .entry("appearance")
         .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
     if let Some(appearance) = appearance.as_object_mut()
-        && !["mode", "dark_theme", "light_theme"]
-            .iter()
-            .any(|key| appearance.contains_key(*key))
+        && appearance
+            .get("mode")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(settings_store::day_schedule::is_automatic)
     {
         appearance.insert(
             "mode".into(),
@@ -58,6 +64,19 @@ pub(crate) fn with_browser_scheme(
         );
     }
     settings
+}
+
+/// The theme `settings` name, with light or dark from the browser's
+/// `scheme` — its answer for `DARK_SCHEME` as `Some(dark)` — when the
+/// person has chosen neither.
+pub(crate) fn from_settings(
+    settings: &serde_json::Map<String, serde_json::Value>,
+    scheme: Option<bool>,
+) -> ui::Theme {
+    match scheme {
+        Some(dark) => ui::Theme::configured_from(&with_browser_scheme(settings.clone(), dark)),
+        None => ui::Theme::configured_from(settings),
+    }
 }
 
 /// The theme as custom properties for the page (`--tilo-*`), with the
@@ -127,20 +146,21 @@ pub(crate) fn themed(base: ui::Theme, accessibility: ui::host::AccessibilityInpu
 /// The theme a mount draws in now.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn current() -> ui::Theme {
-    let base = if FOLLOW_SCHEME.with(Cell::get) {
-        ui::Theme::configured_from(&with_browser_scheme(
-            settings_store::load(),
-            browser_matches(DARK_SCHEME),
-        ))
-    } else {
-        ui::Theme::configured()
-    };
-    themed(base, ui::host::environment().accessibility)
+    let scheme = FOLLOW_SCHEME
+        .with(Cell::get)
+        .then(|| browser_matches(DARK_SCHEME));
+    themed(
+        from_settings(&settings_store::load(), scheme),
+        ui::host::environment().accessibility,
+    )
 }
 
-/// Which change of what the theme is built from the page is at.
+/// Which change of what the theme is built from the page is at. A theme's
+/// surface shader is checked once its code is in, so its arrival is one.
 pub(crate) fn generation() -> u64 {
-    GENERATION.with(Cell::get)
+    GENERATION
+        .with(Cell::get)
+        .wrapping_add(ui::part_paint::SURFACE_SHADER.generation())
 }
 
 /// What the theme is built from changed: every mount takes it again on its
@@ -149,16 +169,21 @@ pub(crate) fn changed() {
     GENERATION.with(|generation| generation.set(generation.get().wrapping_add(1)));
 }
 
-/// Take the browser's answers as the page's host inputs, now and whenever
-/// the person changes them; `wake` draws the mounts again.
+/// What a page takes before anything mounts: its theme follows the
+/// browser's light or dark while the person has chosen neither, and its
+/// host inputs are the browser's answers, now and whenever the person
+/// changes them; `wake` draws the mounts again.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn install(wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
     use wasm_bindgen::JsCast as _;
+    follow_browser_scheme();
     let apply = || {
         ui::host::install_environment(ui::host::HostEnvironment {
             accessibility: accessibility(browser_matches),
             ..ui::host::HostEnvironment::default()
         });
+        // Less motion, more contrast and, on a page that follows it, light
+        // or dark: the mounts take the theme again on their next frame.
         changed();
     };
     apply();
@@ -182,7 +207,7 @@ pub(crate) fn install(wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
 
 /// The browser's `MediaQueryList` for `query`.
 #[cfg(target_arch = "wasm32")]
-fn media_query(query: &str) -> Option<wasm_bindgen::JsValue> {
+pub(crate) fn media_query(query: &str) -> Option<wasm_bindgen::JsValue> {
     use wasm_bindgen::JsCast as _;
     let match_media = js_sys::Reflect::get(&js_sys::global(), &"matchMedia".into()).ok()?;
     let match_media = match_media.dyn_ref::<js_sys::Function>()?;
@@ -221,6 +246,38 @@ mod tests {
         assert_ne!(generation(), before, "a change draws the mounts again");
     }
 
+    /// On a fresh page Settings shows Automatic chosen, and the page draws what Automatic means
+    /// there: the system's light or dark. A Dark tile ringed over a light page told the person a
+    /// choice the page did not draw.
+    #[test]
+    fn what_settings_shows_chosen_on_a_page_is_what_the_page_draws() {
+        use ui::storage::{DeviceClass, SettingsSchema as _};
+        let fresh = settings_sections::prefs::AppearancePrefs::defaults_on(DeviceClass::Web);
+        assert_eq!(fresh.theme_choice(), "Automatic");
+        let mut chosen = settings_sections::prefs::AppearancePrefs::defaults_on(DeviceClass::Web);
+        chosen.choose_theme("Automatic");
+        let chosen = serde_json::json!({"appearance": {"mode": chosen.mode}});
+        for dark in [false, true] {
+            let untouched = from_settings(&serde_json::Map::new(), Some(dark));
+            assert_eq!(untouched.document.is_dark(), dark, "it follows the system");
+            let automatic = from_settings(chosen.as_object().unwrap(), Some(dark));
+            assert_eq!(automatic.document.is_dark(), dark, "so does choosing it");
+        }
+        let dark_theme = serde_json::json!({"appearance": {"mode": "dark"}});
+        assert!(
+            from_settings(dark_theme.as_object().unwrap(), Some(false))
+                .document
+                .is_dark(),
+            "Dark, chosen, is dark on a light system"
+        );
+        assert_eq!(
+            settings_sections::prefs::AppearancePrefs::defaults_on(DeviceClass::Native)
+                .theme_choice(),
+            "Dark",
+            "the person's own computer starts dark, and says so"
+        );
+    }
+
     #[test]
     fn the_browser_scheme_decides_only_what_the_person_left_open() {
         let mode = |settings: serde_json::Value, dark| {
@@ -242,11 +299,19 @@ mod tests {
         );
         assert_eq!(
             mode(
-                serde_json::json!({"appearance": {"light_theme": "nord"}}),
-                true
+                serde_json::json!({"appearance": {"mode": "automatic"}}),
+                false
             ),
-            serde_json::Value::Null,
-            "a theme chosen for one mode is a choice too"
+            "light",
+            "Automatic follows the system"
+        );
+        assert_eq!(
+            mode(
+                serde_json::json!({"appearance": {"light_theme": "nord"}}),
+                false
+            ),
+            "light",
+            "a theme chosen for one mode shows when the system is in that mode"
         );
         let light = ui::Theme::configured_from(&with_browser_scheme(serde_json::Map::new(), false));
         let dark = ui::Theme::configured_from(&with_browser_scheme(serde_json::Map::new(), true));
@@ -258,5 +323,57 @@ mod tests {
                 .iter()
                 .any(|(name, value)| *name == "--tilo-text" && value.starts_with("rgba("))
         );
+    }
+
+    #[test]
+    fn a_first_visit_draws_the_browser_scheme() {
+        // Nothing chosen: the browser's light or dark is the page's.
+        let none = serde_json::Map::new();
+        assert!(
+            !from_settings(&none, Some(false)).document.is_dark(),
+            "settings with no appearance in a light browser are light"
+        );
+        assert!(
+            from_settings(&none, Some(true)).document.is_dark(),
+            "and dark in a dark one"
+        );
+        // The person's own choice is what the page draws, whatever the
+        // browser answers.
+        let chosen = serde_json::json!({"appearance": {"mode": "dark"}});
+        assert!(
+            from_settings(
+                &chosen.as_object().cloned().unwrap_or_default(),
+                Some(false)
+            )
+            .document
+            .is_dark(),
+            "an explicit dark wins over a light browser"
+        );
+        // A caller that does not follow (a native window) keeps the
+        // settings' own default.
+        assert!(from_settings(&none, None).document.is_dark());
+    }
+
+    #[test]
+    fn a_scheme_change_while_following_redraws() {
+        // A page follows from `install`, before anything mounts.
+        follow_browser_scheme();
+        let none = serde_json::Map::new();
+        let drawn = generation();
+        assert!(
+            !from_settings(&none, Some(false)).document.is_dark(),
+            "the first frame in a light browser is light"
+        );
+        // The person's system flips to dark: the browser answers the other
+        // way, and the listener the page installed takes the theme again,
+        // so every mount draws in the scheme that is now set.
+        changed();
+        assert!(from_settings(&none, Some(true)).document.is_dark());
+        assert_ne!(generation(), drawn, "the mounts draw the new scheme");
+        // Following once is enough: a page that already does takes no
+        // further generation for it.
+        let followed = generation();
+        follow_browser_scheme();
+        assert_eq!(generation(), followed);
     }
 }

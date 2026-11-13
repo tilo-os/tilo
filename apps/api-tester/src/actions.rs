@@ -1,21 +1,13 @@
-//! API Tester's effects: the work that reaches outside the workspace.
-//!
-//! Every change to the shared workspace is a field edit or a verb of
-//! [`crate::record::Workspace`] ([`crate::resource`]). Sending a request is an
-//! effect ([`ApiTesterEffect`]): it reaches the network from this device, and
-//! what it brings back is local, except the history entry its completion
-//! records through a verb. The response answers whoever sent the request (a
-//! person's button, an agent, a script), as the response pane shows it. A credential — a request's token or password, a
-//! secret variable's value — never enters the record or an action: it is set
-//! through an effect into the device's secret store, keyed by the record it
-//! belongs to.
+//! API Tester's effects: the work that reaches outside the workspace. Every change to
+//! the workspace is a field edit or a verb of [`crate::record::Workspace`]; sending is an
+//! effect, whose completion records a history entry through a verb. A credential is set
+//! through an effect into this device's secret store and never enters the record.
 
 use ui::prelude::Effect;
 // The effect derive names its runtime crate by this path.
 use ui::tilo_resource;
 
 pub const REQUEST_MENU_CHOICES: &[&str] = &["Save request…", "Rename request…", "Delete request…"];
-/// What [`ApiTesterEffect::CopyResponse`] can copy out of a response.
 pub const COPY_PARTS: &[&str] = &["body", "headers", "request"];
 pub const ENVIRONMENT_MENU_CHOICES: &[&str] =
     &["Rename environment…", "Add variable…", "Delete variable…"];
@@ -23,7 +15,6 @@ pub const ENVIRONMENT_MENU_CHOICES: &[&str] =
 impl std::fmt::Debug for ApiTesterEffect {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = match self {
-            Self::ImportLegacy { .. } => "ImportLegacy",
             Self::Send => "Send",
             Self::CancelSend => "CancelSend",
             Self::CopyResponse { .. } => "CopyResponse",
@@ -39,16 +30,9 @@ impl std::fmt::Debug for ApiTesterEffect {
     }
 }
 
-/// Work that reaches outside the document.
 #[derive(Clone, PartialEq, Effect)]
 #[effect(operation = "api_tester.effects")]
 pub enum ApiTesterEffect {
-    /// Import an old Automerge snapshot into an empty workspace
-    #[effect(job)]
-    ImportLegacy {
-        #[param("Base64-encoded legacy Automerge snapshot; handled only on this device")]
-        snapshot: String,
-    },
     /// Send request
     #[effect(job, returns, untrusted, cancellable)]
     Send,
@@ -59,15 +43,9 @@ pub enum ApiTesterEffect {
         request: String,
     },
     /// Cancel request
-    ///
-    /// Stops waiting for a server that has not answered. The send that was in
-    /// flight reports that it was cancelled.
     #[effect(own_device)]
     CancelSend,
     /// Copy response
-    ///
-    /// Puts part of the response on this device's clipboard: the body as it
-    /// is shown, every header, or the request that produced it.
     #[effect(own_device, idempotent)]
     CopyResponse {
         #[param("What to copy", choices = COPY_PARTS.iter().copied())]
@@ -85,7 +63,6 @@ pub enum ApiTesterEffect {
         #[param("Environment name, No environment, or an environment management command")]
         choice: String,
     },
-    /// Set a secret variable's value
     SetSecretValue {
         #[param("Id of the variable")]
         variable: String,
@@ -93,8 +70,6 @@ pub enum ApiTesterEffect {
         value: String,
     },
     /// Rename collection…
-    ///
-    /// Opens the form that renames the collection.
     #[effect(view, idempotent)]
     RenameCollection {
         #[param("Id of the collection")]

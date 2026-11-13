@@ -21,12 +21,14 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
-mod common;
+use std::time::Duration;
 
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 
-use common::{CANVAS, PERSON, arrangement, on_screen, private_home, show_preset, until, wait_for};
+use crate::common::{
+    CANVAS, PERSON, arrangement, on_screen, private_home, show_preset, until, wait_for,
+};
 
 /// A headless session with the shell as the whole screen and the apps a development session seeds,
 /// the framed canvas in front.
@@ -35,7 +37,7 @@ fn session(root: &std::path::Path) -> Session {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(common::seeded_apps())],
+        services: vec![Box::new(crate::common::seeded_apps())],
         questions: Some(Questions::new()),
         action_plane: ActionPlane::At(root.join("plane.sock")),
         agent_door: Some(root.join("agent.sock")),
@@ -48,11 +50,11 @@ fn session(root: &std::path::Path) -> Session {
     session
 }
 
-/// Point at the canvas's free ground at the fraction `at` of its width and height, and say `text`
-/// there: the person finding or asking where they pointed.
-fn enter_text(session: &mut Session, at: (f64, f64), text: &str) {
+/// Point at the canvas's free ground and say `text` there: the person finding or asking where
+/// they pointed.
+fn enter_text(session: &mut Session, text: &str) {
     let (x, y, w, h) = wait_for(session, "the canvas", |session| on_screen(session, CANVAS));
-    common::point_and_say(session, (x + w * at.0, y + h * at.1), text);
+    crate::common::point_and_say(session, (x + w * 0.5, y + h * 0.3), text);
 }
 
 /// Every placed strip's canvas box, by the resource its place shows: `(x, y, w, h)`, as the desk
@@ -62,7 +64,7 @@ fn boxes(session: &Session) -> Vec<(String, i64, i64, i64, i64)> {
         .places
         .iter()
         .filter_map(|place| {
-            let strip = common::strip(session, common::number(&place.strip))?;
+            let strip = crate::common::strip(session, crate::common::number(&place.strip))?;
             strip.placed.then_some((
                 place.record.clone(),
                 strip.canvas_x,
@@ -81,6 +83,31 @@ fn place_showing(session: &Session, needle: &str) -> Option<(String, i64, i64, i
         .find(|(record, ..)| record.contains(needle))
 }
 
+/// The published root of the seeded app `app` (`so.tilo.lang.tasks`): what an agent opens.
+fn root_of(session: &Session, app: &str) -> String {
+    let prefix = format!("tl:{app}:root-");
+    session
+        .resources()
+        .into_iter()
+        .find(|spec| spec.id.as_str().starts_with(&prefix))
+        .map(|spec| spec.id.as_str().to_owned())
+        .unwrap_or_else(|| panic!("{app}'s root is published"))
+}
+
+/// Open `resource` beside the place showing `beside`, through the arrangement's own `open`, as an
+/// agent's step does.
+fn open_beside(session: &mut Session, resource: &str, beside: &str) {
+    session
+        .invoke(
+            "shell:arrangement",
+            "open",
+            serde_json::json!({ "resource": resource, "beside": beside })
+                .as_object()
+                .expect("arguments"),
+        )
+        .expect("the open runs");
+}
+
 /// Opening a place beside another never moves or resizes what stands: a place's size is the size
 /// the record keeps for it (720 × 520, the canvas's frame), and only its own place action sets it.
 #[test]
@@ -90,7 +117,7 @@ fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
     let mut session = session(root.path());
 
     // The person's mails on the canvas: the inbox, at its own frame size.
-    enter_text(&mut session, (0.05, 0.08), "my mails");
+    enter_text(&mut session, "my mails");
     let inbox = wait_for(&mut session, "the inbox on the canvas", |session| {
         place_showing(session, "so.tilo.lang.mail")
     });
@@ -100,33 +127,21 @@ fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
         "the inbox takes the canvas's frame size: {inbox:?}"
     );
 
-    // An agent's question stands its turn where it was asked.
-    enter_text(&mut session, (0.7, 0.08), "what is on my task list?");
-    let conversation = wait_for(&mut session, "the conversation on the canvas", |session| {
-        place_showing(session, "chat.workspace.turns:")
+    // The notes the person keeps, opened beside the inbox.
+    let notes = root_of(&session, "so.tilo.lang.notes");
+    open_beside(&mut session, &notes, &inbox.0);
+    let conversation = wait_for(&mut session, "the notes on the canvas", |session| {
+        place_showing(session, "so.tilo.lang.notes")
     });
     assert_eq!(
         (conversation.3, conversation.4),
-        (520, 240),
-        "the turn takes an answer's own size: {conversation:?}"
+        (720, 520),
+        "the conversation takes the canvas's frame size: {conversation:?}"
     );
 
-    // The agent opens Tasks beside the conversation it was asked in, as a turn's step.
-    let resource = session
-        .service_resources()
-        .into_iter()
-        .find(|spec| spec.id.as_str().starts_with("tl:so.tilo.lang.tasks:root-"))
-        .map(|spec| spec.id.as_str().to_owned())
-        .expect("the tasks app's root is published");
-    session
-        .invoke_service_step_beside_as(
-            "agent:assistant",
-            &resource,
-            "open",
-            &serde_json::Map::new(),
-            &conversation.0,
-        )
-        .expect("the open runs");
+    // An agent opens Tasks beside the notes, as a turn's step runs the arrangement's `open`.
+    let resource = root_of(&session, "so.tilo.lang.tasks");
+    open_beside(&mut session, &resource, &conversation.0);
     let tasks = wait_for(&mut session, "tasks beside the conversation", |session| {
         place_showing(session, "so.tilo.lang.tasks")
     });
@@ -145,7 +160,7 @@ fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
         "the inbox keeps where it stood and how big it was: {after:?} against {inbox:?}"
     );
     let conversation_after =
-        place_showing(&session, "chat.workspace.turns:").expect("the conversation still stands");
+        place_showing(&session, "so.tilo.lang.notes").expect("the notes still stand");
     assert_eq!(
         (
             conversation_after.1,
@@ -187,7 +202,7 @@ fn opening_a_third_place_never_shrinks_what_the_person_is_reading() {
     let mut session = session(root.path());
 
     // The inbox, lain on the canvas: the frame its title names it by, as wide as the place.
-    enter_text(&mut session, (0.05, 0.08), "my mails");
+    enter_text(&mut session, "my mails");
     let inbox = wait_for(&mut session, "the inbox on the canvas", |session| {
         place_showing(session, "so.tilo.lang.mail")
     });
@@ -210,26 +225,14 @@ fn opening_a_third_place_never_shrinks_what_the_person_is_reading() {
     };
     let inbox_width = wait_for(&mut session, "the inbox drawn", &mut drawn_width);
 
-    // The question, then the agent opening Tasks beside it: two more places arrive.
-    enter_text(&mut session, (0.7, 0.08), "what is on my task list?");
-    let conversation = wait_for(&mut session, "the conversation on the canvas", |session| {
-        place_showing(session, "chat.workspace.turns:")
+    // The notes, then an agent opening Tasks beside them: two more places arrive.
+    let notes = root_of(&session, "so.tilo.lang.notes");
+    open_beside(&mut session, &notes, &inbox.0);
+    let conversation = wait_for(&mut session, "the notes on the canvas", |session| {
+        place_showing(session, "so.tilo.lang.notes")
     });
-    let resource = session
-        .service_resources()
-        .into_iter()
-        .find(|spec| spec.id.as_str().starts_with("tl:so.tilo.lang.tasks:root-"))
-        .map(|spec| spec.id.as_str().to_owned())
-        .expect("the tasks app's root is published");
-    session
-        .invoke_service_step_beside_as(
-            "agent:assistant",
-            &resource,
-            "open",
-            &serde_json::Map::new(),
-            &conversation.0,
-        )
-        .expect("the open runs");
+    let resource = root_of(&session, "so.tilo.lang.tasks");
+    open_beside(&mut session, &resource, &conversation.0);
     wait_for(&mut session, "tasks beside the conversation", |session| {
         place_showing(session, "so.tilo.lang.tasks")
     });
@@ -266,9 +269,7 @@ fn the_desk_style_menu_has_no_empty_band_above_its_rows() {
         .press_action("Showing Frames", TargetAction::Activate)
         .expect("the style menu opens");
     for _ in 0..4 {
-        session
-            .step(std::time::Duration::from_millis(16))
-            .expect("step");
+        session.step(Duration::from_millis(16)).expect("step");
     }
     // The menu's first row, Strips, and the button it hangs under.
     let (_, button_y, _, button_h) = on_screen(&session, "Showing Frames").expect("the button");

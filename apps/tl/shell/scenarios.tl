@@ -1,5 +1,6 @@
 use so.tilo.lang.chat as chat
 use so.tilo.lang.notes as notes
+use so.tilo.lang.tasks as tasks
 
 /// Scenarios: the desk as people meet it, in the states the shell's views are for. Each fills
 /// the desk's own fields (the ones the session writes, which a scenario may set) and the
@@ -1584,7 +1585,7 @@ action a_note_place(a: Arrangement, strip: Text, index: Int) -> Text {
 }
 
 /// A place of a kind this build has no record for: it stands as it is, which is what a place
-/// another shell made looks like (§2).
+/// another shell made looks like.
 action a_foreign_place(a: Arrangement, strip: Text, index: Int, title: Text) -> Text {
     let p = a.places.insert(
         ArrangementPlace(
@@ -1615,6 +1616,7 @@ scenario "a desk of places" -> Arrangement {
             key: "n-1",
             strip: narrow,
             shows: "so.tilo.lang.tasks",
+            record: tasks.tasks.id(),
             title: "Tasks",
             name: "Tasks",
             shell: "so.tilo.shell.strips",
@@ -1699,11 +1701,13 @@ scenario "a reference lands beside its place" -> Arrangement {
     let a = root Arrangement
     let row = a_workspace(a, "Desk")
     let talks = a_strip(a, row, "Chat", 667)
+    let design = channel_named("design")
     a.places.insert(
         ArrangementPlace(
             key: "ch",
             strip: talks,
             shows: "so.tilo.lang.chat",
+            record: design?.id() ?? "",
             title: "design",
             name: "design — Chat",
             shell: "so.tilo.shell.strips",

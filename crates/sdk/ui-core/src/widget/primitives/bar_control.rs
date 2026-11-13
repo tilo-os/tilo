@@ -240,6 +240,56 @@ impl<'a> BarControlFace<'a> {
         }
     }
 
+    /// The control as a page shows it ([`crate::composition::Face`]), on
+    /// `ground`, in the inks and geometry [`Self::paint`] paints it with.
+    /// Reached through [`crate::composition::bar_control_face`].
+    pub(crate) fn composed(
+        &self,
+        theme: &Theme,
+        ground: Color,
+    ) -> Option<crate::composition::Face> {
+        use crate::composition::{Face, TextLook, rgba8};
+        let colors = &theme.tokens.colors;
+        let fill = self.fill(theme, ground);
+        let under = fill.unwrap_or(ground);
+        let lit = self.open || self.hovered || self.pressed;
+        let label_ink = colors.ink_on(under, colors.text_primary, 4.5);
+        let icon_ink = if lit {
+            label_ink
+        } else {
+            colors.ink_on(under, colors.text_dim, 3.0)
+        };
+        let icon = Self::icon_size(theme);
+        let glyph = |i: Icon| i.glyph(icon, icon_ink, false);
+        let leading = match self.icon {
+            Some(i) => Some(glyph(i)?),
+            None => None,
+        };
+        let trailing = match self.trailing {
+            Some(i) => Some(glyph(i)?),
+            None => None,
+        };
+        Some(Face {
+            icon: leading,
+            label: self.label.map(|label| {
+                TextLook::new(label.to_owned(), &self.style(theme), Some(label_ink))
+                    .with_max_lines(Some(1))
+            }),
+            detail: None,
+            trailing,
+            fill: fill.map(rgba8),
+            edge: None,
+            radius: f64::from(theme.tokens.radii.control),
+            pad: if self.label.is_none() && self.trailing.is_none() {
+                0.0
+            } else {
+                Self::pad(theme)
+            },
+            gap: f64::from(theme.tokens.metrics.icon_label_gap),
+            spread: false,
+        })
+    }
+
     /// Paint only the control's lift in `rect` on `ground`: the fill
     /// [`Self::paint`] lays under its content, for a bar control that draws
     /// its content itself (an application's tray icon, a mark). The caller

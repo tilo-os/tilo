@@ -18,7 +18,6 @@ use crate::model::{FeedKind, Filter, Id, Library, TagKey};
 use crate::resource::FeedsEffect;
 use crate::search::feed_icon;
 
-/// The sidebar item id of a place.
 pub(crate) fn nav_id(filter: &Filter) -> String {
     match filter {
         Filter::All => "smart:all".into(),
@@ -30,7 +29,6 @@ pub(crate) fn nav_id(filter: &Filter) -> String {
     }
 }
 
-/// The place a sidebar item id names.
 pub(crate) fn filter_of(id: &str) -> Option<Filter> {
     match id {
         "smart:all" => Some(Filter::All),
@@ -65,9 +63,7 @@ impl Counted for NavItem {
     }
 }
 
-/// The sidebar's section of subscriptions and folders.
 const FEEDS_SECTION: &str = "feeds";
-/// Its heading's action, which opens the New folder dialog.
 const NEW_FOLDER: &str = "new-folder";
 
 impl Core {
@@ -182,7 +178,7 @@ impl SidebarNav {
             let fold = Rc::clone(requests);
             let follow = Rc::clone(core);
             NavList::new(Vec::new())
-                .with_accessible_name("Subscriptions")
+                .with_accessible_name(crate::i18n::t("feeds-a11y-subscriptions"))
                 // Headings and a New folder are what a growing library
                 // needs: the sidebar is a list from the start, never a rail.
                 .with_headings()

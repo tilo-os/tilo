@@ -7,20 +7,19 @@ const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR fixture";
 #[cfg(feature = "appimage")]
 const SVG: &[u8] = b"<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\"/>";
 
-/// A type 2 `AppImage`: a 64-byte ELF64 header marked `AI\x02` whose
-/// section headers end where it ends, then the squashfs image. That is the
-/// layout the runtime has; nothing here runs.
+/// A type 2 `AppImage`: a 64-byte ELF64 header marked `AI\x02` whose section
+/// headers end where it ends, then the squashfs image. That is the layout the
 #[cfg(feature = "appimage")]
 pub(crate) fn appimage(image: &[u8]) -> Vec<u8> {
     let mut elf = vec![0u8; 64];
     elf[..4].copy_from_slice(b"\x7fELF");
-    elf[4] = 2; // 64-bit
-    elf[5] = 1; // little-endian
+    elf[4] = 2;
+    elf[5] = 1;
     elf[6] = 1;
     elf[8..11].copy_from_slice(b"AI\x02");
-    elf[0x28..0x30].copy_from_slice(&64u64.to_le_bytes()); // e_shoff
-    elf[0x3A..0x3C].copy_from_slice(&64u16.to_le_bytes()); // e_shentsize
-    elf[0x3C..0x3E].copy_from_slice(&0u16.to_le_bytes()); // e_shnum
+    elf[0x28..0x30].copy_from_slice(&64u64.to_le_bytes());
+    elf[0x3A..0x3C].copy_from_slice(&64u16.to_le_bytes());
+    elf[0x3C..0x3E].copy_from_slice(&0u16.to_le_bytes());
     elf.extend_from_slice(image);
     elf
 }
@@ -568,7 +567,7 @@ fn a_record_identity_names_the_record_it_was_written_with() {
     assert_eq!(inode.record(), None);
 }
 
-/// A real, decodable `edge`-pixel PNG: a filled square in `rgb`.
+/// A real, decodable PNG of one `edge`-pixel square in `rgb`.
 #[cfg(feature = "appimage")]
 fn real_png(edge: u32, rgb: [u8; 3]) -> Vec<u8> {
     use std::io::Write as _;
@@ -596,7 +595,7 @@ fn real_png(edge: u32, rgb: [u8; 3]) -> Vec<u8> {
     let mut header = Vec::new();
     header.extend_from_slice(&edge.to_be_bytes());
     header.extend_from_slice(&edge.to_be_bytes());
-    header.extend_from_slice(&[8, 2, 0, 0, 0]); // 8-bit RGB
+    header.extend_from_slice(&[8, 2, 0, 0, 0]);
     // Each row: filter type 0, then its pixels.
     let mut row = vec![0_u8];
     for _ in 0..edge {
@@ -650,8 +649,8 @@ fn an_appimage_without_the_named_icon_shows_its_dir_icon_and_keeps_it_with_its_e
     assert_eq!(icon.format, IconFormat::Png);
     assert_eq!(icon.bytes, dir_icon);
 
-    // The entry keeps its own copy, so the list, search and the question
-    // all show the same picture, and it outlives the image being moved.
+    // The entry keeps its own copy, so the list, search and the question all show
+    // the same picture, and it outlives the image being moved.
     let (store, applications) = store(tmp.path());
     let id = store.add(&identity, &program).unwrap();
     let entry = scanned(&applications)
@@ -747,7 +746,6 @@ fn the_newest_copy_is_started_and_the_others_stay_known_until_they_are_gone() {
     assert_eq!(now.locations, std::slice::from_ref(&appimage));
     assert_eq!(now.copies(), [tarball.clone(), appimage.clone()]);
 
-    // Phase `a_gone_copy_falls_back_to_one_still_there`.
     std::fs::remove_file(&tarball).unwrap();
     assert_eq!(store.fall_back(&id, &[]).unwrap(), Some(appimage.clone()));
     let now = downloaded(&applications);
@@ -782,7 +780,6 @@ fn a_copy_only_its_window_names_joins_the_entry_another_copy_made() {
         path: bare.clone(),
         kind: ProgramKind::Program,
     };
-    // By the entry's StartupWMClass ...
     let by_class = store.identify(
         &program,
         &WindowFacts {
@@ -793,7 +790,6 @@ fn a_copy_only_its_window_names_joins_the_entry_another_copy_made() {
     );
     assert_eq!(by_class.key, "org.example.Tool");
     assert_eq!(by_class.name, "Tool");
-    // ... or by the desktop file name it was keyed by.
     let by_stem = store.identify(
         &program,
         &WindowFacts {
@@ -816,7 +812,6 @@ fn a_copy_only_its_window_names_joins_the_entry_another_copy_made() {
     let downloaded = tools[0].downloaded.as_ref().unwrap();
     assert_eq!(downloaded.program, bare);
     assert_eq!(downloaded.locations, [appimage]);
-    // A window no entry knows is its own app.
     let other = store.identify(
         &program,
         &WindowFacts {

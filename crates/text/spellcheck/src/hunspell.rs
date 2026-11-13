@@ -1,18 +1,14 @@
 //! Hunspell dictionaries, checked in-process.
 //!
-//! The system's Hunspell dictionaries (`.aff` + `.dic`, as distributions ship
-//! them under `/usr/share/hunspell`) are parsed and queried in this process by
-//! `spellbook`, so checking works the same inside an app sandbox — which can
-//! read the dictionary directory but cannot start helper programs — as
-//! outside it. Each language loads once, on first use or on
-//! [`warm_up`](super::warm_up_language), and is shared by every field.
+//! The system's `.aff` and `.dic` files under `/usr/share/hunspell` are parsed and
+//! queried here by `spellbook`, so checking works the same inside an app sandbox, which
+//! can read the dictionary directory but cannot start helper programs. Each language
+//! loads once and is shared by every field.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-/// Where distributions install Hunspell dictionaries. The app sandbox's
-/// system read profile exposes the same directories.
 pub const DICTIONARY_DIRS: &[&str] = &["/usr/share/hunspell", "/usr/share/myspell"];
 
 type Slot = Arc<OnceLock<Option<spellbook::Dictionary>>>;
@@ -24,7 +20,6 @@ fn slot(dictionary: &str) -> Option<Slot> {
     Some(Arc::clone(loaded.entry(dictionary.to_owned()).or_default()))
 }
 
-/// The dictionary for `language`, loading it on first use.
 fn dictionary(language: &str) -> Option<Slot> {
     let name = super::normalize_language(language)?;
     let slot = slot(&name)?;
@@ -35,8 +30,6 @@ fn dictionary(language: &str) -> Option<Slot> {
     slot.get()?.is_some().then_some(slot)
 }
 
-/// Load `<name>.aff` / `<name>.dic` from the first directory holding them.
-/// A bare language (`de`) takes the first regional dictionary (`de_DE`).
 pub(super) fn load_from(name: &str, dirs: &[PathBuf]) -> Option<spellbook::Dictionary> {
     let (aff, dic) = dirs.iter().find_map(|dir| locate(dir, name))?;
     let aff = reencode_aff(&std::fs::read(aff).ok()?);
@@ -69,15 +62,14 @@ fn locate(dir: &Path, name: &str) -> Option<(PathBuf, PathBuf)> {
     regional.iter().find_map(|stem| pair(stem))
 }
 
-/// The `SET` encoding an `.aff` file declares; it governs both files.
 fn declared_encoding(aff: &str) -> Option<&'static encoding_rs::Encoding> {
     aff.lines()
         .find_map(|line| line.trim().strip_prefix("SET "))
         .and_then(|label| encoding_rs::Encoding::for_label(label.trim().as_bytes()))
 }
 
-/// Decode a dictionary file with `encoding`, or as UTF-8 falling back to
-/// Latin-1 when none is declared.
+/// Decode a dictionary file with `encoding`, or as UTF-8 falling back to Latin-1 when
+/// none is declared.
 fn decode(bytes: &[u8], encoding: Option<&'static encoding_rs::Encoding>) -> String {
     match encoding {
         Some(encoding) => encoding.decode_without_bom_handling(bytes).0.into_owned(),
@@ -91,8 +83,8 @@ fn decode(bytes: &[u8], encoding: Option<&'static encoding_rs::Encoding>) -> Str
     }
 }
 
-/// Decode an `.aff`: first as UTF-8-or-Latin-1 to find its ASCII `SET` line,
-/// then with the encoding it declares.
+/// Decode an `.aff`: first as UTF-8 or Latin-1 to find its ASCII `SET` line, then with
+/// the encoding it declares.
 fn reencode_aff(bytes: &[u8]) -> String {
     let first = decode(bytes, None);
     match declared_encoding(&first) {
@@ -107,14 +99,12 @@ pub(super) fn warm_up(language: &str) -> bool {
     dictionary(language).is_some()
 }
 
-/// Whether each word is spelled correctly; `None` without a dictionary.
 pub(super) fn results(language: &str, words: &[&str]) -> Option<Vec<bool>> {
     let slot = dictionary(language)?;
     let dictionary = slot.get()?.as_ref()?;
     Some(words.iter().map(|word| dictionary.check(word)).collect())
 }
 
-/// Corrections for `word`, best first; `None` without a dictionary.
 pub(super) fn suggestions(language: &str, word: &str) -> Option<Vec<String>> {
     let slot = dictionary(language)?;
     let dictionary = slot.get()?.as_ref()?;
@@ -127,8 +117,8 @@ pub(super) fn suggestions(language: &str, word: &str) -> Option<Vec<String>> {
 mod tests {
     use super::*;
 
-    /// A tiny Latin-1 dictionary with one suffix rule, written the way many
-    /// distribution dictionaries are encoded.
+    // A tiny Latin-1 dictionary with one suffix rule, the way many distribution
+    // dictionaries are encoded.
     fn latin1_dictionary(dir: &Path, stem: &str) {
         std::fs::write(
             dir.join(format!("{stem}.aff")),
@@ -161,8 +151,6 @@ mod tests {
             "{suggestions:?}"
         );
 
-        // A bare language finds its regional dictionary; a missing one is
-        // simply absent.
         assert!(load_from("xx", &dirs).is_some());
         assert!(load_from("zz_ZZ", &dirs).is_none());
     }

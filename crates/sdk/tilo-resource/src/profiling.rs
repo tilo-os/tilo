@@ -92,7 +92,7 @@ pub fn measure<T>(phase: &'static str, operation: impl FnOnce() -> T) -> T {
 #[cfg(not(target_arch = "wasm32"))]
 mod recorder {
     use std::cell::RefCell;
-    use tilo_clock::Instant;
+    use tilo_clock::time::Instant;
 
     thread_local! {
         static RECORDS: RefCell<Option<Capture>> = const { RefCell::new(None) };

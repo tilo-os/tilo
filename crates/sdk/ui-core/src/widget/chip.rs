@@ -73,6 +73,10 @@ pub enum ChipStyle {
     /// as a primary action's, so the number is the selection's colour and
     /// reads white in every theme.
     Accent,
+    /// Someone's own colour, for a chip naming them: their presence colour
+    /// washed into the body and drawn as the edge, and their name inked in
+    /// it, as legible on the wash as any label.
+    Identity(Color),
 }
 
 /// The resolved colours of one pill.
@@ -132,6 +136,21 @@ impl ChipStyle {
                     lead: colors.ink_on(fill, tint, NON_TEXT_MIN_CONTRAST),
                 }
             }
+            Self::Identity(identity) => {
+                let tint = colors.presence.of(identity);
+                let fill = mix8(ground, tint, TINT_FILL);
+                let fill = if hovered {
+                    colors.lift_on(fill, 0.5)
+                } else {
+                    fill
+                };
+                ChipColors {
+                    fill,
+                    edge: Some(mix8(ground, tint, TINT_EDGE)),
+                    ink: colors.ink_on(fill, tint, SMALL_TEXT_MIN_CONTRAST),
+                    lead: colors.ink_on(fill, tint, NON_TEXT_MIN_CONTRAST),
+                }
+            }
             Self::Accent => ChipColors {
                 fill: colors.intent.accent,
                 edge: None,
@@ -166,6 +185,9 @@ pub enum ChipLead {
     /// A person's face: the initials of the chip's label (their name) on
     /// their presence colour, as their avatar shows them everywhere.
     Face(Color),
+    /// An agent's face: the identity mark every surface names an agent by,
+    /// on its presence colour, where a person's chip shows their initials.
+    Agent(Color),
 }
 
 /// A pill's geometry in one theme: everything the text scale moves.
@@ -203,12 +225,22 @@ impl PillMetrics {
         (self.height - 8.0).max(self.glyph)
     }
 
+    /// The "×" of a removable pill: inset from its trailing edge and centred
+    /// in it.
+    fn remove_rect(&self, pill: Rect) -> Rect {
+        let x1 = pill.x1 - self.pad_x;
+        Rect::from_center_size(
+            Point::new(x1 - self.glyph / 2.0, pill.center().y),
+            (self.glyph, self.glyph),
+        )
+    }
+
     fn lead_width(&self, lead: ChipLead) -> f64 {
         match lead {
             ChipLead::None => 0.0,
             ChipLead::Dot(_) => self.dot,
             ChipLead::Glyph(_) => self.glyph,
-            ChipLead::Face(_) => self.face(),
+            ChipLead::Face(_) | ChipLead::Agent(_) => self.face(),
         }
     }
 
@@ -351,12 +383,7 @@ impl<'a> ChipFace<'a> {
         if !self.removable {
             return Rect::ZERO;
         }
-        let metrics = PillMetrics::of(theme, TextRole::Label);
-        let x1 = self.rect.x1 - metrics.pad_x;
-        Rect::from_center_size(
-            Point::new(x1 - metrics.glyph / 2.0, self.rect.center().y),
-            (metrics.glyph, metrics.glyph),
-        )
+        PillMetrics::of(theme, TextRole::Label).remove_rect(self.rect)
     }
 
     pub fn paint(
@@ -580,6 +607,19 @@ pub(crate) fn paint_pill(
                 crate::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
             x += metrics.glyph + metrics.gap;
+        }
+        ChipLead::Agent(colour) => {
+            let side = metrics.face();
+            let mark = Rect::from_center_size(Point::new(x + side / 2.0, cy), (side, side));
+            crate::agent_identity::draw_agent_identity_mark(
+                scene,
+                transform,
+                mark,
+                fade(theme.tokens.colors.presence.of(colour)),
+                theme,
+                crate::agent_identity::AgentIdentityStyle::Solid,
+            );
+            x += side + metrics.gap;
         }
     }
     if label_w > 0.0 {
@@ -1081,6 +1121,17 @@ impl Chip {
             height: self.box_height() as f32,
         }
     }
+
+    /// Where the "×" stands: the layout's place, so a press, a screen reader
+    /// or a script finds it before anything paints, inside the chip rather
+    /// than at the window's origin, where a control nothing placed stands.
+    fn place_remove(&mut self) {
+        self.x_rect = if self.removable && self.rect.width() > 0.0 {
+            self.metrics.remove_rect(self.pill_rect())
+        } else {
+            Rect::ZERO
+        };
+    }
 }
 
 impl Widget for Chip {
@@ -1198,6 +1249,7 @@ impl Widget for Chip {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.place_remove();
     }
 
     /// A settled pill keeps its footprint until its label or type changes
@@ -1218,12 +1270,6 @@ impl Widget for Chip {
             return;
         }
         let pill = self.pill_rect();
-        let face = ChipFace::new(pill, &self.label);
-        self.x_rect = if self.removable {
-            face.removable(false).remove_rect(theme)
-        } else {
-            Rect::ZERO
-        };
         // Highlight over the same grown rect the press handler and
         // `cursor_shape` test, so feedback and behaviour agree in the bands
         // above and below the glyph.
@@ -1345,8 +1391,8 @@ impl Widget for Chip {
         "Chip"
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        self.tooltip.as_deref()
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.tooltip.as_deref().map(std::borrow::Cow::Borrowed)
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -1541,14 +1587,21 @@ const CHIP_OPERATIONS: [&[&str]; 8] = {
 
 impl crate::resources::PublishesResources for Chip {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        let mut resources = self.activation.native_resources();
-        resources.extend(
-            [self.toggle_verb.as_ref(), self.remove_verb.as_ref()]
-                .into_iter()
-                .flatten()
-                .map(super::control_verb::ControlVerb::resource),
-        );
-        resources
+        // The chip is one resource however many verbs it publishes: a host
+        // keeps one spec per id, so a second spec under the same id would
+        // shadow the first and the verb it holds would answer nothing.
+        let mut resource = self.activation.native_resources().into_iter().next();
+        for verb in [self.toggle_verb.as_ref(), self.remove_verb.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            let mut verb = verb.resource();
+            match resource.as_mut() {
+                Some(resource) => resource.actions.append(&mut verb.actions),
+                None => resource = Some(verb),
+            }
+        }
+        resource.into_iter().collect()
     }
 }
 #[cfg(test)]
@@ -1814,7 +1867,7 @@ mod tests {
             lay_out(&mut c);
             draw(&mut c);
             let x = c.remove_rect().center();
-            assert!(x.x > 0.0, "× rect resolves after draw");
+            assert!(x.x > 0.0, "the × stands where the layout puts it");
             dispatch(&mut c, &cursor(x));
             assert!(dispatch(&mut c, &mouse_press()), "× click is consumed");
             assert!(c.take_removed(), "remove signal fires");
@@ -1928,6 +1981,25 @@ mod tests {
         let rect = harness.inspection().root.children[0].rect;
         Rect::new(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3])
     }
+
+    /// A control's place is the layout's: a chip laid out and not yet painted
+    /// still answers a press on its "×", inside the chip, never at the
+    /// window's origin where a control nothing placed stands.
+    #[test]
+    fn the_layout_places_the_remove_control_without_a_paint() {
+        let mut chip = Chip::new("alice@example.com").removable();
+        lay_out(&mut chip);
+        let x = chip.remove_rect();
+        assert!(!x.is_zero_area(), "the layout places the ×: {x:?}");
+        assert!(
+            chip.get_rect().contains(x.center()),
+            "inside the chip: {x:?} in {:?}",
+            chip.get_rect()
+        );
+        dispatch(&mut chip, &cursor(x.center()));
+        assert!(dispatch(&mut chip, &mouse_press()), "the × press lands");
+        assert!(chip.take_removed(), "and removes");
+    }
 }
 
 #[cfg(test)]
@@ -2010,6 +2082,46 @@ mod activation_tests {
                 );
             }
         }
+    }
+
+    /// A chip that both runs a press and offers its own removal publishes one
+    /// resource for its control: the host keeps one spec per id, so the
+    /// remove would be shadowed by the press's spec and answer nothing.
+    #[test]
+    fn a_chip_with_a_press_and_a_remove_publishes_one_resource_both_reach() {
+        let removed = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&removed);
+        let chip = Chip::new("Book: The Tideglass")
+            .with_id("view-chip:book")
+            .on_view(|| {})
+            .on_remove_view(move || counted.set(counted.get() + 1));
+        let mut harness = crate::headless::FrameHarness::new(
+            crate::State::new(),
+            Box::new(crate::widget::Row::new().push(Box::new(chip))),
+            (400, 100),
+        );
+        let resources = harness.resources();
+        let published: Vec<&tilo_actions::ResourceSpec> = resources
+            .iter()
+            .filter(|resource| resource.id.as_str() == "tilo.control:view-chip:book")
+            .collect();
+        assert_eq!(published.len(), 1, "one resource for the control");
+        let actions: Vec<&str> = published
+            .first()
+            .expect("the chip publishes its control")
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        assert_eq!(actions, ["invoke", "remove"]);
+        harness
+            .invoke_published(
+                "tilo.control:view-chip:book",
+                "remove",
+                &serde_json::Map::from_iter([("value".to_owned(), serde_json::json!(false))]),
+            )
+            .expect("the remove answers");
+        assert_eq!(removed.get(), 1, "the chip's own handler ran");
     }
 
     #[test]

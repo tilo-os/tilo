@@ -1,16 +1,13 @@
 //! Root widget for the Contacts app.
 //!
-//! The window is one [`NavShell`]: the address book's groups are the
-//! sidebar, the people in the chosen group are the overview list, and the
-//! selected person (or the form editing them) is the content. The headers
-//! carry the commands: search, more and new above the list; favorite, edit
-//! and delete above the person.
-//!
-//! The book is the [`Contacts`] record, read as it was last presented; the
-//! window keeps only its view of it (selection, filter, forms, dialogs). Every change to the book is one of
-//! its verbs or field edits, submitted through the window's dispatcher: the
-//! same door Ctrl+K and agents take.
+//! The window is one [`NavShell`]: groups are the sidebar, the people in the
+//! chosen group the overview list, and the selected person or the form editing
+//! them the content. The book is the [`Contacts`] record, read as it was last
+//! presented; the window keeps only its view of it (selection, filter, forms,
+//! dialogs). Every change to the book goes through the window's dispatcher, as
+//! Ctrl+K and agents do.
 
+use crate::account_editor::CATALOG;
 use crate::resource::Contacts;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -44,6 +41,7 @@ use crate::form::EditForm;
 use crate::model::{Contact, ContactId, Labeled, SortKey, group_names_equal};
 use crate::vcard::VCardVersion;
 use crate::view::{Bridge, ContactList, ListEntry, Request, Shared, empty_pane};
+use ui::widget::DrawChild;
 
 mod dialogs;
 mod effects;
@@ -53,15 +51,13 @@ mod handoff;
 
 use dialogs::{DialogKey, ExportDraft};
 
-/// Private presentation token; it is never written to the shared document.
 const FAVORITES_FILTER: &str = "\u{0}contacts:favorites";
 
-/// The sidebar destinations that are not groups.
 const ALL_DESTINATION: &str = "all";
 
 /// What an empty book says to someone who may only view it, in place of a
 /// New contact that would only be refused.
-const VIEW_ONLY_MESSAGE: &str = "You can view this address book, but not add to it.";
+const VIEW_ONLY_MESSAGE: &str = "contacts-view-only-message";
 const FAVORITES_DESTINATION: &str = "favorites";
 const GROUP_DESTINATION: &str = "group:";
 
@@ -91,8 +87,6 @@ struct DuplicateReview {
     survivor: Contact,
     source: Contact,
     reasons: Vec<crate::actions::DuplicateReason>,
-    /// Each conflicting field and whose value it keeps: `"current"` (the
-    /// survivor's) or `"other"` (the merged-away contact's).
     choices: Vec<(crate::actions::MergeField, LocalState<String>)>,
 }
 
@@ -106,7 +100,6 @@ enum ContextAction {
 }
 
 impl ContextAction {
-    /// The menu label; the favorite row says what choosing it does.
     fn label(self, is_favorite: bool) -> &'static str {
         match self {
             ContextAction::Edit => "Edit",
@@ -126,7 +119,6 @@ enum MoreAction {
     ReviewDuplicate,
 }
 
-/// The action ids of the window bar's slots ([`ContactsApp::window_toolbar`]).
 const BAR_NEW: &str = "new-contact";
 const BAR_CALL: &str = "call";
 const BAR_MESSAGE: &str = "message";
@@ -173,68 +165,42 @@ enum ContentKey {
     reason = "independent frame bookkeeping (list, structure, layout and paint staleness) and the seeding flags; none is a state machine"
 )]
 pub struct ContactsApp {
-    /// The book as it was presented last.
     pub(crate) store: Rc<Contacts>,
-    /// A contact this window just asked the book to add, selected before it
-    /// arrives.
     awaiting: Option<ContactId>,
     selected: Option<ContactId>,
     mode: Mode,
     form: Option<EditForm>,
     form_epoch: u64,
     sort: SortKey,
-    /// What the list's order picker runs, once the window takes part in
-    /// the book.
     sort_binding: Option<ActionBinding<String>>,
     group_filter: Option<String>,
     duplicate_review: Option<DuplicateReview>,
     duplicate_candidate: Option<crate::actions::DuplicateCandidate>,
-    /// The export whose format is being chosen.
     export: Option<ExportDraft>,
-    /// When switching to another contact would lose unsaved edits, the
-    /// target id parks here while "Save changes?" is asked.
     pending_switch: Option<ContactId>,
 
     rect: Rect,
     shell: NavShell,
     shared: Shared,
-    /// The sidebar's selection: a destination id.
     destination: LocalState<Option<String>>,
-    /// The list's order, as the sort control shows it.
     sort_choice: LocalState<String>,
-    /// Whether the sort control stands under the overview's header: only
-    /// while the list has rows to order.
     sort_shown: bool,
     overview_controls_shown: Option<(bool, Option<FileWork>)>,
-    /// The More command chosen in the window bar's menu, run after the
-    /// event.
     more_pick: std::sync::Arc<std::sync::Mutex<Option<MoreAction>>>,
-    /// The sidebar rows last handed to the shell.
     sidebar_shown: Vec<(String, String, u32)>,
     content_shown: Option<ContentKey>,
     dialog: Option<(DialogKey, Element)>,
     menu: ContextMenu,
     open_menu: Option<OpenMenu>,
     pending_menu: Option<PendingMenu>,
-    /// The open menu stays on the row or button it opened from while the
-    /// window moves under it.
     menu_follows: Option<PendingMenu>,
-    /// A screen to bring to the front of a narrow window once laid out.
     show_pane: Option<NavPane>,
-    /// The last website opened from a contact.
     opened_url: Option<String>,
-    /// The book's published actions, which the page's controls run.
     pub(crate) actions: Option<ui::framework::Actions<Contacts>>,
-    /// Calls, messages and email drafts handed to the desktop, waiting for
-    /// its answer.
     hand_off: Vec<handoff::PendingHandOff>,
-    /// Where the person's page is scrolled to, kept while the same person
-    /// shows.
     detail_scroll: (Option<ContactId>, std::rc::Rc<std::cell::Cell<(f32, f32)>>),
     last_mouse: Point,
     list_stale: bool,
-    /// Whether the list was published standing alone, a narrow window's
-    /// screen: only then does an empty book say so in the list.
     list_alone: bool,
     structure_dirty: bool,
     layout_dirty: bool,
@@ -243,15 +209,10 @@ pub struct ContactsApp {
     scenario: Option<String>,
     file_work: Rc<Cell<Option<FileWork>>>,
     opened_cards: Option<String>,
-    /// What the view's effect handler asks of the window, and the pending
-    /// import reviews it answers for.
     asked: effects::Asked,
     pending_conflict_resolution: Option<(String, bool)>,
 
-    /// The book as the document holds it, shown as it changes; `None` for a
-    /// window outside the framework.
     document: Option<ui::framework::Live<Contacts>>,
-    /// The `(revision, loads)` of the book last shown.
     presented: Option<(u64, u64)>,
     dispatcher: Option<Dispatcher<Contacts>>,
     pub(crate) jobs: Option<Jobs<Contacts>>,
@@ -260,25 +221,18 @@ pub struct ContactsApp {
     pub(crate) identity_directory:
         Option<ui::framework::PersonRecord<tilo_contact_directory::ContactDirectory>>,
     unconfirmed_save: Option<EditForm>,
-    /// Whether the notice showing offers to undo a deletion, and whether a
-    /// later change of the person's has since made its Undo stale.
     delete_undo: Cell<DeleteUndo>,
 }
 
 /// A deleted contact's "Undo" notice.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum DeleteUndo {
-    /// No notice offers to undo a deletion.
     #[default]
     None,
-    /// The notice's Undo takes back the deletion, the same as Ctrl+Z.
     Offered,
-    /// The person changed the book since: Undo would take back that change
-    /// instead, so the notice goes.
     Lapsed,
 }
 
-/// The list's orders: the control's value, its label, and the key.
 const SORTS: &[(&str, &str, SortKey)] = &[
     ("name", "Sort by last name", SortKey::Name),
     ("organization", "Sort by organization", SortKey::Org),
@@ -300,7 +254,7 @@ fn sort_control(sort: Option<&ActionBinding<String>>, sort_choice: &LocalState<S
         .collect();
     let picker = Dropdown::from_state(labels, sort_choice)
         .with_id("contacts.sort")
-        .with_accessible_name("Sort contacts");
+        .with_accessible_name(crate::account_editor::CATALOG.t("contacts-a11y-sort"));
     let mut sort = match sort {
         Some(sort) => picker.on_action(sort.clone()),
         None => picker.with_enabled(false),
@@ -379,12 +333,10 @@ impl ContactsApp {
         self.dispatcher = Some(dispatcher);
     }
 
-    /// Bind the list's order picker to the book's published effects.
     pub(crate) fn attach_actions(&mut self, actions: &ui::framework::Actions<Contacts>) {
         self.sort_binding = actions.effect_binding(ContactsEffect::SORT_CONTACTS);
     }
 
-    /// Sort the list by `order`, as the order picker names it.
     pub(crate) fn sort_by(&self, order: &str) -> Result<(), String> {
         let (.., sort) = SORTS
             .iter()
@@ -394,7 +346,6 @@ impl ContactsApp {
         Ok(())
     }
 
-    /// Show the book the document holds now, when it changed since.
     fn follow_document(&mut self) {
         let Some(document) = &self.document else {
             return;
@@ -467,10 +418,9 @@ impl ContactsApp {
         self.dirty = true;
     }
 
-    /// Say `text` of a change just submitted once it is kept: at once in an
-    /// address book nobody else decides, once the workspace accepts it in a
-    /// shared one, and never when the workspace refuses it
-    /// ([`Self::announce_answers`]).
+    /// Say `text` of a change once it is kept: at once in a book nobody else
+    /// decides, once the workspace accepts it in a shared one, never when it is
+    /// refused ([`Self::announce_answers`]).
     fn say_when_kept(&mut self, text: &str) {
         match &self.dispatcher {
             Some(dispatcher) => dispatcher.say_when_kept(text),
@@ -478,9 +428,8 @@ impl ContactsApp {
         }
     }
 
-    /// Show what the workspace answered of this window's changes: one it kept
-    /// is said done ("Contact created"), and one it refused, which the
-    /// record withdrew, says why instead.
+    /// What the workspace answered: a change it kept is said done, one it refused,
+    /// which the record withdrew, says why.
     fn announce_answers(&mut self) {
         let Some(dispatcher) = &self.dispatcher else {
             return;
@@ -539,10 +488,8 @@ impl ContactsApp {
         }
     }
 
-    /// The live app. Never fabricates sample content.
-    ///
-    /// Nothing here touches the disk: the address book lives in the shared
-    /// Automerge document, which the host opens and writes back on autosave.
+    /// The live app, which never fabricates content. Nothing touches the disk: the
+    /// book is the shared document, which the host opens and writes on autosave.
     pub fn new() -> Self {
         Self::configured()
     }
@@ -561,9 +508,6 @@ impl ContactsApp {
         self
     }
 
-    /// The hermetic `--shots` / test app: seeds the varied sample address book
-    /// and never touches the user's disk, so a headless frame is populated and
-    /// tests are deterministic.
     pub fn sample() -> Self {
         Self::configured()
     }
@@ -643,13 +587,10 @@ impl ContactsApp {
         }
     }
 
-    /// Stage a capture scenario: it is applied once the sample book is
-    /// seeded, on the first `sync`.
     pub fn stage_scenario(&mut self, name: Option<&str>) {
         self.scenario = name.map(str::to_owned);
     }
 
-    /// Bring the selected person to the front of a narrow window.
     pub fn shots_show_detail(&mut self) {
         self.show_pane = Some(NavPane::Content);
     }
@@ -734,7 +675,6 @@ impl ContactsApp {
         self.dirty = true;
     }
 
-    /// Show the canonical duplicate pair staged through the resource's actions.
     fn stage_duplicate_review(&mut self) {
         let Some(candidate) = self.duplicate_candidate.clone() else {
             return;
@@ -742,7 +682,6 @@ impl ContactsApp {
         let _ = self.open_duplicate_review(candidate.survivor_id, candidate.source_id);
     }
 
-    /// Ids currently visible after the group filter, in sort order.
     fn visible_ids(&self) -> Vec<ContactId> {
         if self.group_filter.as_deref() == Some(FAVORITES_FILTER) {
             let mut contacts = self
@@ -758,7 +697,6 @@ impl ContactsApp {
             .filtered_sorted("", self.group_filter.as_deref(), self.sort)
     }
 
-    /// The group the list shows, by name, or `None` for every contact.
     fn destination_label(&self) -> Option<String> {
         match self.group_filter.as_deref() {
             None => None,
@@ -796,7 +734,6 @@ impl ContactsApp {
         self.list_stale = true;
     }
 
-    /// Follow the sidebar: the person chose a destination.
     fn poll_destination(&mut self) {
         let Some(chosen) = self.destination.with(Clone::clone) else {
             return;
@@ -812,7 +749,6 @@ impl ContactsApp {
         self.set_group_filter(group);
     }
 
-    /// Open contact `id`'s form on `slot`.
     pub(super) fn edit_field(&mut self, id: ContactId, slot: crate::form::Slot) {
         if let Some(contact) = self.store.contact(id).cloned() {
             self.selected = Some(id);
@@ -833,8 +769,6 @@ impl ContactsApp {
         self.dirty = true;
     }
 
-    /// Enter the same blank-contact flow from every affordance (header,
-    /// first-run state, keyboard and assistive technology).
     fn begin_new_contact(&mut self) {
         let mut contact = Contact::new();
         contact.phones.push(Labeled::new("mobile", ""));
@@ -899,9 +833,8 @@ impl ContactsApp {
         self.dirty = true;
     }
 
-    /// Toggle the favourite flag through the sole published action route.
-    /// Every header, semantic, keyboard, and menu affordance calls this so a
-    /// stale local contact cannot mutate the projection after a refusal.
+    /// Toggle the favourite through the published action, so a stale local contact
+    /// cannot change the projection after a refusal.
     fn toggle_favorite(&mut self, doc: &mut ui::widget::Edits<'_>, id: ContactId) -> bool {
         let Some(favorite) = self.store.contact(id).map(|contact| !contact.favorite) else {
             return false;
@@ -961,14 +894,10 @@ impl ContactsApp {
         Ok(())
     }
 
-    /// Whether an export is being set up or written.
     pub(crate) fn export_is_busy(&self) -> bool {
         self.export.is_some() || self.portal_in_flight()
     }
 
-    /// Whether the open edit form holds changes not yet written to the
-    /// store: for a new contact, any content at all; otherwise any
-    /// difference from the stored record.
     fn form_is_dirty(&mut self) -> bool {
         let Some(form) = &mut self.form else {
             return false;
@@ -982,9 +911,8 @@ impl ContactsApp {
             .is_none_or(|stored| *stored != form.draft)
     }
 
-    /// Switch the selected contact to `id`. If an edit form is open with
-    /// unsaved changes, park the target in `pending_switch` and ask
-    /// "Save changes?" instead of switching directly.
+    /// Switch to `id`; with an open form that has unsaved changes, park the target
+    /// and ask "Save changes?" instead.
     fn request_select(&mut self, id: ContactId) {
         if self.mode == Mode::Edit {
             let same = self.form.as_ref().is_some_and(|form| form.draft.id == id);
@@ -1000,9 +928,9 @@ impl ContactsApp {
         self.commit_select(id);
     }
 
-    /// Open `id` from *outside* the list — the global search or an agent. The
-    /// target may be hidden by the current group, so "open" reveals it:
-    /// when it is not in the visible set, show every contact first.
+    /// Open `id` from outside the list — a search hit or an agent. A target hidden by
+    /// the current group reveals it: when it is not visible, show every contact
+    /// first.
     fn reveal_contact(&mut self, id: ContactId) {
         if !self.visible_ids().contains(&id) {
             self.set_group_filter(None);
@@ -1010,9 +938,8 @@ impl ContactsApp {
         self.commit_select(id);
     }
 
-    /// Reveal a durable membership group through its canonical view action.
-    /// This is presentation-only: opening a group must not fabricate a second
-    /// mutable index or history entry. A narrow window shows the list.
+    /// Reveal a group through its view action: presentation only, never a second
+    /// index or a history entry. A narrow window shows the list.
     fn reveal_group(&mut self, requested: &str) -> Result<(), String> {
         let group = self
             .store
@@ -1026,7 +953,6 @@ impl ContactsApp {
         Ok(())
     }
 
-    /// Unconditionally switch selection to `id` (leaving any edit form).
     fn commit_select(&mut self, id: ContactId) {
         self.form = None;
         self.mode = Mode::View;
@@ -1036,7 +962,6 @@ impl ContactsApp {
         self.dirty = true;
     }
 
-    /// Bring the content to the front of a narrow window.
     fn reveal_content(&mut self) {
         if self.rect.width() > 0.0 {
             self.shell.show(NavPane::Content);
@@ -1045,10 +970,9 @@ impl ContactsApp {
         }
     }
 
-    /// Delete the contact `id` at the person's own press, key or menu
-    /// choice. The deletion is one undo step of theirs, so nothing is asked:
-    /// it applies now and the notice's Undo takes it back, the same as
-    /// Ctrl+Z. The palette, a script or an agent is still asked first.
+    /// Delete the contact `id` at the person's own press, key or menu choice: it is
+    /// one undo step of theirs, so nothing is asked and the notice's Undo takes it
+    /// back. The palette, a script or an agent is asked first.
     fn delete_contact(&mut self, doc: &mut ui::widget::Edits<'_>, id: ContactId) {
         self.dirty = true;
         let Some(dispatcher) = &self.dispatcher else {
@@ -1074,7 +998,6 @@ impl ContactsApp {
         self.delete_undo.set(DeleteUndo::Offered);
     }
 
-    /// Move the list selection by `delta` rows within the visible set.
     fn move_selection(&mut self, delta: isize) {
         let ids = self.visible_ids();
         if ids.is_empty() {
@@ -1122,7 +1045,6 @@ impl ContactsApp {
         self.dirty = true;
     }
 
-    /// The More menu's commands and whether each can run now.
     fn more_rows(&self) -> Vec<(MoreAction, bool)> {
         let importing = self.portal_in_flight();
         let mut rows = vec![
@@ -1151,10 +1073,6 @@ impl ContactsApp {
     }
 }
 
-// =====================================================================
-// The window: sidebar, list, content, headers, dialogs and menus
-// =====================================================================
-
 impl ContactsApp {
     fn sidebar_list(
         rows: &[(String, String, u32)],
@@ -1182,11 +1100,10 @@ impl ContactsApp {
         NavList::new(sections)
             .with_headings()
             .with_id("contacts.groups")
-            .with_accessible_name("Groups")
+            .with_accessible_name(crate::account_editor::CATALOG.t("contacts-a11y-groups"))
             .bind_selection(destination)
     }
 
-    /// The sidebar's rows for the book as it is now.
     fn sidebar_rows(&self) -> Vec<(String, String, u32)> {
         let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
         let favorites = self.store.contacts.iter().filter(|c| c.favorite).count();
@@ -1239,9 +1156,8 @@ impl ContactsApp {
         }
     }
 
-    /// What the bar names: the person being written, the person shown
-    /// (beside the list, or pushed over it in a narrow window), else the
-    /// list.
+    /// What the bar names: the person being written, the person shown (beside the
+    /// list, or over it in a narrow window), else the list.
     fn location_label(&self) -> String {
         if let Some(form) = self.form.as_ref().filter(|_| self.mode == Mode::Edit) {
             let draft = &form.draft;
@@ -1249,7 +1165,7 @@ impl ContactsApp {
                 .iter()
                 .all(|part| part.trim().is_empty());
             return if form.is_new && unnamed {
-                "New contact".to_owned()
+                crate::account_editor::CATALOG.t("contacts-new-contact-title")
             } else {
                 draft.display_name()
             };
@@ -1261,13 +1177,12 @@ impl ContactsApp {
             return contact.display_name();
         }
         self.destination_label()
-            .unwrap_or_else(|| "All contacts".to_owned())
+            .unwrap_or_else(|| crate::account_editor::CATALOG.t("contacts-all-contacts"))
     }
 
-    /// The window bar's slots ([`ui::window_toolbar`]): the shell's own,
-    /// what is open as the window's location, New contact and what can be done
-    /// to the person shown (or Save and Cancel while editing them), and
-    /// import, export and a duplicate's review in the bar's menu.
+    /// The window bar's slots ([`ui::window_toolbar`]): the shell's own, the
+    /// location, New contact, what can be done to the person shown (or Save and
+    /// Cancel while editing), and import, export and duplicate review in the menu.
     fn window_toolbar(&self) -> ui::window_toolbar::WindowToolbar {
         use ui::window_toolbar::{ToolbarAction, ToolbarLocation};
         let mut toolbar = self.shell.window_toolbar();
@@ -1277,44 +1192,91 @@ impl ContactsApp {
         });
         let mut actions = Vec::new();
         if self.mode == Mode::Edit && self.form.is_some() {
-            actions.push(ToolbarAction::new(BAR_SAVE, "check", "Save"));
+            actions.push(ToolbarAction::new(
+                BAR_SAVE,
+                "check",
+                crate::account_editor::CATALOG.t("contacts-save"),
+            ));
             // Not the window's own ✕: Cancel leaves the form, not the window.
-            actions.push(ToolbarAction::new(BAR_CANCEL, "undo-2", "Cancel"));
+            actions.push(ToolbarAction::new(
+                BAR_CANCEL,
+                "undo-2",
+                crate::account_editor::CATALOG.t("contacts-account-cancel"),
+            ));
         } else {
-            actions.push(ToolbarAction::new(BAR_NEW, "plus", "New contact"));
+            actions.push(ToolbarAction::new(
+                BAR_NEW,
+                "plus",
+                crate::account_editor::CATALOG.t("contacts-new-contact-title"),
+            ));
             if let Some(contact) = self
                 .selected
                 .and_then(|id| self.store.contact(id))
                 .filter(|_| !self.store.is_empty())
             {
-                // Reaching the person where they are: the number and the
-                // address go to whichever app on this device serves `tel:`,
-                // `sms:` and `mailto:`. A verb with nothing to act on is not
-                // drawn, rather than drawn and dead.
+                // The number and address go to whichever app serves `tel:`, `sms:` and
+                // `mailto:`; a verb with nothing to act on is not drawn.
                 if crate::detail::primary_phone(contact).is_some() {
-                    actions.push(ToolbarAction::new(BAR_CALL, "phone", "Call"));
-                    actions.push(ToolbarAction::new(BAR_MESSAGE, "message-square", "Text"));
+                    actions.push(ToolbarAction::new(
+                        BAR_CALL,
+                        "phone",
+                        crate::account_editor::CATALOG.t("contacts-call"),
+                    ));
+                    actions.push(ToolbarAction::new(
+                        BAR_MESSAGE,
+                        "message-square",
+                        crate::account_editor::CATALOG.t("contacts-text"),
+                    ));
                 }
                 if crate::detail::primary_email(contact).is_some() {
-                    actions.push(ToolbarAction::new(BAR_EMAIL, "mail", "Email"));
+                    actions.push(ToolbarAction::new(
+                        BAR_EMAIL,
+                        "mail",
+                        crate::account_editor::CATALOG.t("contacts-email"),
+                    ));
                 }
                 actions.push(
-                    ToolbarAction::new(BAR_FAVORITE, "star", "Favorite").on(contact.favorite),
+                    ToolbarAction::new(
+                        BAR_FAVORITE,
+                        "star",
+                        crate::account_editor::CATALOG.t("contacts-a11y-favorite"),
+                    )
+                    .on(contact.favorite),
                 );
-                // Named for the whole contact: each field's pencil edits
-                // only that field.
-                actions.push(ToolbarAction::new(BAR_EDIT, "pencil", "Edit contact"));
-                actions.push(ToolbarAction::new(BAR_DELETE, "trash-2", "Delete contact"));
+                actions.push(ToolbarAction::new(
+                    BAR_EDIT,
+                    "pencil",
+                    crate::account_editor::CATALOG.t("contacts-edit-contact"),
+                ));
+                actions.push(ToolbarAction::new(
+                    BAR_DELETE,
+                    "trash-2",
+                    crate::account_editor::CATALOG.t("contacts-remove-contact"),
+                ));
             }
         }
         for (action, enabled) in self.more_rows() {
             let (id, icon, name) = match action {
-                MoreAction::Import if !enabled => (BAR_IMPORT, "download", "Importing…"),
-                MoreAction::Import => (BAR_IMPORT, "download", "Import contacts"),
-                MoreAction::Export => (BAR_EXPORT, "upload", "Export contacts"),
-                MoreAction::ReviewDuplicate => {
-                    (BAR_REVIEW_DUPLICATE, "users", "Review possible duplicate")
-                }
+                MoreAction::Import if !enabled => (
+                    BAR_IMPORT,
+                    "download",
+                    crate::account_editor::CATALOG.t("contacts-bar-importing"),
+                ),
+                MoreAction::Import => (
+                    BAR_IMPORT,
+                    "download",
+                    crate::account_editor::CATALOG.t("contacts-import"),
+                ),
+                MoreAction::Export => (
+                    BAR_EXPORT,
+                    "upload",
+                    crate::account_editor::CATALOG.t("contacts-export"),
+                ),
+                MoreAction::ReviewDuplicate => (
+                    BAR_REVIEW_DUPLICATE,
+                    "users",
+                    crate::account_editor::CATALOG.t("contacts-review-duplicate"),
+                ),
             };
             actions.push(
                 ToolbarAction::new(id, icon, name)
@@ -1326,8 +1288,6 @@ impl ContactsApp {
         toolbar
     }
 
-    /// Queue what the person did in the window's bar, applied with what the
-    /// panes asked for ([`Self::apply_requests`]).
     fn take_window_toolbar_events(&mut self) {
         for event in ui::window_toolbar::take_events() {
             if self.shell.window_toolbar_event(&event) {
@@ -1381,7 +1341,6 @@ impl ContactsApp {
         }
     }
 
-    /// Hand the list its rows and the sidebar its groups.
     fn publish_list(&mut self) {
         self.list_stale = false;
         let pictures = self.shared.borrow().pictures.clone();
@@ -1428,25 +1387,17 @@ impl ContactsApp {
         }
     }
 
-    /// What the list says in place of rows: its title, sentence and icon.
-    /// Beside the content, an empty book is said once, by the content's
-    /// first-run pane; a narrow window's list stands alone, so it says so
-    /// itself rather than show nothing. While the first contact is being
-    /// written the form takes that pane's place, so the list says it then
-    /// too, and where the new contact will appear.
+    /// What the list says in place of rows. Beside the content, an empty book is
+    /// said once, by the content's first-run pane; a narrow window shows only the
+    /// list, which says so itself. While the first contact is written the form
+    /// takes that pane's place, so the list says it is empty then too.
     fn list_empty_state(&self) -> (Option<String>, Option<String>, Option<Icon>) {
         let creating = self.mode == Mode::Edit && self.form.as_ref().is_some_and(|f| f.is_new);
         match self.group_filter.as_deref() {
             Some(FAVORITES_FILTER) => (Some("No favorites yet".to_owned()), None, None),
             Some(_) => (Some("No one is in this group".to_owned()), None, None),
             None if self.store.is_empty() && (self.list_alone || creating) => {
-                let message = if self.read_only() {
-                    Some(VIEW_ONLY_MESSAGE.to_owned())
-                } else if creating {
-                    Some("The contact you're adding appears here once you save it.".to_owned())
-                } else {
-                    None
-                };
+                let message = self.read_only().then(|| CATALOG.t(VIEW_ONLY_MESSAGE));
                 (
                     Some("No contacts yet".to_owned()),
                     message,
@@ -1457,7 +1408,6 @@ impl ContactsApp {
         }
     }
 
-    /// Hand the list what it says in place of rows, when that changed.
     fn publish_list_empty_state(&self) {
         let (title, message, icon) = self.list_empty_state();
         let mut bridge = self.shared.borrow_mut();
@@ -1472,13 +1422,12 @@ impl ContactsApp {
         }
     }
 
-    /// Whether this participant may only view the address book.
     fn read_only(&self) -> bool {
         self.dispatcher.as_ref().is_some_and(Dispatcher::read_only)
     }
 
-    /// The shared list controls and a truthful, live announcement of the
-    /// file operation held by the same guard that prevents duplicate work.
+    /// The list's controls, and a live announcement of the file operation, held by
+    /// the guard that prevents duplicate work.
     fn publish_overview_controls(&mut self) {
         let key = (self.sort_shown, self.file_work.get());
         if self.overview_controls_shown == Some(key) {
@@ -1492,8 +1441,8 @@ impl ContactsApp {
         }
         if let Some(work) = key.1 {
             let label = match work {
-                FileWork::Import => "Importing contacts",
-                FileWork::Export => "Exporting contacts",
+                FileWork::Import => crate::account_editor::CATALOG.t("contacts-importing"),
+                FileWork::Export => crate::account_editor::CATALOG.t("contacts-exporting"),
             };
             controls = controls.push(Box::new(
                 ui::widget::ProgressBar::indeterminate().with_label(label),
@@ -1506,8 +1455,6 @@ impl ContactsApp {
         self.structure_dirty = true;
     }
 
-    /// Hand the shell and the panes what the window shows now. Cheap when
-    /// nothing changed: each part is rebuilt only when what it shows did.
     fn publish(&mut self) {
         if self.list_alone == self.shell.geometry().stack.is_empty() {
             self.list_stale = true;
@@ -1524,7 +1471,6 @@ impl ContactsApp {
             self.selected = self.visible_ids().first().copied();
         }
         {
-            // A contact being created is no one in the list yet.
             let creating = self.mode == Mode::Edit && self.form.as_ref().is_some_and(|f| f.is_new);
             let shown = if creating { None } else { self.selected };
             let mut bridge = self.shared.borrow_mut();
@@ -1546,7 +1492,7 @@ impl ContactsApp {
                 ContentKey::FirstRun { read_only: true } => empty_pane(
                     &self.shared,
                     "No contacts yet",
-                    Some(VIEW_ONLY_MESSAGE),
+                    Some(&CATALOG.t(VIEW_ONLY_MESSAGE)),
                     None,
                 ),
                 ContentKey::Nothing => empty_pane(&self.shared, "No contact selected", None, None),
@@ -1631,7 +1577,6 @@ impl ContactsApp {
         self.dirty = true;
     }
 
-    /// The anchor a waiting menu opens from, once the window is painted.
     fn menu_anchor(&self, menu: PendingMenu) -> Option<Rect> {
         match menu {
             PendingMenu::Contact(id) => self
@@ -1641,9 +1586,8 @@ impl ContactsApp {
                 .iter()
                 .find(|(row, _)| *row == id)
                 .map(|(_, row)| {
-                    // Under the row (above it near the bottom of the
-                    // window), starting where its name does, so the row
-                    // stays readable while its actions are open.
+                    // Under the row (above it near the window's bottom), starting where its name
+                    // does, so the row stays readable.
                     let x = row.x0 + row.height();
                     Rect::new(x, row.y0, x, row.y1)
                 }),
@@ -1661,8 +1605,8 @@ impl ContactsApp {
         }
     }
 
-    /// Turn what the panes and buttons asked for into view changes and
-    /// document actions.
+    /// Turn what the panes and buttons asked for into view changes and document
+    /// actions.
     fn apply_requests(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.take_window_toolbar_events();
         let picked = self.more_pick.lock().ok().and_then(|mut pick| pick.take());
@@ -1772,8 +1716,6 @@ impl ContactsApp {
         self.dirty = true;
     }
 
-    /// The shared field submitted Enter; the last input submits the same
-    /// Save action as the header, while an earlier input advances locally.
     fn advance_form_field(&mut self, doc: &mut ui::widget::Edits<'_>, slot: crate::form::Slot) {
         let next = self.form.as_ref().and_then(|form| {
             let index = form
@@ -1793,9 +1735,8 @@ impl ContactsApp {
         }
     }
 
-    /// Rebuild the retained form with the requested shared input focused.
-    /// Its local bindings and scroll offset survive; the host admits the new
-    /// focus owner through its ordinary composition pass.
+    /// Rebuild the retained form with the requested input focused; its local
+    /// bindings and scroll offset survive.
     fn focus_form_field(&mut self, slot: crate::form::Slot) {
         if let Some(form) = &mut self.form
             && form.fields.iter().any(|(candidate, _)| *candidate == slot)
@@ -1806,8 +1747,6 @@ impl ContactsApp {
         }
     }
 
-    /// Keys the window answers when no control took them: moving through
-    /// the list, opening, deleting, and leaving the form.
     fn handle_key(&mut self, key: &KeyEvent, mods: ModifiersState) -> bool {
         if key.state != ElementState::Pressed {
             return false;
@@ -1860,8 +1799,6 @@ impl ContactsApp {
     }
 }
 
-/// The node of the app's child at `index` (the shell first, then an open
-/// dialog).
 fn child_node(taffy: &TaffyTree<()>, node: NodeId, index: usize) -> Option<NodeId> {
     taffy.children(node).ok()?.get(index).copied()
 }
@@ -2004,7 +1941,7 @@ impl Widget for ContactsApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.shell.draw(scene, transform, tr, theme, presence);
+        self.shell.draw_child(scene, transform, tr, theme, presence);
     }
 
     fn draw_overlay(
@@ -2063,7 +2000,6 @@ impl Widget for ContactsApp {
                 | WindowEvent::MouseWheel { .. }
         );
 
-        // An open menu owns input until it closes.
         if self.menu.is_open() {
             self.menu.handle_event(event, ctx);
             // Any other press outside the menu dismisses it, like a click.
@@ -2083,7 +2019,7 @@ impl Widget for ContactsApp {
             if let Some(index) = choice {
                 self.run_menu_choice(doc, index);
             }
-            if !self.menu.is_showing() {
+            if !self.menu.is_open() {
                 self.open_menu = None;
                 self.dirty = true;
             }
@@ -2268,14 +2204,12 @@ impl Widget for ContactsApp {
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests;
 
-/// The one import or export running.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FileWork {
     Import,
     Export,
 }
 
-/// Holds the running [`FileWork`] until the work ends, however it ends.
 struct FileWorkGuard(Rc<Cell<Option<FileWork>>>);
 
 impl Drop for FileWorkGuard {
@@ -2284,7 +2218,6 @@ impl Drop for FileWorkGuard {
     }
 }
 
-/// Size and kind of a file a chooser named.
 #[cfg(test)]
 fn file_metadata(path: &std::path::Path) -> Result<tilo_files::Meta, String> {
     tilo_files::file_at(path)

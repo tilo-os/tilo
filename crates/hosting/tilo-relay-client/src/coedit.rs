@@ -202,6 +202,8 @@ pub enum Inbound {
     Ready {
         /// Number of store-and-forwarded deltas being flushed.
         pending: u32,
+        /// This workspace sends records only when opened.
+        records_when_opened: bool,
     },
     /// The room's governor answered about one of its calls.
     Voice(VoiceEvent),

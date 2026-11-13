@@ -183,3 +183,44 @@ fn a_page_that_shows_its_title_as_its_heading_names_itself_once() {
         outcomes(&h)
     );
 }
+
+/// An item opened in place among a list's rows titles that item, never the page: the column
+/// keeps its own title over the list.
+#[test]
+fn an_item_opened_among_a_lists_rows_leaves_the_column_its_title() {
+    let row =
+        ListRow(crate::widget::Column::new().push(heading("Today", crate::TextRole::LargeTitle)));
+    let mut h = harness(
+        page(
+            "Today",
+            Box::new(crate::widget::Column::new().push(Box::new(row))),
+        ),
+        390,
+        844,
+        Theme::dark(),
+    );
+    settle(&mut h, 390, 844);
+    assert!(
+        title_rect(&h).width() > 0.0,
+        "the column's title stands over the list"
+    );
+}
+
+/// A row of a list opened where it stands into the item it shows.
+struct ListRow(crate::widget::Column);
+
+impl crate::widget::Decorator for ListRow {
+    type Inner = crate::widget::Column;
+
+    fn inner(&self) -> &crate::widget::Column {
+        &self.0
+    }
+
+    fn inner_mut(&mut self) -> &mut crate::widget::Column {
+        &mut self.0
+    }
+
+    fn is_item_opened_in_place(&self) -> bool {
+        true
+    }
+}

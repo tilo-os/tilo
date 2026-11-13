@@ -4,10 +4,6 @@ use tilo_search::{Document, FieldWeight, MatchTier, Matching, Page, SearchIndex,
 
 use crate::{Catalogue, Emoji};
 
-/// How a query meets an emoji's name: the whole name, then a whole word of
-/// it wherever it sits ("heart" in "red heart"), then the start of a longer
-/// word ("heart" in "hearts"), then anywhere. Keywords rank below any name
-/// match.
 fn name_rank(tier: MatchTier, weight: FieldWeight) -> Option<i32> {
     if weight != FieldWeight::TITLE {
         return tier.rank_in(weight);
@@ -21,15 +17,10 @@ fn name_rank(tier: MatchTier, weight: FieldWeight) -> Option<i32> {
     })
 }
 
-/// The rank of a name holding the query as a whole word.
 const WHOLE_WORD: i32 = 90;
 
-/// Longest name length that still orders equally ranked hits.
 const NAME_LENGTH_STEPS: i32 = 64;
 
-/// Among names holding the query as a whole word, the shorter is the closer
-/// one: "red heart" before "heart with arrow". Other ties keep Unicode
-/// order, which lists the common faces and symbols first.
 fn score(signals: Signals) -> i32 {
     let rank = signals.rank.unwrap_or(0);
     let length = if rank == WHOLE_WORD {
@@ -43,8 +34,8 @@ fn score(signals: Signals) -> i32 {
         .saturating_sub(length)
 }
 
-/// Every emoji's name and keywords, keyed by catalogue position. Each word
-/// of a query must match the name or a keyword, or a name word with a typo.
+/// Every emoji's name and keywords, keyed by catalogue position; each word of a
+/// query must match the name or a keyword, or a name word with a typo.
 pub(crate) fn index(emoji: &[Emoji]) -> SearchIndex {
     let mut index = SearchIndex::new(Matching::LOOSE).with_ranks(name_rank);
     index.replace_all(emoji.iter().enumerate().map(|(at, emoji)| {
@@ -63,7 +54,6 @@ pub(crate) fn index(emoji: &[Emoji]) -> SearchIndex {
     index
 }
 
-/// Catalogue positions matching `query`, best first.
 fn positions(cat: &Catalogue, query: &str, limit: usize) -> impl Iterator<Item = usize> {
     cat.search_index()
         .search_scored(query, Page::first(limit), score)
@@ -99,8 +89,6 @@ fn words(text: &str) -> impl Iterator<Item = &str> {
         .filter(|word| !word.is_empty())
 }
 
-/// How exactly `emoji` stands for folded `word`: its whole name, a whole
-/// keyword, or one word of its name.
 fn stands_for(emoji: &Emoji, word: &str) -> Option<u8> {
     let name = fold(emoji.name());
     if name == word {

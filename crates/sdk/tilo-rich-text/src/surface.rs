@@ -197,6 +197,13 @@ impl<S: RichTextSource + 'static> RichTextSurface<S> {
         &mut self.editor
     }
 
+    /// The text menu the editor has open on its words, as assistive
+    /// technology reads it, where it is drawn: a host that publishes nodes of
+    /// its own adds this beside the field's node, as it adds its own menus.
+    pub fn text_menu_accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.editor.text_menu_access_node()
+    }
+
     /// Where the text comes from.
     pub fn source(&self) -> &S {
         &self.source
@@ -883,7 +890,7 @@ impl RichTextSurface<dyn ErasedSource> {
     fn accessibility_shared_dyn(&self) -> Option<ui::a11y::SharedAccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
         let disabled = self.source.read_only() || self.is_composing();
-        let duplicate_label = ui::i18n!("widget-block-duplicate");
+        let duplicate_label = ui::i18n::widget_text("widget-block-duplicate");
         let duplicate = |id: &str, bounds: ui::vello::kurbo::Rect| {
             AccessNode::new(Role::Button)
                 .with_name(duplicate_label.clone())
@@ -899,7 +906,7 @@ impl RichTextSurface<dyn ErasedSource> {
                 }))?;
         let selection_disabled = disabled || self.editor.selected_block_range().is_none();
         let mut duplicate = AccessNode::new(Role::Button)
-            .with_name(ui::i18n!("widget-block-duplicate-selection"))
+            .with_name(ui::i18n::widget_text("widget-block-duplicate-selection"))
             .with_action_target("notes.editor:duplicate")
             .with_state(
                 AccessState::new()
@@ -912,9 +919,9 @@ impl RichTextSurface<dyn ErasedSource> {
             let disabled = disabled || self.editor.selected_block_move(up).is_none();
             let mut movement = AccessNode::new(Role::Button)
                 .with_name(if up {
-                    ui::i18n!("widget-block-move-selection-up")
+                    ui::i18n::widget_text("widget-block-move-selection-up")
                 } else {
-                    ui::i18n!("widget-block-move-selection-down")
+                    ui::i18n::widget_text("widget-block-move-selection-down")
                 })
                 .with_action_target(if up {
                     "notes.editor:move-up"

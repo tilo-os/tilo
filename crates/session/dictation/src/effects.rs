@@ -19,7 +19,6 @@ pub enum DictationAction {
     #[effect(
         own_device,
         attended,
-        label = "Dictate",
         icon = "microphone",
         keywords = "dictation, dictate, speech to text, microphone, diktieren"
     )]
@@ -27,7 +26,6 @@ pub enum DictationAction {
     /// Stop recording and insert what was heard into the same field.
     #[effect(
         own_device,
-        label = "Insert what was heard",
         icon = "microphone-off",
         keywords = "stop dictation, finish dictation, insert the text"
     )]
@@ -36,7 +34,6 @@ pub enum DictationAction {
     #[effect(
         own_device,
         idempotent,
-        label = "Discard the dictation",
         icon = "x",
         keywords = "cancel dictation, throw away the dictation"
     )]
@@ -45,7 +42,6 @@ pub enum DictationAction {
     #[effect(
         own_device,
         idempotent,
-        label = "Discard the transcript",
         icon = "trash",
         keywords = "recovery, transcript, throw away the transcript"
     )]

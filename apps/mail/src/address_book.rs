@@ -8,17 +8,14 @@ use std::collections::HashMap;
 
 use crate::model::{Addr, Folder, Mailbox};
 
-/// How many completions the composer offers at once.
 pub(crate) const OFFERED: usize = 6;
 
-/// The person's correspondents, most written-to first.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AddressBook {
     people: Vec<Addr>,
 }
 
 impl AddressBook {
-    /// Everyone in `mailbox` except the person's own addresses (`own`).
     pub(crate) fn of(mailbox: &Mailbox, own: &[String]) -> Self {
         let own: Vec<String> = own.iter().map(|email| email.to_ascii_lowercase()).collect();
         let mut seen: HashMap<String, (Addr, u32)> = HashMap::new();
@@ -29,7 +26,6 @@ impl AddressBook {
             }
             let entry = seen.entry(key).or_insert_with(|| (addr.clone(), 0));
             entry.1 += weight;
-            // A name learned later fills one the address had none for.
             if entry.0.name.is_none() && addr.name.is_some() {
                 entry.0.name.clone_from(&addr.name);
             }
@@ -54,8 +50,6 @@ impl AddressBook {
         }
     }
 
-    /// The correspondents `typed` could be the start of, best first, leaving
-    /// out the ones in `taken`.
     pub(crate) fn complete(&self, typed: &str, taken: &str) -> Vec<Addr> {
         let typed = typed.trim().to_lowercase();
         if typed.is_empty() {
@@ -79,8 +73,6 @@ impl AddressBook {
     }
 }
 
-/// What is typed into a recipient field split at its last recipient: the
-/// finished ones before it (with their separator), and the one being typed.
 pub(crate) fn last_recipient(field: &str) -> (&str, &str) {
     match field.rfind([',', ';']) {
         Some(at) => (
@@ -91,8 +83,6 @@ pub(crate) fn last_recipient(field: &str) -> (&str, &str) {
     }
 }
 
-/// `field` with the recipient being typed replaced by `chosen`, ready for
-/// the next one.
 pub(crate) fn complete_with(field: &str, chosen: &str) -> String {
     let (done, _) = last_recipient(field);
     if done.is_empty() {

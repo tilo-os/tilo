@@ -1,18 +1,11 @@
 //! Canonical identity bootstrap for a destination that has no person yet.
 //!
-//! A medium prepared for another computer names the person the package
-//! belongs to. That person's preparing computer holds the root signing
-//! capability in its prepared-identity vault. A fresh destination proves its
-//! own new device key with the canonical [`CertificationRequest`] and asks
-//! the preparing computer to admit exactly that key. The person approves the
-//! six-digit code on the preparing computer; only then does it sign a member
-//! certificate and an identity export, bound by a typed enrollment receipt to
-//! the exact device key, handoff operation and package digest. The
-//! destination verifies that receipt before it writes any identity custody.
-//!
-//! This is the same request, root signature and public member record the
-//! nearby personal-device enrollment uses. The root never leaves the source,
-//! the destination never self-signs, and nothing is trusted because a display
+//! A fresh destination proves its new device key with the canonical
+//! [`CertificationRequest`] and asks the preparing computer — the only holder of
+//! the person's root signing capability — to admit exactly that key. The person
+//! approves the six-digit code there, and only then does the source sign a member
+//! certificate and an identity export bound by a typed enrollment receipt to the
+//! exact device key, operation and package. Nothing is trusted because a display
 //! name matches.
 
 use super::invalid;
@@ -21,8 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::{io, os::unix::fs::PermissionsExt as _, path::Path, sync::Arc};
 use tilo_seal::Label;
 use tilo_user_identity::{
-    CertificationRequest, DeviceCapabilities, DeviceCert, IdentityPaths,
-    device_cert_signing_digest, verify_device_cert_at,
+    CertificationRequest, DeviceCapabilities, DeviceCert, IdentityPaths, verify_device_cert_at,
 };
 
 const PROJECTION_SCHEMA: u32 = 1;
@@ -31,27 +23,20 @@ const MAX_HOME_PEERS: usize = 128;
 const ISSUANCE_CLOCK_ALLOWANCE_NS: u64 = 60 * 1_000_000_000;
 const RECORD_ID_HEX_CHARS: usize = 55;
 
-/// Signs one canonical digest with the person's root. The prepared-identity
-/// vault remains the only holder of the root secret.
+/// Signs one canonical digest with the person's root; the prepared-identity vault
+/// is the only holder of the root secret.
 type SourceSigner = Arc<dyn Fn(&[u8]) -> io::Result<[u8; 64]> + Send + Sync>;
 
-/// The preparing computer's root capability and the public identity it
-/// exports. The signer is a callback so the prepared-identity vault remains
-/// the only holder of the root secret.
+/// The preparing computer's root capability and the public identity it exports.
 pub struct SourceIdentity {
     pub identity_public_key: [u8; 32],
-    /// Canonical public member record for this person.
     pub identity_record: Vec<u8>,
-    /// Certificates already in the person's fleet. The newly admitted device
-    /// is added to this set before export.
     pub certificates: Vec<DeviceCert>,
-    /// The person's home-peer registry as JSON, filtered to this identity.
     pub home_peers: Vec<u8>,
     pub signer: SourceSigner,
 }
 
 impl SourceIdentity {
-    /// Authenticate the public export before an endpoint advertises it.
     pub fn valid(&self) -> io::Result<()> {
         if self.identity_public_key == [0; 32]
             || self.identity_record.is_empty()
@@ -77,7 +62,7 @@ impl SourceIdentity {
     }
 }
 
-/// One signed proof of possession for the bootstrap rendezvous. It binds the
+/// One signed proof of possession for the bootstrap rendezvous: it binds the
 /// destination's new device key and ephemeral key to the exact operation and
 /// package, so a relay cannot substitute another device or transfer.
 #[derive(Serialize)]
@@ -117,9 +102,6 @@ pub(crate) fn proof_bytes(
     .map_err(|_| invalid("Bootstrap proof is invalid"))
 }
 
-/// The person approved this exact device for this exact handoff. The source
-/// signs it with the person's root; the destination refuses to install any
-/// certificate or identity export without it.
 #[derive(Serialize)]
 struct EnrollmentReceipt<'a> {
     tag: &'static str,
@@ -198,8 +180,6 @@ struct FleetProjection {
     revocations: Vec<tilo_user_identity::RevocationEntry>,
 }
 
-/// The encrypted payload of one admitted device: its certificate, the
-/// person's public record, the fleet and the person's home peers.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BootstrapProjection {
@@ -280,7 +260,6 @@ pub(crate) fn aad(
     aad
 }
 
-/// Sign the canonical member certificate and the public identity export.
 pub(crate) fn issue(
     source: &SourceIdentity,
     request: &CertificationRequest,
@@ -304,9 +283,10 @@ pub(crate) fn issue(
         signature: [0; 64],
         issuer: None,
     };
-    let digest = device_cert_signing_digest(&cert)
+    let signer =
+        tilo_user_identity::CallbackSigner::new(source.identity_public_key, &*source.signer);
+    tilo_user_identity::sign_device_cert(&mut cert, &signer)
         .map_err(|_| invalid("The device certificate is invalid"))?;
-    cert.signature = (source.signer)(&digest)?;
     verify_device_cert_at(&cert, now_ns)
         .map_err(|_| invalid("The device certificate did not verify"))?;
     let mut certificates = source.certificates.clone();
@@ -344,8 +324,8 @@ pub(crate) fn issue(
     Ok((cert, projection))
 }
 
-/// Install the admitted member identity into the destination's own custody.
-/// This never writes over an identity that already exists.
+/// Install the admitted member identity into the destination's own custody, never
+/// over an identity that already exists.
 pub(crate) fn install(
     identity_root: &Path,
     identity_dir: &Path,
@@ -410,8 +390,8 @@ pub(crate) fn install(
     if device.verifying_key().to_bytes() != certificate.device_public_key {
         return Err(invalid("The device certificate is for another device key"));
     }
-    // The device key is generated here and certified by the source, exactly
-    // as the canonical nearby join does; the root never arrives with it.
+    // The device key is generated here and certified by the source, as in the
+    // canonical nearby join; the root never arrives with it.
     tilo_user_identity::persist::install_device_cert(&paths, &certificate, now_ns)
         .map_err(|_| invalid("The device certificate could not be installed"))?;
     std::fs::create_dir_all(identity_dir)?;
@@ -482,11 +462,6 @@ fn now_ns() -> u64 {
         })
 }
 
-/// Encode a canonical public member record for a source identity.
-///
-/// # Errors
-///
-/// As [`runtime_identity::public_member_record_with_presentation`].
 pub fn public_identity_record(
     display_name: &str,
     avatar_color: [u8; 3],

@@ -1,15 +1,11 @@
-//! Unified-diff parsing.
-//!
-//! [`parse_unified`] turns standard `git diff` text into a structured
-//! [`FileDiff`] with per-line old/new numbering and hunk boundaries, so
-//! both the unified and side-by-side renderers can address lines without
-//! re-scanning the raw text.
+//! Unified-diff parsing: [`parse_unified`] turns `git diff` text into a
+//! [`FileDiff`] with per-line old and new numbering and hunk boundaries, so both
+//! renderers address lines without re-scanning the text.
 
 use crate::model::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 
-/// Parse a single-file unified diff (the body git emits for one path) into
-/// a [`FileDiff`]. `path` and `language` are supplied by the caller since
-/// the headers may be ambiguous (renames, new files).
+/// Parse a single-file unified diff into a [`FileDiff`]; `path` and `language` come from the
+/// caller, since the headers may be ambiguous (renames, new files).
 pub fn parse_unified(path: &str, language: &str, text: &str) -> FileDiff {
     let mut diff = FileDiff {
         path: path.to_string(),
@@ -42,8 +38,8 @@ pub fn parse_unified(path: &str, language: &str, text: &str) -> FileDiff {
     diff
 }
 
-/// Running position while walking a unified diff: which hunk is open and
-/// the next old/new line numbers to hand out.
+/// Running position while walking a unified diff: which hunk is open and the next old and new line
+/// numbers to hand out.
 #[derive(Default)]
 struct HunkState {
     old_no: u32,
@@ -53,7 +49,6 @@ struct HunkState {
 }
 
 impl HunkState {
-    /// Close the currently-open hunk's line range, if one is open.
     fn close_hunk(&self, diff: &mut FileDiff) {
         if self.in_hunk
             && let Some(h) = diff.hunks.last_mut()
@@ -62,8 +57,6 @@ impl HunkState {
         }
     }
 
-    /// Close the previous hunk (if any) and open a new one at `raw`'s
-    /// `@@ … @@` header.
     fn open_hunk(&mut self, diff: &mut FileDiff, raw: &str) {
         self.close_hunk(diff);
         let (old_start, new_start, header) = parse_hunk_header(raw);
@@ -87,8 +80,6 @@ impl HunkState {
         self.in_hunk = true;
     }
 
-    /// Classify and push one `+`/`-`/` ` content line, advancing the
-    /// relevant line counters.
     fn push_content_line(&mut self, diff: &mut FileDiff, raw: &str) {
         let (kind, body) = match raw.chars().next() {
             Some('+') => (DiffLineKind::Addition, raw.get(1..).unwrap_or("")),
@@ -128,9 +119,7 @@ impl HunkState {
     }
 }
 
-/// Whether `raw` is a file-level metadata line (`diff --git`, `index`,
-/// `--- a/…`, rename/similarity notes, binary markers, …) rather than hunk
-/// content.
+/// Whether `raw` is a file-level metadata line rather than hunk content.
 fn is_meta_line(raw: &str) -> bool {
     raw.starts_with("diff ")
         || raw.starts_with("index ")
@@ -143,7 +132,6 @@ fn is_meta_line(raw: &str) -> bool {
         || raw.starts_with("Binary ")
 }
 
-/// Record a metadata line's file-level flags and append it to `diff.lines`.
 fn push_meta_line(diff: &mut FileDiff, raw: &str, hunk_idx: usize) {
     if raw.starts_with("new file") {
         diff.is_new = true;
@@ -163,8 +151,8 @@ fn push_meta_line(diff: &mut FileDiff, raw: &str, hunk_idx: usize) {
     });
 }
 
-/// Parse an `@@ -a,b +c,d @@ trailing @@` header into (`old_start`, `new_start`,
-/// remaining-section-text).
+/// Parse an `@@ -a,b +c,d @@ trailing` header into its old start, new start and remaining section
+/// text.
 fn parse_hunk_header(line: &str) -> (u32, u32, String) {
     // Expected shape: @@ -12,7 +12,9 @@ fn foo()
     let mut old_start = 0;
@@ -195,8 +183,6 @@ fn parse_hunk_header(line: &str) -> (u32, u32, String) {
     (old_start.max(1), new_start.max(1), header)
 }
 
-/// The grammar token the diff pane highlights `path` with: its extension, or
-/// the file name itself for extensionless files such as `Dockerfile`.
 pub fn language_for(path: &str) -> String {
     let name = path.rsplit('/').next().unwrap_or(path);
     match name.rsplit_once('.') {
@@ -209,8 +195,7 @@ pub fn language_for(path: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Diff parsing: hunk line numbering, new/deleted file detection and language
-    /// detection. Each phase is a former test with its own fresh fixture.
+    /// Diff parsing: hunk line numbering, new/deleted file detection and language detection.
     #[test]
     fn unified_diff_parsing_numbers_lines_and_classifies_files() {
         parses_hunk_line_numbering();

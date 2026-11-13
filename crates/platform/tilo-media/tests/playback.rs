@@ -1,17 +1,9 @@
-//! Proof that playback is driven by the pipeline clock, and that the audio
-//! path is controllable.
+//! Proof that playback is driven by the pipeline clock, and that the audio path is
+//! controllable.
 //!
-//! The editor's preview previously advanced a UI clock and seek-held the
-//! pipeline: one flushing seek per drawn frame, each tearing down and refilling
-//! the decoder, with a brief trip through `PLAYING` to force a picture out.
-//! That produced no continuous decode, no A/V sync, and — because the audio
-//! sink was started and stopped a few milliseconds at a time — an audible
-//! stutter on every frame of a scrub.
-//!
-//! What replaces it: `play()` runs the pipeline, the pipeline's own clock
-//! drives the playhead, and frames arrive paced to their timestamps. Scrubbing
-//! stays in `PAUSED` and reads the preroll, so the audio sink is never
-//! started at all.
+//! `play()` runs the pipeline, whose own clock drives the playhead, and frames arrive
+//! paced to their timestamps; scrubbing stays in `PAUSED` and reads the preroll, so the
+//! audio sink is never started.
 
 mod common;
 
@@ -31,11 +23,8 @@ mod real {
         e
     }
 
-    /// Pump for `dur`, returning every distinct frame timestamp seen.
     fn pump(e: &mut MediaEngine, dur: Duration) -> Vec<u64> {
         let mut seen: Vec<u64> = Vec::new();
-        // `Instant + Duration` panics on overflow; `None` means no deadline is
-        // representable, which for a pump loop is "keep pumping".
         let deadline = Instant::now().checked_add(dur);
         while deadline.is_none_or(|d| Instant::now() < d) {
             e.poll();
@@ -72,7 +61,6 @@ mod real {
     #[test]
     fn playback_decodes_a_continuous_run_of_frames_rather_than_one_per_seek() {
         let mut e = engine();
-        // Settle at a known position first.
         let start = decode_frame_at(&mut e, 5_000, "pre-roll before playing");
         e.play();
         assert!(e.is_playing());
@@ -165,8 +153,6 @@ mod real {
 
     #[test]
     fn the_audio_chain_exists_and_its_gain_is_controllable() {
-        // `prelude` brings `name()` in; the re-export is what lets a consumer
-        // use the returned element at all without its own gstreamer dep.
         use tilo_media::gst::prelude::*;
 
         // The editor needs a place to attach per-source gain and monitoring.
@@ -202,9 +188,6 @@ mod real {
 
     #[test]
     fn a_scrub_never_enters_playing_so_the_audio_sink_is_never_started() {
-        // The stutter this replaces: the old preview seeked, entered PLAYING
-        // to force a picture out, then paused — a few milliseconds of audio
-        // per drawn frame, up to sixty times a second.
         let mut e = engine();
         for t in [1_000u64, 9_500, 22_300, 9_500, 40_000, 3_200] {
             let f = decode_frame_at(&mut e, t, "scrub");

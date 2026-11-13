@@ -1,10 +1,8 @@
-//! A1-style cell references ↔ `(column, row)` coordinates. Columns are 1-based
-//! (`A` = 1, `Z` = 26, `AA` = 27, …); rows are 1-based (`A1` = row 1). Both the
-//! `.xlsx` (`c r="A1"`) and `.ods` (implicit column position) codecs speak these.
+//! A1-style cell references ↔ `(column, row)` coordinates, both 1-based (`A1` =
+//! column 1, row 1), as the `.xlsx` and `.ods` codecs speak them.
 
-/// Parse a column-letter run (`"A"`, `"Z"`, `"AA"`, …) into a 1-based index, or
-/// `None` if it is empty or contains a non-letter. Bounded to 3 letters (`XFD`,
-/// Excel's max column, is 3) so a pathological ref can't overflow.
+/// Parse a column-letter run (`"A"`, `"AA"`, …) into a 1-based index, or `None` when empty or not
+/// letters. Bounded to 3 letters (`XFD`, Excel's max) so a pathological ref cannot overflow.
 pub fn col_to_index(letters: &str) -> Option<u32> {
     if letters.is_empty() || letters.len() > 3 {
         return None;
@@ -15,22 +13,17 @@ pub fn col_to_index(letters: &str) -> Option<u32> {
         if !c.is_ascii_uppercase() {
             return None;
         }
-        // `c` is ASCII upper-case, so the offset from `A` always exists; the
-        // multiply and add reject a run that would leave the u32 range.
+        // `c` is ASCII upper-case, so the offset from `A` always exists; the multiply and add
+        // reject a run that would leave the u32 range.
         let offset = u32::from(c).checked_sub(u32::from('A'))?;
         idx = idx.checked_mul(26)?.checked_add(offset)?.checked_add(1)?;
     }
     Some(idx)
 }
 
-/// Renders a 1-based column index back into its letter run (`1` → `"A"`, `27` → `"AA"`); a zero index (invalid) renders as an empty string.
 pub fn index_to_col(mut idx: u32) -> String {
     let mut out = Vec::new();
-    // Step to a 0-based digit each round; a zero index has no digits at all, so
-    // the loop condition is also what makes the subtraction safe.
     while let Some(zero_based) = idx.checked_sub(1) {
-        // `% 26` keeps the remainder below 26, so it is entirely its low byte
-        // and `A` + it stays inside `A`..=`Z`.
         let [digit, ..] = (zero_based % 26).to_le_bytes();
         out.push(b'A'.saturating_add(digit));
         idx = zero_based / 26;
@@ -39,8 +32,8 @@ pub fn index_to_col(mut idx: u32) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
-/// Splits an A1 reference (`"AB12"`) into `(column, row)` 1-based coordinates, or
-/// `None` if malformed (missing letters/digits, or out of the bounded range); any `$` absolute-reference markers are ignored.
+/// Splits an A1 reference into 1-based `(column, row)`, or `None` when malformed or out of range;
+/// `$` absolute-reference markers are ignored.
 pub fn parse_ref(reference: &str) -> Option<(u32, u32)> {
     let cleaned: String = reference.chars().filter(|c| *c != '$').collect();
     let split = cleaned.find(|c: char| c.is_ascii_digit())?;
@@ -49,26 +42,23 @@ pub fn parse_ref(reference: &str) -> Option<(u32, u32)> {
     }
     let (letters, digits) = cleaned.split_at(split);
     let col = col_to_index(letters)?;
-    // Bound the row so a malicious ref (`A99999999999999`) can't allocate a huge
-    // grid on the reader side; Excel's max row is 1_048_576.
+    // Bound the row so a malicious ref cannot allocate a huge grid on the reader side; Excel's max
+    // row is 1_048_576.
     let row: u32 = digits.parse().ok().filter(|r| *r >= 1 && *r <= 1_048_576)?;
     Some((col, row))
 }
 
-/// Build an A1 reference from 1-based `(column, row)` coordinates.
 pub fn make_ref(col: u32, row: u32) -> String {
     format!("{}{}", index_to_col(col), row)
 }
 
-/// Excel's grid: `XFD` columns by 1,048,576 rows.
+/// Excel's grid: `XFD` columns by `1_048_576` rows.
 const MAX_COL: u32 = 16_384;
 const MAX_ROW: u32 = 1_048_576;
 
-/// Shifts every relative reference in an A1 formula by `d_cols` columns and
-/// `d_rows` rows — how an `.xlsx` shared formula's template expands to the
-/// other cells of its range (`B2*2` anchored at `C2` reads `B3*2` in `C3`).
-/// `$`-absolute parts stay put; function names (a token followed by `(`),
-/// `"text"` literals and `'quoted sheet'` names are left alone, and so is any
+/// Shifts every relative reference in an A1 formula by `d_cols` columns and `d_rows` rows, which is
+/// how a shared formula's template expands to the other cells of its range. `$`-absolute parts stay
+/// put; function names, `"text"` literals and `'quoted sheet'` names are left alone, and so is any
 /// reference that would leave the grid.
 pub fn shift_formula(formula: &str, d_cols: i64, d_rows: i64) -> String {
     let mut out = String::with_capacity(formula.len());
@@ -88,7 +78,6 @@ pub fn shift_formula(formula: &str, d_cols: i64, d_rows: i64) -> String {
             if chars.peek().is_some() {
                 continue;
             }
-            // End of input: fall through with no separator.
             flush_token(&mut out, &mut token, false, d_cols, d_rows);
             continue;
         }

@@ -14,7 +14,6 @@ use std::io;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::JoinHandle;
 
-/// What the supervisor waits for.
 pub enum SessionEvent {
     Unmount,
     /// The session's thread ended, by itself or after an unmount.
@@ -62,7 +61,6 @@ pub fn supervise<S: SupervisedSession>(
     supervise_watching_on(session, events, ended, "fs-fuse-watch")
 }
 
-/// [`supervise`], naming the watcher thread `watcher`.
 fn supervise_watching_on<S: SupervisedSession>(
     mut session: S,
     events: &Receiver<SessionEvent>,

@@ -1,24 +1,15 @@
-//! Screenshot scenarios: the folders a capture shows.
-//!
-//! A capture never browses the machine it is taken on. Every scenario's
-//! folders are written into the capture's scratch directory before the window
-//! is built — a made-up home with its standard places, and for the scenarios
-//! about the Tilo filesystem, a workspace whose files carry real
-//! `user.tilo.sync`, `user.tilo.thumb` and history extended attributes — so
-//! the window reads them through the same listing, badge and preview paths
-//! it reads a person's files with. The view state a scenario shows (a
-//! selection, an open menu, a drag in flight) is staged by the window once
-//! the window is laid out ([`crate::files_app::FilesState::stage_scenario`]).
+//! Screenshot scenarios: the folders a capture shows, written into its own
+//! directory before its window is built.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use ui::image_codec::{DecodedImage, Format};
 
 use host_fs::attributes as xattr;
 use ui::framework::Fixture;
 
 use crate::resource::FileExplorer;
 
-/// Every screenshot scenario.
 const ALL_SCENARIOS: &[&str] = &[
     "applications",
     "applications-menu",
@@ -60,9 +51,6 @@ const ALL_SCENARIOS: &[&str] = &[
     "preview",
 ];
 
-/// The scenarios a host without extended attributes can show truthfully:
-/// all but the ones about the Tilo filesystem's projection (sync badges,
-/// host previews, file history).
 const PORTABLE_SCENARIOS: &[&str] = &[
     "applications",
     "applications-menu",
@@ -101,7 +89,6 @@ const PORTABLE_SCENARIOS: &[&str] = &[
     "preview",
 ];
 
-/// The screenshot scenarios this host can show.
 pub fn scenarios() -> &'static [&'static str] {
     if xattr::SUPPORTED {
         ALL_SCENARIOS
@@ -110,24 +97,17 @@ pub fn scenarios() -> &'static [&'static str] {
     }
 }
 
-/// The folders a capture shows, written before its window is built.
 #[derive(Clone, Debug)]
 pub struct Scene {
-    /// The made-up home: its standard places are the sidebar's.
     pub home: PathBuf,
-    /// Where the window opens.
     pub start: PathBuf,
-    /// The Tilo workspace roots the window shows as such.
     pub workspace_roots: Vec<PathBuf>,
-    /// Where the capture's previews are cached.
     pub thumbnails: PathBuf,
 }
 
-/// Every file in a scene carries this modification time, so the dates a
-/// capture shows are the same on every run.
+/// Every file in a scene has this modification time, so captured dates do not drift.
 const SCENE_TIME_SECS: u64 = 1_789_727_400;
 
-/// Write the folders `fixture`'s scenario shows and hand them to the window.
 pub fn prepare(fixture: &mut Fixture<FileExplorer>) {
     let scenario = fixture.scenario().map(str::to_owned);
     let root = match fixture.directory() {
@@ -155,15 +135,11 @@ fn write_scene(root: &Path, scenario: Option<&str>) -> std::io::Result<Scene> {
         Some("thumbnails-fs") => (write_host_previews(&workspace)?, vec![workspace]),
         Some("thumbnails") => (write_previews(&root.join("Previews"))?, Vec::new()),
         Some("archive" | "archive-menu") => (write_archive(&home)?, Vec::new()),
-        // The archive among the Downloads it came with.
         Some("archive-file-menu" | "extract-progress") => {
             write_archive(&home)?;
             (home.join("Downloads"), Vec::new())
         }
-        // A standard place with nothing in it yet.
         Some("empty") => (home.join("Videos"), Vec::new()),
-        // A folder many levels down: the bar's location has more levels
-        // than a narrow window shows.
         Some("deep-folder") => (write_deep_folder(&home)?, Vec::new()),
         _ => (home.clone(), Vec::new()),
     };
@@ -175,7 +151,6 @@ fn write_scene(root: &Path, scenario: Option<&str>) -> std::io::Result<Scene> {
     })
 }
 
-/// Write `bytes` to `path` with the scene's fixed modification time.
 fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, bytes)?;
     std::fs::File::options()
@@ -188,9 +163,6 @@ fn scene_time() -> std::time::SystemTime {
     std::time::UNIX_EPOCH + std::time::Duration::from_secs(SCENE_TIME_SECS)
 }
 
-/// Set the projection attribute `name` the Tilo filesystem would report on
-/// `path`. A scratch filesystem without user attributes shows the files
-/// without it, as a host without the projection would.
 fn mark(path: &Path, name: &str, value: &[u8]) {
     if let Err(error) = xattr::set(path, name, value) {
         tracing::warn!(
@@ -205,9 +177,6 @@ fn make_dir(path: &Path) -> std::io::Result<()> {
     std::fs::File::open(path)?.set_modified(scene_time())
 }
 
-/// A believable home: the standard places, some holding what they are
-/// for, a project folder to pin, a template for the "New File" menu, and
-/// a handful of documents.
 fn write_home(home: &Path) -> std::io::Result<()> {
     const FOLDERS: [&str; 9] = [
         "Desktop",
@@ -255,7 +224,6 @@ fn write_home(home: &Path) -> std::io::Result<()> {
     std::fs::File::open(home)?.set_modified(scene_time())
 }
 
-/// A design folder five levels under the home, with a few files in it.
 fn write_deep_folder(home: &Path) -> std::io::Result<PathBuf> {
     let folder = home
         .join("Documents")
@@ -282,8 +250,6 @@ fn write_deep_folder(home: &Path) -> std::io::Result<PathBuf> {
     Ok(folder)
 }
 
-/// A workspace whose files carry the three hydration states the Tilo
-/// filesystem reports, so the sync badges come from real attributes.
 fn write_sync(workspace: &Path) -> std::io::Result<PathBuf> {
     make_dir(workspace)?;
     for (name, state) in [
@@ -302,7 +268,6 @@ fn write_sync(workspace: &Path) -> std::io::Result<PathBuf> {
     Ok(workspace.to_path_buf())
 }
 
-/// A workspace file with two versions in its history projection.
 fn write_history(workspace: &Path) -> std::io::Result<PathBuf> {
     make_dir(workspace)?;
     let path = workspace.join("Launch brief.md");
@@ -334,7 +299,6 @@ fn write_history(workspace: &Path) -> std::io::Result<PathBuf> {
     Ok(workspace.to_path_buf())
 }
 
-/// A ZIP of a trip, browsed through the real archive reader.
 fn write_archive(home: &Path) -> std::io::Result<PathBuf> {
     let path = home.join("Downloads").join("Trip archive.zip");
     let file = std::fs::File::create(&path)?;
@@ -364,17 +328,15 @@ fn write_archive(home: &Path) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-/// Real sample files — images, a one-page PDF, an EPUB with a cover, a video
-/// and badge-only types — so the grid shows the generator's actual previews.
 fn write_previews(dir: &Path) -> std::io::Result<PathBuf> {
     make_dir(dir)?;
     make_dir(&dir.join("Camera Roll"))?;
     for (name, width, height, kind, format) in [
-        ("sunset.png", 640, 480, 0, image::ImageFormat::Png),
-        ("harbour.jpg", 640, 480, 1, image::ImageFormat::Jpeg),
-        ("forest-path.png", 480, 640, 2, image::ImageFormat::Png),
-        ("bloom.jpg", 600, 600, 3, image::ImageFormat::Jpeg),
-        ("study.png", 720, 480, 4, image::ImageFormat::Png),
+        ("sunset.png", 640, 480, 0, Format::Png),
+        ("harbour.jpg", 640, 480, 1, Format::Jpeg),
+        ("forest-path.png", 480, 640, 2, Format::Png),
+        ("bloom.jpg", 600, 600, 3, Format::Jpeg),
+        ("study.png", 720, 480, 4, Format::Png),
     ] {
         write_file(
             &dir.join(name),
@@ -386,7 +348,6 @@ fn write_previews(dir: &Path) -> std::io::Result<PathBuf> {
         &dir.join("The Lantern-Keeper.epub"),
         &minimal_epub("The Lantern-Keeper", &gradient_png(300, 440, 3))?,
     )?;
-    // No decoder for video in the hermetic build: an honest video badge.
     write_file(&dir.join("launch-clip.mp4"), b"")?;
     for (name, body) in [
         ("release.zip", &b"PK\x03\x04"[..]),
@@ -403,9 +364,6 @@ fn write_previews(dir: &Path) -> std::io::Result<PathBuf> {
     Ok(dir.to_path_buf())
 }
 
-/// A workspace whose files' content is not here: their previews ride on the
-/// host's `user.tilo.thumb` attribute, as a peer sees a file it has not
-/// downloaded.
 fn write_host_previews(workspace: &Path) -> std::io::Result<PathBuf> {
     make_dir(workspace)?;
     for (name, kind, sync) in [
@@ -417,8 +375,6 @@ fn write_host_previews(workspace: &Path) -> std::io::Result<PathBuf> {
     ] {
         let path = workspace.join(name);
         write_file(&path, b"")?;
-        // Small, as the host makes them: a temporary filesystem bounds one
-        // attribute to its node size.
         mark(
             &path,
             fs_protocol::THUMB_XATTR,
@@ -434,24 +390,21 @@ fn write_host_previews(workspace: &Path) -> std::io::Result<PathBuf> {
     Ok(workspace.to_path_buf())
 }
 
-/// `image` as a PNG, or as a JPEG (at the `image` crate's default quality)
-/// when `format` asks for one, through the runtime's encoders.
-fn encode_image(image: &image::RgbaImage, format: image::ImageFormat) -> Vec<u8> {
-    let (width, height) = image.dimensions();
-    let encoded = if format == image::ImageFormat::Jpeg {
-        ui::jpeg::encode_rgba8_opaque(width, height, image.as_raw(), 75)
+fn encode_image(image: &DecodedImage, format: Format) -> Vec<u8> {
+    let (width, height) = (image.width, image.height);
+    let encoded = if format == Format::Jpeg {
+        ui::jpeg::encode_rgba8_opaque(width, height, &image.rgba, 75)
     } else {
-        ui::png::encode_rgba8(width, height, image.as_raw())
+        ui::png::encode_rgba8(width, height, &image.rgba)
     };
     encoded.unwrap_or_default()
 }
 
-/// A distinct gradient or pattern per `kind`, so previews read as varied
-/// images rather than flat swatches.
-fn gradient_image(width: u32, height: u32, kind: u8) -> image::RgbaImage {
+fn gradient_image(width: u32, height: u32, kind: u8) -> DecodedImage {
     let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t.clamp(0.0, 1.0);
-    let mut img = image::RgbaImage::new(width, height);
-    for (x, y, px) in img.enumerate_pixels_mut() {
+    let mut img = DecodedImage::filled(width, height, [0, 0, 0, 255]);
+    let pixels = (0..height).flat_map(|y| (0..width).map(move |x| (x, y)));
+    for ((x, y), px) in pixels.zip(img.rgba.chunks_exact_mut(4)) {
         let fx = x as f32 / width as f32;
         let fy = y as f32 / height as f32;
         let (r, g, b) = match kind % 5 {
@@ -488,20 +441,15 @@ fn gradient_image(width: u32, height: u32, kind: u8) -> image::RgbaImage {
                 (c, c * 0.98, c * 0.92)
             }
         };
-        *px = image::Rgba([r as u8, g as u8, b as u8, 255]);
+        px.copy_from_slice(&[r as u8, g as u8, b as u8, 255]);
     }
     img
 }
 
 fn gradient_png(width: u32, height: u32, kind: u8) -> Vec<u8> {
-    encode_image(
-        &gradient_image(width, height, kind),
-        image::ImageFormat::Png,
-    )
+    encode_image(&gradient_image(width, height, kind), Format::Png)
 }
 
-/// A valid one-page PDF (a header band, a title, a framed body) with correct
-/// cross-reference offsets, so pdfium renders its first page.
 fn minimal_pdf(title: &str) -> Vec<u8> {
     let escaped: String = title
         .chars()
@@ -551,8 +499,6 @@ fn minimal_pdf(title: &str) -> Vec<u8> {
     out
 }
 
-/// A real EPUB (ZIP + OPF) whose manifest declares `cover_png` as its cover,
-/// so the preview generator extracts it.
 fn minimal_epub(title: &str, cover_png: &[u8]) -> std::io::Result<Vec<u8>> {
     use zip::write::SimpleFileOptions;
     let mut buffer = Vec::new();
@@ -602,8 +548,6 @@ fn minimal_epub(title: &str, cover_png: &[u8]) -> std::io::Result<Vec<u8>> {
 mod tests {
     use super::*;
 
-    /// Each scenario's folders are written into the capture's own directory
-    /// with fixed times, and the projection scenarios carry real attributes.
     #[test]
     fn scenes_are_written_inside_the_capture_directory() {
         let root = tempfile::tempdir().unwrap();
@@ -620,8 +564,6 @@ mod tests {
         let sync = write_scene(root.path(), Some("sync")).unwrap();
         assert_eq!(sync.workspace_roots, std::slice::from_ref(&sync.start));
         let state = xattr::get(sync.start.join("Q3 budget.ods"), fs_protocol::SYNC_XATTR);
-        // A temporary filesystem without user attributes cannot carry the
-        // projection; the scene is still written.
         if let Ok(state) = state {
             assert_eq!(state.as_deref(), Some(b"projected".as_slice()));
         }

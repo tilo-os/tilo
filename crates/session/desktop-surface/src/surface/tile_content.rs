@@ -33,7 +33,20 @@ pub(super) fn build_tile(
 pub(super) fn descriptor(tab: &Tab) -> TabDescriptor {
     TabDescriptor {
         app_kind: Some(tile_app_kind(&tab.tile)),
+        named: tab.is_named(),
+        app_name: tile_app_id(&tab.tile).map(tilo_desktop_search::names::app_name),
         ..TabDescriptor::new(tab.id, tab.title.clone())
+    }
+}
+
+/// The app a window's tile shows; `None` for a stand-in.
+fn tile_app_id(tile: &tilo_desktop_model::TileContent) -> Option<&str> {
+    match tile {
+        tilo_desktop_model::TileContent::Foreign { app_id, .. }
+        | tilo_desktop_model::TileContent::LocalApp { app_id, .. }
+        | tilo_desktop_model::TileContent::HostedWindow { app_id, .. } => Some(app_id),
+        tilo_desktop_model::TileContent::AppPlaceholder { .. }
+        | tilo_desktop_model::TileContent::Stub { .. } => None,
     }
 }
 
@@ -63,7 +76,6 @@ pub fn tile_app_kind(tile: &tilo_desktop_model::TileContent) -> ui::widget::AppK
         // A window wears its own app's glyph, never another app's.
         tilo_desktop_model::TileContent::Foreign { app_id, .. }
         | tilo_desktop_model::TileContent::LocalApp { app_id, .. }
-        | tilo_desktop_model::TileContent::PeerWindow { app_id, .. }
         | tilo_desktop_model::TileContent::HostedWindow { app_id, .. } => {
             Kind::App(ui::icons::app_glyph(app_id, None))
         }

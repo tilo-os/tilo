@@ -260,3 +260,51 @@ fn a_change_made_elsewhere_is_published_on_the_next_poll() {
         .unwrap();
     assert!(service.poll(), "the settings document moved");
 }
+
+#[test]
+fn the_rotation_lock_is_an_action_of_the_display_section() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let mut services = services();
+    services
+        .invoke(
+            "settings:settings.display",
+            "set-rotation-lock",
+            &arguments(json!({ "locked": true })),
+        )
+        .expect("published")
+        .expect("locked");
+    assert_eq!(
+        services.read("settings:settings.display").unwrap()["rotation_lock"],
+        json!(true)
+    );
+    assert!(
+        settings_store::hardware::ROTATION_LOCK.get(),
+        "the session's rotation reads the same setting"
+    );
+}
+
+/// What this service publishes is the sections and the index over them, by the ids a host that
+/// answers for them names: its sections as `settings:<kind>`, and nothing else's resources.
+#[test]
+fn the_settings_it_publishes_are_the_sections_and_the_index() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let published = services().resources();
+    for resource in &published {
+        assert!(
+            super::keeps(resource.id.as_str()),
+            "{} is one of the settings",
+            resource.id.as_str()
+        );
+    }
+    assert!(
+        published
+            .iter()
+            .any(|resource| resource.id.as_str() == "settings:settings.appearance"),
+        "the appearance section is published"
+    );
+    assert!(!super::keeps("sound"), "the sound a session keeps is none");
+    assert!(
+        !super::keeps("settings.audio"),
+        "a kind alone names no section's resource"
+    );
+}

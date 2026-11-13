@@ -54,6 +54,10 @@ use std::collections::HashMap;
 
 type Ex = ir::Expr;
 
+/// How many people a rich input's `@` drawer offers from the conversation, unless a view asks
+/// for another number (`speakers(items, max)`, chat.md "Completion drawers").
+pub(crate) const DRAWER_SPEAKERS: i64 = 5;
+
 /// What kind of code is being checked; each has its own effect discipline.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Ctx {
@@ -113,6 +117,10 @@ pub(crate) enum Invoked {
 }
 
 #[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each says one independent thing about the code being checked"
+)]
 struct FnState {
     ctx: Ctx,
     /// The declaration's name, as a message says it.
@@ -127,8 +135,14 @@ struct FnState {
     result: Ty,
     facts: Facts,
     view_id: String,
-    /// The string literals a component shows as words (by span): each is a message.
-    shown: std::collections::HashSet<Span>,
+    /// The declaration whose message the words this code shows are attributes of, where it is
+    /// not [`Self::view_id`]: an action's, for its label read where a view applies it and for a
+    /// default an invocation computes.
+    words_of: Option<String>,
+    /// What a `let` kept, by the local it bound: the value as it was written, so a prop that
+    /// shows words marks the literals inside it wherever the binding stands
+    /// ([`words::Checker::mark_shown`]).
+    lets: HashMap<LocalId, ast::Expr>,
     /// Locals holding the key suffix of each enclosing UI loop, innermost last.
     keys: Vec<LocalId>,
     /// What the `invoke` call being checked is: the operand of `try`, which reports failure
@@ -194,6 +208,9 @@ struct FnState {
     /// runs when that action is invoked (`Self::at_event`): it may read the clock, as the
     /// invocation it belongs to does, and what it reads is recorded there.
     press: bool,
+    /// Whether the expression being checked is the action `file.choose` runs, whose file fills
+    /// the parameter the action leaves out.
+    choosing: bool,
 }
 
 /// Where the UI being lowered stands, saved and restored around each block.
@@ -258,6 +275,9 @@ pub(crate) struct Checker<'a> {
     /// Where the declaration being checked starts: what a function it makes in passing (a row
     /// view of its body, an argument computed from its view state) is named by.
     outer_at: Option<usize>,
+    /// The string literals the module shows as words (by span): each is a message. A span is a
+    /// place in the source, so one set says what every declaration of the module shows.
+    shown: std::collections::HashSet<Span>,
 }
 
 /// A field an offered action writes from a value it asks for: the action, the field, its type.
@@ -280,6 +300,22 @@ pub struct BlockResult {
 
 /// Checks every body of the module and lowers it. Errors go to `diags`.
 pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>) -> ir::Module {
+    // Which literals are words is known before they are lowered: a literal a `let` keeps, or a
+    // branch of one, is a message where a prop that shows words reaches it, and the body says
+    // which of its literals those are. So the pass that says it runs first — its functions and
+    // its diagnostics are thrown away — and the pass that lowers writes them as messages.
+    let mut quiet = Vec::new();
+    let shown = lower(env, module, &mut quiet, std::collections::HashSet::new()).1;
+    lower(env, module, diags, shown).0
+}
+
+/// One pass over the module's bodies: the module, and the literals it shows as words.
+fn lower(
+    env: &Env,
+    module: &ast::Module,
+    diags: &mut Vec<Diagnostic>,
+    shown: std::collections::HashSet<Span>,
+) -> (ir::Module, std::collections::HashSet<Span>) {
     let declared = env
         .callables
         .iter()
@@ -303,6 +339,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         last_writes: Vec::new(),
         at: None,
         outer_at: None,
+        shown,
     };
     let mut funcs = Vec::new();
     // The actions, which declare what they read, and where their name is.
@@ -361,7 +398,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             continue;
         };
         c.at = Some(a.name.span.start);
-        funcs.push(c.run_present(&view, &a.opts, &action.params));
+        funcs.push(c.run_present(&view, &a.opts, action));
     }
     // The defaults of action parameters, in the order the resolver numbered them.
     for d in &env.defaults {
@@ -471,12 +508,13 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         shows,
         words: c.words,
     };
+    let shown = c.shown;
     // Every prop a view gives a described component is one that component declares: a name the
     // catalogue does not know is refused by the window, so the compiler says it first.
     if diags.is_empty() {
         props::undeclared(&module, diags);
     }
-    module
+    (module, shown)
 }
 
 /// Checks a block that is one expression.
@@ -495,6 +533,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         last_writes: Vec::new(),
         at: None,
         outer_at: None,
+        shown: std::collections::HashSet::new(),
     };
     c.begin(Ctx::Block, &[], Ty::Unit, "b_main");
     c.st.proposes = true;
@@ -546,6 +585,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         last_writes: Vec::new(),
         at: None,
         outer_at: None,
+        shown: std::collections::HashSet::new(),
     };
     c.begin(Ctx::Block, &[], Ty::View, "block");
     c.view_body(body);
@@ -723,6 +763,8 @@ impl Checker<'_> {
         self.st.uses.clone_from(&c.uses);
         for r in guards {
             let cond = self.expr_as(&r.cond, &Ty::Bool);
+            // Why it cannot run is words the person reads where it is refused.
+            self.mark_shown(&r.reason);
             let reason = self.expr_as(&r.reason, &Ty::Text);
             let refuse = Stmt::Eval(Ex::host(Imp::Abort, vec![reason], Ty::Unit));
             self.emit(Stmt::If(cond, Vec::new(), vec![refuse]));
@@ -789,8 +831,10 @@ impl Checker<'_> {
         // What the view answers when the window is asked to show an item of one of its types:
         // each a function of its own, run with the item, applied in the view's state.
         let (shows, rest) = Self::view_shows(&rest);
+        let params: std::collections::BTreeSet<String> =
+            c.params.iter().map(|p| p.name.clone()).collect();
         for show in &shows {
-            self.run_show(&c.id, &c.name, show, &v.body);
+            self.run_show(&c.id, &c.name, show, &v.body, &params);
         }
         let rest = rest.as_slice();
         let env = self.env;
@@ -1129,15 +1173,18 @@ impl Checker<'_> {
             );
             ty = Ty::Error;
         }
-        let id = self.bind_let(name, ty, ex);
+        let id = self.bind_let(name, ty, ex, value);
         if let Some(sym) = sym {
             self.st.syms.insert(id, sym);
         }
     }
 
     /// Bind the checked value `ex` to the new local `name`, of type `ty`: what a `let` holds.
-    fn bind_let(&mut self, name: &str, ty: Ty, ex: Ex) -> LocalId {
+    /// `written` is the value as the source wrote it, kept so a prop of words that shows the
+    /// binding marks the literals inside it.
+    fn bind_let(&mut self, name: &str, ty: Ty, ex: Ex, written: &ast::Expr) -> LocalId {
         let id = self.declare(name, ty);
+        self.st.lets.insert(id, written.clone());
         self.emit(Stmt::Set(id, ex));
         id
     }

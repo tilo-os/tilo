@@ -1,6 +1,5 @@
-//! The installer's action model: validation, the destructive confirmation,
-//! state transitions, and that the wizard's own controls, the console and
-//! the host door all run the same published actions.
+//! The installer's action model: validation, the destructive confirmation and its state
+//! transitions.
 
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -16,9 +15,6 @@ use ui::tilo_resource::Effect as _;
 mod capacity_tests;
 mod method_intent_tests;
 
-/// A recording install backend: disks from a fixture, an install that
-/// streams a recovery-key marker and progress, and power actions noted
-/// instead of taken.
 struct FakeBackend {
     disks: Vec<Disk>,
     installs: Mutex<Vec<(String, String, String, InstallOptions)>>,
@@ -88,7 +84,6 @@ impl InstallBackend for FakeBackend {
 
 fn app(backend: &Arc<FakeBackend>) -> (InstallerApp, AutoCommit) {
     let mut app = InstallerApp::with_disks(Vec::new()).with_backend(backend.clone());
-    // Pin the hardware so the secret policy is deterministic on any host.
     app.tpm2 = false;
     let doc = AutoCommit::new();
     app.sync(&doc, &automerge::ROOT);
@@ -183,8 +178,6 @@ fn oauth_selected_services_reach_production_form_without_public_identity() {
                 .contains("personal@example.org")
         );
     }
-    // Asking for a newly selected service starts fresh authorization; saved
-    // rows do not turn a new request into an implicit reuse of an older grant.
     app.accounts_form.files.set(false);
     app.accounts_form.mail.set(false);
     app.accounts_form.calendar.set(true);
@@ -317,7 +310,6 @@ fn calendar_review_confirmation_uses_selected_private_collections() {
     let public = console(&mut app, &mut doc, &json!({"op": "actions_enumerate"})).to_string();
     assert!(public.contains("Confirm selected calendars"));
     assert!(!public.contains("cloud.example"));
-    // Confirm with nothing selected cannot commit a grant.
     assert!(
         refused(&invoke(
             &mut app,
@@ -441,7 +433,6 @@ fn linux_without_unallocated_space_never_falls_back_to_erase() {
 
 #[test]
 fn the_published_surface_is_valid_and_offers_a_way_back_only_when_staged() {
-    // Phase `the_published_surface_is_valid_on_every_step`.
     {
         let backend = FakeBackend::new();
         let (mut app, _doc) = app(&backend);
@@ -470,8 +461,6 @@ fn the_published_surface_is_valid_and_offers_a_way_back_only_when_staged() {
                 described.iter().any(|d| d.address.action == "status"),
                 "{step:?} has no status"
             );
-            // Exactly the current step's controls are available; every other
-            // action says why not.
             for descriptor in &described {
                 if let tilo_actions::Availability::Unavailable { code, reason } =
                     &descriptor.contract.availability
@@ -481,9 +470,6 @@ fn the_published_surface_is_valid_and_offers_a_way_back_only_when_staged() {
             }
         }
     }
-    // Phase `a_staged_installer_offers_only_alongside_and_the_way_back`.
-    // A staged (USB-free) installer publishes its way back and its one allowed
-    // plan through the same door as every other control.
     {
         let backend = Arc::new(FakeBackend {
             disks: imager_backend::destination::disks::parse_lsblk(
@@ -526,7 +512,6 @@ fn the_published_surface_is_valid_and_offers_a_way_back_only_when_staged() {
         assert!(back.get("answer").is_some(), "{back}");
         assert_eq!(*backend.power.lock().unwrap(), vec![PowerAction::Reboot]);
     }
-    // Phase `an_ordinary_installer_publishes_no_way_back`.
     {
         let backend = FakeBackend::new();
         let (mut app, mut doc) = app(&backend);
@@ -541,7 +526,6 @@ fn the_published_surface_is_valid_and_offers_a_way_back_only_when_staged() {
     reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
 )]
 fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
-    // Phase `wizard_controls_run_the_published_actions`.
     {
         let backend = FakeBackend::new();
         let (mut by_row, mut row_doc) = app(&backend);
@@ -565,8 +549,6 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
             local_text(&by_action.erase_confirmation)
         );
 
-        // A control whose action is unavailable shows the published reason: the
-        // same sentence an external caller receives.
         by_row.step = Step::Install;
         by_row.install_state = InstallState::Done;
         by_row.recovery_key = Some(KEY.into());
@@ -585,17 +567,12 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         assert_eq!(by_row.status, reason);
         assert!(backend.power.lock().unwrap().is_empty());
     }
-    // Phase `the_host_door_reaches_the_same_handler_and_refuses_a_stale_target`.
-    // The framework's door hands an admitted effect to the surface, which
-    // applies it: the handler every other door ends in.
     {
         let backend = FakeBackend::new();
         let (mut app, _doc) = app(&backend);
         app.apply(DestinationEffect::Next).unwrap();
         assert_eq!(app.step, Step::Network);
 
-        // A confirmed begin for a target the review no longer names is refused,
-        // not redirected to whatever is selected now.
         app.step = Step::Review;
         app.selected_disk = Some(1);
         app.recovery_ack = true;
@@ -607,7 +584,6 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         assert!(refused.is_err());
         assert!(backend.installs.lock().unwrap().is_empty());
     }
-    // Phase `a_failed_install_goes_back_to_storage_through_the_same_action`.
     {
         let backend = FakeBackend::finishing(false);
         let (mut app, mut doc) = app(&backend);
@@ -637,7 +613,6 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
             "a failed target is never pre-selected again"
         );
     }
-    // Phase `separate_disk_secret_action_keeps_backend_credentials_distinct_and_private`.
     {
         let backend = FakeBackend::new();
         let (mut app, mut doc) = app(&backend);
@@ -688,7 +663,6 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
     let (mut app, mut doc) = app(&backend);
     let doc = &mut doc;
 
-    // Off-step actions are refused with the reason the wizard would give.
     let early = invoke(
         &mut app,
         doc,
@@ -728,7 +702,6 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
         "disk"
     );
 
-    // Disk: nothing selected yet — Next fails with the wizard's own words.
     let blocked = invoke(&mut app, doc, "next@installer", &json!({}));
     assert_eq!(refused(&blocked), Some("action_failed"));
     assert!(
@@ -812,7 +785,6 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
         invoke(&mut app, doc, "next@installer", &json!({}))["answer"]["step"],
         "media"
     );
-    // Media: the formats are off until asked for, and only on this step.
     assert!(
         invoke(
             &mut app,
@@ -829,8 +801,6 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
         "review"
     );
 
-    // Review: the destructive action is published with its exact phrase and
-    // refused until the recovery promise, then until the phrase is right.
     let listed = console(
         &mut app,
         doc,
@@ -884,7 +854,6 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
     );
     assert!(started.get("answer").is_some(), "{started}");
 
-    // The backend got exactly the reviewed choices, and the secret only there.
     let installs = backend.installs.lock().unwrap().clone();
     assert_eq!(installs.len(), 1);
     let (disk, user, password, opts) = &installs[0];
@@ -896,8 +865,6 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
     assert_eq!(opts.keymap, "de");
     assert_eq!(opts.pin.as_str(), SECRET);
 
-    // Finish: the key exists but never leaves; power waits for the saved
-    // acknowledgement and then goes through the backend.
     let finished = state(&mut app, doc);
     assert_eq!(finished["install"]["state"], "done");
     assert_eq!(finished["recovery_key"]["available"], true);

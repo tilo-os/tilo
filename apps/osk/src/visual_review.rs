@@ -27,6 +27,7 @@ use vello::kurbo::{Affine, Point};
 
 use super::OskWidget;
 use crate::layout::KeyAction;
+use ui::widget::DrawChild;
 
 fn shot_dir() -> PathBuf {
     std::env::var_os("TILO_OSK_SHOT_DIR").map_or_else(
@@ -95,7 +96,7 @@ pub(super) fn render(osk: &mut OskWidget, theme: &Theme, w: f32, h: f32, name: &
     // they do on a phone panel. A render ratio, not a layout size.
     let scale = 2.0;
     let mut scene = Scene::new();
-    osk.draw(
+    osk.draw_child(
         &mut scene,
         Affine::scale(scale),
         &mut tr,
@@ -123,11 +124,9 @@ fn type_text(osk: &mut OskWidget, text: &str) {
     }
 }
 
-/// One keyboard state to photograph.
 struct State {
     name: &'static str,
     build: fn() -> OskWidget,
-    /// Runs after layout, so it can press keys by their geometry.
     after_layout: fn(&mut OskWidget),
 }
 
@@ -279,7 +278,6 @@ fn terminal() -> OskWidget {
     OskWidget::new().with_purpose(crate::layout::InputPurpose::Terminal)
 }
 
-/// Tap the toolbar item `id` `times` times.
 fn tap_tool(osk: &mut OskWidget, id: &str, times: usize) {
     if let Some(index) = osk.toolbar.iter().position(|item| item.id == id) {
         for _ in 0..times {
@@ -306,7 +304,6 @@ fn press_label(osk: &mut OskWidget, label: &str) {
     }
 }
 
-/// Hold `label` past the long-press delay and slide to alternate `pick`.
 fn long_press(osk: &mut OskWidget, label: &str, pick: usize) {
     let Some((id, _)) = key_labelled(osk, label) else {
         return;
@@ -332,7 +329,6 @@ fn render_keyboard_matrix() {
                 let mut osk = (state.build)();
                 lay_out(&mut osk, &theme, w);
                 (state.after_layout)(&mut osk);
-                // A state may change the row count (symbols) or the bands.
                 let h = lay_out(&mut osk, &theme, w);
                 render(
                     &mut osk,

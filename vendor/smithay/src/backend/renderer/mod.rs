@@ -27,9 +27,6 @@ use wayland_server::protocol::{wl_buffer, wl_shm};
 #[cfg(feature = "renderer_gl")]
 pub mod gles;
 
-#[cfg(feature = "renderer_glow")]
-pub mod glow;
-
 #[cfg(feature = "renderer_pixman")]
 pub mod pixman;
 

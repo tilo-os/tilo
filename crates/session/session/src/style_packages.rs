@@ -32,7 +32,7 @@ use tilo_actions::{
     ParamType, ResourceSpec,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_surface_host::Published;
+use tilo_session_core::door::Published;
 use ui::host_operation::ResourceOperationStart;
 
 /// The resource the person's style packages are made, checked and installed on.
@@ -204,7 +204,7 @@ impl Published for Served {
         &mut self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-        _look: &mut tilo_surface_host::Look<'_>,
+        _look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         if address.resource != RESOURCE {
             return Err(DoorError::Unknown(address.clone()));

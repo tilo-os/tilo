@@ -1,4 +1,4 @@
-//! The model manager a screenshot shows, standing in for the device's.
+//! The model manager screenshots and tests show, in place of the device's.
 
 use agent_provider_config::local::hub::{HubFormat, HubSearchResult};
 
@@ -7,8 +7,6 @@ use super::{
 };
 use crate::i18n::t;
 
-/// The model manager a screenshot and the crate's tests show: a good fit,
-/// one recommended model, nothing installed. Every request succeeds.
 pub(super) struct SampleManager;
 
 impl LocalModelControl for SampleManager {
@@ -67,8 +65,6 @@ impl LocalModelControl for SampleManager {
 }
 
 impl super::hub::HubControl for SampleManager {
-    /// Two sample models on Hugging Face, one per file family, found by
-    /// any part of their name.
     fn hub_search(&self, query: &str, format: &str) -> Result<Vec<HubSearchResult>, String> {
         crate::device_read::off_ui_thread();
         let sample = |repo: &str, downloads, likes, format| HubSearchResult {

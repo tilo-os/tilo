@@ -1,6 +1,5 @@
 use super::*;
 
-/// The sample engine, staged as a plain `--shots` opens it.
 fn staged() -> ContainersApp {
     let mut app = ContainersApp::sample();
     app.stage_scene(None);
@@ -107,83 +106,54 @@ fn the_detail_closes_from_its_header_control() {
     );
 }
 
+/// The chosen container's name and its verbs stand in the window's bar; with nothing
+/// chosen the section names the window there.
 #[test]
 fn the_section_and_its_commands_are_in_the_window_bar() {
     let mut d = driver(staged());
     d.present_in_window_bar();
     d.relayout();
-    let bar = ui::window_toolbar::declared().expect("the shell declares the window's slots");
+    assert_eq!(
+        ui::window_toolbar::declared(),
+        None,
+        "the bar holds only what is the window's"
+    );
     let app = d.root::<ContainersApp>();
     let chosen = app
         .selected()
         .and_then(|id| app.state().engine.find(&id).cloned())
         .map(|container| container.name)
         .expect("the staged window shows a container");
-    assert_eq!(
-        bar.location
-            .as_ref()
-            .map(|location| location.label.as_str()),
-        Some(chosen.as_str()),
-        "the chosen container names the window"
-    );
-    let names: Vec<&str> = bar
-        .actions
-        .iter()
-        .map(|action| action.name.as_str())
-        .collect();
+    let names = d.header_row_names();
+    for word in [chosen.as_str(), "Remove", "Close details"] {
+        assert!(
+            names.iter().any(|name| name == word),
+            "{word} stands in the header row: {names:?}"
+        );
+    }
     assert!(
-        names.contains(&"Remove"),
-        "the container's verbs are bar actions: {names:?}"
+        names.iter().filter(|name| name.contains("Search")).count() <= 1,
+        "the bar's own search is the only one: {names:?}"
     );
-    assert!(
-        !d.targets()
-            .keys()
-            .any(|id| id.starts_with("detail-remove-")),
-        "the detail draws no verbs of its own"
-    );
-    assert!(
-        !bar.actions
-            .iter()
-            .any(|action| action.name.contains("Search")),
-        "the bar's own search is the only one: {:?}",
-        bar.actions
-    );
-    let close = bar
-        .actions
-        .iter()
-        .find(|action| action.name == "Close details")
-        .expect("closing the detail is a bar action");
-    assert_eq!(
-        close.icon, "panel-right",
-        "closing the detail shows the pane it closes, not a cross beside the search"
-    );
-    let close = close.id.clone();
-    assert!(
-        !d.targets().contains_key("detail-close"),
-        "the window draws no header row of its own"
-    );
-    d.press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: close });
-    // The shell presses the header's button in the frame's settle pass;
-    // the window then dispatches what the button invoked.
+    d.press_window_action("Close details").unwrap();
     d.idle();
     d.relayout();
     assert!(
         app_of(&mut d).selected().is_none(),
-        "the bar closed the detail"
+        "the row's Close details closed the detail"
     );
-    let bar = ui::window_toolbar::declared().expect("the window's slots");
-    assert_eq!(
-        bar.location.map(|location| location.label).as_deref(),
-        Some("Containers"),
-        "with nothing chosen the section names the window"
+    let names = d.header_row_names();
+    assert!(
+        names.iter().any(|name| name == "Containers"),
+        "with nothing chosen the section names the window: {names:?}"
     );
 
     d.key("2");
     d.relayout();
-    let bar = ui::window_toolbar::declared().expect("the window's slots");
-    assert_eq!(
-        bar.location.map(|location| location.label).as_deref(),
-        Some("Images")
+    let names = d.header_row_names();
+    assert!(
+        names.iter().any(|name| name == "Images"),
+        "the section the person went to names the window: {names:?}"
     );
 }
 
@@ -302,8 +272,8 @@ fn removing_asks_first_and_then_runs_once() {
     );
 }
 
-/// Moving around is the window's own: switching sections leaves the
-/// selection behind, and a selection opens the containers section.
+/// Where the window is stays local: switching sections leaves the selection behind, and
+/// a selection opens the containers section.
 #[test]
 fn where_the_window_is_stays_local() {
     let app = staged();
@@ -557,10 +527,8 @@ fn a_lifecycle_control_asks_the_host_for_its_exact_target() {
     );
 }
 
-/// A container that logs after it was opened says so: the detail read
-/// beside the probe replaces what the tab showed, instead of the first
-/// read being carried over for as long as the container stays open
-/// (`APP-containers-01`).
+/// A container that logs after it was opened says so: the detail read beside the probe
+/// replaces what the tab showed.
 #[test]
 fn a_container_that_logs_later_replaces_the_lines_the_tab_shows() {
     let (window, _requests, _results) = ContainersApp::controlled_runtime_root();
@@ -585,8 +553,7 @@ fn a_container_that_logs_later_replaces_the_lines_the_tab_shows() {
     assert_eq!(shown.logs_fetched_unix_ms, Some(1_700_000_000_000));
 }
 
-/// Stopping a pull asks the engine to end it, and the sheet says it
-/// stopped rather than pretending it finished.
+/// Stopping a pull asks the engine to end it, not to hide it.
 #[test]
 fn stopping_a_pull_ends_it_rather_than_hiding_it() {
     let (window, _requests, _results) = ContainersApp::controlled_runtime_root();
@@ -602,7 +569,6 @@ fn stopping_a_pull_ends_it_rather_than_hiding_it() {
     assert!(app.pull.as_ref().is_some_and(|p| p.stopped));
 }
 
-/// What Podman's layer lines say about the bytes fetched.
 #[test]
 fn a_layer_line_says_how_many_bytes_are_fetched() {
     assert_eq!(
@@ -616,7 +582,6 @@ fn a_layer_line_says_how_many_bytes_are_fetched() {
     );
 }
 
-/// A controlled live engine selects and hydrates its one container.
 #[test]
 fn controlled_selection_asks_for_its_detail() {
     let (window, requests, _results) = ContainersApp::controlled_runtime_root();

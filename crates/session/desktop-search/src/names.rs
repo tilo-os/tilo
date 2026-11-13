@@ -73,35 +73,10 @@ fn package_id(app_id: &str) -> &str {
 #[must_use]
 pub fn humanized(app_id: &str) -> String {
     let id = file_name(package_id(app_id));
-    let last = id.rsplit('.').find(|part| !part.is_empty()).unwrap_or(id);
-    let spread = last.replace(['-', '_'], " ");
-    let mut broken = String::new();
-    let mut before: Option<char> = None;
-    for ch in spread.chars() {
-        if before.is_some_and(|prev| prev.is_lowercase() || prev.is_ascii_digit())
-            && ch.is_uppercase()
-        {
-            broken.push(' ');
-        }
-        before = Some(ch);
-        broken.push(ch);
+    if id.trim().is_empty() {
+        return app_id.to_owned();
     }
-    let said = broken
-        .split_whitespace()
-        .map(|word| {
-            let mut letters = word.chars();
-            let Some(first) = letters.next() else {
-                return String::new();
-            };
-            first.to_uppercase().collect::<String>() + letters.as_str()
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    if said.trim().is_empty() {
-        app_id.to_owned()
-    } else {
-        said
-    }
+    collaboration::history_source::authors::app_words(id)
 }
 
 #[cfg(test)]

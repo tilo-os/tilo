@@ -1,11 +1,10 @@
-//! Client side of the sandboxed helper: spawning, request/response,
-//! crash detection and transparent restart.
+//! Client side of the sandboxed helper: spawning, requests, crash detection
+//! and restart.
 //!
 //! Every open document keeps its own read-only descriptor, so after a helper
-//! dies the next request simply starts a new helper and re-opens the
-//! documents it needs. The request that was in flight when the helper died
-//! fails with [`Error::Crashed`]; a document that keeps crashing the engine
-//! is refused rather than restarted forever.
+//! dies the next request starts a new one and re-opens what it needs. The
+//! request in flight fails with [`Error::Crashed`]; a document that keeps
+//! crashing the engine is refused.
 
 use std::collections::HashMap;
 use std::os::fd::{AsFd, OwnedFd};
@@ -116,7 +115,6 @@ struct Connection {
 }
 
 impl Connection {
-    /// Stop the helper and describe how it ended.
     fn kill(mut self) -> String {
         let status = if let Ok(Some(status)) = self.child.try_wait() {
             Some(status)
@@ -153,7 +151,6 @@ struct State {
     attached: HashMap<u64, u64>,
 }
 
-/// The sandboxed backend.
 pub struct Sandboxed {
     helper: PathBuf,
     state: Mutex<State>,
@@ -232,7 +229,6 @@ impl Sandboxed {
         Ok(connection)
     }
 
-    /// Register a document; it is opened in the helper lazily.
     pub fn open(
         &self,
         id: u64,
@@ -409,7 +405,6 @@ impl Sandboxed {
         self.pool.lock_recover()
     }
 
-    /// A pixel buffer of at least `need` bytes, reused when one is idle.
     fn pixel_buffer(&self, need: u64) -> Result<Arc<PixelBuffer>, Error> {
         let mut pool = self.lock_pool();
         if let Some(buffer) = pool.take(need) {
@@ -432,8 +427,6 @@ impl Sandboxed {
         }))
     }
 
-    /// Render into a pooled pixel buffer. `need` is the output size in
-    /// bytes, computed by the caller from the page geometry.
     pub fn render(
         &self,
         id: u64,
@@ -571,7 +564,6 @@ impl Sandboxed {
         }
     }
 
-    /// Send the development-only abort request.
     pub fn abort_helper(&self) -> Error {
         match self.call(&[], &Request::Abort, REQUEST_TIMEOUT) {
             Ok((other, _)) => unexpected(&other),
@@ -579,12 +571,10 @@ impl Sandboxed {
         }
     }
 
-    /// Process id of the live helper, if one is running.
     pub fn helper_pid(&self) -> Option<u32> {
         self.lock().connection.as_ref().map(|c| c.child.id())
     }
 
-    /// How many helpers this backend has started.
     pub fn helpers_started(&self) -> u64 {
         self.lock().helpers_started
     }
@@ -599,18 +589,10 @@ impl Drop for Sandboxed {
     }
 }
 
-/// Start a helper from one thread that lives as long as the process.
-///
-/// The helper asks the kernel to kill it when its parent goes away
-/// (`PR_SET_PDEATHSIG`), and "parent" there means the *thread* that forked
-/// it. Spawning from whichever thread happened to need a helper would kill
-/// the helper as soon as that thread finished.
-/// The time zone the helper runs in: a POSIX rule, so libc never opens a
-/// zone file for it. pdfium converts times only with `gmtime`, yet glibc's
-/// first conversion of any kind loads the local zone — `/etc/localtime`,
-/// which the sandbox rightly refuses. Nothing the helper returns is in local
-/// time (document dates are passed through as written), so UTC is what it
-/// needs, and it makes exports identical whichever machine wrote them.
+/// The helper's time zone: a POSIX rule, so libc never opens a zone file.
+/// glibc's first time conversion loads `/etc/localtime`, which the sandbox
+/// refuses, and nothing the helper returns is in local time; a rule also makes
+/// exports identical whichever machine wrote them.
 const HELPER_TZ: &str = "UTC0";
 
 /// The helper's command line and environment: nothing inherited but what it
@@ -630,6 +612,9 @@ fn helper_command(helper: &Path) -> Command {
     command
 }
 
+/// Start a helper from a thread that lives as long as the process: the helper
+/// asks the kernel to kill it when the thread that forked it goes away
+/// (`PR_SET_PDEATHSIG`), so it must not be spawned from a thread that ends.
 fn spawn_from_spawner_thread(command: Command) -> std::io::Result<Child> {
     type Job = (Command, std::sync::mpsc::Sender<std::io::Result<Child>>);
     static SPAWNER: std::sync::OnceLock<Mutex<std::sync::mpsc::Sender<Job>>> =
@@ -668,8 +653,6 @@ fn unexpected(response: &Response) -> Error {
 mod tests {
     use super::*;
 
-    /// glibc reads `/etc/localtime` on its first time conversion unless `TZ`
-    /// names a rule it can parse without a file; the sandbox denies that read.
     #[test]
     fn the_helper_runs_in_utc_so_it_never_reads_a_zone_file() {
         let command = helper_command(Path::new("tilo-pdf-helper"));

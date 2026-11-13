@@ -75,8 +75,6 @@ fn directory(parent: &File, name: &std::ffi::OsStr) -> io::Result<File> {
 }
 
 fn one_entry(directory: &File) -> io::Result<OsString> {
-    // /proc routes to this still-held descriptor, never a cached kernel device
-    // pathname. Only names are consumed; each object is opened relative to it.
     let mut entries = fs::read_dir(format!("/proc/self/fd/{}", directory.as_raw_fd()))?;
     let name = entries
         .next()
@@ -159,8 +157,6 @@ fn member(root: &File, filesystem: &Filesystem) -> io::Result<Member> {
     }
     let devices = directory(root, "devices".as_ref())?;
     let name = one_entry(&devices)?;
-    // This one kernel sysfs link is intentionally followed: Btrfs creates it
-    // from device->bdev's kobject, rather than the cached DEV_INFO.path string.
     let block = child(&devices, &name, libc::O_RDONLY | libc::O_DIRECTORY)?;
     let rdev = device_number(&attribute(&block, "dev")?)?;
     let info = info.metadata()?;
@@ -172,14 +168,6 @@ fn member(root: &File, filesystem: &Filesystem) -> io::Result<Member> {
     })
 }
 
-/// Observe the sole actual block member of a readable held Btrfs directory.
-///
-/// This supports readonly mounts without requiring a writable member. It does
-/// not grant source authority: callers must match rdev to their held block FD,
-/// filesystem UUID to reviewed volume facts, and retain the actual mount ID and
-/// namespace. Full-root callers separately require `subvolume_identity().id == 5`.
-/// A missing or hidden kernel sysfs observation is an error, never a fallback to
-/// a UUID or `DEV_INFO` pathname. The membership and `FS_INFO` are read twice.
 pub fn single_device_identity(directory: BorrowedFd<'_>) -> io::Result<SingleDeviceIdentity> {
     let held = File::from(directory.try_clone_to_owned()?);
     if !held.metadata()?.is_dir() {

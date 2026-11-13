@@ -35,7 +35,7 @@ pub const APP_ID: &str = "so.tilo.display-confirm";
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct DisplayConfirm {}
 
-#[resource(kind = "display-confirm.question", label = "Display change")]
+#[resource(kind = "display-confirm.question")]
 impl DisplayConfirm {}
 
 /// The answers to the question.
@@ -43,10 +43,10 @@ impl DisplayConfirm {}
 #[effect(operation = "so.tilo.display-confirm.answer")]
 pub enum ConfirmEffect {
     /// Keep the display change
-    #[effect(own_device, attended)]
+    #[effect(label = "display-confirm-keep", own_device, attended)]
     Keep,
     /// Revert the display change
-    #[effect(own_device, idempotent)]
+    #[effect(label = "display-confirm-revert", own_device, idempotent)]
     Revert,
     /// Keep the display change and stop asking about its tool
     #[effect(own_device, attended)]

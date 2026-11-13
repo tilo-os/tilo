@@ -13,8 +13,6 @@ use tilo_view::ui::{self, Gap};
 use tilo_view::{Node, ResourceRef, ViewCx, ViewResource};
 use tilo_view_macros::view;
 
-/// A channel's page takes this; here it is a type that says what kind it is, as a resource's
-/// `#[resource]` derives.
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 struct Channel {
     name: String,
@@ -37,7 +35,6 @@ impl ViewResource for Video {
     const APP: &'static str = "test";
 }
 
-/// The channel's page: its name, and its videos.
 #[view(default)]
 fn page(c: &Channel, cx: &ViewCx) -> Node {
     let mut children = vec![ui::TextBuilder::new(&cx.key("name"), &c.name).into()];
@@ -51,7 +48,6 @@ fn page(c: &Channel, cx: &ViewCx) -> Node {
     ui::stack(&cx.key("page"), Gap::Sibling, children)
 }
 
-/// Another view of the same type: what a place may name besides the default.
 #[view]
 fn short(c: &Channel, cx: &ViewCx) -> Node {
     ui::TextBuilder::new(&cx.key("name"), &c.name).into()
@@ -82,7 +78,6 @@ fn cx() -> ViewCx {
     )
 }
 
-/// Every text a tree shows, in its props.
 fn texts(node: &Node) -> Vec<String> {
     let mut out: Vec<String> = node
         .props
@@ -142,9 +137,7 @@ fn the_view_reads_its_resource_and_draws_its_described_components() {
             "{expected} shows: {shown:?}"
         );
     }
-    // Its rows are the described component the host builds, not a widget of the app's.
     assert!(tree.find("ui.ListRow").is_some() || has_kind(&tree, "ui.ListRow"));
-    // And every node passes the catalogue check the host applies.
     passes(&tree);
 }
 
@@ -161,18 +154,13 @@ fn a_resource_whose_reading_has_not_arrived_shows_what_it_can() {
         },
         &cx(),
     );
-    // The type's default reads for a channel whose reading has not arrived, and the view
-    // draws its page without it rather than failing the place.
     passes(&tree);
 }
 
-/// Whether the tree holds a node of `kind`.
 fn has_kind(node: &Node, kind: &str) -> bool {
     node.kind == kind || node.children.iter().any(|child| has_kind(child, kind))
 }
 
-/// Whether the tree is one the host builds: every node a described component or a primitive,
-/// every prop of its declared type.
 fn passes(tree: &Node) {
     let validator = tilo_view::patch::validate::Validator::new(
         tilo_view::node::catalogue(),

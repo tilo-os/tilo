@@ -1,43 +1,34 @@
 //! Waiting on a child process without polling it.
 //!
-//! A supervisor that must notice when its child exits, and also react to
-//! other events, would otherwise look at the child on a timer and wake the
-//! CPU for nothing while the child runs. An [`ExitWatch`] sleeps until the
-//! child exits or its [`Bell`] rings.
-//!
+//! An [`ExitWatch`] sleeps until the child exits or its [`Bell`] rings, so a
+//! supervisor reacts to other events without looking at the child on a timer.
 //! On Linux it waits on a pidfd, which becomes readable when the child exits
-//! without reaping it. Where the system offers no such handle (macOS, a Linux
-//! before 5.3, the browser) [`ExitWatch::wait`] returns after at most 100 ms,
-//! so a caller that looks again after every wait stays correct everywhere.
+//! without reaping it; where no such handle exists, [`ExitWatch::wait`] returns
+//! after at most 100 ms.
 
 use std::process::Child;
 use std::time::Duration;
 
-/// How long [`ExitWatch::wait`] sleeps where it cannot watch the process.
 const FALLBACK_PAUSE: Duration = Duration::from_millis(100);
 
 /// Sleeps until a child exits, its [`Bell`] rings or a deadline passes.
 pub struct ExitWatch(backend::Watch);
 
-/// Wakes the [`ExitWatch`] it came with, from any thread.
 #[derive(Clone)]
 pub struct Bell(backend::Bell);
 
 impl ExitWatch {
-    /// Watches `child`, and returns the bell that wakes [`Self::wait`].
-    ///
-    /// `child` must not have been waited for yet: once reaped, its process
-    /// id can name another process.
+    /// Watches `child`, and returns the bell that wakes [`Self::wait`]. `child` must
+    /// not have been waited for yet: once reaped, its process id can name another
+    /// process.
     #[must_use]
     pub fn new(child: &Child) -> (Self, Bell) {
         let (watch, bell) = backend::watch(child);
         (Self(watch), Bell(bell))
     }
 
-    /// Sleeps until the child exits, the bell rings or `deadline` (from
-    /// now) passes; `None` waits without a deadline. It never reaps the
-    /// child, and a return says nothing about why: look at the child and at
-    /// whatever rings the bell after every wait.
+    /// Sleeps until the child exits, the bell rings or `deadline` (from now) passes;
+    /// `None` waits without a deadline. It never reaps the child.
     pub fn wait(&self, deadline: Option<Duration>) {
         self.0.wait(deadline);
     }
@@ -51,7 +42,6 @@ impl ExitWatch {
 }
 
 impl Bell {
-    /// Wakes the watch's current or next [`ExitWatch::wait`].
     pub fn ring(&self) {
         self.0.ring();
     }
@@ -144,7 +134,6 @@ mod backend {
     impl Bell {
         pub fn ring(&self) {
             if let Some(ring) = &self.0 {
-                // Nonblocking: a full buffer already holds an unread ring.
                 let _ = (&**ring).write(&[1]);
             }
         }
@@ -249,7 +238,6 @@ mod tests {
         let mut quick = sleeper("0");
         let (watch, _bell) = ExitWatch::new(&quick);
         woken(watch, "the exit to wake the watch");
-        // The watch did not reap it.
         assert!(quick.wait().unwrap().success());
         let _ = child.kill();
         let _ = child.wait();

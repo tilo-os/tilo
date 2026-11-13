@@ -67,6 +67,22 @@ class MeasureTest(unittest.TestCase):
     def test_within_the_budget_passes(self) -> None:
         self.assertEqual(ratchet.measure("desktop", self.bundle(995), BUDGET)[0], 0)
 
+    def test_a_measurement_names_the_splitter_s_larger_unoptimised_size(self) -> None:
+        bundle = self.bundle(995)
+        (bundle / ratchet.SPLIT).write_text('{"main": {"file": "x.wasm", "bytes": 1400}}')
+        status, message = ratchet.measure("desktop", bundle, BUDGET)
+        self.assertEqual(status, 0, "the budget holds the optimised module, which is within it")
+        self.assertIn("names 1400 bytes", message)
+        self.assertIn("before wasm-opt", message)
+        self.assertIn("the budget holds the 995 bytes the page downloads", message)
+
+    def test_an_optimised_size_the_splitter_agrees_with_is_not_named(self) -> None:
+        bundle = self.bundle(995)
+        (bundle / ratchet.SPLIT).write_text('{"main": {"file": "x.wasm", "bytes": 995}}')
+        status, message = ratchet.measure("desktop", bundle, BUDGET)
+        self.assertEqual(status, 0)
+        self.assertNotIn("before wasm-opt", message)
+
     def test_raises_add_to_the_budget(self) -> None:
         self.assertEqual(ratchet.measure("desktop", self.bundle(1300), raised(BUDGET, a=record(400)))[0], 0)
 

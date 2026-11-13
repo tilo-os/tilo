@@ -115,19 +115,11 @@ impl InstalledApp {
         })
     }
 
-    /// The name to show in `locale` (BCP 47): its exact tag, else its
-    /// language, else `display_name`.
+    /// The name to show in `locale`: [`collab_types::history::localized_name`], else
+    /// `display_name`.
     pub fn name_for(&self, locale: &str) -> &str {
-        let language = locale.split(['-', '_']).next().unwrap_or(locale);
-        self.localized_names
-            .iter()
-            .find(|(tag, _)| tag.eq_ignore_ascii_case(locale))
-            .or_else(|| {
-                self.localized_names
-                    .iter()
-                    .find(|(tag, _)| tag.eq_ignore_ascii_case(language))
-            })
-            .map_or(self.display_name.as_str(), |(_, name)| name.as_str())
+        collab_types::history::localized_name(&self.localized_names, locale)
+            .unwrap_or(self.display_name.as_str())
     }
 
     /// The name to show to a person whose interface prefers `locales`, in
@@ -839,6 +831,29 @@ mod tests {
         assert_eq!(app.name_in(&locales(&["es", "de"])), "Notizen");
         assert_eq!(app.name_in(&locales(&["en-US", "en"])), "Notes");
         assert_eq!(app.name_in(&[]), "Notes");
+    }
+
+    /// A package that names itself by region (`de-DE`, as a tilolang app's catalogue does) reads
+    /// in that language on a machine whose locale says `de_DE.UTF-8`, which the session asks in
+    /// as `de_DE` and `de`.
+    #[test]
+    fn a_name_given_by_region_reads_in_a_posix_locale_of_its_language() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = app_of(
+            tmp.path(),
+            &manifest(
+                "id = \"so.tilo.lang.tasks\"\nname = \"Tasks\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
+                 [package.names]\nde-DE = \"Aufgaben\"",
+                "[entrypoint]\nbin = \"bin/tasks\"\ntype = \"gui\"\n",
+            ),
+        );
+        assert_eq!(
+            app.name_in(&["de_DE".to_owned(), "de".to_owned()]),
+            "Aufgaben"
+        );
+        assert_eq!(app.name_in(&["de".to_owned()]), "Aufgaben");
+        assert_eq!(app.name_in(&["de-AT".to_owned()]), "Aufgaben");
+        assert_eq!(app.name_in(&["en_US".to_owned(), "en".to_owned()]), "Tasks");
     }
 
     #[test]

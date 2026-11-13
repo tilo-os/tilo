@@ -170,6 +170,7 @@ fn a_card_added_is_read_once_the_plans_file_changes() {
     let hosted = HostedAccount {
         account: "acct-1".into(),
         plans: path.clone(),
+        ledger: None,
         socket: None,
         name: "unused".into(),
     };
@@ -188,4 +189,88 @@ fn a_card_added_is_read_once_the_plans_file_changes() {
         .recv_timeout(Duration::from_secs(10))
         .expect("the change is told");
     assert!(hosted.read(0).standing.unwrap().payment_method.is_some());
+}
+
+#[test]
+fn the_standing_shows_the_free_page_actions_and_the_count_of_the_period() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("plans.json");
+    std::fs::write(
+        &path,
+        br#"{"sells":{"host":"tilo.sh","plans":[],
+             "add_payment_method":"https://tilo.sh/billing/card?account={account}",
+             "browser_free_actions":100}}"#,
+    )
+    .unwrap();
+    let ledger = dir.path().join("browser-actions.jsonl");
+    let actions = browser_actions::Ledger::new(ledger.clone());
+    // 2026-11-08T12:00:00Z, the calendar month's period
+    let now = 1_794_139_200_000;
+    for at_ms in [1_793_491_200_000, now, now + 1] {
+        actions
+            .record(&browser_actions::PageAction {
+                account: "acct-1".into(),
+                workspace: "ws1".into(),
+                at_ms,
+            })
+            .unwrap();
+        actions
+            .record(&browser_actions::PageAction {
+                account: "acct-2".into(),
+                workspace: "ws1".into(),
+                at_ms,
+            })
+            .unwrap();
+    }
+    let hosted = HostedAccount {
+        account: "acct-1".into(),
+        plans: path.clone(),
+        ledger: Some(ledger),
+        socket: None,
+        name: "unused".into(),
+    };
+    // phase: no card: the allowance is all it may use, and its count
+    {
+        let account = hosted.read(now);
+        let standing = account.standing.unwrap();
+        assert!(standing.payment_method.is_none());
+        assert_eq!(
+            standing.limits,
+            Some(Limits {
+                free_browser_actions: Some(100),
+                ..Limits::default()
+            })
+        );
+        assert_eq!(standing.usage.browser_actions, 3);
+        assert_eq!(
+            (standing.usage.period_start_ms, standing.usage.period_end_ms),
+            (1_793_491_200_000, 1_796_083_200_000)
+        );
+    }
+    // phase: a card, on a plan, with the same allowance and count
+    {
+        let mut plans: Plans = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        plans.accounts.insert(
+            "acct-1".into(),
+            Plan {
+                plan: Some("pro".into()),
+                ..Plan::default()
+            },
+        );
+        plans.sells.as_mut().unwrap().plans.push(PlanOffer {
+            id: "pro".into(),
+            name: "Pro".into(),
+            ..PlanOffer::default()
+        });
+        std::fs::write(&path, serde_json::to_vec(&plans).unwrap()).unwrap();
+        let standing = hosted.read(now).standing.unwrap();
+        assert!(standing.payment_method.is_some());
+        assert_eq!(
+            standing
+                .limits
+                .and_then(|limits| limits.free_browser_actions),
+            Some(100)
+        );
+        assert_eq!(standing.usage.browser_actions, 3);
+    }
 }

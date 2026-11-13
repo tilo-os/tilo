@@ -14,8 +14,6 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT};
 use tilo_automerge::ApplyIncoming;
 
-/// A document of `changes` changes: a map entry per hundred changes, each
-/// rewritten in a change of its own.
 fn history(changes: u64) -> AutoCommit {
     let mut doc = AutoCommit::new();
     let files = doc.put_object(ROOT, "files", ObjType::Map).unwrap();

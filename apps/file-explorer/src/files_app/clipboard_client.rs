@@ -1,6 +1,5 @@
-//! Bounded native clipboard commands on the existing authenticated host lane.
-//! Descriptors remain owned until Capture answers. Invocation ids are inert:
-//! the broker matches them to its exact retained peer/caller before each command.
+//! The host's native clipboard lane, for a selection too large to carry in the
+//! app.
 
 use super::FilesState;
 use crate::i18n::t;
@@ -26,20 +25,16 @@ struct Publication {
     published: Option<Offer>,
     failure: Option<String>,
     phase: Phase,
-    /// A selection captured by name from the shown folder: the folder, the
-    /// entries still to send, and how many there are in all.
     named: Option<NamedCapture>,
 }
 
 impl Publication {
-    /// How many entries the published offer must hold.
     fn expected_count(&self) -> usize {
         self.named
             .as_ref()
             .map_or(self.tickets.len(), |named| named.total)
     }
 
-    /// The host's tickets now retain the actual objects: publish them.
     fn captured(&mut self, sources: &[String]) -> Command {
         self.retained.clear();
         self.tickets = sources.to_vec();
@@ -50,8 +45,6 @@ impl Publication {
         }
     }
 
-    /// The host holds the entries of `ticket`: send the next names, or
-    /// publish them all once every name is held.
     fn next_named(&mut self, ticket: &str) -> Command {
         self.tickets.push(ticket.to_owned());
         if let Some(named) = self.named.as_mut()
@@ -62,7 +55,6 @@ impl Publication {
                 entries,
             };
         }
-        // Every entry is held by the host now.
         self.retained.clear();
         self.phase = Phase::Publish;
         Command::Publish {
@@ -72,7 +64,6 @@ impl Publication {
     }
 }
 
-/// A large selection by name: the shown folder and its entries.
 type NamedSelection = (
     (SelectedDescriptor, Arc<RetainedObject>),
     Vec<file_clipboard::NamedEntry>,
@@ -84,11 +75,9 @@ struct NamedCapture {
     total: usize,
 }
 
-/// Split `entries` into commands that each stay well inside the wire bound.
 fn named_chunks(
     entries: Vec<file_clipboard::NamedEntry>,
 ) -> std::collections::VecDeque<Vec<file_clipboard::NamedEntry>> {
-    // Room for the folder's path, the command's framing and JSON overhead.
     const BUDGET: usize = file_clipboard::MAX_WIRE_BYTES - 16 * 1024;
     let mut chunks = std::collections::VecDeque::new();
     let mut chunk = Vec::new();
@@ -142,8 +131,6 @@ pub(super) enum Completion {
         error: Option<String>,
     },
     Transferred(Receipt),
-    /// The paste waits for the person: the destination already has `count`
-    /// of the names, the first of them in `names`.
     Conflicts {
         names: Vec<String>,
         count: usize,
@@ -162,7 +149,6 @@ pub(super) struct Client {
     ready: Option<Instant>,
     undo_queue: Rc<RefCell<Vec<UndoRequest>>>,
     undo: Option<UndoJob>,
-    /// A paste waits for the person to say what to do about clashing names.
     asking: bool,
 }
 
@@ -178,8 +164,6 @@ impl Client {
         self.publication.is_some() || self.transfer.is_some() || self.undo.is_some()
     }
 
-    /// Forget only this caller's publication/transfer. Late request ids remain
-    /// distinct, and the host owns ticket expiry and interrupted I/O recovery.
     pub(super) fn abandon(&mut self) {
         self.publication = None;
         self.transfer = None;
@@ -238,9 +222,6 @@ impl Client {
         Ok(())
     }
 
-    /// Publish entries of the shown folder by name: one folder descriptor
-    /// per command however many entries, so a selection is never bounded by
-    /// how many descriptors a message carries.
     pub(super) fn publish_named(
         &mut self,
         invocation: InvocationId,
@@ -403,8 +384,6 @@ impl Client {
         None
     }
 
-    /// Answer only after the host has released its temporary capture tickets.
-    /// A release failure cannot be presented as a successful publication.
     pub(super) fn event(&mut self, event: &CollabEvent) -> Option<Result<Completion, String>> {
         let CollabEvent::LocalFileClipboardResult { request_id, result } = event else {
             return None;
@@ -562,7 +541,6 @@ impl Client {
         Ok(())
     }
 
-    /// The person's answer to clashing names (`None` cancels the paste).
     pub(super) fn decide(
         &mut self,
         conflict: Option<file_clipboard::Conflict>,
@@ -599,7 +577,6 @@ impl Client {
         match step {
             transfer::Step::Done(result) => Some(result.map(Completion::Transferred)),
             transfer::Step::Ask { names, count } => {
-                // Hold the destination until the person answers.
                 self.transfer = Some(transfer);
                 self.asking = true;
                 Some(Ok(Completion::Conflicts { names, count }))
@@ -677,7 +654,6 @@ fn selected(path: &Path, retained: &RetainedObject) -> Result<SelectedDescriptor
 }
 
 impl FilesState {
-    /// Where native Undo and Redo of recorded transfers wait for the host.
     pub(crate) fn native_undo_queue(&self) -> Rc<RefCell<Vec<UndoRequest>>> {
         Rc::clone(&self.local_clipboard.undo_queue)
     }
@@ -781,14 +757,10 @@ impl FilesState {
     pub(crate) fn hosted_clipboard(&self) -> bool {
         match &self.services {
             super::FileServices::Hosted(services) => services.local_clipboard,
-            // Select once: a dead service must fail through the native lane,
-            // never fall back to queuing legacy pathname operations.
             super::FileServices::Legacy => self.local_clipboard.native_service,
         }
     }
 
-    /// Show what a native transfer came to: what arrived is in the listing,
-    /// so only a failure is said.
     pub(crate) fn follow_clipboard_receipt(&mut self, receipt: &Receipt) {
         use crate::i18n::{arg, t_args};
         if let Some(error) = &receipt.error {
@@ -872,8 +844,6 @@ impl FilesState {
     pub(super) fn complete_clipboard_publication(&mut self, result: Result<Completion, String>) {
         match result {
             Ok(Completion::Published(offer)) => {
-                // Copy and Cut say nothing: what is on the clipboard shows
-                // when it is pasted.
                 self.clipboard.clear();
                 self.clipboard_cut = offer.cut;
                 self.answer_effect(Ok(tilo_actions::ActionOutput::default()));
@@ -905,8 +875,6 @@ impl FilesState {
                 }
             }
             Ok(Completion::Conflicts { names, count }) => {
-                // The paste waits: one question, then the host carries out
-                // the answer under the same invocation.
                 self.clash = Some(super::PendingClash::clipboard(
                     names,
                     count,
@@ -935,9 +903,6 @@ impl FilesState {
         self.structure_dirty = true;
     }
 
-    /// A large selection in the folder shown, by name: the folder's own
-    /// retained object and, for each entry, its name and the object the
-    /// listing showed under it.
     fn named_selection(&self) -> Result<NamedSelection, String> {
         let folder = self
             .shown_folder
@@ -1193,9 +1158,6 @@ mod tests {
         assert_eq!(std::fs::read(target).unwrap(), b"replacement");
     }
 
-    /// Select all in a folder of hundreds of long names: the copy goes by
-    /// name, one folder descriptor per command, in as many commands as the
-    /// wire bound needs, then one publication of all of them.
     #[test]
     fn a_large_selection_copies_by_name_in_bounded_commands() {
         let root = tempfile::tempdir().unwrap();

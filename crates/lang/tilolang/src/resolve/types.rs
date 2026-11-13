@@ -1,6 +1,8 @@
 //! The module's own types: what each declares, and what its fields mean to the platform.
 
-use super::{FieldInfo, Resolver, TypeInfo, id_of, is_builtin_type, name_case_ok};
+use super::{
+    FieldInfo, Resolver, TypeInfo, id_of, is_type_former, name_case_ok, type_former_error,
+};
 use crate::ast::{self, Item, TypeExpr, TypeExprKind};
 use crate::ids::IdsLock;
 use crate::types::TypeKey;
@@ -20,7 +22,12 @@ impl Resolver<'_> {
                     ),
                 );
             }
-            if is_builtin_type(&e.name.name) || !self.own_enums.insert(e.name.name.clone()) {
+            if is_type_former(&e.name.name) {
+                let why = type_former_error(&e.name.name);
+                self.err("E013", e.name.span, why);
+                continue;
+            }
+            if !self.own_enums.insert(e.name.name.clone()) {
                 self.err(
                     "E011",
                     e.name.span,
@@ -43,9 +50,12 @@ impl Resolver<'_> {
                     ),
                 );
             }
-            if is_builtin_type(&t.name.name)
-                || self.own_enums.contains(&t.name.name)
-                || !self.own_types.insert(t.name.name.clone())
+            if is_type_former(&t.name.name) {
+                let why = type_former_error(&t.name.name);
+                self.err("E013", t.name.span, why);
+                continue;
+            }
+            if self.own_enums.contains(&t.name.name) || !self.own_types.insert(t.name.name.clone())
             {
                 self.err(
                     "E011",
@@ -66,8 +76,12 @@ impl Resolver<'_> {
                     format!("type names start with an uppercase letter; rename `{name}`"),
                 );
             }
-            if is_builtin_type(name)
-                || self.own_enums.contains(name)
+            if is_type_former(name) {
+                let why = type_former_error(name);
+                self.err("E013", a.name.span, why);
+                continue;
+            }
+            if self.own_enums.contains(name)
                 || self.own_types.contains(name)
                 || self.own_aliases.contains_key(name)
             {

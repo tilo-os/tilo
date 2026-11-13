@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
-# Resolve this checkout's frozen RPM snapshot by package-set fingerprint.
+# Resolve this checkout's frozen RPM snapshot for an architecture by package-set fingerprint.
 #
-# Looks up registry.tilo.so/tilo/rpms:set-<fingerprint>, runs the signature,
-# provenance and both-architecture checks that published image builds require,
-# and prints the digest-pinned RPMS_REF. Never reads a hand-kept pin file.
+# Looks up registry.tilo.so/tilo/rpms:set-<fingerprint>-<arch>, runs the signature,
+# provenance and architecture checks that published image builds require, and prints
+# the digest-pinned RPMS_REF. Never reads a hand-kept pin file. Each architecture's set
+# is published on its own: a machine resolves the set it builds for, and needs no
+# build node of the other architecture to exist.
 #
-#   resolve-rpm-snapshot.sh           print registry.../rpms@sha256:...
-#   resolve-rpm-snapshot.sh --exists  exit 0 if the fingerprint tag resolves, 1 if
-#                                     it does not exist, 3 if the registry failed
-#   resolve-rpm-snapshot.sh --tag     print set-<fingerprint> only
+#   resolve-rpm-snapshot.sh [--arch ARCH]           print registry.../rpms@sha256:...
+#   resolve-rpm-snapshot.sh --exists [--arch ARCH]  exit 0 if the tag resolves, 1 if
+#                                                   it does not exist, 3 if the
+#                                                   registry failed
+#   resolve-rpm-snapshot.sh --tag [--arch ARCH]     print set-<fingerprint>-<arch>
+#
+# ARCH defaults to this machine's (`uname -m`): a build resolves the set of the
+# architecture it builds for.
 #
 # Needs: python3, cosign, jq; skopeo if installed. Registry read access for the tag.
 set -euo pipefail
@@ -17,16 +23,32 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo"
 
 mode=resolve
-case "${1:-}" in
-  "") ;;
-  --exists) mode=exists ;;
-  --tag) mode=tag ;;
-  -h|--help)
-    sed -n '2,12p' "$0"
-    exit 0
-    ;;
+arch=$(uname -m)
+while (($#)); do
+  case $1 in
+    --exists) mode=exists ;;
+    --tag) mode=tag ;;
+    --arch)
+      arch=${2:?--arch needs an architecture}
+      shift ;;
+    --arch=*)
+      arch=${1#--arch=} ;;
+    -h | --help)
+      sed -n '2,19p' "$0"
+      exit 0
+      ;;
+    *)
+      printf 'resolve-rpm-snapshot: unknown option %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+case $arch in
+  x86_64 | amd64) arch=x86_64; platform_arch=amd64 ;;
+  aarch64 | arm64) arch=aarch64; platform_arch=arm64 ;;
   *)
-    printf 'resolve-rpm-snapshot: unknown option %s\n' "$1" >&2
+    printf 'resolve-rpm-snapshot: unknown architecture %s\n' "$arch" >&2
     exit 2
     ;;
 esac
@@ -34,7 +56,7 @@ esac
 fingerprint="$(python3 "$repo/os/dev/rpm-snapshot-fingerprint.py")"
 [[ "$fingerprint" =~ ^[0-9a-f]{64}$ ]] \
   || { printf 'resolve-rpm-snapshot: invalid fingerprint\n' >&2; exit 1; }
-tag="set-$fingerprint"
+tag="set-$fingerprint-$arch"
 tagged="registry.tilo.so/tilo/rpms:$tag"
 TMPDIR_RESOLVE="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_RESOLVE"' EXIT
@@ -58,6 +80,13 @@ manifest_raw() {
     skopeo inspect --raw "docker://$1"
   else
     python3 "$repo/os/dev/registry-manifest.py" raw "$1"
+  fi
+}
+manifest_config() {
+  if command -v skopeo >/dev/null; then
+    skopeo inspect --config "docker://$1"
+  else
+    python3 "$repo/os/dev/registry-manifest.py" config "$1"
   fi
 }
 
@@ -93,43 +122,38 @@ cosign verify --key "$repo/keys/cosign.pub" "$ref" >/dev/null \
   || { printf 'resolve-rpm-snapshot: signature does not verify for %s\n' "$ref" >&2; exit 1; }
 
 work="$(mktemp -d)"
-trap 'rm -rf -- "$work"' EXIT
-python3 "$repo/os/dev/derive-rpm-package-set.py" --arch x86_64 | LC_ALL=C sort -u > "$work/amd64.txt"
-python3 "$repo/os/dev/derive-rpm-package-set.py" --arch aarch64 | LC_ALL=C sort -u > "$work/arm64.txt"
-package_set_sha256="$(cat "$work/amd64.txt" "$work/arm64.txt" | LC_ALL=C sort -u | sha256sum | cut -d' ' -f1)"
-package_amd64_sha256="$(sha256sum "$work/amd64.txt" | cut -d' ' -f1)"
-package_arm64_sha256="$(sha256sum "$work/arm64.txt" | cut -d' ' -f1)"
+trap 'rm -rf -- "$TMPDIR_RESOLVE" "$work"' EXIT
+python3 "$repo/os/dev/derive-rpm-package-set.py" --arch "$arch" | LC_ALL=C sort -u > "$work/set.txt"
+package_set_sha256="$(sha256sum "$work/set.txt" | cut -d' ' -f1)"
 
 provenance="$(cosign verify-attestation --key "$repo/keys/cosign.pub" \
   --type slsaprovenance1 "$ref")" \
   || { printf 'resolve-rpm-snapshot: provenance verification failed for %s\n' "$ref" >&2; exit 1; }
 
 printf '%s' "$provenance" | jq -e --arg digest "$digest" \
-  --arg base "$BASE_REF" --arg package_set_sha256 "$package_set_sha256" \
-  --arg package_amd64_sha256 "$package_amd64_sha256" \
-  --arg package_arm64_sha256 "$package_arm64_sha256" '
+  --arg base "$BASE_REF" --arg arch "$platform_arch" \
+  --arg package_set_sha256 "$package_set_sha256" '
     [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
     | any(
-        ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/frozen-rpm-index/v1")
-          or (.buildDefinition.buildType | endswith("/buildtypes/frozen-rpm-index/v1")))
-        and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
+        ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/frozen-rpm-snapshot/v1")
+          or (.buildDefinition.buildType | endswith("/buildtypes/frozen-rpm-snapshot/v1")))
+        and .buildDefinition.externalParameters.architecture == $arch
         and .buildDefinition.externalParameters.packageSetSha256 == $package_set_sha256
-        and .buildDefinition.externalParameters.packageSetSha256ByArchitecture
-          == {amd64: $package_amd64_sha256, arm64: $package_arm64_sha256}
         and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
         and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
       )
   ' >/dev/null \
   || {
-    printf 'resolve-rpm-snapshot: frozen RPM provenance does not bind its package set, digest, base, and architectures\n' >&2
+    printf 'resolve-rpm-snapshot: frozen RPM provenance does not bind its architecture, package set, digest and base\n' >&2
     exit 1
   }
 
-platforms="$(manifest_raw "$ref" | jq -c \
-  '[.manifests[].platform | {os,architecture}] | sort_by(.architecture)')"
-[ "$platforms" = '[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]' ] \
+image_config="$(manifest_config "$ref")" \
+  || { printf 'resolve-rpm-snapshot: could not read the image config of %s\n' "$ref" >&2; exit 1; }
+image_platform="$(printf '%s' "$image_config" | jq -r '"\(.os)/\(.architecture)"')"
+[ "$image_platform" = "linux/$platform_arch" ] \
   || {
-    printf 'resolve-rpm-snapshot: frozen RPM index has unexpected platforms: %s\n' "$platforms" >&2
+    printf 'resolve-rpm-snapshot: %s is a %s image, not linux/%s\n' "$ref" "${image_platform:-unreadable}" "$platform_arch" >&2
     exit 1
   }
 
@@ -139,5 +163,6 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     printf 'rpms_ref=%s\n' "$ref"
     printf 'fingerprint=%s\n' "$fingerprint"
     printf 'tag=%s\n' "$tag"
+    printf 'arch=%s\n' "$arch"
   } >> "$GITHUB_OUTPUT"
 fi

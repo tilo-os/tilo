@@ -4,6 +4,11 @@
 With `autotests = false` (the single `tests/it.rs` binary layout), Cargo only
 builds the declared `[[test]]` targets, so a file under `tests/` that no target
 root declares as a module is silently never compiled or run.
+
+A crate that keeps its integration tests as modules of one `tests/it.rs` binary
+also sets `autotests = false`: with auto-discovery left on, a new tests/*.rs is
+a test binary of its own again, linking the whole crate the way every file used
+to.
 """
 
 from __future__ import annotations
@@ -92,6 +97,12 @@ def orphans(root: Path = Path("."), staged: bool = False) -> list[str]:
         with (crate / "Cargo.toml").open("rb") as handle:
             manifest = tomllib.load(handle)
         roots = test_roots(crate, manifest)
+        if (tests / "it.rs").resolve() in roots and manifest.get("package", {}).get("autotests", True):
+            rel = (crate / "Cargo.toml").relative_to(root.resolve()).as_posix()
+            errors.append(
+                f"{rel}: tests are modules of tests/it.rs; set `autotests = false` so a "
+                "new tests/*.rs is never a test binary of its own"
+            )
         reached = set(roots)
         for test_root in roots:
             if test_root.is_file():

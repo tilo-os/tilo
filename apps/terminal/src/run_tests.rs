@@ -1,7 +1,5 @@
-//! A session's command runs end to end: the marks its shell prints become
-//! run items with their output and parsed items, and an agent's `run`,
-//! `rerun` and `rerun-test` are typed into the session and answered with
-//! the run they became.
+//! A session's command runs end to end: the shell's marks become runs, and an agent's `run`,
+//! `rerun` and `rerun-test` are typed into the session and answered with the run they became.
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -27,13 +25,10 @@ fn prompt() -> String {
     format!("\x1b]133;A;k={KEY}\x07$ ")
 }
 
-/// What the session's shell prints for one command: its marks around
-/// `output`, numbered as the shell's first command is.
 fn ran(command: &str, output: &str, status: i32) -> Vec<u8> {
     numbered(1, command, output, status)
 }
 
-/// [`ran`] with the command's own place in the shell's history.
 fn numbered(number: u64, command: &str, output: &str, status: i32) -> Vec<u8> {
     format!(
         "{command}\r\n\x1b]133;C;k={KEY};cmd={};cwd={};t={number}\x07{output}\
@@ -45,7 +40,6 @@ fn numbered(number: u64, command: &str, output: &str, status: i32) -> Vec<u8> {
     .into_bytes()
 }
 
-/// The output side of the session's pty, written by the test's shell.
 struct Printed(Receiver<Vec<u8>>, Vec<u8>);
 
 impl std::io::Read for Printed {
@@ -63,7 +57,6 @@ impl std::io::Read for Printed {
     }
 }
 
-/// The input side, read by the test's shell.
 struct Typed(Sender<Vec<u8>>);
 
 impl std::io::Write for Typed {
@@ -76,9 +69,6 @@ impl std::io::Write for Typed {
     }
 }
 
-/// A shell that marks its runs: each line typed into it runs, printing
-/// `output` for it with status 0, and the lines are kept in `lines`. Its
-/// numbers count the lines typed into it, its history being its own.
 fn shell(
     typed: Receiver<Vec<u8>>,
     print: Sender<Vec<u8>>,
@@ -95,17 +85,10 @@ fn shell(
                     b'\r' => {
                         let command = String::from_utf8_lossy(&line).into_owned();
                         line.clear();
-                        // Only a line with something in it runs, and only it
-                        // takes a place in the shell's history.
                         if command.trim().is_empty() {
                             let _ = print.send(prompt().into_bytes());
                             continue;
                         }
-                        // The shell counts a line before it runs it, as
-                        // its history does. The two count the same lines
-                        // (this one receives every line the terminal types,
-                        // and the person types none), so a line asked for is
-                        // at the place the terminal counted for it.
                         number = number.saturating_add(1);
                         let _ = print.send(numbered(number, &command, output, 0));
                         let _ = lines.send(command);
@@ -117,15 +100,12 @@ fn shell(
     });
 }
 
-/// A terminal on its session record whose process is a marking shell:
-/// what it printed so far goes through `print`; every line typed runs.
 fn marked_session(output: &'static str) -> (App, Sender<Vec<u8>>, Receiver<String>) {
     let mut app = App::new().expect("terminal");
     let (print, lines) = run_shell(&mut app, output);
     (app, print, lines)
 }
 
-/// Give the session `app` shows a marking shell as its process.
 fn run_shell(app: &mut App, output: &'static str) -> (Sender<Vec<u8>>, Receiver<String>) {
     let (print, printed) = channel();
     let (typed_tx, typed) = channel();
@@ -147,7 +127,6 @@ fn run_shell(app: &mut App, output: &'static str) -> (Sender<Vec<u8>>, Receiver<
     (print, lines)
 }
 
-/// Settle `app` until its session record satisfies `done`.
 fn settle_until(app: &mut App, done: impl Fn(&Terminal) -> bool) {
     let deadline = ui::time::now() + hang_bound();
     while ui::time::now() < deadline {
@@ -166,10 +145,6 @@ fn settle_until(app: &mut App, done: impl Fn(&Terminal) -> bool) {
     );
 }
 
-/// The next line typed at the session's shell. The terminal types a line
-/// `run` asked for only on a frame after it saw the shell's prompt mark,
-/// and that mark arrives from the reader thread whenever it does, so
-/// keep settling until the shell reads the line.
 fn typed_line(app: &mut App, lines: &Receiver<String>) -> String {
     let deadline = ui::time::now() + hang_bound();
     while ui::time::now() < deadline {
@@ -182,9 +157,6 @@ fn typed_line(app: &mut App, lines: &Receiver<String>) -> String {
     panic!("the shell never got a line: {:#?}", app.state());
 }
 
-/// A failing `cargo test` the person ran is a run with its output and one
-/// item per test; an agent reruns the failing one by its name, and the
-/// request settles with the run it became, by the agent.
 #[test]
 fn an_agent_reruns_the_failing_test_of_a_run() {
     let fixture = include_str!("parse/fixtures/nextest.txt");
@@ -230,8 +202,6 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
         serde_json::json!({ "test": test }),
     )
     .expect("the agent's rerun runs and settles");
-    // The run's package and target selection come back, so only the
-    // library that reported the test builds again.
     assert_eq!(
         typed_line(&mut app, &lines),
         format!("cargo test -p terminal --lib -- --exact {test}"),
@@ -272,8 +242,6 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
     );
 }
 
-/// A command line with a control character is refused before anything is
-/// queued, and a session whose process runs nowhere refuses `run`.
 #[test]
 fn run_takes_one_command_line_for_a_running_session() {
     let mut app = App::new().expect("terminal");
@@ -298,9 +266,71 @@ fn run_takes_one_command_line_for_a_running_session() {
     settle_until(&mut app, |state| state.runs.len() == 1);
 }
 
-/// Runs of two sessions are one history: the person's own record keeps
-/// both, each naming its session and run and who ran it, and its search
-/// finds a command whichever session ran it.
+#[test]
+fn a_terminal_joining_a_session_run_elsewhere_claims_nothing_and_runs_reach_its_process() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use ui::widget::Widget as _;
+
+    let (mut app, _print, lines) = marked_session("");
+    settle_until(&mut app, |state| !state.pane_id().is_empty());
+    let session = Rc::new(app.state());
+    let device = session
+        .device
+        .clone()
+        .expect("the claim names its device")
+        .0;
+    let holder = session.holder.clone().expect("and who started it").0;
+    assert!(
+        !session.runs_elsewhere(&device, &holder),
+        "reopened where it ran, the session is its own"
+    );
+    assert!(session.runs_elsewhere("laptop", &holder));
+    assert!(session.runs_elsewhere(&device, "person:bea"));
+
+    let opened = Rc::new(RefCell::new(0_u32));
+    let count = Rc::clone(&opened);
+    let mut joined = crate::TerminalWidget::spawn_headless().unwrap();
+    joined.set_sessions(Sessions::scripted(RecentTarget::none(), move |_, _, _| {
+        *count.borrow_mut() += 1;
+        Ok(crate::inner::TerminalBackend::for_test())
+    }));
+    joined.runs_on("laptop", &holder);
+    let queue = crate::runs::RunQueue::default();
+    joined.run_through(queue.clone());
+    joined.present_session(&session);
+    let doc = automerge::AutoCommit::new();
+    for _ in 0..3 {
+        joined.sync(&doc, &automerge::ROOT);
+    }
+    assert_eq!(*opened.borrow(), 0, "joining starts no shell");
+    assert_eq!(joined.session_state(), &crate::sessions::OpenState::Joined);
+    let read = joined.read_session();
+    assert_eq!(
+        read["session"],
+        serde_json::Value::Null,
+        "no process of its own"
+    );
+    assert_eq!(
+        read["pane"],
+        session.pane_id(),
+        "its presence is the running session's"
+    );
+    assert!(
+        !queue.runs(session.pane_id()),
+        "the runs are not its to answer"
+    );
+
+    app.call("run", serde_json::json!({ "command": "echo joined" }))
+        .expect("runs");
+    assert_eq!(typed_line(&mut app, &lines), "echo joined");
+    settle_until(&mut app, |state| state.runs.len() == 1);
+
+    assert!(joined.can_restart());
+    joined.restart_session().expect("a shell here");
+    assert_eq!(*opened.borrow(), 1);
+}
+
 #[test]
 fn two_sessions_are_searchable_together() {
     use crate::history::CommandHistory;
@@ -320,7 +350,6 @@ fn two_sessions_are_searchable_together() {
         "{sentences:?}"
     );
 
-    // A new terminal in the same window is a new session.
     app.open_here(&[]).expect("a second session");
     let second = app.record().uri();
     assert_ne!(second, first, "a new terminal starts a new session");
@@ -372,9 +401,6 @@ fn two_sessions_are_searchable_together() {
     );
 }
 
-/// Tab and Shift+Tab are the shell's keys while the grid has the keyboard:
-/// the window hands them to the session's process (completion, back-tab)
-/// rather than moving focus to the next control.
 #[test]
 fn tab_reaches_the_session_while_the_grid_has_the_keyboard() {
     let mut app = App::new().expect("terminal");
@@ -435,8 +461,6 @@ fn tab_reaches_the_session_while_the_grid_has_the_keyboard() {
     );
 }
 
-/// The environment of a Tilo-side session's test: one granted folder, and
-/// the actions asked of it.
 struct Granted {
     grants: Vec<ush_tilo::CapOverride>,
     acted: std::sync::Mutex<Vec<(tilo_environment::files::FileAction, Option<String>)>>,
@@ -461,14 +485,10 @@ impl ush_tilo::Environment for Granted {
         })
     }
     fn keep(&self) -> std::io::Result<Box<dyn ush_tilo::Keeping>> {
-        // This session writes only what travels inside its actions.
         Err(std::io::Error::other("this test keeps no content"))
     }
 }
 
-/// A session whose shell runs on the Tilo side: its host reads only what
-/// the environment grants and writes only through the environment's
-/// actions, and Terminal records its runs from the marks as for any shell.
 #[test]
 fn a_tilo_side_session_records_its_runs() {
     use std::sync::{Arc, Mutex};
@@ -576,10 +596,6 @@ fn a_tilo_side_session_records_its_runs() {
     );
 }
 
-/// What a pty's line discipline does between Terminal and the shell, for a
-/// shell that runs on a thread here: typed bytes reach it a line at a time
-/// (`\r` ends a line, Ctrl-U clears it) and are echoed; what it prints gets
-/// `\r\n` line ends.
 struct Cooked {
     typed: Receiver<Vec<u8>>,
     echo: Sender<Vec<u8>>,
@@ -634,9 +650,6 @@ impl std::io::Write for Crlf {
     }
 }
 
-/// ush's own shell as the session's process: `ls | wc -l` runs as two of
-/// Tilo's own commands joined by a pipe in memory, and the marks it writes
-/// become the session's run, with its line, directory, status and output.
 #[test]
 fn a_ush_session_records_the_run_of_a_pipeline() {
     use std::sync::Arc;
@@ -697,8 +710,6 @@ fn a_ush_session_records_the_run_of_a_pipeline() {
     assert!(!run.undoable, "it only looked");
 }
 
-/// What the terminal types reaches ush's shell as keys: no line discipline
-/// between them, the shell's own editor reads each byte.
 struct Raw(Receiver<Vec<u8>>, Vec<u8>);
 
 impl std::io::Read for Raw {
@@ -716,8 +727,6 @@ impl std::io::Read for Raw {
     }
 }
 
-/// Give the session `app` shows ush's own shell as its process, on `host`,
-/// with its line editor reading the keys the terminal sends.
 fn ush_shell(app: &mut App, host: ush_shell::MemoryHost) {
     use std::sync::Arc;
     use ush_shell::{Input, Output, Session, Shell, Stdio};
@@ -757,7 +766,6 @@ fn demo_host() -> ush_shell::MemoryHost {
     host
 }
 
-/// Give the grid the keyboard, as a click on it does.
 fn focus_grid(app: &mut App) {
     let grid = app
         .with_surface(|terminal: &mut crate::TerminalView| terminal.grid_rect())
@@ -779,9 +787,6 @@ fn press(app: &mut App, modifiers: &[&str], key: &str) {
     app.settle();
 }
 
-/// The person types with the editing keys at ush's prompt — Home, End,
-/// Left, Ctrl+W, Backspace — and the line the editor made is the run the
-/// session records.
 #[test]
 fn a_person_edits_at_ushs_prompt_and_the_run_is_recorded() {
     let mut app = App::new().expect("terminal");
@@ -812,9 +817,6 @@ fn a_person_edits_at_ushs_prompt_and_the_run_is_recorded() {
     );
 }
 
-/// Up at ush's prompt recalls the person's last run from their own history
-/// record, which Terminal answers the shell from: a new session, whose
-/// shell ran nothing yet, gets the line the first session ran.
 #[test]
 fn up_recalls_the_last_run_from_the_persons_history() {
     let mut app = App::new().expect("terminal");
@@ -830,8 +832,6 @@ fn up_recalls_the_last_run_from_the_persons_history() {
     ush_shell(&mut app, demo_host());
     focus_grid(&mut app);
     press(&mut app, &[], "Up");
-    // The answer comes back through the terminal; Enter is pressed at once
-    // and the line waits for it.
     press(&mut app, &[], "Enter");
     settle_until(&mut app, |state| state.runs.len() == 1);
     let state = app.state();
@@ -840,9 +840,6 @@ fn up_recalls_the_last_run_from_the_persons_history() {
     assert!(matches!(run.output, Bytes::Blob { len, .. } if len == "2\r\n".len() as u64));
 }
 
-/// `sleep 0.3 &` runs as a job beside the shell, with a run of its own,
-/// and `fg` waits for it: three runs, the job's among them, its command its
-/// own.
 #[test]
 fn a_background_job_has_its_own_run_and_fg_waits_for_it() {
     let mut app = App::new().expect("terminal");
@@ -872,7 +869,6 @@ fn a_background_job_has_its_own_run_and_fg_waits_for_it() {
             ("sleep 0.3 &".to_owned(), 0)
         ]
     );
-    // The person's history has the lines they ran, not the job.
     let history = app
         .person::<crate::history::CommandHistory>()
         .expect("the person's history")
@@ -885,8 +881,6 @@ fn a_background_job_has_its_own_run_and_fg_waits_for_it() {
     assert_eq!(remembered, ["sleep 0.3 &", "fg"]);
 }
 
-/// An agent's `run` in a ush session gets the compact agent rendering
-/// without asking for it; the person's run of the same line gets the text.
 #[test]
 fn an_agents_run_gets_the_agent_rendering() {
     use ui::tilo_resource::Resource as _;
@@ -922,14 +916,8 @@ fn an_agents_run_gets_the_agent_rendering() {
             .values()
             .find(|run| (run.actor.0 == "agent:helper") == (actor == "agent"))
             .unwrap();
-        let Bytes::Blob { hash, .. } = &run.output else {
-            panic!("printed nothing: {run:?}");
-        };
-        let hex = hash.iter().fold(String::new(), |mut hex, b| {
-            let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{b:02x}"));
-            hex
-        });
-        String::from_utf8(app.content().read(&hex).expect("the output")).unwrap()
+        let printed = run.output.read(&app.content()).expect("the output");
+        String::from_utf8(printed).unwrap()
     };
     assert!(
         output("person").contains("p:\r\nf0.txt\r\nf1.txt\r\nf2.txt"),
@@ -943,8 +931,6 @@ fn an_agents_run_gets_the_agent_rendering() {
     );
 }
 
-/// The refusal a host that sells Linux machines gives an account with no
-/// card on file.
 fn no_card() -> ui::tilo_actions::remote::host_account::Refusal {
     use ui::tilo_actions::remote::host_account::{NextStep, NextStepKind, Reason, Refusal};
     Refusal {
@@ -957,7 +943,6 @@ fn no_card() -> ui::tilo_actions::remote::host_account::Refusal {
     }
 }
 
-/// The shell's mark that the run going on waits on its host.
 fn held_mark(agent: bool, refusal: &ui::tilo_actions::remote::host_account::Refusal) -> String {
     format!(
         "\x1b]133;W;k={KEY};a={};r={}\x07",
@@ -983,8 +968,6 @@ fn settle_until_held(app: &mut App, shown: bool) {
     panic!("the prompt never {}", if shown { "showed" } else { "went" });
 }
 
-/// The held marks are read only with the session's key, and decode to the
-/// host's typed refusal.
 #[test]
 fn held_marks_carry_the_hosts_typed_refusal() {
     use crate::runs::{Mark, Marks, Piece};
@@ -1020,8 +1003,6 @@ fn held_marks_carry_the_hosts_typed_refusal() {
     );
 }
 
-/// A person's command the host holds shows the prompt with the provider's
-/// page, until the host lets it through and it runs.
 #[test]
 fn a_held_command_shows_the_prompt_until_it_runs() {
     let (mut app, print, _lines) = marked_session("");
@@ -1057,8 +1038,6 @@ fn a_held_command_shows_the_prompt_until_it_runs() {
     settle_until(&mut app, |state| state.runs.len() == 1);
 }
 
-/// An agent's command the host refuses answers the agent with the typed
-/// refusal, and the person sees the same prompt on that run.
 #[test]
 fn an_agents_refused_run_answers_with_the_refusal_and_shows_the_person_the_prompt() {
     let output: &'static str = Box::leak(
@@ -1098,11 +1077,45 @@ fn an_agents_refused_run_answers_with_the_refusal_and_shows_the_person_the_promp
         Some(no_card()),
         "the agent gets the typed refusal"
     );
-    // The person's prompt is the same one, and stays until they act on it.
     let shown = held(&mut app).expect("the person sees the prompt");
     assert!(shown.agent);
     assert_eq!(shown.refusal, no_card());
     app.with_surface(|terminal: &mut crate::TerminalView| terminal.dismiss_held(&shown))
         .unwrap();
     assert!(held(&mut app).is_none(), "Cancel puts it away");
+}
+
+#[test]
+fn an_agent_is_shown_the_session_it_runs_commands_in() {
+    fn session(
+        resources: &[ui::tilo_actions::ResourceSpec],
+    ) -> Option<&ui::tilo_actions::ResourceSpec> {
+        resources.iter().find_map(|resource| {
+            (resource.kind == "terminal.session")
+                .then_some(resource)
+                .or_else(|| session(&resource.children))
+        })
+    }
+    let (mut app, _print, _lines) = marked_session("");
+    app.settle();
+    let resources = app.harness().resources();
+    let session = session(&resources).expect("the window publishes its session");
+    let disclosing = session
+        .actions
+        .iter()
+        .filter(|action| action.kind == ui::tilo_actions::OperationKind::View)
+        .min_by_key(|action| action.contract.disclosure_rank())
+        .expect("the session has a view");
+    assert!(
+        disclosing.contract.discloses_resource(),
+        "the session is disclosed only through `{}`, a view of the window's own: no agent sees it",
+        disclosing.id
+    );
+    assert!(
+        session
+            .actions
+            .iter()
+            .any(|action| action.id == "run" && action.contract.reaches_agents()),
+        "run is offered to agents"
+    );
 }

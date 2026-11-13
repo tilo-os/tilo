@@ -1,21 +1,17 @@
 //! The work or school (enterprise, 802.1X) network: the setup form, the
 //! configuration it builds from what the person or an agent gives, and the
-//! action on the session's `network` resource that joins it, so Settings and
-//! a script join such a network the same way.
+//! action on the session's `network` resource that joins it, so Settings and a
+//! script join such a network the same way.
 
 use os_actions::EnterpriseWifiConfiguration;
 use ui::LocalState;
 
 use super::non_blank;
 
-/// The session's `network` resource, which the connectivity service
-/// publishes.
 const NETWORK_RESOURCE: &str = "network";
 
-/// Its action that joins an enterprise (802.1X) network.
 pub(super) const ENTERPRISE_JOIN: &str = "connect-enterprise-wifi";
 
-/// What an enterprise connection was given; the setup form fills the rest.
 #[derive(Clone)]
 pub(super) struct EnterpriseGiven {
     pub(super) profile: Option<String>,
@@ -29,7 +25,6 @@ pub(super) struct EnterpriseGiven {
     pub(super) private_key: Option<String>,
 }
 
-/// The enterprise network setup form.
 pub(super) struct EnterpriseForm {
     pub(super) profile: LocalState<String>,
     pub(super) ssid: LocalState<String>,
@@ -57,8 +52,6 @@ impl EnterpriseForm {
         }
     }
 
-    /// The enterprise network `given` asks for, completed from the setup
-    /// form.
     pub(super) fn config(&self, given: EnterpriseGiven) -> EnterpriseWifiConfiguration {
         let EnterpriseGiven {
             profile,
@@ -110,10 +103,6 @@ pub(super) fn join_enterprise(
     network.invoke(ENTERPRISE_JOIN, &enterprise_arguments(config, password))
 }
 
-/// The arguments `connect-enterprise-wifi` takes, from what the setup form
-/// holds: the profile, the network, the identity and the certificates, the
-/// method and inner authentication, and the password, which the action keeps
-/// out of readings and history.
 pub(super) fn enterprise_arguments(
     config: &EnterpriseWifiConfiguration,
     password: &str,

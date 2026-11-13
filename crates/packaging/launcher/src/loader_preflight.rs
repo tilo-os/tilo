@@ -1,17 +1,7 @@
 //! Will the sandboxed dynamic loader find every library an app links against?
 //!
-//! A thin app links against the shared libraries of the runtime bundle it was
-//! built with, down to the exact hash in Rust's `libstd-<hash>.so`. Launched
-//! with any other bundle it dies in the dynamic loader before `main`, and the
-//! only trace is one loader line on stderr. This module answers the question
-//! on the host before `bwrap` runs, from the directories the sandbox hands the
-//! loader, so such a launch fails with the missing library named instead.
-//!
-//! The check is conservative in one direction only: whenever it cannot tell
-//! (an object it cannot parse, a search path it cannot map to the host, a
-//! loader cache in an unknown format) it treats the library as found and lets
-//! the real loader decide. A launch it refuses is one the loader would have
-//! refused too.
+//! A thin app links against the shared libraries of the runtime bundle it was built
+//! with, down to the exact hash in Rust's `libstd-<hash>.so`.
 
 use std::collections::{HashSet, VecDeque};
 use std::fs::File;
@@ -31,24 +21,22 @@ const DT_RUNPATH: u64 = 29;
 const ELF64_HEADER_LEN: usize = 64;
 const ELF64_PHDR_LEN: usize = 56;
 const ELF64_DYN_LEN: usize = 16;
-/// Bounds on what one object may make the launcher read: real binaries stay
-/// far below these, and a hostile file cannot make a launch allocate more.
+/// Bounds on what one object may make the launcher read: real binaries stay far below these, and a
+/// hostile file cannot make a launch allocate more.
 const MAX_PROGRAM_HEADERS: usize = 512;
 const MAX_DYNAMIC_BYTES: u64 = 64 * 1024;
 const MAX_NAME_BYTES: u64 = 4096;
-/// Enough for an app, its bundled libraries and the runtime libraries they
-/// pull in; past that the check stops rather than walking forever.
+/// Enough for an app, its bundled libraries and the runtime libraries they pull in; past that the check
+/// stops rather than walking forever.
 const MAX_OBJECTS: usize = 256;
 const MAX_LD_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 
-/// The host's loader cache, which the system read profile binds into every
-/// sandbox at the same path.
+/// The host's loader cache, which the system read profile binds into every sandbox at the same path.
 pub const LD_SO_CACHE: &str = "/etc/ld.so.cache";
 
-/// The loader's built-in search directories on the architectures Tilo ships
-/// (glibc's `SYSTEM_DIRS`, plus the multiarch spellings), all reachable in the
-/// sandbox through the system read profile's `/lib`, `/lib64`, `/usr/lib` and
-/// `/usr/lib64` binds at their host paths.
+/// The loader's built-in search directories on the architectures Tilo ships (glibc's `SYSTEM_DIRS`,
+/// plus the multiarch spellings), all reachable in the sandbox through the system read profile's
+/// `/lib`, `/lib64`, `/usr/lib` and `/usr/lib64` binds at their host paths.
 pub const SYSTEM_LIBRARY_DIRS: &[&str] = &[
     "/lib64",
     "/usr/lib64",
@@ -60,9 +48,8 @@ pub const SYSTEM_LIBRARY_DIRS: &[&str] = &[
     "/usr/lib/aarch64-linux-gnu",
 ];
 
-/// Sandbox paths that do not show the host's tree at the same place: the
-/// launcher's own mounts live here, and anything else here is either private
-/// to the sandbox or not there at all.
+/// Sandbox paths that do not show the host's tree at the same place: the launcher's own mounts live
+/// here, and anything else here is either private to the sandbox or not there at all.
 const SANDBOX_PRIVATE_PREFIXES: &[&str] = &["/run", "/var/tilo-apps", "/tmp", "/proc", "/dev"];
 
 /// What the loader reads from an object's `PT_DYNAMIC` segment.
@@ -77,18 +64,12 @@ pub struct DynamicSection {
 }
 
 /// Read the dynamic section of the 64-bit little-endian ELF object at `path`.
-///
-/// Returns `Ok(None)` for anything this reader does not understand (not ELF,
-/// another class or byte order, a string table outside every loaded segment,
-/// names that run past their table): the caller then knows nothing about the
-/// object, which is different from knowing it needs nothing. A statically
-/// linked object has no dynamic section and returns an empty one.
 pub fn read_dynamic_section(path: &Path) -> std::io::Result<Option<DynamicSection>> {
     read_dynamic_section_of(&File::open(path)?)
 }
 
-/// [`read_dynamic_section`] of a file already open: the object read is the
-/// one this descriptor holds, whatever its path names by then.
+/// [`read_dynamic_section`] of a file already open: the object read is the one this descriptor holds,
+/// whatever its path names by then.
 pub fn read_dynamic_section_of(file: &File) -> std::io::Result<Option<DynamicSection>> {
     match parse_dynamic(file) {
         Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
@@ -105,8 +86,7 @@ struct ProgramHeaders {
     interpreter: Option<Segment>,
 }
 
-/// Read an ELF interpreter without executing the object. Absence is distinct
-/// from a malformed/unsupported ELF, which is an error.
+/// Read an ELF interpreter without executing the object.
 pub fn read_interpreter(path: &Path) -> std::io::Result<Option<String>> {
     let file = File::open(path)?;
     let malformed = || std::io::Error::other("invalid ELF interpreter");
@@ -125,8 +105,8 @@ pub fn read_interpreter(path: &Path) -> std::io::Result<Option<String>> {
     String::from_utf8(bytes).map(Some).map_err(|_| malformed())
 }
 
-/// The `PT_LOAD` segments and the first `PT_DYNAMIC` one, or `None` for a
-/// file this reader does not understand.
+/// The `PT_LOAD` segments and the first `PT_DYNAMIC` one, or `None` for a file this reader does not
+/// understand.
 fn program_headers(file: &File) -> std::io::Result<Option<ProgramHeaders>> {
     let mut header = [0u8; ELF64_HEADER_LEN];
     file.read_exact_at(&mut header, 0)?;
@@ -264,8 +244,8 @@ struct StringTable<'a> {
 }
 
 impl StringTable<'_> {
-    /// The NUL-terminated UTF-8 string at `at`, or `None` if it does not end
-    /// inside the table (and within [`MAX_NAME_BYTES`]).
+    /// The NUL-terminated UTF-8 string at `at`, or `None` if it does not end inside the table (and
+    /// within [`MAX_NAME_BYTES`]).
     fn get(&self, at: u64) -> std::io::Result<Option<String>> {
         let Some(remaining) = self.size.checked_sub(at).filter(|left| *left > 0) else {
             return Ok(None);
@@ -302,22 +282,21 @@ fn le_u64(bytes: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_le_bytes(raw.try_into().ok()?))
 }
 
-/// The names the host's `ld.so.cache` maps, which the sandboxed loader
-/// consults after its search paths and before its built-in directories.
+/// The names the host's `ld.so.cache` maps, which the sandboxed loader consults after its search paths
+/// and before its built-in directories.
 #[derive(Debug, Clone)]
 pub enum LdCache {
     /// No cache file: the loader goes straight to its built-in directories.
     Absent,
     /// The sonames listed in a cache this module could parse.
     Names(HashSet<String>),
-    /// A cache in a format this module does not parse; a soname counts as
-    /// listed when its bytes appear in it NUL-terminated.
+    /// A cache in a format this module does not parse; a soname counts as listed when its bytes appear
+    /// in it NUL-terminated.
     Opaque(Vec<u8>),
 }
 
 impl LdCache {
-    /// Read the cache at `path`. A missing or unreadable file is
-    /// [`LdCache::Absent`].
+    /// Read the cache at `path`.
     #[must_use]
     pub fn load(path: &Path) -> Self {
         let Ok(file) = File::open(path) else {
@@ -335,8 +314,7 @@ impl LdCache {
         Self::from_bytes(bytes)
     }
 
-    /// Parse glibc's `glibc-ld.so.cache1.1` format, alone or after the
-    /// legacy `ld.so-1.7.0` table.
+    /// Parse glibc's `glibc-ld.so.cache1.1` format, alone or after the legacy `ld.so-1.7.0` table.
     #[must_use]
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
         parse_ld_cache(&bytes).map_or(Self::Opaque(bytes), Self::Names)
@@ -400,8 +378,8 @@ pub struct LoaderView {
 }
 
 enum Lookup {
-    /// Found at this sandbox path, which lies in a launcher mount and so is
-    /// shipped with the app or its runtime.
+    /// Found at this sandbox path, which lies in a launcher mount and so is shipped with the app or its
+    /// runtime.
     Shipped(PathBuf),
     /// Found on the host system, or not decidable here.
     Elsewhere,
@@ -409,9 +387,8 @@ enum Lookup {
 }
 
 impl LoaderView {
-    /// The view of a sandbox with the app payload and its runtime bundle
-    /// bound at the given mounts, the bundle's library directory on
-    /// `LD_LIBRARY_PATH`, and the host's loader cache and system
+    /// The view of a sandbox with the app payload and its runtime bundle bound at the given mounts, the
+    /// bundle's library directory on `LD_LIBRARY_PATH`, and the host's loader cache and system
     /// directories exposed by the system read profile.
     #[must_use]
     pub fn for_sandbox(
@@ -430,8 +407,8 @@ impl LoaderView {
         )
     }
 
-    /// A view from explicit parts: `mounts` as `(sandbox, host)` pairs, and
-    /// `library_path` and `system_dirs` as sandbox paths.
+    /// A view from explicit parts: `mounts` as `(sandbox, host)` pairs, and `library_path` and
+    /// `system_dirs` as sandbox paths.
     #[must_use]
     pub fn new(
         mut mounts: Vec<(PathBuf, PathBuf)>,
@@ -449,14 +426,13 @@ impl LoaderView {
         }
     }
 
-    /// Check that every `DT_NEEDED` library of `entry` (a sandbox path), and
-    /// of each library it finds shipped in the app payload or the runtime
-    /// bundle, resolves where the sandboxed loader looks.
+    /// Check that every `DT_NEEDED` library of `entry` (a sandbox path), and of each library it finds
+    /// shipped in the app payload or the runtime bundle, resolves where the sandboxed loader looks.
     pub fn check(&self, entry: &Path) -> Result<(), MissingLibrary> {
         let mut queue = VecDeque::from([entry.to_path_buf()]);
         let mut seen: HashSet<PathBuf> = HashSet::from([entry.to_path_buf()]);
-        // glibc searches the DT_RPATH of every object up the loading chain;
-        // the union of all seen so far is a superset of that.
+        // glibc searches the DT_RPATH of every object up the loading chain; the union of all seen so
+        // far is a superset of that.
         let mut rpaths: Vec<PathBuf> = Vec::new();
         while let Some(object) = queue.pop_front() {
             let Some(host) = self.host_path(&object) else {
@@ -536,8 +512,8 @@ impl LoaderView {
         Lookup::Missing(searched)
     }
 
-    /// Where the sandbox path `path` lives on the host, or `None` if the
-    /// sandbox shows something there the host does not have at that path.
+    /// Where the sandbox path `path` lives on the host, or `None` if the sandbox shows something there
+    /// the host does not have at that path.
     fn host_path(&self, path: &Path) -> Option<PathBuf> {
         let path = lexically_normal(path);
         let path = path.as_path();
@@ -564,8 +540,8 @@ impl LoaderView {
     }
 }
 
-/// `path` with `.` and `..` folded away without consulting the filesystem,
-/// so `$ORIGIN/../lib` maps through the mount it lands in.
+/// `path` with `.` and `..` folded away without consulting the filesystem, so `$ORIGIN/../lib` maps
+/// through the mount it lands in.
 fn lexically_normal(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
@@ -581,9 +557,8 @@ fn lexically_normal(path: &Path) -> PathBuf {
     out
 }
 
-/// The interpreter is mapped by the kernel before any search runs, and a
-/// name with a slash is a path, not a search; neither goes through the
-/// directories checked here.
+/// The interpreter is mapped by the kernel before any search runs, and a name with a slash is a path,
+/// not a search; neither goes through the directories checked here.
 fn is_searched_soname(soname: &str) -> bool {
     !soname.contains('/')
         && !soname.starts_with("ld-linux")
@@ -591,8 +566,8 @@ fn is_searched_soname(soname: &str) -> bool {
         && !soname.starts_with("ld.so")
 }
 
-/// A library directory holds `soname` directly or in one of the
-/// `glibc-hwcaps/<level>/` subdirectories the loader also searches.
+/// A library directory holds `soname` directly or in one of the `glibc-hwcaps/<level>/` subdirectories
+/// the loader also searches.
 fn has_library(dir: &Path, soname: &str) -> bool {
     if dir.join(soname).exists() {
         return true;
@@ -604,9 +579,7 @@ fn has_library(dir: &Path, soname: &str) -> bool {
     })
 }
 
-/// Expand `$ORIGIN` in `DT_RPATH` / `DT_RUNPATH` entries. `None` when an entry
-/// uses another dynamic string token (`$LIB`, `$PLATFORM`), whose value is
-/// the loader's to pick.
+/// Expand `$ORIGIN` in `DT_RPATH` / `DT_RUNPATH` entries.
 fn expand_search_path(entries: &[String], origin: &Path) -> Option<Vec<PathBuf>> {
     let origin = origin.to_str()?;
     entries
@@ -626,8 +599,8 @@ fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
-/// A minimal ELF64 object with the given dynamic entries, for tests: one
-/// `PT_LOAD` mapping the whole file at address 0 and one `PT_DYNAMIC`.
+/// A minimal ELF64 object with the given dynamic entries, for tests: one `PT_LOAD` mapping the whole
+/// file at address 0 and one `PT_DYNAMIC`.
 #[doc(hidden)]
 #[must_use]
 #[allow(
@@ -701,9 +674,8 @@ mod tests {
         std::fs::write(path, bytes).unwrap();
     }
 
-    /// A payload at `/var/tilo-apps/app` and a runtime at
-    /// `/run/tilo-runtime/1`, with no cache and no system directories unless
-    /// a test adds them.
+    /// A payload at `/var/tilo-apps/app` and a runtime at `/run/tilo-runtime/1`, with no cache and no
+    /// system directories unless a test adds them.
     struct Fixture {
         _dir: tempfile::TempDir,
         payload: PathBuf,
@@ -728,9 +700,9 @@ mod tests {
             }
         }
 
-        /// The fixture's system directory is seen through a mount of its
-        /// own, so the view never depends on where the test's temporary
-        /// directory is (a `/tmp` one is sandbox-private, and undecidable).
+        /// The fixture's system directory is seen through a mount of its own, so the view never depends
+        /// on where the test's temporary directory is (a `/tmp` one is sandbox-private, and
+        /// undecidable).
         fn view(&self, cache: LdCache) -> LoaderView {
             LoaderView::new(
                 vec![

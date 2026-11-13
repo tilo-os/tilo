@@ -85,7 +85,7 @@ fn a_change_larger_than_one_frame_reaches_the_broker_before_the_frontier_moves()
     assert!(
         app.pending_primary_document()
             .unwrap()
-            .is_some_and(|(mutation, _)| {
+            .is_some_and(|(mutation, _, _)| {
                 mutation.data().len() > collab_types::MAX_DOCUMENT_MUTATION_BYTES
             }),
         "precondition: the change does not fit one signed frame"
@@ -127,7 +127,7 @@ fn a_change_larger_than_one_frame_reaches_the_broker_before_the_frontier_moves()
     assert!(
         app.pending_primary_document()
             .unwrap()
-            .is_some_and(|(mutation, _)| {
+            .is_some_and(|(mutation, _, _)| {
                 mutation.data().len() > collab_types::MAX_DOCUMENT_MUTATION_BYTES
             }),
         "precondition: the live edit does not fit one signed frame either"

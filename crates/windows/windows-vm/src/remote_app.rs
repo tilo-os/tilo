@@ -60,8 +60,6 @@ impl<R> FreeRdpLauncher<R> {
         validate_fingerprint(&guest.endpoint.certificate_sha256)?;
         brokered.validate()?;
 
-        // FreeRDP's `/from-stdin` avoids exposing the one-time password in argv
-        // or `/proc`. The guest service invalidates it after this connection.
         let mut stdin = Vec::new();
         stdin.extend_from_slice(guest.password.expose());
         stdin.push(b'\n');
@@ -73,10 +71,6 @@ impl<R> FreeRdpLauncher<R> {
                 "/cert:fingerprint:sha256:{}",
                 guest.endpoint.certificate_sha256
             ))
-            // FreeRDP and Microsoft's .rdp format distinguish an allow-list
-            // alias from an executable path with the leading `||`. Omitting
-            // it makes client-Windows RAIL especially prone to failing with
-            // no application window even though authentication succeeded.
             .arg(format!("/app:program:||{}", guest.remote_app_alias))
             // A brief compositor/display interruption should reconnect the
             // existing RDP session, but an invalid guest or credential must

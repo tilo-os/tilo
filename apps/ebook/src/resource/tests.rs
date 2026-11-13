@@ -112,6 +112,22 @@ fn find(library: &Replica<Ebook>, test: impl Fn(&Annotation) -> bool) -> Annotat
         .expect("the annotation is there")
 }
 
+/// The library is named by the books on its shelf, and reads right: one is
+/// "1 book", never "1 books".
+#[test]
+fn the_library_is_named_by_its_shelf() {
+    let mut library = Replica::<Ebook>::new();
+    let name = |library: &Replica<Ebook>| {
+        <EbookShell as ui::framework::ResourceApp>::label(&state(library))
+    };
+    assert_eq!(name(&library), "Books");
+    apply(&mut library, shelve(&row(BOOK, "Novel"))).unwrap();
+    assert_eq!(name(&library), "1 book");
+    let other = "book:fedcba9876543210fedcba9876543210";
+    apply(&mut library, shelve(&row(other, "B"))).unwrap();
+    assert_eq!(name(&library), "2 books");
+}
+
 /// The shelf: a book joins once under its content id, refreshing its row
 /// keeps when it was added, and leaving the shelf keeps what was read and
 /// marked in it.
@@ -382,6 +398,84 @@ fn settings_fonts_and_schemes_are_edited_at_their_paths() {
     assert!(state(&library).schemes.get(&Id::from_raw("u1")).is_none());
 }
 
+/// A built-in's name is read where a person reads it: one shared record names
+/// its faces and pages in each member's language, and a name someone gave one
+/// travels with the record instead.
+#[test]
+fn built_in_names_read_in_each_members_language() {
+    let font = |record: &Ebook, id: &str| {
+        record
+            .fonts
+            .values()
+            .find(|font| font.id == id)
+            .cloned()
+            .expect("the built-in font")
+    };
+    let scheme = |record: &Ebook, id: &str| {
+        record
+            .schemes
+            .values()
+            .find(|scheme| scheme.id == id)
+            .cloned()
+            .expect("the built-in scheme")
+    };
+    let mut library = Replica::<Ebook>::new();
+    let fresh = state(&library);
+    assert_eq!(
+        font(&fresh, "default").name,
+        "",
+        "a built-in is stored as what it is, not as a name"
+    );
+    assert_eq!(scheme(&fresh, "light").name, "");
+    assert_eq!(font(&fresh, "default").title(), "Default");
+    assert_eq!(scheme(&fresh, "light").title(), "Light");
+
+    CATALOG.set_locale("de-DE");
+    assert_eq!(font(&fresh, "default").title(), "Standard");
+    assert_eq!(font(&fresh, "mono").title(), "Mono");
+    assert_eq!(scheme(&fresh, "light").title(), "Hell");
+    assert_eq!(scheme(&fresh, "high-contrast").title(), "Hoher Kontrast");
+
+    let fonts = Ebook::paths().fonts;
+    let schemes = Ebook::paths().schemes;
+    edit(
+        &mut library,
+        &fonts
+            .item(&Id::from_raw("default"))
+            .name
+            .replace("Standard"),
+    )
+    .unwrap();
+    edit(
+        &mut library,
+        &schemes.item(&Id::from_raw("dark")).name.replace("Dunkel"),
+    )
+    .unwrap();
+    let seeded = state(&library);
+    assert!(!font(&seeded, "default").renamed());
+    assert_eq!(font(&seeded, "default").title(), "Standard");
+    CATALOG.set_locale("en-US");
+    assert_eq!(
+        font(&seeded, "default").title(),
+        "Default",
+        "the German name a record carries reads in the language of whoever reads it"
+    );
+    assert_eq!(scheme(&seeded, "dark").title(), "Dark");
+
+    edit(
+        &mut library,
+        &fonts.item(&Id::from_raw("serif")).name.replace("Book face"),
+    )
+    .unwrap();
+    let renamed = state(&library);
+    assert!(font(&renamed, "serif").renamed());
+    assert_eq!(font(&renamed, "serif").title(), "Book face");
+    CATALOG.set_locale("de-DE");
+    assert_eq!(font(&renamed, "serif").title(), "Book face");
+    CATALOG.set_locale("en-US");
+    assert_eq!(font(&renamed, "serif").title(), "Book face");
+}
+
 /// Annotation verbs: a highlight goes with its comments, what is gone is
 /// refused, and a malformed or oversized change is refused whole.
 #[test]
@@ -425,7 +519,6 @@ fn annotations_change_through_their_verbs_and_refuse_what_is_gone() {
         "a highlight is recoloured with its comments"
     );
 
-    // Finishing a note stamps it; moving a piece re-anchors that row only.
     let standalone = find(&library, |mark| {
         mark.kind == AnnoKind::Note && !mark.is_comment()
     });
@@ -458,7 +551,6 @@ fn annotations_change_through_their_verbs_and_refuse_what_is_gone() {
         "a range never ends before it starts"
     );
 
-    // A malformed highlight changes nothing, not even what it would replace.
     assert!(
         apply(
             &mut library,
@@ -632,8 +724,6 @@ fn concurrent_changes_converge() {
         (ReadTheme::Dark, 1.55)
     );
 
-    // A font removed while another reader renames it stays removed; fonts
-    // added side by side are both kept.
     let fonts = Ebook::paths().fonts;
     for (replica, id) in [(&mut ours, "left"), (&mut theirs, "right")] {
         let font = FontEntry::new(id, FontKind::Named(id.into()), id, 1.0, true);
@@ -666,8 +756,6 @@ fn concurrent_changes_converge() {
         );
     }
 
-    // A highlight deleted while another reader comments on it keeps its
-    // comments gone, the late one too.
     apply(
         &mut ours,
         Ebook::DELETE_HIGHLIGHT.with(books::DeleteHighlight { highlight: group }),
@@ -689,8 +777,6 @@ fn concurrent_changes_converge() {
         );
     }
 
-    // Two readers bookmarking the same page at once keep both bookmarks;
-    // the next toggle takes the page's bookmarks off.
     let bookmark = |block| {
         Ebook::TOGGLE_BOOKMARK.with(books::ToggleBookmark {
             book: BOOK.into(),
@@ -791,7 +877,7 @@ fn books_and_their_annotations_are_published_as_places() {
         settings
             .children
             .iter()
-            .any(|row| row.label == font.name && ids(row).contains(&"remove-font".to_owned())),
+            .any(|row| row.label == font.title() && ids(row).contains(&"remove-font".to_owned())),
         "a font offers to be removed"
     );
     assert!(
@@ -972,7 +1058,6 @@ fn launching_on_an_epub_keeps_it_in_the_content_store_shelves_and_opens_it() {
         "its row names the bytes the content store keeps, not a path"
     );
 
-    // Reopened with nothing named, the shelf still reads it.
     let mut again = app.reopen().unwrap();
     assert_eq!(again.state().entries.len(), 1);
     assert!(
@@ -1054,7 +1139,6 @@ fn the_library_verbs_bound_to_the_reader_follow_the_selection() {
         "a selection binds its highlight and note"
     );
 
-    // An empty library must not wipe a shelf it never held.
     let before = app.library().len();
     app.adopt_resource_state(&Rc::new(Ebook::default()));
     assert_eq!(app.library().len(), before);
@@ -1091,13 +1175,11 @@ fn a_page_turn_while_the_library_is_held_copies_one_chunk_of_progress() {
             .count()
     };
 
-    // A view holds the library while a book is shelved.
     let shown = Rc::clone(reader.state());
     apply(&mut library, shelve(&row(BOOK, "Shelved"))).unwrap();
     assert!(reader.sync(library.doc()).unwrap());
     assert_eq!(shared(reader.state(), &shown), 500, "no progress copied");
 
-    // And while a page is turned.
     let shown = Rc::clone(reader.state());
     apply(&mut library, record(250, 0.75)).unwrap();
     assert!(reader.sync(library.doc()).unwrap());

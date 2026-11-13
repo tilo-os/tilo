@@ -16,20 +16,12 @@
 //! names. Only the Linux shell opens windows this way; elsewhere there is no
 //! door and every call says so.
 
-/// The switch a Browser window is launched with when it is opened for an
-/// agent: it browses as any visitor would, on a fresh profile of its own that
-/// is thrown away with it, without the person's cookies, sign-ins or saved
-/// passwords. The shell asks the launcher for it (`--open-as-visitor`), and
-/// the launcher hands it to the app after the address it opens.
 pub const VISITOR_WINDOW_FLAG: &str = "--visitor";
 
 use std::io;
 
-/// The service name of the door: the app reads its descriptor from
-/// `TILO_SVC_WINDOWS_FD`.
 pub const SERVICE: &str = "windows";
 
-/// In-sandbox descriptor slot of the door.
 pub const CHILD_FD: i32 = 36;
 
 pub const OPEN_VERB: &[u8] = b"open";
@@ -40,25 +32,16 @@ pub const OPEN_VERB: &[u8] = b"open";
 /// the shell and the apps are updated apart.
 pub const SERVES_VERB: &[u8] = b"serves";
 
-/// The verb of a window's patch connection, for a tilolang app whose instance a tilolang host
-/// runs (`crate::tilolang_host`): the window's instance, in decimal, with the connection. The
-/// window shows what the instance sends over it, and holds nothing of the app's data.
 pub const PATCH_VERB: &[u8] = b"patch";
 
-/// The largest request: a few numbers and flags.
 pub const MAX_MESSAGE: usize = 4096;
 
-/// What the shell sends on a door.
 #[derive(Debug)]
 pub enum Message {
-    /// A window request (encoded) and the connections it names.
     Open(Vec<u8>, Vec<Descriptor>),
-    /// The patch connection of the window `instance`.
     Patch(u64, Descriptor),
 }
 
-/// A descriptor the door carries, owned: the door itself, or a connection a
-/// window request hands over.
 #[cfg(unix)]
 pub type Descriptor = std::os::fd::OwnedFd;
 /// There are no window doors where there are no descriptors. Nothing can
@@ -67,8 +50,6 @@ pub type Descriptor = std::os::fd::OwnedFd;
 #[derive(Clone, Copy, Debug)]
 pub enum Descriptor {}
 
-/// The raw descriptor `descriptor` owned, for a client that takes ownership
-/// of a raw one.
 #[must_use]
 pub fn into_raw(descriptor: Descriptor) -> crate::RawFd {
     #[cfg(unix)]
@@ -87,8 +68,6 @@ fn unsupported() -> io::Error {
     )
 }
 
-/// The door the launcher handed this process, once: `None` outside the
-/// shell, for a process that was handed none, and on every later call.
 #[must_use]
 pub fn take_door() -> Option<Descriptor> {
     #[cfg(target_os = "linux")]
@@ -106,12 +85,6 @@ pub fn take_door() -> Option<Descriptor> {
     None
 }
 
-/// A connected pair of door ends: the shell keeps one and hands the other
-/// to the launch.
-///
-/// # Errors
-///
-/// The socket error, or [`io::ErrorKind::Unsupported`] off Linux.
 pub fn pair() -> io::Result<(Descriptor, Descriptor)> {
     #[cfg(target_os = "linux")]
     {
@@ -147,12 +120,6 @@ pub fn send_open(door: &Descriptor, request: &[u8], fds: &[&Descriptor]) -> io::
     }
 }
 
-/// Say on the app's end of `door` that this process opens the windows the
-/// shell asks for.
-///
-/// # Errors
-///
-/// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux.
 pub fn send_serves(door: &Descriptor) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -166,12 +133,6 @@ pub fn send_serves(door: &Descriptor) -> io::Result<()> {
     }
 }
 
-/// Whether the app on the far end of the shell's `door` has said it serves
-/// windows ([`send_serves`]), reading what it said without waiting.
-///
-/// # Errors
-///
-/// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux.
 pub fn take_serves(door: &Descriptor) -> io::Result<bool> {
     #[cfg(target_os = "linux")]
     {
@@ -204,11 +165,6 @@ pub fn take_serves(door: &Descriptor) -> io::Result<bool> {
     }
 }
 
-/// Whether a message waits on `door`, without taking it or waiting.
-///
-/// # Errors
-///
-/// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux.
 pub fn has_message(door: &Descriptor) -> io::Result<bool> {
     #[cfg(target_os = "linux")]
     {
@@ -230,11 +186,6 @@ pub fn has_message(door: &Descriptor) -> io::Result<bool> {
     }
 }
 
-/// Send the window `instance` its patch connection `patch` on `door`.
-///
-/// # Errors
-///
-/// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux.
 pub fn send_patch(door: &Descriptor, instance: u64, patch: &Descriptor) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -253,14 +204,6 @@ pub fn send_patch(door: &Descriptor, instance: u64, patch: &Descriptor) -> io::R
     }
 }
 
-/// The next message on `door`; `None` at end of file, when the shell closed
-/// its end.
-///
-/// # Errors
-///
-/// The socket's error; a message that is neither a window request nor a
-/// patch connection with its one descriptor; [`io::ErrorKind::Unsupported`]
-/// off Linux.
 pub fn receive_message(door: &Descriptor) -> io::Result<Option<Message>> {
     #[cfg(target_os = "linux")]
     {
@@ -294,8 +237,6 @@ pub fn receive_message(door: &Descriptor) -> io::Result<Option<Message>> {
     }
 }
 
-/// The next request on `door` and the descriptors it came with; `None` at end
-/// of file, when the shell closed its end.
 pub fn receive_open(door: &Descriptor) -> io::Result<Option<(Vec<u8>, Vec<Descriptor>)>> {
     #[cfg(target_os = "linux")]
     {
@@ -335,7 +276,6 @@ mod tests {
         let (request, fds) = receive_open(&app).unwrap().unwrap();
         assert_eq!(request, br#"{"instance":7}"#);
         assert_eq!(fds.len(), 1, "the window's connection came with it");
-        // The descriptor is the far end of `ours`.
         ours.write_all(b"x").unwrap();
         let mut received = std::os::unix::net::UnixStream::from(fds.into_iter().next().unwrap());
         let mut byte = [0_u8; 1];

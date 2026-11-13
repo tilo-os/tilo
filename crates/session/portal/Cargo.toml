@@ -19,7 +19,6 @@ tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settin
 # The writable-folder choice the app-side chooser asks with.
 tilo-dialogs.workspace = true
 tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
-tilo-lockdown-policy = { path = "../tilo-lockdown-policy" }
 tilo-paths.workspace = true
 # Naming an unsandboxed requester by the installed app it runs.
 tilo-desktop-entry = { path = "../../system/desktop-entry" }

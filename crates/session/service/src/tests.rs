@@ -10,7 +10,7 @@ use crate::{Service, Services, Started, Worker, decode, offer, reading, unavaila
 
 /// A lamp's switch: the smallest service there is.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "test.lamp")]
+#[effect(operation = "test.lamp", catalogue = "tests/locales")]
 enum Lamp {
     /// Turn the lamp on or off.
     #[effect(own_device, idempotent)]

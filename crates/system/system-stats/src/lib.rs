@@ -1,11 +1,5 @@
 //! The typed system information service.
 //!
-//! An app never reads `/proc` or `/sys` of the machine: its sandbox has a
-//! process namespace of its own, so it would see only itself, and opening
-//! the host's would hand it every other program's command line and
-//! environment. Instead the session (the compositor) reads the kernel and
-//! pushes typed readings to the apps allowed to see them:
-//!
 //! - [`protocol`]: the wire contract and the [`protocol::Grant`]s that bound
 //!   what a connection sees;
 //! - [`probe`]: what is read from the kernel, and what never is;
@@ -19,12 +13,6 @@
 //!   answered once per request;
 //! - [`server`]: the session's socket, behind the launcher's handoff;
 //! - [`client`]: the app's side.
-//!
-//! The launcher decides what an app is granted (`system-info` and
-//! `processes` for the apps the image ships, whatever the room's
-//! capabilities name for others) and writes it into the connection before
-//! the app holds it; a grant the person gives later through the permission
-//! prompt is added by the service.
 
 pub mod apps;
 #[cfg(unix)]

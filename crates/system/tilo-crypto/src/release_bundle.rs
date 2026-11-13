@@ -1,12 +1,5 @@
 //! Verify a blob signed under Tilo's release root.
 //!
-//! An operational key signs the blob; the offline root certified that key for
-//! one purpose and one revocation epoch; the public transparency log (Rekor)
-//! recorded the signature and the certificate together. The bundle is the form
-//! `tools/signing/sign-blob-certified.sh` writes (Cosign's own): the
-//! signature, the certificate and the log entry with Rekor's signed entry
-//! timestamp. It is accepted only if all of these hold:
-//!
 //! * Rekor's key signed the entry, and the entry logs exactly this blob's
 //!   SHA-256, this signature and this certificate;
 //! * the certificate is issued directly by the root, is not a CA, may sign
@@ -14,11 +7,6 @@
 //!   (`keys/release/trust.env`), and both it and the root were valid when Rekor
 //!   recorded the entry;
 //! * the certificate's key made the signature.
-//!
-//! Validity is checked at Rekor's time, not now, as containers-policy's
-//! `fulcio` requirement does for OS images: a signature made while a
-//! short-lived certificate was valid stays valid after it expires, and a
-//! signature made after that cannot be backdated past the log.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use const_oid::ObjectIdentifier;
@@ -27,7 +15,6 @@ use sha2::{Digest as _, Sha256, Sha384};
 
 /// OIDC issuer, as raw bytes (Fulcio's original extension).
 const OIDC_ISSUER_V1: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.57264.1.1");
-/// OIDC issuer, as a DER `UTF8String`.
 const OIDC_ISSUER_V2: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.57264.1.8");
 const EC_PUBLIC_KEY: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
 const P256: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.3.1.7");
@@ -91,13 +78,11 @@ impl ReleaseTrust {
         })
     }
 
-    /// The OIDC issuer a current certificate names.
     #[must_use]
     pub fn issuer(&self) -> &str {
         &self.issuer
     }
 
-    /// The e-mail identity a certificate for `purpose` names.
     pub fn identity(&self, purpose: &str) -> Result<String, String> {
         let well_formed = !purpose.is_empty()
             && !purpose.starts_with('-')
@@ -217,7 +202,6 @@ fn parse_bundle(bytes: &[u8]) -> Result<Bundle, String> {
     })
 }
 
-/// The DER `SubjectPublicKeyInfo` in a `PUBLIC KEY` PEM block.
 fn public_key_der(pem: &str) -> Result<Vec<u8>, String> {
     let body: String = pem
         .trim()
@@ -229,7 +213,6 @@ fn public_key_der(pem: &str) -> Result<Vec<u8>, String> {
     base64(&body, "the Rekor key")
 }
 
-/// Rekor's signed entry timestamp over the entry, and the log it names.
 fn verify_set(rekor_public_key_pem: &str, bundle: &Bundle) -> Result<(), String> {
     use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
     use p256::pkcs8::DecodePublicKey as _;
@@ -287,7 +270,6 @@ fn verify_body(bundle: &Bundle, input: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// The curve OID and SEC1 point of an EC `SubjectPublicKeyInfo`.
 fn ec_key(spki: &spki::SubjectPublicKeyInfoOwned) -> Result<(ObjectIdentifier, &[u8]), String> {
     if spki.algorithm.oid != EC_PUBLIC_KEY {
         return Err("not an EC public key".into());
@@ -571,7 +553,6 @@ mod tests {
         pem: String,
     }
 
-    /// A root as tools/signing/release-ca.sh makes one: P-384, CA, path length 0.
     fn root(name: &str) -> Root {
         let mut params = CertificateParams::default();
         params.not_before = at(now() - 365 * DAY);
@@ -588,7 +569,6 @@ mod tests {
         Root { params, key, pem }
     }
 
-    /// An operational certificate as release-ca.sh issues one.
     struct Leaf {
         purpose: &'static str,
         issuer_v1: Option<&'static str>,
@@ -666,7 +646,6 @@ mod tests {
         }
     }
 
-    /// Everything one verification takes, built the way production makes it.
     struct Case {
         root: String,
         rekor: String,
@@ -924,7 +903,6 @@ mod tests {
         let error = case_with(&leaf, now()).error();
         assert!(error.contains("names no issuer"), "{error}");
 
-        // Either extension alone carries the issuer.
         for (v1, v2) in [
             (Some("https://signing.tilo.so/release/epoch-1"), None),
             (None, Some("https://signing.tilo.so/release/epoch-1")),
@@ -944,7 +922,6 @@ mod tests {
         let other = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
         case.bundle["base64Signature"] =
             serde_json::json!(STANDARD.encode(other.sign(INPUT).unwrap()));
-        // The log entry no longer matches either; the body check names it.
         assert!(case.verify().is_err());
     }
 

@@ -23,7 +23,6 @@ use std::sync::Arc;
 use crate::io::Stdio;
 use crate::jobs::Job;
 
-/// What kind of thing a path names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     File,
@@ -32,7 +31,6 @@ pub enum Kind {
     Other,
 }
 
-/// What the shell knows about a path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Metadata {
     pub kind: Kind,
@@ -59,21 +57,16 @@ impl Metadata {
     }
 }
 
-/// One entry of a directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirEntry {
     pub name: String,
     pub kind: Kind,
 }
 
-/// How a redirection writes a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteMode {
-    /// `>`: replace what is there.
     Truncate,
-    /// `>>`: add to the end.
     Append,
-    /// `>` under `set -C`: only a file that is not there yet.
     CreateNew,
 }
 
@@ -82,27 +75,22 @@ pub enum WriteMode {
 /// the run is attributed, and undone, as one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Run {
-    /// Stable for the run, unique in the session.
     pub id: String,
-    /// What History calls it: the command line.
     pub label: String,
 }
 
-/// One of the environment's file actions, as a command line asked for it.
 #[derive(Debug, Clone, Copy)]
 pub struct FileCall<'a> {
     /// `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `ln`, `truncate`, `touch` or
     /// `append`.
     pub name: &'a str,
     pub args: &'a [String],
-    /// The directory relative paths are taken against.
     pub cwd: &'a Path,
     pub io: &'a Stdio,
     /// The run it is part of, if the shell is running one.
     pub run: Option<&'a Run>,
 }
 
-/// What became of a program the shell handed to [`Host::program`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Program {
     /// It ran, and ended with this status.
@@ -114,18 +102,13 @@ pub enum Program {
     NeedsTier,
 }
 
-/// A question to the person's command history ([`Host::history`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HistoryQuery {
-    /// How many of the newest matching command lines to pass over.
     pub skip: usize,
-    /// How many to answer at most.
     pub limit: usize,
-    /// Only command lines that contain this; every line when empty.
     pub matching: String,
 }
 
-/// Everything the interpreter reaches outside itself.
 pub trait Host: Send + Sync {
     fn metadata(&self, path: &Path) -> io::Result<Metadata>;
 

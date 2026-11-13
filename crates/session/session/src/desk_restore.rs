@@ -18,12 +18,12 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use crate::platform::surfaces::DesktopHost;
 use tilo_app_launch::Launch;
 use tilo_desktop_model::{DesktopTree, TabId, TileContent, WorkspaceSlot};
-use tilo_surface_host::DesktopHost;
 
+use crate::apps::{self, Apps};
 use crate::i18n::t_args;
-use crate::mount::apps::{self, Apps};
 
 /// How long a saved window may take to show itself before its tab says it did not open: an app that
 /// started and never mapped is not coming.
@@ -36,6 +36,11 @@ pub(crate) struct Restore {
     waiting: VecDeque<Saved>,
     /// The one whose app was asked for and whose window has not come yet.
     opening: Option<Opening>,
+    /// The ones of a workspace this device waits for its host to admit it to: each tab says so,
+    /// and its app is asked for once the host took the device in, as if it had just been reached.
+    held: Vec<Saved>,
+    /// When [`Self::held`] was last read against admission: once a second, not on every pass.
+    held_checked: Option<Instant>,
 }
 
 /// A window the person left open, and the app that opens it again.
@@ -61,43 +66,41 @@ impl Restore {
     /// The windows of `tree` that open again, in the order they are asked: the ones on the desk in
     /// front first, then the rest in the order the person left them.
     pub(crate) fn of(tree: &DesktopTree) -> Self {
-        let active = tree.active;
-        let mut saved: Vec<(WorkspaceSlot, Saved)> = Vec::new();
-        for workspace in &tree.workspaces {
-            for strip in &workspace.strips {
-                for group in &strip.window_groups {
-                    for tab in &group.tabs {
-                        let TileContent::LocalApp { app_id, label, .. } = &tab.tile else {
-                            continue;
-                        };
-                        if app_id.trim().is_empty() {
-                            continue;
-                        }
-                        let name = if label.trim().is_empty() {
-                            app_id.clone()
-                        } else {
-                            label.clone()
-                        };
-                        let launch = apps::launch_of(app_id);
-                        saved.push((
-                            workspace.slot,
-                            Saved {
-                                tab: tab.id,
-                                app: app_id.clone(),
-                                name,
-                                launch,
-                            },
-                        ));
-                    }
-                }
-            }
-        }
+        let mut saved = waiting_in(tree, |_| true);
         // Stable, so the desk's own order stands within each workspace.
-        saved.sort_by_key(|(workspace, _)| *workspace != active);
+        saved.sort_by_key(|(workspace, _)| *workspace != tree.active);
         Self {
             waiting: saved.into_iter().map(|(_, saved)| saved).collect(),
             opening: None,
+            held: Vec::new(),
+            held_checked: None,
         }
+    }
+
+    /// Ask, after what is waiting already, for the windows of the workspace `slot` of `tree` that
+    /// wait for their apps: a workspace put on the desk with windows to open, as a branch is.
+    pub(crate) fn add(&mut self, tree: &DesktopTree, slot: WorkspaceSlot) {
+        self.waiting.extend(
+            waiting_in(tree, |workspace| workspace == slot)
+                .into_iter()
+                .map(|(_, saved)| saved),
+        );
+    }
+
+    /// Ask, after what is waiting already, for the windows `after` waits for that `before` did
+    /// not: the windows someone else in a workspace opened, which this device opens its own
+    /// instance of, each in the tab the workspace put it in.
+    pub(crate) fn arrived(&mut self, before: &DesktopTree, after: &DesktopTree) {
+        let known: std::collections::HashSet<TabId> = waiting_in(before, |_| true)
+            .into_iter()
+            .map(|(_, saved)| saved.tab)
+            .collect();
+        self.waiting.extend(
+            waiting_in(after, |_| true)
+                .into_iter()
+                .map(|(_, saved)| saved)
+                .filter(|saved| !known.contains(&saved.tab)),
+        );
     }
 
     /// When the app asked for a saved window gives up and its tab says so.
@@ -108,13 +111,22 @@ impl Restore {
     }
 
     /// Ask for the next saved window when the one before has come, or say in its tab why it did
-    /// not.
-    pub(crate) fn follow(&mut self, desktop: &DesktopHost, apps: Option<&Apps>) {
+    /// not. A window of a workspace whose host has not taken this device in yet (`awaited` names
+    /// that host, by the workspace's id) is held: its tab says what it waits for, and its app is
+    /// asked for once the host admitted the device. Started before, the app would take part in
+    /// nothing there, and would not join once the device is admitted.
+    pub(crate) fn follow(
+        &mut self,
+        desktop: &DesktopHost,
+        apps: Option<&Apps>,
+        awaited: &dyn Fn(&str) -> Option<String>,
+    ) {
         let Some(apps) = apps else {
             // This session starts no apps at all, so nothing will come for a saved window: the tabs
             // stay as they are.
             return;
         };
+        self.release_admitted(desktop, awaited);
         loop {
             if let Some(opening) = &self.opening {
                 let waiting = desktop.with_policy(|policy| policy.waits_for_window(opening.tab));
@@ -134,18 +146,6 @@ impl Restore {
             let Some(saved) = self.waiting.pop_front() else {
                 return;
             };
-            // An app whose model the session runs itself has no window process: the tab the
-            // person left open is the place its root stands in, restored by the desk as every
-            // place is, and nothing starts for it
-            // (`docs/designs/app-language/one-app-model.md` §3). The tab the saved window was
-            // held in goes with it: the place stands in its workspace.
-            if apps.serves(&saved.app) {
-                if let Some(slot) = slot_of(desktop, saved.tab) {
-                    apps.restore_served(&saved.app, slot);
-                }
-                desktop.with_policy(|policy| policy.release_tab(saved.tab));
-                continue;
-            }
             // The person may have opened the app while its saved window was still waiting: its
             // window comes into that tab now, or came, and asking for it again would start the app
             // a second time.
@@ -155,9 +155,44 @@ impl Restore {
             if coming {
                 continue;
             }
+            let host = workspace_holding(desktop, saved.tab, |held| held.id().to_string())
+                .and_then(|workspace| awaited(&workspace));
+            if let Some(host) = host {
+                let note = waits_for_host(&saved.name, &host);
+                desktop.with_policy(|policy| policy.note_in_tab(saved.tab, &note));
+                self.held.push(saved);
+                continue;
+            }
             if self.open(desktop, apps, saved) {
                 return;
             }
+        }
+    }
+
+    /// The held windows whose workspace's host took this device in since: asked for next, in the
+    /// order they were held, ahead of the ones not asked for yet.
+    fn release_admitted(
+        &mut self,
+        desktop: &DesktopHost,
+        awaited: &dyn Fn(&str) -> Option<String>,
+    ) {
+        if self.held.is_empty()
+            || self
+                .held_checked
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(1))
+        {
+            return;
+        }
+        self.held_checked = Some(Instant::now());
+        let (admitted, still): (Vec<Saved>, Vec<Saved>) = std::mem::take(&mut self.held)
+            .into_iter()
+            .partition(|saved| {
+                workspace_holding(desktop, saved.tab, |held| held.id().to_string())
+                    .is_none_or(|workspace| awaited(&workspace).is_none())
+            });
+        self.held = still;
+        for saved in admitted.into_iter().rev() {
+            self.waiting.push_front(saved);
         }
     }
 
@@ -169,7 +204,8 @@ impl Restore {
             desktop.with_policy(|policy| policy.note_in_tab(saved.tab, &note));
             return false;
         };
-        let Some(workspace) = workspace_of(desktop, saved.tab) else {
+        let Some(workspace) = workspace_holding(desktop, saved.tab, |held| held.id().to_string())
+        else {
             // The tab went with the workspace it was in.
             return false;
         };
@@ -206,7 +242,7 @@ impl Restore {
                     error = %said,
                     "a window this device left open did not start"
                 );
-                let note = would_not_start(&saved.name, said);
+                let note = would_not_start(&saved.name);
                 desktop.with_policy(|policy| policy.note_in_tab(saved.tab, &note));
                 false
             }
@@ -234,43 +270,65 @@ pub(crate) fn without_unfilled(tree: &mut DesktopTree) {
     }
 }
 
-/// The workspace the tab `tab` stands in, which its app is started into: the app runs where the
-/// person opened it, with that workspace's grants.
-/// The desk slot of the workspace that holds the tab `tab` : where a place stands for it.
-fn slot_of(desktop: &DesktopHost, tab: TabId) -> Option<u64> {
+/// The workspace the tab `tab` stands in, as `of` reads it: its desk slot, where a place stands
+/// for the tab, or its id, which the tab's app is started into with that workspace's grants.
+fn workspace_holding<T>(
+    desktop: &DesktopHost,
+    tab: TabId,
+    of: impl Fn(&tilo_desktop_model::Workspace) -> T,
+) -> Option<T> {
     desktop.with_policy(|policy| {
         policy.handle().read(|tree| {
             tree.workspaces
                 .iter()
                 .find(|workspace| {
-                    workspace.strips.iter().any(|strip| {
-                        strip
-                            .window_groups
-                            .iter()
-                            .any(|group| group.tabs.iter().any(|candidate| candidate.id == tab))
-                    })
+                    workspace
+                        .strips
+                        .iter()
+                        .flat_map(|strip| &strip.window_groups)
+                        .any(|group| group.tabs.iter().any(|candidate| candidate.id == tab))
                 })
-                .map(|workspace| workspace.slot.0)
+                .map(of)
         })
     })
 }
 
-fn workspace_of(desktop: &DesktopHost, tab: TabId) -> Option<String> {
-    desktop.with_policy(|policy| {
-        policy.handle().read(|tree| {
-            tree.workspaces
-                .iter()
-                .find(|workspace| {
-                    workspace.strips.iter().any(|strip| {
-                        strip
-                            .window_groups
-                            .iter()
-                            .any(|group| group.tabs.iter().any(|candidate| candidate.id == tab))
-                    })
-                })
-                .map(|workspace| workspace.id().to_string())
-        })
-    })
+/// The windows of the workspaces of `tree` that `wanted` names, each waiting for its app to open
+/// it, by the workspace it stands in.
+fn waiting_in(
+    tree: &DesktopTree,
+    wanted: impl Fn(WorkspaceSlot) -> bool,
+) -> Vec<(WorkspaceSlot, Saved)> {
+    let mut saved = Vec::new();
+    for workspace in tree
+        .workspaces
+        .iter()
+        .filter(|workspace| wanted(workspace.slot))
+    {
+        for tab in workspace.tabs() {
+            let TileContent::LocalApp { app_id, label, .. } = &tab.tile else {
+                continue;
+            };
+            if app_id.trim().is_empty() {
+                continue;
+            }
+            let name = if label.trim().is_empty() {
+                app_id.clone()
+            } else {
+                label.clone()
+            };
+            saved.push((
+                workspace.slot,
+                Saved {
+                    tab: tab.id,
+                    app: app_id.clone(),
+                    name,
+                    launch: apps::launch_of(app_id),
+                },
+            ));
+        }
+    }
+    saved
 }
 
 /// What a tab says when the app it holds is not on this machine.
@@ -279,14 +337,92 @@ fn not_installed(name: &str) -> String {
 }
 
 /// What a tab says when its app started nothing.
-fn would_not_start(name: &str, why: &str) -> String {
+fn would_not_start(name: &str) -> String {
+    t_args("desk-window-would-not-start", &[("app", name.into())])
+}
+
+/// What a tab says while its app waits for `host` to take this device into its workspace.
+fn waits_for_host(name: &str, host: &str) -> String {
     t_args(
-        "desk-window-would-not-start",
-        &[("app", name.into()), ("why", why.into())],
+        "desk-window-waits-for-host",
+        &[("app", name.into()), ("host", host.into())],
     )
 }
 
 /// What a tab says when its app started and never showed a window.
 fn did_not_open(name: &str) -> String {
     t_args("desk-window-did-not-open", &[("app", name.into())])
+}
+
+#[cfg(test)]
+mod tests {
+    use tilo_desktop_model::{
+        DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+        WorkspaceId, WorkspaceSlot,
+    };
+
+    use super::Restore;
+
+    /// A desk of one workspace whose one window group holds `tabs`.
+    fn desk(tabs: Vec<Tab>) -> DesktopTree {
+        let mut workspace = Workspace::in_workspace(
+            WorkspaceSlot(1),
+            WorkspaceId::parse("3024f582-9315-461d-a32f-2c67269385e1").unwrap(),
+            "Shared",
+        );
+        let mut strip = Strip::new(StripId(2), "Main");
+        strip.window_groups.push(WindowGroup {
+            id: 3,
+            active_tab: tabs.first().map_or(0, |tab| tab.id),
+            tabs,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+        workspace.strips.push(strip);
+        DesktopTree {
+            active: WorkspaceSlot(1),
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        }
+    }
+
+    fn window(id: u64, tile: TileContent) -> Tab {
+        Tab {
+            id,
+            title: "Notes".into(),
+            tile,
+            app_title: None,
+            view: String::new(),
+            pinned: false,
+        }
+    }
+
+    fn notes() -> TileContent {
+        TileContent::LocalApp {
+            app_id: "so.tilo.notes".into(),
+            label: "Notes".into(),
+            note: String::new(),
+        }
+    }
+
+    /// A window another member opened arrives in the workspace's desk as one this device opens
+    /// its own instance of: the app is asked for it, and for no window that was already here.
+    #[test]
+    fn a_window_another_member_opened_is_asked_for_and_nothing_already_here() {
+        let mine = window(
+            4,
+            TileContent::Foreign {
+                app_id: "so.tilo.notes".into(),
+                surface_id: 9,
+            },
+        );
+        let waiting = window(5, notes());
+        let before = desk(vec![mine.clone(), waiting.clone()]);
+        let after = desk(vec![mine, waiting, window(6, notes())]);
+        let mut restore = Restore::default();
+        restore.arrived(&before, &after);
+        let asked: Vec<u64> = restore.waiting.iter().map(|saved| saved.tab).collect();
+        assert_eq!(asked, [6]);
+    }
 }

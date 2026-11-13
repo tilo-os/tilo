@@ -12,14 +12,7 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-#[path = "headless/harness.rs"]
-#[allow(
-    dead_code,
-    reason = "the harness is shared with the other headless tests; this one drives part of it"
-)]
-mod harness;
-
-use harness::{TestClient, headless, pump};
+use crate::harness::{TestClient, headless, pump};
 use smithay::utils::{Logical, Point, Rectangle};
 use tilo_color_pipeline::hdr_tonemap::{HdrTonemapConfig, tonemap_rgb_signal_to_srgb8};
 use tilo_compositor::{Compositor, WindowInfo, WindowPolicy};

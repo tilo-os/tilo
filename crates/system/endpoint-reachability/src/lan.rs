@@ -13,15 +13,6 @@
 //! the internet this lookup exists without. What crosses the network is the
 //! key and the addresses — the same pair a directory record holds — and the
 //! connection it leads to is authenticated as every iroh connection is.
-//!
-//! It is said and heard on every network the device is on, not only the
-//! one its default route leaves by: a box with a VPN, a container bridge or
-//! a second network card has its default route somewhere its other devices
-//! are not, and a multicast sent and joined the default way goes out there
-//! alone. The networks are the device's own IPv4 addresses, which are what
-//! the endpoint hands this lookup to advertise ([`AddressLookup::publish`]):
-//! as they change, the lookup is said on the new ones and no longer on those
-//! gone.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -38,13 +29,10 @@ use swarm_discovery::{Discoverer, DropGuard, IpClass, Peer};
 use tilo_lock::MutexRecover as _;
 use tokio::sync::broadcast;
 
-/// The multicast service Tilo endpoints advertise under.
 pub const SERVICE_NAME: &str = "tilo-v1";
 
-/// What the lookup's results say they came from.
 const PROVENANCE: &str = "tilo-lan";
 
-/// How long a lookup of a key nobody has advertised yet listens for it.
 const LOOKUP_FOR: Duration = Duration::from_secs(10);
 
 /// The local-network lookup a session's endpoint takes beside number 0's:
@@ -55,7 +43,6 @@ pub fn lan() -> Lan {
     Lan
 }
 
-/// Builds the [`LanLookup`] an endpoint runs.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Lan;
 
@@ -68,18 +55,14 @@ impl AddressLookupBuilder for Lan {
     }
 }
 
-/// The endpoints heard on the local network, and this one's announcement.
 pub struct LanLookup {
     discoverer: DropGuard,
     shared: Arc<Shared>,
-    /// The networks this endpoint is said on, by its address on each.
     networks: Mutex<BTreeSet<Ipv4Addr>>,
 }
 
 struct Shared {
-    /// Every endpoint heard now, with what it advertises.
     heard: Mutex<HashMap<EndpointId, EndpointData>>,
-    /// Each endpoint as it is heard, for the lookups waiting on it.
     news: broadcast::Sender<(EndpointId, EndpointData)>,
 }
 
@@ -107,7 +90,6 @@ fn endpoint_of(name: &str) -> Option<EndpointId> {
     EndpointId::from_bytes(&key).ok()
 }
 
-/// What `peer` advertises, as a lookup answers it.
 fn advertised(peer: &Peer) -> EndpointData {
     EndpointData::from(
         peer.addrs()

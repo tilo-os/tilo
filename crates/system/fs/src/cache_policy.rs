@@ -1,11 +1,7 @@
-//! The person's cache policy for this device: whether predicted files are
-//! fetched ahead of their open, and how many bytes of fetched content the
-//! content store keeps.
-//!
-//! Settings changes it through the storage socket
-//! ([`runtime_fs::storage::StorageRequest::SetCachePolicy`]); the daemon
-//! keeps it in its cache directory so it survives restarts, and applies it
-//! to the predictive worker and the content store's file area at once.
+//! The person's cache policy: whether predicted files are fetched ahead of their
+//! open, and how many bytes of fetched content the content store keeps. Settings
+//! sets it through the storage socket; the daemon keeps it in its cache directory
+//! and applies it at once.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -18,7 +14,6 @@ use crate::smart::Heuristics;
 use crate::store::area::FileArea;
 use tilo_lock::MutexRecover as _;
 
-/// The file in the cache directory that holds the policy.
 pub const CACHE_POLICY_FILE: &str = "cache-policy.json";
 
 #[derive(Serialize, Deserialize)]
@@ -28,7 +23,6 @@ struct Stored {
     budget_bytes: Option<u64>,
 }
 
-/// The policy in force, where it is kept, and what it governs.
 pub struct CachePolicies {
     path: Option<PathBuf>,
     heuristics: Arc<Heuristics>,
@@ -39,13 +33,8 @@ pub struct CachePolicies {
 }
 
 impl CachePolicies {
-    /// Load the policy kept at `path` (the default when there is none) and
-    /// apply it. `None` keeps the policy in memory only.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a kept policy cannot be read or is invalid; the
-    /// daemon then starts with the default rather than guessing.
+    /// Load the policy kept at `path` (the default when there is none) and apply
+    /// it; `None` keeps the policy in memory only.
     pub fn load(
         path: Option<PathBuf>,
         heuristics: Arc<Heuristics>,
@@ -87,18 +76,12 @@ impl CachePolicies {
         }))
     }
 
-    /// The policy in force.
     #[must_use]
     pub fn current(&self) -> CachePolicy {
         *self.current.lock_recover()
     }
 
-    /// Keep and apply `policy`. A smaller budget evicts down to it at once.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a budget below [`MIN_CACHE_BUDGET_BYTES`] or
-    /// when the policy cannot be kept; nothing changes then.
+    /// Keep and apply `policy`; a smaller budget evicts down to it at once.
     pub fn set(&self, policy: CachePolicy) -> Result<CachePolicy> {
         validate(policy)?;
         if let Some(path) = &self.path {
@@ -164,9 +147,8 @@ mod tests {
         loaded.unwrap();
         assert_eq!(policies.current(), CachePolicy::default());
 
-        // Two cached entries over a 1 GiB budget (sparse: the accounting is
-        // what the budget reads): the older one goes as soon as the smaller
-        // budget is set.
+        // Two cached entries over a 1 GiB budget (sparse: the accounting is what
+        // the budget reads): the older one goes as soon as the smaller budget is set.
         let size = MIN_CACHE_BUDGET_BYTES / 2 + 1;
         for key in [[1; 32], [2; 32]] {
             files.ensure(&key, size, Retention::Cached, &[]).unwrap();
@@ -184,7 +166,6 @@ mod tests {
         assert!(files.entry(&[1; 32]).is_none() && files.entry(&[2; 32]).is_some());
         assert!(!heuristics.prefetch_enabled());
 
-        // A restarted daemon applies the kept policy before serving.
         let (reborn_endpoint, reborn_heuristics, reborn_files) = fixture().await;
         let (restored, loaded) = CachePolicies::load(
             Some(path.clone()),
@@ -196,7 +177,6 @@ mod tests {
         assert!(!reborn_heuristics.prefetch_enabled());
         assert_eq!(reborn_files.budget(), MIN_CACHE_BUDGET_BYTES);
 
-        // `None` is the store's own default again.
         policies.set(CachePolicy::default()).unwrap();
         assert_eq!(files.budget(), default_budget);
         assert!(heuristics.prefetch_enabled());

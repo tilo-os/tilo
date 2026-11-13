@@ -286,10 +286,9 @@ impl State {
     }
 
     fn answer(&mut self, effect: BannerEffect) -> Result<(), String> {
-        use tilo_desktop::notifications::{Addressed, BannerAsk};
+        use tilo_desktop::notifications::BannerAsk;
         let any = |_: &Banner| true;
-        let call =
-            |banner: &Banner| banner.notification.addressed() == Some(Addressed::IncomingCall);
+        let call = |banner: &Banner| banner.notification.rings;
         let ask = match effect {
             BannerEffect::Open { banner } => Ask::Banner(BannerAsk::Activate(
                 self.banner(banner.as_deref(), any)?.id(),

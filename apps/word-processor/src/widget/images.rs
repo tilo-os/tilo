@@ -12,9 +12,6 @@ use super::Editor;
 use super::input::is_dnd_spool_path;
 
 impl Editor {
-    /// Fetch the bytes of every image the document references that is not fetched yet from the
-    /// content store.
-    /// Content that is not here stays absent, which is what draws a placeholder.
     pub(super) fn refresh_images(
         blobs: &mut std::collections::BTreeMap<String, Vec<u8>>,
         image_cache: &mut std::collections::HashMap<String, Option<ui::widget::Image>>,
@@ -34,10 +31,6 @@ impl Editor {
         }
     }
 
-    /// Read an image file and insert it at the caret. Returns whether it inserted
-    /// (false if the file couldn't be read or kept). The bytes go in the app's
-    /// content store and the document references them; the renderer/exporter
-    /// decode them on demand.
     pub(super) fn insert_image_from_path(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -61,9 +54,6 @@ impl Editor {
                 if !self.insert_image_bytes(state, &path.display().to_string(), &bytes) {
                     return false;
                 }
-                // A drop arrives as a file the toolkit spooled into our
-                // runtime dir; once the bytes live in the document the
-                // spool copy has no owner.
                 if is_dnd_spool_path(path)
                     && let Ok((dir, name)) = &file
                 {
@@ -81,9 +71,6 @@ impl Editor {
         }
     }
 
-    /// Insert the image whose encoded contents are `bytes` (from the file
-    /// `name`) at the caret. Returns whether it inserted: false when the
-    /// content store could not keep the bytes.
     fn insert_image_bytes(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
@@ -104,7 +91,6 @@ impl Editor {
         let before: std::collections::HashSet<String> =
             self.inner.ordered_blocks(state).into_iter().collect();
         let mut image = crate::actions::ImageInput::of(hash, bytes);
-        // Prefer the decoder's size: it reads formats the header sniffer does not.
         if let Ok(decoded) = ui::widget::Image::from_encoded(bytes) {
             let (width, height) = decoded.intrinsic_size();
             image.width = Some(i64::from(width));
@@ -131,9 +117,6 @@ impl Editor {
         true
     }
 
-    /// Insert the image the host's chooser answered with, if it answered.
-    /// A cancel or a chooser failure leaves the document as it was; a
-    /// chooser gone without answering frees the request.
     pub(super) fn drain_image_choice(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some(rx) = self.portal_rx.as_ref() else {
             return;
@@ -160,13 +143,9 @@ impl Editor {
         }
     }
 
-    /// Toolbar "Insert image" affordance. Opens the host **XDG file-chooser
-    /// portal** (per the Tilo HIG the app never draws its own picker): the D-Bus
-    /// round-trip + host dialog run on a worker thread ([`portal::PickRequest`]);
-    /// the chosen file's contents come back over a channel drained each frame
-    /// in [`Self::drain_image_choice`], which inserts the image at the caret.
-    /// Contents, not a path, so it works where files have none (a browser
-    /// page). A second request while one is already in flight is ignored.
+    /// Ask the host's file chooser for an image and insert it at the caret. The
+    /// answer is the file's contents, not a path, so a browser page works too;
+    /// a second request while one is in flight is ignored.
     pub(super) fn request_image_insert(&mut self, _state: &mut ui::widget::Edits<'_>) {
         if self.portal_rx.is_some() {
             return;
@@ -189,9 +168,6 @@ impl Editor {
 }
 
 impl Editor {
-    /// The caret block's id when it is an `image` block (an image is "selected"),
-    /// read from the cached block set so it works mid-`draw` without the doc.
-    /// Drives the panel image inspector + on-page selection handles.
     pub(super) fn selected_image_id(&self) -> Option<String> {
         self.blocks
             .iter()
@@ -199,9 +175,6 @@ impl Editor {
             .map(|b| b.id.clone())
     }
 
-    /// The content hash of the picture the editor would share: the one at
-    /// the caret, else the document's only one; `None` with several and the
-    /// caret on none of them, or with none.
     pub(crate) fn shared_image(&self) -> Option<String> {
         let images: Vec<&BlockView> = self.blocks.iter().filter(|b| b.kind == "image").collect();
         let chosen =
@@ -218,8 +191,6 @@ impl Editor {
         }
     }
 
-    /// The current on-page display size `(w, h)` of the selected image, read from
-    /// this frame's laid geometry (post fit-to-column), or `None` when unknown.
     pub(super) fn selected_image_dims(&self) -> Option<(f64, f64)> {
         let id = self.selected_image_id()?;
         self.laid

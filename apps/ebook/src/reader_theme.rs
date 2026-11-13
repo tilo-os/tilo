@@ -173,7 +173,6 @@ mod tests {
     /// page.
     #[test]
     fn page_palettes_split_chrome_from_paper_and_honour_high_contrast() {
-        // --- phase: dark_page_tracks_the_os_theme ---
         {
             let dark = Theme::dark();
             let cool = Theme::preset(ui::theme::Preset::DarkCool);
@@ -201,7 +200,6 @@ mod tests {
             assert_eq!(rgb(from_cool.page), rgb(cool.tokens.colors.surfaces.raised));
         }
 
-        // --- phase: dark_reading_on_a_light_os_still_uses_a_dark_theme_page ---
         {
             let light = Theme::light();
             let pal = ReaderPalette::resolve(ReadTheme::Dark, &light);
@@ -213,7 +211,6 @@ mod tests {
             );
         }
 
-        // --- phase: light_and_sepia_paper_stay_fixed_on_a_dark_os ---
         {
             let dark = Theme::dark();
             let light = ReaderPalette::resolve(ReadTheme::Light, &dark);
@@ -225,7 +222,6 @@ mod tests {
             assert!(!light.dark && !sepia.dark);
         }
 
-        // --- phase: forced_colours_override_sepia_paper ---
         {
             let hc = Theme::dark().with_high_contrast();
             assert!(hc.colors_are_forced());
@@ -242,7 +238,6 @@ mod tests {
             assert!(sepia.dark);
         }
 
-        // --- phase: high_contrast_reading_mode_derives_from_the_hc_theme ---
         {
             let pal = ReaderPalette::resolve(ReadTheme::HighContrast, &Theme::dark());
             let hc = Theme::high_contrast();
@@ -251,7 +246,6 @@ mod tests {
             assert!(pal.dark);
         }
 
-        // --- phase: custom_scheme_keeps_its_paper_unless_os_is_high_contrast ---
         {
             let scheme = ColorScheme::from_bg("ocean", "Ocean", [0x0A, 0x22, 0x33]);
             let kept = ReaderPalette::from_scheme(&scheme);

@@ -1,0 +1,10 @@
+notifications-banners = Benachrichtigungen
+so-tilo-notification-banners-act = Eine Auswahl auf der Benachrichtigung treffen
+so-tilo-notification-banners-answer-call = Den Anruf annehmen
+so-tilo-notification-banners-decline-call = Den Anruf ablehnen
+so-tilo-notification-banners-dismiss = Die Benachrichtigung verwerfen
+so-tilo-notification-banners-focus-newest = Die neueste Benachrichtigung fokussieren
+so-tilo-notification-banners-open = Die Benachrichtigung öffnen
+so-tilo-notification-banners-read = Die ganze Benachrichtigung lesen
+so-tilo-notification-banners-reply = Auf die Benachrichtigung antworten
+so-tilo-notification-banners-snooze = Die Benachrichtigung später zeigen

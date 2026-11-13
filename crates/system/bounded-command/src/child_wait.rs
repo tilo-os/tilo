@@ -1,24 +1,20 @@
 //! Supervise a child without waking up while nothing happens.
 //!
-//! A supervisor that learns of exit or cancellation by calling
-//! `Child::try_wait` on a timer is scheduled on every tick for the child's
-//! whole life. On Linux a pidfd becomes readable when its process exits, so a
-//! supervisor can sleep in one `poll(2)` on that pidfd and a [`WakeFd`] that
-//! any thread (or a signal handler) rings, and wake only for an event.
+//! A supervisor that learns of exit or cancellation by calling `Child::try_wait` on
+//! a timer is scheduled on every tick for the child's whole life. On Linux a pidfd
+//! becomes readable when its process exits, so a supervisor can sleep in one
+//! `poll(2)` on that pidfd and a [`WakeFd`] that any thread or signal handler rings,
+//! and wake only for an event.
 
 use std::io;
 use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, FromRawFd as _, OwnedFd};
 use std::process::{Child, ExitStatus};
 use std::time::{Duration, Instant};
 
-/// Why [`wait_child_or`] returned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wakeup {
-    /// The child exited and has been reaped.
     Exited(ExitStatus),
-    /// The wake descriptor became readable. The caller drains it.
     Woken,
-    /// The deadline passed before either.
     Deadline,
 }
 
@@ -26,14 +22,13 @@ pub enum Wakeup {
 /// non-Linux hosts: the supervision loop this module replaces.
 const FALLBACK_SLICE: Duration = Duration::from_millis(10);
 
-/// Wait until `child` exits, `wake` becomes readable, or `deadline` passes,
-/// without polling. With neither a wake descriptor nor a deadline this blocks
-/// until the child exits. A deadline already in the past only probes.
+/// Wait until `child` exits, `wake` becomes readable, or `deadline` passes, without
+/// polling. With neither a wake descriptor nor a deadline this blocks until the
+/// child exits; a deadline already in the past only probes.
 ///
-/// Linux: one `poll(2)` on a pidfd of `child` (pinned to this unreaped child,
-/// so it cannot name a recycled pid) and `wake`. Elsewhere, or when the
-/// kernel has no `pidfd_open`, the same contract is kept with a short
-/// `try_wait` loop.
+/// Linux: one `poll(2)` on a pidfd of `child` (pinned to this unreaped child, so it
+/// cannot name a recycled pid) and `wake`. Elsewhere, or without `pidfd_open`, a
+/// short `try_wait` loop keeps the same contract.
 ///
 /// # Errors
 /// Returns the error of inspecting or reaping the child, or of `poll(2)`.
@@ -126,7 +121,6 @@ fn pollin(fd: i32) -> libc::pollfd {
     }
 }
 
-/// Time left until `deadline`, or `None` to wait without one.
 fn remaining(deadline: Option<Instant>) -> Option<Duration> {
     deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()))
 }
@@ -157,8 +151,8 @@ fn poll(fds: &mut [libc::pollfd], timeout: Option<Duration>) -> io::Result<()> {
 }
 
 /// A level-triggered wake descriptor: readable from the first [`ring`] until
-/// [`drain`]. A supervisor passes [`fd`] to [`wait_child_or`]; any thread
-/// rings it after changing what the supervisor must re-check.
+/// [`drain`]. A supervisor passes [`fd`] to [`wait_child_or`]; any thread rings it
+/// after changing what the supervisor must re-check.
 ///
 /// [`ring`]: WakeFd::ring
 /// [`drain`]: WakeFd::drain
@@ -256,7 +250,6 @@ impl WakeFd {
     }
 }
 
-/// An eventfd counts in 8-byte writes; a pipe needs only one byte.
 #[cfg(target_os = "linux")]
 fn ring_len(len: usize) -> usize {
     len

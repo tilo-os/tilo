@@ -1,16 +1,15 @@
 //! The content format of the storage daemon.
 //!
-//! A file version's bytes are split into content-defined chunks with
-//! normalised `FastCDC`. The chunk targets scale with the body size
-//! ([`ChunkTier`]): small files get small chunks, so an edit re-sends little;
-//! large files get large chunks, so a gigabyte is a few thousand chunks
-//! rather than a hundred thousand. Each chunk is identified by its BLAKE3
-//! hash, which is also the root of its BAO tree: a peer can fetch and verify
+//! A file version's bytes are split into content-defined chunks with normalised
+//! `FastCDC`, at sizes that scale with the body ([`ChunkTier`]): small files get
+//! small chunks, so an edit re-sends little, and large files large chunks, so a
+//! gigabyte is a few thousand chunks rather than a hundred thousand. A chunk's
+//! BLAKE3 hash is also the root of its BAO tree, so a peer can fetch and verify
 //! any byte range of any chunk.
 //!
-//! A version is described by a [`Manifest`]. Its encoding is an iroh-blobs
-//! `HashSeq` whose first entry is a header rather than a hash, followed by
-//! the chunk hashes and the packed chunk lengths:
+//! A version is described by a [`Manifest`], encoded as an iroh-blobs `HashSeq`
+//! whose first entry is a header rather than a hash, followed by the chunk hashes
+//! and the packed chunk lengths:
 //!
 //! ```text
 //! [ header | c0 | c1 | … | cN-1 | lengths… ]      32 bytes per entry
@@ -19,11 +18,9 @@
 //! content id = BLAKE3(encoding)
 //! ```
 //!
-//! The manifest is self-contained: one blob tells a reader how long the file
-//! is, where every chunk starts and which hash it has. One `GET` of the
-//! content id with a `RangeSpecSeq` then fetches exactly the missing chunks,
-//! or byte ranges within them ([`Manifest::child_offset`]), BAO-verified on
-//! one stream; the header and length entries are never requested.
+//! One `GET` of the content id with a `RangeSpecSeq` fetches exactly the missing
+//! chunks, or byte ranges within them ([`Manifest::child_offset`]), BAO-verified
+//! on one stream; the header and length entries are never requested.
 
 mod chunker;
 mod manifest;

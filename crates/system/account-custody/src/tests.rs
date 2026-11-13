@@ -158,7 +158,6 @@ fn sign_in_publishes_the_access_token_only() {
 
 #[test]
 fn a_due_token_is_refreshed_before_it_is_handed_out() {
-    // A one second lifetime is inside the refresh margin.
     let (fixture, tokens) = signed_in_drive(1);
     assert_eq!(fixture.server.refreshes(), 1, "signed_in already refreshed");
     let handed = handed_off_token(&fixture.root, &fixture.id);
@@ -239,7 +238,6 @@ fn the_daemon_never_receives_a_refresh_token() {
     let refresh = vault_refresh_token(&fixture.root, &fixture.id);
     assert_eq!(refresh, tokens.refresh_token);
     assert!(seen.iter().all(|token| token != &refresh));
-    // Every handoff file, decrypted, carries nothing but an access token.
     let dir = accounts::handoff::handoff_dir_in(&fixture.root);
     let entries: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
@@ -320,8 +318,6 @@ fn webdav_hands_off_its_own_basic_credential() {
     }
 }
 
-/// An `iCloud` provider that asks for a code, then hands out session
-/// headers until told the session needs the two-factor step again.
 #[derive(Default)]
 pub(crate) struct FakeICloud {
     pub needs_reauth: Mutex<bool>,
@@ -476,7 +472,6 @@ fn apple_sign_in_through_the_icloud_provider_hands_off_web_cookies() {
             .any(|(name, value)| name == "Cookie" && !value.is_empty())
     );
 
-    // Apple wants the second factor again: the account needs sign-in.
     fake.expire_web_sessions();
     fake.expire_trust();
     assert_eq!(
@@ -544,7 +539,6 @@ fn a_bare_token_grant_is_resealed_in_the_custody_format_on_first_use() {
     let root = dir.path().join("tilo");
     let id = AccountId::from("ada@gmail.com");
     let now = tilo_clock::unix_now();
-    // The shape Mail sealed before its grants moved into custody.
     let bare = format!(
         r#"{{"access_token":"at-1","refresh_token":"rt-1","expires_in":3600,"obtained_at":{now}}}"#
     );
@@ -558,7 +552,6 @@ fn a_bare_token_grant_is_resealed_in_the_custody_format_on_first_use() {
     );
     vault.try_save().unwrap();
 
-    // Fresh, so no provider is asked (none is configured here).
     let custodian =
         Custodian::for_root(Some(root.clone())).with_client_table(crate::ClientTable::default());
     assert_eq!(
@@ -683,8 +676,6 @@ fn google_services_sign_in_refuses_empty_or_unconfigured_selection() {
 
 #[test]
 fn google_services_denied_permissions_are_rejected_before_api_requests() {
-    // An unreachable origin proves a denied scope is rejected before contacting
-    // the service, rather than relying on the service to reject the token.
     let custodian = google_services_custodian(true, true)
         .with_gmail_profile_endpoint("http://127.0.0.1:1/profile".into());
     for granted in ["", "https://www.googleapis.com/auth/drive"] {
@@ -983,7 +974,7 @@ fn protected_copies_refuse_legacy_decoders_but_canonical_dav_custody_still_publi
         account.config = serde_json::json!({"username":"ada", "app_password":true});
         let original = Secret::password("source-private-password");
         let copy = crate::copied_secret(&account, &original);
-        assert!(copy.password.is_empty()); // Old Basic/revoke consumers refuse it.
+        assert!(copy.password.is_empty());
         let raw = copy.token.as_deref().unwrap();
         assert!(serde_json::from_str::<LegacyGrant>(raw).is_err());
         assert!(serde_json::from_str::<crate::TokenSet>(raw).is_err());
@@ -1040,9 +1031,6 @@ fn unknown_tag_cannot_fall_back_to_bare_oauth_tokens() {
     assert!(HandoffStore::open_in(&root).read(&id).unwrap().is_none());
     assert_eq!(SecretVault::open_in(&root).get(&id).unwrap(), secret);
 }
-/// Vertex AI signs in through Google's client with the cloud scope alone and
-/// keeps its grant under its own id: a revoked or forgotten model grant
-/// reads as "sign in again" or missing while Gmail's grant stays usable.
 #[test]
 fn a_model_grant_is_its_own_and_leaves_mail_alone() {
     let dir = tempfile::tempdir().unwrap();
@@ -1109,8 +1097,6 @@ fn a_model_grant_is_its_own_and_leaves_mail_alone() {
         custodian.oauth_grant_state(&mail),
         Ok(crate::GrantState::Usable)
     );
-    // Forgetting is local: Google would revoke every grant of this client
-    // for the person, Gmail's included.
     assert!(
         server
             .requests()

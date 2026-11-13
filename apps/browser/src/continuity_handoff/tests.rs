@@ -400,7 +400,7 @@ fn failed_browser_import_is_visible_in_empty_personal_library_and_bound_retry_fi
                 inspection.contains("browser.continuity.failure"),
                 "missing failed-import notice in {resource}"
             );
-            assert!(inspection.contains("We couldn’t finish bringing your browsing over."));
+            assert!(inspection.contains("We couldn’t finish bringing your browsing data over."));
             assert!(inspection.contains("browser.continuity.retry"));
             assert!(!inspection.contains("invalid selected bookmark source"));
         }

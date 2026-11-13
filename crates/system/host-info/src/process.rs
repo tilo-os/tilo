@@ -1,12 +1,9 @@
-//! Operating-system process facts.
-
 use std::io;
 
-/// Whether [`is_alive`] can observe other processes on this platform.
 pub const CAN_CHECK_LIVENESS: bool = cfg!(unix);
 
-/// Whether process `pid` exists, including processes this one may not
-/// signal. Always `false` where [`CAN_CHECK_LIVENESS`] is `false`.
+/// Whether process `pid` exists, including ones this process may not signal.
+/// Always `false` where [`CAN_CHECK_LIVENESS`] is `false`.
 #[inline]
 #[must_use]
 pub fn is_alive(pid: i32) -> bool {

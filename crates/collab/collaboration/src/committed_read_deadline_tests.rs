@@ -383,20 +383,23 @@ impl ReadyReader {
         use automerge::transaction::Transactable as _;
         self.graph.put(automerge::ROOT, "body", body).unwrap();
         self.graph.commit();
-        self.captures.lock().unwrap().committed_history_fixture = Some(self.graph.save());
+        let mut captures = self.captures.lock().unwrap();
+        captures.committed_history_fixture = Some(self.graph.save());
+        captures.committed_revision = self.graph.get_heads().first().map(|head| head.0);
     }
 
-    /// Hold the broker's answer to the next unchanged poll until the returned
-    /// sender fires: from the reader's side, a poll starved past its deadline.
-    fn starve_next_poll(&self) -> tokio::sync::oneshot::Sender<()> {
+    /// Hold the broker's answer to the acknowledgement of the next changed
+    /// read until the returned gate is dropped: from the reader's side, a
+    /// read starved past its deadline. The caller changes the document.
+    fn starve_next_poll(&self) -> Starved {
         let (release, gate) = tokio::sync::oneshot::channel();
-        {
-            let mut captures = self.captures.lock().unwrap();
-            captures.committed_recheck_gate = Some(gate);
-            captures.committed_await_stale = true;
-        }
+        let (entered, acknowledging) = std::sync::mpsc::channel();
+        self.captures.lock().unwrap().committed_ack_gate = Some((entered, gate));
         self.wake_waits();
-        release
+        Starved {
+            _release: release,
+            _acknowledging: acknowledging,
+        }
     }
 
     /// Something the broker's held wait reads changed: it looks again.
@@ -454,7 +457,7 @@ impl ReadyReader {
 
     /// One slow poll, one renewal, and a successful read on the renewed
     /// channel, as on a runner that stalls once.
-    fn recover_from_one_slow_poll(&mut self) -> tokio::sync::oneshot::Sender<()> {
+    fn recover_from_one_slow_poll(&mut self) -> Starved {
         let joins = self.joins();
         self.commit("after the first slow poll");
         let release = self.starve_next_poll();
@@ -549,8 +552,8 @@ fn a_slow_renewal_after_a_wait_is_retried_instead_of_closing() {
 }
 
 /// Revocation after a recovery, reaching a reader that waits: the broker's
-/// held wait looks again on the announcement and the reader's next read,
-/// the first, is refused and closes it, exactly as without a renewal.
+/// held wait looks again on the announcement, its read is refused, and the
+/// reader's next Open, refused too, closes it, exactly as without a renewal.
 #[test]
 fn a_revocation_while_waiting_closes_on_the_first_open() {
     let mut reader = ReadyReader::start();
@@ -571,8 +574,8 @@ fn a_revocation_while_waiting_closes_on_the_first_open() {
     assert!(!ready, "a refused peer keeps no read readiness");
     assert_eq!(delivered, 0, "a refused peer receives no committed read");
     assert_eq!(
-        refused_opens, 1,
-        "the first refused poll closes the reader: no retry, no extra latency"
+        refused_opens, 2,
+        "the wait's read is refused, and the Open it leaves to decide closes the reader: no retry"
     );
     assert_eq!(
         joins, 2,
@@ -606,6 +609,7 @@ fn refused_renewal(held_first: bool) {
         }
         captures.join_refusal = Some("collaboration join identity rejected: revoked".into());
     }
+    reader.commit("before the refused renewal");
     let _poll = reader.starve_next_poll();
     reader.wait_for_close("the refused renewal to close the reader");
     let ready = reader.ready();
@@ -622,6 +626,12 @@ fn refused_renewal(held_first: bool) {
         if held_first { 4 } else { 3 },
         "the first refused rejoin closes the reader; it is never retried"
     );
+}
+
+/// A broker's answer held back until this is dropped.
+struct Starved {
+    _release: tokio::sync::oneshot::Sender<()>,
+    _acknowledging: std::sync::mpsc::Receiver<()>,
 }
 
 fn waits(captures: &Captures) -> usize {
@@ -676,7 +686,6 @@ fn an_idle_native_reader_asks_the_broker_nothing_while_nothing_changes() {
     // Another collaborator's edit commits a new revision: the held wait
     // ends and the reader takes it in, with no poll.
     reader.commit("edited elsewhere");
-    reader.captures.lock().unwrap().committed_revision = Some([8; 32]);
     reader.wake_waits();
     let applied = reader.apply_next_read("the committed edit to reach the owner");
     let ready_after = reader.ready();
@@ -704,10 +713,8 @@ fn an_idle_native_reader_asks_the_broker_nothing_while_nothing_changes() {
 fn a_busy_broker_queues_the_read_and_never_ends_collaboration() {
     let mut reader = ReadyReader::start();
     reader.commit("written while the budget is held");
-    reader.captures.lock().unwrap().committed_revision = Some([9; 32]);
     reader.captures.lock().unwrap().committed_busy = true;
     // The reader's wait ends (the read changed); its Open finds the budget held.
-    reader.captures.lock().unwrap().committed_await_stale = true;
     reader.wake_waits();
     let opens = reader.opens();
     tilo_test_env::wait_until("the reader to wait for its turn", || {

@@ -6,8 +6,9 @@
 //! for decide one invocation, and every host decides it the same way — the
 //! Linux broker over its app sockets and the page over the apps it runs.
 
-use tilo_action_policy::{ActionKind, Answer, Authority, Grant, Subject, TreePath, roles};
+use tilo_action_policy::{Acting, ActionKind, Answer, Authority, MemberId, Standing, TreePath};
 use tilo_actions::remote::{Caller, CallerPrincipal};
+use tilo_app_id::AppId;
 use tilo_desktop_model::Workspace;
 
 use crate::published::{PublishedAction, PublishedSurface, canonical_record, published_node};
@@ -48,6 +49,11 @@ pub struct BrokerActor {
     /// takes part in. Every op an agent makes names it, so presence and history
     /// say what caused it, and no agent acts outside one.
     turn: Option<tilo_action_policy::turn::Turn>,
+    /// The app the person acts through, when their session runs one: what it
+    /// may reach is bounded by the kinds it declares.
+    pub app: Option<AppId>,
+    /// The resource kinds `app` declares, when the host holds its manifest.
+    app_kinds: Option<Vec<String>>,
     /// The issue whose run the agent works in, by its address: grants
     /// naming the issue decide for the run as the agent's own do.
     issue: Option<String>,
@@ -67,6 +73,8 @@ impl BrokerActor {
             for_person: None,
             session_delegated: false,
             turn: None,
+            app: None,
+            app_kinds: None,
             issue: None,
             ceiling: None,
         }
@@ -81,23 +89,8 @@ impl BrokerActor {
             for_person: None,
             session_delegated: false,
             turn: None,
-            issue: None,
-            ceiling: None,
-        }
-    }
-
-    /// The application `app`, acting under its own identity: it may do what
-    /// the workspace grants it and nothing it borrows from a person. A reading it
-    /// takes is decided the same way.
-    #[must_use]
-    pub fn app(app: &str) -> Self {
-        Self {
-            id: format!("app:{app}"),
-            is_agent: true,
-            capped: false,
-            for_person: None,
-            session_delegated: false,
-            turn: None,
+            app: None,
+            app_kinds: None,
             issue: None,
             ceiling: None,
         }
@@ -114,6 +107,8 @@ impl BrokerActor {
             for_person: Some(installer.into()),
             session_delegated: false,
             turn: None,
+            app: None,
+            app_kinds: None,
             issue: None,
             ceiling: None,
         }
@@ -148,13 +143,30 @@ impl BrokerActor {
                     (None, None) => agent,
                 }
             }
-            CallerPrincipal::App(id) => Self::app(id),
+            CallerPrincipal::App(id) => {
+                let person = caller.acting_for_person().unwrap_or_default().to_owned();
+                Self::person(person).through_app(id.clone())
+            }
             CallerPrincipal::Bot(id) => match caller.user_public_key() {
                 Some(root) => Self::bot(id, principal_id_for_root(*root)),
                 // A bot nobody installed has no authority to borrow: acting
                 // for nobody, it gets nothing.
                 None => Self::bot(id, String::new()),
             },
+        }
+    }
+
+    /// How this actor shows where it acts when no caller says more: its kind, and for an agent
+    /// the person it acts for.
+    #[must_use]
+    pub fn shown(&self) -> tilo_actions::InteractionActor {
+        if !self.is_agent {
+            return tilo_actions::InteractionActor::new(&self.id, tilo_actions::ActorKind::Person);
+        }
+        let agent = tilo_actions::InteractionActor::new(&self.id, tilo_actions::ActorKind::Agent);
+        match &self.for_person {
+            Some(person) => agent.acting_for(person),
+            None => agent,
         }
     }
 
@@ -202,14 +214,6 @@ impl BrokerActor {
         self
     }
 
-    /// Whether an action of `kind`, privileged when `privileged`, reaches
-    /// further than the invocation this actor's request continues was
-    /// admitted for.
-    fn exceeds(&self, kind: ActionKind, privileged: bool) -> bool {
-        self.ceiling
-            .is_some_and(|ceiling| !ceiling.covers(kind, privileged))
-    }
-
     /// The same agent, working in a run of the issue at `issue`.
     #[must_use]
     pub fn working_on(mut self, issue: impl Into<String>) -> Self {
@@ -234,80 +238,123 @@ impl BrokerActor {
         self.is_agent
     }
 
+    /// The app the person acts through, when their session runs one.
+    #[must_use]
+    pub fn app(&self) -> Option<&AppId> {
+        self.app.as_ref()
+    }
+
+    /// Whether this is an app acting through the person whose session runs it.
+    #[must_use]
+    pub fn is_app(&self) -> bool {
+        self.app.is_some()
+    }
+
+    /// The same actor, acting through `app`, which declares the resource
+    /// `kinds` it may reach in its own node.
+    #[must_use]
+    pub fn in_app(
+        mut self,
+        app: impl Into<AppId>,
+        kinds: impl IntoIterator<Item = String>,
+    ) -> Self {
+        self.app = Some(app.into());
+        self.app_kinds = Some(kinds.into_iter().collect());
+        self
+    }
+
+    /// The same actor, acting through `app`, whose declared kinds this host
+    /// does not hold.
+    #[must_use]
+    pub fn through_app(mut self, app: impl Into<AppId>) -> Self {
+        self.app = Some(app.into());
+        self
+    }
+
     /// The person this agent acts for, when one delegated it.
     #[must_use]
     pub fn acting_for(&self) -> Option<&str> {
         self.for_person.as_deref()
     }
 
-    /// The grant subject this actor is when it is not a person.
-    pub fn delegate(&self) -> Option<Subject> {
-        if let Some(app) = self.id.strip_prefix("app:") {
-            return Some(Subject::App(app.to_owned()));
-        }
+    /// Who this actor is when it is not a person.
+    #[must_use]
+    pub fn delegate(&self) -> Option<tilo_action_policy::Actor> {
         // A person's policy id is lowercase hex, so it never starts with
         // `bot:` and the prefix cannot misread a person.
         if let Some(bot) = self.id.strip_prefix("bot:") {
-            return Some(Subject::Bot(bot.to_owned()));
+            return Some(tilo_action_policy::Actor::Member(MemberId::bot(bot)));
         }
-        self.is_agent
-            .then(|| Subject::agent(self.id.strip_prefix("agent:").unwrap_or(&self.id)))
+        self.is_agent.then(|| {
+            tilo_action_policy::Actor::Member(MemberId::agent(
+                self.id.strip_prefix("agent:").unwrap_or(&self.id),
+            ))
+        })
     }
 
-    /// What this actor may do in `workspace`: a person's own authority (held
-    /// to `foreign_bound` from a device not theirs); an agent's bounded by
-    /// the person it acts for, and by its own grant
-    /// ([`roles::agent_turn`]); an application, or an agent nobody acts for,
-    /// only what the workspace grants it.
+    /// Who this actor's actions are: a person, an agent or bot acting for the
+    /// person who delegated it, an app acting as the person whose session
+    /// runs it.
+    #[must_use]
+    pub fn acting(&self) -> Acting {
+        let acting = match (self.delegate(), &self.for_person) {
+            (None, Some(person)) => Acting::person(person.clone()),
+            (None, None) => Acting::person(self.id.clone()),
+            (Some(tilo_action_policy::Actor::Member(member)), Some(person)) => {
+                Acting::member(member).acting_for(Acting::person(person.clone()))
+            }
+            (Some(tilo_action_policy::Actor::Member(member)), None) => Acting::member(member),
+            (Some(tilo_action_policy::Actor::Automation(id)), _) => Acting::automation(id.as_str()),
+        };
+        let acting = match &self.app {
+            Some(app) => acting.in_app(app.clone()),
+            None => acting,
+        };
+        let acting = acting.on_foreign_device(self.capped);
+        match &self.issue {
+            Some(issue) => acting.caused_by(issue.clone()),
+            None => acting,
+        }
+    }
+
+    /// The grants made for this actor's software: the delegation a person's
+    /// own device gives the agent it handed its session to.
+    #[must_use]
+    pub fn granted(&self, workspace: &str) -> Vec<tilo_action_policy::Grant> {
+        match (self.delegate(), &self.for_person) {
+            (Some(tilo_action_policy::Actor::Member(MemberId::Agent(agent))), Some(person))
+                if self.session_delegated =>
+            {
+                tilo_action_policy::roles::agent_grants(workspace, &agent, person, &[])
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Who this actor's invocation in `workspace` is decided for, with the
+    /// grants the workspace's policy does not hold ([`Self::granted`]).
+    #[must_use]
+    pub fn standing_in(&self, workspace: &Workspace) -> Standing {
+        let mut standing = Standing::new(workspace.policy.clone(), self.acting())
+            .granted(self.granted(&workspace.policy.workspace));
+        if let Some(kinds) = &self.app_kinds {
+            standing = standing.in_app(kinds.clone());
+        }
+        if self.capped {
+            standing.on_foreign_device()
+        } else {
+            standing
+        }
+    }
+
+    /// What this actor may do in `workspace` ([`Self::standing_in`]).
     pub fn with_authority_in<T>(
         &self,
         workspace: &Workspace,
-        foreign_bound: &[Grant],
         decide: impl FnOnce(&Authority<'_>) -> T,
     ) -> T {
-        match (self.delegate(), &self.for_person) {
-            (None, _) => {
-                decide(&workspace.person_authority_on(&self.id, self.capped, foreign_bound))
-            }
-            (Some(delegate), Some(person)) => {
-                let carried = self.session_grants(&workspace.id().to_string(), person);
-                decide(
-                    &workspace
-                        .person_authority_on(person, self.capped, foreign_bound)
-                        .bounded_by(self.party(&workspace.policy.grants, delegate, &carried)),
-                )
-            }
-            (Some(delegate), None) => decide(&workspace.subject_authority(delegate)),
-        }
-    }
-
-    /// The delegate `delegate` this actor is, over `grants` and what it
-    /// `carried`, and the issue it works on.
-    pub fn party<'g>(
-        &self,
-        grants: &'g [Grant],
-        delegate: Subject,
-        carried: &'g [Grant],
-    ) -> tilo_action_policy::Party<'g> {
-        let party = tilo_action_policy::Party::new(vec![delegate], grants).with_grants(carried);
-        match &self.issue {
-            Some(issue) => party.also_as(Subject::Task(issue.clone())),
-            None => party,
-        }
-    }
-
-    /// The authority an agent this connection acts as carries in `workspace`,
-    /// given by `person`: the turn's, from its record's bound and the cap
-    /// [`roles::agent_policy::ROLE_CAP`]. Nothing for any other actor, and
-    /// nothing for an agent no person's turn carries.
-    pub fn session_grants(&self, workspace: &str, person: &str) -> Vec<Grant> {
-        // Only a session a person's device handed to its agent carries the
-        // turn's grants; an agent never acts on its own.
-        if !self.is_agent || !self.session_delegated || self.for_person.is_none() {
-            return Vec::new();
-        }
-        let agent = self.id.strip_prefix("agent:").unwrap_or(&self.id);
-        roles::agent_turn(workspace, agent, person, &[]).grants
+        let standing = self.standing_in(workspace);
+        decide(&standing.authority())
     }
 
     /// Whether this actor is a person acting from their own device: the one
@@ -387,7 +434,6 @@ impl BrokerActor {
         run: Option<RunFacts<'_>>,
         (surface, action): (&PublishedSurface, &PublishedAction),
     ) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
-        use tilo_action_policy::Refused;
         let refused = || "caller no longer authorized for invocation".to_owned();
         let record = if self.is_agent {
             None
@@ -409,30 +455,30 @@ impl BrokerActor {
             Some(_) => return Err("only the run's agent acts in it".into()),
             None => self,
         };
-        let (answer, spent) = actor.verdict_in(workspace, &node, need.kind, need.privileged, now);
         let record = record.map(|record| {
-            let node = collab_types::validator::document_node(
+            collab_types::validator::document_node(
                 &workspace.policy.workspace,
                 &surface.app_id,
                 &record,
-            );
-            self.answer_in(workspace, &node, need.kind, now)
+            )
         });
+        let standing = actor.standing_in(workspace);
         // The broker reaches the person on their own device to ask them.
-        let asks = match tilo_action_policy::admit(
-            tilo_action_policy::Invoked {
-                answer,
+        let (admission, spent) = tilo_action_policy::admit_invocation(
+            &standing.authority(),
+            standing.asker(true),
+            tilo_action_policy::Invocation {
+                node: &node,
+                kind: need.kind,
+                privileged: need.privileged,
                 attended: action.contract.is_attended(),
-                record,
+                record: record.as_ref(),
+                ceiling: self.ceiling,
             },
-            tilo_action_policy::Asker {
-                reachable: true,
-                delegated: self.delegate().is_some(),
-            },
-        ) {
-            Ok(admission) => admission == tilo_action_policy::Admission::AsksFirst,
-            Err(Refused::Action | Refused::Record) => return Err(refused()),
-        };
+            &tilo_desktop_model::context_at(now),
+        )
+        .map_err(|_| refused())?;
+        let asks = admission == tilo_action_policy::Admission::AsksFirst;
         Ok((asks, spent))
     }
 
@@ -444,19 +490,13 @@ impl BrokerActor {
         privileged: bool,
         now: u64,
     ) -> (Answer, Vec<tilo_action_policy::GrantId>) {
-        let bound = roles::foreign_device_bound();
-        self.with_authority_in(workspace, &bound, |authority| {
-            let mut verdict = authority.decide(node, kind, &tilo_desktop_model::context_at(now));
-            if privileged {
-                verdict = verdict.privileged();
-            }
-            // A child going further than the invocation it continues was
-            // admitted for is asked for as its own request.
-            let answer = match verdict.answer {
-                Answer::Allow if self.exceeds(kind, privileged) => Answer::Ask,
-                answer => answer,
-            };
-            (answer, verdict.spent())
+        self.with_authority_in(workspace, |authority| {
+            tilo_action_policy::answer_at(
+                authority,
+                (node, kind, privileged),
+                self.ceiling,
+                &tilo_desktop_model::context_at(now),
+            )
         })
     }
 

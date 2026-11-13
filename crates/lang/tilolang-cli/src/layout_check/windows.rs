@@ -72,6 +72,17 @@ fn nodes_of<'a>(node: &'a tilo_ui_host::UiNode, kind: &str) -> Vec<&'a tilo_ui_h
     out
 }
 
+/// What the menus under `node` say, in drawing order.
+fn menu_labels(node: &tilo_ui_host::UiNode) -> Vec<String> {
+    nodes_of(node, "ui.MenuItem")
+        .into_iter()
+        .filter_map(|item| match item.props.get("label") {
+            Some(tilo_render_protocol::patch::Value::Text(label)) => Some(label.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The catch-up a window's mark opens: each item it changed, newest first, with who and
 /// when, and the one move that marks them all seen.
 fn the_catch_up_names_each_item_it_changed(window: &tilo_ui_host::UiNode) {
@@ -159,7 +170,7 @@ fn the_catch_up_names_each_item_it_changed(window: &tilo_ui_host::UiNode) {
 /// What the audit finds wrong with `staged`'s window as it stands at `viewport`.
 fn wrong_in(staged: &stage::Staged, viewport: (u32, u32)) -> Vec<String> {
     let inspection = staged.harness().inspection();
-    super::audit::inspect(&inspection.root, viewport, None, 1.0)
+    let mut wrong: Vec<String> = super::audit::inspect(&inspection.root, viewport, None, 1.0)
         .into_iter()
         .map(|problem| {
             format!(
@@ -169,7 +180,14 @@ fn wrong_in(staged: &stage::Staged, viewport: (u32, u32)) -> Vec<String> {
                 problem.widget
             )
         })
-        .collect()
+        .collect();
+    // And what only the frame says: a divider a person reads as a band sits in pixels, whatever
+    // the widgets that built it say they drew.
+    wrong.extend(divider_rules(
+        staged,
+        (viewport.0 as usize, viewport.1 as usize),
+    ));
+    wrong
 }
 
 /// Every place the widget `name` (`ui.ChangeMark`, `Popover`) is laid out, in tree order.
@@ -188,6 +206,29 @@ fn rects(staged: &stage::Staged, name: &str) -> Vec<Rect> {
     out
 }
 
+/// Each divider of a conversation the inspection sees, in reading order: the words it says and
+/// where it stands. A day's divider and the one over the unseen part are one component, told
+/// apart by what they say and the ink they are drawn in.
+fn dividers_of(staged: &stage::Staged) -> Vec<(String, Rect)> {
+    fn all(node: &ui::headless::InspectionNode, out: &mut Vec<(String, Rect)>) {
+        if node.widget == "SectionDivider" {
+            let [x, y, width, height] = node.rect;
+            let words = node
+                .semantics
+                .as_ref()
+                .and_then(|semantics| semantics.name.clone())
+                .unwrap_or_default();
+            out.push((words, Rect::new(x, y, x + width, y + height)));
+        }
+        for child in &node.children {
+            all(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    all(&staged.harness().inspection().root, &mut out);
+    out
+}
+
 /// Where the floating surface the widget `name` draws, a popover or a sheet, stands.
 fn floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
     rects(staged, name).into_iter().next()
@@ -203,11 +244,9 @@ fn shown_floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
 }
 
 /// The change marks the rows of the window's lists draw, by the row they stand in.
-fn row_marks(
-    rows: &std::collections::HashMap<String, tilo_ui_host::UiNode>,
-) -> Vec<tilo_ui_host::UiNode> {
+fn row_marks(rows: &[(String, tilo_ui_host::UiNode)]) -> Vec<tilo_ui_host::UiNode> {
     let mut out = Vec::new();
-    for row in rows.values() {
+    for (_, row) in rows {
         let mut marks = Vec::new();
         nodes(row, "ui.ChangeMark", &mut marks);
         out.extend(marks.into_iter().cloned());
@@ -215,10 +254,196 @@ fn row_marks(
     out
 }
 
-/// The changes the rows of `staged`'s window show, as who made it, what they are called and
-/// what they did: a list row draws its mark in the row instead of holding a node of it, so
-/// what the person reads is read off the rows themselves.
-fn row_changes(staged: &stage::Staged) -> Vec<(String, String, String)> {
+/// The changes the rows of `staged`'s window set down, as the row they stand in, who made it
+/// and what they did: a row the app draws at the item's page holds the mark as a node of its
+/// own, where a list row draws it in the row instead.
+fn staged_changes(staged: &mut stage::Staged) -> Vec<(String, String, String)> {
+    let rows = staged.rows();
+    let mut changes = Vec::new();
+    for (key, row) in &rows {
+        for mark in nodes_of(row, "ui.ChangeMark") {
+            let identity = match mark.props.get("by") {
+                Some(tilo_render_protocol::patch::Value::Principal(who)) => who.id.clone(),
+                other => panic!("a marked row names who changed it: {other:?}"),
+            };
+            let said = match mark.props.get("said") {
+                Some(tilo_render_protocol::patch::Value::Text(said)) => said.clone(),
+                other => panic!("a marked row says what they did: {other:?}"),
+            };
+            changes.push((key.clone(), identity, said));
+        }
+    }
+    changes
+}
+
+/// How many pixels of `rect` the frame paints in something other than the content's ground: a
+/// mark a person reads is painted where it stands, not only built.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::arithmetic_side_effects,
+    reason = "frame and mark sizes are small counts, far inside usize and f64"
+)]
+fn painted(staged: &stage::Staged, rect: Rect, viewport: (usize, usize)) -> usize {
+    let rgba = staged.harness().render_rgba();
+    let (wide, tall) = viewport;
+    assert!(!rgba.is_empty(), "the frame renders");
+    let device = rgba.len() / 4;
+    let scale = ((device / (wide * tall)) as f64).sqrt().round().max(1.0) as usize;
+    let ground = ui::Theme::light().tokens.colors.surfaces.content.to_rgba8();
+    let ground = [ground.r, ground.g, ground.b];
+    let mut inked = 0;
+    for y in (rect.y0 as usize * scale)..(rect.y1 as usize * scale) {
+        for x in (rect.x0 as usize * scale)..(rect.x1 as usize * scale) {
+            let at = (y * wide * scale + x) * 4;
+            let painted = [rgba[at], rgba[at + 1], rgba[at + 2]];
+            if !painted
+                .iter()
+                .zip(ground)
+                .all(|(painted, beneath)| painted.abs_diff(beneath) <= 12)
+            {
+                inked += 1;
+            }
+        }
+    }
+    inked
+}
+
+/// The frame `staged` painted at `viewport`, and how many device pixels one point covers.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::arithmetic_side_effects,
+    reason = "frame and band sizes are small counts, far inside usize and f64"
+)]
+fn frame(staged: &stage::Staged, viewport: (usize, usize)) -> (Vec<u8>, usize) {
+    let rgba = staged.harness().render_rgba();
+    let (wide, tall) = viewport;
+    assert!(!rgba.is_empty(), "the frame renders");
+    let device = rgba.len() / 4;
+    let scale = ((device / (wide * tall)) as f64).sqrt().round().max(1.0) as usize;
+    (rgba, scale)
+}
+
+/// Where a divider's rule falls short: for every divider of `staged`'s window, the rule that
+/// runs from its words out to each of the column's edges, as the frame paints it.
+///
+/// A divider is a band ruled out to both sides of its label, never a caption afloat in the
+/// column. A rule derived against the wrong surface — an edge of the ink itself painted over
+/// the conversation's ground — is a pixel the ground's own colour, so nothing but the frame
+/// tells it from a divider drawn as bare text; a step's geometry, or a scene the tests built,
+/// says everything is there.
+///
+/// And how far each rule moves the ground it lands on: a day's rule is a neutral hairline that
+/// divides two of a kind and says nothing by itself, while the band where reading starts again
+/// says where, so its rule in the accent is read at a glance — it moves the ground by
+/// [`ui::surface::COLOURED_RULE_MIN_DELTA`] at least, and clearly more than any day's rule in
+/// the same frame, never the same weight as one.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::arithmetic_side_effects,
+    reason = "frame and band sizes are small counts, far inside usize and f64"
+)]
+fn divider_rules(staged: &stage::Staged, viewport: (usize, usize)) -> Vec<String> {
+    let (wide, _) = viewport;
+    let (rgba, scale) = frame(staged, viewport);
+    let pixel = |x: usize, y: usize| {
+        let at = (y * wide * scale + x) * 4;
+        [rgba[at], rgba[at + 1], rgba[at + 2]]
+    };
+    let luminance = |painted: [u8; 3]| {
+        ui::a11y::relative_luminance(ui::peniko::Color::from_rgb8(
+            painted[0], painted[1], painted[2],
+        ))
+    };
+    let moved = |painted: [u8; 3], beneath: [u8; 3]| {
+        painted
+            .iter()
+            .zip(beneath)
+            .any(|(painted, beneath)| painted.abs_diff(beneath) > 12)
+    };
+    let mut wrong = Vec::new();
+    // How far the strongest rule of a day moves its ground, against which the band where reading
+    // starts again is held; and that band's own rule, when the frame shows one.
+    let mut quiet_rule = 0.0f64;
+    let mut accent_rule: Option<(String, f64)> = None;
+    for (words, divider) in dividers_of(staged) {
+        // A band too narrow to rule moves no column a person reads, and its label may take the
+        // whole of it: only a band with room on either side of its words is held to its rules.
+        if divider.width() < 200.0 {
+            continue;
+        }
+        let (row, scale) = (
+            (divider.center().y.round() as usize).saturating_mul(scale),
+            scale,
+        );
+        let (left, right) = (
+            divider.x0.round() as usize * scale,
+            divider.x1.round() as usize * scale,
+        );
+        // The ground the band is painted on: the column beside it, outside the band itself.
+        let ground = pixel((divider.x0.round() as usize).saturating_sub(2) * scale, row);
+        let beneath = luminance(ground);
+        // The rule runs from the column's edge in to its words: the first 16 points on either
+        // side stand clear of any label a band this wide centres.
+        let span = 16 * scale;
+        let mut strength = 0.0f64;
+        for (side, from, to) in [
+            ("leading", left, left + span),
+            ("trailing", right - span, right),
+        ] {
+            let mut ruled = false;
+            for x in from..to.min(wide * scale) {
+                let painted = pixel(x, row);
+                if moved(painted, ground) {
+                    ruled = true;
+                    strength = strength.max((luminance(painted) - beneath).abs());
+                }
+            }
+            if !ruled {
+                wrong.push(format!(
+                    "the divider {words:?} at {divider:?} has no {side} rule: bare text, not a \
+                     band ruled out to the column's edges"
+                ));
+            }
+        }
+        // The band saying where reading starts again is the one in the accent, and what tells the
+        // two kinds apart is the ink: its rule is read at a glance.
+        if ui::widget::conversation::band::says_where_reading_starts(&words) {
+            accent_rule = Some((
+                words,
+                accent_rule.map_or(strength, |(_, s)| s.max(strength)),
+            ));
+        } else {
+            quiet_rule = quiet_rule.max(strength);
+        }
+    }
+    if let Some((words, strength)) = accent_rule {
+        if strength < ui::surface::COLOURED_RULE_MIN_DELTA {
+            wrong.push(format!(
+                "the divider {words:?} rules at {strength:.3}, under the \
+                 {:.3} a rule that says where reading starts again moves its ground: a day's \
+                 rule at another weight, not a mark",
+                ui::surface::COLOURED_RULE_MIN_DELTA
+            ));
+        }
+        if strength < quiet_rule * 2.0 {
+            wrong.push(format!(
+                "the divider {words:?} rules at {strength:.3}, no more than a day's \
+                 {quiet_rule:.3}: one weight for a division and for where reading starts again"
+            ));
+        }
+    }
+    wrong
+}
+
+/// The rows the window of `staged` laid out, as the person has them: a list keeps the row of an
+/// item under the swipe the item has, not among its children.
+fn list_rows(staged: &stage::Staged) -> Vec<&ui::widget::ListRow> {
     fn collect<'a>(root: &'a dyn ui::widget::Widget, out: &mut Vec<&'a ui::widget::ListRow>) {
         if let Some(row) = root
             .as_any()
@@ -229,7 +454,6 @@ fn row_changes(staged: &stage::Staged) -> Vec<(String, String, String)> {
         for child in root.children() {
             collect(child, out);
         }
-        // A row that swipes holds its row inside itself, not among its children.
         if let Some(widget) = root.as_any() {
             if let Some(swipe) = widget.downcast_ref::<ui::widget::SwipeRow>() {
                 collect(swipe.content(), out);
@@ -243,11 +467,17 @@ fn row_changes(staged: &stage::Staged) -> Vec<(String, String, String)> {
     }
     let mut rows = Vec::new();
     collect(staged.harness().root_widget(), &mut rows);
+    rows
+}
 
+/// The changes the rows of `staged`'s window show, as who made it, what they are called and
+/// what they did: a list row draws its mark in the row instead of holding a node of it, so
+/// what the person reads is read off the rows themselves.
+fn row_changes(staged: &stage::Staged) -> Vec<(String, String, String)> {
     // One change reads once however many rows show it: a task open where it stands shows it
     // on its row and again over the step that made it, and both are the same change.
     let mut changes = Vec::new();
-    for change in rows
+    for change in list_rows(staged)
         .into_iter()
         .filter_map(ui::widget::ListRow::shown_change)
     {
@@ -261,6 +491,54 @@ fn row_changes(staged: &stage::Staged) -> Vec<(String, String, String)> {
         }
     }
     changes
+}
+
+/// What a mark of a change the person has not seen says of it: who changed it, never the
+/// person's own step, and what they did, in words of "it".
+fn a_change_names_its_maker(identity: &str, said: &str) {
+    assert!(
+        !identity.is_empty() && identity != "ada",
+        "a marked row names who changed it, never the person's own step: {identity}"
+    );
+    assert!(
+        !said.is_empty() && !said.contains("this") && !said.contains("done to"),
+        "a marked row says what they did, in words, of \"it\": {said}"
+    );
+}
+
+/// The mark the header of `staged`'s window carries for the `count` changes the person has not
+/// seen: first among the header's actions, opening the catch-up that names each of them.
+fn the_windows_header_mark(staged: &mut stage::Staged, count: i64) -> tilo_ui_host::UiNode {
+    let composed = staged.composed().expect("the window composed its view");
+    let window = window_mark(&composed)
+        .unwrap_or_else(|| panic!("the window's header says what changed in it: {composed:?}"));
+    assert!(
+        matches!(
+            window.props.get("count"),
+            Some(tilo_render_protocol::patch::Value::Int(counted)) if *counted == count
+        ),
+        "the window counts the {count} changes she has not seen: {window:?}"
+    );
+    the_catch_up_names_each_item_it_changed(&window);
+    // The list is the window's content, so its header is the window's: the mark stands among
+    // the header actions, first, in the row that carries the title it counts.
+    let mut slots = Vec::new();
+    nodes(&composed, "slot", &mut slots);
+    let header = slots
+        .iter()
+        .find(|slot| {
+            slot.props.get("name") == Some(&tilo_render_protocol::patch::Value::text("actions"))
+                && slot
+                    .children
+                    .iter()
+                    .any(|child| child.kind == "ui.ChangeMark")
+        })
+        .unwrap_or_else(|| panic!("the window's header holds the window's mark: {composed:?}"));
+    assert_eq!(
+        header.children[0].kind, "ui.ChangeMark",
+        "the window's mark stands first among the header's actions: {header:?}"
+    );
+    window
 }
 
 /// The mark a window's header carries: what changed in what it shows, and by whom.
@@ -446,6 +724,112 @@ fn a_window_alone_on_the_desk_takes_the_desk() {
         "a lone window takes the desk's width at 1280: {window:?}"
     );
     bar_and_content_in(frames[0], window);
+}
+
+#[test]
+fn a_place_the_desk_has_shows_its_app() {
+    // A place is made from the resource it shows (`session.Arrangement`'s `record`), so a place
+    // whose app the desk has draws that app's views, that app's header row and, with nothing in
+    // it yet, that app's empty state. A well is where another app's window shows — a terminal, a
+    // legacy surface — and a place of an app the desk has must never stand in one: that window
+    // would be blank, saying nothing of what it is for and offering nothing to start.
+    tilo_ui_host::i18n::ensure();
+    let (app, packages) = packages();
+    let staged = stage::Staged::over(
+        &app,
+        &packages,
+        "a desk of places",
+        (1280, 800),
+        ui::Theme::light(),
+        None,
+        &[],
+    )
+    .expect("the scenario stages");
+    let desk = staged.places();
+    assert!(!desk.is_empty(), "the staged desk holds its places");
+    // The apps the desk's own build has: a place that shows one of them is drawn by it.
+    let known: Vec<&str> = packages
+        .0
+        .iter()
+        .map(|held| held.meta.app.as_str())
+        .collect();
+    let wells: Vec<&str> = named(staged.harness().root_widget(), "WindowWell")
+        .iter()
+        .filter_map(|well| well.test_id())
+        .collect();
+    for key in &wells {
+        let place = desk
+            .iter()
+            .find(|place| place.key == *key)
+            .unwrap_or_else(|| panic!("the well {key} stands for a place of the desk: {desk:?}"));
+        assert!(
+            !known.contains(&place.shows.as_str()),
+            "the place {key} shows {}, whose views the desk has, so its window draws them: it \
+             stands in a well instead, blank",
+            place.shows
+        );
+    }
+    // The same holds for every place the desk draws as a window of its own, whatever it holds:
+    // a place with no resource is another shell's window, and only that stands in a well.
+    for place in &desk {
+        if !place.record.is_empty() || known.contains(&place.shows.as_str()) {
+            assert!(
+                !wells.contains(&place.key.as_str()),
+                "the place {} shows a resource and stands in a well",
+                place.key
+            );
+        }
+    }
+}
+
+#[test]
+fn a_window_bar_keeps_one_overflow_menu() {
+    // One bar, one "…": the window's decorations in their floating pill, the app's own controls
+    // in its header row, and one door between them for what does not fit. Two doors side by side
+    // are one menu too many, and a person cannot tell which holds what.
+    tilo_ui_host::i18n::ensure();
+    let (app, packages) = packages();
+    let staged = stage::Staged::over(
+        &app,
+        &packages,
+        "a desk of places",
+        (1280, 800),
+        ui::Theme::light(),
+        None,
+        &[],
+    )
+    .expect("the scenario stages");
+    let root = staged.harness().root_widget();
+    let frames = named(root, "WindowFrame");
+    assert!(!frames.is_empty(), "the desk draws windows");
+    for frame in frames {
+        let window = frame.get_rect();
+        // The bar's band: the frame's top edge, one bar tall.
+        let band = ui::kurbo::Rect::new(
+            window.x0,
+            window.y0,
+            window.x1,
+            window.y0 + 56.0_f64.min(window.height()),
+        );
+        // A door: an overflow button, or a menu button, drawn in the bar.
+        let doors: Vec<&dyn Widget> = ["OverflowDoor", "MenuButton"]
+            .iter()
+            .flat_map(|name| named(frame, name))
+            .filter(|door| {
+                let rect = door.get_rect();
+                rect.width() > 0.0 && rect.center().y >= band.y0 && rect.center().y <= band.y1
+            })
+            .collect();
+        assert!(
+            doors.len() <= 1,
+            "the window at {window:?} shows {} doors in its one bar: {:?}",
+            doors.len(),
+            doors
+                .iter()
+                .map(|door| (door.name(), door.get_rect()))
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 /// A window is a window: it fills its strip's whole room, and every window of the desk
@@ -818,46 +1202,11 @@ fn desktop_read_out(size: (u32, u32)) -> Vec<(bool, String)> {
     said
 }
 
-/// Whether `node` is a shell header's overflow door, whatever language the window it
-/// frames reads in: the door is known by its id, not by the words on it.
-fn is_shell_door(node: &ui::headless::InspectionNode) -> bool {
-    let [_, _, w, h] = node.rect;
-    w > 0.0
-        && h > 0.0
-        && node
-            .test_id
-            .as_deref()
-            .is_some_and(|id| id.starts_with("nav-shell-more-"))
-}
-
-/// Whether `node` is the "…" beside a page's title: the menu the page keeps its own
-/// actions behind when it is a window of one thing rather than a bar over columns.
-fn is_title_door(node: &ui::headless::InspectionNode) -> bool {
-    let [_, _, w, h] = node.rect;
-    w > 0.0
-        && h > 0.0
-        && node.widget.as_str() == "MenuButton"
-        && node
-            .test_id
-            .as_deref()
-            .is_some_and(|id| id.ends_with("~more"))
-}
-
-/// The window's menu on the page: the bar's door or the "…" beside a title, whichever
-/// the window draws. Its items are the host's, read where the view is built; here it must
-/// stand where the person reaches it.
-fn shown_menu(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
-    if is_shell_door(node) || is_title_door(node) {
-        return Some(node);
-    }
-    node.children.iter().find_map(shown_menu)
-}
-
 #[test]
 fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
     // A window draws its main actions as buttons and keeps the rest behind one menu: never
-    // every action as a button of its own, and one door to what does not fit in one bar. The
-    // desktop's bar over the window is where they stand, at a desk's width and in a hand's.
+    // every action as a button of its own, and one door to what does not fit in one row. The
+    // column's header row is where they stand, at a desk's width and in a hand's.
     for size in [(1280, 800), (390, 844)] {
         tilo_ui_host::i18n::ensure();
         let packages = tasks_packages();
@@ -879,21 +1228,17 @@ fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
         staged
             .lay_out(size, ui::Theme::light(), input, 1.0)
             .expect("the app lays out");
-        let bar = staged.harness_mut().window_bar_layout(f64::from(size.0));
-        let buttons = bar
-            .controls
-            .iter()
-            .filter(|control| control.slot == "leading" || control.slot == "action")
-            .count();
+        let row = super::header_row_controls(&staged, size);
+        let buttons = row.iter().filter(|control| !control.menu).count();
         assert!(
             buttons <= ui::window_toolbar::MAX_LEADING + ui::window_toolbar::MAX_ACTIONS,
-            "a window draws no more actions as buttons than its bar holds at {size:?}: {buttons}"
+            "a window draws no more actions as buttons than one row holds at {size:?}: {row:?}"
         );
-        let menus: Vec<&ui::window_toolbar::BarControl> =
-            bar.controls.iter().filter(|control| control.menu).collect();
-        assert!(
-            !menus.is_empty(),
-            "a window keeps the rest of its actions in a menu at {size:?}: {bar:?}"
+        let menus: Vec<&super::RowControl> = row.iter().filter(|control| control.menu).collect();
+        assert_eq!(
+            menus.len(),
+            1,
+            "a window keeps the rest of its actions in one menu at {size:?}: {row:?}"
         );
         assert!(
             menus
@@ -902,37 +1247,23 @@ fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
             "the window's menu stands where the person reaches it at {size:?}: {menus:?}"
         );
         assert!(
-            menus.iter().all(|menu| !menu.id.is_empty()),
+            menus.iter().all(|menu| !menu.name.is_empty()),
             "the window's menu is named at {size:?}: {menus:?}"
         );
     }
 }
 
-/// A control named `name` that stands on the window (a rect with room), by its test id.
-fn shown_named(node: &ui::headless::InspectionNode, name: &str) -> Option<String> {
-    let [_, _, w, h] = node.rect;
-    if w > 0.0
-        && h > 0.0
-        && node.semantics.as_ref().and_then(|s| s.name.as_deref()) == Some(name)
-        && let Some(id) = &node.test_id
-    {
-        return Some(id.clone());
-    }
-    node.children
-        .iter()
-        .find_map(|child| shown_named(child, name))
-}
-
 #[test]
-fn an_action_without_an_icon_is_reachable_from_its_window_where_nothing_lists_it() {
-    // In the strips preset a window is the app's own: nothing lists its actions, so its
-    // bar holds the notes app's icon-less Untag as a labelled button, or its menu does
-    // when the row has no room for it.
+fn an_action_without_an_icon_is_reachable_from_the_row_that_offers_it() {
+    // A window that is a tree of notes keeps a note's actions in the menu of the row it
+    // stands for, where a person right-clicks it: the notes app's icon-less Untag is there,
+    // at a desk's width and in a hand's.
     tilo_ui_host::i18n::ensure();
-    let (_, packages) = packages();
+    let packages = app_packages("notes");
+    let app = packages.0.last().expect("the app").meta.app.clone();
     for size in [(1280, 800), (390, 844)] {
         let mut staged = stage::Staged::over(
-            "so.tilo.lang.notes",
+            &app,
             &packages,
             "a week of notes",
             size,
@@ -940,7 +1271,7 @@ fn an_action_without_an_icon_is_reachable_from_its_window_where_nothing_lists_it
             None,
             &[],
         )
-        .expect("the notes stage");
+        .expect("the scenario stages");
         let input = if size.0 < 600 {
             ui::interaction::InteractionEnvironment::TOUCH
         } else {
@@ -949,25 +1280,142 @@ fn an_action_without_an_icon_is_reachable_from_its_window_where_nothing_lists_it
         staged
             .lay_out(size, ui::Theme::light(), input, 1.0)
             .expect("the notes lay out");
-        let root = staged.harness().inspection().root;
-        if shown_named(&root, "Untag…").is_some() {
-            continue;
+        let tree = staged.composed().expect("the window composes");
+        // A tree's rows are built as the window shows them, so a note's menu stands in the row
+        // the window built for it rather than in the tree the app sent.
+        let mut labels = menu_labels(&tree);
+        for (_, row) in &staged.rows() {
+            labels.extend(menu_labels(row));
         }
-        let door = shown_menu(&root)
-            .unwrap_or_else(|| panic!("Untag… is neither shown nor behind a menu at {size:?}"));
-        let [_, _, w, h] = door.rect;
         assert!(
-            w > 0.0 && h > 0.0,
-            "the window's menu stands where the person reaches it at {size:?}"
-        );
-        assert!(
-            door.semantics
-                .as_ref()
-                .and_then(|said| said.name.as_deref())
-                .is_some_and(|name| !name.is_empty()),
-            "the window's menu is named at {size:?}"
+            labels.iter().any(|label| label == "Untag…"),
+            "a note's row offers its actions, its icon-less ones too, at {size:?}: {labels:?}"
         );
     }
+}
+
+/// A notebook is a tree in its sidebar and the note it opens beside it: a note stands indented
+/// under the one it is of, to any depth, and the "+" that starts one stands in the sidebar's
+/// header — once, where what it makes will stand.
+/// The rows of a window's tree, each by what it says and how deep it stands.
+fn rows_with_depth(
+    node: &ui::headless::InspectionNode,
+    out: &mut Vec<(String, ui::widget::RowLayout)>,
+) {
+    if let Some(ui::widget::LayoutInfo::Row(row)) = &node.layout {
+        let name = node
+            .semantics
+            .as_ref()
+            .and_then(|said| said.name.clone())
+            .unwrap_or_default();
+        out.push((name, *row));
+    }
+    for child in &node.children {
+        rows_with_depth(child, out);
+    }
+}
+
+#[test]
+fn a_notebook_is_a_tree_beside_the_note_it_opens() {
+    tilo_ui_host::i18n::ensure();
+    let packages = app_packages("notes");
+    let app = packages.0.last().expect("the app").meta.app.clone();
+    let size = (1280, 800);
+    let mut staged = stage::Staged::over(
+        &app,
+        &packages,
+        "a week of notes",
+        size,
+        ui::Theme::light(),
+        None,
+        &[],
+    )
+    .expect("the scenario stages");
+    staged
+        .lay_out(
+            size,
+            ui::Theme::light(),
+            ui::interaction::InteractionEnvironment::POINTER,
+            1.0,
+        )
+        .expect("the window lays out");
+
+    let mut laid = Vec::new();
+    rows_with_depth(&staged.harness().inspection().root, &mut laid);
+    let of = |title: &str| {
+        laid.iter().find(|(name, _)| name == title).map_or_else(
+            || {
+                let names: Vec<&str> = laid.iter().map(|(name, _)| name.as_str()).collect();
+                panic!("the tree draws {title:?}: {names:?}")
+            },
+            |(_, row)| *row,
+        )
+    };
+    let plan = of("Q3 plan");
+    let standups = of("Standups");
+    let monday = of("Monday");
+    assert_eq!(
+        (plan.depth, standups.depth, monday.depth),
+        (0, 1, 2),
+        "a note stands under the one it is of: {laid:?}"
+    );
+    assert!(
+        plan.content_left < standups.content_left && standups.content_left < monday.content_left,
+        "each depth indents the row: {} {} {}",
+        plan.content_left,
+        standups.content_left,
+        monday.content_left
+    );
+
+    // One control starts a note: the window's bar offers it as the window's own action, and the
+    // sidebar's header keeps the file commands, never a second button for what the bar has.
+    let tree = staged.composed().expect("the window composes");
+    let mut shells = Vec::new();
+    nodes(&tree, "ui.NavShell", &mut shells);
+    let shell = shells.first().expect("the window is a shell");
+    let slot = |name: &str| {
+        shell
+            .children
+            .iter()
+            .find(|child| {
+                child.kind == "slot"
+                    && child.props.get("name")
+                        == Some(&tilo_render_protocol::patch::Value::text(name))
+            })
+            .unwrap_or_else(|| panic!("the shell has its {name} slot: {shell:?}"))
+    };
+    let mut buttons = Vec::new();
+    nodes(shell, "ui.Button", &mut buttons);
+    let starts: Vec<&tilo_ui_host::UiNode> = buttons
+        .iter()
+        .filter(|button| {
+            button.props.get("label") == Some(&tilo_render_protocol::patch::Value::text("New note"))
+        })
+        .copied()
+        .collect();
+    assert_eq!(starts.len(), 1, "one control starts a note: {starts:?}");
+    let mut in_bar = Vec::new();
+    nodes(slot("actions"), "ui.Button", &mut in_bar);
+    assert!(
+        in_bar
+            .iter()
+            .any(|b| b.props.get("label")
+                == Some(&tilo_render_protocol::patch::Value::text("New note"))),
+        "the window's bar starts a note"
+    );
+    let mut in_sidebar = Vec::new();
+    nodes(slot("sidebar_actions"), "ui.Button", &mut in_sidebar);
+    assert!(
+        in_sidebar.is_empty(),
+        "the sidebar's header offers no second button of the window's: {in_sidebar:?}"
+    );
+    let mut menus = Vec::new();
+    nodes(slot("sidebar_actions"), "ui.MenuButton", &mut menus);
+    assert!(
+        menus.iter().any(|menu| menu.props.get("label")
+            == Some(&tilo_render_protocol::patch::Value::text("File"))),
+        "the sidebar's header keeps the notebook's file commands: {menus:?}"
+    );
 }
 
 #[test]
@@ -1056,60 +1504,63 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
         ui::clock::freeze_for_capture();
         let packages = tasks_packages();
         let mut away = away_at(&packages, (1280, 800));
-        let rows = row_changes(&away);
-        // The two tasks of today's list that someone else changed while she was away: Bo took
-        // the mail and her agent moved the survey to today, each row saying so in its words.
+        // The two tasks someone else changed while she was away: Bo took the mail and her agent
+        // moved the survey to today, each row setting down who changed it and what they did.
+        let changed = staged_changes(&mut away);
         assert_eq!(
-            rows.len(),
+            changed.len(),
             2,
-            "the two rows of the tasks Bo and her agent changed are marked: {rows:?}"
+            "the two rows of the tasks Bo and her agent changed are marked: {changed:?}"
         );
-        for (identity, name, said) in &rows {
-            assert!(
-                !identity.is_empty() && identity != "ada",
-                "a marked row names who changed it, never the person's own step: {identity}"
-            );
-            assert!(!name.is_empty(), "a marked row names the changer: {name}");
-            assert!(
-                !said.is_empty() && !said.contains("this") && !said.contains("done to"),
-                "a marked row says what they did, in words, of \"it\": {said}"
-            );
+        for (_, identity, said) in &changed {
+            a_change_names_its_maker(identity, said);
         }
         assert!(
-            rows.iter()
+            changed
+                .iter()
                 .any(|(_, _, said)| said.contains("assigned") && said.contains("you")),
-            "the mail Bo gave her says it was given to her: {rows:?}"
+            "the mail Bo gave her says it was given to her: {changed:?}"
         );
-        let composed = away.composed().expect("the window composed its view");
-        let window = window_mark(&composed)
-            .unwrap_or_else(|| panic!("the window's header says what changed in it: {composed:?}"));
-        // Three: Bo's assign, and the agent's two, one of them the task that is in Done now.
-        assert!(
-            matches!(
-                window.props.get("count"),
-                Some(tilo_render_protocol::patch::Value::Int(3))
-            ),
-            "the window counts the three changes she has not seen: {window:?}"
-        );
-        the_catch_up_names_each_item_it_changed(&window);
-        // The list is the window's content, so its header is the window's: the mark stands among
-        // the header actions, first, in the row that carries the title it counts.
-        let mut slots = Vec::new();
-        nodes(&composed, "slot", &mut slots);
-        let header = slots
-            .iter()
-            .find(|slot| {
-                slot.props.get("name") == Some(&tilo_render_protocol::patch::Value::text("actions"))
-                    && slot
-                        .children
-                        .iter()
-                        .any(|child| child.kind == "ui.ChangeMark")
-            })
-            .unwrap_or_else(|| panic!("the window's header holds the window's mark: {composed:?}"));
+        // The task that is still a row of the list says so under the row's title, where a person
+        // reads it.
+        let rows = row_changes(&away);
         assert_eq!(
-            header.children[0].kind, "ui.ChangeMark",
-            "the window's mark stands first among the header's actions: {header:?}"
+            rows.len(),
+            1,
+            "the row of the task Bo took says so under its title: {rows:?}"
         );
+        for (identity, name, said) in &rows {
+            a_change_names_its_maker(identity, said);
+            assert!(!name.is_empty(), "a marked row names the changer: {name}");
+            assert!(
+                said.contains("assigned") && said.contains("you"),
+                "the mail Bo gave her says it was given to her: {said}"
+            );
+        }
+        // The task she opened stands as its own page, its title written once, so what her agent
+        // changed is marked on the page the row became: the face of who changed it, on it.
+        let opened = changed
+            .iter()
+            .find(|(_, _, said)| said.contains("Today"))
+            .map(|(key, _, _)| key.clone())
+            .expect("her agent moved the survey to today");
+        let face = {
+            let wanted = format!("{opened}~change");
+            let root = away.harness().root_widget();
+            named(root, "Chip")
+                .into_iter()
+                .find(|chip| chip.test_id().is_some_and(|id| id == wanted))
+                .map_or_else(
+                    || panic!("the item she opened carries the face of who changed it: {wanted}"),
+                    Widget::get_rect,
+                )
+        };
+        assert!(
+            face.width() > 8.0 && face.height() > 8.0,
+            "the face stands on the page it marks, at a size a person reads: {face:?}"
+        );
+        // Three: Bo's assign, and the agent's two, one of them the task that is in Done now.
+        the_windows_header_mark(&mut away, 3);
         // A node in the tree is not a pixel: the mark stands in the window's own header row,
         // over the rows it counts, and the frame has its ink there.
         let mark = floating_rect(&away, "ChangeMark").expect("the window's mark is laid out");
@@ -1117,8 +1568,13 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
             mark.width() > 40.0 && mark.height() > 20.0,
             "the mark has room to stand in the header: {mark:?}"
         );
-        let listed = rects(&away, "ListRow");
+        // The rows the window lays out stand under the mark that counts them, inside it.
+        let listed: Vec<Rect> = list_rows(&away)
+            .into_iter()
+            .map(ui::widget::Widget::get_rect)
+            .collect();
         assert!(!listed.is_empty(), "the window lists the tasks it marks");
+
         assert!(
             listed.iter().all(|row| mark.y1 <= row.y0),
             "the mark stands over the rows it counts, not among them: mark {mark:?}, rows {listed:?}"
@@ -1127,32 +1583,21 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
             mark.x0 >= 0.0 && mark.x1 <= 1280.0,
             "the mark stands inside the window it counts: {mark:?}"
         );
-        let rgba = away.harness().render_rgba();
-        let (wide, tall) = (1280usize, 800usize);
-        assert!(!rgba.is_empty(), "the frame renders");
-        let device = rgba.len() / 4;
-        let scale = ((device / (wide * tall)) as f64).sqrt().round().max(1.0) as usize;
-        let ground = ui::Theme::light().tokens.colors.surfaces.content.to_rgba8();
-        let ground = [ground.r, ground.g, ground.b];
-        let pixel = |x: usize, y: usize| {
-            let at = (y * wide * scale + x) * 4;
-            [rgba[at], rgba[at + 1], rgba[at + 2]]
-        };
-        let mut inked = 0;
-        for y in (mark.y0 as usize * scale)..(mark.y1 as usize * scale) {
-            for x in (mark.x0 as usize * scale)..(mark.x1 as usize * scale) {
-                if !pixel(x, y)
-                    .iter()
-                    .zip(ground)
-                    .all(|(painted, beneath)| painted.abs_diff(beneath) <= 12)
-                {
-                    inked += 1;
-                }
-            }
-        }
         assert!(
-            inked > 500,
-            "the mark is painted in the header, not only built: {inked} px in {mark:?}"
+            mark.y1 <= face.y0 && face.x0 >= 0.0 && face.x1 <= 1280.0,
+            "the face of the change stands under the mark, on the page in the window: \
+             face {face:?}, mark {mark:?}"
+        );
+        let ink = |rect: Rect| painted(&away, rect, (1280, 800));
+        assert!(
+            ink(mark) > 500,
+            "the mark is painted in the header, not only built: {} px in {mark:?}",
+            ink(mark)
+        );
+        assert!(
+            ink(face) > 100,
+            "the face on the page the row became is painted, not only built: {} px in {face:?}",
+            ink(face)
         );
     });
 }
@@ -1317,38 +1762,40 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own() {
         unseen.is_some(),
         "the conversation says where its unseen part starts: {lists:?}"
     );
-    // The toolkit draws one divider there, over the row where that part begins.
-    let dividers = rects(&channels, "UnreadDivider");
+    // The toolkit draws the conversation's one band there, over the row where that part
+    // begins: where that row also opens a day, the day and the place reading starts again are
+    // one band saying both, in the accent, never a day's band stacked over the unread one.
+    let dividers = dividers_of(&channels);
+    let merged = ui::widget::conversation::band::day_with_unread("");
+    let unseen: Vec<&(String, Rect)> = dividers
+        .iter()
+        .filter(|(words, _)| words.ends_with(&merged))
+        .collect();
     assert_eq!(
-        dividers.len(),
+        unseen.len(),
         1,
-        "one divider, over the row where the unseen part starts: {dividers:?}"
+        "one band, over the row where the unseen part starts, saying the day and that reading \
+         starts there ({merged:?}): {dividers:?}"
     );
     assert!(
-        dividers[0].x0 > 300.0 && dividers[0].y1 > 100.0,
-        "the divider stands in the conversation's column, under its header: {:?}",
-        dividers[0]
+        !unseen[0].0.trim_end_matches(&merged).is_empty(),
+        "the merged band names the day it opens: {dividers:?}"
     );
-    // It says what stands under it, in the toolkit's words for every conversation.
-    let mut words = Vec::new();
-    {
-        fn labels(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
-            if node.widget == "UnreadDivider"
-                && let Some(name) = node.semantics.as_ref().and_then(|node| node.name.clone())
-            {
-                out.push(name);
-            }
-            for child in &node.children {
-                labels(child, out);
-            }
-        }
-        labels(&channels.harness().inspection().root, &mut words);
+    assert!(
+        dividers.len() > 1,
+        "the days around it are the same component: {dividers:?}"
+    );
+    for (words, rect) in &dividers {
+        assert!(
+            rect.x0 > 300.0 && rect.y1 > 100.0,
+            "the divider {words:?} stands in the conversation's column, under its header: {rect:?}"
+        );
+        assert_eq!(
+            (rect.x0, rect.x1),
+            (dividers[0].1.x0, dividers[0].1.x1),
+            "the dividers rule the one column: {words:?} is {rect:?}, the first {dividers:?}"
+        );
     }
-    assert_eq!(
-        words,
-        vec!["New messages".to_owned()],
-        "the divider says what the rows under it are"
-    );
     // Nothing marks a message of its own: a face over each line under the divider would read as
     // who read it, and the divider already says those rows are new. The one mark left counts
     // what is new in the window's header.
@@ -1367,6 +1814,14 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own() {
     assert!(
         said.is_empty(),
         "the rows carry no mark of their own: {said:?}"
+    );
+    // And every band of the conversation stands in the frame as a band: a rule on each side of
+    // its words, painted in ink the ground it lands on shows. The accent's rule derived as the
+    // edge of the accent itself is nothing on this ground, and the divider reads as bare text.
+    let wrong = wrong_in(&channels, (1280, 800));
+    assert!(
+        wrong.is_empty(),
+        "the conversation's bands read as bands: {wrong:?}"
     );
 }
 
@@ -1400,13 +1855,32 @@ fn a_channels_header_says_what_the_person_has_not_seen_of_it_by_whom() {
     let mark = window_mark(&tree).expect("the channel's header says what is new");
     assert_eq!(
         mark.props.get("count"),
-        Some(&tilo_render_protocol::patch::Value::Int(7)),
-        "seven items wait, not one change: {mark:?}"
+        Some(&tilo_render_protocol::patch::Value::Int(6)),
+        "six messages wait in the transcript's column, not one change and not the thread the \
+         transcript does not list: {mark:?}"
     );
     assert_eq!(
         mark.props.get("added"),
         Some(&tilo_render_protocol::patch::Value::Bool(true)),
         "every one of them is new: {mark:?}"
+    );
+    // And the channel's row in the sidebar says the same number: one count of what is new in a
+    // conversation, never two numbers a person has to tell apart.
+    let place = nodes_of(&tree, "ui.NavItem")
+        .into_iter()
+        .find(|place| {
+            matches!(
+                place.props.get("item"),
+                Some(tilo_render_protocol::patch::Value::Ref(item))
+                    if matches!(mark.props.get("of"),
+                        Some(tilo_render_protocol::patch::Value::Ref(of)) if item.id == of.id)
+            )
+        })
+        .unwrap_or_else(|| panic!("the sidebar holds the channel's row: {tree:?}"));
+    assert_eq!(
+        place.props.get("live"),
+        mark.props.get("count"),
+        "the row counts what the header counts: {place:?} against {mark:?}"
     );
 }
 
@@ -1427,4 +1901,281 @@ fn a_scenario_that_fails_is_said_rather_than_shown_empty() {
         panic!("a scenario that does not run is an error");
     };
     assert!(why.contains("no such scenario"), "{why}");
+}
+
+/// The one main action an app declares for its window stands in its column's header row as the
+/// primary button, at a desk's width and in a hand's: a person sees at once what the window is
+/// for, and the action narrows to its icon before it ever leaves the row.
+#[test]
+fn the_windows_main_action_stands_in_its_row_as_the_primary_button() {
+    tilo_ui_host::i18n::ensure();
+    for (app, scenario, action) in [
+        ("tasks", "a busy week", "New task"),
+        ("notes", "a first note", "New note"),
+    ] {
+        let packages = app_packages(app);
+        the_main_action_of(app, &packages, scenario, action);
+    }
+}
+
+fn the_main_action_of(app: &str, packages: &Rc<stage::Packages>, scenario: &str, action: &str) {
+    for (size, dark) in [
+        ((1280, 800), false),
+        ((1280, 800), true),
+        ((390, 844), false),
+        ((390, 844), true),
+        ((320, 568), false),
+        ((320, 568), true),
+    ] {
+        let theme = if dark {
+            ui::Theme::dark()
+        } else {
+            ui::Theme::light()
+        };
+        let mut staged = stage::Staged::over(
+            &format!("so.tilo.lang.{app}"),
+            packages,
+            scenario,
+            size,
+            theme.clone(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        let input = if size.0 < 600 {
+            ui::interaction::InteractionEnvironment::TOUCH
+        } else {
+            ui::interaction::InteractionEnvironment::POINTER
+        };
+        staged
+            .lay_out(size, theme, input, 1.0)
+            .expect("the app lays out");
+        let row = super::header_row_controls(&staged, size);
+        let primary: Vec<&super::RowControl> =
+            row.iter().filter(|control| control.primary).collect();
+        assert_eq!(
+            primary.len(),
+            1,
+            "one window draws one main action at {size:?}: {row:?}"
+        );
+        let control = primary[0];
+        assert_eq!(
+            control.name, action,
+            "the app's own main action: {control:?}"
+        );
+        assert!(
+            !control.menu,
+            "what the window is for never hides behind the row's door: {control:?}"
+        );
+        assert!(
+            control.rect[2] > 0.0 && control.rect[3] > 0.0,
+            "it stands where the person reaches it at {size:?}: {control:?}"
+        );
+        if size.0 >= 1280 {
+            assert!(
+                control.labelled,
+                "a desk's row says the main action's words at {size:?}: {control:?}"
+            );
+        }
+        if size.0 <= 320 {
+            // The narrowest row says the words where it has room for them and stands as its
+            // icon alone where it has not: either way it is the primary button still.
+            assert!(
+                control.labelled || control.rect[2] <= control.rect[3] * 1.5,
+                "the narrowest row keeps the main action to its icon alone, still on the \
+                 accent at {size:?}: {control:?}"
+            );
+        }
+    }
+}
+
+/// What one layout shows of `staged`'s window bar, and what is wrong with it: whether the
+/// window draws the band above its frame, whether the app's header row is the bar itself, and
+/// each problem added to `problems`, named by `what` and the layout. One bar is the window's
+/// band or the app's row, never both — two header rows to the person reading the window. A row
+/// that holds the bar keeps the window's furniture inside the window, and a title is cut only
+/// where its row has no room for it.
+fn the_window_bar_at(
+    staged: &mut stage::Staged,
+    layout: &super::Layout,
+    what: &str,
+    problems: &mut Vec<String>,
+) -> (bool, bool) {
+    let size = (layout.size.width, layout.size.height);
+    let (bar, _) = staged.harness().frame_extent(size);
+    let row = staged.harness().window_header_row_height();
+    if bar > 0.0 && row > 0.0 {
+        problems.push(format!(
+            "{what} at {layout}: a bar {bar:.0}px tall and, under it, a header row of the app's \
+             {row:.0}px tall",
+        ));
+    }
+    let held = staged.harness().row_holds_bar();
+    if held {
+        let furniture = staged.harness_mut().window_bar_layout(f64::from(size.0));
+        let window = Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
+        let close = furniture
+            .controls
+            .iter()
+            .find(|control| control.slot == "close" && control.rect[2] > 0.0);
+        let inside = close.is_some_and(|close| {
+            let [x0, y0, x1, y1] = close.rect;
+            window.contains(Rect::new(x0, y0, x1, y1).center())
+        });
+        if !inside {
+            problems.push(format!(
+                "{what} at {layout}: the row holds the window's bar, and its controls stand \
+                 outside the window: {:?}",
+                furniture.controls,
+            ));
+        }
+    }
+    for problem in super::audit::inspect(
+        &staged.harness().inspection().root,
+        size,
+        None,
+        layout.display_scale,
+    ) {
+        if problem.kind == super::Kind::TitleClippedWithRoom {
+            problems.push(format!(
+                "{what} at {layout}: {}: {}",
+                problem.widget, problem.detail
+            ));
+        }
+    }
+    (bar > 0.0, held)
+}
+
+/// The Tasks app at the sizes a person holds a window in the hand shows one bar each time: the
+/// week's list at phone width with the page it opens in front of it, and a project in a
+/// tablet's window. The window draws the band above its frame or its app's row is the bar; a
+/// row that holds the bar keeps the window's own controls in it; and a project's title is cut
+/// only where the row has no room for it.
+#[test]
+fn the_tasks_window_shows_one_bar_and_keeps_its_title_at_every_hand_held_size() {
+    tilo_ui_host::i18n::ensure();
+    let packages = tasks_packages();
+    let app = packages.0.last().expect("the app").meta.app.clone();
+    let all = super::layouts();
+    let mut problems: Vec<String> = Vec::new();
+    let mut measured = 0_usize;
+    let (mut band, mut held) = (0_usize, 0_usize);
+    for (scenario, size) in [
+        ("a busy week", (320_u32, 568_u32)),
+        ("a project board", (390_u32, 844_u32)),
+    ] {
+        // The window as the person holds it: one display's pixels, at both text scales.
+        let of_size: Vec<super::Layout> = all
+            .iter()
+            .copied()
+            .filter(|layout| (layout.size.width, layout.size.height) == size)
+            .filter(|layout| (layout.display_scale - 1.0).abs() < f64::EPSILON)
+            .collect();
+        let first = of_size[0];
+        let mut staged =
+            stage::Staged::over(&app, &packages, scenario, size, first.theme(), None, &[])
+                .expect("the scenario stages");
+        let mut lay_out = |staged: &mut stage::Staged, layout: &super::Layout, what: &str| {
+            staged
+                .lay_out(
+                    (layout.size.width, layout.size.height),
+                    layout.theme(),
+                    layout.input(),
+                    layout.display_scale,
+                )
+                .expect("lays out");
+            let (drew, holds) = the_window_bar_at(staged, layout, what, &mut problems);
+            measured += 1;
+            band += usize::from(drew);
+            held += usize::from(holds);
+        };
+        for layout in &of_size {
+            lay_out(&mut staged, layout, scenario);
+        }
+        // What the window opens in front of its list, as a finger opens it.
+        if let Some(tapped) = super::tappable_row(&staged, size) {
+            staged.tap_at(tapped).expect("the row opens");
+            let opened = format!("{scenario}, then the row opened");
+            for layout in &of_size {
+                lay_out(&mut staged, layout, &opened);
+            }
+        }
+    }
+    assert!(measured >= 8, "the windows were laid out: {measured}");
+    assert!(
+        problems.is_empty(),
+        "a window shows one bar, and its title where the row has room:\n  {}",
+        problems.join("\n  ")
+    );
+    assert!(
+        band == 0 && held == measured,
+        "the app's header row is the window's bar at every size: {band} with the window's own \
+         bar, {held} of {measured} with the app's row as the bar"
+    );
+}
+
+/// What a row of a list says its item is: the title the row's own tree carries.
+fn row_title(node: &tilo_ui_host::UiNode) -> Option<String> {
+    if let Some(tilo_render_protocol::patch::Value::Text(title)) = node.props.get("title") {
+        return Some(title.clone());
+    }
+    node.children.iter().find_map(row_title)
+}
+
+/// A page the check stages over a list opens a row the list itself shows first, and the same
+/// row in every run: the list's own order, never the order a hash of the row keys happens to
+/// give. The check stages a scenario once at the smallest window and reads every size off that
+/// one window, so one row serves every size: shots of two runs are the same picture, and a
+/// finding that comes and goes is a finding about the app.
+#[test]
+fn a_list_opens_the_page_of_its_first_row_in_every_run() {
+    tilo_ui_host::i18n::ensure();
+    let packages = tasks_packages();
+    let task = packages
+        .0
+        .iter()
+        .find(|package| package.meta.app == "so.tilo.lang.tasks")
+        .and_then(|package| package.meta.types.iter().find(|ty| ty.name == "Task"))
+        .map(|ty| ty.id.clone())
+        .expect("the tasks app declares its task");
+    let first = super::layouts().first().copied().expect("a layout");
+    let size = (first.size.width, first.size.height);
+    let mut opened = Vec::new();
+    for run in 0..4 {
+        let mut staged = stage::Staged::over(
+            "so.tilo.lang.tasks",
+            &packages,
+            "a busy week",
+            size,
+            first.theme(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        // The rows as the window lists them, and the page the run opens off them: the row it
+        // opens is the first one, by the title the row shows rather than by the id a staging
+        // gives its records.
+        let rows = staged.rows();
+        let named = staged.resources();
+        let picked = super::listed_of(&mut staged, &task).expect("a task to open a page of");
+        let at = rows
+            .iter()
+            .position(|(key, _)| key.ends_with(&picked.id))
+            .unwrap_or_else(|| panic!("the page opens a row the list shows, run {run}"));
+        assert_eq!(
+            at, 0,
+            "the page opens the row the list shows first, run {run}"
+        );
+        let listed = super::row_items(&rows, &named);
+        assert_eq!(
+            listed.first(),
+            Some(&picked),
+            "the row is the first of its type the list shows, run {run}"
+        );
+        opened.push(row_title(&rows[at].1).expect("the row says what its task is called"));
+    }
+    assert!(
+        opened.windows(2).all(|pair| pair[0] == pair[1]),
+        "every run opens the same task: {opened:?}"
+    );
 }

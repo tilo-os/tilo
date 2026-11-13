@@ -28,30 +28,19 @@ struct Tree {
     clock: i64,
 }
 
-/// Files in memory, every one of them readable and writable.
 #[derive(Clone, Default)]
 pub struct MemoryHost {
     tree: Arc<Mutex<Tree>>,
     /// Milliseconds slept so far: the host's clock moves only when
     /// something sleeps, so time in a test is exact.
     slept: Arc<std::sync::atomic::AtomicI64>,
-    /// Every file action asked for, as its command line.
     actions: Arc<Mutex<Vec<Vec<String>>>>,
-    /// The run each file action was part of, in order.
     runs: Arc<Mutex<Vec<String>>>,
-    /// The terminal's width, when the host has a terminal to edit lines on.
     terminal: Option<usize>,
-    /// Whether the terminal takes keys one at a time now, and how often it
-    /// was switched.
     editing: Arc<Mutex<(bool, usize)>>,
-    /// The person's history, oldest first, when this host holds it.
     history: Option<Arc<Mutex<Vec<String>>>>,
-    /// The programs it says it can run, for completion.
     programs: Vec<String>,
-    /// Whether `sleep` waits as long as it says, for tests of commands
-    /// that run side by side.
     real_time: bool,
-    /// Ctrl+Z was pressed and no job took it yet.
     suspended: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -62,15 +51,12 @@ impl MemoryHost {
         host
     }
 
-    /// A host with a terminal `columns` wide: the line editor runs on it,
-    /// reading keys from the shell's standard input.
     #[must_use]
     pub fn with_terminal(mut self, columns: usize) -> Self {
         self.terminal = Some(columns);
         self
     }
 
-    /// A host that holds the person's history, `lines` oldest first.
     #[must_use]
     pub fn with_history(mut self, lines: &[&str]) -> Self {
         self.history = Some(Arc::new(Mutex::new(
@@ -79,28 +65,23 @@ impl MemoryHost {
         self
     }
 
-    /// A host that says it runs `names`, as the environment's tools.
     #[must_use]
     pub fn with_programs(mut self, names: &[&str]) -> Self {
         self.programs = names.iter().map(|n| (*n).to_owned()).collect();
         self
     }
 
-    /// A host whose `sleep` takes as long as it says.
     #[must_use]
     pub const fn with_real_time(mut self) -> Self {
         self.real_time = true;
         self
     }
 
-    /// Press Ctrl+Z: the job in the foreground stops.
     pub fn suspend(&self) {
         self.suspended
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
-    /// Whether the terminal takes keys one at a time now, and how many
-    /// times the editor switched it.
     pub fn editing(&self) -> (bool, usize) {
         *self.editing.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -109,7 +90,6 @@ impl MemoryHost {
         self.tree.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Put a file at `path` with `contents`, making its directories.
     pub fn file(&self, path: &str, contents: impl Into<Vec<u8>>) -> &Self {
         let path = PathBuf::from(path);
         if let Some(parent) = path.parent() {
@@ -123,7 +103,6 @@ impl MemoryHost {
         self
     }
 
-    /// Make the directory `path` and every one above it.
     pub fn dir(&self, path: &str) -> &Self {
         self.make_dirs(Path::new(path));
         self
@@ -139,7 +118,6 @@ impl MemoryHost {
         self
     }
 
-    /// The contents of the file at `path`.
     pub fn contents(&self, path: &str) -> Option<Vec<u8>> {
         match self.tree().nodes.get(Path::new(path)) {
             Some((Node::File(bytes), _)) => Some(bytes.clone()),
@@ -151,7 +129,6 @@ impl MemoryHost {
         self.tree().nodes.contains_key(Path::new(path))
     }
 
-    /// The run each file action so far was part of, by its id.
     pub fn action_runs(&self) -> Vec<String> {
         self.runs
             .lock()
@@ -159,7 +136,6 @@ impl MemoryHost {
             .clone()
     }
 
-    /// The file actions asked for so far, each as its command line.
     pub fn actions(&self) -> Vec<Vec<String>> {
         self.actions
             .lock()

@@ -2,9 +2,10 @@
 //!
 //! A Mail draft never keeps a host pathname.  The portal gives this module an
 //! already-open descriptor, which is copied into the app's content store.
-//! The CRDT then carries the stable identity plus bounded presentation
-//! metadata; the bytes are read back from the content store, verified against
-//! that identity, only when a message is sent.
+//! The CRDT then carries the reference the content is kept under (sealed,
+//! in a store that seals) plus bounded presentation metadata; the bytes are
+//! read back from the content store, which opens and verifies them, only
+//! when a message is sent.
 
 use std::io::Read;
 
@@ -13,8 +14,6 @@ use tilo_content::ContentStore;
 use crate::model::DraftAttachment;
 
 pub const PREFIX: &str = "mail-attachment:blake3:";
-/// The portable attachment ceiling. Enforcing it before reading means Mail rejects before a chooser read/stage can report a
-/// vague retention failure for a 32–64 MiB file.
 pub const MAX_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_ATTACHMENTS: usize = 16;
 pub const MAX_ATTACHMENT_TOTAL_BYTES: usize = 128 * 1024 * 1024;
@@ -22,12 +21,8 @@ pub const MAX_FILENAME_CHARS: usize = 180;
 pub const MAX_MIME_CHARS: usize = 127;
 
 pub fn valid_content_id(id: &str) -> bool {
-    id.strip_prefix(PREFIX).is_some_and(|hash| {
-        hash.len() == 64
-            && hash
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    })
+    id.strip_prefix(PREFIX)
+        .is_some_and(tilo_content::valid_reference)
 }
 
 pub fn safe_filename(name: &str) -> String {
@@ -97,8 +92,6 @@ pub fn bounded(attachments: &[DraftAttachment]) -> Vec<DraftAttachment> {
 ///
 /// # Errors
 ///
-/// Returns an error when the descriptor is not a regular file, exceeds the
-/// portable content limit, cannot be read, or the store cannot retain/verify it.
 pub fn stage_file(
     content: &ContentStore,
     file: std::fs::File,
@@ -140,26 +133,39 @@ pub fn stage_bytes(
     if bytes.len() > MAX_ATTACHMENT_BYTES {
         return Err("attachments are limited to 32 MiB".into());
     }
-    let hash = content.put(bytes).map_err(|error| {
+    let reference = content.put(bytes).map_err(|error| {
         tracing::warn!(%error, "mail: couldn't store attachment content");
         "could not retain attachment content for this draft".to_string()
     })?;
-    let stored = content
-        .read(&hash)
-        .filter(|stored| stored == bytes && tilo_content::verify(&hash, stored))
-        .ok_or_else(|| "attachment content failed integrity verification".to_string())?;
-    let size = u64::try_from(stored.len()).map_err(|_| "selected file is too large")?;
+    if content.read(&reference).as_deref() != Some(bytes) {
+        return Err("attachment content failed integrity verification".to_string());
+    }
+    kept_as(&reference, bytes, display_name)
+}
+
+/// The attachment `bytes` are, kept under `reference` already.
+///
+/// # Errors
+///
+/// Returns an error when the bytes exceed the portable content limit.
+pub fn kept_as(
+    reference: &str,
+    bytes: &[u8],
+    display_name: &str,
+) -> Result<DraftAttachment, String> {
+    if bytes.len() > MAX_ATTACHMENT_BYTES {
+        return Err("attachments are limited to 32 MiB".into());
+    }
+    let size = u64::try_from(bytes.len()).map_err(|_| "selected file is too large")?;
     let filename = safe_filename(display_name);
     Ok(DraftAttachment {
-        content_id: format!("{PREFIX}{hash}"),
+        content_id: format!("{PREFIX}{reference}"),
         mime: safe_mime(crate::transport::mime_from_filename(&filename)),
         filename,
         size,
     })
 }
 
-/// Materialise a portable reference only after re-validating identity,
-/// metadata, byte count and digest. Missing peer content deliberately fails.
 pub fn materialize(
     content: &ContentStore,
     attachment: &DraftAttachment,
@@ -170,13 +176,13 @@ pub fn materialize(
             attachment.filename
         ));
     }
-    let hash = attachment.content_id.strip_prefix(PREFIX).ok_or_else(|| {
+    let reference = attachment.content_id.strip_prefix(PREFIX).ok_or_else(|| {
         format!(
             "attachment {} has invalid content identity",
             attachment.filename
         )
     })?;
-    let bytes = content.read(hash).ok_or_else(|| {
+    let bytes = content.read(reference).ok_or_else(|| {
         format!(
             "attachment {} is not available on this device yet",
             attachment.filename
@@ -184,7 +190,6 @@ pub fn materialize(
     })?;
     if bytes.len() > MAX_ATTACHMENT_BYTES
         || u64::try_from(bytes.len()).ok() != Some(attachment.size)
-        || !tilo_content::verify(hash, &bytes)
     {
         return Err(format!(
             "attachment {} failed integrity validation",

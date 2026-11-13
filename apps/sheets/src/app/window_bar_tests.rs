@@ -1,15 +1,8 @@
-//! The window bar's search is the workbook's find: it counts every match in
-//! the workbook, steps through them (the grid following to the match's sheet
-//! and cell), replaces through the workbook's own edit path as one undo step,
-//! and stops painting matches when it closes. The sheet draws no find field of
-//! its own.
-
 use super::tests::{char_event, ctrl_mods, feed, sample_app, seeded_app};
 use super::*;
 use ui::framework::testing::TestApp;
 use ui::window_toolbar::SearchOpening;
 
-/// What cell `addr` of sheet `idx` says in the workbook the app shows.
 fn raw_at(app: &TestApp<crate::resource::SheetsShell>, idx: usize, addr: Addr) -> String {
     app.state()
         .sheets
@@ -20,7 +13,6 @@ fn raw_at(app: &TestApp<crate::resource::SheetsShell>, idx: usize, addr: Addr) -
         .unwrap_or_default()
 }
 
-/// Ctrl+F asks the window bar for its search; Ctrl+H for its replacement.
 #[test]
 fn find_and_replace_open_the_window_search() {
     let (mut app, mut doc) = seeded_app();
@@ -32,8 +24,6 @@ fn find_and_replace_open_the_window_search() {
     assert_eq!(chord("h"), Some(SearchOpening::Replace));
 }
 
-/// A match is the cell that says it: the bar's counter is the workbook's, and
-/// stepping moves the grid to the match's sheet and cell.
 #[test]
 fn the_window_search_counts_and_steps_through_the_workbook() {
     let mut app = sample_app();
@@ -74,19 +64,15 @@ fn the_window_search_counts_and_steps_through_the_workbook() {
         "the budget's Total row is the match now current"
     );
 
-    // The next match is on the sales sheet: the grid follows it there.
     let stepped = app.harness().step_window_search(true);
     assert_eq!(stepped, Some((3, 3)));
     let (sheet, cell, _, _) = shown(&mut app);
     assert_eq!((sheet, cell), (1, (0, 5)), "the match switched sheets");
 
-    // Stepping wraps, as the bar's counter does.
     let wrapped = app.harness().step_window_search(true);
     assert_eq!(wrapped, Some((1, 3)), "past the last match is the first");
 }
 
-/// Every match in the workbook is replaced by one grouped edit, so one undo
-/// takes the whole replacement back, across both sheets.
 #[test]
 fn the_window_search_replaces_the_workbook_as_one_undo_step() {
     let mut app = sample_app();
@@ -109,7 +95,6 @@ fn the_window_search_replaces_the_workbook_as_one_undo_step() {
     assert_eq!(raw_at(&app, 1, (0, 5)), "Total", "and the sales sheet");
 }
 
-/// Closing the search stops painting its matches.
 #[test]
 fn closing_the_window_search_clears_the_matches() {
     let mut app = sample_app();

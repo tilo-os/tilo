@@ -124,7 +124,7 @@ impl AppBrokerState {
             request.confirmation.as_ref(),
             witnessed,
         ) {
-            return Err(ActionHostError::ConfirmationRequired);
+            return Err(ActionHostError::confirmation_required());
         }
         self.framework_policy(
             authority,
@@ -256,7 +256,7 @@ impl AppBrokerState {
                 if !(witnessed
                     || (actor.direct() && confirmation == Some(&Confirmation::Confirmed))) =>
             {
-                return Err(ActionHostError::ConfirmationRequired);
+                return Err(ActionHostError::confirmation_required());
             }
             _ => {}
         }
@@ -495,7 +495,7 @@ impl AppBrokerState {
                 &self.witness_binding(authority.1.id(), &authority.0.id().to_string(), request),
             );
         if owner_action && !witnessed && request.confirmation != Some(Confirmation::Confirmed) {
-            return Err(ActionHostError::ConfirmationRequired);
+            return Err(ActionHostError::confirmation_required());
         }
         // Convert only the exact consumed owner witness; ordinary governance
         // retains its legacy phrase/confirmation semantics at the service.
@@ -520,7 +520,7 @@ impl AppBrokerState {
                 witnessed,
             )
         {
-            return Err(ActionHostError::ConfirmationRequired);
+            return Err(ActionHostError::confirmation_required());
         }
         let admitted = self.admit_host_action(
             caller,

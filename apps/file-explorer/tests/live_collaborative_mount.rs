@@ -1,9 +1,5 @@
-//! Mandatory Files-to-kernel collaborative-mount contract.
-//!
-//! This is deliberately a separate test binary: it owns the workspace-root
-//! environment for its lifetime and requires the real `/dev/fuse` release
-//! runner. It exercises the production Files model and command path, not a
-//! fabricated xattr fixture.
+//! The Files-to-kernel collaborative-mount contract: what a mounted folder
+//! shows, and that it keeps up.
 
 #![cfg(unix)]
 
@@ -16,7 +12,6 @@ use fs_protocol::AvailabilityPolicy;
 use fs_protocol::Residency;
 use fs_protocol::Residency as FsResidency;
 use fuser::{Config, MountOption};
-use iroh::endpoint::{Endpoint, presets};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
@@ -39,7 +34,7 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
     let temp = tempfile::tempdir().unwrap();
     let mount = temp.path().join("mount");
     std::fs::create_dir(&mount).unwrap();
-    let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+    let endpoint = test_relay::direct_endpoint().await;
     let shutdown_endpoint = endpoint.clone();
     let store = Arc::new(ContentStore::memory());
     let shutdown_store = store.clone();
@@ -141,10 +136,6 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
         Some(b"pinned".as_slice())
     );
 
-    // Create a descendant after the user pins its folder. This crosses the
-    // real FUSE mutation path and proves that Files receives the inherited
-    // policy badge for future entries, rather than only for a pre-seeded
-    // availability record.
     let later = mount.join("Offline/later.txt");
     std::fs::write(&later, b"created after folder pin").unwrap();
     let child_deadline = tilo_test_env::hang_deadline();

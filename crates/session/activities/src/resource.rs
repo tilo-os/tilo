@@ -18,7 +18,7 @@ use crate::surface::ActivitiesSurface;
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Activities {}
 
-#[resource(kind = "activities.layer", label = "Activities")]
+#[resource(kind = "activities.layer")]
 impl Activities {}
 
 /// What anyone can do with the activity cards on screen. An activity is

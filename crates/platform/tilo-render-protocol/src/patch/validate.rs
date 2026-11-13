@@ -169,25 +169,31 @@ impl<'a> Validator<'a> {
         Ok(())
     }
 
+    /// A resource the window names: its id and its type.
+    fn target(&self, target: &ResourceRef) -> Result<(), Refused> {
+        self.key(&target.id)?;
+        self.key(&target.ty)
+    }
+
     fn message(&self, message: &ToUi) -> Result<(), Refused> {
         match message {
             ToUi::Loading
             | ToUi::Close
-            | ToUi::Front(_)
+            | ToUi::Front { shows: None, .. }
             | ToUi::Ask(None)
             | ToUi::Form(None)
             | ToUi::Activate
             | ToUi::Took { .. } => Ok(()),
             ToUi::Actions(catalogue) => {
-                let actions = match catalogue {
-                    super::ActionCatalogue::All(actions)
-                    | super::ActionCatalogue::Relabeled(actions) => actions,
-                };
-                if actions.len() > self.limits.string_bytes as usize {
+                if catalogue.bytes() > self.limits.string_bytes as usize {
                     return Err(Refused::invalid("over the limit of bytes in a catalogue"));
                 }
                 Ok(())
             }
+            ToUi::Front {
+                shows: Some((_, target)),
+                ..
+            } => self.target(target),
             ToUi::Open { target, tree, .. } => {
                 self.key(&target.id)?;
                 self.key(&target.ty)?;
@@ -238,6 +244,7 @@ impl<'a> Validator<'a> {
             }
             ToUi::Notice { words, .. } => self.words(words),
             ToUi::ShowRun { run } => self.key(run),
+            ToUi::Speak(language) => self.key(language),
             ToUi::Ask(Some(ask)) => {
                 self.string(&ask.action)?;
                 self.string(&ask.invoker)
@@ -478,9 +485,10 @@ impl<'a> Validator<'a> {
             self.key(target)?;
             self.key(field)?;
         }
-        if let Some((target, action)) = &event.invokes {
-            self.key(target)?;
-            self.key(action)?;
+        if let Some(invoked) = &event.invokes {
+            self.key(&invoked.resource)?;
+            self.key(&invoked.action)?;
+            self.key(&invoked.declared)?;
         }
         Ok(())
     }
@@ -546,6 +554,10 @@ impl<'a> Validator<'a> {
                 offered.icon.as_ref().map_or(Ok(()), |icon| self.key(icon))
             }
             Value::Picture(picture) => self.string(&picture.src),
+            Value::Link { reference, title } => {
+                self.string(reference)?;
+                self.string(title)
+            }
             Value::Rich(rich) => {
                 if rich.blocks.len() > self.limits.rows as usize
                     || rich.embeds.len() > self.limits.rows as usize
@@ -781,6 +793,7 @@ pub fn fits(value: &Value, ty: &Type) -> bool {
         | (Type::Resource, Value::Ref(_))
         | (Type::Icon | Type::Time, Value::Text(_))
         | (Type::Picture, Value::Picture(_))
+        | (Type::Link, Value::Link { .. })
         | (Type::RichText, Value::Rich(_))
         | (Type::Action, Value::Action(_))
         // The case's fields are read against the catalogue's set where the node is built.
@@ -795,7 +808,8 @@ pub fn fits(value: &Value, ty: &Type) -> bool {
             | Value::Rich(_)
             | Value::Map(_)
             | Value::Action(_)
-            | Value::Picture(_),
+            | Value::Picture(_)
+            | Value::Link { .. },
         ) => false,
         (Type::Text, _) => true,
         (Type::Choice { cases, .. }, Value::Text(case) | Value::Enum(case)) => cases.contains(case),

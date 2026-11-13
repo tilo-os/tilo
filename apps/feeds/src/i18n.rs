@@ -13,7 +13,6 @@ use crate::fetch::RefreshFailure;
 
 ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
 
-/// One named variable for [`t_args`], as `(name, value)`.
 pub fn arg(name: &str, value: impl Into<ArgValue>) -> (&str, ArgValue) {
     (name, value.into())
 }

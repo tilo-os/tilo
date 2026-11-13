@@ -1,54 +1,56 @@
-//! A member device that takes its workspaces' work runs their shell
-//! commands ([`tilo_actions::remote::environment_runs`]).
+//! A member device that takes its workspaces' work: their shell commands
+//! ([`tilo_actions::remote::environment_runs`]) and their Browser
+//! ([`tilo_actions::remote::browser`]), in their VMs on the hosted-VM service.
 //!
-//! [`EnvironmentRuns`] is what the member's device plane hands a request to:
-//! it admits a [`RUN`](environment_runs::RUN) from the workspace's host (a
-//! device of the operator this member's identity belongs to, the only one who
-//! knows which account pays), runs the command line in the session's shell
-//! over the member's own copy of the workspace's files ([`WorkspaceShells`]),
-//! shows what it prints as it prints it, and answers how it went. Anything
-//! else is not served here, so its caller learns at once.
+//! [`EnvironmentRuns`] admits a [`RUN`](environment_runs::RUN) from the workspace's
+//! host, runs the command line in the session's shell over the member's own copy of the
+//! workspace's files ([`WorkspaceShells`]), streams what it prints, and answers how it
+//! went. The host can stop a run it started, which ends the command as Ctrl+C does
+//! ([`CommandRan::cancelled`]).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
+use tilo_actions::remote::browser::{self, OpenBrowser};
 use tilo_actions::remote::environment_runs::{self, CommandRan, RunCommand, RunOutput};
+use tilo_actions::remote::linux_apps::{self, OpenApp};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationLedger,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, Reservation,
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 
+use crate::environment_browsers::{AppRefused, BrowserHost};
 use crate::workspace_shell::{Payer, ShellRun, WorkspaceShells};
 
-/// How many runs the ledger remembers, finished ones forgotten first.
+const PROFILE_STORE: &str = ".tilo/browser";
+
 const REMEMBERED: usize = 1024;
 
-/// How long a waiting follower is held when nothing changes.
 const CHANGE_WAIT: Duration = Duration::from_secs(1);
 
-/// A member's runs of its workspaces' commands, as its device plane serves
-/// them.
 pub struct EnvironmentRuns(Arc<Inner>);
 
 struct Inner {
     shells: WorkspaceShells,
-    /// The operator this member belongs to: whose devices may ask.
+    browsers: Option<BrowserHost>,
     operator: [u8; 32],
     ledger: Mutex<InvocationLedger<Run>>,
-    /// Woken whenever a run moves.
     moved: Condvar,
     /// How many times a run moved, so a waiter tells a change from a wake.
     moves: Mutex<u64>,
 }
 
-/// One admitted run: what it is at now.
 #[derive(Clone)]
-struct Run(Arc<Mutex<InvocationState>>);
+struct Run {
+    state: Arc<Mutex<InvocationState>>,
+    stop: Arc<AtomicBool>,
+}
 
 impl Run {
     fn state(&self) -> InvocationState {
-        self.0
+        self.state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
@@ -56,11 +58,15 @@ impl Run {
 }
 
 impl EnvironmentRuns {
-    /// Runs in `shells`, asked by devices of `operator`.
     #[must_use]
     pub fn new(shells: WorkspaceShells, operator: [u8; 32]) -> Self {
+        let size = shells.hosted_size();
+        let browsers = shells
+            .hosted_socket()
+            .map(|socket| BrowserHost::new(socket, size));
         Self(Arc::new(Inner {
             shells,
+            browsers,
             operator,
             ledger: Mutex::new(InvocationLedger::with_capacity(REMEMBERED)),
             moved: Condvar::new(),
@@ -71,7 +77,7 @@ impl EnvironmentRuns {
 
 fn not_served() -> ActionHostError {
     ActionHostError::Unavailable {
-        reason: "this member runs only its workspaces' shell commands".into(),
+        reason: "this member runs its workspaces' shell commands and Browser".into(),
     }
 }
 
@@ -112,9 +118,108 @@ impl Inner {
 
     fn set(&self, run: &Run, update: InvocationUpdate) {
         let invocation = run.state().invocation();
-        *run.0.lock().unwrap_or_else(PoisonError::into_inner) =
+        *run.state.lock().unwrap_or_else(PoisonError::into_inner) =
             InvocationState::new(invocation, update);
         self.moved();
+    }
+
+    fn start_browser(
+        self: &Arc<Self>,
+        run: Run,
+        workspace: String,
+        asked: Option<OpenBrowser>,
+        browsers: Option<BrowserHost>,
+    ) {
+        let inner = Arc::clone(self);
+        let invocation = run.state().invocation();
+        std::thread::spawn(move || {
+            let outcome = match (asked, browsers) {
+                (Some(mut asked), Some(browsers)) => {
+                    asked.workspace.clone_from(&workspace);
+                    let store = inner.shells.files(&workspace).join(PROFILE_STORE);
+                    browsers.open(&asked, store).map(Some)
+                }
+                (None, Some(browsers)) => browsers.stop(&workspace).map(|()| None),
+                _ => Err("this member runs no workspace VMs".to_owned()),
+            };
+            let update = match outcome {
+                Ok(opened) => InvocationUpdate::Succeeded {
+                    invocation,
+                    output: ActionOutput {
+                        value: opened.and_then(|opened| serde_json::to_value(opened).ok()),
+                        resources: Vec::new(),
+                    },
+                },
+                Err(message) => InvocationUpdate::Failed {
+                    invocation,
+                    error: ActionFailure {
+                        code: "unavailable".into(),
+                        message,
+                        details: None,
+                        retryable: true,
+                    },
+                },
+            };
+            inner.set(&run, update);
+        });
+    }
+
+    /// Answer `run` by starting (or ending) `workspace`'s Linux apps in its
+    /// VM on this host's hosted-VM service. A refusal by the account's plan
+    /// is answered as one, carrying the plans' typed refusal, so whoever
+    /// opened the app reads what would let it through.
+    fn start_app(
+        self: &Arc<Self>,
+        run: Run,
+        workspace: String,
+        asked: Option<OpenApp>,
+        browsers: Option<BrowserHost>,
+    ) {
+        let inner = Arc::clone(self);
+        let invocation = run.state().invocation();
+        std::thread::spawn(move || {
+            let outcome = match (asked, browsers) {
+                (Some(mut asked), Some(browsers)) => {
+                    asked.workspace.clone_from(&workspace);
+                    browsers.open_app(&asked).map(Some)
+                }
+                (None, Some(browsers)) => browsers
+                    .stop_apps(&workspace)
+                    .map(|()| None)
+                    .map_err(AppRefused::Error),
+                _ => Err(AppRefused::Error(
+                    "this member runs no workspace VMs".to_owned(),
+                )),
+            };
+            let update = match outcome {
+                Ok(opened) => InvocationUpdate::Succeeded {
+                    invocation,
+                    output: ActionOutput {
+                        value: opened.and_then(|opened| serde_json::to_value(opened).ok()),
+                        resources: Vec::new(),
+                    },
+                },
+                Err(AppRefused::Refused(refusal)) => InvocationUpdate::Failed {
+                    invocation,
+                    error: ActionFailure {
+                        code: linux_apps::REFUSED.into(),
+                        message: refusal.message.clone(),
+                        details: serde_json::to_value(&refusal).ok(),
+                        retryable: false,
+                    },
+                },
+                Err(AppRefused::Error(message)) => InvocationUpdate::Failed {
+                    invocation,
+                    error: ActionFailure {
+                        code: "unavailable".into(),
+                        message,
+                        details: None,
+                        retryable: true,
+                    },
+                },
+            };
+            inner.set(&run, update);
+        });
     }
 
     fn start(self: &Arc<Self>, run: Run, workspace: String, asked: RunCommand) {
@@ -122,8 +227,8 @@ impl Inner {
         let invocation = run.state().invocation();
         std::thread::spawn(move || {
             let sequence = std::sync::atomic::AtomicU64::new(0);
-            let seen = |printed: &[u8]| {
-                let value = serde_json::to_value(RunOutput::of(printed)).unwrap_or_default();
+            let seen = |printed: &RunOutput| {
+                let value = serde_json::to_value(printed).unwrap_or_default();
                 let sequence = sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 inner.set(
                     &run,
@@ -134,6 +239,8 @@ impl Inner {
                     },
                 );
             };
+            let stop = Arc::clone(&run.stop);
+            let stopping = || stop.load(Ordering::SeqCst);
             let payer = Payer {
                 account: asked.account.clone(),
                 size: legacy_vm::hosted::size::VmSize::parse(&asked.size).unwrap_or_default(),
@@ -144,6 +251,7 @@ impl Inner {
                 &asked.command,
                 asked.agent,
                 Some(&payer),
+                Some(&stopping),
                 Some(&seen),
             );
             let update = match ran {
@@ -176,6 +284,7 @@ fn ran_of(ran: ShellRun) -> CommandRan {
         exit: ran.exit,
         output: String::from_utf8_lossy(&ran.output).into_owned(),
         truncated: ran.truncated,
+        cancelled: ran.cancelled,
         started_ms: ran.started_ms,
         ended_ms: ran.ended_ms,
         refusal: ran.refusal,
@@ -216,14 +325,25 @@ impl ActionHost for EnvironmentRuns {
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
-        let known = self.observe(caller, id).is_some();
-        Pending::ready(Err(if known {
-            ActionHostError::NotCancellable {
-                reason: "a command runs until it ends".into(),
-            }
-        } else {
-            ActionHostError::UnknownInvocation
-        }))
+        let run = self
+            .0
+            .ledger
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(caller, id)
+            .cloned();
+        let Some(run) = run else {
+            return Pending::ready(Err(ActionHostError::UnknownInvocation));
+        };
+        if run.state().update.is_terminal() {
+            return Pending::ready(Err(ActionHostError::NotCancellable {
+                reason: "the run has ended".into(),
+            }));
+        }
+        // The command ends in the session's shell, as it does on a person's
+        // Ctrl+C; the run answers with what it printed until then.
+        run.stop.store(true, Ordering::SeqCst);
+        Pending::ready(Ok(()))
     }
 }
 
@@ -235,9 +355,23 @@ impl EnvironmentRuns {
     ) -> Result<InvocationReceipt, ActionHostError> {
         let target = &request.target;
         if target.provider != environment_runs::PROVIDER
-            || target.address.action != environment_runs::RUN
+            || target.address.resource != environment_runs::RESOURCE
         {
             return Err(not_served());
+        }
+        let action = target.address.action.as_str();
+        let in_vm = [
+            browser::OPEN,
+            browser::STOP,
+            linux_apps::OPEN,
+            linux_apps::STOP,
+        ]
+        .contains(&action);
+        let browsers = self.0.browsers.as_ref().filter(|_| in_vm);
+        if in_vm && browsers.is_none() {
+            return Err(ActionHostError::Unavailable {
+                reason: "this member runs no workspace VMs, so no Browser".into(),
+            });
         }
         // Only the workspace's host asks: a device of this member's own
         // operator. Anyone else could name an account that is not theirs.
@@ -248,7 +382,14 @@ impl EnvironmentRuns {
             .workspace()
             .ok_or(ActionHostError::NotPermitted)?
             .to_owned();
-        let asked = argument(request)?;
+        let asked = match action {
+            environment_runs::RUN => Asked::Run(argument(request)?),
+            browser::OPEN => Asked::Browser(Some(open_argument(request, "Browser")?)),
+            browser::STOP => Asked::Browser(None),
+            linux_apps::OPEN => Asked::App(Some(open_argument(request, "a Linux app")?)),
+            linux_apps::STOP => Asked::App(None),
+            _ => return Err(not_served()),
+        };
         let invocation = request.invocation;
         let mut ledger = self.0.ledger.lock().unwrap_or_else(PoisonError::into_inner);
         match ledger.reserve(caller, request)? {
@@ -257,18 +398,53 @@ impl EnvironmentRuns {
                 .map(|run| run.state().receipt())
                 .ok_or(ActionHostError::UnknownInvocation),
             Reservation::Reserved => {
-                let run = Run(Arc::new(Mutex::new(InvocationState::new(
-                    invocation,
-                    InvocationUpdate::Accepted { invocation },
-                ))));
+                let run = Run {
+                    state: Arc::new(Mutex::new(InvocationState::new(
+                        invocation,
+                        InvocationUpdate::Accepted { invocation },
+                    ))),
+                    stop: Arc::new(AtomicBool::new(false)),
+                };
                 ledger.complete(&invocation, run.clone());
                 drop(ledger);
                 let receipt = run.state().receipt();
-                self.0.start(run, workspace, asked);
+                match asked {
+                    Asked::Run(asked) => self.0.start(run, workspace, asked),
+                    Asked::Browser(asked) => {
+                        let browsers = browsers.cloned();
+                        self.0.start_browser(run, workspace, asked, browsers);
+                    }
+                    Asked::App(asked) => {
+                        let browsers = browsers.cloned();
+                        self.0.start_app(run, workspace, asked, browsers);
+                    }
+                }
                 Ok(receipt)
             }
         }
     }
+}
+
+enum Asked {
+    Run(RunCommand),
+    Browser(Option<OpenBrowser>),
+    App(Option<OpenApp>),
+}
+
+fn open_argument<T: serde::de::DeserializeOwned>(
+    request: &InvokeRequest,
+    what: &str,
+) -> Result<T, ActionHostError> {
+    let InvokeArgument::Json(map) = &request.argument else {
+        return Err(ActionHostError::InvalidRequest {
+            reason: format!("opening {what} takes its workspace as JSON"),
+        });
+    };
+    serde_json::from_value(serde_json::Value::Object(map.clone())).map_err(|error| {
+        ActionHostError::InvalidRequest {
+            reason: format!("not {what} to open: {error}"),
+        }
+    })
 }
 
 #[cfg(test)]

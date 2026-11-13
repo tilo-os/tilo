@@ -62,14 +62,13 @@ pub fn change_author(message: Option<&str>) -> Option<String> {
     })
 }
 
-/// The name of the workspace in front on a desktop a host value carries,
-/// when it has one.
+/// The name of the workspace in front on a desktop a host value carries, as a person reads it: the
+/// name it was given, or the word for a workspace nobody has named.
 pub fn workspace_name(value: &serde_json::Value) -> Option<String> {
     desktop_of(value)?
         .tree
         .active_workspace()
-        .map(|workspace| workspace.name.trim().to_owned())
-        .filter(|name| !name.is_empty())
+        .map(|workspace| crate::names::workspace(&workspace.name))
 }
 
 /// The author the newest change of `log` names.
@@ -144,7 +143,7 @@ pub fn desk_document(
     // they would be a change of the desk of their own, at no time at all.
     let mut wrote_names = false;
     for change in log.get_changes(&[]) {
-        let Some(desktop) = shared_record::read(log, Some(&[change.hash()])) else {
+        let Some(desktop) = shared_record::read_as_kept(log, Some(&[change.hash()])) else {
             continue;
         };
         doc.set_actor(actor_of(&change));

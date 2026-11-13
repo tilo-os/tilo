@@ -181,6 +181,15 @@ impl PresenceHue {
             .as_str()
             .and_then(Self::from_id)
     }
+
+    /// The hue a person wears, as the settings document they keep says: the one
+    /// they chose ([`Self::chosen_in`]), else the one their identity derives
+    /// ([`Self::of_identity`]). The one lookup every surface asks, so one person
+    /// is one colour, here, on the bar and in every app they edit in.
+    #[must_use]
+    pub fn worn_in(settings: &serde_json::Value, identity: &str) -> Self {
+        Self::chosen_in(settings).unwrap_or_else(|| Self::of_identity(identity))
+    }
 }
 
 /// Stable identity colour for a collaborator who has not chosen one: the
@@ -195,6 +204,17 @@ impl PresenceHue {
 /// active theme's presence lightness and chroma.
 pub fn user_color(user_id: &str) -> (u8, u8, u8) {
     identity_rgb(PresenceHue::of_identity(user_id))
+}
+
+/// What every task agent's id starts with: a task agent is minted for a run of one, never a
+/// collaborator the workspace's governance admits.
+pub const TASK_AGENT_PREFIX: &str = "task-";
+
+/// Whether `agent` names a task agent, minted for a run, rather than a collaborator: its id
+/// tells one run of it from the next, so the agent it works as is the one its admission names.
+#[must_use]
+pub fn is_task_agent(agent: &str) -> bool {
+    agent.starts_with(TASK_AGENT_PREFIX)
 }
 
 /// The MCP client an agent is, by the name it goes by: a run is named for its client and a number
@@ -212,6 +232,19 @@ pub fn agent_client(name: &str) -> &str {
         .trim()
 }
 
+/// The agent `participant`'s identity, with the run instance its admission gave it taken off:
+/// `agent:helper@host#2` is `helper@host`. One agent the person admits again wears the colour of
+/// what it is, not of the run that carried it; its name still numbers the runs apart.
+#[must_use]
+pub fn agent_identity(participant: &str) -> &str {
+    let bare = participant.strip_prefix("agent:").unwrap_or(participant);
+    bare.rsplit_once('#')
+        .filter(|(stem, instance)| {
+            !stem.is_empty() && !instance.is_empty() && instance.bytes().all(|b| b.is_ascii_digit())
+        })
+        .map_or(bare, |(stem, _)| stem)
+}
+
 impl PresenceHue {
     /// The hue every face of the agent `name` names wears ([`agent_client`]), so one client reads
     /// as itself at a glance wherever it shows: warm for Claude Code, cool for Codex. `None` for a
@@ -227,6 +260,56 @@ impl PresenceHue {
             None
         }
     }
+
+    /// The hue the agent `name` names wears wherever it shows (presence, History): its client's
+    /// ([`Self::of_agent_client`]), else the one its name gives it, the same for each of its runs
+    /// ([`agent_identity`]).
+    #[must_use]
+    pub fn of_agent(name: &str) -> Self {
+        let name = agent_identity(name);
+        Self::of_agent_client(name).unwrap_or_else(|| Self::of_identity(agent_client(name)))
+    }
+
+    /// The hue a participant wears, from who they are: a person the one their identity derives
+    /// ([`Self::of_identity`]), software the one what it is wears ([`Self::of_agent`], the same
+    /// for every run of it) — and, for software, never the hue of the person it acts for
+    /// (`for_person`, its principal): it steps clear of them ([`Self::apart_from`]). A person
+    /// yields a hue to nobody. The one rule every surface and record asks.
+    #[must_use]
+    pub fn of_participant(id: &str, is_agent: bool, for_person: Option<&str>) -> Self {
+        if !is_agent {
+            return Self::of_identity(id);
+        }
+        let own = Self::of_agent(id);
+        for_person.map_or(own, |person| own.apart_from(Self::of_identity(person)))
+    }
+
+    /// This hue worn clearly apart from `other`: itself, unless it sits on `other`'s hue or
+    /// next to it, where it steps round the ring to the first entry two slots or more away, so
+    /// software is never painted in the colour of the person it acts for. `other` stays where
+    /// it is: a person's colour is theirs.
+    #[must_use]
+    pub fn apart_from(self, other: Self) -> Self {
+        let distance = |hue: Self| {
+            let ahead = hue
+                .slot()
+                .wrapping_add(PRESENCE_LEN)
+                .wrapping_sub(other.slot())
+                .checked_rem(PRESENCE_LEN)
+                .unwrap_or(0);
+            ahead.min(PRESENCE_LEN.wrapping_sub(ahead))
+        };
+        (0..PRESENCE_LEN)
+            .map(|step| Self::from_slot(self.slot().wrapping_add(step)))
+            .find(|hue| distance(*hue) >= 2)
+            .unwrap_or(self)
+    }
+}
+
+/// [`PresenceHue::of_agent`] as the colour it travels as.
+#[must_use]
+pub fn agent_rgb(name: &str) -> (u8, u8, u8) {
+    identity_rgb(PresenceHue::of_agent(name))
 }
 
 /// A presence hue as the identity colour it travels as.
@@ -266,9 +349,21 @@ pub fn assign_peer_colors(
     ids: &[&str],
     reserved: &[(u8, u8, u8)],
 ) -> HashMap<String, (u8, u8, u8)> {
-    let mut sorted: Vec<&str> = ids.to_vec();
-    sorted.compact_sort();
-    sorted.dedup();
+    let naturals: Vec<(&str, (u8, u8, u8))> = ids.iter().map(|id| (*id, user_color(id))).collect();
+    assign_peer_colors_from(&naturals, reserved)
+}
+
+/// [`assign_peer_colors`] where each id's own colour is `naturals`: the entry it
+/// starts from, instead of the one its id hashes to. Software wears the colour
+/// what it is wears ([`PresenceHue::of_agent`]), never the one its run's id would
+/// hash to, and it steps aside from a colour already spoken for like anyone else.
+pub fn assign_peer_colors_from(
+    naturals: &[(&str, (u8, u8, u8))],
+    reserved: &[(u8, u8, u8)],
+) -> HashMap<String, (u8, u8, u8)> {
+    let mut sorted: Vec<(&str, (u8, u8, u8))> = naturals.to_vec();
+    sorted.compact_sort_by_key(|(id, _)| *id);
+    sorted.dedup_by(|a, b| a.0 == b.0);
 
     let mut taken = [false; PEER_PALETTE.len()];
     for c in reserved {
@@ -280,8 +375,7 @@ pub fn assign_peer_colors(
     }
 
     let mut out = HashMap::with_capacity(sorted.len());
-    for id in sorted {
-        let natural = user_color(id);
+    for (id, natural) in sorted {
         let start = PEER_PALETTE
             .iter()
             .position(|p| *p == natural)
@@ -316,7 +410,7 @@ pub fn assign_peer_colors(
 
 #[cfg(test)]
 mod agent_client_tests {
-    use super::{PresenceHue, agent_client};
+    use super::{PRESENCE_LEN, PresenceHue, agent_client, agent_identity};
 
     #[test]
     fn a_run_is_its_clients_and_a_client_has_its_hue() {
@@ -333,5 +427,98 @@ mod agent_client_tests {
             Some(PresenceHue::Sky)
         );
         assert_eq!(PresenceHue::of_agent_client("Cursor"), None);
+        assert_eq!(
+            PresenceHue::of_agent("Jane Doe's agent #2"),
+            PresenceHue::of_agent("Jane Doe's agent"),
+            "every run of an agent wears one colour"
+        );
+    }
+
+    /// The id an agent's admission gives it ends in the instance number it was
+    /// admitted as, and that number is not part of what the agent is: the same
+    /// agent admitted again wears the same colour.
+    #[test]
+    fn an_admitted_agent_wears_one_colour_however_often_it_comes() {
+        assert_eq!(agent_identity("agent:helper@host#1"), "helper@host");
+        assert_eq!(agent_identity("agent:helper@host#2"), "helper@host");
+        assert_eq!(agent_identity("helper@host"), "helper@host");
+        assert_eq!(
+            agent_identity("agent:claude-code@env#12"),
+            "claude-code@env"
+        );
+        assert_eq!(agent_identity("agent:helper@host"), "helper@host");
+        assert_eq!(
+            agent_identity("#3"),
+            "#3",
+            "no stem before the number: nothing to take off"
+        );
+        assert_eq!(
+            PresenceHue::of_agent(agent_identity("agent:helper@host#1")),
+            PresenceHue::of_agent(agent_identity("agent:helper@host#4")),
+            "one agent, one colour"
+        );
+        assert_eq!(
+            PresenceHue::of_agent(agent_identity("agent:claude-code@host#9")),
+            PresenceHue::Orange,
+            "a known client keeps the colour it is known by"
+        );
+    }
+
+    /// Software is never painted in the colour of the person it acts for, and never beside it:
+    /// every pair of hues there is lands at least two entries apart, and an agent already clear
+    /// of its person keeps the hue it is known by.
+    #[test]
+    fn an_agent_wears_a_hue_clear_of_its_persons() {
+        let apart = |a: PresenceHue, b: PresenceHue| {
+            let ahead = a
+                .slot()
+                .wrapping_add(PRESENCE_LEN)
+                .wrapping_sub(b.slot())
+                .checked_rem(PRESENCE_LEN)
+                .unwrap_or(0);
+            ahead.min(PRESENCE_LEN.wrapping_sub(ahead))
+        };
+        for person in PresenceHue::ALL {
+            for agent in PresenceHue::ALL {
+                let worn = agent.apart_from(person);
+                assert_ne!(worn, person, "{agent:?} on {person:?}");
+                assert!(apart(worn, person) >= 2, "{worn:?} beside {person:?}");
+            }
+        }
+        // A hue already clear of the person's is the one the agent wears.
+        assert_eq!(
+            PresenceHue::Blue.apart_from(PresenceHue::Red),
+            PresenceHue::Blue
+        );
+        // One that is not steps to the next entry that is.
+        assert_eq!(
+            PresenceHue::Blue.apart_from(PresenceHue::Sky),
+            PresenceHue::Violet,
+            "the entry after its neighbour"
+        );
+        assert_eq!(
+            PresenceHue::Blue.apart_from(PresenceHue::Blue),
+            PresenceHue::Magenta,
+            "and the one after its own neighbour"
+        );
+    }
+
+    /// The colour a person wears is the one they chose, and the one their
+    /// identity derives only while they have chosen none.
+    #[test]
+    fn a_person_wears_what_they_chose_and_derives_it_until_they_do() {
+        let chosen = serde_json::json!({"identity": {"colour": "violet"}});
+        assert_eq!(PresenceHue::worn_in(&chosen, "ada"), PresenceHue::Violet);
+        for unset in [
+            serde_json::json!({"identity": {"colour": null}}),
+            serde_json::json!({"identity": {}}),
+            serde_json::json!({}),
+        ] {
+            assert_eq!(
+                PresenceHue::worn_in(&unset, "ada"),
+                PresenceHue::of_identity("ada"),
+                "no choice stored: {unset}"
+            );
+        }
     }
 }

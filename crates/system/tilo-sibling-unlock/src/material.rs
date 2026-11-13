@@ -1,14 +1,8 @@
 //! The secret this machine keeps for a sibling unlock, and the key it derives.
 //!
-//! The volume key slot opens with a passphrase derived from two halves:
-//!
 //! * the **device half**, kept here, in [`Material`];
 //! * the **sibling half**, held only by the person's other devices, which
 //!   release it for one boot after the owner approves.
-//!
-//! Neither half alone derives anything
-//! ([`tilo_unlock_protocol::derive_slot_key`]); the boot key's certificate
-//! binds the enrolment to this device and one slot.
 
 use anyhow::{Context, Result, bail};
 use ed25519_dalek::SigningKey;
@@ -20,9 +14,7 @@ use zeroize::{Zeroize, Zeroizing};
 /// unlocking. The profile is a `NetworkManager` keyfile, secrets included.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Network {
-    /// The connection's name, which is also its keyfile's name.
     pub id: String,
-    /// The `.nmconnection` keyfile.
     pub keyfile: String,
 }
 
@@ -40,7 +32,6 @@ impl Drop for Network {
     }
 }
 
-/// What the token's sealed blob holds.
 #[derive(Serialize, Deserialize)]
 pub struct Material {
     pub device_half: String,
@@ -104,7 +95,6 @@ impl Material {
         Ok(Zeroizing::new(serde_json::to_vec(self)?))
     }
 
-    /// Parses unsealed material.
     pub fn from_json(bytes: &[u8]) -> Result<Self> {
         let material: Self =
             serde_json::from_slice(bytes).context("the unlock material is malformed")?;
@@ -119,7 +109,6 @@ impl Material {
     }
 }
 
-/// A connection name that is safe as a file name in early boot.
 pub fn valid_network_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64

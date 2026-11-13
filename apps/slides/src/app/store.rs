@@ -24,18 +24,11 @@ use crate::effects::SlidesEffect;
 use crate::model::{Deck, ElementKind};
 use crate::strings::tr;
 
-/// What an effect asked of the editor, done when it next syncs.
 pub(crate) enum Ask {
-    /// Show what a view effect names: a mode, a panel, a slide, an element
-    /// or its notes. The effect was checked against the document.
     Show(SlidesEffect),
-    /// Place the picture stored as this `src` on the current slide.
     InsertPicture(String),
-    /// Show a deck just opened from a file from its first slide.
     ShowOpenedDeck,
-    /// Say something in the window's bar.
     Say(String, ToastKind),
-    /// Stage a capture's scenario (`None` for a plain capture).
     Stage(Option<String>),
 }
 
@@ -43,21 +36,18 @@ pub(crate) enum Ask {
 pub(crate) struct Selected {
     pub(crate) slide: Id,
     pub(crate) element: Id,
+    /// What the element is called in the edits bound to it.
     pub(crate) label: String,
 }
 
-/// What the editor and the view's effect handler share.
 pub(crate) struct Store {
     /// Where pictures' and presentations' bytes live, addressed by their
     /// hash; the editor's image decoder reads the same store.
     pub(super) content: ContentStore,
-    /// The element selected in the editor, while it edits one.
     pub(super) selected: Option<Selected>,
-    /// What effects asked of the editor since it last synced.
     pub(super) asks: Vec<Ask>,
 }
 
-/// The [`Store`] as the editor and the view share it.
 pub(crate) type Shared = Rc<RefCell<Store>>;
 
 impl Store {
@@ -73,14 +63,11 @@ impl Store {
         self.asks.push(ask);
     }
 
-    /// Show `message` as a failure in the window's bar, and answer it.
     fn fail<T>(&mut self, message: String) -> Result<T, String> {
         self.ask(Ask::Say(message.clone(), ToastKind::Error));
         Err(message)
     }
 
-    /// Answer one of the editor's effects, from a control, a key, the
-    /// palette or an agent.
     fn answer(
         &mut self,
         effect: SlidesEffect,
@@ -164,8 +151,6 @@ impl Store {
         }
     }
 
-    /// Show the outcome of opening a presentation, replacing the deck when
-    /// it was read.
     fn finish_open(
         &mut self,
         loaded: Result<Deck, String>,
@@ -187,9 +172,6 @@ impl Store {
         }
     }
 
-    /// Save the deck as a presentation file: at `path` (PPTX by its
-    /// extension, else ODP), or as ODP where the person chooses with the
-    /// host's chooser. It is written off the UI thread.
     fn save_presentation(
         &mut self,
         path: Option<ui::tilo_resource::AbsolutePath>,
@@ -228,8 +210,6 @@ impl Store {
         })
     }
 
-    /// Show a failed save. A save through the chooser has nothing more to
-    /// say: the person just picked the file.
     fn finish_save(&mut self, saved: Result<bool, String>) -> EffectAnswer {
         match saved {
             Ok(_) => Ok(Effected::done()),
@@ -267,7 +247,6 @@ fn slide_index(deck: &Deck, slide: &str) -> Result<usize, String> {
         .ok_or_else(|| "slide no longer exists".to_string())
 }
 
-/// What kind of element `element` of slide `slide` is.
 fn element_kind(deck: &Deck, slide: &str, element: &str) -> Result<ElementKind, String> {
     let index = slide_index(deck, slide)?;
     deck.slides
@@ -299,7 +278,10 @@ pub(crate) fn selection_declarations(selected: Option<&Selected>) -> Vec<ActionD
             crate::deck::deck::DeleteElement::paths().element,
             element.clone(),
         )
-        .declaration("delete-selection", format!("Delete {label}"))
+        .declaration(
+            "delete-selection",
+            ui::tilo_resource::word!("slides-deck-delete-selection", name = label.as_str()),
+        )
     {
         declarations.push(delete.describe("Delete the element selected in the editor."));
     }
@@ -312,23 +294,26 @@ pub(crate) fn selection_declarations(selected: Option<&Selected>) -> Vec<ActionD
             crate::deck::deck::BringToFront::paths().element,
             element.clone(),
         )
-        .declaration("bring-selection-front", format!("Bring to front: {label}"));
+        .declaration(
+            "bring-selection-front",
+            ui::tilo_resource::word!("slides-deck-bring-selection-front", name = label.as_str()),
+        );
     let back = DeckRecord::SEND_TO_BACK
         .bind(crate::deck::deck::SendToBack::paths().slide, slide.clone())
         .and(
             crate::deck::deck::SendToBack::paths().element,
             element.clone(),
         )
-        .declaration("send-selection-back", format!("Send to back: {label}"));
+        .declaration(
+            "send-selection-back",
+            ui::tilo_resource::word!("slides-deck-send-selection-back", name = label.as_str()),
+        );
     for restack in [front, back].into_iter().flatten() {
         declarations.push(restack.describe("Restack the element selected in the editor."));
     }
     declarations
 }
 
-/// The view of the deck: `editor` follows the document, its [`Store`]
-/// answers the effects, and the view binds the edits of the selected
-/// element beside it.
 pub(crate) fn window(cx: &ViewCx<DeckRecord>, mut editor: SlidesApp) -> ui::widget::Element {
     editor.live = Some(cx.live().clone());
     cx.on_open_item(editor.opener());

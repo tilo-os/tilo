@@ -32,7 +32,19 @@ fn frozen_json_snapshot() {
         },
     }) };
     }
-    let snapshot = snapshot!(before);
-    assert_eq!(snapshot!(after), snapshot);
-    println!("IMAGER_MODEL_BEFORE={snapshot}");
+    let frozen = snapshot!(before);
+    let mut current = snapshot!(after);
+    // The label's target is a stored word ("x86-64") rather than the prose the
+    // frozen model wrote: a surface paints "Generic x86-64" from its
+    // catalogue. A source is kept twice in the snapshot and its label is the
+    // only field that differs; everything else still matches the frozen model.
+    for place in ["serde", "model"] {
+        assert_eq!(
+            current[place]["source"]["label"],
+            json!("Tilo 1.0 (stable), x86-64")
+        );
+        current[place]["source"]["label"] = frozen[place]["source"]["label"].clone();
+    }
+    assert_eq!(current, frozen);
+    println!("IMAGER_MODEL_BEFORE={frozen}");
 }

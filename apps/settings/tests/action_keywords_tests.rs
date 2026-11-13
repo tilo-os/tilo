@@ -2,10 +2,6 @@
 
 use ui::tilo_resource::{Effect as _, EffectDecl, Resource as _, declaration_spec};
 
-/// Each word people use for one of the app's common actions ranks that
-/// action among the app's first three, on the fields every search ranks an
-/// app's action by: the words come from the action's declaration, so an
-/// action that loses them drops out here.
 #[test]
 fn people_find_settings_actions_by_the_words_they_use() {
     let mut actions: Vec<ui::tilo_actions::ActionSpec> = Vec::new();
@@ -19,7 +15,6 @@ fn people_find_settings_actions_by_the_words_they_use() {
             .iter()
             .map(EffectDecl::spec_of::<settings::panes::display::DisplayEffect>),
     );
-    // The screen reader is turned on by the `accessibility` section's verb.
     actions.extend(
         <settings::accessibility_settings::AccessibilitySettings>::declarations()
             .iter()
@@ -35,7 +30,6 @@ fn people_find_settings_actions_by_the_words_they_use() {
             .iter()
             .map(EffectDecl::spec_of::<settings::panes::keyboard_shortcuts::ShortcutEffect>),
     );
-    // Shortcuts are rebound by the `shortcuts` section's own verbs.
     actions.extend(
         <settings::shortcut_settings::ShortcutPrefs as ui::tilo_resource::Resource>::declarations()
             .iter()
@@ -61,8 +55,6 @@ fn people_find_settings_actions_by_the_words_they_use() {
             .iter()
             .map(EffectDecl::spec_of::<settings::panes::mouse_keyboard::InputEffect>),
     );
-    // The data used is started again and forgotten by the `network_usage`
-    // section's verbs.
     actions.extend(
         <settings::prefs::NetworkUsage>::declarations()
             .iter()

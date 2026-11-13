@@ -7,12 +7,11 @@ use std::path::{Path, PathBuf};
 pub struct LocalFile {
     pub path: PathBuf,
     pub track: crate::model::Track,
-    /// Decoder metadata retained when the finished pipeline is torn down.
+    /// Decoder metadata kept when the finished pipeline is torn down.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_duration_ms: Option<u64>,
-    /// Where a file chosen by its contents plays from on a host whose files
-    /// have no paths (a browser page): a page-local URL over the bytes. It
-    /// lasts as long as the page, so it is never saved.
+    /// Where a file chosen by its contents plays from where files have no paths; it lasts as
+    /// long as the page, so it is never saved.
     #[serde(skip)]
     pub page_url: Option<String>,
 }
@@ -67,8 +66,7 @@ impl LocalFile {
         })
     }
 
-    /// A file the host handed over as contents, playing from `url`, a
-    /// page-local URL over its bytes. `name` is what the person chose.
+    /// A file handed over as contents, playing from a page-local `url`.
     pub(crate) fn from_page_url(name: &str, url: String) -> Result<Self, String> {
         let path = PathBuf::from(name);
         check_supported(&path)?;
@@ -90,7 +88,6 @@ impl LocalFile {
     }
 }
 
-/// Whether Music plays files of `path`'s type.
 pub(crate) fn check_supported(path: &Path) -> Result<(), String> {
     let extension = path
         .extension()

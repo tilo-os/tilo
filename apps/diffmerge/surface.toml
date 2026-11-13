@@ -1,75 +1,105 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "diffmerge.session"
 label = "Diff & Merge"
 version = 1
 fields = [
-  { path = "comparison", type = "Option<Comparison>", readonly = true, stored = "record" },
-  { path = "comparison.left_label", type = "Atom" },
-  { path = "comparison.left", type = "Atom" },
-  { path = "comparison.right_label", type = "Atom" },
-  { path = "comparison.right", type = "Atom" },
-  { path = "merge", type = "Option<MergeInputs>", readonly = true, stored = "record" },
-  { path = "merge.base_label", type = "Atom" },
-  { path = "merge.base", type = "Atom" },
-  { path = "merge.ours_label", type = "Atom" },
-  { path = "merge.ours", type = "Atom" },
-  { path = "merge.theirs_label", type = "Atom" },
-  { path = "merge.theirs", type = "Atom" },
-  { path = "merged", type = "String" },
-  { path = "resolutions", type = "BTreeMap<String, HunkChoice>", readonly = true },
-  { path = "written", type = "BTreeMap<String, String>", readonly = true },
+  { path = "comparison", type = { option = { named = "Comparison" } }, readonly = true, stored = "record" },
+  { path = "comparison.left_label", type = "text" },
+  { path = "comparison.left", type = "text" },
+  { path = "comparison.right_label", type = "text" },
+  { path = "comparison.right", type = "text" },
+  { path = "merge", type = { option = { named = "MergeInputs" } }, readonly = true, stored = "record" },
+  { path = "merge.base_label", type = "text" },
+  { path = "merge.base", type = "text" },
+  { path = "merge.ours_label", type = "text" },
+  { path = "merge.ours", type = "text" },
+  { path = "merge.theirs_label", type = "text" },
+  { path = "merge.theirs", type = "text" },
+  { path = "merged", type = "text" },
+  { path = "resolutions", type = { map = { named = "HunkChoice" } }, readonly = true },
+  { path = "written", type = { map = "text" }, readonly = true },
 ]
 
 [[resources.verbs]]
 id = "open-comparison"
 kind = "undoable"
 params = [
-  { name = "left_label", required = true, schema = { type = "string" } },
-  { name = "left", required = true, schema = { type = "string" } },
-  { name = "right_label", required = true, schema = { type = "string" } },
-  { name = "right", required = true, schema = { type = "string" } },
+  { name = "left_label", type = "text", required = true, schema = { type = "string" } },
+  { name = "left", type = "text", required = true, schema = { type = "string" } },
+  { name = "right_label", type = "text", required = true, schema = { type = "string" } },
+  { name = "right", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "open-merge"
 kind = "undoable"
 params = [
-  { name = "base_label", required = true, schema = { type = "string" } },
-  { name = "base", required = true, schema = { type = "string" } },
-  { name = "ours_label", required = true, schema = { type = "string" } },
-  { name = "ours", required = true, schema = { type = "string" } },
-  { name = "theirs_label", required = true, schema = { type = "string" } },
-  { name = "theirs", required = true, schema = { type = "string" } },
+  { name = "base_label", type = "text", required = true, schema = { type = "string" } },
+  { name = "base", type = "text", required = true, schema = { type = "string" } },
+  { name = "ours_label", type = "text", required = true, schema = { type = "string" } },
+  { name = "ours", type = "text", required = true, schema = { type = "string" } },
+  { name = "theirs_label", type = "text", required = true, schema = { type = "string" } },
+  { name = "theirs", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "take-ours"
 kind = "undoable"
 params = [
-  { name = "hunk", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "hunk", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
 ]
 
 [[resources.verbs]]
 id = "take-theirs"
 kind = "undoable"
 params = [
-  { name = "hunk", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "hunk", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
 ]
 
 [[resources.verbs]]
 id = "take-both"
 kind = "undoable"
 params = [
-  { name = "hunk", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "hunk", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
 ]
 
 [[resources.verbs]]
 id = "resolve"
 kind = "undoable"
 params = [
-  { name = "hunk", required = true, schema = { type = "integer", minimum = 0 } },
-  { name = "text", required = true, schema = { type = "string" } },
+  { name = "hunk", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "text", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "Comparison"
+fields = [
+  { name = "left_label", type = "text" },
+  { name = "left", type = "text" },
+  { name = "right_label", type = "text" },
+  { name = "right", type = "text" },
+]
+
+[[resources.types]]
+name = "HunkChoice"
+cases = [
+  { name = "ours" },
+  { name = "theirs" },
+  { name = "both" },
+]
+
+[[resources.types]]
+name = "MergeInputs"
+fields = [
+  { name = "base_label", type = "text" },
+  { name = "base", type = "text" },
+  { name = "ours_label", type = "text" },
+  { name = "ours", type = "text" },
+  { name = "theirs_label", type = "text" },
+  { name = "theirs", type = "text" },
 ]
 

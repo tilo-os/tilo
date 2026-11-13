@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use moq_net::Pattern;
 
-use crate::video::{self, Layer};
+use crate::video::{self, Layer, Source};
 
 /// The segment that introduces a workspace's live namespaces.
 const WORKSPACE: &str = "workspace";
@@ -172,10 +172,35 @@ pub enum Track {
     Screen(Layer),
     /// One window's picture at one layer.
     Window(u64, Layer),
+    /// One window's page as a paint stream.
+    Page(u64),
     /// Pointer and keyboard input for one window.
     Input(u64),
     /// What a device is doing, for its own surfaces.
     Activity,
+}
+
+impl Track {
+    /// The source whose picture this track carries, or `None` for any other
+    /// track.
+    #[must_use]
+    pub const fn picture_of(self) -> Option<Source> {
+        match self {
+            Self::Camera(_) => Some(Source::Camera),
+            Self::Screen(_) => Some(Source::Screen),
+            _ => None,
+        }
+    }
+
+    /// How large this track's content is: a picture at its layer, a window or
+    /// a page at the window's own size.
+    #[must_use]
+    pub const fn layer(self) -> Layer {
+        match self {
+            Self::Camera(layer) | Self::Screen(layer) | Self::Window(_, layer) => layer,
+            _ => Layer::High,
+        }
+    }
 }
 
 /// The name `track` is published under.
@@ -187,6 +212,7 @@ pub fn track(track: Track) -> String {
         Track::Camera(layer) => video::track(video::Source::Camera, layer),
         Track::Screen(layer) => video::track(video::Source::Screen, layer),
         Track::Window(tab, layer) => format!("{}/{}", video::window_track(tab), layer_name(layer)),
+        Track::Page(tab) => crate::page::track(tab),
         Track::Input(tab) => format!("input/{tab:016x}"),
         Track::Activity => "activity".to_owned(),
     }
@@ -206,6 +232,9 @@ pub fn parse_track(name: &str) -> Option<Track> {
             video::Source::Camera => Track::Camera(layer),
             video::Source::Screen => Track::Screen(layer),
         });
+    }
+    if let Some(tab) = crate::page::parse_track(name) {
+        return Some(Track::Page(tab));
     }
     if let Some(rest) = name.strip_prefix("window/") {
         let (window, layer) = rest.rsplit_once('/')?;
@@ -258,10 +287,12 @@ pub fn delivery(track: Track) -> Delivery {
             retain: Duration::from_millis(200),
             redundancy: true,
         },
-        Track::Camera(_) | Track::Screen(_) | Track::Window(..) => Delivery::Keyed {
-            retain: Duration::from_secs(2),
-            max_objects: video::MAX_GROUP_OBJECTS,
-        },
+        Track::Camera(_) | Track::Screen(_) | Track::Window(..) | Track::Page(_) => {
+            Delivery::Keyed {
+                retain: Duration::from_secs(2),
+                max_objects: video::MAX_GROUP_OBJECTS,
+            }
+        }
         Track::Input(_) => Delivery::Stream {
             max_age: Duration::from_secs(5),
         },
@@ -281,6 +312,7 @@ pub const fn priority(track: Track) -> u8 {
         Track::Screen(_) => 120,
         Track::Window(..) => 100,
         Track::Camera(_) => 80,
+        Track::Page(_) => 140,
         Track::Activity => 40,
     }
 }
@@ -327,6 +359,7 @@ mod tests {
             Track::Camera(Layer::Low),
             Track::Camera(Layer::High),
             Track::Window(7, Layer::Low),
+            Track::Page(7),
             Track::Input(7),
             Track::Activity,
         ];
@@ -354,6 +387,19 @@ mod tests {
         );
         assert_eq!(parse_track("window/0000000000000007"), None);
         assert_eq!(parse_track("window/nothex/low"), None);
+    }
+
+    #[test]
+    fn a_page_track_names_its_window() {
+        assert_eq!(parse_track("page/0000000000000007"), Some(Track::Page(7)));
+        assert_eq!(Track::Page(7).layer(), Layer::High);
+        assert_eq!(Track::Page(7).picture_of(), None);
+        assert_eq!(
+            Track::Camera(Layer::Mid).picture_of(),
+            Some(crate::video::Source::Camera)
+        );
+        assert_eq!(parse_track("page/nothex"), None);
+        assert_eq!(parse_track("page/0000000000000007/low"), None);
     }
 
     #[test]

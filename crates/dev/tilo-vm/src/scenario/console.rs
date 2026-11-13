@@ -1,12 +1,7 @@
-//! A client for the console channel of a scenario VM.
-//!
-//! The installer and the greeter answer the `tilo-control` action protocol
-//! on a virtio-serial port; `os/dev/vm.sh` exposes its host end as a Unix
-//! socket (`$TILO_RUN/console.sock`). This is the same protocol
-//! `tilo-control --socket <that path> actions list` speaks, with one
-//! addition a long-lived client needs: every request carries a `seq`, and
-//! replies to anything else — a request written before the guest was
-//! listening, answered after this client gave up on it — are skipped.
+//! A client for the console channel of a scenario VM: the installer and the
+//! greeter answer the `tilo-control` action protocol on a virtio-serial port,
+//! whose host end `os/dev/vm.sh` exposes as a Unix socket. Every request carries
+//! a `seq`, so a reply to a request this client gave up on is skipped.
 
 use std::io::{BufRead, BufReader};
 #[cfg(windows)]
@@ -19,15 +14,10 @@ use std::time::Instant;
 
 use serde_json::{Map, Value, json};
 
-/// Why a console request did not produce an answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConsoleError {
-    /// Nothing answered: the socket is absent, the guest is still booting,
-    /// or the app is not running.
     Unreachable(String),
-    /// The app refused the request, with the door's code.
     Refused { code: String, message: String },
-    /// The reply was not the protocol.
     Protocol(String),
 }
 
@@ -41,8 +31,6 @@ impl std::fmt::Display for ConsoleError {
     }
 }
 
-/// One request/response exchange. The socket client implements it; the
-/// scenario driver's tests implement it with a scripted installer.
 pub trait Console {
     /// Send `request` (an object with an `op`) and return the reply object.
     fn request(&mut self, request: Value) -> Result<Value, ConsoleError>;
@@ -103,11 +91,9 @@ fn refusal_or_protocol(reply: &Value) -> ConsoleError {
     }
 }
 
-/// The console socket of a running scenario VM.
 pub struct SocketConsole {
     path: PathBuf,
     next: u64,
-    /// How long one request may wait for its answer.
     pub timeout: Duration,
 }
 
@@ -199,11 +185,8 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::net::UnixListener;
 
-    /// Stale replies are skipped and the matching one returned; the TCP console matches the request
-    /// sequence; a missing socket is unreachable and a refusal keeps its code.
     #[test]
     fn the_console_matches_replies_to_requests_and_reports_reachability() {
-        // Phase: stale_replies_are_skipped_and_the_matching_one_returned.
         #[cfg(unix)]
         {
             let dir = tempfile::tempdir().unwrap();
@@ -216,7 +199,6 @@ mod tests {
                 reader.read_line(&mut line).unwrap();
                 let request: Value = serde_json::from_str(&line).unwrap();
                 let mut writer = stream;
-                // An answer left over from an earlier, abandoned request first.
                 writeln!(
                     writer,
                     "{}",
@@ -236,7 +218,6 @@ mod tests {
             server.join().unwrap();
         }
 
-        // Phase: tcp_console_matches_the_request_sequence.
         #[cfg(windows)]
         {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -262,7 +243,6 @@ mod tests {
             server.join().unwrap();
         }
 
-        // Phase: a_missing_socket_is_unreachable_and_a_refusal_keeps_its_code.
         {
             #[cfg(not(windows))]
             let mut console = SocketConsole::new(Path::new("/nonexistent/console.sock"));

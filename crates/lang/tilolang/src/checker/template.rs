@@ -502,7 +502,7 @@ impl Checker<'_> {
                     let want = self.type_in(te, &types);
                     // A text parameter is words the view shows, as a component's prop of words
                     // is: the literal given to it is this view's message (i18n.md §2), so
-                    // `std.composer(draft, "Comment on this {noun}", send)`'s sentence is
+                    // `std.composer(draft, "Message #{c.name}", send)`'s sentence is
                     // translated with the view that writes it.
                     if self.st.ctx == Ctx::View
                         && !want.is_error()

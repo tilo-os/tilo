@@ -15,7 +15,7 @@
 //! ([`ReadingItem`]) through the `_in` variants, and a finger explores it
 //! through [`ScreenReader::explore_in`] ([`crate::screen_reader_touch`]).
 //!
-//! Narration vocabulary resolves through [`i18n!`](macro@crate::i18n) bundles;
+//! Narration vocabulary resolves through [`widget_text`](crate::i18n::widget_text);
 //! with none loaded it falls back to English so headless builds narrate
 //! unchanged.
 
@@ -31,11 +31,12 @@ use crate::widget::Widget;
 /// clear English fallback.
 mod phrase {
     use crate::a11y::Role;
+    use crate::i18n::widget_text;
 
     /// `I18nManager::lookup` returns the key verbatim for an unknown
     /// message — that's the "nothing loaded" signal to substitute English.
     pub fn localized(key: &str, english: &str) -> String {
-        let resolved = crate::i18n!(key);
+        let resolved = widget_text(key);
         if resolved == key {
             english.to_string()
         } else {

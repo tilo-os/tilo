@@ -1,6 +1,7 @@
 //! A footer action's focus node: its place in the window's keyboard focus
 //! order and its button in the accessibility tree.
 
+use crate::i18n::widget_text;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -81,7 +82,7 @@ impl Widget for FooterKey {
         state.disabled = !self.enabled;
         Some(
             AccessNode::new(Role::Button)
-                .with_name(crate::i18n!(&self.label))
+                .with_name(widget_text(&self.label))
                 .with_semantic_key(&self.test_id)
                 .with_state(state)
                 .with_action_target(self.action_target.clone()),

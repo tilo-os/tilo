@@ -1,10 +1,9 @@
 //! Test processes never reach the desktop session of whoever runs them.
 //!
-//! Cargo starts every test binary through `tools/cargo-runner.sh`, which runs
-//! it inside `tools/with-test-environment.sh`. This test fails the suite when
-//! that isolation is missing: without it a test that falls back to the
-//! default session bus could pause the caller's media, open a file chooser
-//! on their desktop or ask logind to end their session.
+//! Cargo starts every test binary through `tools/cargo-runner.sh`, which runs it inside
+//! `tools/with-test-environment.sh`. This test fails the suite when that isolation is missing:
+//! without it a test that falls back to the default session bus could pause the caller's media,
+//! open a file chooser on their desktop or ask logind to end their session.
 #![cfg(target_os = "linux")]
 
 use std::env;
@@ -26,7 +25,6 @@ fn tests_run_without_the_callers_desktop_session() {
     assert_eq!(runtime, root.join("runtime"), "private XDG_RUNTIME_DIR");
     assert_eq!(var("HOME").map(PathBuf::from), Some(root.join("home")));
 
-    // The default addresses zbus, sd-bus and systemctl --user fall back to.
     for default in [runtime.join("bus"), runtime.join("systemd/private")] {
         assert!(!default.exists(), "{} must not exist", default.display());
     }

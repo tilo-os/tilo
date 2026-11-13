@@ -22,77 +22,14 @@ use tilo_action_policy::{ActionKind, Answer};
 use tilo_clock::unix_now;
 use wire_frame::FrameError;
 
+pub use crate::sources::{ChannelKeySource, ChannelKeys, PersonRecordKinds, WorkspaceMembership};
 use tilo_desktop_model::{Workspace, WorkspaceId};
+
 use tilo_lock::MutexRecover as _;
 
 /// The legacy resource for app device-signature grants. Ordinary app
 /// connections no longer accept generic signing, regardless of grants.
 pub const DEVICE_SIGNATURE_RESOURCE: &str = "identity.device-signature";
-
-/// The committed workspaces the broker authorizes each request against.
-pub trait WorkspaceMembership: Send + Sync + 'static {
-    /// Run `read` over the workspace with this id, when this host has it.
-    fn with_workspace(&self, workspace: &WorkspaceId, read: &mut dyn FnMut(&Workspace));
-}
-
-/// A route's access, generation and content keys, as [`ChannelKeySource`]
-/// answers; the keys are empty unless newly ready.
-pub type ChannelKeys = (runtime_identity::wire::ChannelAccess, u64, Vec<u8>);
-
-/// The channel service that hands apps their routes' content keys.
-pub trait ChannelKeySource: Send + Sync + 'static {
-    /// The access this device has to the channel of `route`'s record in
-    /// `workspace`, its generation, and the route's content keys when ready and
-    /// newer than `known_generation`; `None` while no channel service runs.
-    /// The route goes to the channel's participants with this device's access
-    /// request, so it can decide Read on the record itself.
-    fn access(
-        &self,
-        workspace: WorkspaceId,
-        route: &collab_types::ChannelRoute,
-        known_generation: u64,
-    ) -> Option<Result<ChannelKeys, String>>;
-}
-
-/// The records of the person's own an app keeps in, or reads from, their
-/// store: the person-record kinds its surface declares. Nothing broader is
-/// signed for an app in the person's store.
-pub trait PersonRecordKinds: Send + Sync + 'static {
-    /// The person-record kinds `app_id` declares; empty for none.
-    fn person_record_kinds(&self, app_id: &str) -> Vec<String>;
-
-    /// `app_id` attached naming `surface`, the surface file it was started
-    /// with. A host that runs no package of the app may take it as the
-    /// app's surface; by default it is ignored and only a package's counts.
-    fn attached(&self, _app_id: &str, _surface: &[u8]) {}
-
-    /// The ids `app_id` had before, as the installed catalogue believes them (the same publisher
-    /// signed them, `app_catalogue::apps::earlier_ids`): the app keeps using the records of
-    /// those ids, so a route of one is its launch's own. None by default.
-    fn earlier_ids(&self, _app_id: &str) -> Vec<String> {
-        Vec::new()
-    }
-}
-
-/// A host that knows no app's person records: nothing is signed in the
-/// person's store.
-impl PersonRecordKinds for () {
-    fn person_record_kinds(&self, _app_id: &str) -> Vec<String> {
-        Vec::new()
-    }
-}
-
-/// A host without a channel service: every route is unavailable.
-impl ChannelKeySource for () {
-    fn access(
-        &self,
-        _workspace: WorkspaceId,
-        _route: &collab_types::ChannelRoute,
-        _known_generation: u64,
-    ) -> Option<Result<ChannelKeys, String>> {
-        None
-    }
-}
 
 /// `read` over `workspace`, or `None` when this host has none.
 fn read_workspace<T>(
@@ -417,6 +354,12 @@ impl Bound<'_> {
                 .any(|old| old == app_id)
     }
 
+    /// Whether the bound app declares that it reads `app_id`'s records: another app's, which
+    /// it opens and never writes.
+    fn reads_records_of(&self, app_id: &str) -> bool {
+        self.person.reads_records_of(self.app_id, app_id)
+    }
+
     /// Whether `workspace_id` is the own cluster of the person the bound
     /// workspace's identity is, and the app keeps records of theirs there.
     fn in_personal_cluster(
@@ -630,10 +573,12 @@ fn channel_keys(
     let bound = &route.bound;
     let launch_workspace = route.workspace_id == bound.workspace.to_string();
     // A route of the launch, a record every app of the launch workspace opens,
-    // or a record of the person's the app declares in their own store (its
-    // own, or another app's it reads).
+    // another app's record of the launch workspace it declares it reads, or a
+    // record of the person's the app declares in their own store (its own, or
+    // another app's it reads).
     if (launch_workspace
         && !bound.keeps_records_of(route.app_id)
+        && !bound.reads_records_of(route.app_id)
         && collab_types::workspace_record(route.app_id, route.record_id).is_none())
         || (!launch_workspace && !bound.keeps_person_record(route.record_id))
     {
@@ -753,9 +698,10 @@ fn require_trusted_current_device(
         ));
     }
     // Served from memory only while the fleet files are unchanged, so a
-    // revocation is seen by the very next call.
+    // revocation — of the device or of the stand-in that issued it — is seen by
+    // the very next call.
     let fleet = crate::device_fleet::DeviceFleetStore::from_env()?.load_cached(&profile.id)?;
-    if fleet.is_revoked(&device_key) {
+    if !crate::certificates::admitted(&profile.user_public_key, &fleet, &cert) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "this device has been revoked for the selected identity",
@@ -1768,6 +1714,58 @@ params = []
         assert!(
             matches!(answer, Response::ChannelKeys { .. }),
             "the person reads their own cluster: {answer:?}"
+        );
+    }
+
+    /// Today declares that it reads Tasks' records.
+    struct TodayReadsTasks;
+
+    impl PersonRecordKinds for TodayReadsTasks {
+        fn person_record_kinds(&self, _app_id: &str) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn reads_records_of(&self, reader: &str, owner: &str) -> bool {
+            reader == "so.tilo.lang.today" && owner == "so.tilo.lang.tasks"
+        }
+    }
+
+    /// An app is handed the keys of another app's record it declares it reads, as the broker
+    /// admits its read-only join, and of no other app's.
+    #[test]
+    fn an_app_gets_the_keys_of_the_records_it_declares_it_reads() {
+        let fixture = crate::join_proof::tests::Fixture::new();
+        let workspace = WorkspaceId::parse(
+            &collab_types::personal_cluster(&fixture.user_public_key).to_string(),
+        )
+        .expect("the person's store");
+        let launch = workspace.to_string();
+        let keys_of = |owner: &str| {
+            channel_keys(
+                &WorkspaceTree::default().shared(),
+                &ReadyChannels,
+                &ChannelKeyRoute {
+                    bound: Bound {
+                        workspace: &workspace,
+                        app_id: "so.tilo.lang.today",
+                        person: &TodayReadsTasks,
+                    },
+                    workspace_id: &launch,
+                    app_id: owner,
+                    record_id: "",
+                },
+                0,
+            )
+        };
+        let tasks = keys_of("so.tilo.lang.tasks");
+        assert!(
+            matches!(tasks, Response::ChannelKeys { .. }),
+            "Today reads Tasks' record: {tasks:?}"
+        );
+        let chat = keys_of("so.tilo.lang.chat");
+        assert!(
+            matches!(chat, Response::Denied(_)),
+            "Today declares no read of Chat: {chat:?}"
         );
     }
 

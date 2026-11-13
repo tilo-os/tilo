@@ -1,32 +1,24 @@
 //! Sealing, and the LUKS2 keyslots that hold the sealed passphrases.
 //!
-//! # Shape
+//! One keyslot per retained generation, with a fresh 32-byte passphrase sealed to that generation's
+//! policy and stored in a `tilo-rollback` LUKS2 token next to the slot; unlocking reads the token,
+//! unseals the passphrase and hands it to cryptsetup. The keyslots `systemd-cryptenroll` creates
+//! and the recovery-key slot are left alone, so the recovery key stays an independent path.
 //!
-//! One keyslot per retained generation, with a fresh 32-byte passphrase sealed to that
-//! generation's policy and stored in a `tilo-rollback` LUKS2 token next to the slot; unlocking
-//! reads the token, unseals the passphrase, and hands it to cryptsetup. This deliberately does
-//! **not** touch the keyslots `systemd-cryptenroll` creates or the recovery-key slot — those
-//! stay exactly as they are, keeping the recovery key an independent path.
+//! `systemd-cryptenroll --tpm2-device` has no `TPM2_PolicyNV` support, so it can attach neither the
+//! rollback floor nor anything sealed to it, and the seal has to be ours. `systemd-cryptsetup`
+//! therefore cannot open our token by itself: a unit in early userspace runs `tilo-rollback unlock`
+//! and writes the passphrase to `/run/cryptsetup-keys.d/<volume>.key`, which `systemd-cryptsetup`
+//! picks up as an implicit key file. No patched systemd, no cryptsetup plugin, no keyscript.
 //!
-//! # Why not systemd-cryptenroll's own TPM2 token
+//! SAFETY-CRITICAL rules encoded here:
 //!
-//! `systemd-cryptenroll --tpm2-device` has no `TPM2_PolicyNV` support, so it can't attach the
-//! rollback floor; its `--tpm2-public-key` signed-policy covers firmware updates but not the
-//! floor. Since the floor is the point, the seal is ours — at the cost that
-//! `systemd-cryptsetup` can't open our token by itself, so a unit in early userspace runs
-//! `tilo-rollback unlock` and writes the passphrase to `/run/cryptsetup-keys.d/<volume>.key`,
-//! which `systemd-cryptsetup` picks up as an implicit key file. No patched systemd, no
-//! cryptsetup plugin, no keyscript.
-//!
-//! # SAFETY-CRITICAL rules encoded here
-//!
-//! * [`verify_passphrase`] is the only way anything here concludes a slot works, and it's
-//!   called *before* any destructive step.
-//! * [`add_generation_slot`] verifies the new slot opens the device before returning; a slot
-//!   that can't open is removed again rather than left as a plausible-looking token that
-//!   fails at boot.
+//! * [`verify_passphrase`] is the only way anything here concludes a slot works, and it is called
+//!   *before* any destructive step.
+//! * [`add_generation_slot`] verifies the new slot opens the device before returning; a slot that
+//!   cannot open is removed again rather than left as a plausible-looking token.
 //! * [`kill_generation_slot`] refuses to run without proof that another path works.
-//! * Nothing here calls `luksKillSlot` on a slot it didn't create, or `luksHeaderRestore`.
+//! * Nothing here calls `luksKillSlot` on a slot it did not create, or `luksHeaderRestore`.
 
 use crate::argv;
 use crate::exec::{Runner, require};
@@ -40,17 +32,17 @@ use zeroize::Zeroizing;
 /// A freshly generated slot passphrase. Zeroized on drop.
 pub type Passphrase = Zeroizing<Vec<u8>>;
 
-/// 32 bytes from the kernel CSPRNG, hex-encoded so it's safe to hand to cryptsetup as a
-/// key file and to `tpm2_create -i`.
+/// 32 bytes from the kernel CSPRNG, hex-encoded so it is safe to hand to cryptsetup as a key file
+/// and to `tpm2_create -i`.
 pub fn new_passphrase() -> Result<Passphrase> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("reading OS randomness: {e}"))?;
     Ok(Zeroizing::new(hex::encode(bytes).into_bytes()))
 }
 
-/// Does `passphrase` open `device`? Optionally restricted to one keyslot. `--test-passphrase`
-/// does the full key-derivation and digest check without activating a mapping, so it's safe
-/// on an already-open device and needs no device-mapper privileges beyond reading the header.
+/// Does `passphrase` open `device`? Optionally restricted to one keyslot. `--test-passphrase` does
+/// the full key-derivation and digest check without activating a mapping, so it is safe on an
+/// already-open device and needs no device-mapper privileges beyond reading the header.
 pub fn verify_passphrase(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -72,13 +64,13 @@ pub fn verify_passphrase(
     Ok(out.ok())
 }
 
-/// SAFETY-CRITICAL: prove the recovery key still opens the device. Everything destructive in
-/// this module takes the result of this call as a precondition — a separate function so the
-/// proof is a value that has to be produced, not a comment claiming it was considered.
+/// SAFETY-CRITICAL: prove the recovery key still opens the device. Everything destructive here
+/// takes the result of this call as a precondition — a separate function so the proof is a value
+/// that has to be produced, not a comment claiming it was considered.
 ///
 /// # Errors
 ///
-/// Returns an error if [`verify_passphrase`] fails to run.
+/// [`verify_passphrase`] fails to run.
 pub fn verify_recovery(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -88,23 +80,22 @@ pub fn verify_recovery(
     verify_passphrase(runner, ws, device, recovery_key, None)
 }
 
-/// How the independent unlock path is checked before anything destructive. Enrollment happens
-/// with a person present who was just shown the recovery key, so it can be checked properly;
-/// confirmation happens unattended after reboot, where nothing knows the recovery key by
-/// design (storing it would make it a second copy of the disk key) — so the two get
-/// different, honestly-labelled checks.
+/// How the independent unlock path is checked before anything destructive. Enrollment has a person
+/// present who was just shown the recovery key, so it can be checked properly; confirmation runs
+/// unattended after reboot, where nothing knows the recovery key by design (storing it would make
+/// it a second copy of the disk key).
 pub enum RecoveryCheck<'a> {
     /// Open the device with the recovery key.
     Key(&'a [u8]),
-    /// Unattended: confirm the keyslots that are *not* ours are still there. Strictly weaker —
-    /// it proves the slot exists and we didn't remove it, nothing about whether the recovery key
-    /// still derives its key — but it's the strongest check available without the secret, and it
-    /// catches the failure that actually happens: a keyslot removed by accident.
+    /// Unattended: confirm the keyslots that are *not* ours are still there. Strictly weaker: it
+    /// proves the slot exists and we did not remove it, nothing about whether the recovery key
+    /// still derives its key. But it is the strongest check available without the secret, and it
+    /// catches the failure that actually happens, a keyslot removed by accident.
     ForeignSlotsPresent { expected: &'a [u32] },
 }
 
-/// Keyslot numbers in the header that no `tilo-rollback` token claims: the recovery key's
-/// slot and any `systemd-cryptenroll` slots. Nothing in this crate ever writes to them.
+/// Keyslot numbers in the header that no `tilo-rollback` token claims: the recovery key's slot and
+/// any `systemd-cryptenroll` slots. Nothing in this crate writes to them.
 pub fn foreign_keyslots(runner: &dyn Runner, device: &Path) -> Result<Vec<u32>> {
     let all = keyslots_in_use(runner, device)?;
     let ours: Vec<u32> = list_tokens(runner, device)?
@@ -118,8 +109,8 @@ pub fn foreign_keyslots(runner: &dyn Runner, device: &Path) -> Result<Vec<u32>> 
 ///
 /// # Errors
 ///
-/// Returns an error if the check fails — the recovery key doesn't open the device, or no
-/// independent unlock path remains — or if the underlying keyslot/token lookups fail.
+/// The check fails — the recovery key does not open the device, or no independent unlock path
+/// remains — or the underlying keyslot/token lookups fail.
 pub fn verify_recovery_path(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -158,11 +149,10 @@ pub fn verify_recovery_path(
     }
 }
 
-/// Read every `tilo-rollback` token in the header, newest generation first.
 pub fn list_tokens(runner: &dyn Runner, device: &Path) -> Result<Vec<(u32, RollbackToken)>> {
     let mut found = Vec::new();
-    // LUKS2 allows 32 tokens; no "list tokens" subcommand is stable across cryptsetup versions,
-    // so probe each id — `token export` on an empty id fails cheaply.
+    // LUKS2 allows 32 tokens and no "list tokens" subcommand is stable across cryptsetup
+    // versions, so probe each id: `token export` on an empty id fails cheaply.
     for id in 0..32u32 {
         let ids = id.to_string();
         let out = runner.run(
@@ -180,8 +170,8 @@ pub fn list_tokens(runner: &dyn Runner, device: &Path) -> Result<Vec<(u32, Rollb
         match RollbackToken::from_json(text.trim()) {
             Ok(t) => found.push((id, t)),
             Err(e) => {
-                // A malformed token of our own type is worth surfacing, but it must not stop the machine
-                // from using the good ones.
+                // A malformed token of our own type is worth surfacing, but it must not stop the
+                // machine from using the good ones.
                 eprintln!(
                     "tilo-rollback: ignoring token {id} on {}: {e:#}",
                     device.display()
@@ -189,18 +179,18 @@ pub fn list_tokens(runner: &dyn Runner, device: &Path) -> Result<Vec<(u32, Rollb
             }
         }
     }
-    // Newest generation first: `unlock` tries them in this order, since the newest is most
+    // Newest generation first, since `unlock` tries them in this order and the newest is most
     // likely the running image.
     found.sort_by_key(|(_, t)| std::cmp::Reverse(t.generation));
     Ok(found)
 }
 
-/// Create the sealing parent, deterministic from the owner hierarchy seed and template, so it
-/// doesn't need to be persisted and survives a reboot.
+/// Create the sealing parent, deterministic from the owner-hierarchy seed and template, so it does
+/// not need to be persisted and survives a reboot.
 ///
 /// # Errors
 ///
-/// Returns an error if `tpm2_createprimary` fails.
+/// `tpm2_createprimary` fails.
 pub fn primary(runner: &dyn Runner, ws: &Workspace) -> Result<std::path::PathBuf> {
     policy::flush(runner);
     let ctx = ws.path("primary.ctx");
@@ -222,15 +212,14 @@ pub fn primary(runner: &dyn Runner, ws: &Workspace) -> Result<std::path::PathBuf
     Ok(ctx)
 }
 
-/// Seal `secret` under a generation's policy. Created **without** `noda`, so failed PIN
-/// attempts count against the TPM's dictionary-attack lockout — the entire reason a
-/// four-digit PIN is defensible; setting `noda` would silently turn it into four digits of
-/// nothing.
+/// Seal `secret` under a generation's policy. Created **without** `noda`, so failed PIN attempts
+/// count against the TPM's dictionary-attack lockout — the entire reason a four-digit PIN is
+/// defensible; `noda` would silently make it four digits of nothing.
 ///
 /// # Errors
 ///
-/// Returns an error if creating the sealing parent, sealing with `tpm2_create`, or reading
-/// back the sealed public/private blobs fails.
+/// Creating the sealing parent, sealing with `tpm2_create`, or reading back the sealed
+/// public/private blobs fails.
 pub fn seal(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -260,8 +249,8 @@ pub fn seal(
         "-a",
         "fixedtpm|fixedparent|adminwithpolicy",
     ];
-    // tpm2-tools accepts `file:<path>` for an auth value, so the PIN goes through a scratch file
-    // — passing it literally would put it in /proc/<pid>/cmdline for every process to read.
+    // tpm2-tools accepts `file:<path>` for an auth value, so the PIN goes through a scratch file:
+    // passing it literally would put it in /proc/<pid>/cmdline for every process to read.
     let pin_spec;
     if let Some(p) = pin {
         let pin_file = ws.put("seal.pin", p)?;
@@ -285,10 +274,9 @@ pub fn seal(
     Ok((pu, pr))
 }
 
-/// Unseal a token's passphrase, trying each prediction in turn. Returns `Ok(None)` when no
-/// prediction fits the current machine state (wrong generation, or the firmware moved); an
-/// error means the floor rejected the generation or the mechanism failed, and the caller
-/// should not silently move on.
+/// Unseal a token's passphrase, trying each prediction in turn. `Ok(None)` when no prediction fits
+/// the current machine state (wrong generation, or the firmware moved); an error means the floor
+/// rejected the generation or the mechanism failed, and the caller must not silently move on.
 pub fn unseal(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -310,8 +298,8 @@ pub fn unseal(
             Ok(Some(s)) => s,
             Ok(None) => continue,
             Err(e) => {
-                // Remember the floor refusal but keep trying — a different prediction can't change the
-                // floor, this just produces the best diagnostic at the end.
+                // Remember the floor refusal but keep trying: a different prediction cannot change
+                // the floor, so this only produces the best diagnostic at the end.
                 floor_refusal = Some(e);
                 continue;
             }
@@ -372,7 +360,6 @@ pub fn unseal(
     Ok(None)
 }
 
-/// The sealed public/private blobs a caller holds outside a LUKS2 token.
 #[derive(Debug, Clone, Copy)]
 pub struct SealedArtifact<'a> {
     pub public: &'a [u8],
@@ -382,14 +369,12 @@ pub struct SealedArtifact<'a> {
     pub policy_digest: &'a [u8],
 }
 
-/// Unseal an artifact sealed under a signed target boot policy with no NV
-/// counter. The predictions are tried in order, exactly like a rollback
-/// token's; `Ok(None)` means none matches this machine's live state.
+/// Unseal an artifact sealed under a signed target boot policy with no NV counter. Predictions are
+/// tried in order as for a rollback token; `Ok(None)` means none matches this machine's live state.
 ///
 /// # Errors
 ///
-/// Returns an error if the mechanism fails or the policy requires a PIN, which
-/// this installer handoff never uses.
+/// The mechanism fails, or the policy requires a PIN, which this installer handoff never uses.
 pub fn unseal_boot(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -471,8 +456,8 @@ pub fn unseal_boot(
     Ok(None)
 }
 
-/// Build tpm2-tools' compound policy-session authorization without putting a
-/// PIN in argv. Its `file:` form is read by the child after it starts.
+/// tpm2-tools' compound policy-session authorization, without putting a PIN in argv. Its `file:`
+/// form is read by the child after it starts.
 fn unseal_auth(session: &Path, pin_file: Option<&Path>) -> String {
     match pin_file {
         Some(pin) => format!("session:{}+file:{}", session.display(), pin.display()),
@@ -517,14 +502,14 @@ fn invoke_unseal(
 /// Add a keyslot for `passphrase`, authorised by `authorising`, and prove it works before
 /// returning.
 ///
-/// SAFETY-CRITICAL: if the new slot can't open the device, it's removed again and the call
-/// fails — leaving a non-working slot with a plausible token would produce a machine that
-/// looks enrolled and asks for the recovery key at boot.
+/// SAFETY-CRITICAL: if the new slot cannot open the device it is removed again and the call fails.
+/// Leaving a non-working slot with a plausible token produces a machine that looks enrolled and
+/// asks for the recovery key at boot.
 ///
 /// # Errors
 ///
-/// Returns an error if `luksAddKey` fails, if it doesn't produce exactly one new keyslot, or
-/// if the new keyslot fails to open the device (in which case it is removed before returning).
+/// `luksAddKey` fails, it does not produce exactly one new keyslot, or the new keyslot fails to
+/// open the device (in which case it is removed before returning).
 pub fn add_generation_slot(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -568,8 +553,8 @@ pub fn add_generation_slot(
     let slot = added.remove(0);
 
     if !verify_passphrase(runner, ws, device, passphrase, Some(slot))? {
-        // Undo, using the passphrase we just added (the least privileged authorisation available
-        // for its own removal).
+        // Undo, using the passphrase just added, the least privileged authorisation for its own
+        // removal.
         let kf = ws.put("undo.key", passphrase)?;
         let slot_s = slot.to_string();
         let _ = runner.run(
@@ -598,7 +583,7 @@ pub fn add_generation_slot(
 ///
 /// # Errors
 ///
-/// Returns an error if reading the LUKS2 header fails.
+/// Reading the LUKS2 header fails.
 pub fn keyslots_in_use(runner: &dyn Runner, device: &Path) -> Result<Vec<u32>> {
     let out = require(
         runner,
@@ -609,7 +594,6 @@ pub fn keyslots_in_use(runner: &dyn Runner, device: &Path) -> Result<Vec<u32>> {
     Ok(parse_keyslots(&out.stdout_utf8()))
 }
 
-/// Parse the keyslot numbers out of `cryptsetup luksDump` output.
 pub fn parse_keyslots(dump: &str) -> Vec<u32> {
     let mut out = Vec::new();
     let mut in_keyslots = false;
@@ -640,7 +624,6 @@ pub fn parse_keyslots(dump: &str) -> Vec<u32> {
     out
 }
 
-/// Attach a token to a keyslot.
 pub fn import_token(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -672,7 +655,7 @@ pub fn import_token(
 ///
 /// # Errors
 ///
-/// Returns an error if all 32 LUKS2 token slots are occupied, or if probing a slot fails.
+/// All 32 LUKS2 token slots are occupied, or probing a slot fails.
 pub fn free_token_id(runner: &dyn Runner, device: &Path) -> Result<u32> {
     for id in 0..32u32 {
         let id_s = id.to_string();
@@ -691,17 +674,16 @@ pub fn free_token_id(runner: &dyn Runner, device: &Path) -> Result<u32> {
     )
 }
 
-/// SAFETY-CRITICAL: remove one generation's token and keyslot. `proof` must carry a
-/// passphrase verified against the device this run, and **not** the one being removed. The
-/// token is removed before the keyslot, so an interruption leaves an orphan keyslot
-/// (harmless, reclaimable) rather than a token pointing at a slot that no longer exists
-/// (which would make `unlock` try to use it).
+/// SAFETY-CRITICAL: remove one generation's token and keyslot. `proof` must carry a passphrase
+/// verified against the device this run, and **not** the one being removed. The token is removed
+/// before the keyslot, so an interruption leaves an orphan keyslot (harmless, reclaimable) rather
+/// than a token pointing at a slot that no longer exists.
 ///
 /// # Errors
 ///
-/// Returns an error if `proof` doesn't open `device`, if `proof` is bound to the very slot
-/// being removed, if removing the token or keyslot fails, or — the case that most needs
-/// shouting about — if `proof` no longer opens the device after the keyslot is gone.
+/// `proof` does not open `device`, `proof` is bound to the very slot being removed, removing the
+/// token or keyslot fails, or — the case that most needs shouting about — `proof` no longer opens
+/// the device after the keyslot is gone.
 pub fn kill_generation_slot(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -717,7 +699,7 @@ pub fn kill_generation_slot(
             device.display()
         );
     }
-    // Make sure the proof is not the slot we are about to remove.
+    // Make sure the proof is not the slot about to be removed.
     if verify_passphrase(runner, ws, device, proof, Some(keyslot))? {
         bail!(
             "refusing to remove keyslot {keyslot}: the authorising passphrase is the one held in \
@@ -759,7 +741,6 @@ pub fn kill_generation_slot(
     Ok(())
 }
 
-/// One generation to enroll.
 #[derive(Debug, Clone, Copy)]
 pub struct Enrollment<'a> {
     pub generation: u64,
@@ -770,8 +751,8 @@ pub struct Enrollment<'a> {
     pub pin: Option<&'a [u8]>,
 }
 
-/// Build the whole seal + slot + token sequence for one generation. `authorising` is a
-/// secret that already opens `device`, used to add the new keyslot.
+/// Build the whole seal + slot + token sequence for one generation. `authorising` is a secret that
+/// already opens `device`, used to add the new keyslot.
 pub fn enroll_generation(
     runner: &dyn Runner,
     ws: &Workspace,

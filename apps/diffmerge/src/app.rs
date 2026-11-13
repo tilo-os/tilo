@@ -50,6 +50,7 @@ use crate::merge_view::MergeView;
 use crate::resource::session;
 use ui::chrome::status_bar;
 use ui::icons::Icon;
+use ui::widget::DrawChild;
 
 /// The error the `error` screenshot scenario shows.
 const SHOT_LOAD_ERROR: &str = "Couldn’t read the selected files. Check permissions and try again.";
@@ -1128,8 +1129,8 @@ impl Widget for DiffMergeApp {
             self.reveal_folder_row(self.folder_selection, row_h);
         } else {
             match self.mode {
-                Mode::Diff => self.diff.draw(scene, transform, tr, theme, presence),
-                Mode::Merge => self.merge.draw(scene, transform, tr, theme, presence),
+                Mode::Diff => self.diff.draw_child(scene, transform, tr, theme, presence),
+                Mode::Merge => self.merge.draw_child(scene, transform, tr, theme, presence),
             }
         }
 
@@ -1265,9 +1266,9 @@ impl Widget for DiffMergeApp {
                         comparison.left_label, comparison.right_label, added, removed, modified
                     ))
                     .with_description(if comparison.truncated {
-                        "Only the first part of the folders was compared"
+                        t("diff-a11y-folders-truncated")
                     } else {
-                        "Choose a file to compare it"
+                        t("diff-a11y-choose-file")
                     }),
             );
             // The rows that were painted, so the listing is the same list to
@@ -1283,7 +1284,7 @@ impl Widget for DiffMergeApp {
                             "diffmerge.folder-entry:{index}"
                         )))
                         .with_name(format!("{}: {}", entry.path, entry.kind.tag()))
-                        .with_description("Open these two files as a comparison")
+                        .with_description(t("diff-a11y-open-two-files"))
                         .with_action_target(format!("diffmerge.folder-entry:{index}"))
                         .with_bounds(*rect)
                         .with_state(
@@ -1305,20 +1306,20 @@ impl Widget for DiffMergeApp {
             children.push(
                 AccessNode::new(Role::Paragraph)
                     .with_key(ui::a11y::hash_key(&"diffmerge.empty"))
-                    .with_name("No files loaded")
-                    .with_description("Use Open files to start a local comparison."),
+                    .with_name(t("diff-a11y-no-files"))
+                    .with_description(t("diff-a11y-start-comparison")),
             );
         }
         children.push(
             AccessNode::new(Role::Paragraph)
                 .with_key(ui::a11y::hash_key(&"diffmerge.status"))
-                .with_name("Comparison status")
+                .with_name(t("diff-a11y-status"))
                 .with_description(self.status_text()),
         );
         Some(
             AccessNode::new(Role::Group)
-                .with_name("Diff and Merge")
-                .with_description("Compare local files or resolve a shared three-way merge")
+                .with_name(t("diff-a11y-window"))
+                .with_description(t("diff-a11y-window-description"))
                 .with_children(children),
         )
     }

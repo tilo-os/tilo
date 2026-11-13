@@ -124,6 +124,47 @@ fn any_action_is_drafted_from_its_parameters() {
     assert!(draft.fields.iter().all(|field| field.role.is_none()));
 }
 
+/// A reviewer reads each argument in one line by its label: a long value
+/// cut short, a secret withheld.
+#[test]
+fn a_summary_names_each_argument_in_a_line_and_withholds_secrets() {
+    let submit = descriptor(
+        "Submit the application",
+        vec![
+            ActionParam::required("name", ParamType::Text, "Applicant"),
+            ActionParam::required("passport", ParamType::Text, "Passport number"),
+            ActionParam::required("purpose", ParamType::Text, "Why they travel"),
+            ActionParam::required("portal_password", ParamType::Secret, "Consulate login"),
+        ],
+    );
+    let summary = Draft::render(
+        &submit,
+        &args(json!({
+            "name": "Jane Doe",
+            "passport": "X1234567",
+            "purpose": "Attending the\nannual conference of European visa officers in Lisbon, three days",
+            "portal_password": "hunter2"
+        })),
+    )
+    .summary();
+    assert_eq!(
+        summary[..2],
+        [
+            ("Name".to_owned(), "Jane Doe".to_owned()),
+            ("Passport".to_owned(), "X1234567".to_owned()),
+        ]
+    );
+    assert_eq!(summary[2].0, "Purpose");
+    assert!(
+        summary[2].1.starts_with("Attending the annual"),
+        "{summary:?}"
+    );
+    assert!(summary[2].1.ends_with('…'));
+    assert!(summary[2].1.chars().count() <= SUMMARY_CHARS + 1);
+    assert_eq!(summary[3], ("Portal password".to_owned(), "•••".to_owned()));
+    assert!(!format!("{summary:?}").contains("hunter2"));
+}
+
 #[test]
 fn password_fields_in_object_parameters_are_withheld() {
     let action = descriptor(

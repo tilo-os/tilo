@@ -18,7 +18,8 @@ that unit and everything above it. `stamp` gives every listed file one time, now
 source file, which t wrote before the check started, and the same for a unit and its dependencies.
 
 A unit is `.fingerprint/<name>-<hash>`; its outputs carry the same hash: `deps/<lib>name-<hash>.*`
-and executables, `build/<name>-<hash>` (build scripts and their output), `incremental/...`. The
+and executables, `build/<name>-<hash>`. An `incremental/<crate>-<hash>` directory is named after
+its crate, with a hash of cargo's own, so it goes unless the build used a unit of that crate. The
 runtime and its engines are dynamic libraries, whose file names have no hash: they are kept by name.
 """
 
@@ -80,13 +81,22 @@ def keep(profile: Path, top: set[str]) -> list[Path]:
     units = fingerprints(profile)
     used = {unit.name for unit in units if read_since_mark(unit)}
     stale = {unit_hash(unit.name) for unit in units if unit.name not in used}
+    # The crates whose units the build used: cargo names an incremental directory after its
+    # crate, with a hash of its own, so that is what tells whether the build left it.
+    kept = {unit.rsplit("-", 1)[0].replace("-", "_") for unit in used}
     # The fingerprint goes first, so a unit half removed is rebuilt rather than trusted.
     for unit in units:
         if unit.name not in used:
             remove(unit)
     for directory in ("build", "incremental"):
         for path in sorted((profile / directory).glob("*")) if (profile / directory).is_dir() else []:
-            if "-" in path.name and unit_hash(path.name) in stale:
+            if "-" not in path.name:
+                continue
+            if directory == "incremental":
+                left = path.name.rsplit("-", 1)[0] not in kept
+            else:
+                left = unit_hash(path.name) in stale
+            if left:
                 remove(path)
     deps = profile / "deps"
     for path in sorted(deps.iterdir()) if deps.is_dir() else []:

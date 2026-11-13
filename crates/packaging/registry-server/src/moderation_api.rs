@@ -1,4 +1,4 @@
-//! Authenticated public moderation cases and tamper-evident transparency log.
+//! Authenticated public moderation cases and a tamper-evident transparency log.
 
 use std::sync::{Arc, Mutex};
 
@@ -40,9 +40,8 @@ impl ModerationApiService {
         }
     }
 
-    /// Verify, authorize and durably apply one mutation. A byte-identical
-    /// retry returns the prior authoritative case; request-id reuse with a
-    /// changed signed body is rejected.
+    /// Verify, authorize and durably apply one mutation. A byte-identical retry returns the prior
+    /// authoritative case; request-id reuse with a changed signed body is rejected.
     #[allow(
         clippy::too_many_lines,
         reason = "this is the intentionally linear, auditable transaction boundary: validation, replay recovery, authoritative side effect, then three ordered durable renames"
@@ -223,9 +222,8 @@ impl ModerationApiService {
         case.updated_at_unix = now_unix;
         case.latest_sequence = sequence;
 
-        // Publish the immutable event before its materialized view. A crash at
-        // either following atomic rename is repaired on restart/retry from the
-        // authoritative log by `case()`.
+        // Publish the immutable event before its materialized view. A crash at either following
+        // atomic rename is repaired on restart or retry from the authoritative log by `case()`.
         self.storage.save_transparency(sequence, &event)?;
         self.storage.save_moderation_case(&case.case_id, &case)?;
         self.storage.save_moderation_request(
@@ -702,7 +700,6 @@ mod tests {
 
     #[test]
     fn moderation_requests_are_signed_idempotent_and_fresh() {
-        // phase: report_is_signed_idempotent_and_publicly_verifiable
         {
             let (directory, service, _publisher, _reviewer, allowlist) = setup();
             let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -714,9 +711,8 @@ mod tests {
             registry_types::verify_transparency_chain(&page.events, "").unwrap();
             assert_eq!(service.case(&first.case_id).unwrap(), Some(first.clone()));
 
-            // Simulate a crash after the immutable event rename but before the
-            // materialized case/receipt renames. Retry repairs both without a
-            // second public event.
+            // Simulate a crash after the immutable event rename but before the materialized case
+            // and receipt renames. Retry repairs both without a second public event.
             std::fs::remove_file(
                 directory
                     .path()
@@ -738,7 +734,6 @@ mod tests {
             );
             assert_eq!(service.transparency(1, 10).unwrap().events.len(), 1);
         }
-        // phase: request_id_reuse_and_expiry_are_rejected
         {
             let (_directory, service, _publisher, _reviewer, allowlist) = setup();
             let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -776,7 +771,6 @@ mod tests {
         reason = "one scenario, one labelled phase per merged case"
     )]
     fn moderation_decisions_are_role_authorised_and_recoverable() {
-        // phase: only_package_publisher_can_reply_or_appeal
         {
             let (_directory, service, publisher, _reviewer, allowlist) = setup();
             let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -808,7 +802,6 @@ mod tests {
                 .unwrap();
             assert_eq!(appealed.status, ModerationCaseStatus::Appealed);
         }
-        // phase: only_registry_owner_can_make_reviewer_decision
         {
             let (_directory, service, _publisher, reviewer, allowlist) = setup();
             let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -843,7 +836,6 @@ mod tests {
                 ModerationCaseStatus::ClosedNoAction
             );
         }
-        // phase: restore_recovers_when_catalogue_effect_was_durable_before_public_event
         {
             let (_directory, service, _publisher, reviewer, allowlist) = setup();
             let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -865,8 +857,8 @@ mod tests {
             .unwrap();
             service.apply(&quarantine, 112, &allowlist).unwrap();
 
-            // The catalogue half of restore lands, then the process dies before
-            // the API can append its public event.
+            // The catalogue half of restore lands, then the process dies before the API can append
+            // its public event.
             service
                 .moderation
                 .restore_quarantined("so.tilo.notes", "owner", "fixed", 113, &allowlist)

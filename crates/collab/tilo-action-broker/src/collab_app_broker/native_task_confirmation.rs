@@ -40,12 +40,8 @@ impl AppBrokerState {
         let run = self.task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)?;
         let target = reask.target;
         let (surface, offered) = self
-            .surfaces
-            .lock()
-            .map_err(|_| "task action surface unavailable")?
-            .get(&target.peer_id)
-            .filter(|surface| surface.route.cluster_id == run.cluster_id)
-            .and_then(|surface| surface.action_projection(target.resource, target.action))
+            .offered_by(target.peer_id, target.resource, target.action)
+            .filter(|(surface, _)| surface.route.cluster_id == run.cluster_id)
             .ok_or("the task action is no longer published in this workspace")?;
         self.native_confirmation_for(
             &run,

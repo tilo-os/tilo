@@ -23,7 +23,6 @@ use super::icon_button;
 use crate::model::Artwork;
 use crate::model::{Gradient, Mark};
 
-/// How a fill is painted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Solid,
@@ -83,7 +82,6 @@ pub fn across(kind: Kind, area: Rect, degrees: f64, stops: Vec<(f64, String)>) -
     }
 }
 
-/// The colour a gradient has at `at`, between its stops, as `#rrggbb`.
 fn colour_at(stops: &[(f64, String)], at: f64) -> String {
     let parse = |text: &str| crate::render::colour(text, &[]);
     let mut sorted: Vec<&(f64, String)> = stops.iter().collect();
@@ -127,13 +125,11 @@ fn colour_at(stops: &[(f64, String)], at: f64) -> String {
     )
 }
 
-/// The bar showing a gradient, with a grip for each stop.
 pub struct GradientBar {
     rect: Rect,
     gradient: Gradient,
     /// The stop the swatches recolour.
     active: LocalState<usize>,
-    /// The stop being dragged and where it is now, `0..=1`.
     dragging: Option<(usize, f64, bool)>,
     cursor: Point,
     commit: Rc<dyn Fn(Gradient)>,
@@ -380,7 +376,7 @@ impl Widget for GradientBar {
             .join(", ");
         Some(
             AccessNode::new(Role::Image)
-                .with_name(ui::i18n::I18nManager::lookup_plain("canvas-gradient-stops"))
+                .with_name(crate::locales::CATALOG.t("canvas-gradient-stops"))
                 .with_description(stops),
         )
     }
@@ -402,7 +398,6 @@ impl Widget for GradientBar {
     }
 }
 
-/// The fill's kind, and for a gradient its bar, direction and stops.
 pub fn editor(
     cx: &ViewCx<Artwork>,
     ids: &[String],
@@ -451,7 +446,7 @@ fn kind_picker(
     area: Rect,
     commit: &Rc<dyn Fn(Gradient)>,
 ) -> Element {
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let kinds = [Kind::Solid, Kind::Linear, Kind::Radial];
     let kind = Kind::of(mark);
     // The brush's starting ink when a shape has no fill: a document colour.
@@ -509,7 +504,7 @@ fn direction_and_stops(
     gradient: Gradient,
     active: &LocalState<usize>,
 ) -> Element {
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let mut row = Row::new()
         .no_wrap()
         .with_gap(ui::tokens::Spacing::BASE.s2)

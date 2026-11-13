@@ -1,9 +1,5 @@
-//! Web-Mercator projection + geodesic helpers.
-//!
-//! The map uses the standard slippy-map projection: the world is a square
-//! of `256 · 2^zoom` pixels at a given (fractional) zoom. We project a
-//! `LatLon` to a screen `Point` relative to a viewport whose centre shows
-//! `center`. All trig lives here so the canvas/draw code stays geometric.
+//! Web-Mercator projection and geodesic helpers: a [`LatLon`] projects to a screen `Point` around a
+//! viewport centre, with the world `256 · 2^zoom` pixels across.
 
 use std::f64::consts::PI;
 
@@ -18,12 +14,11 @@ fn world_size(zoom: f64) -> f64 {
     TILE_SIZE * 2f64.powf(zoom)
 }
 
-/// Clamp latitude to the Mercator-valid range.
+/// Clamp latitude to the range Mercator can project.
 fn clamp_lat(lat: f64) -> f64 {
     lat.clamp(-85.051_128_78, 85.051_128_78)
 }
 
-/// Project a coordinate to absolute world pixels at `zoom`.
 pub fn lonlat_to_world(c: LatLon, zoom: f64) -> (f64, f64) {
     let size = world_size(zoom);
     let lat = clamp_lat(c.lat).to_radians();
@@ -40,8 +35,6 @@ pub fn world_to_lonlat(x: f64, y: f64, zoom: f64) -> LatLon {
     LatLon::new(lat, lon)
 }
 
-/// A reusable projection bound to a viewport rectangle + camera. Construct
-/// once per frame and project many points cheaply.
 #[derive(Clone, Copy, Debug)]
 pub struct Projection {
     center_world: (f64, f64),
@@ -62,7 +55,6 @@ impl Projection {
         self.zoom
     }
 
-    /// Project a geographic coordinate to a screen point.
     pub fn project(&self, c: LatLon) -> Point {
         let (wx, wy) = lonlat_to_world(c, self.zoom);
         Point::new(
@@ -71,7 +63,6 @@ impl Projection {
         )
     }
 
-    /// Inverse-project a screen point back to a coordinate.
     pub fn unproject(&self, p: Point) -> LatLon {
         let wx = p.x - self.view_center.x + self.center_world.0;
         let wy = p.y - self.view_center.y + self.center_world.1;
@@ -79,7 +70,6 @@ impl Projection {
     }
 }
 
-/// Great-circle distance between two coordinates, in metres (haversine).
 pub fn haversine_m(a: LatLon, b: LatLon) -> f64 {
     let (lat1, lat2) = (a.lat.to_radians(), b.lat.to_radians());
     let dlat = (b.lat - a.lat).to_radians();
@@ -88,7 +78,6 @@ pub fn haversine_m(a: LatLon, b: LatLon) -> f64 {
     2.0 * EARTH_RADIUS_M * h.sqrt().asin()
 }
 
-/// Total length of a polyline in metres.
 pub fn polyline_length_m(pts: &[LatLon]) -> f64 {
     pts.windows(2)
         .map(|w| {
@@ -98,21 +87,10 @@ pub fn polyline_length_m(pts: &[LatLon]) -> f64 {
         .sum()
 }
 
-/// Simplify a geographic polyline with Ramer–Douglas–Peucker, keeping every
-/// vertex that deviates from the retained line by more than `tolerance_m`
-/// metres and dropping the rest. The two endpoints are always preserved, so a
-/// route's start/end pucks never move.
-///
-/// OSRM's `overview=full` geometry (and the transit planner's leg polylines)
-/// carry a dense run of shape points along every straight section — hundreds of
-/// nearly-collinear vertices that cost the render thread a projection each on
-/// every frame while adding nothing visible. Running this **on the fetch worker**
-/// before the geometry ever reaches the model moves that geometry work off the
-/// UI thread and shrinks the per-frame projection cost, with a deviation bounded
-/// by `tolerance_m` (a few metres — imperceptible at map zoom).
-///
-/// Pure and allocation-light; iterative (an explicit stack) so a very long route
-/// cannot blow the call stack.
+/// Simplify a polyline with Ramer–Douglas–Peucker, keeping the vertices that deviate more than
+/// `tolerance_m` and always the endpoints, so a route's pucks never move. OSRM and MOTIS emit dense
+/// collinear shape points along straight sections; this runs on the fetch worker before the
+/// geometry reaches the model. Iterative, so a long route cannot blow the stack.
 pub fn simplify_polyline(pts: &[LatLon], tolerance_m: f64) -> Vec<LatLon> {
     let n = pts.len();
     if n <= 2 || tolerance_m <= 0.0 {
@@ -122,8 +100,6 @@ pub fn simplify_polyline(pts: &[LatLon], tolerance_m: f64) -> Vec<LatLon> {
         return pts.to_vec();
     };
 
-    // Local equirectangular projection to metres so perpendicular distances are
-    // Euclidean. Anchored at the first point; accurate at route scale.
     let lat0 = origin.lat.to_radians();
     let m_per_deg = EARTH_RADIUS_M * PI / 180.0;
     let cos_lat0 = lat0.cos();
@@ -175,8 +151,6 @@ pub fn simplify_polyline(pts: &[LatLon], tolerance_m: f64) -> Vec<LatLon> {
         .collect()
 }
 
-/// Squared perpendicular distance from planar point `p` to the segment `a`–`b`
-/// (falls back to the distance to `a` when the segment is degenerate).
 fn perp_dist2(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let len2 = dx * dx + dy * dy;
@@ -184,15 +158,12 @@ fn perp_dist2(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
         let (px, py) = (p.0 - a.0, p.1 - a.1);
         return px * px + py * py;
     }
-    // Project p onto the infinite line, clamp to the segment.
     let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2).clamp(0.0, 1.0);
     let (cx, cy) = (a.0 + t * dx, a.1 + t * dy);
     let (ex, ey) = (p.0 - cx, p.1 - cy);
     ex * ex + ey * ey
 }
 
-/// Compute a centre + zoom that frames `pts` inside a `w × h` viewport with
-/// `pad` pixels of margin. Falls back to a default zoom for degenerate input.
 pub fn fit_bounds(pts: &[LatLon], w: f64, h: f64, pad: f64) -> Option<(LatLon, f64)> {
     if pts.is_empty() {
         return None;
@@ -214,8 +185,6 @@ pub fn fit_bounds(pts: &[LatLon], w: f64, h: f64, pad: f64) -> Option<(LatLon, f
     let avail_w = (w - 2.0 * pad).max(64.0);
     let avail_h = (h - 2.0 * pad).max(64.0);
 
-    // Find the largest zoom at which the bbox still fits. Bounded by the fixed
-    // 3.0..19.0 zoom range in 0.25 steps rather than a float `while`.
     let mut best = 3.0_f64;
     for step in 0..64 {
         let z = 3.0 + 0.25 * f64::from(step);
@@ -235,9 +204,8 @@ pub fn fit_bounds(pts: &[LatLon], w: f64, h: f64, pad: f64) -> Option<(LatLon, f
     Some((center, best))
 }
 
-/// Human-readable distance: metres under 1 km, kilometres with one decimal
-/// up to 100 km, whole kilometres beyond, in the person's number format
-/// ("1,972 km", not "1972.2 km").
+/// Distance as a person reads it: metres under 1 km, one decimal to 100 km, whole kilometres
+/// beyond, in their number format.
 pub fn fmt_distance(m: f64) -> String {
     if m < 950.0 {
         format!("{} m", (m / 10.0).round() as i64 * 10)
@@ -248,8 +216,6 @@ pub fn fmt_distance(m: f64) -> String {
     }
 }
 
-/// Human-readable duration from seconds, in the person's language: a card or
-/// a sheet reads the units the way the person does.
 pub fn fmt_duration(secs: f64) -> String {
     let total_min = (secs / 60.0).round() as i64;
     if total_min < 60 {
@@ -268,14 +234,10 @@ pub fn fmt_duration(secs: f64) -> String {
     }
 }
 
-/// Pick a "nice" round distance (m) and its on-screen pixel width for the
-/// scale bar at the given latitude/zoom. Returns `(label, pixels)`.
 pub fn scale_bar(center: LatLon, zoom: f64, max_px: f64) -> (String, f64) {
-    // Metres-per-pixel at this latitude.
     let mpp =
         (2.0 * PI * EARTH_RADIUS_M * center.lat.to_radians().cos()) / (TILE_SIZE * 2f64.powf(zoom));
     let max_m = mpp * max_px;
-    // Largest nice value ≤ max_m from the 1-2-5 sequence.
     let nice = [
         1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1_000.0, 2_000.0, 5_000.0, 10_000.0,
         20_000.0, 50_000.0, 100_000.0,
@@ -312,7 +274,6 @@ mod tests {
         }
 
         {
-            // ~111 km between one degree of latitude.
             let d = haversine_m(LatLon::new(0.0, 0.0), LatLon::new(1.0, 0.0));
             assert!((d - 111_195.0).abs() < 500.0, "got {d}");
         }
@@ -328,11 +289,7 @@ mod tests {
 
     #[test]
     fn simplify_drops_collinear_points_keeps_corners_and_handles_edges() {
-        // Phase `simplify_drops_collinear_shape_points`.
-        // Dense collinear shape points along a straight road collapse to the two
-        // endpoints, and the endpoints are always preserved.
         {
-            // 100 points evenly along a straight east–west line.
             let pts: Vec<LatLon> = (0..100)
                 .map(|i| LatLon::new(48.0, 11.0 + f64::from(i) * 0.001))
                 .collect();
@@ -342,11 +299,7 @@ mod tests {
             assert_eq!(out[1], pts[99], "end preserved");
         }
 
-        // Phase `simplify_preserves_corners_within_tolerance`.
-        // A real corner (deviation well above tolerance) is kept, and no retained
-        // vertex deviates from the simplified line by more than the tolerance.
         {
-            // An L-shape: east then north, with jitter points along each leg.
             let mut pts = Vec::new();
             for i in 0..20 {
                 pts.push(LatLon::new(48.0, 11.0 + f64::from(i) * 0.001));

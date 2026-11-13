@@ -46,7 +46,6 @@ fn final_component_paths_follow_the_native_cache_support_contract() {
     });
 }
 
-/// Working namespace, record parser and impossible epochs.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -60,7 +59,6 @@ fn working_names_and_fixed_records_are_bounded_and_disjoint() {
             assert!(
                 validate_leaf(&selected, ".tilo-part-0123456789abcdef0123456789abcdef").is_ok()
             );
-            // Whatever a provider mints must pass the check it is held to.
             for name in [0, 1, u128::MAX, 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef] {
                 let leaf = working_leaf(name);
                 assert!(validate_leaf(&selected, &leaf).is_ok(), "refused {leaf:?}");
@@ -232,7 +230,6 @@ fn file_id(file: &File) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// Fresh creation, restart trim, failed successors and reset intent.
 #[test]
 #[cfg(unix)]
 #[allow(
@@ -415,8 +412,6 @@ fn creation_and_restart_keep_only_committed_prefixes() {
         },
     );
 }
-/// Host fixture only: real separate journal parent, held identity, exclusive
-/// ordinary record files, record/file/parent syncs. Not a native security provider.
 #[cfg(unix)]
 pub(in crate::setup) struct DiskProvider {
     dir: PathBuf,
@@ -644,7 +639,6 @@ fn stale_malformed_or_unknown_state_never_mutates_payload() {
                     fs::read_dir(dir.path().join("journal")).unwrap().count(),
                     before.len()
                 );
-                // Valid transition succeeds in the same still-live session after refusal.
                 prefix(&mut prepared, b"EEEE").unwrap();
                 assert_eq!(prepared.committed, 8);
             }
@@ -775,7 +769,6 @@ fn stale_malformed_or_unknown_state_never_mutates_payload() {
         },
     );
 }
-/// Periodic readback, flush failures and previous digest checks.
 #[test]
 #[cfg(unix)]
 #[allow(
@@ -888,7 +881,6 @@ fn rewrite_checksum(b: &mut [u8]) {
     let h = Sha256::digest(&b[..end]);
     b[end..].copy_from_slice(&h);
 }
-/// Bounded scans, duplicate transitions and impossible epochs on recovery.
 #[test]
 #[cfg(unix)]
 #[allow(
@@ -1113,7 +1105,6 @@ fn standalone_epoch_record(kind: u8, generation: u64, epoch: u64) -> Vec<u8> {
     bytes.extend_from_slice(&checksum);
     bytes
 }
-/// Bootstrap hints, preparation receipts and failures.
 #[test]
 #[cfg(unix)]
 #[allow(
@@ -1199,7 +1190,6 @@ fn preparation_receipts_follow_real_history_and_revoke_on_failure() {
             );
             assert_eq!(fs::read_dir(&provider.disk.dir).unwrap().count(), 2);
             assert_eq!(read_totals("restart"), (4, 4));
-            // Failed construction must revoke a prior success before it can return Err.
             assert!(Session::new(&selected, 0, 0, &mut provider).is_err());
             assert!(!provider.complete);
         },
@@ -1310,8 +1300,6 @@ fn preparation_receipts_follow_real_history_and_revoke_on_failure() {
     );
 }
 
-/// Ordinary-file lifecycle observer. No native security or Linux publication
-/// behavior is substituted: this checks the real Session's callback ordering.
 #[cfg(unix)]
 struct LifecycleProvider<'a> {
     disk: DiskProvider,
@@ -1331,8 +1319,6 @@ impl Provider for &mut LifecycleProvider<'_> {
         assert!(proof.authorizes(self.selected, 0, &self.disk.own)?);
         assert!(!proof.authorizes(self.selected, 1, &self.disk.own)?);
         let payload = self.disk.dir.parent().unwrap().join(&self.disk.own.leaf);
-        // Successful preparation must already have trimmed the uncommitted tail
-        // and normalized any third survivor before issuing the receipt.
         assert_eq!(fs::metadata(payload).unwrap().len(), self.expected_length);
         assert!(fs::read_dir(&self.disk.dir).unwrap().count() <= 2);
         self.events.push("complete");
@@ -1376,7 +1362,6 @@ fn lifecycle_records(selected: &SelectedManifest, dir: &Path) -> (DiskProvider, 
     prefix(&mut prepared, b"EE").unwrap();
     drop(prepared);
     drop(session);
-    // Emulate the durable uncertain third successor that recovery normalizes.
     fs::write(dir.join("journal/record-1"), zero).unwrap();
     let (disk, mut file) = DiskProvider::reopen(dir, own);
     file.seek(std::io::SeekFrom::End(0)).unwrap();
@@ -1396,8 +1381,6 @@ fn record_snapshot(dir: &Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
     records.sort();
     records
 }
-// Scoped host fixture hook at the actual final preparation receipt, after
-// Session's real record normalization, tail trimming and cursor restoration.
 #[cfg(unix)]
 type PreparationHook = Box<dyn FnMut(usize) -> Result<(), String>>;
 #[cfg(unix)]
@@ -1416,8 +1399,6 @@ pub(in crate::setup) fn with_preparation_hook(hook: PreparationHook, run: impl F
     run();
 }
 
-/// Real-file common-protocol fixture. Freshness is minted only by create_new;
-/// this models provider policy, not Linux security, locking or publication.
 #[cfg(unix)]
 pub(in crate::setup) struct FreshDisk<'a> {
     disk: DiskProvider,
@@ -1566,7 +1547,6 @@ fn fresh_settlements_require_normal_preparation_and_preserve_evidence() {
             let dirs = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
             let mut owners = Vec::new();
             for (index, dir) in dirs.iter().enumerate() {
-                // Independent admitted creations; neither is created under a cancelled flag.
                 let cancel = std::sync::Arc::new(AtomicBool::new(false));
                 let (mut p, mut f) = FreshDisk::create(dir.path(), &selected, index);
                 p.cancel_during_publish = Some(cancel.clone());
@@ -1731,8 +1711,6 @@ fn fresh_settlements_require_normal_preparation_and_preserve_evidence() {
                 if stage == "record-write" {
                     assert!(checkpoint::Record::decode(&before[0].1).is_err());
                 } else if stage == "lost-ack" {
-                    // Disk state may be complete despite an error; only independent
-                    // reopen/recovery may accept it, never this poisoned owner.
                     let own = p.disk.ownership();
                     drop(p);
                     drop(f);

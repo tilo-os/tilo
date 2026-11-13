@@ -200,7 +200,6 @@ mod tests {
     use ui::widget::{Element, Text};
 
     // An isolated Contacts owner exercises the actual person-record boundary;
-    // Mail consumes this same record without acquiring editor authority.
     struct DirectoryOwner;
     impl ResourceApp for DirectoryOwner {
         type Resource = ContactDirectory;
@@ -267,8 +266,6 @@ mod tests {
         let consumer = mail.shared_person::<ContactDirectory>().unwrap();
         assert!(!consumer.editable());
         // Simulate the host's incoming replica transfer, outside app actions.
-        // An app profile is app-specific; the owner and consumer never share
-        // a primary mailbox or bypass its binding by reusing a data directory.
         consumer
             .record()
             .edit(false, |doc| {
@@ -627,7 +624,6 @@ mod chrome_tests {
             mail.harness().set_theme(theme);
             mail.harness().resize((1280, 800)).unwrap();
             mail.harness().relayout();
-            // "Write to a contact" is in the window bar's menu.
             let write = ui::window_toolbar::declared()
                 .and_then(|toolbar| {
                     toolbar

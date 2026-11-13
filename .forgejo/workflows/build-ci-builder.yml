@@ -1,0 +1,140 @@
+name: Build / CI builder
+
+# Publishes registry.tilo.so/tilo/tilo-builder (os/Containerfile.builder), the
+# image the Rust jobs run in, whenever what it is built from changes, under the
+# tag those inputs name (tools/ci/publish/ci-builder.sh tag). Jobs resolve that
+# tag for their own commit (tools/ci/resolve_builder.py), so none runs in an
+# image older than its commit asks for. `latest` follows main for the app
+# workflows tilo-app generates. The paths below are ci-builder.sh's `inputs`
+# (tools/tests/test_ci_builder_workflow.py holds that line).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tools/ci/publish/ci-builder.sh"
+      - "os/Containerfile.builder"
+      - "rust-toolchain.toml"
+      - "os/dev/cache-github-assets.sh"
+      - "os/external-assets/wine/**"
+      - "os/external-assets/cargo/**"
+      - "os/external-assets/github-assets.tsv"
+      - "dist/ci/install-build-deps.sh"
+      - "tools/ci/check-build-env.sh"
+      - "tools/ci/install-android-ndk.sh"
+      - "tools/ci/install-pdfium.sh"
+      - "tools/ci/native-mold-linker.sh"
+      - "tools/ci/verify-native-mold.sh"
+      - "tools/ci/windows/wine-prefix.sh"
+      - "tools/ci/install-wine.sh"
+      - "tools/ci/install-cargo.sh"
+      - "tools/ci/shstk-mark.py"
+      - "os/scripts/verify-elf-hardening.sh"
+      - "tools/font-catalog.py"
+      - "crates/sdk/ui-core/assets/fonts/manifest.toml"
+      - "crates/sdk/ui-core/assets/fonts/artifacts.json"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-builder-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+            runner: runner
+          - arch: aarch64
+            platform: linux/arm64
+            runner: runner-large-arm64
+    runs-on: ${{ matrix.runner }}
+    # Wine and cargo build from source in it; the layer cache makes a rebuild
+    # of a later step minutes.
+    timeout-minutes: 180
+    outputs:
+      tag: ${{ steps.inputs.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Require a native build host
+        run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
+
+      - name: Name the image and lay out its context
+        id: inputs
+        run: |
+          set -euo pipefail
+          tag=$(bash tools/ci/publish/ci-builder.sh tag)
+          assets=$(bash tools/ci/publish/ci-builder.sh assets '${{ matrix.arch }}' | tr '\n' ' ')
+          bash tools/ci/publish/ci-builder.sh context "$RUNNER_TEMP/ci-builder-context"
+          printf 'tag=%s\nassets=%s\n' "$tag" "$assets" >> "$GITHUB_OUTPUT"
+          printf 'channel=%s\n' "$(awk -F'"' '/^channel/{print $2}' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the pinned external assets
+        uses: ./.forgejo/actions/cache-github-assets
+        with:
+          key: ci-builder-assets-${{ matrix.arch }}-v1
+          assets: ${{ steps.inputs.outputs.assets }}
+
+      - name: Lay out the pinned fonts
+        run: python3 -I tools/font-catalog.py seed crates/sdk/ui-core/assets/fonts "$RUNNER_TEMP/font-seed"
+
+      - name: Log in to registry.tilo.so
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up buildx
+        uses: ./.forgejo/actions/setup-buildx
+
+      # The Containerfile runs tools/ci/check-build-env.sh, so a missing build
+      # dependency fails here rather than in every job.
+      - name: Build and push the ${{ matrix.arch }} image
+        env:
+          TAG: ${{ steps.inputs.outputs.tag }}
+          CHANNEL: ${{ steps.inputs.outputs.channel }}
+        run: |
+          set -euo pipefail
+          docker buildx build --push --progress=plain --provenance=false \
+            --platform '${{ matrix.platform }}' \
+            --cache-from 'type=gha,scope=ci-builder-${{ matrix.arch }}' \
+            --cache-to 'type=gha,scope=ci-builder-${{ matrix.arch }},mode=max,ignore-error=true' \
+            --build-context github-assets=os/external-assets/cache \
+            --build-context "font-seed=$RUNNER_TEMP/font-seed" \
+            --build-arg "RUST_CHANNEL=$CHANNEL" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --file os/Containerfile.builder \
+            --tag "registry.tilo.so/tilo/tilo-builder:$TAG-${{ matrix.arch }}" \
+            "$RUNNER_TEMP/ci-builder-context"
+
+  publish:
+    needs: build
+    runs-on: runner
+    timeout-minutes: 15
+    steps:
+      - name: Log in to registry.tilo.so
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Registry operations only: the daemon's own builder does them.
+      - name: Publish the index
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          image=registry.tilo.so/tilo/tilo-builder
+          tags=(--tag "$image:$TAG" --tag "$image:sha-$GITHUB_SHA")
+          if [[ $GITHUB_REF == refs/heads/main ]]; then tags+=(--tag "$image:latest"); fi
+          docker buildx imagetools create "${tags[@]}" "$image:$TAG-x86_64" "$image:$TAG-aarch64"
+          digest=$(docker buildx imagetools inspect "$image:$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf '### CI builder\n\n- `%s:%s`\n- `%s@%s`\n' "$image" "$TAG" "$image" "$digest" | tee -a "$GITHUB_STEP_SUMMARY"

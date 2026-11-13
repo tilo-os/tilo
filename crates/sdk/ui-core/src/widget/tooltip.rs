@@ -278,6 +278,19 @@ fn draw_chip_marked(
     scene.pop_layer();
 }
 
+/// The room a tooltip for a control within `within` may take: `within`, cut to
+/// the part of the screen this frame draws (`presence`'s viewport), so the chip
+/// of a control near the edge of a window that runs past the screen (a strip
+/// panned on a phone) stays on screen, as every floating Panel does. `within`
+/// alone where the frame names no screen, or shows none of it.
+pub fn on_screen(presence: &crate::presence::PresenceCtx, within: Rect) -> Rect {
+    presence
+        .viewport()
+        .map(|screen| within.intersect(screen))
+        .filter(|room| room.width() > 0.0 && room.height() > 0.0)
+        .unwrap_or(within)
+}
+
 /// Composes [`chip_size`], [`chip_rect`] and [`draw_chip`] — the one call
 /// [`TooltipHost`] uses to render a tooltip.
 pub fn draw_hover_tooltip(
@@ -1279,5 +1292,34 @@ mod tests {
                 Some(label)
             );
         }
+    }
+
+    /// A person's tooltip for a control near the edge of a window that runs past the screen (a
+    /// strip panned on a phone) stays on the screen, wholly, not merely inside the window.
+    #[test]
+    fn a_tooltip_near_the_screens_edge_stays_on_the_screen_inside_a_wider_window() {
+        let theme = Theme::light();
+        let window = Rect::new(0.0, 0.0, 900.0, 844.0);
+        let screen = Rect::new(0.0, 0.0, 390.0, 844.0);
+        let presence = PresenceCtx::default();
+        presence.viewport.set(Some(screen));
+        let room = on_screen(&presence, window);
+        assert_eq!(room, screen, "the window's part of the screen");
+        let anchor = Rect::new(228.0, 12.0, 382.0, 40.0);
+        let mut text = TextRenderer::new();
+        let label = "Fill Jane Doe's visa application";
+        let size = chip_size_in_viewport(label, &mut text, &theme, room);
+        let rect = chip_rect_on(&theme, TooltipSide::Below, anchor, size, room);
+        let margin = ChipMetrics::of(&theme).margin;
+        assert!(
+            rect.x1 <= screen.x1 - margin + 0.5 && rect.x0 >= screen.x0,
+            "the chip stays on the screen: {rect:?}"
+        );
+        assert!(rect.y0 >= anchor.y1, "and under its control: {rect:?}");
+        // Unclamped to the screen it ran past the screen's edge.
+        let wide = chip_rect_on(&theme, TooltipSide::Below, anchor, size, window);
+        assert!(wide.x1 > screen.x1, "{wide:?}");
+        // A frame that names no screen keeps the window.
+        assert_eq!(on_screen(&PresenceCtx::default(), window), window);
     }
 }

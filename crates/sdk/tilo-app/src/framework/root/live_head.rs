@@ -16,6 +16,7 @@ impl ResourceRoot {
         &self,
         state: &dyn std::any::Any,
         epoch: &str,
+        label: &str,
     ) -> Rc<tilo_actions::ResourceSpec> {
         let at = (
             self.version(),
@@ -26,7 +27,7 @@ impl ResourceRoot {
             .live_head
             .borrow()
             .as_ref()
-            .filter(|kept| kept.at == at)
+            .filter(|kept| kept.at == at && kept.label == label)
         {
             return Rc::clone(&kept.resource);
         }
@@ -37,7 +38,7 @@ impl ResourceRoot {
             kept.at.1 == at.1
                 && kept.at.2 == at.2
                 && kept.id == id
-                && kept.label == self.label
+                && kept.label == label
                 && Some(&kept.inputs) == inputs.as_ref()
         }) {
             kept.at = at;
@@ -45,13 +46,13 @@ impl ResourceRoot {
         }
         let _profile = tilo_resource::profiling::Phase::start("framework.resource_head");
         let Some(inputs) = inputs else {
-            return Rc::new(self.typed.head(id, &self.label, state));
+            return Rc::new(self.typed.head(id, label, state));
         };
-        let resource = Rc::new(self.typed.head_of(id, &self.label, &inputs));
+        let resource = Rc::new(self.typed.head_of(id, label, &inputs));
         *kept = Some(LiveHead {
             at,
             id: id.to_owned(),
-            label: self.label.clone(),
+            label: label.to_owned(),
             inputs,
             resource: Rc::clone(&resource),
         });

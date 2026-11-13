@@ -8,8 +8,6 @@ use std::{
 #[cfg(all(feature = "voice", unix, not(target_arch = "wasm32")))]
 pub mod gst;
 
-/// One call's audio devices: the microphone picked from this device's graph
-/// and the connection the call's audio runs on.
 pub mod call;
 
 pub const RATE: u32 = 48_000;
@@ -38,11 +36,6 @@ impl CaptureTimeline {
     pub fn reset_source(&mut self) {
         self.source = None;
     }
-    /// Map a capture source's raw sample clock onto the monotonic 48 kHz media timeline.
-    ///
-    /// # Errors
-    ///
-    /// [`AudioError::InvalidFrame`] for a non-frame-aligned, regressing or overflowing timestamp.
     pub fn timestamp(&mut self, raw: u64, captured_at: Instant) -> Result<u64, AudioError> {
         let (raw_base, media_base) = if let Some(source) = self.source {
             source
@@ -107,7 +100,6 @@ pub struct PublicationId {
 }
 
 impl PublicationId {
-    /// Carrier generation, then incarnation: what supersedes what.
     fn epoch(&self) -> (u64, u64) {
         (self.carrier_generation, self.incarnation)
     }
@@ -116,7 +108,6 @@ impl PublicationId {
 /// Contiguous frames that make a voice heard: speech arrives every 20 ms,
 /// while a silent (DTX) publisher's comfort-noise updates come 400 ms apart.
 const HEARD_RUN: u32 = 3;
-/// A voice is heard while its last contiguous frame is this recent.
 const HEARD_FOR: Duration = Duration::from_millis(120);
 
 #[derive(Clone, Debug)]
@@ -179,12 +170,6 @@ impl CaptureQueue {
         self.active = false;
         self.frames.clear();
     }
-    /// Queue one captured frame, dropping frames past their send lifetime.
-    ///
-    /// # Errors
-    ///
-    /// [`AudioError::Revoked`] while stopped and [`AudioError::InvalidFrame`] for a malformed or
-    /// future-dated frame.
     pub fn push(&mut self, frame: CapturedOpus, now: Instant) -> Result<(), AudioError> {
         if !self.active {
             return Err(AudioError::Revoked);
@@ -212,10 +197,6 @@ impl CaptureQueue {
     }
 }
 
-/// Whether an encoded Opus packet carries anything. With DTX the encoder
-/// returns a packet of at most two bytes for a silent frame that needs no
-/// transmission (libopus `opus_encode`); the receiver's decoder fills the gap
-/// with comfort noise from the last update it got.
 #[must_use]
 pub fn needs_transmission(packet: &[u8]) -> bool {
     packet.len() > 2
@@ -233,7 +214,6 @@ pub struct PlayoutFrame {
     pub sequence: u64,
     pub timestamp_48k: u64,
     pub expires_at: Instant,
-    /// `None` requests exactly one frame of codec loss concealment.
     pub payload: Option<Vec<u8>>,
 }
 
@@ -256,12 +236,10 @@ struct Publisher {
     jitter_ms: f64,
     target_ms: u64,
     applied_target_ms: u64,
-    /// Contiguous frames up to the last one received.
     run: u32,
 }
 
 impl Publisher {
-    /// A publisher heard for the first time, with `frame`.
     fn first(frame: &ReceivedOpus) -> Self {
         Self {
             id: frame.publisher.clone(),
@@ -283,8 +261,6 @@ impl Publisher {
         }
     }
 
-    /// Count a frame at `timestamp_48k` into the run of contiguous frames:
-    /// speech runs on, a silent publisher's comfort noise starts over.
     fn count_run(&mut self, timestamp_48k: u64) {
         self.run = if self.run > 0 && timestamp_48k == self.last_timestamp.saturating_add(960) {
             self.run.saturating_add(1)
@@ -293,8 +269,6 @@ impl Publisher {
         };
     }
 
-    /// Update the arrival-jitter estimate and playout target from one frame
-    /// that is newer in both media time and arrival time.
     fn observe_arrival(&mut self, timestamp_48k: u64, received_at: Instant) {
         if timestamp_48k <= self.last_timestamp || received_at < self.last_receive {
             return;
@@ -317,18 +291,11 @@ impl Publisher {
     }
 }
 
-/// A collection length as a saturating statistics count.
 fn count(len: usize) -> u64 {
     u64::try_from(len).unwrap_or(u64::MAX)
 }
 
 impl JitterBuffer {
-    /// Admit one received frame into its publisher's playout queue.
-    ///
-    /// # Errors
-    ///
-    /// [`AudioError::InvalidFrame`] for a malformed or inconsistent frame, [`AudioError::Revoked`]
-    /// for a superseded carrier generation, and [`AudioError::Capacity`] when full.
     pub fn push(&mut self, mut frame: ReceivedOpus, now: Instant) -> Result<(), AudioError> {
         validate_frame(frame.duration_samples, &frame.payload)?;
         if frame.publisher.namespace.is_empty()
@@ -429,7 +396,6 @@ impl JitterBuffer {
                     .min_by_key(|(_, publisher)| publisher.last_receive)
                     .map(|(idle, _)| idle.clone());
                 let Some(quiet) = quiet else {
-                    // Every slot is speaking: this voice waits for one.
                     self.stats.overruns = self.stats.overruns.saturating_add(1);
                     return Ok(false);
                 };
@@ -466,8 +432,6 @@ impl JitterBuffer {
             };
             publisher.frames.retain(|ts, _| *ts >= timestamp);
             self.stats.late = self.stats.late.saturating_add(skipped);
-            // PLC has no new media lifetime: it is bounded by the last
-            // authenticated receive window, including asynchronous decode.
             let mut deadline = publisher.active_until;
             let mut sequence = publisher.next_sequence;
             let payload = publisher.frames.remove(&timestamp).and_then(|frame| {
@@ -523,7 +487,6 @@ impl JitterBuffer {
             })
             .map(|publisher| &publisher.id)
     }
-    /// Whether `publisher` holds one of the voices this device plays.
     pub fn contains(&self, publisher: &PublicationId) -> bool {
         self.publishers
             .get(&publisher.namespace)

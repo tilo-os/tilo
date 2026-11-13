@@ -6,6 +6,7 @@ use crate::a11y::{AccessNode, AccessState, Role};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::{AppModel, ModelPath, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -287,7 +288,7 @@ impl crate::widget::Decorator for ControlRow {
     ) {
         self.paint_lift(scene, transform, theme);
         self.content
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

@@ -1,12 +1,6 @@
 //! The service against real libsecret: `secret-tool` and a
 //! `gi.repository.Secret` client talk to the built `tilo-secret-service`
 //! over a private session bus.
-//!
-//! The bus is a `dbus-daemon` of this test's own, with its own runtime,
-//! home and data directories and a development device identity; nothing
-//! reaches the person's session bus or keyring. The tools must exist: a
-//! check that cannot observe its subject fails (CI installs them with
-//! `tools/ci/ensure-session-bus-tools.sh`).
 
 #![allow(
     clippy::unwrap_used,
@@ -28,7 +22,6 @@ fn service() -> std::path::PathBuf {
 }
 const NAME: &str = "org.freedesktop.secrets";
 
-/// A private session bus and the directories every client of it uses.
 struct Session {
     root: tempfile::TempDir,
     bus: tilo_test_env::PrivateBus,
@@ -123,7 +116,6 @@ impl Session {
         }
     }
 
-    /// `secret-tool args`, with `input` on standard input.
     fn secret_tool(&self, args: &[&str], input: &str) -> (bool, String) {
         let mut child = self
             .command("secret-tool")
@@ -178,12 +170,10 @@ fn secret_tool_stores_looks_up_searches_and_clears_across_a_restart() {
     assert!(listing.contains("secret = hunter2"), "{listing}");
     assert!(listing.contains("attribute.account = carol"), "{listing}");
 
-    // The vault holds none of it in the clear.
     let vault = std::fs::read(session.path("data/tilo/secrets/vault.tseal")).unwrap();
     assert!(!vault.windows(7).any(|window| window == b"hunter2"));
     assert!(!vault.windows(4).any(|window| window == b"Mail"));
 
-    // A new service process over the same files: nothing was lost.
     session.stop_service();
     session.start_service();
     let (found, secret) = session.secret_tool(&["lookup", "account", "carol"], "");
@@ -240,7 +230,6 @@ fn a_gi_secret_client_works_over_both_session_algorithms_and_browses_items() {
         );
     }
 
-    // And the foreign item is still there for its owner.
     let (found, secret) = session.secret_tool(&["lookup", "account", "from-secret-tool"], "");
     assert!(found && secret == "not-yours", "{secret}");
 }

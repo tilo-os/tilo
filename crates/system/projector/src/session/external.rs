@@ -124,11 +124,8 @@ fn run_airplay_process(
     )
 }
 
-/// What the session loop wakes for.
 enum SenderOutput {
-    /// A line of sender output, and whether it says the stream is up.
     Line { ready: bool, text: String },
-    /// The service asked the session to stop.
     Stop,
 }
 
@@ -242,7 +239,6 @@ fn run_external_process(
     }
 }
 
-/// Keeps the last eight diagnostic lines: enough to explain a failure.
 fn keep_tail(diagnostics: &mut Vec<String>, line: String) {
     diagnostics.push(line);
     if diagnostics.len() > 8 {
@@ -259,7 +255,6 @@ fn forward_sender_diagnostics(
     ready_messages: &[String],
 ) {
     for line in BufReader::new(stream).lines().map_while(Result::ok) {
-        // Classify before redaction: a password may coincide with a status word.
         let ready = ready_messages.iter().any(|message| line.contains(message));
         let text = match credential.filter(|value| !value.is_empty()) {
             Some(secret) => line.replace(secret, "[redacted]"),
@@ -299,7 +294,6 @@ mod tests {
             .expect("make sender executable");
     }
 
-    /// Waits for the session to report the receiver connected.
     fn connected(events: &Receiver<ProjectorEvent>) -> bool {
         let deadline = tilo_test_env::hang_deadline();
         while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) {

@@ -1,16 +1,12 @@
 //! Change notification for the settings and the directories beside them.
 //!
-//! The settings themselves ring their source's change signal ([`watch_settings`]). The
-//! identity and dictionary directories are watched as directories: their writers replace
-//! files by rename, so a watch on a file would follow the old inode.
-//!
-//! The directory watches are change-only ([`tilo_files::native::watch_changes`]): reading a file in a
-//! watched directory does not wake them. The identity directory is read whenever the desktop
-//! checks who is signed in, and an idle desktop woke a watcher for each of those reads.
+//! The settings ring their source's change signal ([`watch_settings`]). The identity and dictionary
+//! directories are watched as directories, because their writers replace files by rename and a
+//! watch on a file would follow the old inode. The directory watches are change-only: reading a
+//! file in a watched directory does not wake them.
 
 use std::path::Path;
 
-/// A live watch; dropping it stops notifications.
 pub struct SettingsWatch {
     _directory: Option<tilo_files::native::ChangeWatch>,
     _listener: Option<std::sync::Arc<crate::Listener>>,
@@ -54,8 +50,6 @@ pub fn watch_file_at(
     )
 }
 
-/// Watch the existing identity directory for selector and identity-record changes.
-/// Re-read the verified active owner after each notification.
 pub fn watch_identity_at(
     directory: &Path,
     on_change: impl Fn() + Send + 'static,
@@ -63,8 +57,6 @@ pub fn watch_identity_at(
     watch_directory(directory, identity_entry(directory.to_owned()), on_change)
 }
 
-/// Whether a changed path is the identity selector or an identity record
-/// directly in `root`.
 fn identity_entry(root: std::path::PathBuf) -> impl Fn(&Path) -> bool + Send + 'static {
     move |path| {
         path.parent() == Some(root.as_path())
@@ -100,8 +92,6 @@ pub(crate) fn watch_dictionary_at(
     )
 }
 
-/// Call `on_change` when an entry of `directory` that `names` accepts (given its full path)
-/// changes, and when changes may have been missed.
 fn watch_directory(
     directory: &Path,
     names: impl Fn(&Path) -> bool + Send + 'static,
@@ -120,7 +110,6 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
 
-    /// A watch whose every notification says what `look` saw when it ran.
     fn watch_seeing<T: Send + 'static>(
         start: impl FnOnce(Box<dyn Fn() + Send>) -> std::io::Result<SettingsWatch>,
         look: impl Fn() -> T + Send + 'static,
@@ -133,7 +122,6 @@ mod tests {
         (watch, seen)
     }
 
-    /// Waits for a notification that ran once `seen` holds.
     fn notified_after<T>(what: &str, seen: &mpsc::Receiver<T>, holds: impl Fn(&T) -> bool) {
         while !holds(&tilo_test_env::recv(what, seen)) {}
     }
@@ -172,20 +160,6 @@ mod tests {
         assert!(!entry(&root.join("nested").join("work.json")));
     }
 
-    /// The watch threads this process runs, by thread id.
-    #[cfg(target_os = "linux")]
-    fn watch_threads() -> Vec<String> {
-        std::fs::read_dir("/proc/self/task")
-            .unwrap()
-            .flatten()
-            .map(|task| task.file_name().to_string_lossy().into_owned())
-            .filter(|tid| {
-                std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
-                    .is_ok_and(|name| name.trim() == tilo_files::native::CHANGE_WATCH_THREAD)
-            })
-            .collect()
-    }
-
     #[cfg(target_os = "linux")]
     #[test]
     fn reading_the_watched_directory_does_not_wake_the_watch() {
@@ -201,18 +175,27 @@ mod tests {
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let record = root.join("work.json");
         std::fs::write(&record, "{}").unwrap();
-        let before = watch_threads();
-        let _watch = watch_identity_at(&root, || {}).unwrap();
-        let mut tid = None;
-        tilo_test_env::wait_until("the watch thread to block", || {
-            tid = watch_threads()
-                .into_iter()
-                .find(|candidate| !before.contains(candidate));
-            tid.as_deref()
-                .is_some_and(|tid| crate::tests::blocked(tid).1)
-        });
-        let tid = tid.unwrap();
-        let (switches, _) = crate::tests::blocked(&tid);
+        // The watch's thread is the one that runs its callback, so the change below is what names
+        // it here: this binary runs its tests as threads of one process, and every watch's thread
+        // of the process is called the same, so a thread found by name may be another test's.
+        //
+        // The change is one event and no more — a rename into the directory, which is how the
+        // writers of the directories watched here publish — so nothing of it is left to arrive
+        // once the count below is taken.
+        let (named, name) = mpsc::channel();
+        let _watch = watch_identity_at(&root, move || {
+            let _ = named.send(tilo_test_env::idle::current_thread_id());
+        })
+        .unwrap();
+        let elsewhere = crate::tests::tmpdir();
+        let published = elsewhere.join("active");
+        std::fs::write(&published, "work").unwrap();
+        std::fs::rename(&published, root.join("active")).unwrap();
+        std::fs::remove_dir_all(elsewhere).unwrap();
+        let tid = tilo_test_env::recv("the watch thread", &name)
+            .expect("this thread's id")
+            .to_string();
+        let switches = crate::tests::blocked_count(&tid);
         for _ in 0..20 {
             std::fs::read(&record).unwrap();
             let _ = std::fs::read_dir(&root).unwrap().count();

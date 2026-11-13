@@ -1,26 +1,14 @@
 //! Take changes into an [`AutoCommit`] without growing it by a patch event per op.
 //!
-//! An `AutoCommit` owns a patch log that backs its incremental diff
-//! ([`AutoCommit::update_diff_cursor`], [`AutoCommit::diff_incremental`]). It
-//! passes that log to every apply path — [`AutoCommit::apply_changes`],
-//! [`AutoCommit::apply_changes_batch`], [`AutoCommit::load_incremental`],
-//! [`AutoCommit::merge`] and the sync wrapper's
-//! [`SyncDoc::receive_sync_message`] — and to the view switches
-//! [`AutoCommit::isolate`] and [`AutoCommit::integrate`]. Automerge (0.8
-//! through at least 0.12) records an event per applied op into that log
-//! whether or not it is active, and only an active log is ever drained
-//! (`update_diff_cursor` truncates it). A document nobody diffs therefore
-//! keeps one event for every op any peer ever sent it, for as long as it
-//! lives: several times the size of the document itself.
+//! An `AutoCommit` records an event per applied op into its patch log whether or not a
+//! diff cursor is armed, and only an armed log is ever drained; a document nobody diffs
+//! therefore keeps one event for every op any peer ever sent it, for as long as it lives.
 //!
-//! [`ApplyIncoming`] wraps each of those calls. When no diff cursor is armed
-//! the log it leaves behind is dead, so it is replaced by an empty one
-//! ([`AutoCommit::reset_diff_cursor`]); a document whose owner armed a cursor
-//! keeps its log for the next diff. The raw methods are listed under
-//! `disallowed-methods` in `clippy.toml`, so this trait is the one way in.
-//!
-//! [`Automerge`](automerge::Automerge) itself is not affected: its apply paths
-//! log into a fresh inactive log per call and drop it.
+//! [`ApplyIncoming`] wraps each apply path: with no cursor armed the log it leaves behind
+//! is dead and is replaced by an empty one ([`AutoCommit::reset_diff_cursor`]), while a
+//! document whose owner armed a cursor keeps its log for the next diff. The raw methods
+//! are listed under `disallowed-methods` in `clippy.toml`, so this trait is the one way
+//! in.
 
 #[cfg(feature = "heap-probe")]
 pub mod heap;
@@ -42,31 +30,16 @@ use automerge::{AutoCommit, AutomergeError, Change, ChangeHash};
 /// Every method has the signature and result of the automerge method it is
 /// named after.
 pub trait ApplyIncoming {
-    /// [`AutoCommit::apply_changes`].
-    ///
-    /// # Errors
-    ///
-    /// As [`AutoCommit::apply_changes`].
     fn apply_incoming(
         &mut self,
         changes: impl IntoIterator<Item = Change> + Clone,
     ) -> Result<(), AutomergeError>;
 
-    /// [`AutoCommit::apply_changes_batch`].
-    ///
-    /// # Errors
-    ///
-    /// As [`AutoCommit::apply_changes_batch`].
     fn apply_incoming_batch(
         &mut self,
         changes: impl IntoIterator<Item = Change> + Clone,
     ) -> Result<(), AutomergeError>;
 
-    /// [`AutoCommit::load_incremental`] — the number of ops applied.
-    ///
-    /// # Errors
-    ///
-    /// As [`AutoCommit::load_incremental`].
     fn load_incoming(&mut self, data: &[u8]) -> Result<usize, AutomergeError>;
 
     /// [`Self::load_incoming`] of `data` whole or not at all: every chunk of
@@ -83,33 +56,20 @@ pub trait ApplyIncoming {
         self.load_incoming(data)
     }
 
-    /// [`AutoCommit::merge`] — the hashes of the changes taken from `other`.
-    ///
-    /// # Errors
-    ///
-    /// As [`AutoCommit::merge`].
     fn merge_incoming(&mut self, other: &mut AutoCommit)
     -> Result<Vec<ChangeHash>, AutomergeError>;
 
-    /// [`SyncDoc::receive_sync_message`] through [`AutoCommit::sync`].
-    ///
-    /// # Errors
-    ///
-    /// As [`SyncDoc::receive_sync_message`].
     fn receive_incoming_sync(
         &mut self,
         state: &mut sync::State,
         message: sync::Message,
     ) -> Result<(), AutomergeError>;
 
-    /// [`AutoCommit::isolate`] — view the document at `heads`.
     fn isolate_at(&mut self, heads: &[ChangeHash]);
 
-    /// [`AutoCommit::integrate`] — leave an isolated view for the current heads.
     fn integrate_all(&mut self);
 }
 
-/// Drop the events an apply left in the patch log when no diff cursor will read them.
 fn discard_unread_patches(doc: &mut AutoCommit) {
     if doc.diff_cursor().is_empty() {
         doc.reset_diff_cursor();
@@ -175,8 +135,6 @@ impl ApplyIncoming for AutoCommit {
     }
 }
 
-/// Attribute exactly the newly inserted text to an author. Authorship marks do
-/// not expand into text subsequently inserted by another collaborator.
 pub fn mark_text_author(
     doc: &mut impl automerge::transaction::Transactable,
     object: &automerge::ObjId,

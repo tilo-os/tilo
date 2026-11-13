@@ -26,16 +26,16 @@ where
     D: SeatHandler + 'static,
     <D as SeatHandler>::KeyboardFocus: WaylandFocus,
 {
-    /// Check if client of given resource currently has keyboard focus
-    pub fn client_of_object_has_focus(&self, id: &ObjectId) -> bool {
-        self.arc
-            .internal
-            .lock()
-            .unwrap()
-            .focus
-            .as_ref()
-            .map(|f| f.0.same_client_as(id))
-            .unwrap_or(false)
+    /// Whether the client of given resource may set a selection for the input event `serial`: it
+    /// has keyboard focus, or the event reached it before the keyboard left it for no one (a copy
+    /// the person made just before the compositor took the keys).
+    pub fn client_of_object_may_set_selection(&self, id: &ObjectId, serial: Serial) -> bool {
+        let internal = self.arc.internal.lock().unwrap();
+        match (&internal.focus, &internal.left) {
+            (Some((focus, _)), _) => focus.same_client_as(id),
+            (None, Some((left, at))) => left.same_client_as(id) && serial < *at,
+            (None, None) => false,
+        }
     }
 
     /// Return all raw [`WlKeyboard`] instances for a particular [`Client`]
@@ -186,10 +186,9 @@ impl<D: SeatHandler + 'static> KeyboardTarget<D> for WlSurface {
         // text-input global bound due to clients doing lazy global binding.
         text_input.set_focus(Some(self.clone()));
 
-        // Only notify on `enter` once we have an actual IME.
-        if input_method.has_instance() {
-            text_input.enter();
-        }
+        // The field is entered whether or not an input method runs: the
+        // client reports its caret and content type to the compositor too.
+        text_input.enter();
     }
 
     fn leave(&self, seat: &Seat<D>, state: &mut D, serial: Serial) {
@@ -200,8 +199,8 @@ impl<D: SeatHandler + 'static> KeyboardTarget<D> for WlSurface {
 
         if input_method.has_instance() {
             input_method.deactivate_input_method(state);
-            text_input.leave();
         }
+        text_input.leave();
 
         text_input.set_focus(None);
     }

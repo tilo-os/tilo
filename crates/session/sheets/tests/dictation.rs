@@ -446,6 +446,8 @@ fn the_sheet_publishes_no_action_that_could_answer_it() {
         .actions
         .iter()
         .filter(|action| action.kind == OperationKind::Effect)
+        // The framework offers the record's own link beside every resource; it answers no prompt.
+        .filter(|action| !ui::tilo_resource::share::is_share_verb(&action.id))
         .map(|action| action.id.as_str())
         .collect();
     assert!(

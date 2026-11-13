@@ -24,36 +24,22 @@ use crate::resource::ShotClock;
 
 /// What the view asked of the window, done when it next looks.
 pub(super) enum Ask {
-    /// Do an effect; a job's caller waits for `EffectReply`.
     Effect(CameraEffect, Option<InvocationId>, Option<EffectReply>),
-    /// Scan the code in the image the person chose.
     ScanImage(Vec<u8>, Option<InvocationId>, EffectReply),
-    /// Say something in the window.
     Say(String),
-    /// A file chooser answered: show it closed.
     ChooserClosed,
-    /// Stage a capture's scenario (`None` for a plain capture).
     Stage(Option<String>),
 }
 
 /// What the window and the view's effect handler share.
 #[derive(Default)]
 pub(crate) struct Store {
-    /// What the view asked of the window since it last looked.
     pub(super) asks: Vec<Ask>,
-    /// What the rows show of the window, as it last looked; the camera
-    /// devices are listed when the rows are read.
     pub(super) shown: CameraResourceCtx,
-    /// Whether the window lists this device's real cameras.
     lists_devices: bool,
-    /// Set while the file chooser for an image to scan is open.
     scan_import_pending: Rc<Cell<bool>>,
-    /// The record as the document holds it, shown as it changes; `None` for
-    /// a window outside the framework.
     document: Option<Live<Record>>,
-    /// The `(revision, loads)` of the record last shown.
     presented: Option<(u64, u64)>,
-    /// Where the window starts work of its own, once the view attached it.
     jobs: Option<Jobs<Record>>,
 }
 
@@ -61,7 +47,6 @@ pub(crate) struct Store {
 pub(crate) type Shared = Rc<RefCell<Store>>;
 
 impl Store {
-    /// The store of a window that lists this device's real cameras, or not.
     pub(super) fn shared(lists_devices: bool) -> Shared {
         Rc::new(RefCell::new(Self {
             lists_devices,
@@ -69,7 +54,6 @@ impl Store {
         }))
     }
 
-    /// The rows of the camera, the scanners and the document scanner.
     fn rows(&self) -> Vec<ui::framework::LiveRow> {
         let mut ctx = self.shown.clone();
         ctx.camera_devices = super::camera_devices(self.lists_devices);
@@ -165,17 +149,14 @@ fn import_image(store: &Shared, cx: &mut EffectCx<Record>) -> EffectAnswer {
 }
 
 impl CameraApp {
-    /// What the window shares with the view's effect handler.
     pub(crate) fn state(&self) -> std::cell::RefMut<'_, Store> {
         self.store.borrow_mut()
     }
 
-    /// Whether the file chooser for an image to scan is open.
     pub(super) fn scan_import_pending(&self) -> bool {
         self.store.borrow().scan_import_pending.get()
     }
 
-    /// Show the record the document holds now, when it changed since.
     pub(super) fn follow_document(&mut self) {
         let changed = {
             let mut store = self.state();
@@ -190,7 +171,6 @@ impl CameraApp {
         }
     }
 
-    /// Keep what the rows show in step with the window.
     pub(super) fn publish_rows(&self) {
         let shown = self.camera_resource_ctx_with_recent(
             self.captures.first().map(Self::capture_item),
@@ -202,7 +182,6 @@ impl CameraApp {
         }
     }
 
-    /// Do what the view asked of the window since it last looked.
     pub(super) fn do_asks(&mut self) {
         let asks = std::mem::take(&mut self.state().asks);
         if asks.is_empty() {

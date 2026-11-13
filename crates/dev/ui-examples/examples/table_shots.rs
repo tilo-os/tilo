@@ -4,22 +4,7 @@
 )]
 
 //! Offscreen shots for the editable [`tilo_ui::widget::table::Table`].
-//!
-//! Renders four frames through the widget's real five-pass pipeline and its
-//! real event handler (no private-field pokes):
-//!   1. `table-base.png`          — a seeded 3-column table with a header band
-//!      and the always-on insert ticks in the
-//!      gutters.
-//!   2. `table-insert-col.png`    — hovering a *middle* column boundary shows
-//!      the accent insert pill + full-height guide.
-//!   3. `table-delete-row.png`    — hovering a row's delete handle tints the
-//!      row danger-red and shows the "×" handle.
-//!   4. `table-after-insert.png`  — after clicking that middle boundary, a new
-//!      empty column has appeared between the
-//!      originals (asserted on the model too).
-//!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- table_shots`
-//! Out:  `$TABLE_SHOTS_OUT` (default `/tmp/table_shots`)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -33,6 +18,7 @@ use winit::event::{Modifiers, WindowEvent};
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::Widget;
 use tilo_ui::widget::table::{self, Table};
 
@@ -148,7 +134,7 @@ fn shoot(table: &mut Table, size: (f64, f64), out: &Path) {
     let cw = px_dim(size.0 + MARGIN * 2.0);
     let ch = px_dim(size.1 + MARGIN * 2.0);
     let mut scene = Scene::new();
-    table.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    table.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     let mut r = OffscreenRenderer::new(cw, ch);
     r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
     println!("wrote {}", out.display());

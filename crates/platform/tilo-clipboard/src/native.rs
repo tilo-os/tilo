@@ -112,7 +112,6 @@ fn local_only(target: ClipboardTarget) -> bool {
 }
 
 impl NativeClipboard {
-    /// Write to a clipboard other processes can read, if there is one.
     fn set_shared(target: ClipboardTarget, text: &str) -> bool {
         if let Some(wayland) = wayland() {
             return wayland.set_text(target, text);
@@ -158,8 +157,6 @@ impl ClipboardBackend for NativeClipboard {
     }
 
     fn set_secret_text(&self, text: &str) -> bool {
-        // Like `set_shared_text`: an attached Wayland connection is
-        // authoritative, and nothing falls back to the in-process buffer.
         if let Some(wayland) = wayland() {
             return wayland.set_secret_text(text);
         }
@@ -248,9 +245,7 @@ impl ClipboardBackend for NativeClipboard {
     }
 }
 
-/// What reading the non-Wayland system clipboard found.
 enum SystemText {
-    /// There is no system clipboard to read here.
     Unavailable,
     /// The clipboard was read: its text, or `None` when it holds none. A
     /// Linux build without `x11` has no such clipboard to read.
@@ -293,7 +288,6 @@ mod system {
         set_arboard_secret_text(&mut handle, text)
     }
 
-    /// What the system clipboard holds, or that there is none to read.
     pub(super) fn text(target: ClipboardTarget) -> super::SystemText {
         let Some(mut handle) = arboard_clipboard().and_then(|cb| cb.lock().ok()) else {
             return super::SystemText::Unavailable;
@@ -309,7 +303,6 @@ mod system {
         handle.set_html(html, Some(plain)).is_ok()
     }
 
-    /// The HTML the system clipboard holds, or that there is none to read.
     pub(super) fn html() -> super::SystemText {
         let Some(mut handle) = arboard_clipboard().and_then(|cb| cb.lock().ok()) else {
             return super::SystemText::Unavailable;
@@ -323,7 +316,6 @@ mod system {
         )
     }
 
-    /// `rgba` is already checked against the dimensions.
     pub(super) fn set_image(width: usize, height: usize, rgba: &[u8]) -> bool {
         let Some(cb) = arboard_clipboard() else {
             return false;
@@ -417,7 +409,6 @@ mod system {
         handle.get_text().ok()
     }
 
-    /// The X11 clipboard's image, as a PNG.
     #[cfg(target_os = "linux")]
     pub(super) fn image() -> Option<crate::ClipboardImage> {
         let image = arboard_clipboard()?.lock().ok()?.get_image().ok()?;
@@ -428,7 +419,6 @@ mod system {
         })
     }
 
-    /// Reading an image needs an encoder this target does not carry.
     #[cfg(not(target_os = "linux"))]
     pub(super) fn image() -> Option<crate::ClipboardImage> {
         None
@@ -452,7 +442,6 @@ mod system {
         .as_ref()
     }
 
-    /// Whether this process is a Wayland client.
     fn running_on_wayland() -> bool {
         cfg!(target_os = "linux")
             && std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
@@ -479,12 +468,10 @@ mod system {
         false
     }
 
-    /// No system clipboard to read.
     pub(super) fn html() -> super::SystemText {
         super::SystemText::Unavailable
     }
 
-    /// No system clipboard to read.
     pub(super) fn text(_target: ClipboardTarget) -> super::SystemText {
         super::SystemText::Unavailable
     }
@@ -502,8 +489,6 @@ mod system {
 mod tests {
     use super::*;
 
-    /// Off Linux the primary selection is the app's own: a drag-select must
-    /// not replace what the user explicitly copied.
     #[test]
     fn a_primary_selection_never_replaces_an_explicit_copy() {
         let _system = crate::tests::SYSTEM.lock();
@@ -522,9 +507,6 @@ mod tests {
         }
     }
 
-    /// Copy → paste must round-trip within the process even with no system
-    /// clipboard (the headless test env), and equally when a real clipboard
-    /// is present.
     #[test]
     fn native_clipboard_round_trips_with_or_without_a_system_clipboard() {
         let _system = crate::tests::SYSTEM.lock();

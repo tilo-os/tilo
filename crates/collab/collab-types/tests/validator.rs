@@ -17,8 +17,8 @@ use std::time::{Duration, SystemTime};
 
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
-    Clearance, DEFAULT_ROOM, Ed25519PublicKey, OpKind, Role, RoleAttestation, Signature, SignedOp,
-    ValidationError, generate_keypair, sign_event, sign_op, validate_admitted_inbound_op,
+    Clearance, DEFAULT_WORKSPACE, Ed25519PublicKey, OpKind, Role, RoleAttestation, Signature,
+    SignedOp, ValidationError, generate_keypair, sign_event, sign_op, validate_admitted_inbound_op,
     validate_inbound_op, validate_replayed_inbound_op,
 };
 use ed25519_dalek::SigningKey;
@@ -179,7 +179,7 @@ fn grant_clearance(f: &mut Fixture, level: Clearance, trusted: bool) -> Ed25519P
 }
 
 fn presets() -> Vec<Grant> {
-    roles::workspace_role_grants(DEFAULT_ROOM, &Subject::Role(Role::Owner))
+    roles::workspace_role_grants(DEFAULT_WORKSPACE, &Subject::Role(Role::Owner))
 }
 
 fn party(grants: &[Grant], role: Role) -> Authority<'_> {

@@ -73,11 +73,10 @@ pub(super) fn import(
                 }
             },
             Event::Text(t) if inside && cur.is_some() => {
-                if let Ok(txt) = t.xml10_content() {
-                    // Skip pretty-printer indentation between structural elements.
-                    if !super::content::is_layout_whitespace(&txt) {
-                        append(doc, &cur, &mut cur_len, &txt);
-                    }
+                if let Ok(txt) = t.xml10_content()
+                    && !super::content::is_layout_whitespace(&txt)
+                {
+                    append(doc, &cur, &mut cur_len, &txt);
                 }
             }
             Event::GeneralRef(r) if inside && cur.is_some() => {
@@ -96,7 +95,6 @@ pub(super) fn import(
     }
 }
 
-/// Render blocks as plain `text:p` paragraphs.
 pub(super) fn render(blocks: &[BlockView]) -> String {
     blocks.iter().map(|b| render_one(b, |_| None)).collect()
 }

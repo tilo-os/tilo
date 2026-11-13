@@ -52,10 +52,6 @@ fn sources() -> String {
     all
 }
 
-// ---------------------------------------------------------------------------
-// Arguments
-// ---------------------------------------------------------------------------
-
 #[test]
 fn accepts_verb_and_catalogue_id() {
     assert_eq!(
@@ -192,7 +188,6 @@ fn the_status_file_keeps_its_python_form() {
     assert_eq!(machine.run("install"), 0);
     let text = fs::read_to_string(machine.layout.status("media-codecs")).unwrap();
     let value: Value = serde_json::from_str(&text).unwrap();
-    // json.dumps(indent=2, sort_keys=True) and a newline.
     assert_eq!(
         text,
         tilo_extension::py::Dumps::INDENTED.dumps(&value) + "\n"
@@ -212,10 +207,6 @@ fn the_status_file_keeps_its_python_form() {
         "{updated}"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Fingerprint
-// ---------------------------------------------------------------------------
 
 #[test]
 fn order_and_gpg_keys_do_not_matter() {
@@ -250,8 +241,6 @@ fn definition_is_pinned() {
 
 #[test]
 fn the_device_computes_the_publishers_fingerprint() {
-    // The same rpm output and digest as tools/tests/test_extension_resolve.py
-    // pins for the resolver that publishes manifests under this fingerprint.
     let rpm = "bash 0:5.3.0-2.fc44.x86_64\ngpg-pubkey 0:6d9f90a6-6470bd3b.(none)\n\
                zlib-ng-compat 0:2.2.5-2.fc44.x86_64\naudit-libs 0:4.1.1-1.fc44.x86_64\n";
     let lines: Vec<&str> = rpm.lines().collect();
@@ -264,10 +253,6 @@ fn the_device_computes_the_publishers_fingerprint() {
         support::sha256_hex(b"tilo.base-packages.v1\n")
     );
 }
-
-// ---------------------------------------------------------------------------
-// Catalogue
-// ---------------------------------------------------------------------------
 
 #[test]
 fn shipped_entries_parse() {
@@ -291,8 +276,6 @@ fn shipped_entries_parse() {
         .unwrap();
         assert!(entry.manifest.starts_with("https://code.tilo.so/"));
         if entry.kind == "windows-compat" {
-            // Tilo builds and signs this payload itself (os/Containerfile
-            // windows-compat-sysext); nothing else may host it.
             assert_eq!(entry.hosts.iter().collect::<Vec<_>>(), ["code.tilo.so"]);
             assert!(entry.download_bytes > 0);
             assert!(entry.installed_bytes > entry.download_bytes);
@@ -333,10 +316,6 @@ fn entry_must_name_itself_and_pin_the_base() {
         );
     }
 }
-
-// ---------------------------------------------------------------------------
-// Install
-// ---------------------------------------------------------------------------
 
 #[test]
 fn installs_verified_parts_and_reports_status() {
@@ -737,10 +716,6 @@ fn failed_refresh_keeps_the_working_extension() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Downloads
-// ---------------------------------------------------------------------------
-
 #[test]
 fn resumes_a_partial_download_by_offset() {
     let machine = Machine::new();
@@ -853,10 +828,6 @@ fn a_connection_lost_mid_install_waits_instead_of_failing() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Offline start-up
-// ---------------------------------------------------------------------------
-
 #[test]
 fn empty_activation_reads_neither_rpm_nor_the_network() {
     let machine = Machine::new();
@@ -868,10 +839,6 @@ fn empty_activation_reads_neither_rpm_nor_the_network() {
         (0, 0)
     );
 }
-
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Images with the release root take certified manifests only.
@@ -902,7 +869,6 @@ fn an_image_with_the_release_root_installs_from_a_certified_bundle() {
         .join(machine.fingerprint());
     assert!(kept.join("manifest.json.bundle").is_file());
     assert!(!kept.join("manifest.json.sig").exists());
-    // Activation verifies the kept bundle again.
     fs::remove_dir_all(machine.codecs()).unwrap();
     assert_eq!(machine.run("activate"), 0);
     assert!(machine.codecs().is_dir());
@@ -926,7 +892,6 @@ fn an_image_with_the_release_root_refuses_a_bare_signature() {
 fn a_kept_bare_signature_does_not_activate_on_an_image_with_the_root() {
     let machine = Machine::new();
     install(&machine, false);
-    // The next image carries the root: what the old one kept no longer counts.
     machine.certify();
     machine.run("activate");
     assert!(!machine.codecs().exists());
@@ -1058,8 +1023,6 @@ fn activation_merges_nothing_beside_a_foreign_extension() {
             .unwrap()
             .contains("unexpected system extensions")
     );
-    // Once the foreign extension is gone, activation merges again and the
-    // refusal no longer shows.
     fs::remove_dir_all(&foreign).unwrap();
     assert_eq!(machine.run("activate"), 0);
     let status = machine.status();
@@ -1201,7 +1164,6 @@ fn a_part_whose_base_package_changed_waits_and_returns_on_rollback() {
     assert!(machine.codecs().is_dir(), "the software codecs still fit");
     assert!(!machine.part("tilo-codecs-mesa").exists());
     assert_eq!(machine.status()["parts"]["tilo-codecs-mesa"], "waiting");
-    // Rolling back to the deployment it was built for brings it back, offline.
     *machine.host.packages.borrow_mut() = booted;
     machine.run("activate");
     assert!(machine.part("tilo-codecs-mesa").is_dir());
@@ -1354,10 +1316,6 @@ fn installer_seed_is_adopted_once() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Shipped
-// ---------------------------------------------------------------------------
-
 #[test]
 fn activation_unit_merges_in_the_host_namespace() {
     let unit = read("os/usr/lib/systemd/system/tilo-extension-activate.service");
@@ -1453,10 +1411,6 @@ fn the_image_installs_the_compiled_helper_where_its_units_run_it() {
     assert!(!read("os/Containerfile").contains("os/usr/libexec/tilo-extension"));
 }
 
-// ---------------------------------------------------------------------------
-// A prebuilt, manifest-pinned sysext image (format "sysext-raw")
-// ---------------------------------------------------------------------------
-
 const RAW_ID: &str = "windows-compat";
 const RAW_PART: &str = "tilo-windows-compat";
 const RAW_BASE_URL: &str =
@@ -1476,8 +1430,6 @@ fn raw_image() -> Vec<u8> {
     b"erofs image bytes".repeat(100)
 }
 
-/// Publish a manifest whose one part is `image` (or `artifacts` instead);
-/// returns the image's artifact entry.
 fn publish_raw(machine: &Machine, image: &[u8], artifacts: Option<Value>) -> Value {
     let fingerprint = machine.fingerprint();
     let url = format!("{RAW_BASE_URL}/x86_64-{fingerprint}/{RAW_PART}.raw");

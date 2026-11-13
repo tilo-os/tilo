@@ -192,12 +192,6 @@ impl Costs {
         self.unit(name).map_or(0, |cost| cost.calls)
     }
 
-    /// The fuel the unit `name` spent; 0 when it did not run.
-    #[must_use]
-    pub fn fuel_of(&self, name: &str) -> u64 {
-        self.unit(name).map_or(0, |cost| cost.fuel)
-    }
-
     /// The table a profile prints and a failed budget shows: each unit, where it is written,
     /// how often it ran, the fuel it spent and what it read.
     #[must_use]

@@ -1,4 +1,4 @@
-//! `/usr/libexec/tilo-firstboot-files`: see the library for the commands.
+//! `/usr/libexec/tilo-firstboot-files`; see the library for the commands.
 
 use std::ffi::OsString;
 use std::process::ExitCode;

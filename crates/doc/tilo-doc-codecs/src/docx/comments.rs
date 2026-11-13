@@ -8,12 +8,9 @@ use super::side_part;
 use super::styles::attr_val;
 use crate::xml_escape::escape_attr;
 use std::collections::BTreeMap;
-use tilo_doc::model::{DocMut, DocRef, materialize_comments};
-// `write!` into a `String` cannot fail; the discarded `Result` is the
-// `fmt::Write` contract, not a swallowed error.
 use std::fmt::Write as _;
+use tilo_doc::model::{DocMut, DocRef, materialize_comments};
 
-/// The fixed part name + relationship id qdoc writes for comments.
 pub(super) const COMMENTS_PART: &str = "word/comments.xml";
 
 /// Import `word/comments.xml`, returning a `docx_id → qdoc_comment_id` map so the body
@@ -44,11 +41,8 @@ pub(super) fn import_comments_part(xml: &[u8], doc: &mut DocMut) -> BTreeMap<Str
     map
 }
 
-/// The exported comments part + the `qdoc-id → docx-id` map the body exporter uses for
-/// `commentRangeStart/End` + `commentReference`; `None` when there are no comments.
 pub(super) struct ExportedComments {
     pub comments_xml: Option<Vec<u8>>,
-    /// qdoc comment id → the docx numeric id emitted in the body + part.
     pub id_map: BTreeMap<String, i64>,
 }
 
@@ -87,7 +81,6 @@ pub(super) fn export_comments(doc: &DocRef) -> ExportedComments {
     }
 }
 
-/// The `<w:commentReference>` run for a comment id, or `None` when it isn't being exported.
 pub(super) fn comment_reference_run(
     comment_id: &str,
     id_map: &BTreeMap<String, i64>,
@@ -98,7 +91,6 @@ pub(super) fn comment_reference_run(
     ))
 }
 
-/// The `<w:commentRangeStart>` empty element for a comment id, or `None` when absent.
 pub(super) fn comment_range_start(
     comment_id: &str,
     id_map: &BTreeMap<String, i64>,
@@ -107,7 +99,6 @@ pub(super) fn comment_range_start(
     Some(format!(r#"<w:commentRangeStart w:id="{docx_id}"/>"#))
 }
 
-/// The `<w:commentRangeEnd>` empty element for a comment id, or `None` when absent.
 pub(super) fn comment_range_end(
     comment_id: &str,
     id_map: &BTreeMap<String, i64>,

@@ -13,12 +13,8 @@ fn acl_fixture(rule: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
     (temp, source, parent)
 }
 
-/// Windows parent ACL checks and protected private ACL on creation.
 #[test]
 fn windows_parent_acls_and_private_creation_are_enforced() {
-    // Phase `windows_refuses_parent_with_untrusted_delete_child_acl`.
-    // Catches trusting ownership or READ_CONTROL alone while another account
-    // has authority to replace children between validation and mkdir/open.
     {
         let (_temp, source, parent) = acl_fixture("(A;;0x40;;;WD)");
         fs::write(parent.join("sentinel"), b"keep").unwrap();
@@ -35,8 +31,6 @@ fn windows_parent_acls_and_private_creation_are_enforced() {
         assert_eq!(fs::read(parent.join("sentinel")).unwrap(), b"keep");
     }
 
-    // Phase `windows_allows_parent_add_subdirectory_without_replacement_rights`.
-    // Ancestor child-creation rights alone cannot replace our protected child.
     {
         let (_temp, source, parent) = acl_fixture("(A;;0x4;;;WD)");
         let report = copy_folder(
@@ -50,9 +44,6 @@ fn windows_parent_acls_and_private_creation_are_enforced() {
         assert_eq!(fs::read(parent.join("copy/hello")).unwrap(), b"hello");
     }
 
-    // Phase `windows_creation_uses_protected_private_acl_despite_parent_inheritance`.
-    // Catches inherited permissive ACLs or protecting the DACL only after
-    // directory creation. The private descriptor overrides inheritance.
     {
         let (_temp, source, parent) = acl_fixture("(A;OICIIO;FA;;;WD)");
         let destination = parent.join("copy");

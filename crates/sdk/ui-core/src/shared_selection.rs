@@ -10,7 +10,7 @@
 //!
 //! Every context menu takes typing ([`crate::widget::ContextMenu`]): its send
 //! row carries a sentence its entries do not answer into the send-to box that
-//! takes the menu's place ([`crate::widget::SendToBox`]), where the person
+//! opens beside the menu ([`crate::widget::SendToBox`]), where the person
 //! names whom to send it to. The box queues the request ([`send_to`]), and the
 //! app runner hands it to the session with a typed reference
 //! ([`resolve_selection`]), which the session acts on as the person: it makes
@@ -192,15 +192,10 @@ impl SharedSelection {
                 from: Some(at),
             });
         }
-        let label = (!resource.label.trim().is_empty())
-            .then(|| resource.label.clone())
-            .or_else(|| excerpt.map(str::to_owned))
-            .or_else(|| match &anchor {
-                Some(Anchor::Item { id }) => Some(id.clone()),
-                Some(Anchor::Items { ids }) => ids.first().cloned(),
-                Some(Anchor::Text { .. }) | None => None,
-            })?;
-        Some(Attached::Resource { at, anchor, label })
+        // What the person saw on the box's chip: the item picked ("#1 Write the launch notes"),
+        // never only the list it is in.
+        let label = crate::widget::send_to::subject_label(self);
+        (!label.is_empty()).then_some(Attached::Resource { at, anchor, label })
     }
 
     /// Whether there is nothing to ask about.
@@ -619,8 +614,9 @@ mod tests {
             Some(Attached::resource(
                 run_at,
                 Some(Anchor::item("block-2")),
-                "Plan"
-            ))
+                "late results"
+            )),
+            "the chip reads the words picked, as the box's chip did, not the page they are in"
         );
         let Some(Attached::Resource { at, anchor, .. }) = &sent else {
             panic!("a resource attachment: {sent:?}");
@@ -644,8 +640,9 @@ mod tests {
                     reference: ResourceRef::whole("notes.page", "notes.page:1", "Plan"),
                 },
                 Some(Anchor::items(["row-1", "row-2"])),
-                "Plan"
-            ))
+                "One +1"
+            )),
+            "rows read as the first row and how many more, never only the list"
         );
 
         // Words the app reports no resource for are quoted, alone.
@@ -866,13 +863,13 @@ mod tests {
         assert!(area.open_at(vec2_point(), false));
         assert_eq!(
             area.menu().shown_rows(),
-            &[0],
-            "nothing typed: the menu's own rows, and no row to ask"
+            &[0, 1, 2],
+            "nothing typed: the menu's own rows, a rule, and Send to…"
         );
         type_into(&mut area, "make this a heading");
         assert_eq!(
             area.menu().shown_rows(),
-            &[1],
+            &[2],
             "no entry answers it: only sending it"
         );
         crate::testing::dispatch(

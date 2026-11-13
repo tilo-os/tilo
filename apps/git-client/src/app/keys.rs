@@ -1,9 +1,7 @@
-//! The keyboard: every decision the client can make, without the pointer.
-//!
-//! The lists move with the arrow keys; this module is the part that *does*
-//! something — stage a file, write a message, keep a side of a conflict,
-//! check out a branch. Each key is one letter with no chord, and the same
-//! letter means the same thing on every screen it applies to.
+//! The keyboard: every decision the client can make, without the pointer. The lists
+//! move with the arrow keys, and this module does the work — stage a file, write a
+//! message, keep a side of a conflict, check out a branch — with one letter per
+//! action and no chords.
 
 use winit::keyboard::{Key, NamedKey};
 
@@ -12,17 +10,12 @@ use crate::panels::BranchAction;
 use super::{Confirm, Field, GitClientState, Screen};
 
 impl GitClientState {
-    /// The letters that do the screen's work, so a file can be staged, a
-    /// message written, a branch checked out and a conflict settled without
-    /// the pointer. Each is one key with no chord: the same letter does the
-    /// same thing on every screen it makes sense on.
-    ///
+    /// The letters that do the screen's work, one key each, the same letter doing the same thing on every screen it makes sense on:
     /// * `s` stage or unstage the selected file, `S` (Shift) every file
     /// * `o`/`t` keep our or their side of a conflicted file
     /// * `c` write the commit message, `Ctrl+Enter` commits from anywhere
     /// * `b` writes a new branch name on the branches page
-    /// * `Enter` opens the selected commit's first file, or checks out the
-    ///   selected branch; `Backspace` steps back out of a commit file's diff
+    /// * `Enter` opens the selected commit's first file, or checks out the selected branch; `Backspace` steps back out of a commit file's diff
     /// * `Delete` deletes the selected branch, after the same confirmation
     pub(super) fn handle_action_key(
         &mut self,
@@ -76,9 +69,7 @@ impl GitClientState {
         }
     }
 
-    /// Keys that act on the file list of the selected commit, and the branch
-    /// list: `Enter` opens what is under the keyboard, `Backspace` steps
-    /// back, `Delete` deletes the selected branch.
+    /// Keys that act on the file list of the selected commit and the branch list.
     pub(super) fn navigate_panels(&mut self, key: &Key) -> bool {
         match (self.screen, key) {
             (Screen::History, Key::Named(NamedKey::Enter)) => {
@@ -128,8 +119,7 @@ impl GitClientState {
             .map(|branch| branch.name.clone())
     }
 
-    /// Move the branches page's selection, skipping nothing: every local
-    /// branch is one arrow away from a checkout.
+    /// Move the branches page's selection; every local branch is one arrow away from a checkout.
     pub(super) fn navigate_panels_selection(&mut self, step: isize) -> bool {
         let local = self
             .model
@@ -164,8 +154,8 @@ impl GitClientState {
         match self.screen {
             Screen::History => {
                 if self.commit_diff.is_none() && self.file_view_focused() {
-                    // Inside a commit's file list the arrows move between its
-                    // files, so Enter opens the one under the keyboard.
+                    // Inside a commit's file list the arrows move between its files, so Enter opens
+                    // the one under the keyboard.
                     let count = self.commit_file_count();
                     if count > 0 {
                         let current = self.file_selection.unwrap_or(0).min(count - 1);

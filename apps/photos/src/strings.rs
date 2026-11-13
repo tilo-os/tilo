@@ -1,27 +1,18 @@
-//! User-facing text, as fluent keys.
-//!
-//! Every string the user reads is looked up by key rather than written at the
-//! call site, so the app translates without touching the widget code. The
-//! lookups go through the app's declared catalog, which loads itself on first
-//! use, so a unit test that constructs a widget directly gets real text.
+//! User-facing text, as fluent keys. Every string the user reads is looked up by key rather than
+//! written at the call site, so the app translates without touching the widget code.
 
-/// Look up `key`.
 pub fn tr(key: &str) -> String {
     crate::resource::CATALOG.t(key)
 }
 
-/// Look up `key`, interpolating `args` into its placeables. A number
-/// argument also picks the message's plural form.
 pub fn tr_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
     crate::resource::CATALOG.t_args(key, args)
 }
 
-/// Look up `key` with one text argument.
 pub fn tr_with(key: &str, name: &str, value: &str) -> String {
     tr_args(key, &[(name, ui::i18n::ArgValue::Text(value.to_owned()))])
 }
 
-/// Look up `key` with one count, which also picks the plural form.
 pub fn tr_count(key: &str, count: usize) -> String {
     tr_args(key, &[("count", ui::i18n::ArgValue::Number(count as f64))])
 }
@@ -30,9 +21,6 @@ pub fn tr_count(key: &str, count: usize) -> String {
 mod tests {
     use super::*;
 
-    /// Every key the app asks for must resolve to real text. A missing key
-    /// comes back as the key itself, which would ship as `photos-crop` on a
-    /// button face.
     #[test]
     fn every_key_the_app_uses_resolves() {
         for key in [
@@ -137,8 +125,6 @@ mod tests {
         }
     }
 
-    /// Every key the sources look up exists in the bundle: a key spelled at
-    /// a call site but missing from `en-US.ftl` would ship as its own name.
     #[test]
     fn every_key_in_the_sources_is_in_the_bundle() {
         let sources = [

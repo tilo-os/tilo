@@ -2,7 +2,7 @@
 //! a test and the app's own window, staged per scenario.
 
 use tilo_desktop::notifications::{
-    Addressed, Banner, BannerFeed, Notification, NotificationIconKind, NotificationSeverity,
+    Banner, BannerFeed, Notification, NotificationIconKind, NotificationSeverity,
     PERSISTENT_DISMISS,
 };
 use ui::time::Duration;
@@ -64,7 +64,6 @@ fn alarm() -> Banner {
         Notification::new("Design review", "Starts in 5 minutes")
             .with_app_id("so.tilo.calendar")
             .with_app_name("Calendar")
-            .with_addressed(Addressed::Reminder)
             .with_dismiss_after(PERSISTENT_DISMISS),
     );
     banner.actions = alarm_choices();
@@ -83,7 +82,7 @@ fn call() -> Banner {
     let mut notification = Notification::new("Jonas Weber", "Incoming video call")
         .with_app_name("Calls")
         .with_from("Jonas Weber", "jonas@example.org")
-        .with_addressed(Addressed::IncomingCall)
+        .ringing()
         .with_dismiss_after(PERSISTENT_DISMISS);
     notification.actions = vec![
         ("accept".into(), "Answer".into()),

@@ -118,7 +118,7 @@ pub fn door_error(error: &ActionHostError) -> DoorError {
                 reason: reason.clone(),
             }
         }
-        ActionHostError::ConfirmationRequired => DoorError::ConfirmationRequired,
+        ActionHostError::ConfirmationRequired { .. } => DoorError::ConfirmationRequired,
         ActionHostError::NotPermitted => DoorError::Unavailable {
             code: error.code().into(),
             reason: "You may not do that here".into(),

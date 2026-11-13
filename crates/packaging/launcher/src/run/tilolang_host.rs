@@ -1,23 +1,8 @@
-//! The launch kind "tilolang host": one process per workspace and author that runs that author's
-//! tilolang apps in that workspace, each as an instance (`docs/designs/app-language/ui-host.md`).
+//! The launch kind "tilolang host": one process per workspace and author that runs that
+//! author's tilolang apps in that workspace, each as an instance
+//! (`docs/designs/app-language/ui-host.md`).
 //!
-//! It is no app launch. It has no manifest, no app id and no app storage, and its sandbox is
-//! narrower than any app's:
-//!
-//! - the tilolang runtime bundle, verified as an app launch on it verifies it, read-only and
-//!   executable, its binary `bin/tilolang-host` the only program;
-//! - the Tilo runtime its apps name, verified the same way, read-only: the loader and libraries
-//!   that binary runs on, as an app's entrypoint binary runs on its app's runtime;
-//! - one directory of its own, read-write: the storage of its workspace and author, which the session
-//!   names, keyed by package inside. Landlock can only narrow, so it holds that directory from
-//!   its start;
-//! - its door, the one descriptor it inherits (at [`DOOR_CHILD_FD`]);
-//! - nothing else: no display, no session bus, no service socket, no network (every namespace is
-//!   its own, and Landlock refuses TCP), no home, no device but the minimal `/dev`; the baseline
-//!   seccomp filter with write-xor-execute.
-//!
-//! Everything an instance is arrives over the door from the session, attested as that app's
-//! launch (`runtime_portal::tilolang_host`).
+//! It is no app launch.
 
 use super::{RunError, RunOptions, compile_app_baseline, find_runtime_bundle, stage_seccomp_blob};
 use std::os::fd::{AsRawFd as _, OwnedFd, RawFd};
@@ -33,6 +18,9 @@ pub const BIN: &str = "bin/tilolang-host";
 
 /// Where the host sees its storage.
 pub const STORAGE_MOUNT: &str = "/run/tilolang-host/storage";
+
+/// The zone database and the device's zone, which the host's clock reads the person's day by.
+pub const ZONE_PATHS: [&str; 2] = ["/usr/share/zoneinfo", "/etc/localtime"];
 
 /// The descriptor the host finds its door at.
 pub const DOOR_CHILD_FD: RawFd = 3;
@@ -91,7 +79,9 @@ pub fn bwrap_argv(
     ] {
         argv.extend(["--setenv".to_owned(), name.to_owned(), value]);
     }
-    for name in ["LANG", "LC_ALL", "LC_MESSAGES", "RUST_LOG"] {
+    // The person's language and zone, as an app inherits them: `today` an instance writes and filters
+    // by is the day their window heads its rows by.
+    for &name in crate::sandbox::INHERITED_ENV {
         if let Some(value) = std::env::var_os(name).filter(|value| !value.is_empty()) {
             argv.extend([
                 "--setenv".to_owned(),
@@ -100,17 +90,20 @@ pub fn bwrap_argv(
             ]);
         }
     }
-    // The Tilo runtime: the loader, `LD_LIBRARY_PATH` and libraries, as for an app; the
-    // tilolang bundle beside it, as an app's entrypoint runtime is.
+    // The Tilo runtime: the loader, `LD_LIBRARY_PATH` and libraries, as for an app; the tilolang
+    // bundle beside it, as an app's entrypoint runtime is.
     crate::sandbox::push_runtime_bundle(&mut argv, Some(app_runtime));
     let _ = crate::sandbox::push_required_runtime(&mut argv, runtime_root, version);
+    for zone in ZONE_PATHS {
+        argv.extend(["--ro-bind-try", zone, zone].map(str::to_owned));
+    }
     argv.extend([
         "--bind".to_owned(),
         storage.display().to_string(),
         STORAGE_MOUNT.to_owned(),
     ]);
-    // Landlock inside the namespace, through the launcher's own binary: read and execute the
-    // runtime, write the storage, no TCP; every descriptor but the door closed.
+    // Landlock inside the namespace, through the launcher's own binary: read and execute the runtime,
+    // write the storage, no TCP; every descriptor but the door closed.
     argv.extend([
         "--ro-bind".to_owned(),
         shim.display().to_string(),
@@ -121,6 +114,9 @@ pub fn bwrap_argv(
         runtime_mount.display().to_string(),
     ]);
     super::push_runtime_landlock_rules(&mut argv, Some(app_runtime));
+    for zone in ZONE_PATHS {
+        argv.extend(["--ro-noexec", zone].map(str::to_owned));
+    }
     argv.extend([
         "--rw-noexec".to_owned(),
         STORAGE_MOUNT.to_owned(),
@@ -133,33 +129,32 @@ pub fn bwrap_argv(
     argv
 }
 
-/// What the session hands a tilolang host for one instance of an installed tilolang app, read
-/// from the installation verified as a launch of it verifies it.
+/// What the session hands a tilolang host for one instance of an installed tilolang app, read from the
+/// installation verified as a launch of it verifies it.
 #[derive(Debug)]
 pub struct VerifiedInstance {
     /// The tilolang runtime its entrypoint names, `tilolang/<version>`.
     pub runtime: String,
     /// The Tilo runtime it names, `tilo-runtime/<version>`.
     pub app_runtime: String,
-    /// The identity of the publisher whose key signed the package: the author whose host runs
-    /// it. A person's own build is signed with their own key.
+    /// The identity of the publisher whose key signed the package: the author whose host runs it.
     pub publisher: [u8; 32],
     /// Its module, from the verified payload.
     pub module: runtime_portal::tilolang_host::Module,
 }
 
 impl VerifiedInstance {
-    /// Whether both runtimes it names are installed here, so a host on them can start: an
-    /// app installed for runtimes since replaced runs nowhere until it is built again.
+    /// Whether both runtimes it names are installed here, so a host on them can start: an app installed
+    /// for runtimes since replaced runs nowhere until it is built again.
     #[must_use]
     pub fn runs_here(&self) -> bool {
         super::runtime_installed(&self.runtime) && super::runtime_installed(&self.app_runtime)
     }
 }
 
-/// The tilolang app `installed`, installed at `manifest_path` with its payload at
-/// `payload_root`, whose signed root hashes to `expected`: verified (its files, its signature,
-/// its publisher not revoked) and read for a tilolang host.
+/// The tilolang app `installed`, installed at `manifest_path` with its payload at `payload_root`, whose
+/// signed root hashes to `expected`: verified (its files, its signature, its publisher not revoked) and
+/// read for a tilolang host.
 pub fn verified_instance(
     installed: &package_store::InstalledPackage,
     manifest_path: &Path,
@@ -263,9 +258,9 @@ pub fn run_tilolang_host(
         (clone3.as_raw_fd(), CLONE3_COMPAT_FD),
         (baseline.as_raw_fd(), BASELINE_FD),
     ];
-    // SAFETY: only async-signal-safe calls between fork and exec: each descriptor is moved
-    // above every target slot first, so no dup2 overwrites one not yet placed, then placed at
-    // its slot without close-on-exec.
+    // SAFETY: only async-signal-safe calls between fork and exec: each descriptor is moved above every
+    // target slot first, so no dup2 overwrites one not yet placed, then placed at its slot without
+    // close-on-exec.
     unsafe {
         command.pre_exec(move || {
             let mut moved = [(0, 0); 3];
@@ -300,8 +295,8 @@ mod tests {
             .collect()
     }
 
-    /// An instance runs here only while both runtimes it names are installed: once a newer
-    /// build replaced one, the app is no candidate for a host.
+    /// An instance runs here only while both runtimes it names are installed: once a newer build
+    /// replaced one, the app is no candidate for a host.
     #[test]
     fn an_instance_runs_here_only_on_runtimes_that_are_installed() {
         let root = tempfile::tempdir().unwrap();
@@ -329,10 +324,12 @@ mod tests {
         assert!(!on_gone_tilolang.runs_here());
     }
 
-    /// The host holds the runtime read-only, its storage, its door, and nothing an app would:
-    /// no display, no bus, no service, no network, no home, no app storage.
+    /// The host holds the runtime read-only, its storage, its door, and nothing an app would: no
+    /// display, no bus, no service, no network, no home, no app storage.
     #[test]
     fn a_tilolang_host_holds_its_runtime_its_storage_and_its_door_only() {
+        let mut zone = tilo_test_env::ScopedEnv::new();
+        zone.set("TZ", "America/Los_Angeles");
         let argv = bwrap_argv(
             (
                 Path::new("/usr/lib/tilo/runtimes/tilolang/0.1.0"),
@@ -374,7 +371,18 @@ mod tests {
                 "{forbidden} is not in a host's sandbox: {mounted:?}"
             );
         }
+        let read_only = pair(&argv, "--ro-bind-try");
+        for zone in ZONE_PATHS {
+            assert!(
+                read_only.contains(&(zone.to_owned(), zone.to_owned())),
+                "the person's zone is read where an app reads it: {read_only:?}"
+            );
+        }
         let env = pair(&argv, "--setenv");
+        assert!(
+            env.contains(&("TZ".to_owned(), "America/Los_Angeles".to_owned())),
+            "the zone the person chose for the session: {env:?}"
+        );
         assert!(env.contains(&(
             runtime_portal::tilolang_host::DOOR_FD_ENV.to_owned(),
             "3".to_owned()

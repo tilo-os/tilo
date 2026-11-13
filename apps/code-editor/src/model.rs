@@ -2,10 +2,9 @@
 //! open buffers, and language detection. No rendering, no IO, no CRDT — this
 //! layer is the in-memory source of truth the widgets read from.
 //!
-//! Buffer *text* lives in the shared Automerge document (so edits are
-//! collaborative and undoable); this model only tracks the structural facts
-//! around it — which files exist, which are open, which tab is active, and
-//! where each caret sits.
+//! The [`Project`] record keeps the files and folders as a collection under
+//! `files` and each file's text as an Automerge `Text` under `buffers`, keyed
+//! by the file's id.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -13,14 +12,8 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
-/// Ephemeral arena identifier for a node in this running project projection.
-/// Never publish this outside the process; [`TreeNode::resource_id`] is the
-/// durable collaborative identity.
 pub type NodeId = usize;
 
-/// The recognised source languages. Drives both the syntax-highlighting
-/// grammar selection and the status-bar label. `PlainText` is the fallback
-/// for anything we don't have a grammar for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Language {
     Rust,
@@ -43,7 +36,6 @@ pub enum Language {
 }
 
 impl Language {
-    /// Human-readable name shown in the status bar.
     pub fn label(self) -> &'static str {
         match self {
             Language::Rust => "Rust",
@@ -66,8 +58,6 @@ impl Language {
         }
     }
 
-    /// The file extension the toolkit's syntax highlighter resolves this
-    /// language's grammar by.
     pub fn grammar_token(self) -> &'static str {
         match self {
             Language::Rust => "rs",
@@ -90,7 +80,6 @@ impl Language {
         }
     }
 
-    /// Resolve a language from a file name's extension.
     pub fn from_path(name: &str) -> Language {
         let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
         match ext.as_str() {
@@ -133,10 +122,6 @@ impl Language {
         }
     }
 
-    /// The token that begins a line comment in this language, if it has one.
-    /// Drives the toggle-comment line operation. Languages without a line
-    /// comment (JSON, HTML, CSS, plain text) return `None` and toggle is a
-    /// no-op for them.
     pub fn line_comment(self) -> Option<&'static str> {
         match self {
             Language::Rust
@@ -157,21 +142,13 @@ impl Language {
     }
 }
 
-/// One node in the project tree. Folders own an ordered list of children;
-/// files carry the language and the seed body used to populate the buffer
-/// when first opened.
 #[derive(Clone, Debug)]
 pub struct TreeNode {
     pub id: NodeId,
-    /// Stable file resource identity. Local `id`s are permitted to differ on
-    /// peers after lazy filesystem loading; this UUID is what actions, search,
-    /// history and collaboration use.
     pub resource_id: String,
     pub name: String,
     pub parent: Option<NodeId>,
     pub kind: NodeKind,
-    /// Depth from the project root (root children are depth 0). Cached so the
-    /// flattened render list doesn't have to walk parents every frame.
     pub depth: usize,
     /// The real filesystem path this node projects, when the project was opened
     /// from disk (`Project::from_dir` / `open_single_file`). `None` for the
@@ -182,9 +159,6 @@ pub struct TreeNode {
 
 #[derive(Clone, Debug)]
 pub enum NodeKind {
-    /// `loaded` is `false` for a disk-backed folder whose children have not yet
-    /// been read from the filesystem; the first expansion reads them lazily
-    /// (`Project::load_children`). In-memory folders are always `loaded`.
     Folder {
         expanded: bool,
         loaded: bool,
@@ -202,21 +176,13 @@ impl TreeNode {
     }
 }
 
-/// One directory level as the tree shows it: its folders and files by
-/// name, each sorted, build output and VCS internals left out.
 #[derive(Debug, Default)]
 pub struct Listing {
     folders: Vec<(String, PathBuf)>,
     files: Vec<(String, PathBuf)>,
 }
 
-/// Read one directory level for the tree (see [`Project::load_children`]).
-///
-/// # Errors
-/// Returns an error if the directory listing can't be read.
 pub fn read_folder(path: &Path) -> io::Result<Listing> {
-    // Collect and sort before inserting, so the arena order matches the
-    // display order and a folder's children do not shuffle between reads.
     let mut listing = Listing::default();
     for entry in std::fs::read_dir(path)? {
         let Ok(entry) = entry else { continue };
@@ -229,8 +195,6 @@ pub fn read_folder(path: &Path) -> io::Result<Listing> {
             continue;
         }
         let Ok(ft) = entry.file_type() else { continue };
-        // `file_type` does not follow symlinks, so a link pointing back up
-        // the tree cannot make the walk cycle.
         if ft.is_symlink() {
             continue;
         }
@@ -245,9 +209,8 @@ pub fn read_folder(path: &Path) -> io::Result<Listing> {
     Ok(listing)
 }
 
-/// Read every directory from `root` down to the one holding `path`, for
-/// [`Project::adopt_folders`] and [`Project::reveal_read`]: what revealing
-/// a file in a never-expanded tree reads.
+/// Every directory from `root` down to the one holding `path`: what revealing a file in a
+/// never-expanded tree reads.
 pub fn read_folders_along(root: &Path, path: &Path) -> Vec<(PathBuf, io::Result<Listing>)> {
     let Some(parent) = path.parent() else {
         return Vec::new();
@@ -264,15 +227,12 @@ pub fn read_folders_along(root: &Path, path: &Path) -> Vec<(PathBuf, io::Result<
     read
 }
 
-/// The whole project: a flat arena of nodes plus the root id. Tree shape is
-/// expressed through `parent` / `children`.
 #[derive(Clone, Debug, Default)]
 pub struct Project {
     pub name: String,
     pub nodes: BTreeMap<NodeId, TreeNode>,
     pub root: NodeId,
     next_id: NodeId,
-    /// Nodes read from disk since [`Self::take_read_from_disk`] last asked.
     read_from_disk: Vec<NodeId>,
 }
 
@@ -312,19 +272,14 @@ impl Project {
         id
     }
 
-    /// The id `alloc` will hand out next.
     #[cfg(test)]
     pub(crate) fn peek_next_id(&self) -> NodeId {
         self.next_id
     }
 
-    /// Surface a buffer that already exists in the shared document (created by a
-    /// Ctrl+K "New file" action or by a peer) as a tracked in-memory file under
-    /// the root, using its document-assigned `id` verbatim so the in-memory node
-    /// and the buffer key stay in agreement. Idempotent, and bumps the allocator
-    /// past `id` so a later `alloc` cannot collide with it. The
-    /// buffer's text stays in the CRDT; this only creates the in-memory shell the
-    /// tree and tabs read from — no persisted file model is invented.
+    /// Surface a buffer that already exists in the document as a tracked in-memory file under the root,
+    /// keeping its `id` so the node and the buffer key agree. Idempotent, and an alloc never collides with
+    /// it. The text stays in the CRDT; no persisted file model is invented.
     pub fn adopt_file(&mut self, id: NodeId, name: &str) {
         if self.nodes.contains_key(&id) {
             return;
@@ -353,9 +308,8 @@ impl Project {
         }
     }
 
-    /// Materialise a shared file record in this process's tree projection.
-    /// The caller owns the durable `resource_id`; the arena id is intentionally
-    /// allocated locally and is never used in a resource/action payload.
+    /// Materialise a shared file record in this process's tree. The caller owns the durable `resource_id`;
+    /// the arena id is local and never goes in a payload.
     pub fn adopt_collaborative_file(
         &mut self,
         resource_id: &str,
@@ -483,9 +437,8 @@ impl Project {
             .find_map(|(id, node)| (node.resource_id == resource_id).then_some(*id))
     }
 
-    /// Remove a file projection after its durable record becomes a tombstone.
-    /// The tombstone remains in the CRDT; only this process's render/cache node
-    /// disappears, so a later sync cannot resurrect it by accident.
+    /// Remove a file projection once its durable record is a tombstone; the tombstone stays in the CRDT,
+    /// so a later sync cannot resurrect it.
     pub fn remove_collaborative_file(&mut self, resource_id: &str) -> Option<NodeId> {
         let id = self.node_for_resource(resource_id)?;
         let parent = self.nodes.get(&id).and_then(|node| node.parent);
@@ -501,9 +454,8 @@ impl Project {
         Some(id)
     }
 
-    /// Order every projected folder from the durable `order` field.  Arena
-    /// allocation deliberately differs between replicas, so it must never be
-    /// used as a tie breaker for a collaborative tree.
+    /// Order every projected folder from the durable `order`, never by arena id: those differ between
+    /// replicas.
     pub fn order_collaborative_children(&mut self, ordering: &[(String, i64)]) {
         let order_by_resource: BTreeMap<_, _> = ordering.iter().cloned().collect();
         let order_by_node: BTreeMap<_, _> = self
@@ -534,13 +486,10 @@ impl Project {
         self.insert_folder(parent, name, None, false)
     }
 
-    /// Add a file under `parent` with a seed body, inferring the language.
     pub fn add_file(&mut self, parent: NodeId, name: &str, seed: &str) -> NodeId {
         self.insert_file(parent, name, seed, None)
     }
 
-    /// Add a disk-backed folder under `parent`. Its children are read lazily
-    /// from `path` the first time it is expanded (`load_children`).
     pub fn add_disk_folder(&mut self, parent: NodeId, name: &str, path: &Path) -> NodeId {
         if let Some(id) = self.claim_disk_node(parent, name, path, true) {
             return id;
@@ -550,8 +499,6 @@ impl Project {
         id
     }
 
-    /// Add a disk-backed file under `parent`. Its content is read lazily from
-    /// `path` the first time the buffer is opened (`file_seed`).
     pub fn add_disk_file(&mut self, parent: NodeId, name: &str, path: &Path) -> NodeId {
         if let Some(id) = self.claim_disk_node(parent, name, path, false) {
             return id;
@@ -561,10 +508,6 @@ impl Project {
         id
     }
 
-    /// The identity of the entry `name` read from disk under `parent`: the
-    /// same for the same place in the project on every launch and every
-    /// device that opens it, so reopening a folder meets the records it
-    /// left.
     fn disk_identity(&self, parent: Option<NodeId>, name: &str) -> String {
         use sha2::{Digest, Sha256};
         let path = match parent {
@@ -581,8 +524,6 @@ impl Project {
             .to_string()
     }
 
-    /// Give the node `id`, just read from disk, its identity, and note it
-    /// for the project to record.
     fn identify_from_disk(&mut self, id: NodeId) {
         let Some(node) = self.nodes.get(&id) else {
             return;
@@ -594,8 +535,6 @@ impl Project {
         self.read_from_disk.push(id);
     }
 
-    /// A node the project's records already put at this place: it is the
-    /// entry on disk, read now.
     fn claim_disk_node(
         &mut self,
         parent: NodeId,
@@ -616,7 +555,6 @@ impl Project {
         Some(id)
     }
 
-    /// The nodes read from disk since the last call.
     pub fn take_read_from_disk(&mut self) -> Vec<NodeId> {
         std::mem::take(&mut self.read_from_disk)
     }
@@ -630,8 +568,6 @@ impl Project {
     ) -> NodeId {
         let depth = self.nodes.get(&parent).map_or(0, |n| n.depth + 1);
         let id = self.alloc();
-        // A disk-backed folder starts unloaded (children read on expand); an
-        // in-memory folder is fully known, so it is `loaded`.
         let loaded = disk_path.is_none();
         self.nodes.insert(
             id,
@@ -670,8 +606,6 @@ impl Project {
             id,
             TreeNode {
                 id,
-                // Do not leak an absolute path into history/search/resource
-                // identity. See the corresponding folder insertion above.
                 resource_id: Uuid::new_v4().to_string(),
                 name: name.to_string(),
                 parent: Some(parent),
@@ -701,7 +635,6 @@ impl Project {
         self.nodes.get(&id)
     }
 
-    /// Toggle a folder's expanded flag. No-op on files.
     pub fn toggle_folder(&mut self, id: NodeId) {
         if let Some(TreeNode {
             kind: NodeKind::Folder { expanded, .. },
@@ -712,7 +645,6 @@ impl Project {
         }
     }
 
-    /// Set a folder's expanded flag. No-op on files.
     pub fn set_folder_expanded(&mut self, id: NodeId, open: bool) {
         if let Some(TreeNode {
             kind: NodeKind::Folder { expanded, .. },
@@ -723,14 +655,6 @@ impl Project {
         }
     }
 
-    /// Build a project rooted at the real directory `path`, reading its top
-    /// level immediately. Sub-folders are read lazily on first expansion via
-    /// [`Project::load_children`], so opening a large tree is cheap.
-    ///
-    /// The root is canonicalised, so every path the editor derives from it —
-    /// the language server's workspace root, a search hit, a save target — is
-    /// absolute and symlink-resolved, and two ways of naming the same directory
-    /// cannot open as two different projects.
     pub fn from_dir(path: &Path) -> io::Result<Project> {
         let md = std::fs::metadata(path)?;
         if !md.is_dir() {
@@ -743,8 +667,6 @@ impl Project {
         let name = dir_display_name(&path);
         let mut p = Project::new(&name);
         let root = p.root;
-        // Point the root at the real directory and mark it unloaded so
-        // `load_children` reads it.
         p.identify_from_disk(root);
         if let Some(node) = p.nodes.get_mut(&root) {
             node.disk_path = Some(path);
@@ -760,19 +682,14 @@ impl Project {
         Ok(p)
     }
 
-    /// The real directory this project is rooted at, if it came from disk.
     pub fn root_path(&self) -> Option<PathBuf> {
         self.nodes.get(&self.root).and_then(|n| n.disk_path.clone())
     }
 
-    /// Whether this project projects a real directory (as opposed to the
-    /// bundled demo tree or a set of scratch buffers).
     pub fn is_disk_backed(&self) -> bool {
         self.root_path().is_some()
     }
 
-    /// Find the node for a real path, if the tree has read that far. Used to
-    /// focus the file a search hit or a go-to-definition landed in.
     pub fn node_for_path(&self, path: &Path) -> Option<NodeId> {
         self.nodes
             .iter()
@@ -780,20 +697,12 @@ impl Project {
             .map(|(id, _)| *id)
     }
 
-    /// Read every folder along `path` from the project root so the file at the
-    /// end becomes a node the tree and the tabs can address, expanding the
-    /// folders on the way. Returns the file's node id.
-    ///
-    /// This is what lets a project-wide search hit open its file: the hit names
-    /// a path in a folder that has very likely never been expanded, so the
-    /// lazily-loaded tree has no node for it yet.
+    /// Read every folder along `path` from the root so the file at the end becomes a node the tree and
+    /// the tabs can address. Returns the file's node id.
     pub fn reveal_path(&mut self, path: &Path) -> Option<NodeId> {
         self.reveal_with(path, Self::load_children)
     }
 
-    /// [`Self::reveal_path`] over folders already read: what
-    /// [`read_folders_along`] read for it, adopted with [`Self::adopt_folders`].
-    /// Reads nothing; `None` where a folder on the way was not read.
     pub fn reveal_read(&mut self, path: &Path) -> Option<NodeId> {
         self.reveal_with(path, |project, id| {
             if project.folder_to_read(id).is_some() {
@@ -819,7 +728,6 @@ impl Project {
         let mut components = rel.components().peekable();
         while let Some(component) = components.next() {
             walked = walked.join(component);
-            // Reading the parent is what materialises this component as a node.
             load(self, current).ok()?;
             let child = self.node_for_path(&walked)?;
             if components.peek().is_some() {
@@ -839,13 +747,9 @@ impl Project {
         None
     }
 
-    /// Build a single-file project: a root folder named after the file's parent
-    /// directory containing just `path`. Returns the project and the file's
-    /// node id (ready to open into a tab). The file's bytes are read lazily
-    /// when the buffer is first opened (see [`Project::file_seed`]).
+    /// A single-file project: a root folder named after the file's directory, holding just `path`. The
+    /// bytes are read when the buffer is first opened ([`Project::file_seed`]).
     pub fn open_single_file(path: &Path) -> io::Result<(Project, NodeId)> {
-        // Surface an unreadable path up front (permission / not-found) rather
-        // than silently opening an empty tab.
         let _ = std::fs::metadata(path)?;
         let file_name = path.file_name().map_or_else(
             || path.display().to_string(),
@@ -861,20 +765,6 @@ impl Project {
         Ok((p, node))
     }
 
-    /// Read a disk-backed folder's children from the filesystem the first time
-    /// it is expanded. Idempotent: a folder with no `disk_path`, or one already
-    /// loaded, is left untouched.
-    ///
-    /// One directory level is read at a time, which is what keeps opening a
-    /// repository the size of this one instant — the alternative, walking the
-    /// whole tree up front, would read hundreds of thousands of entries before
-    /// the first frame. Build output and VCS internals are skipped entirely
-    /// (see `crate::disk::IGNORED_DIRS`): `target/` here holds more files
-    /// than the rest of the repository by two orders of magnitude, and none of
-    /// them is source anyone opens.
-    ///
-    /// # Errors
-    /// Returns an error if the folder's directory listing can't be read.
     pub fn load_children(&mut self, id: NodeId) -> io::Result<()> {
         let Some(path) = self.folder_to_read(id) else {
             return Ok(());
@@ -884,8 +774,6 @@ impl Project {
         Ok(())
     }
 
-    /// The directory a disk-backed folder that has not been read yet stands
-    /// for; `None` for any other node.
     pub fn folder_to_read(&self, id: NodeId) -> Option<PathBuf> {
         match self.nodes.get(&id) {
             Some(TreeNode {
@@ -897,8 +785,6 @@ impl Project {
         }
     }
 
-    /// Give folder `id` the children [`read_folder`] found, unless it was
-    /// read already.
     pub fn adopt_listing(&mut self, id: NodeId, listing: Listing) {
         if self.folder_to_read(id).is_none() {
             return;
@@ -918,8 +804,6 @@ impl Project {
         }
     }
 
-    /// Adopt what [`read_folders_along`] read, outermost first, so each
-    /// folder is a node by the time its own listing comes.
     pub fn adopt_folders(&mut self, read: Vec<(PathBuf, io::Result<Listing>)>) {
         for (path, listing) in read {
             let (Some(id), Ok(listing)) = (self.node_for_path(&path), listing) else {
@@ -929,13 +813,9 @@ impl Project {
         }
     }
 
-    /// The bytes to seed a file buffer with: the in-memory seed if present,
-    /// otherwise the real file read from disk.
-    ///
-    /// The disk read is fallible and its failure is *returned*, not swallowed.
-    /// An unreadable file that opened as a silently-empty buffer would be saved
-    /// back as an empty file the moment the user pressed Ctrl+S — the read
-    /// error has to reach them before that.
+    /// The bytes to seed a file buffer with: the in-memory seed, else the file read from disk. The read's
+    /// failure is returned, not swallowed: a buffer that opened empty would be saved back empty on the
+    /// next Ctrl+S.
     pub fn file_seed(
         &self,
         id: NodeId,
@@ -956,8 +836,6 @@ impl Project {
         }
     }
 
-    /// Point a file node at a real path (used by Save As), updating its name
-    /// and inferred language to match. No-op on folders / missing nodes.
     pub fn set_file_path(&mut self, id: NodeId, path: &Path, name: &str) {
         if let Some(node) = self.nodes.get_mut(&id)
             && let NodeKind::File { language, .. } = &mut node.kind
@@ -968,14 +846,10 @@ impl Project {
         }
     }
 
-    /// The real filesystem path a node projects, if any.
     pub fn disk_path_of(&self, id: NodeId) -> Option<PathBuf> {
         self.nodes.get(&id).and_then(|n| n.disk_path.clone())
     }
 
-    /// Flatten the visible tree into an ordered list, honouring folder
-    /// expansion. Folders sort before files, then alphabetically — the
-    /// conventional file-explorer ordering.
     pub fn visible_rows(&self) -> Vec<NodeId> {
         let mut out = Vec::new();
         self.push_children(self.root, &mut out);
@@ -992,8 +866,6 @@ impl Project {
         else {
             return;
         };
-        // Root's own children are the top-level rows; the root itself isn't
-        // rendered as a row (its name shows in the sidebar header instead).
         let mut kids: Vec<NodeId> = children.clone();
         kids.sort_by(|a, b| {
             let (Some(na), Some(nb)) = (self.nodes.get(a), self.nodes.get(b)) else {
@@ -1023,8 +895,6 @@ impl Project {
         }
     }
 
-    /// The breadcrumb path of a node from the project root, e.g.
-    /// `myproj / src / main.rs`.
     pub fn path_of(&self, id: NodeId) -> String {
         let mut chain = Vec::new();
         let mut cur = Some(id);
@@ -1040,8 +910,6 @@ impl Project {
     }
 }
 
-/// A human-friendly name for a directory path — its last component, or the
-/// whole path for a root like `/`. Used to label a project opened from disk.
 fn dir_display_name(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.display().to_string(),
@@ -1049,39 +917,23 @@ fn dir_display_name(path: &Path) -> String {
     )
 }
 
-/// The editor buffer: the file this window shows. The actual
-/// text lives in the CRDT, keyed by `node`; this struct holds the per-buffer
-/// caret/selection and the cached language.
 #[derive(Clone, Debug)]
 pub struct OpenBuffer {
     pub node: NodeId,
     pub name: String,
     pub language: Language,
-    /// Whether the buffer has unsaved edits relative to its on-disk seed.
     pub dirty: bool,
-    /// The real file this buffer writes back to, if it has one. A scratch
-    /// buffer has none until Save As gives it one.
     pub path: Option<PathBuf>,
-    /// The state the file was in when we last agreed with it — set on open and
-    /// on every successful save. Save re-stats against this to refuse
-    /// clobbering someone else's write; see `crate::disk::save`.
     pub stamp: Option<crate::disk::Stamp>,
-    /// The text as last read from or written to disk. Dirty is
-    /// `buffer_text != saved_text` — a real comparison rather than a flag that
-    /// an undo back to the original would leave stuck on.
     pub saved_text: String,
-    /// Set once the file is known to have changed on disk since it was opened,
-    /// so the tab can say so before the user tries to save over it.
     pub stale: bool,
 }
 
 impl OpenBuffer {
-    /// Whether the buffer's current text differs from what is on disk.
     pub fn is_dirty(&self, current: &str) -> bool {
         current != self.saved_text
     }
 
-    /// Adopt `text` as the on-disk truth (after a load, a save, or a reload).
     pub fn mark_saved(&mut self, text: String, stamp: Option<crate::disk::Stamp>) {
         self.saved_text = text;
         self.stamp = stamp;
@@ -1090,10 +942,8 @@ impl OpenBuffer {
     }
 }
 
-/// The editor session: the project, and the one file this window shows.
-///
-/// A window edits one file. Another file side by side is another editor in a
-/// tab of the desktop's window group, never a tab of this one.
+/// The editor session: the project, and the one file this window shows. Another file side by side is
+/// another editor in a tab of the desktop's window group.
 #[derive(Clone, Debug, Default)]
 pub struct Session {
     pub project: Project,
@@ -1108,9 +958,6 @@ impl Session {
         }
     }
 
-    /// Show the file `node`, replacing the file shown before. Returns
-    /// whether `node` is a file. The caller keeps unsaved work: replacing a
-    /// modified buffer is its decision, after asking.
     pub fn open_file(&mut self, node: NodeId) -> bool {
         let Some(tn) = self.project.get(node) else {
             return false;
@@ -1138,12 +985,10 @@ impl Session {
         self.buffer.as_ref().filter(|b| b.node == node)
     }
 
-    /// Mutable access to the shown buffer when it is `node`.
     pub fn buffer_of_mut(&mut self, node: NodeId) -> Option<&mut OpenBuffer> {
         self.buffer.as_mut().filter(|b| b.node == node)
     }
 
-    /// Stop showing `node`, if it is the shown file.
     pub fn close_file(&mut self, node: NodeId) {
         if self.buffer.as_ref().is_some_and(|b| b.node == node) {
             self.buffer = None;
@@ -1193,7 +1038,6 @@ mod tests {
         let mut p = Project::new("proj");
         let src = p.add_folder(p.root, "src");
         let _main = p.add_file(src, "main.rs", "fn main() {}");
-        // Collapsed by default: src shows but not its child.
         let rows = p.visible_rows();
         assert_eq!(rows.len(), 1);
         p.toggle_folder(src);
@@ -1206,23 +1050,19 @@ mod tests {
         let _z = p.add_file(p.root, "z.rs", "");
         let _a = p.add_folder(p.root, "alpha");
         let rows = p.visible_rows();
-        // Folder "alpha" comes before file "z.rs".
         assert!(p.get(rows[0]).unwrap().is_folder());
     }
 
     fn adopt_file_tracks_a_document_buffer_and_advances_the_allocator() {
         let mut p = Project::new("proj");
-        // A buffer id from the document that the in-memory tree does not know.
         let orphan = 7;
         assert!(p.get(orphan).is_none());
         p.adopt_file(orphan, "untitled-7.txt");
         assert!(!p.get(orphan).unwrap().is_folder());
         assert!(p.visible_rows().contains(&orphan));
-        // The allocator will not reissue the adopted id.
         assert!(p.peek_next_id() > orphan);
         let next = p.add_file(p.root, "z.rs", "");
         assert_ne!(next, orphan);
-        // Adopting the same id twice is a no-op.
         p.adopt_file(orphan, "different.txt");
         assert_eq!(p.get(orphan).unwrap().name, "untitled-7.txt");
     }
@@ -1256,8 +1096,7 @@ mod tests {
         assert!(s.active_buffer().is_none());
     }
 
-    /// A small on-disk project shaped like a real one: nested source, build
-    /// output that must be invisible, and a VCS directory.
+    /// A small on-disk project shaped like a real one: nested source, build output, and a VCS directory.
     fn disk_fixture() -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();
         let r = d.path();
@@ -1296,14 +1135,11 @@ mod tests {
         let top = names(&p);
         assert!(top.contains(&"src".to_string()));
         assert!(top.contains(&"Cargo.toml".to_string()));
-        // …build output and VCS internals are not…
         assert!(
             !top.contains(&"target".to_string()),
             "target/ must be hidden"
         );
         assert!(!top.contains(&".git".to_string()), ".git/ must be hidden");
-        // …and the nested file has NOT been read: the tree is lazy, which is
-        // what makes opening a large repository instant.
         assert!(!top.contains(&"main.rs".to_string()));
         assert_eq!(p.nodes.len(), 3, "root + src + Cargo.toml, nothing deeper");
     }
@@ -1336,8 +1172,6 @@ mod tests {
     }
 
     fn reveal_path_walks_a_never_expanded_tree_down_to_the_file() {
-        // This is the search-hit path: a hit names a file several folders deep
-        // that the lazy tree has no node for yet.
         let d = disk_fixture();
         let mut p = Project::from_dir(d.path()).unwrap();
         let target = crate::disk::canonical(d.path()).join("src/inner/deep.rs");
@@ -1346,7 +1180,6 @@ mod tests {
         let id = p.reveal_path(&target).expect("reveal the nested file");
         assert_eq!(p.get(id).unwrap().name, "deep.rs");
         assert_eq!(p.disk_path_of(id).as_deref(), Some(target.as_path()));
-        // The folders along the way were expanded, so it is actually visible.
         assert!(names(&p).contains(&"deep.rs".to_string()));
         assert_eq!(p.reveal_path(&target), Some(id));
     }
@@ -1363,8 +1196,6 @@ mod tests {
     }
 
     fn an_unreadable_file_surfaces_its_error_instead_of_an_empty_buffer() {
-        // Opening a binary as a silently-empty buffer would let the next Ctrl+S
-        // truncate it, so the failure has to be returned.
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("a.bin"), [0u8, 1, 2]).unwrap();
         let mut p = Project::from_dir(d.path()).unwrap();
@@ -1379,7 +1210,6 @@ mod tests {
 
     #[test]
     fn opening_a_path_roots_single_files_and_rejects_missing_or_non_directories() {
-        // Each phase uses its own fixture (or none).
         opening_a_single_file_gives_a_project_rooted_at_its_folder();
         opening_a_missing_path_fails_rather_than_opening_an_empty_project();
         a_file_is_not_a_project_directory();
@@ -1428,7 +1258,6 @@ mod tests {
         };
         assert!(!buf.is_dirty("fn main() {}"));
         assert!(buf.is_dirty("fn main() { x }"));
-        // Undoing back to the original is clean again — a flag would be stuck.
         assert!(!buf.is_dirty("fn main() {}"));
 
         buf.dirty = true;

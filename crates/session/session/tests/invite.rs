@@ -11,8 +11,6 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
-mod common;
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -32,11 +30,7 @@ use tilo_sheets::invite::InviteApp;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use ui::a11y::Action as A11yAction;
 
-use common::{HEIGHT, WIDTH};
-
-// An engine admits a workspace's records through an Automerge worker: this binary is that worker,
-// as it is the session's own.
-tilo_automerge_isolate::test_worker!();
+use crate::common::{HEIGHT, WIDTH};
 
 /// The workspace this computer holds and the person invites into.
 const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
@@ -67,7 +61,7 @@ fn this_computer(
     std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
         .expect("this computer's key directory");
     let person = SigningKey::from_bytes(&[0x61; 32]);
-    let device = SigningKey::from_bytes(&[0x62; 32]);
+    let device = SigningKey::from_bytes(&tilo_test_env::node_key());
     tilo_user_identity::persist::write_device_key(&paths.device_privkey, &device)
         .expect("this computer's device key");
     let cert = certified(&person, &device, "The laptop");
@@ -80,13 +74,7 @@ fn this_computer(
 /// The identity of `cert` 's device, with no identity root of its own: what redeems a link is a
 /// device, and this one joins only what it is handed.
 fn identity(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
-    HostIdentity {
-        device_cert: cert.clone(),
-        device_signing_key: key.clone(),
-        workspace_device_certs: HashMap::new(),
-        workspace_revocations: HashMap::new(),
-        identity_paths: None,
-    }
+    HostIdentity::kept(cert.clone(), key.clone())
 }
 
 /// This computer's copy of the workspace `workspace` under `state` , held as `cert` 's device in a
@@ -111,7 +99,6 @@ fn workspace_held_here(state: &Path, workspace: WorkspaceId, cert: &DeviceCert, 
                 workspace,
                 TransportOrigin::RetainedRelayDelta(host),
                 postcard::from_bytes(&frame).expect("a publication is a message"),
-                None,
                 SystemTime::now(),
             )
             .expect("the host admits the workspace's people");
@@ -225,8 +212,8 @@ fn bar_control(session: &Session) -> Option<(f64, f64, f64, f64)> {
     session
         .controls()
         .into_iter()
-        .find(|(name, _)| name == "Invite" || name == "topbar:invite")
-        .map(|(_, rect)| rect)
+        .find(|control| control.name == "Invite" || control.name == "topbar:invite")
+        .map(|control| control.rect)
 }
 
 /// A press at the centre of `rect` , through the compositor's own input.
@@ -334,18 +321,19 @@ fn scanned(code: &[u8]) -> Result<(Vec<u8>, usize), String> {
     Ok((read, meta.version.0))
 }
 
-/// The sheet's code for the link it made carries what the person hands over: the invitation's own
-/// text, or the short link that names it. A scanner reads it back byte for byte.
-fn scanned_back(created: &tilo_sheets::invite::Created) -> Result<Vec<u8>, String> {
-    let handed_over = if tilo_workspace_join::sealed::parse_link(&created.link).is_some() {
-        created.link.clone().into_bytes()
-    } else {
-        tilo_workspace_join::invitation_bytes(&created.link)?
-    };
-    if handed_over != created.code {
-        return Err("the code is not what the sheet hands over".to_owned());
-    }
-    scanned(&created.code).map(|(read, _)| read)
+/// The invitation a short `link` names, as its site's shelf `kept` it and the key in the link
+/// opens it: the text a device joins with.
+fn redeemed(link: &str, kept: &Mutex<HashMap<String, String>>) -> String {
+    let parsed = tilo_workspace_join::sealed::parse_link(link).expect("a short link");
+    let sealed = kept
+        .lock()
+        .expect("the shelf's invitations")
+        .get(&parsed.handle)
+        .cloned()
+        .expect("the shelf keeps the invitation the link names");
+    let bytes = tilo_workspace_join::sealed::open_sealed(&sealed, &parsed.handle, &parsed.key)
+        .expect("the link's key opens it");
+    tilo_workspace_join::encode_invitation_text(&bytes)
 }
 
 /// A session on a desk that holds [`WORKSPACE`], with the invite sheet up as the person who may
@@ -376,7 +364,7 @@ fn hosted(home: &mut tilo_test_env::TestHome) -> Hosted {
         .input(InputEvent::PointerMotion { x: 1100.0, y: 16.0 })
         .expect("the pointer");
     let mut place = None;
-    common::until(&mut session, "the bar offers Invite", |session| {
+    crate::common::until(&mut session, "the bar offers Invite", |session| {
         place = bar_control(session);
         place.is_some()
     });
@@ -419,7 +407,7 @@ fn press_create(app: &mut HeadlessApp<InviteApp>, session: &mut Session) -> Stri
     app.settle();
     settle(session);
     let mut link = String::new();
-    common::until(session, "the sheet shows the link it made", |session| {
+    crate::common::until(session, "the sheet shows the link it made", |session| {
         link = session
             .invite_sheet()
             .and_then(|seat| {
@@ -439,11 +427,18 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     let _settled = ui::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    // This computer knows no community site, so the sheet hands over the invitation's own text: the
-    // long form, as every build has.
+    // This computer's community site is a shelf on this machine: the sheet hands over its short
+    // link, and her device redeems the invitation it names.
+    let (responder, kept) = shelf();
     let community = home.config().join("community.toml");
-    std::fs::write(&community, "site = \"\"\n").expect("a config naming no site");
+    std::fs::write(&community, format!("site = \"{}/\"\n", responder.url()))
+        .expect("a community site");
     home.env().set("TILO_COMMUNITY_CONFIG", &community);
+    // Nor does it relay through anyone: the link names the addresses of this computer's own
+    // network, which her device dials directly, rather than a public relay a test cannot count on.
+    settings_store::relay::RELAY
+        .set(settings_store::relay::Relays::None)
+        .expect("the relay setting is kept");
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let Hosted {
         _kept,
@@ -458,8 +453,8 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     let mut app = sheet_app(&seat);
     let link = press_create(&mut app, &mut session);
     assert!(
-        link.len() > 40,
-        "the link the sheet shows is a signed invitation: {link:?}"
+        link.starts_with(&format!("{}/i/", responder.url())),
+        "the link the sheet shows is the site's short one: {link:?}"
     );
     assert_eq!(
         invitations_at_the_desk(&mut session).len(),
@@ -468,19 +463,19 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     );
     capture(&mut app, "invite-sheet");
 
-    // The link is shown as a code to scan, and the code is the invitation itself: a scanner reads
-    // back exactly what the person hands over.
+    // The link is shown as a code to scan: a scanner reads back exactly what the person hands over.
     let made = session
         .invite_sheet()
         .and_then(|seat| seat.invite().created)
         .expect("the link the sheet made");
     assert_eq!(
-        scanned_back(&made),
-        Ok(made.code.clone()),
-        "the code is the invitation, read back out of the QR the sheet draws"
+        scanned(made.link.as_bytes()).map(|(read, _)| read),
+        Ok(made.link.clone().into_bytes()),
+        "the code is the link, read back out of the QR the sheet draws"
     );
-    // Every part the sheet offers makes a link of its own, and every link's code is that invitation
-    // the same way.
+    // Every part the sheet offers makes a link of its own, and every link's code is that link the
+    // same way.
+    let mut shown = made.link;
     for part in 0..seat.invite().roles.len() {
         app.harness()
             .perform_named(
@@ -493,23 +488,30 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
             .perform_named("invite-create", &A11yAction::Activate)
             .expect("the create button is pressed");
         app.settle();
-        settle(&mut session);
+        // The link is signed off the loop and shows once it landed.
+        crate::common::until(&mut session, "the sheet shows the part's link", |session| {
+            session
+                .invite_sheet()
+                .and_then(|seat| seat.invite().created)
+                .is_some_and(|made| made.link != shown)
+        });
         let made = session
             .invite_sheet()
             .and_then(|seat| seat.invite().created)
             .expect("a link for the part");
+        shown.clone_from(&made.link);
         assert_eq!(
-            scanned_back(&made),
-            Ok(made.code.clone()),
-            "the code of a link at part {part} is the invitation, read back"
+            scanned(made.link.as_bytes()).map(|(read, _)| read),
+            Ok(made.link.clone().into_bytes()),
+            "the code of a link at part {part} is its link, read back"
         );
     }
 
     // Her own device, of her own person, joins with what was handed to her.
     let her_root = SigningKey::from_bytes(&[0x81; 32]);
-    let her_key = SigningKey::from_bytes(&[0x82; 32]);
+    let her_key = SigningKey::from_bytes(&tilo_test_env::node_key());
     let her = certified(&her_root, &her_key, "Her laptop");
-    let hers = joins_with(&link, workspace, &her, &her_key)
+    let hers = joins_with(&redeemed(&link, &kept), workspace, &her, &her_key)
         .expect("the link admits her device into the workspace");
 
     // The workspace she took in has this computer's person in it already, and her in the part the
@@ -655,14 +657,14 @@ fn a_link_left_on_the_community_site_is_short_and_the_site_never_sees_its_key() 
     // modules, a version 6 code at medium error correction, not the version 39 the invitation's own
     // kilobytes need.
     let made = seat.invite().created.expect("the link the sheet made");
-    assert_eq!(
-        made.code,
-        link.clone().into_bytes(),
-        "the code is the link the person hands over"
-    );
+    assert_eq!(made.link, link, "the sheet shows the link it hands over");
     capture(&mut app, "invite-sheet-short");
-    let (read, version) = scanned(&made.code).expect("a scanner reads the short code");
-    assert_eq!(read, made.code, "the scanner reads the link back whole");
+    let (read, version) = scanned(made.link.as_bytes()).expect("a scanner reads the short code");
+    assert_eq!(
+        read,
+        link.as_bytes(),
+        "the scanner reads the link back whole"
+    );
     assert!(
         version <= 6,
         "a short link fits a version 6 code, and this one is version {version}"

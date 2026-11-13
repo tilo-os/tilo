@@ -23,9 +23,9 @@ use std::{
 use tilo_action_broker::{
     channel_encryption::{
         ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
-        ChannelKeyProvider, GovernancePump,
+        ChannelKeyProvider, ChannelsDir, GovernancePump,
     },
-    collab_core::BrokerChannels,
+    collab_core::{BrokerChannels, BrokerGates},
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_identity_host::provisioning::IdentityStorage;
@@ -35,8 +35,17 @@ use tilo_identity_host::provisioning::IdentityStorage;
 const CHANNEL_STATE: &str = "channels";
 const CHANNEL_STATE_KEY: &str = "channel-state.key";
 /// How long a first write to a route's channel waits for its group to be
-/// created and admit this device.
-const OPEN_WAIT: Duration = Duration::from_secs(5);
+/// created and admit this device: far more than the wait before this device
+/// creates the group itself
+/// (`tilo_action_broker::channel_encryption::founding_wait`) and the work a
+/// first write does beside it, so a fresh workspace's first write is not
+/// refused for keys that are about to arrive; keys that have not arrived in
+/// half a minute are not about to.
+const OPEN_WAIT: Duration = Duration::from_secs(30);
+/// A first write must outlast the wait before the group is created here.
+const _: () = assert!(
+    OPEN_WAIT.as_secs() > tilo_action_broker::channel_encryption::founding_wait().as_secs()
+);
 
 /// The running channel service; stops when dropped.
 pub(super) struct Channels {
@@ -57,14 +66,15 @@ pub(super) fn open(
 ) -> io::Result<Channels> {
     let service = ChannelEncryption::open(
         ChannelEncryptionConfig {
-            root: profile.join(CHANNEL_STATE),
+            state: Arc::new(ChannelsDir::new(profile.join(CHANNEL_STATE))),
             vault: vault_key(profile, profile_workspace, storage)?,
-            device_key,
+            signer: Arc::new(device_key),
+            role: tilo_action_broker::channel_encryption::Role::Participant,
         },
         Box::new(Directory {
             joined: Arc::clone(&joined),
         }),
-        broker,
+        Arc::new(BrokerGates(broker)),
     )?;
     let park = joined.governance_wake();
     let poke = Arc::clone(&park);
@@ -101,6 +111,12 @@ impl ChannelDirectory for Directory {
         now: u64,
     ) -> Option<collab_types::ChannelId> {
         self.joined.unit_scope(workspace, route, now)
+    }
+
+    /// A workspace joined through another device's host is that host's to
+    /// answer for.
+    fn hosts(&self, workspace: WorkspaceId) -> bool {
+        !self.joined.hosted_elsewhere(workspace)
     }
 }
 
@@ -182,7 +198,7 @@ fn vault_key(
     let file = profile.join(CHANNEL_STATE_KEY);
     #[cfg(target_os = "macos")]
     if storage == IdentityStorage::Platform {
-        return keychain::vault_key(&file, workspace).map(VaultKey::new);
+        return keychain::vault_key(workspace).map(VaultKey::new);
     }
     let _ = (workspace, storage);
     if let Some(key) = read_key_file(&file)? {
@@ -213,55 +229,37 @@ fn random_key() -> [u8; 32] {
     key
 }
 
-/// The channel-state key as a Keychain generic password. A key file an
-/// earlier build wrote moves in once: stored, read back, then removed. A
-/// Keychain that refuses or fails fails the start; nothing falls back to a
-/// file.
+/// The channel-state key as a Keychain generic password, created on first
+/// use. A Keychain that refuses or fails fails the start; nothing falls back
+/// to a file.
 #[cfg(target_os = "macos")]
 mod keychain {
-    use super::{WorkspaceId, random_key, read_key_file};
-    use std::{io, path::Path};
+    use super::{WorkspaceId, random_key};
+    use std::io;
     use tilo_secrets::{PutOptions, SecretStore};
 
     const SECRETS_APP: &str = "so.tilo.runtime";
 
-    pub(super) fn vault_key(file: &Path, workspace: WorkspaceId) -> io::Result<[u8; 32]> {
+    pub(super) fn vault_key(workspace: WorkspaceId) -> io::Result<[u8; 32]> {
         let store = SecretStore::for_app(SECRETS_APP);
         let name = format!("channel-state-v1.{workspace}");
-        let stored = get(&store, &name)?;
-        let legacy = read_key_file(file)?;
-        let key = match (stored, legacy) {
-            (Some(stored), Some(legacy)) if stored != legacy => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "the login Keychain and {} hold different channel state keys",
-                        file.display()
-                    ),
-                ));
-            }
-            (Some(stored), _) => stored,
-            (None, legacy) => {
-                let key = legacy.unwrap_or_else(random_key);
-                store
-                    .put_blocking(
-                        &name,
-                        &key,
-                        PutOptions {
-                            label: Some("Tilo channel state key".into()),
-                        },
-                    )
-                    .map_err(|error| keychain_error(&error))?;
-                if get(&store, &name)? != Some(key) {
-                    return Err(io::Error::other(
-                        "the login Keychain did not return the stored channel state key",
-                    ));
-                }
-                key
-            }
-        };
-        if legacy.is_some() {
-            std::fs::remove_file(file)?;
+        if let Some(key) = get(&store, &name)? {
+            return Ok(key);
+        }
+        let key = random_key();
+        store
+            .put_blocking(
+                &name,
+                &key,
+                PutOptions {
+                    label: Some("Tilo channel state key".into()),
+                },
+            )
+            .map_err(|error| keychain_error(&error))?;
+        if get(&store, &name)? != Some(key) {
+            return Err(io::Error::other(
+                "the login Keychain did not return the stored channel state key",
+            ));
         }
         Ok(key)
     }

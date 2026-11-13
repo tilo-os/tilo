@@ -242,7 +242,7 @@ fn an_attended_action_waits_for_the_persons_confirmation_before_an_agent_runs_it
         matches!(
             &asked,
             PendingPoll::Ready(Err(
-                tilo_actions::remote::ActionHostError::ConfirmationRequired
+                tilo_actions::remote::ActionHostError::ConfirmationRequired { .. }
             ))
         ),
         "the agent waits for the person: {asked:?}"
@@ -1445,8 +1445,7 @@ fn agent_answered(
     let owner = "a1".repeat(32);
     let person = tilo_action_policy::Subject::person(owner.clone());
     let (state, person_caller, mut app) = fixture_granting(Vec::new(), Vec::new(), |workspace| {
-        let mut grants =
-            tilo_action_policy::roles::agent_turn(workspace, "scribe", &owner, &[]).grants;
+        let mut grants = tilo_action_policy::roles::agent_grants(workspace, "scribe", &owner, &[]);
         grants.push(agent_answers::grant(
             workspace,
             "scribe",
@@ -1518,7 +1517,7 @@ fn an_agents_change_the_person_asks_about_waits_for_them() {
         assert!(
             matches!(
                 answered,
-                PendingPoll::Ready(Err(ActionHostError::ConfirmationRequired))
+                PendingPoll::Ready(Err(ActionHostError::ConfirmationRequired { .. }))
             ),
             "{answered:?}"
         );

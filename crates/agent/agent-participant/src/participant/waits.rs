@@ -12,10 +12,10 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::parts::is_part;
 use super::running::{Running, step_brief};
-use super::unopened::Reading;
 use super::{AgentParticipant, MOST_ARRIVED_CHARS, MOST_NEWS_REPLANS, MOST_WAIT_RECORDS};
 use crate::message_lines::{names_participant, participant_names, shown_line};
 use crate::planner::{MESSAGE_APPS, MOST_WAITS, Step, StepAction, Wait};
+use crate::workspace_records::Reading;
 
 /// A wait that ended on what arrived, kept until the plan after it is made
 /// ([`Running::rewake`]).
@@ -542,12 +542,23 @@ impl AgentParticipant {
         self.unopened.text(route, Reading::Messages)
     }
 
+    /// The messages of the record at `route` as they stood before the write
+    /// that just landed: an open record merges it only after this is read; a
+    /// record not open is read from the replica, which holds the write
+    /// already, so its messages as last read stand for before.
+    pub(super) fn messages_before(&mut self, route: &DocumentRoute) -> Option<Arc<str>> {
+        if self.apps.contains_key(route) || self.beside.contains_key(route) {
+            return self.record_messages(route);
+        }
+        self.unopened.last_read(route, Reading::Messages)
+    }
+
     /// `lines`, messages the record at `route` added, as a person reads
     /// them: a sender named by participant id is shown by the name its
     /// app's records give it (a chat's roster), unless that is `from`, who
     /// changed the record and is named beside the lines anyway.
     pub(super) fn shown_lines(
-        &mut self,
+        &self,
         route: &DocumentRoute,
         lines: Vec<String>,
         from: Option<&str>,
@@ -567,7 +578,7 @@ impl AgentParticipant {
 
     /// The names the records of `route`'s app in the workspace give
     /// participants: those open, else those not open.
-    fn participant_names(&mut self, route: &DocumentRoute) -> HashMap<String, String> {
+    fn participant_names(&self, route: &DocumentRoute) -> HashMap<String, String> {
         let naming = |held: &DocumentRoute| {
             held.app_id == route.app_id
                 && held.cluster_id == route.cluster_id
@@ -819,11 +830,15 @@ impl AgentParticipant {
             .title(route, |doc| titles.title(&route.app_id, doc))
     }
 
-    /// The name the member on `device` shows in its presence.
+    /// The name the member on `device` shows in its presence: the one it said of itself, or the
+    /// one the shell it says draws it by.
     pub(super) fn member_name(&self, device: [u8; 32]) -> Option<String> {
-        self.members
-            .get(&device)
-            .map(|(shell, _)| shell.label.clone())
+        let publisher = hex::encode(device);
+        self.presence
+            .members(&self.workspace)
+            .into_iter()
+            .find(|member| member.publisher == publisher)
+            .map(|member| member.label)
             .filter(|label| !label.is_empty())
     }
 }

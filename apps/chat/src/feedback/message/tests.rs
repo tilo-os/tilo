@@ -174,7 +174,7 @@ fn the_masked_picture_is_the_report_messages_image() {
     assert_eq!(
         rows(&doc, &submission)[0].attachments,
         vec![tilo_reference::Attached::Image {
-            name: super::PICTURE_NAME.into(),
+            name: ui::feedback_read_out::PICTURE_NAME.into(),
             blob: "ab".repeat(32),
             w: 640,
             h: 360,
@@ -204,29 +204,26 @@ fn members_react_to_a_report_as_to_any_message() {
 }
 
 #[test]
-fn a_bot_reading_the_workspace_reads_the_report_as_its_message() {
-    let (doc, submission) = picked(true);
-    let chat = crate::projection::read(&doc);
-    let message = crate::feedback::message_id(&submission.id);
-    let none = crate::messages::Messages::default();
-    let read = crate::effects::read_workspace(&chat, &none, Some(&message), None);
-    let found = &read["messages"][0];
-    assert_eq!(found["id"], message.as_str());
-    let value = &found["value"];
-    assert!(
-        value["text"]
-            .as_str()
-            .unwrap()
-            .starts_with("1. The \u{201C}Save\u{201D} button in Files")
+fn a_bot_reading_the_record_through_the_door_reads_the_report_out() {
+    use ui::tilo_resource::Model as _;
+    let (mut doc, submission) = picked(true);
+    // What the record door answers every reader: the record as plain data.
+    let read = ui::tilo_actions::remote::RecordCopy::Document(doc.save())
+        .readable()
+        .unwrap();
+    let filed = read["feedback"]
+        .as_object()
+        .unwrap()
+        .values()
+        .find(|filed| filed["v"]["submission"]["id"] == submission.id.as_str())
+        .expect("the report is in the record");
+    let read_back = Submission::from_json(&filed["v"]["submission"]).unwrap();
+    assert_eq!(
+        read_back.destination.channel,
+        submission.destination.channel
     );
-    let latest =
-        crate::effects::read_workspace(&chat, &none, None, Some(&submission.destination.channel));
     assert!(
-        latest["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|found| found["id"] == message.as_str()),
-        "a channel's latest messages include the report"
+        ui::feedback_read_out::lines(&read_back.feedback)[0]
+            .starts_with("1. The \u{201C}Save\u{201D} button in Files")
     );
 }

@@ -1,16 +1,12 @@
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 
-/// One item. Its title is collaborative text.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Item {
-    /// Names the item in history, search and the palette.
     #[model(label)]
     pub title: String,
     pub done: bool,
 }
 
-/// The app's state: the items, in the order they were added.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Items {
     pub items: Collection<Item>,
@@ -21,9 +17,8 @@ pub struct Items {
 /// are item verbs: the palette and agents see each item as a resource of its
 /// own with them on it, and a row's context menu (right-click, the Menu key,
 /// Shift+F10) offers them.
-#[resource(kind = "generated.items", label = "Items")]
+#[resource(kind = "generated.items")]
 impl Items {
-    /// Add an item.
     #[action]
     pub fn add(
         &mut self,
@@ -38,7 +33,6 @@ impl Items {
         Ok(())
     }
 
-    /// Remove an item. Undo brings it back.
     #[action]
     pub fn remove(&mut self, item: &Id) -> Result<(), &'static str> {
         self.items.remove(item).map(drop).ok_or("no such item")
@@ -53,14 +47,11 @@ fn item_row(row: &mut ViewCx<Items, Item>) -> Element {
         return Box::new(Column::new());
     };
     let p = row.paths();
-    let done = row.checkbox(crate::locales::keys::COLLECTION_DONE_LABEL, p.done);
+    let done = row.checkbox("collection-done-label", p.done);
     let title = row
         .input(p.title)
-        .with_placeholder(crate::locales::keys::COLLECTION_TITLE_PLACEHOLDER);
-    let remove = row.button(
-        crate::locales::keys::COLLECTION_REMOVE,
-        Items::REMOVE.with(id),
-    );
+        .with_placeholder("collection-title-placeholder");
+    let remove = row.button("collection-remove", Items::REMOVE.with(id));
     Box::new(ui::row![done, title, remove])
 }
 
@@ -82,15 +73,15 @@ impl ResourceApp for App {
         let draft = cx
             .input(next.paths().title)
             .with_id("draft-input")
-            .with_placeholder(crate::locales::keys::COLLECTION_DRAFT_PLACEHOLDER);
-        let add = cx.button(crate::locales::keys::COLLECTION_ADD, next.submit());
+            .with_placeholder("collection-draft-placeholder");
+        let add = cx.button("collection-add", next.submit());
         // Apps start empty; say what to do instead of showing a blank list.
         let empty = cx.value(|items| items.items.is_empty());
         let hint = ModelView::from_state(&empty, |empty| -> Element {
             if *empty {
                 Box::new(
-                    EmptyState::new(I18nManager::lookup_plain("collection-empty-title"))
-                        .with_message(I18nManager::lookup_plain("collection-empty-message")),
+                    EmptyState::new(crate::locales::CATALOG.t("collection-empty-title"))
+                        .with_message(crate::locales::CATALOG.t("collection-empty-message")),
                 )
             } else {
                 Box::new(Column::new())
@@ -98,10 +89,7 @@ impl ResourceApp for App {
         });
         let rows = cx.each(|items| &items.items, item_row);
         Box::new(ui::column![
-            ui::row![
-                labeled_field(crate::locales::keys::COLLECTION_DRAFT_LABEL, draft),
-                add
-            ],
+            ui::row![labeled_field("collection-draft-label", draft), add],
             hint,
             rows,
         ])

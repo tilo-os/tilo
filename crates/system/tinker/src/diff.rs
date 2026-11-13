@@ -1,14 +1,5 @@
 //! Reading a layer's change set straight out of the overlay upper directory.
 //!
-//! overlayfs records everything a layer did in its upper directory, fully self-describing:
-//!
-//! * a character device with major 0 / minor 0 is a *whiteout* (deleted, base intact
-//!   underneath);
-//! * a directory with the `overlay.opaque` xattr replaced the base directory wholesale;
-//! * any other entry that also exists in the base was modified (overlayfs copies up on
-//!   first write);
-//! * anything else is new.
-//!
 //! No bookkeeping at layer-write time is needed, so the change set is derived
 //! directly from the layer and base directories.
 
@@ -17,10 +8,8 @@ use std::ffi::CString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// What a layer did to one path, relative to the base it was stacked on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ChangeKind {
-    /// The path did not exist in the base.
     Added,
     Modified,
     /// The layer deleted a path that exists in the base. Recorded as an overlayfs whiteout;
@@ -32,7 +21,6 @@ pub enum ChangeKind {
 }
 
 impl ChangeKind {
-    /// Single-character marker, in the shape people already read in `git status` and `rpm -V` output.
     pub fn marker(self) -> char {
         match self {
             ChangeKind::Added => '+',
@@ -43,7 +31,6 @@ impl ChangeKind {
     }
 }
 
-/// One changed path.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Change {
     /// Path as it appears inside the layer, absolute and base-relative (`/usr/bin/cowsay`, not
@@ -62,7 +49,6 @@ pub struct Diff {
     /// Packages whose install receipt appears in the layer, by package manager name. Derived
     /// from the manager's own on-disk records, not guessed from filenames.
     pub packages: BTreeMap<String, Vec<String>>,
-    /// Every path claimed by one of those packages' file manifests.
     owned_by_packages: std::collections::BTreeSet<PathBuf>,
 }
 
@@ -232,7 +218,6 @@ pub fn compute(upper: &Path, base: Option<&Path>) -> std::io::Result<Diff> {
     })
 }
 
-/// overlayfs marks a deleted path with a 0:0 character device.
 fn is_whiteout(meta: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     meta.file_type().is_char_device() && meta.rdev() == 0
@@ -299,7 +284,6 @@ fn read_package_receipts(
         let Some(stem) = name.strip_suffix(".list") else {
             continue;
         };
-        // `pkg:arch.list` for multi-arch; the architecture is noise in a summary.
         pkgs.push(stem.split(':').next().unwrap_or(stem).to_string());
         if let Ok(manifest) = std::fs::read_to_string(entry.path()) {
             for line in manifest.lines() {
@@ -350,7 +334,6 @@ mod tests {
                 ChangeKind::Modified
             );
             assert_eq!(by_path[Path::new("/usr/bin/fresh")], ChangeKind::Added);
-            // Plain parent directories are structure, not change.
             assert!(!by_path.contains_key(Path::new("/usr")));
             assert!(!by_path.contains_key(Path::new("/usr/bin")));
         }
@@ -412,7 +395,6 @@ mod tests {
             let upper = d.path().join("upper");
             fs::create_dir_all(upper.join("var/lib/dpkg/info")).unwrap();
             fs::create_dir_all(upper.join("usr/games")).unwrap();
-            // An empty manifest claims nothing, so the binary stays unexplained.
             fs::write(upper.join("var/lib/dpkg/info/cowsay.list"), b"").unwrap();
             fs::write(upper.join("var/lib/dpkg/status"), b"").unwrap();
             fs::write(upper.join("usr/games/cowsay"), b"#!/bin/sh\n").unwrap();
@@ -440,14 +422,12 @@ mod tests {
             .unwrap();
             fs::write(upper.join("usr/games/cowsay"), b"bin").unwrap();
             fs::write(upper.join("usr/share/cowsay/cows/default.cow"), b"cow").unwrap();
-            // Not claimed by any package: this is the user's own work.
             fs::write(upper.join("etc/my-tweak.conf"), b"tuned = yes").unwrap();
 
             let diff = compute(&upper, None).unwrap();
             let substantive: Vec<_> = diff.substantive().map(|c| c.path.clone()).collect();
             assert_eq!(substantive, vec![PathBuf::from("/etc/my-tweak.conf")]);
             assert_eq!(diff.packages["apt"], vec!["cowsay"]);
-            // Nothing is lost — the full change set is still there to be printed.
             assert_eq!(diff.changes.len(), 4);
         }
         {

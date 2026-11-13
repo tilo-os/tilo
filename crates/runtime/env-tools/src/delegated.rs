@@ -38,37 +38,29 @@ use crate::index::Catalog;
 use crate::key::CacheKey;
 use tilo_lock::MutexRecover as _;
 
-/// The socket a member's supervisor asks for builds on.
 pub const BUILDS_SOCKET_ENV: &str = "TILO_USH_TOOL_BUILDS";
 
-/// Largest delegated tool image the worker reads.
 pub const MAX_DELEGATED_TAPP_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
-/// Longest request or reply line.
 pub const MAX_LINE_BYTES: usize = 64 * 1024;
 
-/// What a supervisor asks the worker for.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildRequest {
     /// The env-runtime image (`tapp:<hex>`) to build on.
     pub runtime: String,
-    /// The packages the member asked for.
     pub packages: Vec<String>,
 }
 
-/// One line of the worker's answer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BuildReply {
     /// The build's output, for the shell that asked.
     Progress(String),
-    /// The signed tool image.
     Built(String),
     /// Why there is none.
     Failed(String),
 }
 
-/// A [`ToolBuilder`] that asks the worker over `socket`.
 #[derive(Clone, Debug)]
 pub struct RemoteBuilder {
     socket: PathBuf,
@@ -81,7 +73,6 @@ impl RemoteBuilder {
         }
     }
 
-    /// The builder [`BUILDS_SOCKET_ENV`] names, when it is set.
     pub fn from_env() -> Option<Self> {
         std::env::var_os(BUILDS_SOCKET_ENV)
             .filter(|socket| !socket.is_empty())
@@ -137,8 +128,6 @@ impl ToolBuilder for RemoteBuilder {
     }
 }
 
-/// A [`ToolStore`] that seals tools for `publisher` without its key,
-/// writing the one image it seals to `out`. Runtimes come from `store`.
 pub struct UnsignedStore {
     store: Store,
     publisher: [u8; 32],
@@ -148,7 +137,6 @@ pub struct UnsignedStore {
 }
 
 impl UnsignedStore {
-    /// Seal for `publisher` into `out`, reading runtimes from `store`.
     pub fn new(store: Store, publisher: [u8; 32], out: PathBuf) -> anyhow::Result<Self> {
         Ok(Self {
             store,
@@ -159,7 +147,6 @@ impl UnsignedStore {
         })
     }
 
-    /// The unsigned image written, if one was.
     pub fn written(&self) -> Option<PackageId> {
         *self.written.lock_recover()
     }
@@ -217,15 +204,12 @@ pub fn sign_delegated(
     sign_delegated_image(tapp, runtime, arch, identity, dest).map(|signed| signed.signed)
 }
 
-/// An image sealed without its publisher's key, and the signed one made from it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SignedImage {
-    /// The id the image had with its placeholder signature.
     pub unsigned: PackageId,
     pub signed: PackageId,
 }
 
-/// [`sign_delegated`], also naming the id the image had before.
 pub fn sign_delegated_image(
     tapp: &Path,
     runtime: &PackageId,
@@ -416,7 +400,6 @@ mod tests {
             "the image verifies against the relay's key"
         );
 
-        // Another runtime, another publisher, a link: refused.
         assert!(matches!(
             sign_delegated(
                 &built,
@@ -475,7 +458,6 @@ mod tests {
                 .is_some(),
             "the signed tool verifies against the publisher"
         );
-        // Signing directly with the key would have made the same image.
         let direct =
             image::seal_tool(tree.path(), &key, &["hello".to_owned()], arch, &publisher).unwrap();
         assert_eq!(direct.id(), id);

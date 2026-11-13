@@ -71,6 +71,7 @@ impl ContentPeers for JoinedPeers {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id.clone(),
             hash: hash.to_owned(),
+            have: Vec::new(),
         };
         let _ = live.send(message);
     }
@@ -155,8 +156,13 @@ pub(super) fn record_content_on(
 }
 
 impl Joined {
+    /// The profile's record-content service, once the broker runs.
+    pub(in crate::standalone) fn record_content_service(&self) -> Option<Arc<RouteContent>> {
+        self.content.get().cloned()
+    }
+
     fn own_handle(&self) -> ContentPeer {
-        peer_handle(&self.custody.device_signing_key.verifying_key().to_bytes())
+        peer_handle(&self.custody.device_public_key())
     }
 
     /// A member of `workspace` asked it for content. Returns whether `message`
@@ -167,6 +173,7 @@ impl Joined {
             app_id,
             cluster_id,
             hash,
+            ..
         } = message
         else {
             return false;

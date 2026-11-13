@@ -61,6 +61,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::ButtonRole;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::file_table::{
     FileColumn, FileRow, FileTable, FileTableInputs, FileTableMetrics, NameCell,
@@ -1896,7 +1897,8 @@ impl FilePicker {
             self.rect.x1 - m.pad,
             toolbar_y0 + m.control_h,
         );
-        self.query.apply_layout_external(self.search_rect);
+        let theme = self.theme.clone();
+        self.query.apply_layout_external(self.search_rect, &theme);
         let inner = self.path_inner();
         match self.location.as_mut() {
             Some(field) => field.apply_layout_external(inner),
@@ -3552,13 +3554,15 @@ impl FilePicker {
             );
         }
         match self.location.as_mut() {
-            Some(field) => Widget::draw(field, scene, transform, text_renderer, theme, presence),
+            Some(field) => {
+                DrawChild::draw_child(field, scene, transform, text_renderer, theme, presence)
+            }
             None => self
                 .crumbs
-                .draw(scene, transform, text_renderer, theme, presence),
+                .draw_child(scene, transform, text_renderer, theme, presence),
         }
         self.query
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     /// The places sidebar: a quiet wash beside the list, one row per place.
@@ -3930,7 +3934,7 @@ impl FilePicker {
                 &s,
             );
         }
-        Widget::draw(
+        DrawChild::draw_child(
             &mut self.filename,
             scene,
             transform,

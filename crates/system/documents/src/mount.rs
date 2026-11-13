@@ -1,18 +1,16 @@
 //! The documents table served as a filesystem, for the session shell.
 //!
-//! Layout under the mount point: `<workspace>/<app>/<token>/<name>[/…]`.
-//! The launcher binds one app's `<workspace>/<app>` at
-//! [`crate::SANDBOX_DIR`], so an app reaches only its own documents. The
-//! workspace and app levels answer any valid name with an empty folder (the
-//! launcher binds an app's view before anything is chosen) and list nothing;
-//! an app's view lists its tokens; a token holds the chosen file or folder.
+//! Layout under the mount point: `<workspace>/<app>/<token>/<name>[/…]`. The launcher
+//! binds one app's `<workspace>/<app>` at [`crate::SANDBOX_DIR`], so an app reaches only
+//! its own documents. The workspace and app levels answer any valid name with an empty
+//! folder (the launcher binds an app's view before anything is chosen) and list
+//! nothing; an app's view lists its tokens; a token holds the chosen file or folder.
 //!
-//! Every operation looks its document up in the table again, so taking a
-//! document back is immediate, and reaches the host only through
-//! [`crate::host::Target`], which resolves beneath the chosen item. Changes
-//! are refused unless the choice was for writing: a Save may create and
-//! write its file, write its save sibling and rename that over it; a
-//! writable folder may change anything beneath it.
+//! Every operation looks its document up in the table again, so taking a document back
+//! is immediate, and reaches the host only through [`crate::host::Target`], which
+//! resolves beneath the chosen item. Changes are refused unless the choice was for
+//! writing: a Save may create and write its file, write its save sibling and rename
+//! that over it; a writable folder may change anything beneath it.
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -37,16 +35,15 @@ use rustix::io::Errno;
 use crate::host::{self, Target};
 use crate::{AppKey, Documents, Kind, is_app, is_workspace};
 
-/// How long the kernel may keep an answer: short, so a document taken
-/// back stops showing within a second even where nothing re-asks.
+/// How long the kernel may keep an answer: short, so a document taken back stops
+/// showing within a second even where nothing re-asks.
 const TTL: Duration = Duration::from_secs(1);
 const ROOT: u64 = 1;
 
-/// The documents filesystem, mounted; unmounted when dropped, and also when
-/// the process that mounted it ends without dropping it.
+/// The documents filesystem, mounted; unmounted when dropped, and also when the process
+/// that mounted it ends without dropping it.
 pub struct Mounted {
     _session: fuser::BackgroundSession,
-    /// Removes the mount where this process could not drop it.
     _guardian: Guardian,
     at: PathBuf,
 }
@@ -57,29 +54,25 @@ impl Mounted {
     }
 }
 
-/// A process that unmounts `at` when the one that mounted it ends, however it
-/// ends.
+/// A process that unmounts `at` when the one that mounted it ends, however it ends.
 ///
-/// fuser watches a mount it made only with `AutoUnmount`, and refuses that
-/// with an owner-only mount ([`fuser::SessionACL::Owner`]): fusermount serves
-/// auto-unmount for a shared mount alone (`allow_other` or `allow_root`),
-/// which would let other users in. So the mount is watched from outside
-/// instead: a process of its own, in a process group of its own, waits on a
-/// pipe only this process holds and unmounts once it is closed. A session
-/// that ends on its own unmounts as it drops its [`Mounted`]; one that is
-/// killed or crashes — a stop of its whole process group, `SIGKILL`, an abort
-/// — leaves the kernel's connection aborted but the mount in place, and this
+/// fuser watches a mount it made only with `AutoUnmount`, and refuses that with an
+/// owner-only mount ([`fuser::SessionACL::Owner`]): fusermount serves auto-unmount for a
+/// shared mount alone (`allow_other` or `allow_root`), which would let other users in.
+/// So the mount is watched from outside instead: a process of its own, in a process
+/// group of its own, waits on a pipe only this process holds and unmounts once it is
+/// closed. A session killed or crashed (a stop of its whole process group, `SIGKILL`,
+/// an abort) leaves the kernel's connection aborted but the mount in place, and this
 /// removes it, so the next start can mount at that path again.
 struct Guardian {
-    /// The end this process holds: its end, and with it the process's end,
-    /// closes the pipe.
+    /// The end this process holds: its end, and with it the process's end, closes the
+    /// pipe.
     _end: ChildStdin,
 }
 
 impl Guardian {
-    /// A guardian for the mount at `at`, made once it is mounted: one made
-    /// before a mount that then failed would unmount what another session
-    /// serves at that path.
+    /// A guardian for the mount at `at`, made once it is mounted: one made before a mount
+    /// that then failed would unmount what another session serves at that path.
     fn new(at: &Path) -> io::Result<Self> {
         let mut process = Command::new("sh")
             .args([
@@ -116,7 +109,6 @@ impl Guardian {
     }
 }
 
-/// Most threads serving the mount at once.
 const MAX_THREADS: usize = 8;
 
 /// Mount `documents` at `at`, creating the folder (owner-only) and clearing
@@ -156,8 +148,8 @@ pub fn mount(documents: Documents, at: &Path) -> io::Result<Mounted> {
     })
 }
 
-/// A mount a crashed shell left behind answers `ENOTCONN`; unmount it so
-/// the folder can be mounted again.
+/// A mount a crashed shell left behind answers `ENOTCONN`; unmount it so the folder can
+/// be mounted again.
 fn clear_stale_mount(at: &Path) -> io::Result<()> {
     match std::fs::metadata(at) {
         Err(error) if error.raw_os_error() == Some(Errno::NOTCONN.raw_os_error()) => {
@@ -184,7 +176,6 @@ enum Node {
     Workspace(String),
     App(AppKey),
     Token(AppKey, String),
-    /// A path in a document: its first component is the document's name.
     Entry(AppKey, String, PathBuf),
 }
 
@@ -219,7 +210,6 @@ impl Table {
             .ok_or_else(|| errno(Errno::STALE))
     }
 
-    /// The inode for `node`, counted as one more kernel lookup.
     fn remember(&mut self, node: Node) -> u64 {
         if node == Node::Root {
             return ROOT;
@@ -250,8 +240,6 @@ impl Table {
         }
     }
 
-    /// After a rename inside a document: what was known under `from` is
-    /// now under `to`.
     fn renamed(&mut self, key: &AppKey, token: &str, from: &Path, to: &Path) {
         let moved: Vec<(u64, Node)> = self
             .inodes
@@ -278,8 +266,6 @@ impl Table {
         }
     }
 
-    /// A file just created as `node`: its inode, counted as a lookup, and
-    /// its open handle.
     fn created(&mut self, node: Node, file: File, write: bool) -> (u64, u64) {
         let ino = self.remember(node);
         let fh = self.handle(Open {
@@ -305,7 +291,6 @@ fn reply_error(error: &io::Error) -> fuser::Errno {
     fuser::Errno::from_i32(error.raw_os_error().unwrap_or(Errno::IO.raw_os_error()))
 }
 
-/// The filesystem: the shared table, and the kernel's inodes and handles.
 pub(crate) struct DocumentsFs {
     documents: Documents,
     table: Mutex<Table>,
@@ -327,7 +312,6 @@ impl DocumentsFs {
         self.table.lock().map_err(|_| errno(Errno::IO))
     }
 
-    /// What an entry node names now, while its document is still given.
     fn target(&self, key: &AppKey, token: &str, inner: &Path) -> io::Result<Target> {
         host::target(&self.documents, key, token, inner).ok_or_else(|| errno(Errno::NOENT))
     }
@@ -433,7 +417,6 @@ impl DocumentsFs {
         }
     }
 
-    /// The entries of a folder node, without `.` and `..`.
     fn list(&self, node: &Node) -> io::Result<Vec<(OsString, FileType)>> {
         match node {
             // Workspaces and apps are entered by name, never listed: an app
@@ -478,7 +461,6 @@ impl DocumentsFs {
         }
     }
 
-    /// The writable target for changing `name` in folder node `parent`.
     fn change(&self, parent: &Node, name: &OsStr) -> io::Result<(Node, Target)> {
         let node = self.child(parent, name)?;
         let Node::Entry(key, token, inner) = &node else {
@@ -1140,7 +1122,6 @@ mod tests {
         );
     }
 
-    /// Whether a mount is up at `at` right now.
     fn mounted_at(at: &Path) -> bool {
         let Ok(at) = at.canonicalize() else {
             return false;

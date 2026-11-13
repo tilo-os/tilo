@@ -117,7 +117,16 @@ fn the_controls_drawn_above_the_first_section_are_stops_before_it() {
         "Fade in".into(),
         "Fade out".into(),
     ];
-    top.extend(["cut", "dissolve", "fade", "dip", "wipe"].map(|t| format!("Transition {t}")));
+    top.extend(
+        [
+            "Transition Cut",
+            "Transition Dissolve",
+            "Transition Fade",
+            "Transition Dip",
+            "Transition Wipe",
+        ]
+        .map(ToString::to_string),
+    );
     top.extend((1..=7).map(|n| format!("Label colour {n}")));
     for name in top {
         assert!(
@@ -166,7 +175,12 @@ fn an_unmeasured_mix_says_so_and_c_has_nowhere_to_go() {
     let mut app = open(&sample_project());
     let words = value(&mut app, "Mix level");
     assert!(!words.contains("clipped"), "{words}");
-    assert!(words.to_lowercase().contains("not measured"), "{words}");
+    assert!(
+        words
+            .to_lowercase()
+            .contains("play the timeline to measure"),
+        "{words}"
+    );
 
     go_to(&mut app, "0:07");
     app.harness().key("c");

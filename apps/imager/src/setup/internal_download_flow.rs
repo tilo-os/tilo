@@ -37,10 +37,13 @@ impl SelectionKey {
 
     fn decode(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > MAX_PREFERENCE_BYTES {
-            return Err("Saved download selection exceeds its size limit.".into());
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-selection-too-large",
+            ));
         }
-        let key: Self = serde_json::from_slice(bytes)
-            .map_err(|error| format!("Saved download selection is invalid: {error}"))?;
+        let key: Self = serde_json::from_slice(bytes).map_err(|_| {
+            crate::setup::strings::t("imager-setup-error-download-selection-invalid")
+        })?;
         key.validate()?;
         Ok(key)
     }
@@ -57,7 +60,9 @@ impl SelectionKey {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         {
-            return Err("Saved download selection has an unsupported value.".into());
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-selection-invalid",
+            ));
         }
         Ok(())
     }
@@ -72,18 +77,15 @@ impl SelectionKey {
 fn offered_selection(
     releases: Vec<InternalRelease>,
     host_architecture: &str,
-) -> Result<SelectionKey, String> {
+) -> Result<SelectionKey, &'static str> {
     let mut host = releases
         .into_iter()
         .filter(|release| release.architecture() == host_architecture);
     let release = host
         .next()
-        .ok_or("No Full Tilo download is offered for this computer.")?;
+        .ok_or("imager-setup-error-download-not-offered")?;
     if host.next().is_some() {
-        return Err(
-            "More than one Full Tilo download is offered for this computer; selection policy is unresolved."
-                .into(),
-        );
+        return Err("imager-setup-error-download-multiple");
     }
     Ok(SelectionKey::from_release(&release))
 }
@@ -95,11 +97,9 @@ struct SelectionPreference {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct DownloadPresentation {
     pub(super) phase: Option<WorkerPhase>,
-    pub(super) title: String,
-    /// Everything known about the download, for status readers.
-    pub(super) details: String,
-    /// The one sentence the page shows under the title.
-    pub(super) summary: String,
+    pub(super) title_key: &'static str,
+    pub(super) sentence_key: &'static str,
+    pub(super) failure: Option<String>,
     pub(super) pending: bool,
 }
 
@@ -107,9 +107,9 @@ impl Default for DownloadPresentation {
     fn default() -> Self {
         Self {
             phase: None,
-            title: "Full Tilo download".into(),
-            details: "Choose Download Tilo after reviewing this setup.".into(),
-            summary: "Download Tilo when you have reviewed this setup.".into(),
+            title_key: "imager-setup-internal-download-title",
+            sentence_key: "imager-setup-internal-download-choose",
+            failure: None,
             pending: false,
         }
     }
@@ -129,16 +129,13 @@ pub(super) struct InternalDownloadFlow {
     preference: SelectionPreference,
     saved: Option<SelectionKey>,
     offered: Option<SelectionKey>,
-    catalog_error: Option<String>,
+    catalog_error: Option<&'static str>,
     worker: Option<Worker>,
     token: Option<Token>,
     presentation: DownloadPresentation,
     pending: Option<PendingCommand>,
     revision: u64,
-    /// Consumer for verified downloads: the staging helper handoff.
     staging: Option<StagingLink>,
-    /// The current operation was handed to the staging consumer, so a failure
-    /// is an installation failure over retained verified data.
     consumed: bool,
     #[cfg(test)]
     catalogs: VecDeque<Vec<InternalRelease>>,
@@ -148,9 +145,15 @@ pub(super) struct InternalDownloadFlow {
 
 impl InternalDownloadFlow {
     #[cfg(not(test))]
-    pub(super) fn new(capabilities: Capabilities, staging: StagingLink) -> Result<Self, String> {
-        let preference = SelectionPreference::live()?;
-        let saved = preference.load()?;
+    pub(super) fn new(
+        capabilities: Capabilities,
+        staging: StagingLink,
+    ) -> Result<Self, &'static str> {
+        let preference =
+            SelectionPreference::live().map_err(|_| "imager-setup-error-download-no-folder")?;
+        let saved = preference
+            .load()
+            .map_err(|_| "imager-setup-error-download-unreadable")?;
         let mut flow = Self {
             capabilities,
             preference,
@@ -254,12 +257,13 @@ impl InternalDownloadFlow {
         }
     }
 
-    fn current_catalog(&mut self) -> Result<Vec<InternalRelease>, String> {
+    fn current_catalog(&mut self) -> Result<Vec<InternalRelease>, &'static str> {
         #[cfg(test)]
         if let Some(catalog) = self.catalogs.pop_front() {
             return Ok(catalog);
         }
         crate::release::bundled_internal_releases()
+            .map_err(|_| "imager-setup-error-download-catalog")
     }
 
     fn refresh_catalog(&mut self) {
@@ -281,7 +285,9 @@ impl InternalDownloadFlow {
 
     fn resolve(&mut self, key: &SelectionKey) -> Result<InternalRelease, String> {
         if !self.capabilities.supports(Experience::FullOs) {
-            return Err("Full Tilo download is not supported on this computer.".into());
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-unsupported",
+            ));
         }
         let architecture = self.host_architecture().to_string();
         let mut releases = self
@@ -290,18 +296,16 @@ impl InternalDownloadFlow {
             .filter(|release| release.architecture() == architecture);
         let release = releases
             .next()
-            .ok_or("The selected Full Tilo download is no longer offered.")?;
+            .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-not-offered"))?;
         if releases.next().is_some() {
-            return Err(
-                "More than one Full Tilo download is offered for this computer; selection policy is unresolved."
-                    .into(),
-            );
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-multiple",
+            ));
         }
         if !key.matches(&release) {
-            return Err(
-                "The selected Full Tilo download changed. Review the current download before continuing."
-                    .into(),
-            );
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-changed",
+            ));
         }
         Ok(release)
     }
@@ -311,30 +315,26 @@ impl InternalDownloadFlow {
             self.worker = Some(match self.staging.clone() {
                 Some(link) => Worker::spawn(staging_consumer(link))?,
                 None => Worker::spawn(|_, _, _, _| {
-                    Err(
-                        "Protected staging is not available; verified download data was retained."
-                            .into(),
-                    )
+                    Err(crate::setup::strings::t(
+                        "imager-setup-error-staging-not-built-retained",
+                    ))
                 })?,
             });
         }
-        self.worker
-            .as_ref()
-            .ok_or("Download worker is unavailable.".into())
+        self.worker.as_ref().ok_or(crate::setup::strings::t(
+            "imager-setup-error-download-unavailable",
+        ))
     }
 
-    /// Follow a capability change (the host probe finished).
     pub(super) fn set_capabilities(&mut self, capabilities: Capabilities) {
         self.capabilities = capabilities;
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// A verified download is held and can be handed to the staging helper.
     pub(super) fn is_ready(&self) -> bool {
         self.pending.is_none() && self.presentation.phase == Some(WorkerPhase::Ready)
     }
 
-    /// Hand the held verified download to the staging consumer.
     pub(super) fn consume(&mut self) -> Result<(), String> {
         if !self.is_ready() {
             return Err(crate::setup::strings::t(
@@ -345,33 +345,36 @@ impl InternalDownloadFlow {
             .worker
             .as_ref()
             .zip(self.token.as_ref())
-            .ok_or("The verified download is no longer held.")?;
+            .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-lost"))?;
         worker.consume(token)?;
         self.consumed = true;
         self.set_pending(
             PendingCommand::Consume,
-            &crate::setup::strings::t("imager-setup-internal-download-consuming"),
+            "imager-setup-internal-download-consuming",
         );
         Ok(())
     }
 
-    /// The installation failure the worker reported for a consumed download.
-    pub(super) fn consume_failure(&self) -> Option<&str> {
+    pub(super) fn consume_failure(&self) -> Option<String> {
         (self.consumed
             && self.pending.is_none()
             && matches!(
                 self.presentation.phase,
                 Some(WorkerPhase::Failed | WorkerPhase::Cancelled)
             ))
-        .then_some(self.presentation.details.as_str())
+        .then(|| {
+            self.presentation.failure.clone().unwrap_or_else(|| {
+                crate::setup::strings::t("imager-setup-internal-download-cancelled-detail")
+            })
+        })
     }
 
     pub(super) fn offered_selection(&self) -> Option<SelectionKey> {
         self.offered.clone()
     }
 
-    pub(super) fn catalog_error(&self) -> Option<&str> {
-        self.catalog_error.as_deref()
+    pub(super) fn catalog_error(&self) -> Option<&'static str> {
+        self.catalog_error
     }
 
     pub(super) fn can_resume(&self) -> bool {
@@ -440,7 +443,9 @@ impl InternalDownloadFlow {
 
     pub(super) fn start_selected(&mut self, key: SelectionKey) -> Result<(), String> {
         if !self.can_start() {
-            return Err("A Full Tilo download cannot start in its current state.".into());
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-start-unavailable",
+            ));
         }
         let release = self.resolve(&key)?;
         self.preference.save(&key)?;
@@ -455,12 +460,13 @@ impl InternalDownloadFlow {
 
     pub(super) fn resume(&mut self) -> Result<(), String> {
         if self.pending.is_some() || !self.can_resume() {
-            return Err("This saved download cannot be resumed yet.".into());
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-resume-unavailable",
+            ));
         }
-        let key = self
-            .saved
-            .clone()
-            .ok_or("There is no saved download selection to resume.")?;
+        let key = self.saved.clone().ok_or(crate::setup::strings::t(
+            "imager-setup-error-no-saved-download",
+        ))?;
         let release = self.resolve(&key)?;
         let token = self.ensure_worker()?.start(release)?;
         self.token = Some(token);
@@ -489,19 +495,29 @@ impl InternalDownloadFlow {
                 )
             )
         {
-            return Err("The download is not currently active.".into());
+            return Err(crate::setup::strings::t(if cancel {
+                "imager-setup-error-download-cancel-unavailable"
+            } else {
+                "imager-setup-error-download-pause-unavailable"
+            }));
         }
         let (worker, token) = self
             .worker
             .as_ref()
             .zip(self.token.as_ref())
-            .ok_or("The active download is unavailable.")?;
+            .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-unavailable"))?;
         if cancel {
             worker.cancel(token)?;
-            self.set_pending(PendingCommand::Cancel, "Cancelling download…");
+            self.set_pending(
+                PendingCommand::Cancel,
+                "imager-setup-status-cancelling-download",
+            );
         } else {
             worker.pause(token)?;
-            self.set_pending(PendingCommand::Pause, "Pausing download…");
+            self.set_pending(
+                PendingCommand::Pause,
+                "imager-setup-status-pausing-download",
+            );
         }
         Ok(())
     }
@@ -518,48 +534,56 @@ impl InternalDownloadFlow {
                 )
             )
         {
-            return Err("Unfinished download data is not available to discard.".into());
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-discard-unavailable",
+            ));
         }
-        let key = self
-            .saved
-            .clone()
-            .ok_or("There is no saved download selection to discard.")?;
+        let key = self.saved.clone().ok_or(crate::setup::strings::t(
+            "imager-setup-error-no-unfinished-download",
+        ))?;
         let release = self.resolve(&key)?;
         let target = self
             .token
             .clone()
-            .ok_or("The prior download operation is unavailable.")?;
+            .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-unavailable"))?;
         let token = self
             .worker
             .as_ref()
-            .ok_or("The download worker is unavailable.")?
+            .ok_or(crate::setup::strings::t(
+                "imager-setup-error-download-unavailable",
+            ))?
             .discard(&target, release)?;
         self.token = Some(token);
         self.set_pending(
             PendingCommand::Discard,
-            "Discarding unfinished download data…",
+            "imager-setup-status-discarding-download",
         );
         Ok(())
     }
 
     pub(super) fn release(&mut self) -> Result<(), String> {
         if self.pending.is_some() || self.presentation.phase != Some(WorkerPhase::Ready) {
-            return Err("The verified download is not available to keep for later.".into());
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-release-unavailable",
+            ));
         }
         let (worker, token) = self
             .worker
             .as_ref()
             .zip(self.token.as_ref())
-            .ok_or("The verified download is no longer held.")?;
+            .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-lost"))?;
         worker.release(token)?;
-        self.set_pending(PendingCommand::Release, "Keeping download for later…");
+        self.set_pending(
+            PendingCommand::Release,
+            "imager-setup-status-keeping-download",
+        );
         Ok(())
     }
 
-    fn set_pending(&mut self, pending: PendingCommand, title: &str) {
+    fn set_pending(&mut self, pending: PendingCommand, title_key: &'static str) {
         self.pending = Some(pending);
         self.presentation.pending = true;
-        self.presentation.title = title.into();
+        self.presentation.title_key = title_key;
         self.revision = self.revision.wrapping_add(1);
     }
 
@@ -592,10 +616,8 @@ impl InternalDownloadFlow {
         }
         let mut next = presentation_from_status(&status);
         if self.consumed && status.phase == WorkerPhase::Failed {
-            // The download itself stayed verified; the installer helper stopped.
-            next.title = crate::setup::strings::t("imager-setup-internal-download-kept");
-            next.details = status.error.unwrap_or_default();
-            next.summary.clone_from(&next.details);
+            next.title_key = "imager-setup-internal-download-kept";
+            next.sentence_key = "imager-download-sentence-handoff-failed";
         }
         if next == self.presentation {
             return false;
@@ -633,114 +655,47 @@ impl InternalDownloadFlow {
 }
 
 fn presentation_from_status(status: &Status) -> DownloadPresentation {
-    presentation_from_facts(
-        status.phase,
-        status.committed,
-        status.progress,
-        status.finals,
-        status.residue,
-        status.uncertain,
-        status.error.as_deref(),
-    )
+    DownloadPresentation {
+        phase: Some(status.phase),
+        title_key: download_title_key(status.phase),
+        sentence_key: download_sentence_key(status.phase),
+        failure: status.error.clone(),
+        pending: false,
+    }
 }
 
-fn presentation_from_facts(
-    phase: WorkerPhase,
-    committed: [u64; 2],
-    progress: Option<crate::setup::internal_download::Progress>,
-    finals: [bool; 2],
-    residue: bool,
-    uncertain: bool,
-    error: Option<&str>,
-) -> DownloadPresentation {
-    let consumption: (String, String);
-    let (title, summary) = match phase {
-        WorkerPhase::Authenticating => ("Downloading Tilo", "Checking the Tilo release."),
+fn download_title_key(phase: WorkerPhase) -> &'static str {
+    match phase {
+        WorkerPhase::Authenticating
+        | WorkerPhase::Acquiring
+        | WorkerPhase::Preparing
+        | WorkerPhase::Downloading => "imager-download-title-downloading",
+        WorkerPhase::Ready => "imager-download-title-ready",
+        WorkerPhase::Paused => "imager-download-title-paused",
+        WorkerPhase::Cancelled => "imager-download-title-cancelled",
+        WorkerPhase::Failed => "imager-download-title-failed",
+        WorkerPhase::Released => "imager-download-title-released",
+        WorkerPhase::Discarded => "imager-download-title-discarded",
+        WorkerPhase::Consuming => "imager-setup-internal-download-consuming",
+        WorkerPhase::Consumed => "imager-setup-internal-download-consumed",
+    }
+}
+
+fn download_sentence_key(phase: WorkerPhase) -> &'static str {
+    match phase {
+        WorkerPhase::Authenticating => "imager-download-sentence-checking-release",
         WorkerPhase::Acquiring | WorkerPhase::Preparing => {
-            ("Downloading Tilo", "Checking what was already downloaded.")
+            "imager-download-sentence-checking-earlier"
         }
-        WorkerPhase::Downloading => ("Downloading Tilo", "Downloading and checking Tilo."),
-        WorkerPhase::Ready => (
-            "Download ready",
-            "Download verified. Installation has not started.",
-        ),
-        WorkerPhase::Paused => (
-            "Download paused",
-            "Paused. Resuming checks what was already downloaded first.",
-        ),
-        WorkerPhase::Cancelled => (
-            "Download cancelled",
-            "Cancelled. Downloaded data may remain until you discard it.",
-        ),
-        WorkerPhase::Failed => ("Download failed", "The download did not finish."),
-        WorkerPhase::Released => (
-            "Kept for later",
-            "The verified download is kept on this computer. Installation has not started.",
-        ),
-        WorkerPhase::Discarded => (
-            "Unfinished download data discarded",
-            "Unfinished download data was removed. Completed parts may remain.",
-        ),
-        WorkerPhase::Consuming => {
-            consumption = (
-                crate::setup::strings::t("imager-setup-internal-download-consuming"),
-                crate::setup::strings::t("imager-setup-internal-download-consuming-detail"),
-            );
-            (consumption.0.as_str(), consumption.1.as_str())
-        }
-        WorkerPhase::Consumed => {
-            consumption = (
-                crate::setup::strings::t("imager-setup-internal-download-consumed"),
-                crate::setup::strings::t("imager-setup-internal-download-consumed-detail"),
-            );
-            (consumption.0.as_str(), consumption.1.as_str())
-        }
-    };
-    let mut details = summary.to_string();
-    if let Some(progress) = progress {
-        details.push_str(&format!(
-            " Component {} of 2: {} bytes received in this attempt; {} bytes verified.",
-            progress.component.saturating_add(1).min(2),
-            progress.received,
-            progress.verified
-        ));
-    }
-    if committed != [0, 0] {
-        details.push_str(&format!(
-            " Retained download data: component 1 has {} bytes; component 2 has {} bytes.",
-            committed[0], committed[1]
-        ));
-    }
-    let final_count = finals.iter().filter(|retained| **retained).count();
-    if final_count > 0 {
-        let noun = if final_count == 1 {
-            "component is"
-        } else {
-            "components are"
-        };
-        details.push_str(&format!(
-            " {final_count} completed and verified {noun} retained."
-        ));
-    }
-    if residue {
-        details
-            .push_str(" Some download data remains and will be checked before another operation.");
-    }
-    if uncertain {
-        details.push_str(
-            " The saved download state may have changed; it will be checked again before another operation.",
-        );
-    }
-    if let Some(error) = error {
-        details.push_str(" Error: ");
-        details.push_str(error);
-    }
-    DownloadPresentation {
-        phase: Some(phase),
-        title: title.into(),
-        details,
-        summary: summary.to_string(),
-        pending: false,
+        WorkerPhase::Downloading => "imager-download-sentence-downloading",
+        WorkerPhase::Ready => "imager-download-sentence-ready",
+        WorkerPhase::Paused => "imager-download-sentence-paused",
+        WorkerPhase::Cancelled => "imager-download-sentence-cancelled",
+        WorkerPhase::Failed => "imager-download-sentence-failed",
+        WorkerPhase::Released => "imager-download-sentence-released",
+        WorkerPhase::Discarded => "imager-download-sentence-discarded",
+        WorkerPhase::Consuming => "imager-setup-internal-download-consuming-detail",
+        WorkerPhase::Consumed => "imager-setup-internal-download-consumed-detail",
     }
 }
 
@@ -748,7 +703,7 @@ impl SelectionPreference {
     #[cfg(not(test))]
     fn live() -> Result<Self, String> {
         let root = tilo_paths::data_local_dir()
-            .ok_or("A device-local settings folder is unavailable on this computer.")?;
+            .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-no-folder"))?;
         Ok(Self::at(
             root.join("tilo")
                 .join("setup")
@@ -764,15 +719,15 @@ impl SelectionPreference {
         let mut file = match File::open(&self.path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(format!(
-                    "Saved download selection could not be read: {error}"
+            Err(_) => {
+                return Err(crate::setup::strings::t(
+                    "imager-setup-error-download-unreadable",
                 ));
             }
         };
         if file
             .metadata()
-            .map_err(|error| format!("Saved download selection could not be inspected: {error}"))?
+            .map_err(|_| crate::setup::strings::t("imager-setup-error-download-unreadable"))?
             .len()
             > MAX_PREFERENCE_BYTES as u64
         {
@@ -782,7 +737,7 @@ impl SelectionPreference {
         Read::by_ref(&mut file)
             .take((MAX_PREFERENCE_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
-            .map_err(|error| format!("Saved download selection could not be read: {error}"))?;
+            .map_err(|_| crate::setup::strings::t("imager-setup-error-download-unreadable"))?;
         if bytes.len() > MAX_PREFERENCE_BYTES {
             return Ok(None);
         }
@@ -797,12 +752,12 @@ impl SelectionPreference {
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent)
-            .map_err(|error| format!("Download selection could not be saved: {error}"))?;
+            .map_err(|_| crate::setup::strings::t("imager-setup-error-download-unsaved"))?;
         let name = self
             .path
             .file_name()
             .and_then(|name| name.to_str())
-            .ok_or("Download selection path has no ordinary file name.")?;
+            .ok_or_else(|| crate::setup::strings::t("imager-setup-error-download-unsaved"))?;
         let write_result = (|| -> Result<(), std::io::Error> {
             let mut file = tempfile::Builder::new()
                 .prefix(&format!(".{name}."))
@@ -816,8 +771,10 @@ impl SelectionPreference {
             }
             Ok(())
         })();
-        if let Err(error) = write_result {
-            return Err(format!("Download selection could not be saved: {error}"));
+        if write_result.is_err() {
+            return Err(crate::setup::strings::t(
+                "imager-setup-error-download-unsaved",
+            ));
         }
         Ok(())
     }
@@ -859,7 +816,6 @@ mod tests {
         });
     }
 
-    /// Saved and offered selection, preference round trip and failures.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -883,8 +839,6 @@ mod tests {
             assert!(SelectionKey::decode(&serde_json::to_vec(&old).unwrap()).is_err());
         }
 
-        // Phase `offered_selection_requires_exactly_one_current_host_entry`.
-        // Catches selecting array order when the embedded catalog has zero or several host entries.
         {
             assert!(offered_selection(Vec::new(), "x86_64").is_err());
             assert!(offered_selection(vec![release(), release()], "x86_64").is_err());
@@ -941,7 +895,9 @@ mod tests {
             let preference_root = tempfile::tempdir().unwrap();
             let key = SelectionKey::from_release(&server.release(&bytes));
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-unavailable",
+                ))
             });
             let mut changed_flow = InternalDownloadFlow::fixture(
                 supported(),
@@ -955,7 +911,9 @@ mod tests {
             assert!(server.requests().is_empty());
 
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-unavailable",
+                ))
             });
             let mut ambiguous = InternalDownloadFlow::fixture(
                 supported(),
@@ -971,7 +929,9 @@ mod tests {
             assert!(ambiguous.token.is_none());
 
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-unavailable",
+                ))
             });
             let mut unsupported_capabilities = supported();
             unsupported_capabilities.internal_dual_boot = false;
@@ -988,15 +948,12 @@ mod tests {
         }
     }
 
-    /// Real worker, duplicate and stale starts.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn internal_download_worker_start_is_idempotent_and_holds_verified_data() {
-        // Phase `real_worker_reaches_held_ready_and_keeps_verified_data_for_later`.
-        // Catches detaching from the real worker, claiming installation, or polling held Ready forever.
         {
             let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
             let server = Server::new(vec![
@@ -1008,7 +965,9 @@ mod tests {
             let preference_root = tempfile::tempdir().unwrap();
             let key = SelectionKey::from_release(&server.release(&bytes));
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is not available in this build.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-not-built",
+                ))
             });
             let mut flow = InternalDownloadFlow::fixture(
                 supported(),
@@ -1022,23 +981,22 @@ mod tests {
             flow.start_selected(key).unwrap();
             assert!(flow.has_pending_operation());
             wait_for(&mut flow, Phase::Ready);
-            assert_eq!(flow.presentation().title, "Download ready");
-            assert!(
-                flow.presentation()
-                    .details
-                    .contains("Download verified. Installation has not started.")
+            assert_eq!(
+                crate::setup::strings::t(flow.presentation().title_key),
+                "Download ready"
             );
             assert!(!flow.has_pending_operation());
 
             flow.release().unwrap();
             assert!(flow.has_pending_operation());
             wait_for(&mut flow, Phase::Released);
-            assert_eq!(flow.presentation().title, "Kept for later");
+            assert_eq!(
+                crate::setup::strings::t(flow.presentation().title_key),
+                "Kept for later"
+            );
             assert!(!flow.has_pending_operation());
         }
 
-        // Phase `duplicate_start_during_active_download_preserves_token_preference_catalog_and_requests`.
-        // Catches a duplicate Start replacing an active token or repeating selection side effects.
         {
             use std::os::unix::fs::MetadataExt;
 
@@ -1068,7 +1026,9 @@ mod tests {
             let preference_path = preference_root.path().join("selection.json");
             let key = SelectionKey::from_release(&server.release(&bytes));
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-unavailable",
+                ))
             });
             let mut flow = InternalDownloadFlow::fixture(
                 supported(),
@@ -1097,7 +1057,7 @@ mod tests {
 
             assert_eq!(
                 duplicate.unwrap_err(),
-                "A Full Tilo download cannot start in its current state."
+                crate::setup::strings::t("imager-setup-error-download-start-unavailable")
             );
             assert_eq!(token_after, token);
             assert_eq!(preference_inode_after, preference_inode);
@@ -1126,7 +1086,9 @@ mod tests {
             let preference_path = preference_root.path().join("selection.json");
             let key = SelectionKey::from_release(&server.release(&bytes));
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-unavailable",
+                ))
             });
             let mut flow = InternalDownloadFlow::fixture(
                 supported(),
@@ -1148,7 +1110,7 @@ mod tests {
 
             assert_eq!(
                 flow.start_selected(key).unwrap_err(),
-                "A Full Tilo download cannot start in its current state."
+                crate::setup::strings::t("imager-setup-error-download-start-unavailable")
             );
             assert_eq!(flow.token.as_ref(), Some(&token));
             assert_eq!(
@@ -1193,7 +1155,9 @@ mod tests {
             let preference_path = preference_root.path().join("selection.json");
             let key = SelectionKey::from_release(&server.release(&bytes));
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-unavailable",
+                ))
             });
             let mut flow = InternalDownloadFlow::fixture(
                 supported(),
@@ -1219,7 +1183,9 @@ mod tests {
             ]);
             let resumed_worker =
                 Worker::fixture_for_test(root.path(), resumed_server.transport(), |_, _, _, _| {
-                    Err("Protected staging is unavailable.".into())
+                    Err(crate::setup::strings::t(
+                        "imager-setup-error-staging-unavailable",
+                    ))
                 });
             let mut resumed = InternalDownloadFlow::fixture(
                 supported(),
@@ -1263,7 +1229,9 @@ mod tests {
             let preference_root = tempfile::tempdir().unwrap();
             let key = SelectionKey::from_release(&server.release(&bytes));
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-unavailable",
+                ))
             });
             let mut flow = InternalDownloadFlow::fixture(
                 supported(),
@@ -1282,7 +1250,10 @@ mod tests {
             flow.cancel().unwrap();
             flow.poll();
             assert!(flow.presentation().pending);
-            assert_eq!(flow.presentation().title, "Cancelling download…");
+            assert_eq!(
+                flow.presentation().title_key,
+                "imager-setup-status-cancelling-download"
+            );
             continue_tx.send(()).unwrap();
             wait_for(&mut flow, Phase::Cancelled);
             let cancelled = flow.worker.as_ref().unwrap().status().unwrap();
@@ -1293,11 +1264,8 @@ mod tests {
             assert!(!flow.accept_status(cancelled));
             assert!(flow.presentation().pending);
             wait_for(&mut flow, Phase::Discarded);
-            assert!(flow.presentation().details.contains("may remain"));
         }
 
-        // Phase `dropping_held_ready_releases_leases_and_retains_verified_components`.
-        // Catches leaving held readers/root leases behind when the setup view closes at Ready.
         {
             let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
             let server = Server::new(vec![
@@ -1309,7 +1277,9 @@ mod tests {
             let preference_root = tempfile::tempdir().unwrap();
             let key = SelectionKey::from_release(&server.release(&bytes));
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-unavailable",
+                ))
             });
             let mut flow = InternalDownloadFlow::fixture(
                 supported(),
@@ -1327,7 +1297,9 @@ mod tests {
             let reopened_server = Server::new(vec![response(200, "", &bytes)]);
             let reopened_worker =
                 Worker::fixture_for_test(root.path(), reopened_server.transport(), |_, _, _, _| {
-                    Err("Protected staging is unavailable.".into())
+                    Err(crate::setup::strings::t(
+                        "imager-setup-error-staging-unavailable",
+                    ))
                 });
             let mut reopened = InternalDownloadFlow::fixture(
                 supported(),
@@ -1346,8 +1318,6 @@ mod tests {
             assert_eq!(reopened_server.requests().len(), 1);
         }
 
-        // Phase `dropping_during_authentication_waits_for_cooperative_worker_shutdown`.
-        // Catches dropping the controller while leaving an in-flight worker detached.
         {
             let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
             let (entered_tx, entered_rx) = mpsc::sync_channel(0);
@@ -1363,7 +1333,9 @@ mod tests {
             let preference_root = tempfile::tempdir().unwrap();
             let key = SelectionKey::from_release(&server.release(&bytes));
             let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err("Protected staging is unavailable.".into())
+                Err(crate::setup::strings::t(
+                    "imager-setup-error-staging-unavailable",
+                ))
             });
             let mut flow = InternalDownloadFlow::fixture(
                 supported(),
@@ -1381,109 +1353,6 @@ mod tests {
             drop(flow);
             unblock.join().unwrap();
             assert!(request_returned.load(Ordering::Acquire));
-        }
-    }
-
-    /// Terminal and paused presentation.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn internal_download_wording_reports_only_known_retained_facts() {
-        // Phase `terminal_wording_retains_bytes_components_residue_uncertainty_and_original_error`.
-        // Catches normalizing away the coordinator's R1/R2 uncertainty and boundary errors.
-        {
-            for phase in [Phase::Failed, Phase::Cancelled] {
-                let presentation = presentation_from_facts(
-                    phase,
-                    [17, 29],
-                    None,
-                    [true, false],
-                    true,
-                    true,
-                    Some("journal normalization failed; held-reader boundary: readback changed"),
-                );
-                assert!(presentation.details.contains("17 bytes"));
-                assert!(presentation.details.contains("29 bytes"));
-                assert!(
-                    presentation
-                        .details
-                        .contains("1 completed and verified component")
-                );
-                assert!(presentation.details.contains("Some download data remains"));
-                assert!(presentation.details.contains("may have changed"));
-                assert!(
-                    presentation
-                        .details
-                        .contains("journal normalization failed")
-                );
-                assert!(
-                    presentation
-                        .details
-                        .contains("held-reader boundary: readback changed")
-                );
-                assert!(!presentation.details.contains("acknowledged prefix"));
-                assert!(!presentation.details.contains("private cache"));
-                assert_ne!(presentation.title, "Download ready");
-            }
-        }
-
-        // Phase `false_residue_makes_no_global_absence_claim`.
-        // Catches residue=false being upgraded into a claim that all retained data is absent.
-        {
-            let presentation = presentation_from_facts(
-                Phase::Discarded,
-                [0, 0],
-                None,
-                [false, false],
-                false,
-                false,
-                None,
-            );
-            assert!(!presentation.details.contains("no download data"));
-            assert!(!presentation.details.contains("cache cleared"));
-            assert!(presentation.details.contains("may remain"));
-        }
-
-        // Phase `paused_zero_fact_presentation_is_neutral_about_retained_data`.
-        // Catches a pause with no established retained facts claiming data or completed components.
-        {
-            let presentation = presentation_from_facts(
-                Phase::Paused,
-                [0, 0],
-                None,
-                [false, false],
-                false,
-                false,
-                None,
-            );
-            assert_eq!(presentation.title, "Download paused");
-            assert_eq!(
-                presentation.details,
-                "Paused. Resuming checks what was already downloaded first."
-            );
-        }
-
-        {
-            let presentation = presentation_from_facts(
-                Phase::Paused,
-                [512, 0],
-                None,
-                [true, false],
-                true,
-                true,
-                Some("pause boundary changed"),
-            );
-            assert!(presentation.details.contains("component 1 has 512 bytes"));
-            assert!(
-                presentation
-                    .details
-                    .contains("1 completed and verified component")
-            );
-            assert!(presentation.details.contains("Some download data remains"));
-            assert!(presentation.details.contains("may have changed"));
-            assert!(presentation.details.contains("pause boundary changed"));
         }
     }
 }

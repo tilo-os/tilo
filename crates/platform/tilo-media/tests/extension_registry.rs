@@ -1,15 +1,10 @@
 //! The registry follows system extensions, end to end, in one process.
 //!
-//! A codec-pack merge adds plugin files under `/usr` and an
-//! `extension-release` file; an unmerge removes both. This test stands up
-//! `GStreamer` on a private, initially empty plugin directory and registry
-//! cache, then plays those events with real plugin files copied from the
-//! system and checks what the registry offers after
-//! [`tilo_media::extensions::refresh_registry_at`].
-//!
-//! It is its own test binary because the plugin paths must be in the
-//! environment before `GStreamer` initialises, and it is one test because the
-//! registry is process-global.
+//! `GStreamer` runs on a private, initially empty plugin directory and registry cache,
+//! and codec-pack merges and unmerges are played into it with real plugin files copied
+//! from the system. It is its own test binary because the plugin paths must be in the
+//! environment before `GStreamer` initialises, and one test because the registry is
+//! process-global.
 #![cfg(any(feature = "decode", feature = "encode", feature = "realtime"))]
 #![allow(
     clippy::unwrap_used,
@@ -57,7 +52,6 @@ fn announce(extensions: &Path, name: &str, modified: SystemTime) {
         .unwrap();
 }
 
-/// A private directory under Cargo's per-target scratch space, removed at the end.
 #[test]
 fn registry_follows_extension_merges() {
     let (Some(videotestsrc), Some(audiotestsrc)) = (
@@ -93,11 +87,9 @@ fn registry_follows_extension_merges() {
     gst::init().unwrap();
     let registry = gst::Registry::get();
 
-    // Nothing merged, nothing recorded: no rebuild, and no element.
     assert!(!refresh_registry_at(&extensions, Some(&stamp)));
     assert!(gst::ElementFactory::find("videotestsrc").is_none());
 
-    // Merge: plugin files appear with their extension-release file.
     std::fs::copy(&videotestsrc, plugins.join("libgstvideotestsrc.so")).unwrap();
     std::fs::copy(&audiotestsrc, plugins.join("libgstaudiotestsrc.so")).unwrap();
     let t0 = SystemTime::now();
@@ -110,7 +102,6 @@ fn registry_follows_extension_merges() {
         Some(extension_stamp(&extensions)),
         "the stamp the cache now reflects is recorded for later processes"
     );
-    // Unchanged extensions: construction stays cheap.
     assert!(!refresh_registry_at(&extensions, Some(&stamp)));
 
     // What plain gst_update_registry does with an unchanged plugin file: it
@@ -134,7 +125,6 @@ fn registry_follows_extension_merges() {
     assert_ne!(rescanned, cached, "the unloaded plugin was scanned again");
     assert!(gst::ElementFactory::find("videotestsrc").is_some());
 
-    // A loaded plugin cannot be replaced in-process: it stays as it is.
     let element = gst::ElementFactory::make("videotestsrc").build().unwrap();
     let loaded = registry.find_plugin("videotestsrc").unwrap();
     assert!(loaded.is_loaded());
@@ -143,7 +133,6 @@ fn registry_follows_extension_merges() {
     assert_eq!(registry.find_plugin("videotestsrc").unwrap(), loaded);
     drop(element);
 
-    // Unmerge: the unloaded plugin's elements go away with its file.
     std::fs::remove_file(plugins.join("libgstaudiotestsrc.so")).unwrap();
     std::fs::remove_file(extensions.join("extension-release.tilo-codecs")).unwrap();
     assert!(refresh_registry_at(&extensions, Some(&stamp)));
@@ -153,7 +142,6 @@ fn registry_follows_extension_merges() {
         Some(Vec::new())
     );
 
-    // The public lookups the engines use go through the same refresh.
     assert!(tilo_media::encode::registry_has("videotestsrc"));
     assert!(!tilo_media::encode::registry_has("audiotestsrc"));
 }

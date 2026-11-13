@@ -214,6 +214,9 @@ class InstallerTests(unittest.TestCase):
                     "TILO_FONT_CATALOG_ROOT": "" if defect == "offline" else str(supplied),
                     "TILO_FONT_ASSET_CACHE": str(root / "empty-cache"),
                     "TILO_FONT_ASSETS_OFFLINE": "1",
+                    # The builder image's seed would answer every lookup first, and the installer
+                    # runs the catalog tool as a program: the only fonts are those named here.
+                    "TILO_FONT_IMAGE_SEED": str(root / "no-image-seed"),
                 }), contextlib.redirect_stderr(io.StringIO()) as stderr:
                     status = self.run_installer("--from", str(out), "--dest", str(layer), "tilo-session")
                 installed = layer / "usr/share/fonts/tilo"

@@ -24,6 +24,11 @@ const fn ms(now_ns: u64) -> u64 {
 }
 
 impl StandInApprover for Approver {
+    fn sets_up(&self, request: &CertificationRequest, now_ns: u64) -> bool {
+        self.codes
+            .sets_up(&request.user_public_key, &request.invite, ms(now_ns))
+    }
+
     fn expects(&self, request: &CertificationRequest, now_ns: u64) -> bool {
         self.codes
             .claimed(&request.user_public_key, &request.invite, ms(now_ns))

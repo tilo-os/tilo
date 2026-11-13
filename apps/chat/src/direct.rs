@@ -1,7 +1,7 @@
 //! Chat's direct conversations: the conversation two of the workspace's
-//! people have, opened, read and sent to by the app's operations
-//! (`open-direct-conversation`, `read-direct-conversation`,
-//! `send-direct-message`).
+//! people have, opened and sent to by the app's operations
+//! (`open-direct-conversation`, `send-direct-message`); its messages are read
+//! from the record, as every conversation's are.
 //!
 //! A direct conversation is not created: its id names its participants
 //! ([`Chat::direct_id`]), so every device that opens the same conversation
@@ -11,7 +11,7 @@
 
 use ui::framework::{Effected, LiveRow};
 use ui::tilo_resource::Effect as _;
-use ui::tilo_resource::Id;
+use ui::tilo_resource::{Id, Invoke};
 
 use crate::app::{ChatApp, Focus};
 use crate::effects::{ChatEffect, item_row_id};
@@ -82,90 +82,69 @@ impl ChatApp {
         self.request_relayout();
     }
 
-    /// The conversation with `peer` as the app answers a read of it: its
-    /// messages in the order the window shows them, and how many of them this
-    /// person has not seen.
-    pub(crate) fn read_direct_answer(&mut self, peer: &str, id: &Id, chat: &Chat) -> Effected {
-        let channel = id.to_string();
-        let held = self.held_messages();
-        let rows = chat.message_rows(&held, &channel);
-        let messages: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|message| {
-                serde_json::json!({
-                    "id": message.id,
-                    "author": message.author,
-                    "text": message.text,
-                    "at": message.ts,
-                })
-            })
-            .collect();
-        let unread = chat.unread(&held, &channel, &self.me.id);
-        if self.active_channel == channel {
-            self.messages = rows;
-        }
-        Effected::value(serde_json::json!({
-            "peer": peer,
-            "messages": messages,
-            "unread": unread,
-        }))
-    }
-
-    /// Post `text`, with what it carries, to the conversation `id` now, as
-    /// the record's `post` does, and say whether it was taken.
-    pub(crate) fn post_to_conversation(
+    /// Post `text` to the conversation `id`, as [`Self::send_message`] does,
+    /// and tell `then` whether it was taken: at once, or, on a device whose
+    /// messages are still on their way from the workspace (back from away),
+    /// once they are here and it was written after them.
+    pub(crate) fn post_to_conversation_then(
         &self,
         id: &Id,
         text: &str,
-        attachments: Vec<tilo_reference::Attached>,
-    ) -> Result<(), String> {
-        let Some(chain) = &self.chain else {
-            return Err(crate::i18n::t("chat-direct-unavailable"));
-        };
-        chain
-            .invoke(&ChatPart::POST.with(chat_part::Post {
-                message: crate::messages::NewMessage {
-                    channel: id.clone(),
-                    text: text.to_owned(),
-                    parent: None,
-                    quoted: None,
-                    body: None,
-                    attachments,
-                    mentions: None,
-                    written: None,
-                },
-            }))
-            .map(drop)
-            .map_err(|error| error.to_string())
+        then: impl FnOnce(Result<(), String>) + 'static,
+    ) {
+        match self.messages_chain() {
+            Ok(chain) => {
+                chain.invoke_then(&post(id, text, None, None, Vec::new()), move |posted| {
+                    then(posted.map(drop).map_err(|error| error.to_string()));
+                });
+            }
+            Err(unavailable) => then(Err(unavailable)),
+        }
     }
 
-    /// Send what a window's box held: the words and everything they carry go
-    /// to the conversation with whom it names — a person, an agent, several of
-    /// them, or a conversation that is already there — and the conversation
-    /// opens as a window of the desk, floated where the box stood
-    /// ([`ui::shell_tabs::open_floated`]). The window that sent it goes on
-    /// showing what it showed, its box ready for the next message.
+    fn messages_chain(&self) -> Result<&ui::framework::Chain<ChatPart>, String> {
+        self.chain
+            .as_ref()
+            .ok_or_else(|| crate::i18n::t("chat-direct-unavailable"))
+    }
+
+    /// Send what a box held: the words and everything they carry go to the
+    /// conversation with whom it names — a person, an agent, several of
+    /// them, or a conversation that is already there. When it `opens`, the
+    /// conversation opens as a window of the desk, floated where the box
+    /// stood ([`ui::shell_tabs::open_floated`]). The window that sent it goes
+    /// on showing what it showed, its box ready for the next message.
     ///
     /// # Errors
     /// The box names nobody this chat knows, a conversation beside other
     /// recipients, or a message with neither words nor anything to carry.
-    pub(crate) fn send_from_box(
+    pub(crate) fn send_message(
         &self,
-        to: &[ui::floating_surface::Recipient],
-        attached: Vec<tilo_reference::Attached>,
-        text: &str,
+        message: SendMessage<'_>,
         chat: &Chat,
     ) -> Result<Effected, String> {
+        let SendMessage {
+            to,
+            attached,
+            text,
+            parent,
+            body,
+            opens,
+        } = message;
         if text.trim().is_empty() && attached.is_empty() {
             return Err(crate::i18n::t("chat-send-empty"));
         }
         let id = self.conversation_named(to, chat)?;
-        self.post_to_conversation(&id, text, attached)?;
+        self.messages_chain()?
+            .invoke(&post(&id, text, parent.map(Id::from_raw), body, attached))
+            .map_err(|error| error.to_string())?;
         // The conversation stands where the box stood: a window of the desk,
         // floated over it, that the workspace's record keeps for every
         // member.
         let anchor = item_row_id("channels", id.as_str());
-        ui::shell_tabs::open_floated(anchor.clone());
+        if opens {
+            ui::shell_tabs::open_floated(anchor.clone());
+        }
         Ok(Effected::value(serde_json::json!({
             "conversation": id.to_string(),
             "anchor": anchor,
@@ -220,26 +199,13 @@ impl ChatApp {
         Ok(Chat::direct_id(participants))
     }
 
-    /// The person the direct conversation `channel` is with, when it is one
-    /// of this window's person with exactly one other person: what the app's
-    /// direct operations are asked on. A conversation with an agent, or one
-    /// of more than two people, is not one of them.
+    /// The person the direct conversation `channel` is with, when it is one of this window's
+    /// person with exactly one other person: what the app's direct operations are asked on. A
+    /// conversation with an agent, or one of more than two people, is not one of them.
     fn direct_peer(&self, channel: &crate::model::Channel) -> Option<String> {
-        if !channel.direct || channel.participants.len() != 2 {
-            return None;
-        }
-        let participants: Vec<Participant> = channel
-            .participants
-            .iter()
-            .filter_map(|key| Participant::parse(key))
-            .collect();
-        if participants.len() != 2 || participants.iter().any(Participant::is_agent) {
-            return None;
-        }
-        participants
-            .into_iter()
-            .find(|participant| participant.id() != self.me.id)
-            .map(|participant| participant.id().to_owned())
+        self.conversation_peer(&channel.participants)
+            .filter(|peer| channel.direct && !peer.is_agent())
+            .map(|peer| peer.id().to_owned())
     }
 
     /// The direct conversations the sidebar lists: those holding messages,
@@ -259,7 +225,8 @@ impl ChatApp {
     /// people, so a caller finds them by the operation it wants rather than
     /// by a written address. Every person has one, not only those the
     /// conversation with whom holds a message yet: a caller asks for the
-    /// row before it can write the first message.
+    /// row before it can write the first message. Its messages are read as
+    /// any conversation's, from the chat's record and its parts.
     pub(crate) fn direct_conversation_rows(&self) -> Vec<LiveRow> {
         self.channels
             .iter()
@@ -274,9 +241,6 @@ impl ChatApp {
                     .effect(&ChatEffect::OpenDirectConversation {
                         public_key: public_key.clone(),
                     })
-                    .effect(&ChatEffect::ReadDirectConversation {
-                        public_key: public_key.clone(),
-                    })
                     .operation(
                         ChatEffect::SendDirectMessage {
                             public_key,
@@ -288,6 +252,42 @@ impl ChatApp {
             })
             .collect()
     }
+}
+
+/// What a box holds for one send: who it goes to, what it says, what it
+/// carries, the message it answers in a thread, its own paragraphs, and
+/// whether the conversation opens where the box stood.
+pub(crate) struct SendMessage<'a> {
+    pub to: &'a [ui::floating_surface::Recipient],
+    pub attached: Vec<tilo_reference::Attached>,
+    pub text: &'a str,
+    /// The message it answers in a thread, by its id.
+    pub parent: Option<String>,
+    pub body: Option<Vec<tilo_document::ClipBlock>>,
+    pub opens: bool,
+}
+
+/// The record's `post` of `text`, with what it carries and the paragraphs it
+/// was written in, to the conversation `id`.
+fn post(
+    id: &Id,
+    text: &str,
+    parent: Option<Id>,
+    body: Option<Vec<tilo_document::ClipBlock>>,
+    attachments: Vec<tilo_reference::Attached>,
+) -> Invoke<ChatPart> {
+    ChatPart::POST.with(chat_part::Post {
+        message: crate::messages::NewMessage {
+            channel: id.clone(),
+            text: text.to_owned(),
+            parent,
+            quoted: None,
+            body,
+            attachments,
+            mentions: None,
+            written: None,
+        },
+    })
 }
 
 #[cfg(test)]

@@ -18,7 +18,7 @@ use crate::surface::BannerSurface;
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Banners {}
 
-#[resource(kind = "notifications.banners", label = "Notifications")]
+#[resource(kind = "notifications.banners")]
 impl Banners {}
 
 /// What anyone can do with the banners on screen. A banner is named by its

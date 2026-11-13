@@ -40,7 +40,7 @@ fn a_look_read_shows_its_picture_after_the_tool_results() {
         ],
         true,
     );
-    let mut reads = Looks::new('a');
+    let mut reads = Looks::new();
     planner
         .plan_reading("look, then draw", &look_context(), &mut reads)
         .unwrap();
@@ -69,7 +69,7 @@ fn a_model_that_does_not_see_gets_no_look_content_and_is_told_so() {
         ],
         false,
     );
-    let mut reads = Looks::new('a');
+    let mut reads = Looks::new();
     planner
         .plan_reading("look, then draw", &look_context(), &mut reads)
         .unwrap();
@@ -100,9 +100,9 @@ fn a_model_that_does_not_see_gets_no_look_content_and_is_told_so() {
 /// the confined worker and shown.
 #[test]
 fn look_content_refuses_unshown_addresses_and_workspace_pictures_unless_allowed() {
-    let mut reads = Looks::new('a');
-    let scan = reads.keep('b', crate::vision::tests::png(10, 10));
-    let pdf = reads.keep('c', b"%PDF-1.4\n".to_vec());
+    let mut reads = Looks::new();
+    let scan = reads.keep(&crate::vision::tests::png(10, 10));
+    let pdf = reads.keep(b"%PDF-1.4\n");
     let unshown = crate::vision::tests::address('d');
     let look = |address: &str| serde_json::json!({"content": address});
     let (mut planner, sent) = scripted(
@@ -137,7 +137,7 @@ fn look_content_refuses_unshown_addresses_and_workspace_pictures_unless_allowed(
     assert!(
         !reads
             .looked
-            .contains(&crate::vision::content_hash(&unshown).unwrap()),
+            .contains(&crate::vision::reference(&unshown).unwrap()),
         "an unnamed address is never fetched"
     );
 
@@ -152,6 +152,11 @@ fn look_content_refuses_unshown_addresses_and_workspace_pictures_unless_allowed(
     context.workspace_pictures = true;
     planner.plan_reading(&task, &context, &mut reads).unwrap();
     let requests = sent.lock().unwrap().clone();
+    // A member's scan is kept sealed: the look opens it by the reference
+    // the task named, and the model is shown the picture itself.
+    assert!(tilo_content::is_sealed(
+        &crate::vision::reference(&scan).unwrap()
+    ));
     let shown = &results(&requests[1])[0];
     assert!(shown.contains("10×10 JPEG picture"), "{shown}");
     assert_eq!(pictures(requests[1].messages.last().unwrap()), 1);
@@ -165,8 +170,8 @@ fn a_replan_shows_the_newest_looked_at_picture_in_its_first_turn() {
         vec![called("p1", tilo_agent::tools::PLAN, &draw_plan())],
         true,
     );
-    let mut reads = Looks::new('a');
-    let older = reads.keep('e', crate::vision::tests::png(4, 4));
+    let mut reads = Looks::new();
+    let older = reads.keep(&crate::vision::tests::png(4, 4));
     let mut context = look_context();
     context.request = Some("draw a band, then check it looks right".into());
     context.pictures = vec![older, reads.rendered.clone()];

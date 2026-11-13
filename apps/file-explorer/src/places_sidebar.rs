@@ -1,12 +1,6 @@
-//! The places list down the left of the file explorer: Favorites (which the
-//! person reorders by dragging and removes with the row's action) and the
-//! system locations (Recent, workspaces, cloud accounts, Root, Trash).
-//!
-//! The list is the shared navigation list ([`ui::widget::NavList`]) hosted in
-//! the window shell's sidebar; this module only says what the destinations
-//! are, which one is chosen, and what a choice, a drag or a row action does.
-//! The favourites themselves live in a [`FavStore`] the app owns, so they
-//! survive the rebuild of the list when the window's structure changes.
+//! The places list down the left: the person's favourites, then the fixed
+//! locations, cloud accounts and drives. Choosing a row opens it; a favourite
+//! can be dragged to reorder the list.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -18,17 +12,11 @@ use crate::i18n::t;
 use ui::icons::Icon;
 use ui::widget::{NavAction, NavDrop, NavItem, NavList, NavSection, RowStatus};
 
-/// The section holding the person's favourites.
 const FAVORITES_SECTION: &str = "favorites";
-/// The section holding the fixed locations.
 const LOCATIONS_SECTION: &str = "locations";
-/// The section holding NTFS drives (a Windows partition, external drives).
 const DRIVES_SECTION: &str = "drives";
-/// Row action: unpin a favourite.
 const REMOVE_ACTION: &str = "remove";
 
-/// Shared, persistent favourites state the app owns and every freshly built
-/// places list borrows.
 pub struct FavState {
     pub favorites: Vec<Favorite>,
 }
@@ -41,41 +29,31 @@ impl FavState {
 
 pub type FavStore = Rc<RefCell<FavState>>;
 
-/// Build a shared favourites store.
 pub fn new_store(favorites: Vec<Favorite>) -> FavStore {
     Rc::new(RefCell::new(FavState::new(favorites)))
 }
 
-/// The row id of a favourite pointing at `path`.
 fn favorite_id(path: &Path) -> String {
     format!("fav:{}", path.display())
 }
 
-/// The row id of a fixed location at `path`.
 fn location_id(path: &Path) -> String {
     format!("loc:{}", path.display())
 }
 
-/// The row id of a cloud account whose folder is not mounted: choosing it
-/// opens its import browser or connection details rather than a folder.
 fn account_id(id: &str) -> String {
     format!("{ACCOUNT_PREFIX}{id}")
 }
 
-/// The prefix of a row id naming an account rather than a folder.
 const ACCOUNT_PREFIX: &str = "account:";
-/// The prefix of a row id naming a drive: choosing it asks the shell to
-/// open the drive, which asks the person first.
 const DRIVE_PREFIX: &str = "drive:";
 
-/// The folder a row id names, if it is one of ours.
 pub(crate) fn path_of_id(id: &str) -> Option<PathBuf> {
     id.strip_prefix("fav:")
         .or_else(|| id.strip_prefix("loc:"))
         .map(PathBuf::from)
 }
 
-/// What choosing the row `id` asks of the window.
 fn choose(sink: &CommandSink, id: &str) {
     if let Some(account) = id.strip_prefix(ACCOUNT_PREFIX) {
         push(sink, FileCommand::ShowRemoteAccount(account.to_owned()));
@@ -86,45 +64,30 @@ fn choose(sink: &CommandSink, id: &str) {
     }
 }
 
-/// One fixed location: a place that is not the person's to reorder.
 struct Location {
     icon: Icon,
     label: String,
     path: PathBuf,
-    /// The account this row stands for, when its folder is not mounted: the
-    /// row then opens its import browser or account state; `path` is not a folder.
     account: Option<String>,
-    /// A cloud account's short state when it is not well ("Offline", "Sign
-    /// in"): its second line, with a dot.
     status: Option<String>,
 }
 
-/// A cloud account as the places list shows it.
 pub struct AccountPlace {
-    /// The account's own id.
     pub id: String,
     pub label: String,
-    /// Where its folder is mounted, when it is.
     pub mount: Option<PathBuf>,
-    /// A short state ("Offline", "Sign in") when the account is not well.
     pub status: Option<String>,
 }
 
-/// An NTFS drive as the places list shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DrivePlace {
-    /// The shell's id for the drive while it stays attached.
     pub id: String,
     pub label: String,
-    /// Built into this computer, as opposed to external.
     pub internal: bool,
-    /// Where it is open, when it is.
     pub open_at: Option<PathBuf>,
-    /// Its second line: its size, or that it is open.
     pub detail: String,
 }
 
-/// What the places list shows for the current folder.
 pub struct Places {
     favorites: Vec<Favorite>,
     locations: Vec<Location>,
@@ -135,9 +98,6 @@ pub struct Places {
 
 impl Places {
     pub fn new(favs: &FavStore, active: PathBuf) -> Self {
-        // Recent leads the fixed places: what you used last, from any folder.
-        // Then the filesystem root, then the Trash (when the platform exposes
-        // one): deleting moves files there.
         let mut locations = vec![
             Location {
                 icon: Icon::History,
@@ -146,7 +106,6 @@ impl Places {
                 account: None,
                 status: None,
             },
-            // Every app in the person's app list, and ~/Applications.
             Location {
                 icon: Icon::LayoutGrid,
                 label: t("files-place-applications"),
@@ -180,34 +139,23 @@ impl Places {
         }
     }
 
-    /// Surface the Tilo collaborative-workspace mounts as locations, above
-    /// Root. Each root the FUSE driver mounts (e.g. `/var/workspace`) is a
-    /// place with a cloud emblem, so the person reaches their synced
-    /// workspace without typing a path.
     #[must_use]
     pub fn with_workspaces(mut self, roots: Vec<PathBuf>) -> Self {
         let mut entries: Vec<Location> = roots
             .into_iter()
             .map(|path| Location {
                 icon: Icon::Cloud,
-                // Shared with the breadcrumb, which names the same place.
                 label: crate::model::workspace_label(&path),
                 path,
                 account: None,
                 status: None,
             })
             .collect();
-        // Workspaces lead the locations; Root (and any future devices) follow.
         entries.append(&mut self.locations);
         self.locations = entries;
         self
     }
 
-    /// Surface cloud accounts as locations after the workspaces. A mounted
-    /// account opens its folder; one that is offline, syncing or needs
-    /// attention says so on its second line with a status dot, and one whose
-    /// folder is not mounted opens its import browser or connection details
-    /// (so import accounts and accounts needing sign-in stay visible).
     #[must_use]
     pub fn with_remote_accounts(mut self, accounts: Vec<AccountPlace>) -> Self {
         let at = self
@@ -231,23 +179,18 @@ impl Places {
         self
     }
 
-    /// Surface NTFS drives in their own section after the locations. A
-    /// drive is never opened by being listed; choosing it asks the shell.
     #[must_use]
     pub fn with_drives(mut self, drives: Vec<DrivePlace>) -> Self {
         self.drives = drives;
         self
     }
 
-    /// Select an unmounted account's browser instead of the last local folder.
     #[must_use]
     pub fn with_active_account(mut self, account: Option<String>) -> Self {
         self.active_account = account;
         self
     }
 
-    /// The row of the chosen place: the favourite for the current folder,
-    /// else the fixed location that is it.
     pub fn selected_id(&self) -> Option<String> {
         if let Some(account) = &self.active_account {
             return self
@@ -274,7 +217,6 @@ impl Places {
             })
     }
 
-    /// The destinations, as the shared list shows them.
     pub fn sections(&self) -> Vec<NavSection> {
         let mut sections = Vec::new();
         if !self.favorites.is_empty() {
@@ -359,16 +301,12 @@ impl Places {
         sections
     }
 
-    /// The last favourite and the one it would be dragged in front of, for a
-    /// capture of a reorder in progress.
     pub fn favorite_drag(&self) -> Option<(String, String)> {
         let movable: Vec<&Favorite> = self.favorites.iter().filter(|f| !f.is_home).collect();
         let (first, last) = (movable.first()?, movable.last()?);
         (movable.len() > 1).then(|| (favorite_id(&last.path), favorite_id(&first.path)))
     }
 
-    /// The favourite move a drop asks for: `(from, to)` indices into the
-    /// favourites, or `None` when the drop is not a reorder of two favourites.
     pub fn reorder_for(&self, source: &str, drop: &NavDrop) -> Option<(usize, usize)> {
         let (before, target) = match drop {
             NavDrop::Before(id) => (true, id),
@@ -383,11 +321,6 @@ impl Places {
         )
     }
 
-    /// The navigation list: choosing a place opens it, dragging a favourite
-    /// reorders them, and a favourite's row action unpins it. The row the
-    /// person chooses in the list is also left in `chosen`. The drag and the
-    /// row action run the window's published effects (see
-    /// [`crate::bindings`]).
     pub fn nav_list(self, sink: &CommandSink, chosen: &Rc<RefCell<Option<String>>>) -> NavList {
         let selected = self.selected_id();
         let sections = self.sections();
@@ -446,8 +379,6 @@ mod tests {
         section.items.iter().map(|item| item.id.clone()).collect()
     }
 
-    /// The favourites and the fixed locations are two sections, and the
-    /// current folder is the chosen row.
     #[test]
     fn favourites_and_locations_are_sections_with_the_current_folder_chosen() {
         let places = sample();
@@ -475,7 +406,6 @@ mod tests {
         );
     }
 
-    /// Without favourites there is no empty "Favorites" header.
     #[test]
     fn no_favourites_means_no_favourites_section() {
         let places = Places::new(&new_store(Vec::new()), PathBuf::from("/"));
@@ -537,8 +467,6 @@ mod tests {
         assert_eq!(places.selected_id().as_deref(), Some("loc:/home/u/Drive"));
     }
 
-    /// Workspaces lead the locations; mounted cloud accounts follow them and
-    /// say when they are offline or need attention.
     #[test]
     fn workspaces_and_cloud_accounts_are_locations_with_a_status_icon() {
         let places = Places::new(&new_store(Vec::new()), PathBuf::from("/"))
@@ -585,8 +513,6 @@ mod tests {
                 .find(|i| i.id == id)
                 .expect("the account is listed")
         };
-        // Every account is a cloud; one that is not well says so on its
-        // second line, with a dot that needs the person only when it does.
         for id in [
             "loc:/home/a/Remote/Cloud",
             "loc:/home/a/Remote/Work",
@@ -613,8 +539,6 @@ mod tests {
                 .map(|s| s.row_status()),
             Some(RowStatus::Warning)
         );
-        // An account with no mounted folder is still a row: it opens the
-        // account's state instead of a folder.
         assert_eq!(order[4], "account:archive");
         assert_eq!(
             item("account:archive").secondary.as_deref(),
@@ -622,7 +546,6 @@ mod tests {
         );
     }
 
-    /// Home cannot be unpinned; other favourites can, fixed locations cannot.
     #[test]
     fn only_removable_favourites_offer_the_unpin_action() {
         let sections = sample().sections();
@@ -631,28 +554,22 @@ mod tests {
         assert!(sections[1].items.iter().all(|item| !item.actions));
     }
 
-    /// A drop before or after a favourite becomes the index move
-    /// `favorites::reorder` makes; anything involving a location is not a move.
     #[test]
     fn drops_map_to_favourite_reorders() {
         let places = sample();
         let fav = |name: &str| format!("fav:/home/u/{name}");
-        // Pictures (2) dropped before Documents (1) moves up one.
         assert_eq!(
             places.reorder_for(&fav("Pictures"), &NavDrop::Before(fav("Documents"))),
             Some((2, 1))
         );
-        // Documents (1) dropped after Projects (3) moves to the end.
         assert_eq!(
             places.reorder_for(&fav("Documents"), &NavDrop::After(fav("Projects"))),
             Some((1, 3))
         );
-        // Documents dropped before Pictures is where it already is.
         assert_eq!(
             places.reorder_for(&fav("Documents"), &NavDrop::Before(fav("Pictures"))),
             None
         );
-        // A location is neither a source nor a target.
         assert_eq!(
             places.reorder_for("loc:/", &NavDrop::Before(fav("Documents"))),
             None
@@ -661,14 +578,12 @@ mod tests {
             places.reorder_for(&fav("Documents"), &NavDrop::Before("loc:/".into())),
             None
         );
-        // Into is not a reorder.
         assert_eq!(
             places.reorder_for(&fav("Documents"), &NavDrop::Into(fav("Projects"))),
             None
         );
     }
 
-    /// The reorder the list reports is exactly what the store applies.
     #[test]
     fn a_reported_move_reorders_the_stored_favourites() {
         let store = new_store(vec![
@@ -693,7 +608,6 @@ mod tests {
         assert_eq!(order, ["Home", "Pictures", "Documents"]);
     }
 
-    /// Row ids round-trip to the folder they name and nothing else.
     #[test]
     fn ids_name_their_folder() {
         assert_eq!(
@@ -717,9 +631,6 @@ mod tests {
         }
     }
 
-    /// Drives are their own section after the locations: internal ones with
-    /// a disk icon, external ones with a USB icon, an open one with a dot and
-    /// selected while its folder is shown.
     #[test]
     fn drives_are_a_section_and_an_open_one_is_chosen_while_shown() {
         let none = Places::new(&new_store(Vec::new()), PathBuf::from("/"));
@@ -752,7 +663,6 @@ mod tests {
         );
     }
 
-    /// Choosing a drive asks to open it; it never navigates by itself.
     #[test]
     fn choosing_a_drive_asks_to_open_it() {
         let sink = new_sink();
@@ -767,7 +677,6 @@ mod tests {
         );
     }
 
-    /// The list built from the places carries the chosen row and its name.
     #[test]
     fn the_list_shows_the_chosen_place() {
         let sink = new_sink();

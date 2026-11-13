@@ -1,6 +1,4 @@
-//! Integration test: build a bundle from a fixture host root, verify it,
-//! then flip a byte and confirm verify rejects it. Also exercises the
-//! cross-arch aarch64 path and the signing round-trip.
+//! Build a bundle from a fixture host root, verify it, and refuse tampered bundles.
 
 #![allow(
     clippy::unwrap_used,
@@ -142,7 +140,6 @@ fn unsigned_bundles_round_trip_over_every_host_layout() {
         assert!(!manifest.files.is_empty(), "bundle should include files");
         assert_eq!(manifest.root_hash.len(), 64);
 
-        // ld.so.cache should be included when present.
         assert!(manifest.files.iter().any(|f| f.path == "etc/ld.so.cache"));
         assert!(manifest.files.windows(2).all(|w| w[0].path <= w[1].path));
 
@@ -152,13 +149,9 @@ fn unsigned_bundles_round_trip_over_every_host_layout() {
     // phase: build_verify_roundtrip_over_fake_host_default_arch
     {
         fn phase_build_verify_roundtrip_over_fake_host_default_arch() {
-            // build_bundle without --arch uses the host arch — the wrapper
-            // path most tools use.
             let host = tempfile::tempdir().unwrap();
             fake_x86_64_host(host.path());
             let out = tempfile::tempdir().unwrap();
-            // Only run when host is x86_64; on aarch64 CI this test would
-            // (correctly) find no sources.
             if runtime_bundle::host_arch() != "x86_64" {
                 return;
             }
@@ -328,11 +321,6 @@ fn signed_bundles_verify_and_catch_a_tampered_root() {
     }
     // phase: tampered_root_hash_in_signed_bundle_is_caught
     {
-        // Signature covers version+root_hash; flipping root_hash without
-        // updating files causes the payload-hash check to fail first
-        // (hash-of-files vs recorded root_hash). That's the design —
-        // we test both signatures: swap the recorded root_hash so the
-        // signature no longer verifies but files stay consistent.
         let host = tempfile::tempdir().unwrap();
         fake_x86_64_host(host.path());
         let identity_path = host.path().join("id.json");
@@ -353,23 +341,12 @@ fn signed_bundles_verify_and_catch_a_tampered_root() {
         )
         .unwrap();
 
-        // Swap in a valid-looking but wrong root_hash so we reach the
-        // signature check with mismatched hashes. Use a well-formed 64-
-        // hex string.
         let bundle_toml = out.path().join(runtime_bundle::BUNDLE_MANIFEST_FILENAME);
         let text = fs::read_to_string(&bundle_toml).unwrap();
-        let tampered = text.replace(
-            // this is fragile-but-scoped: the root_hash field is unique
-            // and one line.
-            "root_hash = \"",
-            "root_hash = \"deadbeef",
-        );
+        let tampered = text.replace("root_hash = \"", "root_hash = \"deadbeef");
         fs::write(&bundle_toml, tampered).unwrap();
 
         let err = verify_bundle(out.path()).unwrap_err();
-        // The integrity check (file-list root-hash) rejects first; that's the
-        // right layered behavior. Either error type is acceptable — both mean
-        // "you can't fake this".
         match err {
             BundleError::HashMismatch { .. }
             | BundleError::BadSignature

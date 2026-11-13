@@ -6,10 +6,10 @@ use tilo_relay_protocol::{DeviceRole, ReplicationIntent};
 use ui::widget::{Button, ButtonRole, DisclosureRow, Dropdown, EditableLabel, Widget};
 
 use super::{
-    DeviceMeshEffect, Page, PairingTarget, REVOKE_REASONS, RelayRuntimeStatus, home_server_row,
-    last_seen_label, mesh_status_shown, peer_health_badge, peer_key, personal_device_key,
-    personal_device_row, replication_description, replication_shown, revoke_shown, role_shown,
-    runtime_status_tone, shows_advanced_services,
+    DeviceMeshEffect, HomePeerHealth, Page, PairingTarget, RelayRuntimeStatus, home_server_row,
+    last_seen_label, peer_health_badge, peer_health_detail, peer_key, personal_device_key,
+    replication_description, replication_shown, role_shown, runtime_status_tone,
+    shows_advanced_services,
 };
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
@@ -18,13 +18,9 @@ use provider_settings_ui::widgets::{
     semantic_status_pill, setting_row_described, value_row,
 };
 
-/// The entry this device has in the list before the device list answers.
 const THIS_DEVICE_KEY: &str = "this-device";
 
-/// One device of the person's, as the list shows it once: from the device
-/// list, the home servers, or both.
 struct DeviceEntry<'a> {
-    /// The row's stable key: the device's key or node id, in hex.
     key: String,
     label: String,
     personal: Option<&'a crate::device_fleet::DeviceView>,
@@ -33,9 +29,6 @@ struct DeviceEntry<'a> {
 }
 
 impl Page<'_> {
-    /// The person's devices, each once: this device first, then the others
-    /// with their home servers among them, then the ones whose access
-    /// ended. A home server the device list also names is one entry.
     fn device_entries(&self) -> Vec<DeviceEntry<'_>> {
         let peer_of = |device: &crate::device_fleet::DeviceView| {
             let key = hex::encode(device.key);
@@ -106,8 +99,6 @@ impl Page<'_> {
         entries
     }
 
-    /// "Your devices": one list, each device opening its settings in place
-    /// under its own row; adding a device or a home server below it.
     pub(super) fn devices_section(&self) -> SettingsSection {
         let pairing = self.pairing_call.is_some();
         let personal_label = if pairing && self.pairing_target == PairingTarget::PersonalDevice {
@@ -155,10 +146,9 @@ impl Page<'_> {
                 .secondary(self.device_state(&entry)),
             )));
         }
-        if let Some(error) = &self.personal_device_error {
-            items.push(row(error_caption(&t_args(
-                "mesh-device-list-err",
-                &[("error", error.as_str().into())],
+        if self.personal_devices_unavailable {
+            items.push(row(error_caption(&t(
+                "mesh-status-device-list-unavailable",
             ))));
         }
 
@@ -188,19 +178,12 @@ impl Page<'_> {
             )),
         ));
         items.push(note(&t("mesh-personal-caption")));
-        if (pairing
-            || self.pairing_candidate.is_some()
-            || self.load_status.starts_with("Home server"))
-            || (self.pairing_target == PairingTarget::PersonalDevice
-                && !self.load_status.is_empty())
-        {
-            items.push(note(&mesh_status_shown(&self.load_status)));
+        if let Some(status) = self.status.pairing_shown() {
+            items.push(note(&status));
         }
         section_with(&t("mesh-trusted-title"), add_device, rows(items))
     }
 
-    /// A device's line under its name: what it is to the others and, for a
-    /// home server, how it is doing.
     fn device_state(&self, entry: &DeviceEntry<'_>) -> String {
         if entry.this {
             return t("mesh-status-this-device");
@@ -218,20 +201,19 @@ impl Page<'_> {
         })
     }
 
+    /// A home server's line under its name: how it is doing, and when it
+    /// was last seen if it is not answering.
     fn peer_health(&self, peer: &tilo_relay_protocol::HomePeerRegistration) -> String {
         let device = &peer.device_node_id;
-        self.home_peer_health
-            .get(device)
-            .cloned()
-            .or_else(|| {
-                self.home_peer_last_seen
-                    .get(device)
-                    .map(|last_seen| last_seen_label(*last_seen))
-            })
-            .unwrap_or_else(|| t("mesh-checking"))
+        let health = self.home_peer_health.get(device).copied();
+        match self.home_peer_last_seen.get(device) {
+            Some(last_seen) if matches!(health, None | Some(HomePeerHealth::Unreachable)) => {
+                last_seen_label(*last_seen)
+            }
+            _ => health.map_or_else(|| t("mesh-checking"), peer_health_badge),
+        }
     }
 
-    /// The selected device's settings, in one place under its row.
     fn device_details(&self, entry: &DeviceEntry<'_>) -> Box<dyn Widget> {
         let mut items = Vec::new();
         if let Some(device) = entry.personal {
@@ -254,8 +236,6 @@ impl Page<'_> {
         ))])
     }
 
-    /// This device's own settings: how available it is, what it keeps,
-    /// which workspaces, and the services a serving device offers.
     fn this_device_rows(&self) -> Vec<provider_settings_ui::widgets::Item> {
         let role_shown_value = role_shown(self.config.device_role);
         let role_state = ui::LocalState::new(role_shown_value.clone());
@@ -310,7 +290,6 @@ impl Page<'_> {
         out
     }
 
-    /// What this device keeps of the workspaces it syncs.
     fn files_row(&self) -> provider_settings_ui::widgets::Item {
         let files = t("mesh-files");
         if !self.config.device_role.can_serve() {
@@ -339,7 +318,6 @@ impl Page<'_> {
         )
     }
 
-    /// The services a serving device offers, each a switch.
     fn service_rows(&self) -> [provider_settings_ui::widgets::Item; 4] {
         [
             self.service_row(
@@ -373,8 +351,6 @@ impl Page<'_> {
         ]
     }
 
-    /// A home server's name, changed in place (Enter or clicking away
-    /// commits it), and how it is doing.
     fn home_peer_rows(
         &self,
         peer: &tilo_relay_protocol::HomePeerRegistration,
@@ -389,40 +365,45 @@ impl Page<'_> {
             effect(DeviceMeshEffect::RENAME_HOME_SERVER)
                 .map(move |name: String| (device.clone(), name.trim().to_owned())),
         );
-        let health = self.peer_health(peer);
-        let badge = peer_health_badge(&health);
+        let health = self.home_peer_health.get(&peer.device_node_id).copied();
+        let badge = health.map_or_else(|| t("mesh-badge-checking"), peer_health_badge);
+        let detail = health.map_or_else(|| t("mesh-checking"), peer_health_detail);
+        let tone = match health {
+            Some(HomePeerHealth::Online { .. }) => StatusTone::Success,
+            Some(HomePeerHealth::Connecting) | None => StatusTone::Warning,
+            Some(HomePeerHealth::Removed | HomePeerHealth::Unreachable) => StatusTone::Neutral,
+        };
         vec![
             provider_settings_ui::widgets::setting_row(&t("mesh-name"), Box::new(name)),
             setting_row_described(
                 &t("mesh-availability"),
-                &health,
-                semantic_status_pill(
-                    &badge,
-                    if health.starts_with("Online") {
-                        StatusTone::Success
-                    } else if health.contains("Syncing") || health == t("mesh-checking") {
-                        StatusTone::Warning
-                    } else {
-                        StatusTone::Neutral
-                    },
-                ),
+                &detail,
+                semantic_status_pill(&badge, tone),
             ),
         ]
     }
 
-    /// Removing a device: a destructive button that asks first, in place.
-    /// Asked, it says what removing does, takes the reason a trusted
-    /// device's revocation signs, and offers Remove beside Cancel.
     fn removal_rows(&self, entry: &DeviceEntry<'_>) -> Vec<provider_settings_ui::widgets::Item> {
-        let home = entry.peer.is_some();
-        // The device's own row offers what removing it does: the personal
-        // device's, else the home server's.
-        let live = match (entry.personal, entry.peer) {
-            (Some(device), _) => personal_device_row(device),
-            (None, Some(peer)) => home_server_row(peer),
-            (None, None) => return Vec::new(),
-        }
-        .into_resource();
+        let Some(peer) = entry.peer else {
+            if entry.personal.is_none() {
+                return Vec::new();
+            }
+            let open = self.bind_invocation(
+                Button::new(
+                    &personal_device_key("manage-access", &entry.key),
+                    &t("mesh-manage-access"),
+                ),
+                crate::effects::NavigationEffect::OpenPane {
+                    pane: crate::categories::Category::DevicesAccess.slug().to_owned(),
+                },
+            );
+            return vec![provider_settings_ui::widgets::row(Box::new(
+                ui::widget::Row::new()
+                    .push(Box::new(open))
+                    .push(Box::new(ui::widget::Spacer::new())),
+            ))];
+        };
+        let live = home_server_row(peer).into_resource();
         if self.removing.as_deref() != Some(entry.key.as_str()) {
             return vec![provider_settings_ui::widgets::row(Box::new(
                 ui::widget::Row::new()
@@ -430,11 +411,7 @@ impl Page<'_> {
                         self.bind_row(
                             Button::new(
                                 &peer_key("review-remove", &entry.key),
-                                &t(if home {
-                                    "mesh-remove-home"
-                                } else {
-                                    "mesh-remove-device"
-                                }),
+                                &t("mesh-remove-home"),
                             )
                             .role(ButtonRole::Destructive),
                             &live,
@@ -446,60 +423,26 @@ impl Page<'_> {
                     .push(Box::new(ui::widget::Spacer::new())),
             ))];
         }
-        let confirm: Button = if let Some(peer) = entry.peer {
-            self.bind_row(
-                Button::new(
-                    &peer_key("remove", &peer.device_node_id),
-                    &t("mesh-remove-home-confirm"),
-                )
-                .role(ButtonRole::Destructive),
-                &home_server_row(peer).into_resource(),
-                DeviceMeshEffect::RemoveHomeServer {
-                    device: peer.device_node_id.clone(),
-                },
+        let confirm = self.bind_row(
+            Button::new(
+                &peer_key("remove", &peer.device_node_id),
+                &t("mesh-remove-home-confirm"),
             )
-        } else {
-            let device = entry.key.clone();
-            let reason = self.removal_reason.clone();
-            self.bind_on_row(
-                &live,
-                Button::new(
-                    &personal_device_key("revoke", &entry.key),
-                    &t("mesh-remove-device-confirm"),
-                )
-                .role(ButtonRole::Destructive),
-                effect(DeviceMeshEffect::REVOKE_DEVICE)
-                    .map(move |()| (device.clone(), reason.with(Clone::clone))),
-            )
-        };
+            .role(ButtonRole::Destructive),
+            &live,
+            DeviceMeshEffect::RemoveHomeServer {
+                device: peer.device_node_id.clone(),
+            },
+        );
         let cancel = self.bind_invocation(
             Button::new(&peer_key("cancel-remove", &entry.key), &t("mesh-cancel")),
             DeviceMeshEffect::CancelRemoval,
         );
-        let mut out = Vec::new();
-        if !home {
-            out.push(provider_settings_ui::widgets::setting_row(
-                &t("mesh-why-ending"),
-                Box::new(
-                    Dropdown::from_state(
-                        REVOKE_REASONS.iter().map(|id| revoke_shown(id)).collect(),
-                        &self.removal_reason,
-                    )
-                    .with_id(&personal_device_key("reason", &entry.key))
-                    .with_accessible_name(t("mesh-why-ending")),
-                ),
-            ));
-        }
-        out.push(provider_settings_ui::widgets::item_row(
+        vec![provider_settings_ui::widgets::item_row(
             &t_args("mesh-remove-ask", &[("label", entry.label.as_str().into())]),
             Vec::new(),
-            &[t(if home {
-                "mesh-files-stay-desc"
-            } else {
-                "mesh-why-ending-desc"
-            })],
+            &[t("mesh-files-stay-desc")],
             vec![confirm, cancel],
-        ));
-        out
+        )]
     }
 }

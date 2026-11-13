@@ -73,6 +73,31 @@ impl super::App {
         self.pump_hosted_model_as(host_perf_baseline());
     }
 
+    /// One wake of an app the session runs with no window
+    /// ([`crate::host::WINDOWLESS_ENV`]): the passes a frame runs before it
+    /// paints, so it takes its actions and publishes. Answers when it wakes
+    /// next.
+    ///
+    /// The shell speaks to it as to a window: it says where the app's
+    /// workspace stands, which the app's views wait for before they build
+    /// and publish what they answer. What the shell asks of a window (a
+    /// surface to prepare) has no window here and goes unanswered.
+    ///
+    /// Only a native launch runs an app with no window; the portable
+    /// toolkit's host always draws one, and the tests wake one here.
+    #[cfg(any(feature = "native", test))]
+    pub(crate) fn wake_unshown(&mut self) -> Option<crate::time::Instant> {
+        #[cfg(feature = "native")]
+        {
+            if self.pump_floating_surface_service() {
+                self.invalidate_widget_resource_cache();
+            }
+            drop(self.take_floating_host_messages());
+        }
+        self.pump_hosted_model();
+        self.root_widget.next_wake_deadline()
+    }
+
     /// Presence and connection changes can change pixels without dirtying a widget.
     #[cfg(feature = "native")]
     pub(super) fn pump_embedded_model(&mut self) -> bool {

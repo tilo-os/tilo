@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 
 use collab_types::Ed25519PublicKey;
 use fs_protocol::{FileActor, FileProvenance, FileRecordId};
-use iroh::endpoint::{Endpoint, presets};
 
 use super::{Pass, STAGING_PREFIX, SyncFolder};
 use crate::fs::QuickFS;
@@ -13,7 +12,6 @@ use crate::namespace::Namespace;
 use crate::smart::Heuristics;
 use crate::store::ContentStore;
 
-/// A workspace with history, as the runtime keeps one, and its folder.
 struct Fixture {
     dir: tempfile::TempDir,
     fs: Arc<QuickFS>,
@@ -23,7 +21,7 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = test_relay::direct_endpoint().await;
         let hydrator = Arc::new(Hydrator::new(endpoint, Arc::new(ContentStore::memory())));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let history = Arc::new(crate::history_fixture::History::new(Arc::clone(&namespace)));
@@ -60,7 +58,6 @@ impl Fixture {
         self.folder_path().join(path)
     }
 
-    /// A write to the workspace made elsewhere (an app, a peer).
     fn write_remote(&self, path: &str, bytes: &[u8]) {
         let source = self.dir.path().join("remote-write");
         std::fs::write(&source, bytes).unwrap();
@@ -312,7 +309,6 @@ async fn watching_carries_changes_without_being_asked() {
 }
 
 impl Fixture {
-    /// `path` in the folder, with the folder created.
     fn local_parent_ready(&self, path: &str) -> std::path::PathBuf {
         std::fs::create_dir_all(self.folder_path()).unwrap();
         self.local(path)

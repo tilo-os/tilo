@@ -15,6 +15,7 @@ tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 peniko = "0.6.1"
 postcard = { workspace = true, features = ["alloc"] }
 serde.workspace = true
+serde_bytes.workspace = true
 thiserror.workspace = true
 tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
 vello_encoding = { workspace = true, features = ["bump_estimate"] }

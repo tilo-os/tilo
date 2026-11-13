@@ -1982,3 +1982,61 @@ fn a_row_carries_its_name_activation_and_menu_into_the_accessibility_tree() {
         "a row without a menu does not announce one"
     );
 }
+
+/// A grid's columns are its own to scroll sideways: a sideways wheel over them
+/// is the grid's even at the last column, where that event moves nothing. A
+/// wheel the grid cannot use would otherwise go on to whatever encloses it —
+/// on a desktop, the strip of windows the grid's window stands in, which a
+/// person scrolling to the last column never asked to pan.
+#[test]
+fn a_sideways_wheel_over_the_columns_is_the_tables_even_at_the_last_column() {
+    fn sideways(dx: f64) -> WindowEvent {
+        WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: MouseScrollDelta::PixelDelta(crate::winit::dpi::PhysicalPosition::new(dx, 0.0)),
+            phase: winit::event::TouchPhase::Moved,
+        }
+    }
+    let keys = ["a", "b", "c", "d", "e", "f"];
+    let columns: Vec<ColumnDef<R>> = keys
+        .into_iter()
+        .map(|key| ColumnDef::new(key, "Column", ColumnWidth::Fixed(100.0)))
+        .collect();
+    let mut table = DataTable::<R>::new(columns);
+    table.set_rows(rows4());
+    let (tree, node) = lay_out(&mut table);
+    assert!(
+        table.content_w > table.columns_band().width() + 0.5,
+        "the columns overflow the table: {} px of columns",
+        table.content_w
+    );
+    // Six columns of 100 px in a 300 px table: 300 px of sideways travel.
+    let mut moves = 0;
+    for _ in 0..10 {
+        let before = table.scroll_x();
+        let handled = Dispatch::new()
+            .layout(&tree, node)
+            .send(&mut table, &sideways(-100.0))
+            .handled;
+        if table.scroll_x() == before {
+            break;
+        }
+        assert!(handled, "a wheel the columns have room for is the table's");
+        moves += 1;
+    }
+    assert!(moves >= 2, "the columns scrolled by {moves} wheels");
+    let at_the_end = table.scroll_x();
+    assert!(
+        at_the_end > 200.0,
+        "the columns scrolled to their last: {at_the_end}"
+    );
+    assert!(
+        Dispatch::new()
+            .layout(&tree, node)
+            .send(&mut table, &sideways(-100.0))
+            .handled,
+        "and one at the last column is the table's too, not the strip's: {} px",
+        table.scroll_x()
+    );
+    assert_eq!(table.scroll_x(), at_the_end, "it moved nothing further");
+}

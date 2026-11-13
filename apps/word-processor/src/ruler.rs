@@ -1,4 +1,4 @@
-//! Horizontal document ruler with owned layout, painting, and drag state.
+//! The horizontal document ruler: its layout, painting and drag state.
 
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -17,8 +17,6 @@ pub(crate) struct RulerModel {
     pub page_w: f64,
     pub margin_left: f64,
     pub margin_right: f64,
-    /// How the page shows the document's margins: below 1 on a narrow
-    /// window's editing sheet, which keeps them in proportion to its width.
     pub margin_scale: f64,
     pub indent_left: f64,
     pub indent_first: f64,
@@ -172,7 +170,6 @@ impl Ruler {
         let x = model.to_content(point.x);
         let left = model.left_text_x();
         match drag.marker {
-            // Margins are the document's: back from the page's scale.
             RulerMarker::MarginLeft => Some(RulerEffect::PreviewMarginLeft(
                 ((x - model.page_x) / model.margin_scale)
                     .clamp(4.0, model.page_w / (2.0 * model.margin_scale)),
@@ -207,9 +204,6 @@ impl Ruler {
         })
     }
 
-    /// The band's height: one `Caption` line with the related step above and
-    /// below, so the numerals sit between the indent markers at the top and
-    /// bottom edges without touching them.
     pub fn band_height(theme: &Theme, text: &mut TextRenderer) -> f64 {
         let line = f64::from(
             text.measure_style("0", None, &theme.text(TextRole::Caption))
@@ -218,11 +212,6 @@ impl Ruler {
         line + 2.0 * f64::from(theme.tokens.spacing.s2)
     }
 
-    /// Paint the ruler: the page's extent as a lift of the ground, its text
-    /// column raised like the sheet, quarter-inch ticks and a `Caption`
-    /// numeral per inch inside the text column, and the margin, indent and
-    /// tab markers. The band itself stands on the content ground with one
-    /// hairline under it.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -300,7 +289,6 @@ impl Ruler {
             }
             let label = inch.to_string();
             let (w, h) = text.measure_style(&label, None, &style);
-            // A numeral stands clear of the margin markers at both ends.
             let clear = f64::from(w) / 2.0 + tick;
             let fits = sx - clear > model.to_screen(left) && sx + clear < model.to_screen(right);
             if inch > 0 && fits {
@@ -350,7 +338,6 @@ impl Ruler {
             if sx < band.x0 - 6.0 || sx > band.x1 + 6.0 {
                 continue;
             }
-            // The marker being dragged is yours: it takes your colour.
             let color = if active == Some(marker) {
                 colors.intent.you
             } else {
@@ -388,8 +375,6 @@ impl Ruler {
                     (sx, band.y1 - edge - half * 1.5),
                 ),
                 RulerMarker::Tab(_) => {
-                    // An L under the numerals: a stem down from the centre
-                    // line and a foot toward the text it aligns.
                     let foot = band.y1 - edge;
                     scene.fill(
                         Fill::NonZero,
@@ -447,11 +432,8 @@ mod tests {
         }
     }
 
-    /// A press prefers the marker drawn in the pointer zone, dragging a tab below the band becomes a remove
-    /// commit, and empty space inside the text span adds a tab.
     #[test]
     fn ruler_presses_resolve_to_markers_tabs_or_removals() {
-        // Phase: press_prefers_the_marker_drawn_in_the_pointer_zone.
         {
             let model = model();
             let mut ruler = Ruler {
@@ -467,7 +449,6 @@ mod tests {
             assert_eq!(ruler.drag_marker(), Some(RulerMarker::IndentLeft));
         }
 
-        // Phase: dragging_a_tab_below_the_band_becomes_a_remove_commit.
         {
             let model = model();
             let mut ruler = Ruler {
@@ -491,7 +472,6 @@ mod tests {
             );
         }
 
-        // Phase: empty_space_inside_the_text_span_adds_a_tab.
         {
             let model = model();
             let mut ruler = Ruler {

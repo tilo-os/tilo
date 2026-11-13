@@ -17,7 +17,26 @@ use ui::widget::Element;
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Launcher {}
 
-#[resource(kind = "launcher.search", label = "Search")]
+impl Launcher {
+    /// What the record holds: nothing — what is being searched is the window's own, and the
+    /// keys that search are settings.
+    ///
+    /// It answers through [`fields`](tilo_resource::read::fields): a caller
+    /// with no window open reads the record as it reads any app's record, and
+    /// a named item is read from the record's table or by the read its own
+    /// type gives it.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<tilo_resource::__private::serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "launcher.search",
+    read_content = Launcher::read_document
+)]
 impl Launcher {}
 
 /// What anyone can do with the launcher. Opening, typing, narrowing and
@@ -111,6 +130,7 @@ impl ResourceApp for LauncherShell {
     type Resource = Launcher;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = "Search";
+    const TITLE_KEY: &'static str = "launcher-app-title";
     const ICON: Option<&'static str> = Some("search");
     // Nothing is kept: there is nothing to look back on.
     const DOCUMENT_HISTORY: bool = false;

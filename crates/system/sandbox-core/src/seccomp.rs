@@ -13,19 +13,6 @@
 //! worker that computes over bytes on a pipe. [`allow_list_program`] builds
 //! its filter, default-kill, so anything outside the list ends the process
 //! rather than giving hostile input a second try.
-//!
-//! ## Baseline application policy
-//!
-//! Based on Flatpak's published seccomp profile (`common/flatpak-run.c`'s
-//! `setup_seccomp`), itself derived from the Bubblewrap reference deny-list:
-//! namespace manipulation (`unshare`, `setns`, namespace flags to `clone`),
-//! `mount`/`umount2`/`pivot_root`/`chroot`, `ptrace`, raw packet sockets
-//! (`AF_PACKET`), `bpf`, `keyctl`, kernel administration and a set of attack
-//! surfaces no desktop app needs. [`SeccompProfile::TiloDefault`] adds
-//! write-xor-execute; [`SeccompProfile::TiloJit`] omits only that.
-//!
-//! Which profile a package gets is not decided here: the launcher resolves a
-//! manifest's request against the image's entitlement list.
 
 #[cfg(target_os = "linux")]
 use std::collections::BTreeMap;
@@ -40,7 +27,6 @@ use seccompiler::{
     SeccompFilter, SeccompRule, TargetArch,
 };
 
-/// Filter compilation errors.
 #[derive(Debug, thiserror::Error)]
 #[cfg(target_os = "linux")]
 pub enum SeccompError {
@@ -162,7 +148,6 @@ pub const BLANKET_DENIES: &[libc::c_long] = &[
     libc::SYS_setns,
     libc::SYS_bpf,
     libc::SYS_keyctl,
-    // High-risk kernel administration and dynamic kernel extension.
     libc::SYS_kexec_load,
     libc::SYS_finit_module,
     libc::SYS_init_module,
@@ -170,7 +155,6 @@ pub const BLANKET_DENIES: &[libc::c_long] = &[
     libc::SYS_reboot,
     libc::SYS_swapon,
     libc::SYS_swapoff,
-    // Attack surfaces an ordinary desktop app has no reason to reach.
     libc::SYS_userfaultfd,
     libc::SYS_perf_event_open,
     libc::SYS_open_by_handle_at,
@@ -262,7 +246,6 @@ impl SeccompProfile {
         }
     }
 
-    /// The manifest spelling, for logging and round-tripping.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::TiloDefault => "tilo-default",
@@ -397,13 +380,11 @@ fn baseline_rules(
     Ok(rules)
 }
 
-/// The baseline policy for `profile` as a BPF program, ready to install.
 #[cfg(target_os = "linux")]
 pub fn baseline_program(profile: SeccompProfile) -> Result<BpfProgram, SeccompError> {
     baseline_program_with(profile, SyscallGrants::default())
 }
 
-/// The baseline policy for `profile`, minus the syscalls `grants` allows.
 #[cfg(target_os = "linux")]
 pub fn baseline_program_with(
     profile: SeccompProfile,
@@ -465,7 +446,6 @@ pub const PARSER_DENIES: &[libc::c_long] = &[
 pub fn parser_program() -> Result<BpfProgram, SeccompError> {
     let mut rules = baseline_rules(SeccompProfile::TiloDefault, SyscallGrants::default())?;
     for nr in PARSER_DENIES {
-        // Unconditional: replaces the baseline's AF_PACKET-only socket rule.
         rules.insert(*nr, Vec::new());
     }
     deny_list_program(rules)
@@ -545,7 +525,6 @@ pub fn driver_program(own_pid: u32) -> Result<BpfProgram, SeccompError> {
 /// writable-executable mappings (JITs in test suites).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CiProfile {
-    /// Every job's: [`CI_DENIES`], and no new namespace of any kind.
     #[default]
     Standard,
     /// For jobs that genuinely run rootful containers, loop devices or VMs,
@@ -1078,7 +1057,6 @@ mod tests {
                 strict.len(),
                 jit.len()
             );
-            // Both still deny the blanket set, so neither is a no-op filter.
             assert!(!jit.is_empty());
             assert_eq!(jit.len() % 8, 0);
         }
@@ -1374,7 +1352,6 @@ mod tests {
         );
     }
 
-    /// A foreign driver may signal only itself and create no socket.
     #[test]
     #[cfg(target_os = "linux")]
     fn driver_program_signals_only_itself_and_opens_no_socket() {
@@ -1455,7 +1432,6 @@ mod tests {
         libc::WEXITSTATUS(status)
     }
 
-    /// The errno a raw syscall left, or 0 if it succeeded.
     #[cfg(target_os = "linux")]
     fn errno_of(result: libc::c_long) -> i32 {
         if result == -1 {

@@ -1,7 +1,6 @@
 //! What this crate can do on the running target.
 
 pub use tilo_platform_caps::{Availability, availability, available};
-/// A capability of this crate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Feature {
     /// [`crate::MediaEngine`] decodes real media (not the synthesized
@@ -12,20 +11,10 @@ pub enum Feature {
     /// It reports the target rather than the build, so a native build
     /// without decoders does not claim live streams need another app.
     LiveStreams,
-    /// Decoded pictures stay on the GPU and are imported without a copy
-    /// (dmabuf). Where this is unsupported, frames arrive as RGBA or planar
-    /// YUV in system memory and are uploaded; consumers fall back to that.
     ZeroCopyVideo,
-    /// The system's now-playing controls and media keys
-    /// ([`crate::MediaEngine::set_now_playing`]).
     NowPlaying,
-    /// Low-latency encode and decode for calls and screen sharing
-    /// ([`crate::realtime`]).
     Realtime,
-    /// Encoding for export ([`crate::encode`]).
     Encode,
-    /// The system audio graph: devices, per-app streams and routing
-    /// ([`crate::audio`]).
     AudioGraph,
 }
 
@@ -39,8 +28,6 @@ const WEB_NO_LIVE: &str = "the page's media element plays one progressive file, 
 const NO_GRAPH: &str = "no PipeWire graph on this platform";
 
 impl tilo_platform_caps::Feature for Feature {
-    /// The feature's availability on Linux, macOS and the web, in that order,
-    /// for a build with the native backends enabled.
     fn targets(self) -> [Availability; 3] {
         use Availability::{Available, Unsupported};
         match self {
@@ -57,7 +44,6 @@ impl tilo_platform_caps::Feature for Feature {
         }
     }
 
-    /// Whether the feature works on the running target, in this build.
     fn availability(self) -> Availability {
         let native = !cfg!(target_family = "wasm");
         let built = match self {

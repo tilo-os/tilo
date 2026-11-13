@@ -1,6 +1,5 @@
-//! Answering effects: what a control, the palette, an agent or a script asks
-//! of Photos, how its controls bind to actions, and how long-running
-//! invocations settle.
+//! Answering effects: what a control, the palette, an agent or a script asks of Photos, how its
+//! controls bind to actions, and how long-running invocations settle.
 
 use crate::actions::PhotosEffect;
 use crate::model::{PhotoLibrary, Rect01};
@@ -21,19 +20,15 @@ use super::{
 };
 
 impl Photos {
-    /// Build the retained controls again, bound to their effects.
     pub(super) fn bind_controls(&mut self) {
         let actions = self.actions.as_ref();
         self.directory_import_buttons = build_directory_import_buttons(actions);
         self.library_analysis_buttons = build_library_analysis_buttons(actions);
         self.collection_page_buttons = build_collection_page_buttons(actions);
         self.metadata_editor_buttons = build_metadata_editor_buttons(actions);
-        // People controls are rebuilt on their next refresh.
         self.people_control_signature.clear();
     }
 
-    /// Answer the effect of a retained control: post its intent for the
-    /// next sync, which has the document. `false` when `effect` is not one.
     fn post_control(&self, effect: &PhotosEffect) -> bool {
         let Some(control) = Control::of(effect) else {
             return false;
@@ -49,8 +44,6 @@ impl Photos {
         true
     }
 
-    /// What shows the photograph or album a search hit or an agent's `open`
-    /// names, for [`ViewCx::on_open_item`](ui::framework::ViewCx::on_open_item).
     pub(crate) fn opener(
         &self,
     ) -> impl FnMut(&Id) -> Result<(), ui::tilo_resource::Refusal> + 'static {
@@ -68,7 +61,6 @@ impl Photos {
         }
     }
 
-    /// Show what was asked to be opened since the last sync.
     pub(super) fn drain_opens(&mut self) {
         let opens = std::mem::take(&mut *self.opens.borrow_mut());
         for id in opens {
@@ -88,8 +80,6 @@ impl Photos {
         }
     }
 
-    /// Perform a device-local operation and surface failures to canonical
-    /// operation dispatch. A local notice alone is not an invocation result.
     #[expect(
         clippy::too_many_lines,
         reason = "one exhaustive match over device-local Photos operations keeps their effects auditable"
@@ -100,8 +90,6 @@ impl Photos {
         library: &crate::model::PhotoLibrary,
     ) -> Result<(), String> {
         match operation {
-            // Resource/search routing has already brought this Photos
-            // instance forward. Viewing does not alter document or OS state.
             PhotosEffect::Import { path: None } => {
                 self.import_content = Some(LiveContent {
                     library: library.clone(),
@@ -244,14 +232,11 @@ impl Photos {
             PhotosEffect::ViewPlace { place_key } => {
                 self.open_place_collection(library, &place_key)?;
             }
-            // Views with a library to check, a direct import and the
-            // retained controls' effects are answered before this.
             _ => {}
         }
         Ok(())
     }
 
-    /// Drain a click that a button posted, and act on it.
     pub(super) fn drain_pending(&mut self) {
         let Some(hit) = self.pending.take() else {
             return;
@@ -274,8 +259,6 @@ impl Photos {
             Hit::RotateRight => self.edit_shown(|photo| PhotoLibrary::ROTATE_RIGHT.with(photo)),
             Hit::CropToView => {
                 let view = self.visible_rect();
-                // Cropping to the whole image is a no-op; say so rather than
-                // writing an edit that changes nothing.
                 if view.is_full() {
                     self.notice = Some(tr("photos-crop-noop"));
                 } else {
@@ -370,7 +353,6 @@ impl LibraryAnalysisHit {
     }
 }
 
-/// The intent of the retained control `effect` stands for, when it is one.
 enum Control {
     Toolbar(Hit),
     Album(AlbumEditorHit),
@@ -446,10 +428,6 @@ impl Control {
 }
 
 impl Photos {
-    /// Apply callbacks after the host has admitted and dispatched an emitted
-    /// control action. Pointer handling only queues the action; the callback
-    /// runs after that event has returned, so `sync` is the common completion
-    /// boundary for pointer, keyboard, accessibility, and agent activation.
     pub(super) fn drain_action_control_pending(&mut self) {
         self.drain_pending();
         if let Some(hit) = self.directory_import_pending.take() {
@@ -490,8 +468,6 @@ impl Photos {
 }
 
 impl Photos {
-    /// Answer `effect` for the view's effect handler: a job's answer is kept
-    /// under its invocation, and settles as its work reports.
     pub(crate) fn effect(
         &mut self,
         effect: PhotosEffect,
@@ -501,8 +477,6 @@ impl Photos {
             .iter()
             .any(|decl| decl.id == effect.id() && matches!(decl.answers, Answers::Later { .. }));
         let invocation = cx.invocation().unwrap_or_default();
-        // A job's work reports under its invocation from the moment it
-        // starts, so its answer is kept before the work begins.
         if job {
             let reply = cx.reply();
             self.register_reply(invocation, reply);
@@ -523,10 +497,6 @@ impl Photos {
         }
     }
 
-    /// Answer `effect` — invoked by a control, the palette, an agent or a
-    /// script — against `library` as it is now. `Ok(None)` when its work
-    /// continues: it reports through [`Self::settle`] under `invocation`
-    /// and changes the library with ordinary actions as it goes.
     #[expect(
         clippy::too_many_lines,
         reason = "one exhaustive match over every Photos effect keeps their answers auditable"
@@ -691,9 +661,6 @@ impl Photos {
                 return Ok(None);
             }
             PhotosEffect::ImportCameraMedia { media_id, name } => {
-                // Verify the portable Camera identity and bytes before the
-                // one idempotent library import: a missing local blob is a
-                // refusal, never a phantom entry.
                 let photo = crate::camera_import_photo(&media_id, &name, &self.content)?;
                 let id = photo.id.clone();
                 let dispatch = self
@@ -757,8 +724,6 @@ impl Photos {
         done()
     }
 
-    /// Keep `reply`, owed to the caller of the effect whose work reports
-    /// under `invocation`.
     pub(crate) fn register_reply(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -767,7 +732,6 @@ impl Photos {
         self.replies.insert(invocation, reply);
     }
 
-    /// Answer the caller of `invocation` now.
     pub(crate) fn settle_now(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -778,14 +742,10 @@ impl Photos {
         }
     }
 
-    /// Drop the reply owed under `invocation`: the effect failed at once,
-    /// and its caller learns that from the failure itself.
     pub(crate) fn forget_reply(&mut self, invocation: tilo_actions::InvocationId) {
         self.replies.remove(&invocation);
     }
 
-    /// What the job answering `update`'s invocation reports: its progress,
-    /// or its end, told to whoever invoked it.
     pub(super) fn settle(&mut self, update: tilo_actions::InvocationUpdate) {
         let invocation = update.invocation();
         #[cfg(test)]
@@ -820,7 +780,6 @@ impl Photos {
         }
     }
 
-    /// The last report settled for `invocation`, taken.
     #[cfg(test)]
     pub(crate) fn take_settled(
         &mut self,
@@ -833,8 +792,6 @@ impl Photos {
         Some(self.settled.remove(at))
     }
 
-    /// Stop the work its callers cancelled. The framework has told them;
-    /// what is stopped here is the work itself.
     pub(super) fn follow_cancellations(&mut self) {
         let cancelled: Vec<_> = self
             .replies
@@ -848,10 +805,8 @@ impl Photos {
         }
     }
 
-    /// Stop the work answering `invocation`.
     pub(super) fn cancel_invocation(&mut self, invocation: tilo_actions::InvocationId) {
         if self.library_analysis.is_running_invocation(invocation) {
-            // The photograph in progress may finish safely.
             self.pause_library_analysis();
         }
         if self.active_analysis.remove(&invocation) {
@@ -874,14 +829,9 @@ impl Photos {
             .as_ref()
             .is_some_and(|(_, pending)| *pending == Some(invocation))
         {
-            // The chooser may still write what it was handed; the caller
-            // only stops waiting for its answer.
             self.save_chooser = None;
         }
         if self.resource_invocation == Some(invocation) {
-            // Dropping the receiver closes this app's portal request channel;
-            // a late response can no longer open a file after the caller
-            // cancelled. Completed photographs of a folder are kept.
             self.picker = None;
             self.contents_picker = None;
             self.directory_picker = None;
@@ -895,8 +845,6 @@ impl Photos {
         }
     }
 
-    /// Take the Save chooser's answer, if it has arrived: say how the save
-    /// went and settle the invocation that asked for it.
     pub(super) fn drain_save_chooser(&mut self) {
         let Some((rx, invocation)) = self.save_chooser.as_ref() else {
             return;
@@ -944,9 +892,6 @@ impl Photos {
 }
 
 impl Photos {
-    /// Who is named in `library` and on how many photographs, and whether
-    /// this device recognises faces: the People place's read. This
-    /// device's unapproved suggestions are not part of it.
     fn read_people(&self, library: &crate::model::PhotoLibrary) -> serde_json::Value {
         use crate::people::FaceCapability;
         let capability = self.people_controller.capability();
@@ -970,8 +915,6 @@ impl Photos {
         })
     }
 
-    /// Where this device's analysis of the library stands: the analysis
-    /// place's read.
     fn read_library_analysis(&self) -> serde_json::Value {
         use crate::library_analysis::LibraryAnalysisPhase;
         let analysis = &self.library_analysis;
@@ -1003,7 +946,6 @@ impl Photos {
     }
 }
 
-/// `value` as a read's answer.
 fn answered(value: serde_json::Value) -> tilo_actions::ActionOutput {
     tilo_actions::ActionOutput {
         value: Some(value),
@@ -1011,8 +953,6 @@ fn answered(value: serde_json::Value) -> tilo_actions::ActionOutput {
     }
 }
 
-/// The person named `person` in `library` and the photographs they are
-/// named on: the person's read.
 fn read_person(
     library: &crate::model::PhotoLibrary,
     person: &str,

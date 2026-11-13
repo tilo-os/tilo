@@ -47,6 +47,52 @@ fn directory_disclosure_prefers_document_reads_to_private_views() {
     );
 }
 
+/// A record with no document read, whose own window views (Show history,
+/// render) come before History's `review-restore`, a read of the record, is
+/// disclosed through that read: whoever may read the record sees it, an agent
+/// included, so its listing reaches the record's actions (Terminal's session
+/// and its `run`). A document read still comes first.
+#[test]
+fn directory_disclosure_prefers_a_read_of_the_record_to_private_views() {
+    let view = |id: &str| {
+        ActionSpec::operation(
+            id,
+            id,
+            OperationKind::View,
+            COUNTER_TYPE,
+            &CounterAction::Bump,
+        )
+        .unwrap()
+    };
+    let review = view("review").reads_record();
+    let session = ResourceSpec::new("session", "test.session", "Session")
+        .with_action(view("render"))
+        .with_action(view("history"))
+        .with_action(review.clone());
+    let readable = ResourceSpec::new("readable", "test.document", "Document")
+        .with_action(view("render"))
+        .with_action(review)
+        .with_action(view("read").reads_document());
+    let (app, _) = declared_directory(0);
+    for (resource, disclosed) in [(&session, "review"), (&readable, "read")] {
+        let row = app.directory_resource_row(resource, "", true).unwrap();
+        assert_eq!(row.visibility.as_ref().unwrap().action, disclosed);
+    }
+    let resources = vec![session, readable];
+    let descriptors = tilo_actions::door::survey(&resources);
+    let snapshot = crate::app::action_directory_snapshot::ActionDirectorySnapshot::build(
+        &resources,
+        &descriptors,
+        |_| None,
+    );
+    let disclosed: Vec<&str> = snapshot
+        .roots
+        .iter()
+        .map(|row| row.visibility.as_ref().unwrap().action.as_str())
+        .collect();
+    assert_eq!(disclosed, ["review", "read"]);
+}
+
 // No bounded page or exact-resource override: this is the ordinary app declaration API.
 struct DeclaredDirectory {
     calls: std::rc::Rc<Cell<usize>>,
@@ -324,6 +370,59 @@ fn retained_local_directory_pins_are_bounded_without_evicting_pending_reports() 
         app.try_pin_local_document_action_directory(&revision)
             .ok()
             .is_some()
+    );
+}
+
+/// A change on its way to the broker holds the one row it is reported
+/// against, not the whole surface its input froze: the next keystroke's
+/// input has room to freeze its own.
+#[test]
+fn a_report_holds_only_the_row_it_is_reported_against() {
+    let (mut app, _) = declared_directory(2);
+    publish_declared_directory(&mut app);
+    let revision = app.action_directory_revision();
+    let surface = app
+        .try_pin_local_document_action_directory(&revision)
+        .ok()
+        .unwrap();
+    let capture = crate::local_document_action::CapturedAction {
+        custody: None,
+        invocation: uuid::Uuid::nil(),
+        capture_id: uuid::Uuid::nil(),
+        revision: revision.clone(),
+        published: Some(crate::local_document_action::PublishedInvocation {
+            resource: "declared:0".into(),
+            action: "inspect".into(),
+            arguments: serde_json::Map::new(),
+        }),
+        encoded: tilo_actions::EncodedAction {
+            type_id: COUNTER_TYPE.into(),
+            payload: Vec::new(),
+        },
+        context: None,
+        original_heads: Vec::new(),
+        mutation_hashes: Vec::new(),
+    };
+    let held = app.report_pin(&capture).expect("the row the report names");
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&revision, "declared:1", "inspect"),
+        runtime_collab::ActionDirectoryResolution::Found { .. }
+    ));
+    drop(surface);
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&revision, "declared:0", "inspect"),
+        runtime_collab::ActionDirectoryResolution::Found { .. }
+    ));
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&revision, "declared:1", "inspect"),
+        runtime_collab::ActionDirectoryResolution::NotFound
+    ));
+    drop(held);
+    assert!(
+        app.actions
+            .local_document_directory_pins
+            .iter()
+            .all(|pin| pin.strong_count() == 0)
     );
 }
 

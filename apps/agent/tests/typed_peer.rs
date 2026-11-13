@@ -187,8 +187,7 @@ pub fn spawn_with_agent_grants(
     // Agents answer in the workspace's documents, inside a turn of the
     // owner's.
     let turn = |agent: &str| {
-        tilo_action_policy::roles::agent_turn(&TEST_WORKSPACE.to_string(), agent, &owner_id, &[])
-            .grants
+        tilo_action_policy::roles::agent_grants(&TEST_WORKSPACE.to_string(), agent, &owner_id, &[])
     };
     for grant in turn("scribe") {
         workspace.grant(grant);

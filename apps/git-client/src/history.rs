@@ -1,14 +1,9 @@
-//! The history screen: the commit list with its branch graph, and the
-//! selected commit.
-//!
-//! The list stands on the sidebar region. Every commit row has the same
-//! three lines in the same places: the summary across the whole row; the
-//! author with the commit's age at the trailing edge; and the short hash,
-//! followed by the refs that point at the commit as chips. The
-//! graph is content the app draws: lanes and dots in the theme's series
-//! colours. The detail is a readable column on the window ground: the
-//! summary as the title, the author, the commit's facts as a property list,
-//! the message, and the files it changed.
+//! The history screen: the commit list with its branch graph, and the selected
+//! commit. Every commit row has the same three lines in its places: the summary
+//! across the row, the author with the commit's age at the trailing edge, and the
+//! short hash with the refs that point at it as chips. The graph runs through every
+//! row in the theme's series colours, and the detail is a readable column on the
+//! window ground.
 
 use vello::kurbo::{BezPath, Point, Rect, Stroke};
 
@@ -27,21 +22,16 @@ use crate::graph::GraphLayout;
 use crate::i18n::{t, t_args};
 use crate::model::{Commit, RefKind, RefLabel, RepoModel};
 
-/// Row geometry of the commit list, measured from the theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Metrics {
-    /// One commit row (all three lines and their padding).
     pub row_h: f64,
     pad_y: f64,
     line_gap: f64,
     summary_h: f64,
     caption_h: f64,
     chip_h: f64,
-    /// The list's inset from the column edges.
     inset: f64,
-    /// Horizontal padding inside a row.
     pad_x: f64,
-    /// Distance between two graph lanes.
     lane_w: f64,
     dot_r: f64,
 }
@@ -75,7 +65,6 @@ impl Metrics {
     }
 }
 
-/// The commit list's input for one frame.
 pub struct ListInput<'a> {
     pub model: &'a RepoModel,
     pub layout: &'a GraphLayout,
@@ -84,22 +73,17 @@ pub struct ListInput<'a> {
     pub pointer: Option<Point>,
 }
 
-/// What painting the list produced.
 pub struct ListDraw {
-    /// Each visible commit's row, by index into the commit list.
     pub rows: Vec<(usize, Rect)>,
-    /// Height of all rows, for clamping the scroll.
     pub content_height: f64,
 }
 
-/// The age of a commit at `time`, read off the toolkit clock.
 pub fn age(time: i64) -> String {
     let now = ui::clock::local_now().timestamp();
     ui::format::relative(now.saturating_sub(time))
 }
 
-/// A commit's date and time in the local zone, in the active locale:
-/// `30 June 2026, 08:12`.
+/// A commit's date and time in the local zone, in the active locale: `30 June 2026, 08:12`.
 pub fn date(time: i64) -> String {
     use chrono::Datelike;
     let Some(utc) = chrono::DateTime::from_timestamp(time, 0) else {
@@ -117,12 +101,10 @@ pub fn date(time: i64) -> String {
     )
 }
 
-/// The first seven characters of a commit id.
 pub fn short_id(id: &str) -> &str {
     id.get(..7).unwrap_or(id)
 }
 
-/// Paint the commit list into `area` (on the sidebar region).
 pub fn paint_list(ctx: &mut PaintCtx<'_>, area: Rect, input: &ListInput<'_>) -> ListDraw {
     let m = Metrics::measure(ctx.text, ctx.theme);
     let top = area.y0 + m.inset - input.scroll;
@@ -146,7 +128,6 @@ pub fn paint_list(ctx: &mut PaintCtx<'_>, area: Rect, input: &ListInput<'_>) -> 
     let pointer = input.pointer.filter(|p| area.contains(*p));
     let ground = ctx.theme.tokens.colors.surfaces.content;
     let mut rows = Vec::new();
-    // Selection and hover sit under the graph, which runs through every row.
     for i in 0..count {
         let row = row_at(i);
         if row.y1 < area.y0 || row.y0 > area.y1 {
@@ -178,8 +159,6 @@ pub fn paint_list(ctx: &mut PaintCtx<'_>, area: Rect, input: &ListInput<'_>) -> 
     }
 }
 
-/// Where a row's text starts in a list over `area`: past the graph's
-/// `lanes` and a gap. The text ends `pad_x` inside the row.
 fn text_left(area: Rect, lanes: usize, m: &Metrics, theme: &Theme) -> f64 {
     area.x0
         + m.inset
@@ -188,7 +167,6 @@ fn text_left(area: Rect, lanes: usize, m: &Metrics, theme: &Theme) -> f64 {
         + f64::from(theme.tokens.spacing.s2)
 }
 
-/// The lane edges and the commit dots, in the theme's series colours.
 fn paint_graph(
     ctx: &mut PaintCtx<'_>,
     input: &ListInput<'_>,
@@ -213,8 +191,6 @@ fn paint_graph(
         if (x0 - x1).abs() < 0.5 {
             path.line_to(Point::new(x1, y1));
         } else if x1 > x0 {
-            // A second parent branches off: bend out of the row, then run
-            // down the parent's lane.
             let bend = (y0 + m.row_h).min(y1);
             let mid = f64::midpoint(y0, bend);
             path.curve_to(
@@ -224,7 +200,6 @@ fn paint_graph(
             );
             path.line_to(Point::new(x1, y1));
         } else {
-            // A lane joins its parent: run down the lane, then bend in.
             let bend = (y1 - m.row_h).max(y0);
             let mid = f64::midpoint(bend, y1);
             path.line_to(Point::new(x0, bend));
@@ -245,7 +220,6 @@ fn paint_graph(
         let r = m.dot_r + stroke.width / 2.0;
         let dot = Rect::from_center_size(centre, (2.0 * r, 2.0 * r));
         if commit.parents.len() > 1 {
-            // A merge is a ring.
             ctx.stroke_round(dot, r, colour, stroke.width);
         } else {
             ctx.fill_round(dot, r, colour);
@@ -253,8 +227,6 @@ fn paint_graph(
     }
 }
 
-/// One commit row's text: the summary; the author and the age; the short
-/// hash and the refs.
 fn paint_row_text(
     ctx: &mut PaintCtx<'_>,
     commit: &Commit,
@@ -280,7 +252,6 @@ fn paint_row_text(
         line2.y1 + m.line_gap + m.chip_h,
     );
 
-    // The summary has the whole line.
     let body = theme.text(TextRole::Body);
     let summary = ctx.text.elide_to_width_style(
         &commit.summary,
@@ -296,7 +267,6 @@ fn paint_row_text(
         None,
     );
 
-    // The author, and the age at the trailing edge.
     let meta = theme.text(TextRole::Caption).numeric();
     let age = age(commit.time);
     let (age_w, age_h) = ctx.text.measure_style(&age, None, &meta);
@@ -326,7 +296,6 @@ fn paint_row_text(
         None,
     );
 
-    // The short hash, then the refs.
     let hash_style = hash_style(theme);
     let hash = short_id(&commit.id);
     let (hash_w, hash_h) = ctx.text.measure_style(hash, None, &hash_style);
@@ -344,8 +313,8 @@ fn paint_row_text(
     paint_refs(ctx, commit, line3, head);
 }
 
-/// The refs pointing at a row's commit as chips in `line`, as many as fit
-/// whole and a count chip for the rest.
+/// The refs pointing at a row's commit as chips in `line`, as many as fit whole and a count chip
+/// for the rest.
 fn paint_refs(ctx: &mut PaintCtx<'_>, commit: &Commit, line: Rect, head: &str) {
     let theme = ctx.theme;
     let gap = f64::from(theme.tokens.spacing.s2);
@@ -386,25 +355,19 @@ fn paint_refs(ctx: &mut PaintCtx<'_>, commit: &Commit, line: Rect, head: &str) {
     }
 }
 
-/// The chip that stands for the refs a row has no room for.
 fn more_label(hidden: usize) -> String {
     t_args("git-more-refs", &[("count", hidden.into())])
 }
 
-/// Which of a row's ref chips stand whole in `room`, and how many a
-/// trailing count chip stands for.
 #[derive(Debug, PartialEq)]
 struct ChipPlan {
-    /// The width of each chip shown, in order; only the first is ever
-    /// narrower than it would be, elided when nothing else fits.
     widths: Vec<f64>,
     hidden: Option<usize>,
 }
 
-/// Lay out chips of `widths` with `gap` between them in `room`: as many as
-/// fit whole, then a count chip (`more_width` of the hidden count) for the
-/// rest. When not even the first fits beside the count, the first is elided
-/// to what is left, never below a minimum that still reads.
+/// Lay out chips of `widths` in `room`: as many as fit whole, then a count chip for the rest; when
+/// not even the first fits beside the count it is elided to what is left, never below a minimum
+/// that still reads.
 fn plan_chips(
     widths: &[f64],
     room: f64,
@@ -458,19 +421,18 @@ fn plan_chips(
     }
 }
 
-/// Hashes: `Code` with tabular figures.
 fn hash_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Code).numeric()
 }
 
-/// The refs a row shows: everything but the bare `HEAD` marker, which the
-/// checked-out branch's chip carries instead.
+/// The refs a row shows: everything but the bare `HEAD` marker, which the checked-out branch's chip
+/// carries instead.
 fn shown_refs(refs: &[RefLabel]) -> impl Iterator<Item = &RefLabel> {
     refs.iter().filter(|r| r.kind != RefKind::Head)
 }
 
-/// The checked-out branch is where you are: its chip leads with a dot in
-/// your colour. Every other ref is a plain chip.
+/// The checked-out branch is where the person is: its chip leads with a dot in their colour, and
+/// every other ref is a plain chip.
 fn ref_lead(theme: &Theme, label: &RefLabel, head: &str) -> ChipLead {
     if label.kind == RefKind::LocalBranch && label.name == head {
         ChipLead::Dot(theme.tokens.colors.intent.you)
@@ -479,9 +441,8 @@ fn ref_lead(theme: &Theme, label: &RefLabel, head: &str) -> ChipLead {
     }
 }
 
-/// A commit message body reflowed for reading: single line breaks inside a
-/// paragraph (git's hard wrap) become spaces; blank lines stay paragraph
-/// breaks.
+/// A commit message body reflowed for reading: single line breaks inside a paragraph (git's hard
+/// wrap) become spaces, and blank lines stay paragraph breaks.
 pub fn reflow(body: &str) -> String {
     body.split("\n\n")
         .map(|para| {
@@ -496,7 +457,6 @@ pub fn reflow(body: &str) -> String {
         .join("\n\n")
 }
 
-/// A commit's facts for its property list, in the active locale.
 struct Facts {
     commit_label: String,
     id: String,
@@ -533,8 +493,6 @@ impl Facts {
         }
     }
 
-    /// The rows: the id, the date, the parents and the refs pointing here
-    /// (each of the last two only when there are any).
     fn rows(&self) -> Vec<PropertyRow<'_>> {
         let mut rows = vec![
             PropertyRow::new(&self.commit_label, &self.id).with_kind(TextKind::Secret),
@@ -555,16 +513,12 @@ impl Facts {
     }
 }
 
-/// What one detail paint produced.
 pub struct DetailDraw {
-    /// Height of everything, for clamping the scroll.
     pub height: f64,
-    /// The changed-file rows, top to bottom, at their painted places: what
-    /// the pointer and the keyboard choose to see that file's diff.
+    /// The changed-file rows, top to bottom, at their painted places.
     pub file_rows: Vec<Rect>,
 }
 
-/// Paint the selected commit into `area`, scrolled by `scroll`.
 pub fn paint_detail(
     ctx: &mut PaintCtx<'_>,
     area: Rect,
@@ -588,7 +542,6 @@ pub fn paint_detail(
         &area,
     );
 
-    // The summary is the detail's title.
     let title = theme.text(TextRole::Title);
     let (_, title_h) = ctx.text.measure_style(&commit.summary, Some(w32), &title);
     ctx.text(
@@ -600,7 +553,6 @@ pub fn paint_detail(
     );
     y += f64::from(title_h) + f64::from(s.s4);
 
-    // The author.
     let avatar = ui::widget::AvatarSize::Regular.side(theme);
     AvatarFace::new(&commit.author_name, &commit.author_email)
         .paint(ctx, Rect::new(x, y, x + avatar, y + avatar));
@@ -628,7 +580,6 @@ pub fn paint_detail(
     );
     y += avatar + f64::from(s.s6);
 
-    // Its facts.
     let fact_text = Facts::of(commit);
     let facts = fact_text.rows();
     let list = PropertyListFace::new(&facts);
@@ -636,7 +587,6 @@ pub fn paint_detail(
     list.paint(ctx, Rect::new(x, y, x + width, y + facts_h));
     y += facts_h + f64::from(s.s6);
 
-    // The message.
     let body = reflow(&commit.body);
     if !body.is_empty() {
         let style = theme.text(TextRole::Body);
@@ -651,7 +601,6 @@ pub fn paint_detail(
         y += f64::from(body_h) + f64::from(s.s6);
     }
 
-    // The files it changed.
     let file_rows = if commit.files.is_empty() {
         Vec::new()
     } else {
@@ -666,8 +615,6 @@ pub fn paint_detail(
     }
 }
 
-/// The "Changed files" group: a `Subheading` with its count over one row
-/// per file. Returns the `y` under it and each row's rect.
 fn paint_files(ctx: &mut PaintCtx<'_>, commit: &Commit, lane: Rect, y: f64) -> (f64, Vec<Rect>) {
     let theme = ctx.theme;
     let s = &theme.tokens.spacing;
@@ -710,8 +657,6 @@ fn paint_files(ctx: &mut PaintCtx<'_>, commit: &Commit, lane: Rect, y: f64) -> (
 
     let badges: Vec<&str> = commit.files.iter().map(|f| f.kind.badge()).collect();
     let badge_w = badge_column_width(ctx.text, theme, &badges);
-    // Rows run from the lane's edges, so their text lines up with the
-    // column's other text.
     let mut y = band.y1 + f64::from(s.s2);
     let count = commit.files.len();
     let mut rows = Vec::with_capacity(count);

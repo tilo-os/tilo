@@ -1,7 +1,8 @@
 //! `tilolang repl` against a session's agent door.
 //!
-//! The first test needs nothing running: a door that serves the agent tools but no `tilo` (a
-//! session from before programs on the door), which the REPL refuses cleanly. The second drives
+//! The first tests need nothing running: a door that serves the agent tools but no `tilo` (a
+//! session from before programs on the door), which the REPL refuses cleanly, and asks the person
+//! to admit it on the way there. The last drives
 //! a running nested session with Notes, Todo, Chat and Board (`TILOLANG_REPL_SESSION`: its
 //! --ready file), doing real work there: queries, a bulk change shown as a preview and applied
 //! on confirm, and undo of it.
@@ -155,8 +156,8 @@ history task
     );
 }
 
-/// Answer a nested session's control socket as the person there: one agent admission waiting,
-/// every request recorded in `seen`, until `stop` is set.
+/// Answer a nested session's control socket as the person there would: every request recorded in
+/// `seen`, and refused, so a REPL that asked its own way in would be told so, until `stop` is set.
 fn person_at_control(
     listener: &UnixListener,
     seen: &std::sync::Mutex<Vec<Value>>,
@@ -176,22 +177,24 @@ fn person_at_control(
         let mut writer = stream.try_clone().unwrap();
         let mut line = String::new();
         BufReader::new(stream).read_line(&mut line).unwrap();
-        let request: Value = serde_json::from_str(&line).unwrap();
-        let reply = match request["op"].as_str() {
-            Some("actions_enumerate") => json!({"answer": {"actions": [
-                {"provider": "permission-prompts", "id": "deny@p1"}
-            ]}}),
-            _ => json!({"answer": {}}),
-        };
-        seen.lock().unwrap().push(request);
-        writeln!(writer, "{reply}").unwrap();
+        seen.lock()
+            .unwrap()
+            .push(serde_json::from_str(&line).unwrap());
+        writeln!(
+            writer,
+            "{}",
+            json!({"err": {"code": "refused", "message": "no"}})
+        )
+        .unwrap();
     }
 }
 
-/// The REPL is admitted to a nested session as the person's agent, and writes none of the
-/// answers the person gives that agent: a `deny` or `ask` they set stays theirs.
+/// A REPL started on a nested session (`--session`) tells the person at the desk that it asks to
+/// act as them, and gives itself no answer: the door's admission stays theirs, on the sheet, or
+/// their `--admit-repl` made as they started the session. The session's control socket is the
+/// person's, not the REPL's, and it is sent nothing.
 #[test]
-fn the_repl_is_admitted_as_the_persons_agent_and_never_writes_their_answers() {
+fn the_repl_asks_the_person_and_never_answers_its_own_admission() {
     let runtime = tempfile::tempdir().unwrap();
     std::fs::create_dir(runtime.path().join("tilo-session")).unwrap();
     let door = UnixListener::bind(runtime.path().join("tilo-session/agent.sock")).unwrap();
@@ -209,22 +212,16 @@ fn the_repl_is_admitted_as_the_persons_agent_and_never_writes_their_answers() {
     door.join().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
+        stderr.contains("asking to act as you") && stderr.contains("--admit-repl"),
+        "the person is told what waits for them: {stderr}"
+    );
+    assert!(
         stderr.contains("has no `tilo` tool"),
-        "it got past admission: {stderr}"
+        "the door's answer came back: {stderr}"
     );
     let seen = std::mem::take(&mut *seen.lock().unwrap());
-    let admitted = seen
-        .iter()
-        .find(|request| request["id"] == "allow-once@p1")
-        .unwrap_or_else(|| panic!("the person admits it: {seen:?}"));
-    assert_eq!(admitted["args"]["agent"], "tilolang-repl");
     assert!(
-        admitted["args"].get("preset").is_none(),
-        "the door takes no preset: the connection works in its task run: {admitted}"
-    );
-    assert!(
-        seen.iter()
-            .all(|request| request["op"] != "allow" && request["op"] != "disallow"),
+        seen.is_empty(),
         "the REPL gives itself no answers: {seen:?}"
     );
 }

@@ -26,15 +26,12 @@ use ui::widget::Widget;
 use ui::winit;
 use ui::winit::event::{Modifiers, WindowEvent};
 use ui::winit::keyboard::NamedKey;
+use ui_core::widget::DrawChild;
 
 /// A text renderer over the checkout's fixture fonts, so geometry does not
 /// depend on the machine's.
 fn renderer() -> ui::TextRenderer {
-    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-        ui::font_catalog::checkout_root(),
-        "en-US",
-    );
-    ui::TextRenderer::with_font_catalog(&catalog).unwrap()
+    ui::font_catalog::fixture_renderer()
 }
 
 /// Mount `editor` in the production frame host `width` wide at its content
@@ -133,7 +130,7 @@ fn wrapped_block_caret_stays_on_one_baseline_when_moving_or_typing() {
         let mut baseline: Option<f64> = None;
         for byte in [0, 1, 2, 3, 2, 1, 0, 6] {
             line.set_cursor_pos(byte);
-            line.draw(
+            line.draw_child(
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut renderer,
@@ -177,7 +174,7 @@ fn empty_wrapped_block_reserves_the_same_caret_band_as_first_character() {
         );
         heights.push(size.height);
         line.apply_layout_external(Rect::new(40.0, 60.0, 440.0, 60.0 + f64::from(size.height)));
-        line.draw(
+        line.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut renderer,

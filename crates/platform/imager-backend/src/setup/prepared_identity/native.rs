@@ -1,5 +1,5 @@
-//! Durable installer identity custody, separate from the host's active persona.
-//! Dropping a handle never deletes a prepared identity or its provider secret.
+//! Durable installer identity custody, separate from the host's active persona; dropping a handle
+//! never deletes a prepared identity or its provider secret.
 use crate::{destination_security, migration::PinnedDirectory, migration_durability};
 use std::{
     io,
@@ -18,7 +18,6 @@ pub struct PreparedIdentity {
 }
 
 impl PreparedIdentity {
-    /// Authenticate already-created custody without minting or replacing a key.
     pub fn recover_created(directory: &Path) -> io::Result<Self> {
         let pin = PinnedDirectory::open_absolute(directory)?;
         pin.validate_destination()?;
@@ -28,7 +27,6 @@ impl PreparedIdentity {
         Self::resume(directory, metadata.group_public_key)
     }
 
-    /// Reauthenticate the exact previously approved future device.
     pub fn resume_enrolled(
         operation: &Path,
         record: &Path,
@@ -52,9 +50,9 @@ impl PreparedIdentity {
         Self::from_enrolled(Arc::new(enrolled))
     }
 
-    /// Create exclusively in a fresh private directory under a granted private
-    /// parent. Neither the host's active identity nor an existing preparation is
-    /// adopted or replaced. Failed attempts retain custody for explicit recovery.
+    /// Creates exclusively in a fresh private directory under a granted private parent. Neither the
+    /// host's active identity nor an existing preparation is adopted or replaced, and a failed attempt
+    /// keeps custody for explicit recovery.
     pub fn create(
         directory: &Path,
         name: &str,
@@ -90,7 +88,6 @@ impl PreparedIdentity {
         })
     }
 
-    /// Restore an existing authenticated identity into fresh installer custody.
     /// The source backup is preserved and no replacement signing key is minted.
     pub fn restore_backup(
         directory: &Path,
@@ -123,7 +120,6 @@ impl PreparedIdentity {
         Self::resume(directory, info.group_public_key)
     }
 
-    /// Adopt the exact certified future device; no human root key is created.
     pub fn from_enrolled(
         enrolled: Arc<tilo_identity_host::enrolled_transport::EnrolledDevice>,
     ) -> io::Result<Self> {
@@ -140,7 +136,6 @@ impl PreparedIdentity {
             current: None,
         })
     }
-    /// Explicit current-owner preparation. The capsule contains public metadata only.
     pub fn from_current(
         directory: &Path,
         current: Arc<tilo_identity_host::enrolled_transport::CurrentDeviceReference>,
@@ -298,8 +293,8 @@ impl PreparedIdentity {
             .map_err(|error| io::Error::other(error.to_string()))
     }
 
-    /// Resume only the exact previously acknowledged identity. No new key is
-    /// generated when its provider is unavailable or its metadata was replaced.
+    /// Only the exact previously acknowledged identity; no new key is generated when its provider is
+    /// unavailable or its metadata was replaced.
     pub fn resume(directory: &Path, expected_public_key: [u8; 32]) -> io::Result<Self> {
         let pin = PinnedDirectory::open_absolute(directory)?;
         pin.validate_destination()?;
@@ -315,12 +310,10 @@ impl PreparedIdentity {
         Ok(prepared)
     }
 
-    /// The already reviewed custody namespace; this does not grant new access.
     pub fn custody_directory(&self) -> &Path {
         &self.directory
     }
 
-    /// The signed enrolled device label, retained unchanged across restart.
     pub fn enrolled_device_label(&self) -> Option<&str> {
         self.current
             .as_ref()
@@ -332,7 +325,6 @@ impl PreparedIdentity {
             })
     }
 
-    /// The canonical approved member record, for private restart bookkeeping.
     pub fn enrolled_record_name(&self) -> Option<&str> {
         self.enrolled
             .as_ref()
@@ -343,9 +335,8 @@ impl PreparedIdentity {
         self.public_key
     }
 
-    /// The root capability and public record a fresh destination joins before
-    /// it can receive this person's prepared package. The root secret stays in
-    /// this prepared-identity vault; only a signature leaves it.
+    /// The root capability and public record a fresh destination joins before it can receive this
+    /// person's prepared package. The root secret stays in this vault; only a signature leaves it.
     pub fn bootstrap_source_identity(&self) -> io::Result<tilo_handoff::SourceIdentity> {
         self.validate()?;
         if self.enrolled.is_some() {
@@ -361,10 +352,8 @@ impl PreparedIdentity {
             self.public_key,
             metadata.profile_photo.clone(),
         )?;
-        // A newly prepared or restored identity keeps its root in this
-        // directory. An explicitly reviewed current identity signs through
-        // this session's active root record, and the signer rechecks that it
-        // names the same person before any signature leaves.
+        // A prepared or restored identity keeps its root here; an explicitly reviewed current
+        // identity signs through this session's active root record, which the signer rechecks.
         let record_path = if self.current.is_some() {
             let directory = runtime_identity::identity_dir_from_env()?;
             runtime_identity::resolve_active_identity(&directory).ok_or_else(|| {
@@ -429,7 +418,6 @@ impl PreparedIdentity {
         self.pin.validate()
     }
 
-    /// Persist bounded canonical pixels; exported identity backups carry them.
     pub fn update_photo(&self, photo: Option<runtime_identity::ProfilePhoto>) -> io::Result<()> {
         self.validate()?;
         if self.enrolled.is_some() || self.current.is_some() {
@@ -445,7 +433,6 @@ impl PreparedIdentity {
         self.validate()
     }
 
-    /// Save the complete public presentation in one canonical metadata publication.
     pub fn update_presentation(
         &self,
         name: &str,
@@ -473,7 +460,6 @@ impl PreparedIdentity {
         Ok(metadata)
     }
 
-    /// Change public presentation without minting or replacing the identity.
     pub fn update_name(&self, name: &str) -> io::Result<runtime_identity::IdentityMetadata> {
         self.validate()?;
         let metadata = self.metadata()?;
@@ -503,8 +489,8 @@ impl PreparedIdentity {
         Ok(metadata)
     }
 
-    /// Seal a new installation transport artifact through canonical identity
-    /// backup custody. This does not mark first-login recovery backup complete.
+    /// Seals a new installation transport artifact through canonical identity backup custody; this does
+    /// not mark first-login recovery backup complete.
     pub fn export(
         &self,
         destination: &Path,

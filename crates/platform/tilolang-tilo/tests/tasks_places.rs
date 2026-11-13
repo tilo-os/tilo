@@ -6,36 +6,10 @@ use tilolang_runtime::{Principal, UiNode, Value, ViewInstance};
 
 use crate::tasks::{
     APP, ShownPlace, ShownSection, all, call, count, create, go_to, home_list_rows, key_of,
-    node_of, places, read, target, task, workspace,
+    node_of, places, read, shown_count, shown_title, target, task, workspace,
 };
 #[cfg(feature = "record")]
 use crate::tasks::{bound_key, task_page};
-
-/// The title the window's header reads, as a person reads it: the shell's own, unwrapped.
-fn shown_title(view: &ViewInstance) -> Option<String> {
-    let shell = all(view.tree(), "ui.NavShell").into_iter().next()?;
-    match shell.props.get("title") {
-        Some(Value::Text(title)) => Some(title.clone()),
-        Some(Value::Opt(Some(title))) => match &**title {
-            Value::Text(title) => Some(title.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// How many things the window's header says its page lists, or nothing when it says no number.
-fn shown_count(view: &ViewInstance) -> Option<i64> {
-    let shell = all(view.tree(), "ui.NavShell").into_iter().next()?;
-    match shell.props.get("count") {
-        Some(Value::Int(count)) => Some(*count),
-        Some(Value::Opt(Some(count))) => match **count {
-            Value::Int(count) => Some(count),
-            _ => None,
-        },
-        _ => None,
-    }
-}
 
 /// The places under each heading of the sidebar, in order.
 fn sections(view: &ViewInstance) -> Vec<ShownSection> {

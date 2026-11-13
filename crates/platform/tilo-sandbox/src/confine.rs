@@ -1,126 +1,94 @@
 //! What a helper process does at start-up, before it reads untrusted input.
 //!
-//! 1. [`detach`]: close every inherited descriptor except stdio, and arrange
-//!    to die with the parent.
+//! 1. [`detach`]: close every inherited descriptor except stdio, and arrange to die with the
+//!    parent.
 //! 2. Load whatever code and data it needs (a parser library).
 //! 3. [`limit_resources`]: no core dumps, a small descriptor budget.
-//! 4. [`confine`]: read-only access to [`Policy::read_only`] and nothing
-//!    else — no writes, no network, no `exec`. "No network" means no
-//!    socket can be bound or connected: Linux refuses the `socket` call
-//!    itself, macOS refuses `bind` and `connect`.
+//! 4. [`confine`]: read-only access to [`Policy::read_only`] and nothing else — no writes, no
+//!    network, no `exec`. "No network" means no socket can be bound or connected: Linux refuses
+//!    the `socket` call itself, macOS refuses `bind` and `connect`.
 //!
-//! A confinement the platform cannot fully enforce is an error
-//! ([`ConfineError::NotEnforced`]); callers decide whether to refuse to run
-//! or to parse in process, and never run a half-confined helper as if it
-//! were confined.
+//! A confinement the platform cannot fully enforce is an error ([`ConfineError::NotEnforced`]);
+//! callers decide whether to refuse to run or to parse in process, and never run a half-confined
+//! helper as if it were confined.
 
 use std::path::PathBuf;
 
-/// What a confined helper may still do.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Policy {
     /// Files and directories (recursively) the helper may read.
     pub read_only: Vec<PathBuf>,
-    /// The helper may make connected `AF_UNIX` socket pairs, which a media
-    /// framework wakes its own threads through (every `GStreamer` bus and
-    /// clock makes one). A pair has no address and reaches nothing outside
-    /// the process; macOS allows them to every helper, Linux only with this.
+    /// The helper may make connected `AF_UNIX` socket pairs, which a media framework wakes its own
+    /// threads through (every `GStreamer` bus and clock makes one). A pair has no address and
+    /// reaches nothing outside the process; macOS allows them to every helper, Linux only with
+    /// this.
     pub socket_pairs: bool,
 }
 
-/// Why a start-up step failed.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ConfineError {
-    /// A process set-up step failed (descriptors, parent watch, limits).
     #[error("{0}")]
     Setup(String),
-    /// The confinement could not be installed, or only partially.
     #[error("{0}")]
     NotEnforced(String),
-    /// This target has no helper processes to confine.
     #[error("process sandboxing is not available on this platform")]
     Unsupported,
 }
 
-/// The variable a spawner sets to its own process id: the parent its helper
-/// watches for.
-///
-/// A helper with no parent but its process namespace's init is not a helper
-/// whose parent exited — a host that runs helpers inside a container is PID 1
-/// there — so the spawner names itself and [`detach`] compares against it
-/// instead of reading `getppid() == 1` as "already gone".
+/// The variable a spawner sets to its own process id: the parent its helper watches for. A helper
+/// whose only parent is its process namespace's init is not a helper whose parent exited (a host
+/// that runs helpers in a container is PID 1 there), so the spawner names itself and [`detach`]
+/// compares against it instead of reading `getppid() == 1` as "already gone".
 pub const PARENT_ENV: &str = "TILO_SANDBOX_PARENT";
 
-/// Close inherited descriptors above stderr and die with the parent.
-///
-/// # Errors
-///
-/// [`ConfineError::Setup`] when either cannot be arranged, including when
-/// the parent has already exited.
+/// Close inherited descriptors above stderr and die with the parent. # Errors
+/// [`ConfineError::Setup`] when either cannot be arranged, including when the parent has already
+/// exited.
 pub fn detach() -> Result<(), ConfineError> {
     sys::close_inherited_descriptors().map_err(ConfineError::Setup)?;
     sys::die_with_parent(named_parent()).map_err(ConfineError::Setup)
 }
 
-/// The parent the spawner named in [`PARENT_ENV`], when it named one.
 fn named_parent() -> Option<i32> {
     std::env::var(PARENT_ENV).ok()?.trim().parse().ok()
 }
 
-/// Disable core dumps and cap open descriptors at `max_open_files`.
-///
-/// # Errors
-///
+/// Disable core dumps and cap open descriptors at `max_open_files`. # Errors
 /// [`ConfineError::Setup`] when a limit cannot be set.
 pub fn limit_resources(max_open_files: u64) -> Result<(), ConfineError> {
     sys::limit_resources(max_open_files).map_err(ConfineError::Setup)
 }
 
-/// Cap the calling process's address space at `bytes`, so a helper that
-/// runs away with memory fails its own allocations instead of starving the
-/// host. Returns whether the platform enforces it: Linux does
-/// (`RLIMIT_AS`); macOS accepts the limit without enforcing it, and a
-/// process using the GPU maps far more address space than it touches, so it
-/// is not set there.
-///
-/// # Errors
-///
+/// Cap the calling process's address space at `bytes`, so a helper that runs away with memory fails
+/// its own allocations instead of starving the host. Returns whether the platform enforces it:
+/// Linux does (`RLIMIT_AS`); macOS accepts the limit without enforcing it, and a process using the
+/// GPU maps far more address space than it touches, so it is not set there. # Errors
 /// [`ConfineError::Setup`] when Linux refuses the limit.
 pub fn limit_address_space(bytes: u64) -> Result<bool, ConfineError> {
     sys::limit_address_space(bytes).map_err(ConfineError::Setup)
 }
 
-/// Bound the allocator's per-thread arenas, so the address space a process
-/// maps stops growing with the machine's core count. Call it first in `main`,
-/// before any thread starts, in a process that later sets
-/// [`limit_address_space`].
-///
-/// glibc gives threads arenas of their own, up to eight per core, each
-/// reserving 64 MiB of address space: a helper whose libraries start a
-/// thread per core (plugin loaders, shader compilation, a software
-/// rasterizer) maps gigabytes of reservations on a many-core machine before
-/// it allocates anything, more than a fixed cap allows. Elsewhere this does
-/// nothing.
+/// Bound the allocator's per-thread arenas, so the address space a process maps stops growing with
+/// the machine's core count. Call it first in `main`, before any thread starts, in a process that
+/// later sets [`limit_address_space`]. glibc gives threads arenas of their own, up to eight per
+/// core, each reserving 64 MiB of address space: a helper whose libraries start a thread per core
+/// (plugin loaders, shader compilation, a software rasterizer) maps gigabytes of reservations on a
+/// many-core machine before it allocates anything, more than a fixed cap allows. Elsewhere this
+/// does nothing.
 pub fn share_allocator_arenas() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    // SAFETY: mallopt takes a parameter and a value; M_ARENA_MAX bounds the
-    // arenas created from then on and touches no memory.
+    // SAFETY: mallopt takes a parameter and a value; M_ARENA_MAX bounds the arenas created from
+    // then on and touches no memory.
     unsafe {
         libc::mallopt(libc::M_ARENA_MAX, 2);
     }
 }
 
-/// Confine the calling process to `policy`, irreversibly, for it and every
-/// descendant. Never call this from a process that must keep running
-/// unconfined (a test harness).
-///
-/// Every policy this installs refuses `exec`, so the process also
-/// declares [`declare_no_exec`]: nothing it starts would run anyway.
-///
-/// # Errors
-///
-/// [`ConfineError::NotEnforced`] when the platform refuses the policy or can
-/// enforce only part of it; [`ConfineError::Unsupported`] on the web.
+/// Confine the calling process to `policy`, irreversibly, for it and every descendant. Never call
+/// this from a process that must keep running unconfined (a test harness). Every policy this
+/// installs refuses `exec`, so the process also declares [`declare_no_exec`]: nothing it starts
+/// would run anyway. # Errors [`ConfineError::NotEnforced`] when the platform refuses the policy or
+/// can enforce only part of it; [`ConfineError::Unsupported`] on the web.
 pub fn confine(policy: &Policy) -> Result<(), ConfineError> {
     let confined = sys::confine(policy);
     if confined.is_ok() {
@@ -129,22 +97,18 @@ pub fn confine(policy: &Policy) -> Result<(), ConfineError> {
     confined
 }
 
-/// Set once the calling process confines itself to a policy that runs no
-/// other program — [`confine`], or a caller's own filter that refuses
-/// `exec`.
+/// Set once the calling process confines itself to a policy that runs no other program:
+/// [`confine`], or a caller's own filter that refuses `exec`.
 static NO_EXEC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Declare that this process starts no other program: it confined itself to
-/// a policy that refuses `exec` (the parser policy of [`confine`], or an app
-/// worker's own filter of the same kind). Code that would start a helper
-/// reads [`no_exec`] and takes the path that runs in process instead, rather
-/// than failing on the refusal.
+/// Declare that this process starts no other program: it confined itself to a policy that refuses
+/// `exec` (the parser policy of [`confine`], or an app worker's own filter of the same kind). Code
+/// that would start a helper reads [`no_exec`] and takes the path that runs in process instead of
+/// failing on the refusal.
 pub fn declare_no_exec() {
     NO_EXEC.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Whether this process has declared it starts no other program
-/// ([`declare_no_exec`]).
 #[must_use]
 pub fn no_exec() -> bool {
     NO_EXEC.load(std::sync::atomic::Ordering::Relaxed)
@@ -180,11 +144,9 @@ mod sys {
         if rc != 0 {
             return Err(format!("PR_SET_PDEATHSIG: {}", io::Error::last_os_error()));
         }
-        // The parent may have exited before the call took effect. A spawner
-        // that named itself ([`super::PARENT_ENV`]) is compared exactly: its
-        // helper sees the same pid even when that pid is the namespace's
-        // init.
-        // SAFETY: getppid has no failure mode.
+        // The parent may have exited before the call took effect. A spawner that named itself
+        // ([`super::PARENT_ENV`]) is compared exactly: its helper sees the same pid even when that
+        // pid is the namespace's init. SAFETY: getppid has no failure mode.
         let actual = unsafe { libc::getppid() };
         let gone = parent.map_or(actual == 1, |parent| i64::from(actual) != i64::from(parent));
         if gone {
@@ -268,14 +230,13 @@ mod sys {
         fn sandbox_free_error(errorbuf: *mut c_char);
     }
 
-    /// macOS has no parent-death signal: a thread waits on a kqueue for the
-    /// parent's exit and ends the process.
+    /// macOS has no parent-death signal: a thread waits on a kqueue for the parent's exit and ends
+    /// the process.
     pub fn die_with_parent(parent: Option<i32>) -> Result<(), String> {
         // SAFETY: getppid has no failure mode.
         let actual = unsafe { libc::getppid() };
-        // A spawner that named itself is compared exactly: its helper sees
-        // the same pid even when that pid is the namespace's init
-        // ([`super::PARENT_ENV`]).
+        // A spawner that named itself is compared exactly: its helper sees the same pid even when
+        // that pid is the namespace's init ([`super::PARENT_ENV`]).
         if parent.map_or(actual == 1, |parent| i64::from(actual) != i64::from(parent)) {
             return Err("the parent exited".to_string());
         }
@@ -347,8 +308,8 @@ mod sys {
         // SAFETY: getdtablesize has no failure mode.
         let table = unsafe { libc::getdtablesize() }.clamp(3, 1 << 16);
         for fd in 3..table {
-            // SAFETY: closing descriptors this process does not use; EBADF
-            // for the unused slots is expected.
+            // SAFETY: closing descriptors this process does not use; EBADF for the unused slots is
+            // expected.
             unsafe { libc::close(fd) };
         }
         Ok(())
@@ -370,8 +331,8 @@ mod sys {
         let profile = CString::new(profile(policy))
             .map_err(|_| ConfineError::NotEnforced("a path contains NUL".into()))?;
         let mut error: *mut c_char = std::ptr::null_mut();
-        // SAFETY: `profile` is NUL-terminated; `error` receives a string
-        // the library allocates, freed below.
+        // SAFETY: `profile` is NUL-terminated; `error` receives a string the library allocates,
+        // freed below.
         let rc = unsafe { sandbox_init(profile.as_ptr(), 0, &raw mut error) };
         if rc == 0 {
             return Ok(());
@@ -390,10 +351,9 @@ mod sys {
         Err(ConfineError::NotEnforced(format!("seatbelt: {message}")))
     }
 
-    /// The Seatbelt profile for `policy`: deny by default; read system code
-    /// (already-loaded libraries may map more of it lazily), the policy's
-    /// paths, and metadata; create and use only this crate's shared memory
-    /// objects. No writes, sockets, `exec`, `fork` or Mach services.
+    /// The Seatbelt profile for `policy`: deny by default; read system code (already-loaded
+    /// libraries may map more of it lazily), the policy's paths, and metadata; create and use only
+    /// this crate's shared memory objects. No writes, sockets, `exec`, `fork` or Mach services.
     pub fn profile(policy: &Policy) -> String {
         let mut profile = String::from(
             "(version 1)\n\
@@ -475,17 +435,15 @@ mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    /// Before anything confines itself, no process has declared it starts no
-    /// program.
+    /// Before anything confines itself, no process has declared it starts no program.
     #[test]
     fn no_exec_is_undeclared_until_a_process_confines_itself() {
         assert!(!no_exec());
     }
 
-    /// A confined process declares it runs no other program: every policy
-    /// [`confine`] installs refuses `exec`, so code that would start a helper
-    /// (the PDF engine's, among others) reads this. The probe confines itself
-    /// and reports what it finds on the other side.
+    /// A confined process declares it runs no other program: every policy [`confine`] installs
+    /// refuses `exec`, so code that would start a helper (the PDF engine's, among others) reads
+    /// this. The probe confines itself and reports what it finds on the other side.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn confined_child_declares_it_starts_no_program() {
@@ -516,11 +474,10 @@ mod tests {
 
     const NO_EXEC_PROBE_ENV: &str = "TILO_SANDBOX_NO_EXEC_PROBE_DIR";
 
-    /// A helper whose spawner names itself ([`PARENT_ENV`]) keeps running even
-    /// when that pid is the process namespace's init — a container runs one
-    /// program, and the workers it starts are its children — and still stops
-    /// when the named pid is not its parent. The probe calls [`detach`] and
-    /// reports through its exit status.
+    /// A helper whose spawner names itself ([`PARENT_ENV`]) keeps running even when that pid is the
+    /// process namespace's init — a container runs one program, and the workers it starts are its
+    /// children — and still stops when the named pid is not its parent. The probe calls [`detach`]
+    /// and reports through its exit status.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_helper_watches_the_parent_its_spawner_names() {
@@ -549,8 +506,8 @@ mod tests {
             Some(0),
             "a helper whose spawner named itself was refused"
         );
-        // A container's init when this test is not itself PID 1: the helper
-        // has no such parent and stops rather than outliving it.
+        // A container's init when this test is not itself PID 1: the helper has no such parent and
+        // stops instead of outliving it.
         if std::process::id() != 1 {
             assert_eq!(
                 probe("1".into()),
@@ -582,13 +539,13 @@ mod tests {
             }
             Err(_) => return 201,
         }
-        // The confinement refuses `exec`; it says so, so a caller takes its
-        // in-process path instead of failing on the refusal.
+        // The confinement refuses `exec`; it says so, so a caller takes its in-process path instead
+        // of failing on the refusal.
         i32::from(!no_exec())
     }
 
-    /// Set in the re-executed test binary: the probe below confines itself
-    /// and reports what it could still do through its exit status.
+    /// Set in the re-executed test binary: the probe below confines itself and reports what it
+    /// could still do through its exit status.
     const PROBE_ENV: &str = "TILO_SANDBOX_PROBE_DIR";
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -628,8 +585,8 @@ mod tests {
         );
     }
 
-    /// A helper allowed socket pairs (a media framework's buses wake through
-    /// them) makes one while confined, and still reaches no endpoint.
+    /// A helper allowed socket pairs (a media framework's buses wake through them) makes one while
+    /// confined, and still reaches no endpoint.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn confined_child_with_socket_pairs_makes_a_pair_and_no_endpoint() {
@@ -694,8 +651,8 @@ mod tests {
         failures
     }
 
-    /// The cap is enforced where the platform enforces it, and reported as
-    /// not set where it would not hold (macOS).
+    /// The cap is enforced where the platform enforces it, and reported as not set where it would
+    /// not hold (macOS).
     #[test]
     fn address_space_cap_reports_whether_it_holds() {
         if let Some(cap) = std::env::var_os(CAP_PROBE_ENV) {
@@ -764,8 +721,8 @@ mod tests {
         {
             failures |= 8;
         }
-        // Seatbelt lets a process create sockets but not bind or connect
-        // them; seccomp refuses the socket itself. Either way, no endpoint.
+        // Seatbelt lets a process create sockets but not bind or connect them; seccomp refuses the
+        // socket itself. Either way, no endpoint.
         if UnixDatagram::bind(allowed.join("sock")).is_ok() {
             failures |= 16;
         }

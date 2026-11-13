@@ -33,7 +33,6 @@ pub mod capture;
 pub mod compare;
 mod decode;
 mod diff;
-pub mod dom;
 mod glyph;
 mod image;
 mod plan;
@@ -727,6 +726,7 @@ impl CpuRasterizer {
             ops,
             region.to_rect(),
             base,
+            1.0,
             &mut self.scratch,
             stats,
         );

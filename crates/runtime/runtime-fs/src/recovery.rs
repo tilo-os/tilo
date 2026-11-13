@@ -13,8 +13,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-mod signed_history;
-
 const MAX_REPORTS: usize = 4096;
 const MAX_REPORT_BYTES: usize = 64 * 1024;
 const MAX_METADATA_BYTES: usize = 64 * 1024 * 1024;
@@ -60,7 +58,6 @@ pub enum RecoveryResolution {
         parent: DirectoryGrant,
         name: EntryName,
     },
-    /// Restore an actual protected capture without opening its contents.
     RestoreCaptured {
         parent: DirectoryGrant,
         name: EntryName,
@@ -221,72 +218,8 @@ impl NativeReplacementPin {
         }
         Ok(())
     }
-    /// Accept canonical ownership only from the enrolled daemon's signed
-    /// commit for this same actual pin and durably retained preparation.
-    pub fn commit_with_history(
-        &self,
-        current: &FsSession,
-        parent: &DirectoryGrant,
-        committed: &crate::external_history::CommittedReceipt,
-    ) -> Result<(), FsError> {
-        self.check(current, parent)?;
-        let prepared = self.claim.owner.history_prepare(&self.operation)?;
-        let verifier = current.retained_history_verifier()?;
-        committed
-            .verify(&prepared, &verifier)
-            .map_err(|_| FsError::Denied)?;
-        if committed.operation_id != self.operation.native().to_string()
-            || committed.source_owner != self.source_owner
-            || committed.capture_id != self.claim.recovery.to_string()
-            || committed.source_identity != self.source
-            || committed.victim_identity != self.victim
-            || committed.destination_identity != self.destination
-        {
-            return Err(FsError::Denied);
-        }
-        self.commit_history_ownership(current, parent, committed)?;
-        current.advance_selected_lineage_from_history(parent, self)
-    }
-    fn commit_history_ownership(
-        &self,
-        current: &FsSession,
-        parent: &DirectoryGrant,
-        committed: &crate::external_history::CommittedReceipt,
-    ) -> Result<(), FsError> {
-        self.check(current, parent)?;
-        let (_, observed_step) = self.claim.owner.find_recovery(&self.capture_id())?;
-        // Keep the actual revocation/lifetime gate through durable authority
-        // mutation; no effect occurs after an unlocked preliminary check.
-        current.with_replacement_observation(
-            parent,
-            &observed_step,
-            Some(self.source_owner),
-            |observed| {
-                if observed != (self.source, self.victim, self.destination) {
-                    return Err(FsError::StaleEntry);
-                }
-                self.claim
-                    .owner
-                    .bind_history_commit(&self.operation, committed)?;
-                self.claim
-                    .owner
-                    .update(&self.operation, "ReplaceHistoryOwned", |receipt| {
-                        let step = receipt.steps.first_mut().ok_or(FsError::StoreUnavailable)?;
-                        if !matches!(
-                            step.phase.as_str(),
-                            "ReplaceVictimCaptured" | "ReplaceHistoryOwned"
-                        ) || step.recovery.as_ref().is_none_or(|recovery| {
-                            recovery.id != self.claim.recovery || recovery.acknowledged
-                        }) {
-                            return Err(FsError::Conflict);
-                        }
-                        step.phase = "ReplaceHistoryOwned".into();
-                        Ok(())
-                    })
-            },
-        )
-    }
 }
+
 impl RecoveryId {
     /// A record identifier only. Resolution requires a genuine current native owner.
     pub fn from_bytes(bytes: [u8; 16]) -> Self {
@@ -388,11 +321,8 @@ impl OperationOwner {
             victim: observed.1,
             destination: observed.2,
         };
-        // An owned phase alone never reacquires canonical history. Require the
-        // same actual pin and durable signed prepare/commit under today's scope.
         if step.phase == "ReplaceHistoryOwned" {
             pin.check(current, parent)?;
-            pin.verify_owned_history(current)?;
         }
         Ok(pin)
     }
@@ -484,7 +414,6 @@ impl OperationOwner {
             #[cfg(test)]
             submissions: std::sync::atomic::AtomicUsize::new(0),
         });
-        // Reconciliation metadata is durable; user files remain untouched.
         for receipt in lock(&result.state)?.receipts.values() {
             result.write(receipt)?;
         }
@@ -572,14 +501,12 @@ impl OperationOwner {
                     &OperationId(record.id),
                     "OriginalSourceAdopted",
                     |receipt| {
-                        // Keep update's newly appended durable checkpoint.
                         receipt.steps = adopted.steps;
                         Ok(())
                     },
                 )?;
             }
         }
-        // Renew actual held scope after publication, before exposing the owner.
         session.check_directory(root)?;
         Ok(this)
     }

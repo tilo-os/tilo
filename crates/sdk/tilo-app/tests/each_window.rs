@@ -32,6 +32,7 @@ impl ResourceApp for Window {
     type Resource = Checklist;
     const ID: &'static str = "so.tilo.test-window-checklist";
     const TITLE: &'static str = "Checklist";
+    const TITLE_KEY: &'static str = "checklist-title";
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
         Some(&support_checklist::CATALOG)
@@ -620,4 +621,35 @@ fn rows_that_bind_into_the_published_tree_are_all_built() {
         root.actions.iter().any(|spec| spec.id == "finish-last"),
         "the last row's bound edit is published while the row is not mounted"
     );
+}
+
+/// An app of its own: its definition is built by the test below and no
+/// other, so the name it resolves is the one that test set the language for.
+struct Titled;
+
+impl ResourceApp for Titled {
+    type Resource = Checklist;
+    const ID: &'static str = "so.tilo.test-titled";
+    const TITLE: &'static str = "Checklist";
+    const TITLE_KEY: &'static str = "checklist-title";
+
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&support_checklist::CATALOG)
+    }
+
+    fn view(_cx: &mut ViewCx<Checklist>) -> Element {
+        Box::new(Column::new())
+    }
+}
+
+/// A window, a launcher entry and a dock row read the app's name from its
+/// catalogue, in the language the person speaks.
+#[test]
+fn an_app_is_titled_in_the_language_its_catalogue_names() {
+    support_checklist::CATALOG.set_locale("de-DE");
+    assert_eq!(
+        tilo_app::framework::definition::<Titled>().title(),
+        "Prüfliste"
+    );
+    support_checklist::CATALOG.set_locale("en-US");
 }

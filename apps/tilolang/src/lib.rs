@@ -23,7 +23,6 @@ pub mod names;
 #[cfg(test)]
 pub mod packages;
 pub mod resource;
-pub mod search;
 pub mod updates;
 pub mod window;
 

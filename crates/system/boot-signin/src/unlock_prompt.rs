@@ -1,24 +1,13 @@
 //! What the volume's own prompt asks for, in the person's words.
-//!
-//! Before anyone has a sign-in on the volume, and after "Can't sign in",
-//! systemd-cryptsetup asks for a secret that opens one of the volume's key
-//! slots, and the boot screen says which. The installer marks the slot its
-//! startup secret went into with a `tilo-startup-secret` token when that
-//! secret is the account password, so the screen can say "password" instead
-//! of "disk passphrase"; it offers the recovery key only where a
-//! `systemd-recovery` token has a slot.
 
 use std::path::Path;
 use std::process::{Command, Stdio};
 
 use serde::Deserialize;
 
-/// The secret a person can type at the volume's prompt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Secret {
-    /// The account password, which the installer also set as the disk's.
     Password,
-    /// A disk passphrase of its own.
     Passphrase,
 }
 
@@ -104,7 +93,6 @@ pub fn ways(metadata: &str) -> Ways {
     }
 }
 
-/// The volume header's metadata, through `cryptsetup`.
 pub fn read(cryptsetup: &Path, device: &Path) -> Option<String> {
     let output = Command::new(cryptsetup)
         .arg("luksDump")

@@ -10,7 +10,6 @@ const FONT_SANS: usize = 0;
 const FONT_SERIF: usize = 1;
 const FONT_MONO: usize = 2;
 
-/// Base body font size in points. Headings scale up from here by level.
 const BODY_PT: i64 = 11;
 
 /// Twips per indent step (RTF measures indents in twips; 720 ≈ 0.5 inch).
@@ -21,7 +20,6 @@ const INDENT_TWIPS: i64 = 720;
 /// degrade to their alt text (or are skipped).
 pub fn render_rtf(snap: &DocSnapshot) -> String {
     let snap = &*tilo_doc::export::without_kept_placeholders(snap);
-    // Pass 1: collect the color table from every `color` mark in the document.
     let mut colors = ColorTable::new();
     collect_colors(&snap.blocks, &mut colors);
 
@@ -30,21 +28,16 @@ pub fn render_rtf(snap: &DocSnapshot) -> String {
     let mut body = String::new();
     render_blocks(&mut body, &snap.blocks, &colors, 0);
 
-    // Assemble: header + font table + color table + body, all inside one group.
     let mut out = String::new();
     out.push_str("{\\rtf1\\ansi\\deff0");
     out.push_str(FONT_TABLE);
     out.push_str(&colors.render());
-    // A leading newline keeps the control words off the header line for
-    // readability; RTF ignores it.
     out.push('\n');
     out.push_str(&body);
     out.push('}');
     out
 }
 
-/// The fixed font table: sans → Helvetica (swiss), serif → Times
-/// (roman), mono → Courier (modern).
 const FONT_TABLE: &str = "{\\fonttbl\
 {\\f0\\fswiss Helvetica;}\
 {\\f1\\froman Times;}\
@@ -56,7 +49,6 @@ const FONT_TABLE: &str = "{\\fonttbl\
 struct ColorTable {
     /// Insertion-ordered distinct colors as `(r, g, b)`.
     colors: Vec<(u8, u8, u8)>,
-    /// Lookup from packed rgb → position in `colors`.
     seen: BTreeMap<(u8, u8, u8), usize>,
 }
 
@@ -96,8 +88,6 @@ impl ColorTable {
     }
 }
 
-/// Walk blocks (and children) interning every `color` mark so the color
-/// table is complete before the body renders.
 fn collect_colors(blocks: &[BlockView], colors: &mut ColorTable) {
     for b in walk_blocks(blocks) {
         for m in &b.marks {
@@ -110,8 +100,6 @@ fn collect_colors(blocks: &[BlockView], colors: &mut ColorTable) {
     }
 }
 
-/// Render a slice of sibling blocks. List items render individually
-/// (each a self-contained `\par`), matching qdoc's flat run.
 fn render_blocks(out: &mut String, blocks: &[BlockView], colors: &ColorTable, indent_level: i64) {
     for block in blocks {
         render_block(out, block, colors, indent_level);
@@ -147,7 +135,6 @@ fn render_heading(out: &mut String, block: &BlockView, colors: &ColorTable) {
     let pt = heading_pt(level);
     out.push_str("{\\pard");
     push_align(out, block);
-    // Bold + larger font for the whole heading paragraph.
     let _ = write!(out, "\\b\\fs{}", pt.saturating_mul(2));
     out.push(' ');
     render_inline(out, &block.text, &block.marks, colors);
@@ -165,7 +152,6 @@ fn render_paragraph(out: &mut String, block: &BlockView, colors: &ColorTable, in
 }
 
 fn render_quote(out: &mut String, block: &BlockView, colors: &ColorTable, indent_level: i64) {
-    // A quote is an indented, italic paragraph one level deeper than its context.
     out.push_str("{\\pard");
     let child_indent = indent_level.saturating_add(1);
     push_indent(out, child_indent);
@@ -176,12 +162,10 @@ fn render_quote(out: &mut String, block: &BlockView, colors: &ColorTable, indent
         render_inline(out, &block.text, &block.marks, colors);
     }
     out.push_str("\\par}\n");
-    // Multi-paragraph quotes carry child blocks; render them indented too.
     render_blocks(out, &block.children, colors, child_indent);
 }
 
 fn render_code(out: &mut String, block: &BlockView) {
-    // Code renders verbatim in the mono font; inline marks are not applied.
     let _ = write!(out, "{{\\pard\\f{FONT_MONO}\\fs{} ", BODY_PT * 2);
     push_escaped(out, &block.text);
     out.push_str("\\par}\n");
@@ -191,7 +175,6 @@ fn render_list_item(out: &mut String, block: &BlockView, colors: &ColorTable) {
     let level = ExportBlock::new(block).list_level();
     let ordered = ExportBlock::new(block).ordered();
     out.push_str("{\\pard");
-    // Hanging indent: left margin one step past the bullet at this nesting level.
     push_indent(out, level.saturating_add(1));
     let _ = write!(out, "\\fi-{INDENT_TWIPS}");
     let _ = write!(out, "\\fs{}", BODY_PT * 2);
@@ -216,8 +199,6 @@ fn render_list_item(out: &mut String, block: &BlockView, colors: &ColorTable) {
 }
 
 fn render_image(out: &mut String, block: &BlockView, indent_level: i64) {
-    // Pixel embedding is out of scope; fall back to alt text so the
-    // block isn't lost, or skip if there's no alt text.
     let alt = if block.text.is_empty() {
         block.str_attr("alt").unwrap_or_default().to_owned()
     } else {
@@ -234,16 +215,12 @@ fn render_image(out: &mut String, block: &BlockView, indent_level: i64) {
 }
 
 fn render_table(out: &mut String, block: &BlockView, colors: &ColorTable) {
-    // Rows are child blocks, each row's children its cells. Tolerates
-    // the flat shape (cells directly under the table with a `cols`
-    // attr), matching export_html's handling.
     let plan = TablePlan::new(block);
 
     if plan.is_empty() {
         return;
     }
 
-    // Equal-width columns across the page width (≈ 9000 twips of usable width).
     let max_cols = plan
         .rows()
         .iter()
@@ -257,26 +234,21 @@ fn render_table(out: &mut String, block: &BlockView, colors: &ColorTable) {
 
     for row in plan.rows() {
         out.push_str("\\trowd");
-        // Cell boundary positions: cumulative right edge of each column.
         for c in 1..=max_cols {
             let c_i64 = i64::try_from(c).unwrap_or(i64::MAX);
             let _ = write!(out, "\\cellx{}", col_w.saturating_mul(c_i64));
         }
-        // Cell contents.
         for cell in row {
             out.push_str("\\intbl ");
             if cell.children.is_empty() {
                 render_inline(out, &cell.text, &cell.marks, colors);
             } else {
-                // Block content inside a cell: flatten the first text-bearing
-                // child's inline run (full nested block content is out of scope here).
                 let mut tmp = String::new();
                 render_blocks(&mut tmp, &cell.children, colors, 0);
                 out.push_str(strip_pars(&tmp).trim());
             }
             out.push_str("\\cell ");
         }
-        // Pad short rows so every row has `max_cols` cells.
         for _ in row.len()..max_cols {
             out.push_str("\\intbl \\cell ");
         }
@@ -292,7 +264,6 @@ fn strip_pars(s: &str) -> String {
         .replace(['}', '{'], "")
 }
 
-/// Emit a paragraph alignment control word from the block's `align` attr.
 fn push_align(out: &mut String, block: &BlockView) {
     if let Some(AttrVal::Str(a)) = block.attrs.get("align") {
         let cw = match a.as_str() {
@@ -340,7 +311,6 @@ fn render_run(out: &mut String, segment: &str, active: &[&MarkSpan], colors: &Co
         .and_then(|m| mark_str(m));
 
     if let Some(url) = href {
-        // {\field{\*\fldinst HYPERLINK "url"}{\fldrslt <formatted text>}}
         out.push_str("{\\field{\\*\\fldinst HYPERLINK \"");
         push_escaped(out, &url);
         out.push_str("\"}{\\fldrslt ");
@@ -351,13 +321,11 @@ fn render_run(out: &mut String, segment: &str, active: &[&MarkSpan], colors: &Co
     }
 }
 
-/// Emit `{ <toggles> <escaped text> }` for a run's character formatting.
 fn push_run_group(out: &mut String, segment: &str, active: &[&MarkSpan], colors: &ColorTable) {
     let has = |name: &str| active.iter().any(|m| m.name == name);
 
     out.push('{');
     let words_start = out.len();
-    // Font family (`\fN`).
     if let Some(f) = active
         .iter()
         .find(|m| m.name == "font" || m.name == "fontFamily")
@@ -365,7 +333,6 @@ fn push_run_group(out: &mut String, segment: &str, active: &[&MarkSpan], colors:
     {
         let _ = write!(out, "\\f{}", font_index(&f));
     }
-    // Font size (`\fsN`, half-points → 2 × pt).
     if let Some(pt) = active
         .iter()
         .find(|m| m.name == "size" || m.name == "fontSize")
@@ -373,7 +340,6 @@ fn push_run_group(out: &mut String, segment: &str, active: &[&MarkSpan], colors:
     {
         let _ = write!(out, "\\fs{}", pt.saturating_mul(2));
     }
-    // Color (`\cfN`).
     if let Some(idx) = active
         .iter()
         .find(|m| m.name == "color")
@@ -384,7 +350,6 @@ fn push_run_group(out: &mut String, segment: &str, active: &[&MarkSpan], colors:
     {
         let _ = write!(out, "\\cf{idx}");
     }
-    // Boolean toggles.
     if has("strong") || has("bold") {
         out.push_str("\\b");
     }
@@ -413,17 +378,14 @@ fn font_index(f: &str) -> usize {
     match f {
         "serif" => FONT_SERIF,
         "mono" | "monospace" => FONT_MONO,
-        // "sans" / "sans-serif" / anything else
         _ => FONT_SANS,
     }
 }
 
-/// The string payload of a valued mark (link href, color hex, font family).
 fn mark_str(m: &MarkSpan) -> Option<String> {
     m.value.as_str().map(std::string::ToString::to_string)
 }
 
-/// Parse a `#rrggbb` / `rrggbb` (or `#rgb`) hex color into `(r, g, b)`.
 fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
     let h = s.trim().trim_start_matches('#');
     let parse2 = |i: usize| {
@@ -433,7 +395,6 @@ fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
     match h.len() {
         6 => Some((parse2(0)?, parse2(2)?, parse2(4)?)),
         3 => {
-            // #abc → #aabbcc
             let d = |i: usize| {
                 let c = u8::from_str_radix(h.get(i..=i)?, 16).ok()?;
                 c.checked_mul(16)?.checked_add(c)

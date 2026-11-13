@@ -1,40 +1,19 @@
-//! Animatable parameters: a value that is **either a constant or a curve**.
+//! Animatable parameters: a numeric field on a clip keeps its constant value,
+//! and a curve on the clip overrides it. Every reader asks
+//! [`Clip::param_at`](crate::model::Clip::param_at), so a value is animated
+//! wherever it is used.
 //!
-//! Every numeric knob on a clip — opacity, volume, the three grade axes,
-//! an effect's intensity, and each channel of the geometric
-//! [`Transform`](crate::model::Transform) — has a plain scalar field on
-//! [`Clip`](crate::model::Clip) holding its constant value. Animating one
-//! does not change that field's type: it adds a [`ParamTrack`] to the
-//! clip's [`ClipAnimation`], and from then on the curve *overrides* the
-//! constant.
-//!
-//! That is why call sites do not change shape when a parameter is
-//! animated. Everything that needs a value asks
-//! [`Clip::param_at`](crate::model::Clip::param_at), which samples the
-//! curve when there is one and returns the static field when there is
-//! not. The compositor, the audio mixer and the export all read through
-//! that one door, so an animated opacity is animated *everywhere* without
-//! a second code path.
-//!
-//! ## Keyframe times are clip-local
-//!
-//! A keyframe's `t` is seconds from the clip's **start**, not absolute
-//! timeline seconds. Moving a clip therefore carries its animation with
-//! it, and a split hands each half the keys that fall inside it (rebased
-//! onto the new start). Absolute times would silently detach from the
-//! footage the moment anything was dragged.
+//! A keyframe's `t` is seconds from the clip's start, not timeline seconds, so
+//! moving or splitting a clip carries its animation with it.
 
 use serde::{Deserialize, Serialize};
 
-/// How the value travels from one keyframe to the next.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Interp {
-    /// Straight line to the next key.
     #[default]
     Linear,
-    /// Stay on this key's value until the next key, then jump. A step.
+    /// Hold this key's value until the next key, then jump.
     Hold,
-    /// Smooth acceleration out and deceleration in (smoothstep).
     Ease,
 }
 
@@ -48,11 +27,11 @@ impl Interp {
             Interp::Ease => "ease",
         }
     }
-    pub fn label(self) -> &'static str {
+    pub fn message(self) -> &'static str {
         match self {
-            Interp::Linear => "Linear",
-            Interp::Hold => "Hold",
-            Interp::Ease => "Ease",
+            Interp::Linear => "video-editor-interp-linear",
+            Interp::Hold => "video-editor-interp-hold",
+            Interp::Ease => "video-editor-interp-ease",
         }
     }
     pub fn from_name(s: &str) -> Self {
@@ -63,7 +42,6 @@ impl Interp {
         }
     }
 
-    /// Shape a normalised 0..1 position between two keys.
     fn shape(self, u: f64) -> f64 {
         let u = u.clamp(0.0, 1.0);
         match self {
@@ -75,7 +53,7 @@ impl Interp {
     }
 }
 
-/// One key: a value at a clip-local time, plus how the curve leaves it.
+/// A value at a clip-local time, and how the curve leaves it.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Keyframe {
     /// Seconds from the clip's start.
@@ -95,13 +73,7 @@ impl Keyframe {
     }
 }
 
-/// Which knob a curve drives.
-///
-/// `EffectAmount(id)` addresses one effect instance of the clip's stack by
-/// its id, so its curve stays with it however the stack is reordered, here
-/// or concurrently on a peer.
-///
-/// Written as its name ([`Param::as_str`]): `opacity`, `pos_x`,
+/// Which value a curve drives, written as its name: `opacity`, `pos_x`,
 /// `effect:<id>`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Param {
@@ -115,13 +87,13 @@ pub enum Param {
     PosX,
     PosY,
     Rotation,
-    /// Colour-key tolerance: how wide a band of chroma is removed.
+    /// How wide a band of chroma is removed.
     KeyTolerance,
     /// Width of the key's soft edge.
     KeySoftness,
     /// How much of the key colour is pulled out of what survives.
     KeySpill,
-    /// Mask centre, offset from the frame centre in frame widths/heights.
+    /// Mask centre, offset from the frame centre in frame widths and heights.
     MaskX,
     MaskY,
     /// Mask extent, as a fraction of the frame.
@@ -131,12 +103,11 @@ pub enum Param {
     MaskRotation,
     /// Softness of the mask edge.
     MaskFeather,
-    /// How much of the clip's tone curve is mixed in: 0 bypasses it, 1 is
-    /// the curve as drawn. The curve's *shape* is not animatable — a shape
-    /// that morphed frame to frame is a different grade rather than an
-    /// animation of one — so this single knob is what a ramp on or off a
-    /// grade drives.
+    /// How much of the tone curve is mixed in: 0 bypasses it, 1 is the curve as
+    /// drawn. Its shape is not animatable, so this is the knob a ramp drives.
     CurveMix,
+    /// One effect instance of the clip's stack, by its id, so the curve stays
+    /// with it however the stack is reordered, here or on a peer.
     EffectAmount(uuid::Uuid),
 }
 
@@ -168,7 +139,6 @@ impl ui::tilo_resource::JsonSchema for Param {
 }
 
 impl Param {
-    /// Every parameter that is not tied to a list index, for menus.
     pub const SIMPLE: [Param; 20] = [
         Param::Opacity,
         Param::Volume,
@@ -218,32 +188,6 @@ impl Param {
         }
     }
 
-    pub fn label(self) -> String {
-        match self {
-            Param::Opacity => "Opacity".into(),
-            Param::Volume => "Volume".into(),
-            Param::Brightness => "Brightness".into(),
-            Param::Contrast => "Contrast".into(),
-            Param::Saturation => "Saturation".into(),
-            Param::ScaleX => "Scale X".into(),
-            Param::ScaleY => "Scale Y".into(),
-            Param::PosX => "Position X".into(),
-            Param::PosY => "Position Y".into(),
-            Param::Rotation => "Rotation".into(),
-            Param::KeyTolerance => "Key tolerance".into(),
-            Param::KeySoftness => "Key softness".into(),
-            Param::KeySpill => "Spill removal".into(),
-            Param::MaskX => "Mask X".into(),
-            Param::MaskY => "Mask Y".into(),
-            Param::MaskW => "Mask width".into(),
-            Param::MaskH => "Mask height".into(),
-            Param::MaskRotation => "Mask rotation".into(),
-            Param::MaskFeather => "Mask feather".into(),
-            Param::CurveMix => "Curve amount".into(),
-            Param::EffectAmount(_) => "Effect amount".into(),
-        }
-    }
-
     pub fn from_name(s: &str) -> Option<Self> {
         Some(match s {
             "opacity" => Param::Opacity,
@@ -274,7 +218,7 @@ impl Param {
     }
 }
 
-/// The curve driving one parameter. Keys are kept sorted by time.
+/// The curve for one parameter. Keys are sorted by time.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ParamTrack {
     pub param: Param,
@@ -289,12 +233,9 @@ impl ParamTrack {
         }
     }
 
-    /// Sample the curve at clip-local time `t`.
-    ///
-    /// Returns `None` when there are no keys at all — the caller then uses
-    /// the parameter's constant field. Before the first key the curve
-    /// holds that key's value, and after the last it holds the last: a
-    /// curve never extrapolates off into a value the user never typed.
+    /// Sample at clip-local time `t`: the first key's value before it and the
+    /// last key's after it, so a curve never extrapolates. `None` with no keys,
+    /// and the caller then reads the constant field.
     pub fn sample(&self, t: f64) -> Option<f64> {
         let (Some(first), Some(last)) = (self.keys.first(), self.keys.last()) else {
             return None;
@@ -329,8 +270,8 @@ impl ParamTrack {
         Some(left.v + (right.v - left.v) * eased)
     }
 
-    /// Insert or replace the key at `t` (within a tight tolerance, so
-    /// re-keying the same instant edits rather than stacks).
+    /// Set the key at `t`, replacing one within a microsecond, so re-keying an
+    /// instant edits rather than stacks.
     pub fn set_key(&mut self, t: f64, v: f64, interp: Interp) {
         let key = Keyframe { t, v, interp };
         if let Some(existing) = self.keys.iter_mut().find(|k| (k.t - t).abs() < 1e-6) {
@@ -345,7 +286,6 @@ impl ParamTrack {
         }
     }
 
-    /// Drop the key nearest `t` within `tol` seconds. Returns whether one went.
     pub fn remove_key_near(&mut self, t: f64, tol: f64) -> bool {
         let Some((i, _)) = self
             .keys
@@ -365,13 +305,9 @@ impl ParamTrack {
         true
     }
 
-    /// Restrict this curve to the clip-local window `[from, to)` and
-    /// rebase it onto a clip that now starts `from` seconds later.
-    ///
-    /// Keys strictly inside the window move across unchanged (minus the
-    /// rebase). The value at each *edge* is preserved by planting a key
-    /// there sampled from the original curve, so cutting a clip in half
-    /// does not change what either half looks like at the cut.
+    /// Keep the keys inside `[from, to)` and rebase them onto a clip that now
+    /// starts `from` later, with a key at each edge holding the value the
+    /// original curve had there, so a cut changes nothing at the cut.
     #[must_use]
     pub fn sliced(&self, from: f64, to: f64) -> Self {
         let mut out = ParamTrack::new(self.param);
@@ -405,11 +341,7 @@ impl ParamTrack {
     }
 }
 
-/// Every curve on one clip.
-///
-/// Empty by default, which is exactly "nothing is animated" — a clip that
-/// has never been keyframed costs one empty `Vec` and reads every value
-/// from its constant fields.
+/// Every curve on one clip. Empty means nothing is animated.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ClipAnimation {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -429,7 +361,6 @@ impl ClipAnimation {
         self.tracks.iter_mut().find(|t| t.param == param)
     }
 
-    /// The curve for `param`, creating an empty one if absent.
     #[expect(
         clippy::indexing_slicing,
         reason = "`i` is either an existing track's position or the one just pushed"
@@ -444,18 +375,14 @@ impl ClipAnimation {
         &mut self.tracks[i]
     }
 
-    /// Sample `param` at clip-local time `t`, or `None` when it has no
-    /// keys — the caller falls back to the constant field.
     pub fn sample(&self, param: Param, t: f64) -> Option<f64> {
         self.track(param).and_then(|tr| tr.sample(t))
     }
 
-    /// Whether `param` is animated (has at least one key).
     pub fn is_animated(&self, param: Param) -> bool {
         self.track(param).is_some_and(|t| !t.keys.is_empty())
     }
 
-    /// Every animated parameter, in insertion order.
     pub fn animated_params(&self) -> Vec<Param> {
         self.tracks
             .iter()
@@ -464,25 +391,22 @@ impl ClipAnimation {
             .collect()
     }
 
-    /// Drop `param`'s curve entirely, returning the parameter to its constant.
+    /// Drop the curve, returning the parameter to its constant.
     pub fn clear(&mut self, param: Param) {
         self.tracks.retain(|t| t.param != param);
     }
 
-    /// Drop the curve of the effect `id`, which left the stack.
     pub fn forget_effect(&mut self, id: uuid::Uuid) {
         self.tracks
             .retain(|track| track.param != Param::EffectAmount(id));
     }
 
-    /// Drop all animation belonging to a stack that is being cleared.
     pub fn clear_effect_slots(&mut self) {
         self.tracks
             .retain(|track| !matches!(track.param, Param::EffectAmount(_)));
     }
 
-    /// Restrict every curve to `[from, to)` and rebase (see
-    /// [`ParamTrack::sliced`]). Used by split and trim.
+    /// See [`ParamTrack::sliced`].
     #[must_use]
     pub fn sliced(&self, from: f64, to: f64) -> Self {
         Self {
@@ -495,8 +419,7 @@ impl ClipAnimation {
         }
     }
 
-    /// All keyframe times on any curve, sorted and de-duplicated — what a
-    /// timeline draws as key markers on the clip body.
+    /// Every keyframe time on any curve, sorted and de-duplicated.
     pub fn key_times(&self) -> Vec<f64> {
         let mut ts: Vec<f64> = self
             .tracks

@@ -174,15 +174,16 @@ def _lifecycle(ctx, res, app_id: str, provider: str, label: str, expect_foreign:
     frame = None
     if expect_foreign:
         def presented():
-            for f in ctx.vm.foreign_frames():
-                if (match or (lambda f: f["app_id"] == app_id))(f) and f.get("presented") and f.get("frame_seq", 0) > 0:
+            for f in ctx.vm.windows():
+                if ((match or (lambda f: f["app_id"] == app_id))(f)
+                        and f.get("frames", 0) > 0 and f.get("rect")):
                     return f
             return None
         frame = wait_until(presented, 30, 0.5)
         if frame is None:
             ctx.shot(f"{label}-no-frame")
-            frames = [(f["app_id"], f.get("frame_seq"), f.get("last_error")) for f in ctx.vm.foreign_frames()]
-            raise CheckFailed(f"{label} never presented a first frame within 30 s (foreign frames: {frames})")
+            frames = [(f["app_id"], f.get("frames"), f.get("rect")) for f in ctx.vm.windows()]
+            raise CheckFailed(f"{label} never drew a first frame within 30 s (windows: {frames})")
         res.metrics["seconds_to_first_frame"] = round(t_group + time.monotonic() - started, 2)
     # Bounded: focus elsewhere is what the check reports.
     wait_until(lambda: core.active_group_id(ctx.state()) == gid, 3, 0.2)
@@ -206,12 +207,12 @@ def _lifecycle(ctx, res, app_id: str, provider: str, label: str, expect_foreign:
                 ctx.vm.shot(shot)
             latest["fresh"] = False
             r = latest["frame"]["rect"]
-            img, rect = core.load_image(shot), (r["x"], r["y"], r["w"], r["h"])
+            img, rect = core.load_image(shot), (r[0], r[1], r[2], r[3])
             return {**core.region_stats(img, rect), "ink": core.region_ink(img, rect)}
 
         stats, attempts = first_textured(sample, FIRST_FRAME_WAIT_S)
         r = latest["frame"]["rect"]
-        rect = (r["x"], r["y"], r["w"], r["h"])
+        rect = (r[0], r[1], r[2], r[3])
         drect = core.display_rects(st)[disp]
         res.metrics["surface_rect"] = rect
         res.metrics["surface_pixels"] = stats

@@ -67,9 +67,9 @@ pub struct DesktopServices {
     /// The system bus the agents registered on, which everything else the session asks the machine
     /// goes through: one connection, not one per service.
     system: Option<zbus::Connection>,
-    /// The observer that keeps the person's lockdown policy applied while the session runs:
+    /// The watch that keeps the person's lockdown policy applied while the session runs:
     /// dropping it stops the policy reaching the services, so it is kept, never read.
-    _lockdown: Option<Arc<tilo_portal::lockdown::PolicyListener>>,
+    _lockdown: Option<tilo_portal::lockdown::PolicyWatch>,
 }
 
 impl DesktopServices {
@@ -322,7 +322,7 @@ impl DesktopServices {
 /// `None` where the policy cannot be followed: what the portal checks at each request still
 /// enforces what the person chose, and an app that was already capturing keeps its stream until it
 /// is stopped.
-fn follow_lockdown(portal: Option<&Portal>) -> Option<Arc<tilo_portal::lockdown::PolicyListener>> {
+fn follow_lockdown(portal: Option<&Portal>) -> Option<tilo_portal::lockdown::PolicyWatch> {
     let captures = portal.map(|portal| portal.captures().clone());
     let listener: Arc<tilo_portal::lockdown::PolicyListener> = Arc::new(move |policy| {
         media::audio_output::set_disabled(policy.disable_sound_output);
@@ -333,7 +333,7 @@ fn follow_lockdown(portal: Option<&Portal>) -> Option<Arc<tilo_portal::lockdown:
         captures.set_lockdown(CaptureKind::Microphone, policy.disable_microphone);
     });
     match tilo_portal::lockdown::LockdownBackend::for_session().watch(&listener) {
-        Ok(()) => Some(listener),
+        Ok(watch) => Some(watch),
         Err(error) => {
             tracing::warn!(%error, "the lockdown policy is not followed while the session runs");
             None

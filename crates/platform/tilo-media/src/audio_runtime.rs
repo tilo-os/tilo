@@ -1,9 +1,9 @@
 //! Short-lived, capability-gated `PipeWire` audio diagnostics and transforms.
 //!
-//! Every process or virtual node created here has exactly one owner. Dropping
-//! its session kills/waits the process or restores the physical default and
-//! unloads the Pulse compatibility module. Microphone testing only reads
-//! samples into a level meter; it never creates a playback/monitor link.
+//! Every process or virtual node created here has exactly one owner: dropping its
+//! session kills or waits for the process, or restores the physical default and
+//! unloads the Pulse compatibility module. Microphone testing only reads samples into
+//! a level meter; it never creates a playback or monitor link.
 
 #[cfg(unix)]
 use std::io::Write;
@@ -31,8 +31,6 @@ pub struct RuntimeCapabilities {
     pub mono_output: bool,
     pub channel_test: bool,
     pub microphone_meter: bool,
-    /// The session can run the shipped echo-cancellation client
-    /// ([`ECHO_CANCEL_CONFIG`]).
     pub echo_cancellation: bool,
 }
 
@@ -42,7 +40,6 @@ pub trait BoundedSession: Send {
 }
 
 pub trait MicrophoneMeterSession: BoundedSession {
-    /// Latest peak in the normalized `0..=1` range.
     fn level(&mut self) -> f32;
     fn remaining(&self) -> Duration;
 }
@@ -50,22 +47,16 @@ pub trait MicrophoneMeterSession: BoundedSession {
 pub trait AudioRuntimeControl: Send + Sync {
     fn capabilities(&self) -> RuntimeCapabilities;
 
-    /// Set `sink_name`'s base volume and left/right balance.
     fn set_balance(&self, sink_name: &str, base_volume: f32, balance: f32) -> Result<(), String>;
 
-    /// Remap `sink_name` to a virtual mono-mix device and make it the
-    /// default output.
     fn start_mono(&self, sink_name: &str) -> Result<Box<dyn BoundedSession>, String>;
 
-    /// Play a short identification tone on `sink_name`'s left or right
-    /// channel.
     fn start_channel_test(
         &self,
         sink_name: &str,
         left: bool,
     ) -> Result<Box<dyn BoundedSession>, String>;
 
-    /// Start metering `source_name` for up to `duration`.
     fn start_microphone_meter(
         &self,
         source_name: &str,
@@ -104,10 +95,8 @@ pub trait AudioRuntimeControl: Send + Sync {
 /// creating a second mono sink.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PersistentAudioPreferences {
-    /// UI-space balance: `0` is left, `0.5` is centred, `1` is right.
     pub balance: f32,
     pub mono_output: bool,
-    /// Offer calls an echo-cancelled microphone.
     pub echo_cancellation: bool,
 }
 
@@ -121,12 +110,6 @@ impl Default for PersistentAudioPreferences {
     }
 }
 
-/// Reconciles persisted audio intent against successive `PipeWire` snapshots.
-///
-/// The policy is deliberately independent of the settings store and polling
-/// mechanism: the compositor owns those, while tests can inject a recording
-/// runtime and exact graph snapshots. Dropping it restores the physical sink
-/// through the [`BoundedSession`] RAII contract.
 pub struct PersistentAudioPolicy {
     runtime: Arc<dyn AudioRuntimeControl>,
     capabilities: RuntimeCapabilities,
@@ -134,10 +117,8 @@ pub struct PersistentAudioPolicy {
     mono_sink: Option<String>,
     last_balance: Option<(String, u32, u32)>,
     echo_session: Option<Box<dyn BoundedSession>>,
-    /// Consecutive echo-cancellation client exits, used to back off restarts
-    /// of a client that dies on start.
     echo_failures: u32,
-    echo_retry_at: Option<std::time::Instant>,
+    echo_retry_at: Option<tilo_clock::time::Instant>,
 }
 
 impl PersistentAudioPolicy {
@@ -191,7 +172,7 @@ impl PersistentAudioPolicy {
             self.echo_failures = self.echo_failures.saturating_add(1);
             let backoff = ECHO_CANCEL_RESTART_BACKOFF
                 .saturating_mul(self.echo_failures.min(ECHO_CANCEL_MAX_BACKOFF_STEPS));
-            self.echo_retry_at = std::time::Instant::now().checked_add(backoff);
+            self.echo_retry_at = tilo_clock::now().checked_add(backoff);
         }
         if !enabled || !self.capabilities.echo_cancellation || graph.sources.is_empty() {
             self.echo_session = None;
@@ -200,9 +181,7 @@ impl PersistentAudioPolicy {
             return Ok(());
         }
         if self.echo_session.is_some()
-            || self
-                .echo_retry_at
-                .is_some_and(|at| std::time::Instant::now() < at)
+            || self.echo_retry_at.is_some_and(|at| tilo_clock::now() < at)
         {
             return Ok(());
         }
@@ -217,7 +196,7 @@ impl PersistentAudioPolicy {
     /// When a backed-off echo-cancellation restart falls due. Nothing in the
     /// graph changes at that moment, so an event-driven owner must reconcile
     /// again by then on its own.
-    pub fn next_retry(&self) -> Option<std::time::Instant> {
+    pub fn next_retry(&self) -> Option<tilo_clock::time::Instant> {
         self.echo_retry_at
     }
 
@@ -421,8 +400,6 @@ impl AudioRuntimeControl for RealAudioRuntime {
     }
 
     fn start_mono(&self, sink_name: &str) -> Result<Box<dyn BoundedSession>, String> {
-        // A two-channel virtual sink accepting MONO twice makes the Pulse
-        // channel mixer sum stereo input and deliver the same mix to FL/FR.
         let args = mono_load_args(sink_name);
         let module = run("pactl", &args)?
             .parse::<u32>()
@@ -580,9 +557,6 @@ fn start_meter(
 #[cfg(unix)]
 const LEVEL_WINDOW_BYTES: usize = 1024;
 
-// PipeWire process control and session teardown require Unix process groups.
-// Keep this public runtime available for portable callers without advertising
-// or attempting unsupported operations on other hosts.
 #[cfg(not(unix))]
 impl AudioRuntimeControl for RealAudioRuntime {
     fn capabilities(&self) -> RuntimeCapabilities {
@@ -619,12 +593,8 @@ impl AudioRuntimeControl for RealAudioRuntime {
     }
 }
 
-/// Stable node name used to distinguish our virtual accessibility sink from
-/// real hardware during subsequent graph enumerations.
 pub const ACCESSIBILITY_MONO_SINK_NAME: &str = "tilo_accessibility_mono";
 
-/// The `PipeWire` client configuration, installed in `PipeWire`'s config search
-/// path, that creates the echo-cancelled microphone.
 pub const ECHO_CANCEL_CONFIG: &str = "tilo-echo-cancel.conf";
 
 pub use crate::audio::{ECHO_CANCEL_NODE_PREFIX, ECHO_CANCEL_SOURCE_NAME};
@@ -632,8 +602,6 @@ pub use crate::audio::{ECHO_CANCEL_NODE_PREFIX, ECHO_CANCEL_SOURCE_NAME};
 const ECHO_CANCEL_RESTART_BACKOFF: Duration = Duration::from_secs(5);
 const ECHO_CANCEL_MAX_BACKOFF_STEPS: u32 = 12;
 
-/// Whether [`ECHO_CANCEL_CONFIG`] is somewhere `pipewire -c` looks: the
-/// user's and the administrator's override directories, then the system one.
 #[cfg(unix)]
 fn echo_cancel_config_installed() -> bool {
     let mut dirs = Vec::new();
@@ -794,8 +762,6 @@ impl BoundedSession for MicSession {
             .is_some_and(crate::audio::record::Capture::alive)
     }
     fn stop(&mut self) {
-        // Dropping the capture kills the recorder and joins its reader; the
-        // level reader then reaches the end of the stream and ends.
         self.capture = None;
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();

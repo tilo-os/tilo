@@ -39,8 +39,24 @@ fn char_key(s: &str) -> WindowEvent {
     ))
 }
 
-/// Route `ev` to the app through the tree it was last laid out in (a
-/// bare node before any layout).
+pub(super) struct GermanWindow {
+    before: String,
+}
+
+impl GermanWindow {
+    pub(super) fn new() -> Self {
+        let before = CATALOG.current_locale();
+        CATALOG.set_locale("de-DE");
+        Self { before }
+    }
+}
+
+impl Drop for GermanWindow {
+    fn drop(&mut self) {
+        CATALOG.set_locale(&self.before);
+    }
+}
+
 fn dispatch(app: &mut MailApp, ev: &WindowEvent, doc: &mut AutoCommit) -> bool {
     let (taffy, node) = app.test_layout.take().unwrap_or_else(|| {
         let mut taffy = TaffyTree::<()>::new();
@@ -88,7 +104,6 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
 }
 
 impl MailApp {
-    /// The undo time of every held message is up: they go.
     fn undo_time_is_up(&mut self, doc: &mut AutoCommit) {
         for held in &mut self.held_sends {
             held.due = ui::time::now();
@@ -179,7 +194,6 @@ fn click_at(app: &mut MailApp, doc: &mut AutoCommit, p: Point) -> bool {
     pressed || released
 }
 
-/// The first list row's centre, as the shell laid the list out.
 fn first_row_centre(app: &MailApp) -> Point {
     let geometry = app.nav.geometry();
     let column = geometry.overview_column;
@@ -189,7 +203,6 @@ fn first_row_centre(app: &MailApp) -> Point {
     )
 }
 
-/// The first accessibility node under `widget` that `matches`.
 fn find_access(
     widget: &dyn Widget,
     matches: &dyn Fn(&ui::a11y::AccessNode) -> bool,

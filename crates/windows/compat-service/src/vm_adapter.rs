@@ -1050,9 +1050,6 @@ where
         validate_portal_projection(&grants, request.resolved_capabilities)?;
         self.appliance.launch(&windows_vm::LaunchRequest {
             workspace_id: request.workspace_id.to_string(),
-            // `published_application_id` is a server-owned registered
-            // program id. `WindowsAppliance` additionally requires it to be
-            // present in the authenticated guest catalogue before launch.
             application_id: request.published_application_id.to_string(),
             grants,
         })

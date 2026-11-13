@@ -1,35 +1,21 @@
 //! Keep the `GStreamer` registry in step with merged system extensions.
 //!
-//! The optional additional-codecs pack arrives as a `systemd-sysext` image:
-//! its plugins and libraries appear under `/usr` exactly when its
-//! `extension-release` file appears in `/usr/lib/extension-release.d`, and
-//! disappear with it. Every entry point that consults the registry (playback
-//! engines, real-time encoders and decoders, encoder selection) calls
-//! [`refresh_registry`] first, which reads that one small directory and does
-//! nothing more unless it changed.
+//! The optional additional-codecs pack arrives as a `systemd-sysext` image, its
+//! plugins and libraries appearing under `/usr` exactly while its `extension-release`
+//! file is there. [`refresh_registry`] reads that one small directory before anything
+//! consults the registry, and does nothing more unless it changed.
 //!
-//! When it changed, an ordinary `gst_update_registry` is not enough. The
-//! registry (and its on-disk cache, `~/.cache/gstreamer-1.0/registry.*.bin`)
-//! keeps a plugin's feature list for as long as the plugin *file* keeps its
-//! modification time and size. The pack replaces libraries under unchanged
-//! plugin files: `libavcodec-freeworld` shadows `libavcodec.so` beneath the
-//! stock `libgstlibav.so`, whose element list (`avdec_h264`, `avdec_h265`)
-//! depends on which codecs that library was built with. So a changed stamp
-//! drops every plugin this process has not loaded from the registry and
-//! rescans, which re-registers each one from the files now under `/usr` and
-//! rewrites the cache.
+//! When it changed, an ordinary registry update is not enough: the registry keeps a
+//! plugin's feature list for as long as the plugin *file* keeps its modification time
+//! and size, and the pack replaces libraries under unchanged plugin files (a
+//! freeworld `libavcodec` beneath the stock `libgstlibav.so`, whose element list
+//! depends on it). So a changed stamp drops every plugin this process has not loaded
+//! and rescans from the files on disk. The stamp is also persisted per user, so a
+//! process started after the merge rescans once too.
 //!
-//! The stamp is also persisted per user, so a process started after the merge
-//! (whose first look would otherwise have nothing to compare with, and read
-//! the stale cache) rescans once too.
-//!
-//! What cannot change inside a running process: a plugin that is already
-//! loaded keeps the elements it registered and the libraries it linked. A
-//! replaced `libavcodec` under an already-loaded libav plugin, or new VA-API
-//! entry points (H.264/HEVC from the freeworld Mesa driver) of an
-//! already-loaded `va` plugin, apply to processes started afterwards. New
-//! plugins (`OpenH264`, the freeworld/ugly sets) and plugins this process
-//! never loaded are usable at once.
+//! A plugin already loaded keeps the elements it registered and the libraries it
+//! linked: new hardware entry points of a loaded VA-API plugin apply to processes
+//! started afterwards, while new plugins are usable at once.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -38,14 +24,12 @@ use std::time::UNIX_EPOCH;
 
 use gstreamer as gst;
 
-/// Where merged system extensions announce themselves.
 pub const EXTENSION_RELEASE_DIR: &str = "/usr/lib/extension-release.d";
 
 /// The merged extensions: file name and modification time (nanoseconds since
 /// the epoch, 0 when unknown), sorted by name.
 pub type ExtensionStamp = Vec<(OsString, u128)>;
 
-/// Read the stamp of `dir`. A missing directory is "no extensions".
 pub fn extension_stamp(dir: &Path) -> ExtensionStamp {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -66,7 +50,6 @@ pub fn extension_stamp(dir: &Path) -> ExtensionStamp {
     out
 }
 
-/// Serialise a stamp as one `name<TAB>nanos` line per extension.
 pub fn encode_stamp(stamp: &ExtensionStamp) -> String {
     let mut out = String::new();
     for (name, modified) in stamp {
@@ -109,7 +92,6 @@ pub fn needs_rescan(
     }
 }
 
-/// The per-user file recording the stamp the registry cache reflects.
 pub fn default_stamp_path() -> Option<PathBuf> {
     let cache = tilo_paths::xdg::cache_home()?;
     Some(cache.join("tilo").join("media-extensions.stamp"))
@@ -119,8 +101,6 @@ pub fn default_stamp_path() -> Option<PathBuf> {
 /// wait for one rebuild instead of racing their own.
 static PROCESS_LAST: Mutex<Option<ExtensionStamp>> = Mutex::new(None);
 
-/// Rebuild the registry if the merged extensions changed. Returns whether it
-/// rebuilt. Call after `gst::init`.
 pub fn refresh_registry() -> bool {
     refresh_registry_at(
         Path::new(EXTENSION_RELEASE_DIR),

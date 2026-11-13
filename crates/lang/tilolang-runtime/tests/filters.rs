@@ -5,12 +5,8 @@
 //! them (a place's badge, the projects its root holds) is the app's own.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::members::Member;
     use tilolang_runtime::{
         AmStore, Principal, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,

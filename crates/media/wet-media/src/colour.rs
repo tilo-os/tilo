@@ -3,7 +3,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// A colour in linear light, each channel `0..=1`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Rgb {
     pub r: f32,
@@ -27,7 +26,6 @@ impl Rgb {
         Self { r, g, b }
     }
 
-    /// An 8-bit sRGB colour.
     pub fn from_srgb8(r: u8, g: u8, b: u8) -> Self {
         Self {
             r: to_linear(f32::from(r) / 255.0),
@@ -36,7 +34,6 @@ impl Rgb {
         }
     }
 
-    /// The 8-bit sRGB encoding of this colour.
     pub fn to_srgb8(self) -> [u8; 3] {
         [
             encode8(from_linear(self.r)),
@@ -45,7 +42,6 @@ impl Rgb {
         ]
     }
 
-    /// `#rrggbb` in sRGB.
     pub fn to_hex(self) -> String {
         let [r, g, b] = self.to_srgb8();
         format!("#{r:02x}{g:02x}{b:02x}")
@@ -87,7 +83,6 @@ impl Rgb {
     }
 }
 
-/// sRGB transfer to linear light.
 pub fn to_linear(encoded: f32) -> f32 {
     if encoded <= 0.040_45 {
         encoded / 12.92
@@ -96,7 +91,6 @@ pub fn to_linear(encoded: f32) -> f32 {
     }
 }
 
-/// Linear light to the sRGB transfer.
 pub fn from_linear(linear: f32) -> f32 {
     let linear = linear.clamp(0.0, 1.0);
     if linear <= 0.003_130_8 {
@@ -106,7 +100,6 @@ pub fn from_linear(linear: f32) -> f32 {
     }
 }
 
-/// A unit float as an 8-bit channel.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -116,19 +109,12 @@ pub(crate) fn encode8(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-/// A pigment in a medium's palette: a name a painter can use
-/// (`pigment:ultramarine`) for a colour with its own handling.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Pigment {
-    /// Lower-case name, words joined by `-`, such as `burnt-sienna`.
     pub name: String,
-    /// Masstone colour, `#rrggbb` sRGB.
     pub colour: String,
-    /// How much it settles into the ground's valleys, `0..=1`
-    /// (watercolour granulation).
     #[serde(default)]
     pub granulation: f32,
-    /// How strongly it tints at a given load, around `1`.
     #[serde(default = "one")]
     pub strength: f32,
 }
@@ -137,8 +123,6 @@ fn one() -> f32 {
     1.0
 }
 
-/// A parsed colour: the linear colour, its alpha, and the pigment handling
-/// when it was named from a palette.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Paint {
     pub colour: Rgb,
@@ -147,9 +131,6 @@ pub struct Paint {
     pub strength: f32,
 }
 
-/// Parse `#rgb`, `#rrggbb`, `#rrggbbaa` or `pigment:<name>` (looked up in
-/// `palette`). Returns `None` for anything else, so a caller can name the
-/// mistake rather than paint black.
 pub fn parse_paint(text: &str, palette: &[Pigment]) -> Option<Paint> {
     let text = text.trim();
     if let Some(name) = text.strip_prefix("pigment:") {
@@ -180,7 +161,6 @@ fn normalise(name: &str) -> String {
         .collect()
 }
 
-/// Parse a hex colour into linear light and alpha.
 pub fn parse_hex(text: &str) -> Option<(Rgb, f32)> {
     let hex = text.trim().strip_prefix('#')?;
     if !hex.chars().all(|c| c.is_ascii_hexdigit()) {

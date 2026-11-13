@@ -337,6 +337,7 @@ async fn a_member_follows_the_version_the_room_runs_and_its_held_edit_goes_in() 
                 app_id: APP.into(),
                 cluster_id: room.workspace.clone(),
                 hash: wanted.clone(),
+                have: Vec::new(),
             })
             .unwrap(),
         )

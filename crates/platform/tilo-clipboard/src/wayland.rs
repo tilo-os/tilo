@@ -66,11 +66,10 @@ impl RichClipboard {
     }
 }
 
-const CLIPBOARD_READ_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(40);
+const CLIPBOARD_READ_BUDGET: tilo_clock::time::Duration =
+    tilo_clock::time::Duration::from_millis(40);
 
-/// How long an explicit paste waits for the clipboard's owner to send its
-/// text.
-const EXPLICIT_READ_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_secs(2);
+const EXPLICIT_READ_BUDGET: tilo_clock::time::Duration = tilo_clock::time::Duration::from_secs(2);
 
 /// How long a copy may wait for the compositor before it is refused. A copy
 /// is two compositor roundtrips (the focus check, then the selection's
@@ -78,14 +77,13 @@ const EXPLICIT_READ_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_se
 /// which also paints; the compositor itself only calls an iteration slow
 /// beyond 100 ms. The app's UI thread does not wait: the outcome settles a
 /// [`crate::ClipboardCopy`].
-const PUBLICATION_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(250);
+const PUBLICATION_BUDGET: tilo_clock::time::Duration = tilo_clock::time::Duration::from_millis(250);
 
-fn publication_deadline() -> tilo_clock::Instant {
+fn publication_deadline() -> tilo_clock::time::Instant {
     let now = tilo_clock::now();
     now.checked_add(PUBLICATION_BUDGET).unwrap_or(now)
 }
 
-/// What a copy publishes.
 enum PublicationPayload {
     Text(Vec<u8>),
     SecretText(Vec<u8>),
@@ -97,8 +95,6 @@ enum PublicationPayload {
     Image(Vec<u8>),
 }
 
-/// Reports a copy's outcome once. Dropped unreported (the worker went away),
-/// it reports a failure.
 struct Settle(Option<Box<dyn FnOnce(bool) + Send>>);
 
 impl Settle {
@@ -121,8 +117,6 @@ impl Drop for Settle {
     }
 }
 
-/// A [`Settle`] the focus check, the confirmation and the deadline share;
-/// the first to report wins.
 type SharedSettle = Arc<std::sync::Mutex<Option<Settle>>>;
 
 fn settle_once(settle: &SharedSettle, copied: bool) {
@@ -140,11 +134,15 @@ fn settle_once(settle: &SharedSettle, copied: bool) {
 struct Publication {
     payload: PublicationPayload,
     settle: Settle,
-    deadline: tilo_clock::Instant,
+    deadline: tilo_clock::time::Instant,
 }
 
 impl Publication {
-    fn new(payload: PublicationPayload, settle: Settle, deadline: tilo_clock::Instant) -> Self {
+    fn new(
+        payload: PublicationPayload,
+        settle: Settle,
+        deadline: tilo_clock::time::Instant,
+    ) -> Self {
         Self {
             payload,
             settle,
@@ -189,7 +187,7 @@ impl PublicationClaim {
 
 fn recv_bounded<T>(
     receiver: &std::sync::mpsc::Receiver<T>,
-    budget: tilo_clock::Duration,
+    budget: tilo_clock::time::Duration,
 ) -> Option<T> {
     receiver.recv_timeout(budget).ok()
 }
@@ -225,7 +223,7 @@ pub struct WaylandClipboard {
     pasted: PastedImage,
     rich: Arc<RichClipboard>,
     wake: tilo_rt::wake::WakeHandle,
-    explicit_read_budget: tilo_clock::Duration,
+    explicit_read_budget: tilo_clock::time::Duration,
 }
 
 struct PublicationClipboard {
@@ -257,26 +255,15 @@ enum ClipboardCommand {
     Publish(Publication),
     Exit,
     Fence(std::sync::mpsc::Sender<()>),
-    ReadText(std::sync::mpsc::Sender<Option<String>>, tilo_clock::Instant),
+    ReadText(
+        std::sync::mpsc::Sender<Option<String>>,
+        tilo_clock::time::Instant,
+    ),
     #[cfg(test)]
     CommandProcessed(std::sync::mpsc::Sender<()>),
 }
 
 impl WaylandClipboard {
-    /// Attach to the `wl_display` behind `display_ptr`.
-    ///
-    /// # Safety
-    ///
-    /// `display_ptr` must remain live until this value AND every outstanding
-    /// loader have finished. A timed-out text read can retain a loader after
-    /// this value is dropped. Use [`Self::from_owned_display`] when that
-    /// independent lifetime cannot be guaranteed.
-    pub unsafe fn new(display_ptr: *mut std::ffi::c_void) -> Self {
-        unsafe { Self::new_with_owner(display_ptr, None) }
-    }
-
-    /// Attach while retaining the actual display owner for every worker,
-    /// including loaders that survive runner close.
     pub fn from_owned_display(
         handle: impl raw_window_handle::HasDisplayHandle + Send + Sync + 'static,
     ) -> Option<Self> {
@@ -330,7 +317,7 @@ impl WaylandClipboard {
     unsafe fn with_publication_worker(
         display_ptr: *mut std::ffi::c_void,
         owner: Option<Arc<dyn Send + Sync>>,
-        rich_read_budget: tilo_clock::Duration,
+        rich_read_budget: tilo_clock::time::Duration,
         name: &str,
     ) -> Self {
         let backend = unsafe {
@@ -399,12 +386,10 @@ impl WaylandClipboard {
     /// Wait until the compositor has processed this worker's seat and device
     /// bindings before a protocol fixture maps its window and acquires focus.
     #[doc(hidden)]
-    pub fn wait_ready_for_wayland_test(&self, budget: tilo_clock::Duration) -> bool {
+    pub fn wait_ready_for_wayland_test(&self, budget: tilo_clock::time::Duration) -> bool {
         let Some(end) = tilo_clock::now().checked_add(budget) else {
             return false;
         };
-        // The first reply follows seat capabilities; their callbacks bind the
-        // keyboard and data device. The second follows those new requests.
         for _ in 0..2 {
             let (reply, received) = std::sync::mpsc::channel();
             if self
@@ -427,7 +412,7 @@ impl WaylandClipboard {
     #[doc(hidden)]
     pub fn new_for_wayland_test_with_read_budget(
         connection: smithay_client_toolkit::reexports::client::Connection,
-        rich_read_budget: tilo_clock::Duration,
+        rich_read_budget: tilo_clock::time::Duration,
     ) -> Self {
         let display_ptr = connection.backend().display_ptr().cast();
         // SAFETY: the worker retains the connection that owns the display.
@@ -525,15 +510,11 @@ mod image_worker_impl {
         data_sources: Vec<sctk::data_device_manager::data_source::CopyPasteSource>,
         source_payloads: HashMap<ObjectId, SourcePayload>,
         text_contents: Option<Arc<[u8]>>,
-        /// Whether `text_contents` is a secret, offered with the markers that
-        /// keep it out of clipboard histories and device sync.
         text_secret: bool,
-        /// The formatting of the text copied, when the copy was rich.
         html_contents: Option<Arc<[u8]>>,
         pending_image: Option<Arc<[u8]>>,
         inflight_transfers: usize,
         inflight_bytes: usize,
-        /// The image on the current selection, once read.
         pasted: PastedImage,
         /// Counts selections, so a slow read of an older one never lands.
         selection_generation: u64,
@@ -542,7 +523,7 @@ mod image_worker_impl {
         rich_active_seat: Option<WlSeat>,
         rich_pending: Option<PendingRich>,
         plain_pending: Option<PendingPlain>,
-        rich_read_budget: tilo_clock::Duration,
+        rich_read_budget: tilo_clock::time::Duration,
         /// Dispatched claims must be settled even when the shared display
         /// retains their callback userdata after this worker stops.
         pending_publications: HashMap<usize, (Arc<PublicationClaim>, SharedSettle)>,
@@ -552,7 +533,6 @@ mod image_worker_impl {
     pub(super) struct SourcePayload {
         pub(super) image: Option<Arc<[u8]>>,
         pub(super) text: Option<Arc<[u8]>>,
-        /// The formatting of a rich copy, offered as `text/html`.
         pub(super) html: Option<Arc<[u8]>>,
         pub(super) secret: bool,
     }
@@ -578,7 +558,7 @@ mod image_worker_impl {
         commands: calloop::channel::Channel<ClipboardCommand>,
         pasted: PastedImage,
         rich: Arc<RichClipboard>,
-        rich_read_budget: tilo_clock::Duration,
+        rich_read_budget: tilo_clock::time::Duration,
     ) {
         struct ClearRich(Arc<RichClipboard>);
         impl Drop for ClearRich {
@@ -656,9 +636,6 @@ mod image_worker_impl {
                         let _ = reply.send(());
                     }
                     ClipboardCommand::Fence(reply) => {
-                        // A protocol sync reply shares the worker's event queue.
-                        // It proves earlier selection/focus events were handled,
-                        // unlike observing a command-channel acknowledgement.
                         fence_connection.display().sync(&state.queue_handle, reply);
                         let _ = fence_connection.flush();
                     }
@@ -684,7 +661,7 @@ mod image_worker_impl {
     struct PendingPublication {
         payload: std::sync::Mutex<Option<PublicationPayload>>,
         settle: SharedSettle,
-        deadline: tilo_clock::Instant,
+        deadline: tilo_clock::time::Instant,
         claim: Arc<PublicationClaim>,
     }
 
@@ -694,7 +671,7 @@ mod image_worker_impl {
 
     struct PlainRequest {
         reply: std::sync::Mutex<Option<std::sync::mpsc::Sender<Option<String>>>>,
-        deadline: tilo_clock::Instant,
+        deadline: tilo_clock::time::Instant,
     }
 
     struct PendingPlain {
@@ -734,9 +711,6 @@ mod image_worker_impl {
     }
 
     impl State {
-        /// At the deadline, refuse a copy the focus check has not taken. One
-        /// it took already set the selection: give the compositor's
-        /// confirmation one more budget, then report it copied either way.
         fn arm_publication_deadline(&mut self, pending: &PendingPublication) {
             let claim = Arc::clone(&pending.claim);
             let settle = Arc::clone(&pending.settle);
@@ -757,15 +731,12 @@ mod image_worker_impl {
                 },
             );
             if armed.is_err() {
-                // Without a deadline the copy could stay pending for good.
                 pending.claim.abandon();
                 self.finish_publication(&pending.settle, false);
             }
         }
 
         fn finish_publication(&mut self, settle: &SharedSettle, copied: bool) {
-            // The allocation's identity stays unique while callback userdata
-            // retains it; remove settled claims rather than retaining a history.
             self.pending_publications
                 .remove(&(Arc::as_ptr(settle) as usize));
             settle_once(settle, copied);
@@ -868,10 +839,6 @@ mod image_worker_impl {
         }
 
         fn store_image(&mut self, contents: Vec<u8>) {
-            // A copy replaces what was copied before, as a text copy does.
-            // Text kept beside the image would be what every app that
-            // prefers text pastes, and a secret would ride along under its
-            // markers.
             self.text_contents = None;
             self.text_secret = false;
             self.html_contents = None;
@@ -897,7 +864,6 @@ mod image_worker_impl {
             if image.is_some() {
                 mime_types.push("image/png");
             }
-            // Formatting first: an app that reads it prefers it.
             if self.html_contents.is_some() && !self.text_secret {
                 mime_types.extend(["text/html", "text/html;charset=utf-8"]);
             }
@@ -937,8 +903,6 @@ mod image_worker_impl {
             };
             source.set_selection(device, serial);
             self.data_sources.push(source);
-            // Keep the accepted payload available for protocol transfers and
-            // subsequent focus/serial updates.
             true
         }
 
@@ -1096,7 +1060,6 @@ mod image_worker_impl {
         Finished(Option<String>),
     }
 
-    /// One bounded nonblocking read callback, including interrupted syscalls.
     pub(super) struct RichPipe {
         bytes: Vec<u8>,
         limit: usize,
@@ -1138,7 +1101,7 @@ mod image_worker_impl {
     }
 
     struct PendingRich {
-        deadline: tilo_clock::Instant,
+        deadline: tilo_clock::time::Instant,
         html: Option<String>,
         plain: Option<String>,
         html_done: bool,
@@ -1162,7 +1125,7 @@ mod image_worker_impl {
             &self,
             connection: &Connection,
             reply: std::sync::mpsc::Sender<Option<String>>,
-            deadline: tilo_clock::Instant,
+            deadline: tilo_clock::time::Instant,
         ) {
             // Read only after this queue has handled preceding selection and
             // keyboard-focus events, including a queued focus revocation.
@@ -1190,10 +1153,8 @@ mod image_worker_impl {
             &mut self,
             connection: &Connection,
             reply: std::sync::mpsc::Sender<Option<String>>,
-            deadline: tilo_clock::Instant,
+            deadline: tilo_clock::time::Instant,
         ) {
-            // One explicit paste can own one bounded pipe. A newer request
-            // cancels the previous transfer rather than accumulating readers.
             self.finish_plain_read(None);
             let offered = self.latest_seat.as_ref().and_then(|seat| {
                 let data = self.seats.get(seat)?;
@@ -1260,7 +1221,7 @@ mod image_worker_impl {
             &mut self,
             pipe: sctk::data_device_manager::ReadPipe,
             generation: u64,
-            deadline: tilo_clock::Instant,
+            deadline: tilo_clock::time::Instant,
         ) -> bool {
             let Ok(flags) = get_fd_flags(pipe.as_raw_fd()) else {
                 return false;
@@ -1362,8 +1323,6 @@ mod image_worker_impl {
             let Some(pending) = self.rich_pending.as_mut() else {
                 return;
             };
-            // This callback returns Remove for its own source. Other readers
-            // and the deadline are explicitly removed on completion/refusal.
             *pending.reader(part) = None;
             match part {
                 RichPart::Html => {
@@ -1454,8 +1413,6 @@ mod image_worker_impl {
                     .as_ref()
                     .is_some_and(|data| data.inner() == device)
             }) {
-                // Selection precedes Enter. Retain offer identity, including
-                // NULL; reading still requires this seat's keyboard focus.
                 data.rich_offer_seen = true;
             }
             self.read_selection_rich(conn, device);
@@ -1854,8 +1811,6 @@ mod image_worker_impl {
                     data.keyboard_focus = true;
                     state.latest_seat = Some(seat.clone());
                     state.activate_rich_seat(seat);
-                    // The selection was delivered before Enter. A same-client
-                    // surface switch may retain that offer without resending it.
                     let device = state
                         .seats
                         .get(seat)
@@ -2121,13 +2076,8 @@ impl WaylandClipboard {
         recv_bounded(&immediate_rx, CLIPBOARD_READ_BUDGET)
     }
 
-    /// Queue a copy; `settle` reports its outcome from the worker: refused,
-    /// or published and confirmed by the compositor. The worker settles it by
-    /// the deadline plus one more budget at the latest.
     fn publish_async(&self, payload: PublicationPayload, settle: Settle) {
         let publication = Publication::new(payload, settle, publication_deadline());
-        // A refused send drops the publication, and with it the settle,
-        // which reports the failure.
         let _ = self.send_publication(ClipboardCommand::Publish(publication));
     }
 
@@ -2145,7 +2095,6 @@ impl WaylandClipboard {
         recv_bounded(&result, PUBLICATION_BUDGET.saturating_mul(3)).unwrap_or(false)
     }
 
-    /// Queue `content`; `then` reports its outcome from the worker.
     fn copy_then(&self, content: crate::CopyContent<'_>, then: impl FnOnce(bool) + Send + 'static) {
         let payload = match content {
             crate::CopyContent::Text(text) | crate::CopyContent::SharedText(text) => {
@@ -2232,7 +2181,6 @@ mod tests {
 
     #[test]
     fn clipboard_images_encode_as_bounded_lossless_png() {
-        // phase: rgba_image_is_encoded_as_lossless_png
         {
             let rgba = [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40];
             let png = encode_png(2, 1, &rgba).expect("valid RGBA image");
@@ -2242,7 +2190,6 @@ mod tests {
             assert_eq!(decoded.dimensions(), (2, 1));
             assert_eq!(decoded.as_raw().as_slice(), rgba);
         }
-        // phase: png_encoding_rejects_invalid_dimensions_and_oversized_input
         {
             assert!(encode_png(0, 1, &[]).is_none());
             assert!(encode_png(1, 1, &[]).is_none());
@@ -2253,7 +2200,6 @@ mod tests {
 
     #[test]
     fn clipboard_transfers_are_single_flight_bounded_and_mime_exact() {
-        // phase: external_readers_are_single_flight_but_targets_are_independent
         {
             use std::sync::atomic::AtomicBool;
 
@@ -2265,7 +2211,6 @@ mod tests {
             clipboard.store(false, std::sync::atomic::Ordering::Release);
             assert!(begin_external_refresh(&clipboard));
         }
-        // phase: bounded_result_wait_returns_fresh_data_and_times_out_without_stale_fallback
         {
             let (tx, rx) = std::sync::mpsc::channel();
             let (request_tx, request_rx) = std::sync::mpsc::channel::<()>();
@@ -2289,10 +2234,7 @@ mod tests {
                 "a slow external owner must not make paste return an unrelated cached value"
             );
         }
-        // phase: shutdown_returns_only_after_the_worker_has_stopped
         {
-            // A worker slower to stop than the old fixed budget: shutting
-            // down still waits for it, since it would use the display after.
             let (sender, commands) =
                 smithay_client_toolkit::reexports::calloop::channel::channel::<ClipboardCommand>();
             let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2321,7 +2263,6 @@ mod tests {
                 "shutting down returned while the worker could still use the display"
             );
         }
-        // phase: source_payload_rejects_unadvertised_mime_without_falling_back_to_text
         {
             use image_worker_impl::SourcePayload;
 

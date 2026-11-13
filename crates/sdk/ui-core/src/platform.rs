@@ -23,23 +23,63 @@ pub fn spell_shortcut(template: &str) -> String {
             rest = after;
             break;
         };
-        let (modifiers, key) = spec.split_once(':').unwrap_or(("", spec));
-        let mut shortcut = if modifiers.contains("cmd") {
-            Shortcut::command(key)
-        } else {
-            Shortcut::key(key)
-        };
-        if modifiers.contains("shift") {
-            shortcut = shortcut.shift();
-        }
-        if modifiers.contains("alt") {
-            shortcut = shortcut.alt();
-        }
-        out.push_str(&shortcut.label(conventions));
+        out.push_str(&shortcut(spec).label(conventions));
         rest = tail;
     }
     out.push_str(rest);
     out
+}
+
+/// The same row as [`spell_shortcut`], one keycap per key, for a reference
+/// sheet that draws its keys with [`crate::widget::InputHint`]:
+/// `{cmd+shift:S}` is the command key, the shift key and S. Text outside the
+/// braces is a key of its own, so a plain `Page Up` is one cap.
+#[must_use]
+pub fn spell_shortcut_keycaps(template: &str) -> Vec<String> {
+    let conventions = PlatformConventions::default();
+    let mut caps: Vec<String> = Vec::new();
+    let mut plain = String::new();
+    let mut rest = template;
+    while let Some((before, after)) = rest.split_once('{') {
+        plain.push_str(before);
+        let Some((spec, tail)) = after.split_once('}') else {
+            plain.push('{');
+            rest = after;
+            break;
+        };
+        push_caps(&mut caps, &mut plain, conventions);
+        caps.extend(shortcut(spec).keycap_labels(conventions));
+        rest = tail;
+    }
+    plain.push_str(rest);
+    push_caps(&mut caps, &mut plain, conventions);
+    caps
+}
+
+/// The key names written between two chords as their own cap.
+fn push_caps(caps: &mut Vec<String>, plain: &mut String, conventions: PlatformConventions) {
+    let loose = std::mem::take(plain);
+    if !loose.trim().is_empty() {
+        caps.extend(Shortcut::key(loose.trim()).keycap_labels(conventions));
+    }
+}
+
+/// The chord a template's `{…}` names: `cmd` is the platform's command
+/// modifier, `shift` and `alt` add theirs.
+fn shortcut(spec: &str) -> Shortcut {
+    let (modifiers, key) = spec.split_once(':').unwrap_or(("", spec));
+    let mut shortcut = if modifiers.contains("cmd") {
+        Shortcut::command(key)
+    } else {
+        Shortcut::key(key)
+    };
+    if modifiers.contains("shift") {
+        shortcut = shortcut.shift();
+    }
+    if modifiers.contains("alt") {
+        shortcut = shortcut.alt();
+    }
+    shortcut
 }
 
 /// Platform family relevant to human-interface conventions.
@@ -430,6 +470,27 @@ mod tests {
         assert_eq!(
             HostShortcut::resolve(mac, "y", false),
             Some(HostShortcut::History)
+        );
+    }
+
+    /// A reference sheet paints one drawn keycap per key: a chord is its
+    /// modifiers and its key, never one cap holding a joined string.
+    #[test]
+    fn a_shortcut_row_is_one_keycap_per_key() {
+        let _us = crate::keycaps::scoped(crate::keycaps::Keycaps::US);
+        let conventions = PlatformConventions::default();
+        assert_eq!(
+            spell_shortcut_keycaps("{cmd+shift:S}"),
+            Shortcut::command("S").shift().keycap_labels(conventions)
+        );
+        assert_eq!(
+            spell_shortcut_keycaps("{cmd:X}"),
+            Shortcut::command("X").keycap_labels(conventions)
+        );
+        assert_eq!(
+            spell_shortcut_keycaps("Page Up"),
+            ["Page Up"],
+            "a plain key name is one cap"
         );
     }
 

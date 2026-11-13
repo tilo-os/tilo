@@ -1,11 +1,10 @@
-//! The Windows backend: generic credentials in the user's Credential
-//! Manager, which keeps them encrypted with the user's DPAPI key, readable
-//! by that user on this machine and by no one else.
+//! The Windows backend: generic credentials in the user's Credential Manager, which
+//! keeps them encrypted with the user's DPAPI key, readable by that user on this machine
+//! and by no one else.
 //!
-//! Each secret is a credential named `tilo:<app>/<key>` (as Credential
-//! Manager lists it under Windows Credentials), persisted for this machine
-//! only so it never roams to another; a secret larger than one credential
-//! holds continues in numbered ones (see the `credential` module).
+//! Each secret is a credential named `tilo:<app>/<key>`, persisted for this machine only
+//! so it never roams; a secret larger than one credential holds continues in numbered
+//! ones.
 
 use std::ptr;
 
@@ -31,7 +30,6 @@ fn wide(text: &str) -> Vec<u16> {
 fn failure(call: &str, code: WIN32_ERROR) -> SecretError {
     match code {
         ERROR_ACCESS_DENIED => SecretError::Denied,
-        // A service or a session without a loaded user profile.
         ERROR_NO_SUCH_LOGON_SESSION => {
             SecretError::Unavailable("Credential Manager needs a signed-in user's session".into())
         }
@@ -39,7 +37,6 @@ fn failure(call: &str, code: WIN32_ERROR) -> SecretError {
     }
 }
 
-/// The blob of the credential `target`, or `None` where there is none.
 fn read(target: &str) -> Result<Option<Zeroizing<Vec<u8>>>, SecretError> {
     let name = wide(target);
     let mut found: *mut CREDENTIALW = ptr::null_mut();
@@ -72,7 +69,6 @@ fn read(target: &str) -> Result<Option<Zeroizing<Vec<u8>>>, SecretError> {
     Ok(Some(Zeroizing::new(blob)))
 }
 
-/// Store `blob` as the credential `target`, replacing it.
 fn write(target: &str, blob: &[u8], label: &str) -> Result<(), SecretError> {
     let mut name = wide(target);
     let mut comment = wide(label);
@@ -96,7 +92,6 @@ fn write(target: &str, blob: &[u8], label: &str) -> Result<(), SecretError> {
     Ok(())
 }
 
-/// Delete the credential `target`; a missing one is already deleted.
 fn remove(target: &str) -> Result<(), SecretError> {
     let name = wide(target);
     // SAFETY: `name` is NUL-terminated and outlives the call.
@@ -110,8 +105,6 @@ fn remove(target: &str) -> Result<(), SecretError> {
     Ok(())
 }
 
-/// How many further parts the stored secret has; none where there is no
-/// secret or the first part is not one Tilo wrote.
 fn stored_parts(app: &str, key: &str) -> Result<usize, SecretError> {
     Ok(read(&target_name(app, key, 0))?
         .and_then(|first| further_parts(&first).ok())
@@ -139,9 +132,9 @@ impl SecretBackend for CredentialManager {
         Ok(Some(Secret::new(value.as_slice())))
     }
 
-    /// The further parts are written before the first, which names how many
-    /// there are, so a reader never finds a first part without its parts;
-    /// parts an earlier, larger secret left are removed last.
+    // The further parts are written before the first, which names how many there are, so a
+    // reader never finds a first part without its parts; parts an earlier, larger secret
+    // left are removed last.
     fn put(&self, app: &str, key: &str, value: &[u8], label: &str) -> Result<(), SecretError> {
         let before = stored_parts(app, key)?;
         let parts = split(value).map_err(SecretError::Failed)?;
@@ -167,8 +160,6 @@ impl SecretBackend for CredentialManager {
         Ok(())
     }
 
-    /// Reading a credential nobody stores reaches Credential Manager without
-    /// touching a secret.
     fn probe(&self) -> Result<(), SecretError> {
         read("tilo:probe").map(drop)
     }
@@ -178,9 +169,6 @@ impl SecretBackend for CredentialManager {
 mod tests {
     use super::*;
 
-    /// Writes, overwrites (smaller and larger), reads and deletes through
-    /// the signed-in user's Credential Manager, only where a developer asks
-    /// for it: it writes their real store.
     #[test]
     fn credential_manager_keeps_the_store_contract_when_asked() {
         if std::env::var_os("TILO_SECRETS_SYSTEM_TEST").is_none() {

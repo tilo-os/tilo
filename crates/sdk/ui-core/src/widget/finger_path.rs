@@ -62,7 +62,9 @@ impl FingerPath {
     /// The total travel where the fingers were [`RESAMPLE_LATENCY`] before
     /// `now`: interpolated between the two reports around that moment,
     /// extrapolated a little past the newest when the next is late, or the
-    /// first report before the path has history. `None` without a report.
+    /// first report before the path has history. Fingers that stopped
+    /// reporting for [`MAX_REPORT_GAP`] rest, so the newest report is where
+    /// they are. `None` without a report.
     pub(crate) fn resampled(&self, now: Instant) -> Option<f64> {
         let &(last_at, last) = self.reports.back()?;
         let at = now.checked_sub(RESAMPLE_LATENCY).unwrap_or(now);
@@ -71,7 +73,10 @@ impl FingerPath {
                 return Some(last);
             };
             let interval = last_at.saturating_duration_since(prev_at);
-            if interval.is_zero() || interval > MAX_REPORT_GAP {
+            if interval.is_zero()
+                || interval > MAX_REPORT_GAP
+                || at.saturating_duration_since(last_at) > MAX_REPORT_GAP
+            {
                 return Some(last);
             }
             let ahead = at
@@ -94,6 +99,13 @@ impl FingerPath {
             later = (sample_at, travel);
         }
         Some(later.1)
+    }
+
+    /// Whether a frame at `now` reads the fingers ahead of their newest report: a later frame
+    /// still has to bring the path back to it should they have stopped.
+    pub(crate) fn predicting(&self, now: Instant) -> bool {
+        let newest = self.reports.back().map(|&(_, travel)| travel);
+        self.resampled(now) != newest
     }
 
     /// Velocity (travel px/s) of the fingers as they lift at `now`: the

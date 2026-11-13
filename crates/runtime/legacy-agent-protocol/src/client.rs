@@ -8,7 +8,6 @@ use crate::{
     PROTOCOL_MAJOR, ProtocolError, Signal, TerminalSize, recv, send,
 };
 
-/// Exchange hellos; refuses an agent speaking another protocol major.
 pub fn handshake<S: Read + Write>(stream: &mut S) -> Result<AgentHello, ProtocolError> {
     send(
         stream,
@@ -27,7 +26,6 @@ pub fn handshake<S: Read + Write>(stream: &mut S) -> Result<AgentHello, Protocol
     }
 }
 
-/// One request and its single answer, on a fresh connection.
 pub fn request<S: Read + Write>(
     stream: &mut S,
     message: &HostMessage,
@@ -40,18 +38,16 @@ pub fn request<S: Read + Write>(
     }
 }
 
-/// Where a launch's output goes on the host.
 pub struct LaunchIo<'a> {
     /// Copied to the app's stdin until it ends; `None` closes stdin at once.
     pub stdin: Option<Box<dyn Read + Send>>,
     pub stdout: &'a mut dyn Write,
     pub stderr: &'a mut dyn Write,
-    /// Called once with the guest pid when the app started.
     pub started: &'a mut dyn FnMut(u32),
 }
 
-/// A handle that can signal a running launch from another thread, and
-/// feed a terminal launch its keys and size.
+/// A handle that signals a running launch from another thread, and feeds a
+/// terminal launch its keys and size.
 pub struct LaunchSignals<S> {
     writer: Arc<Mutex<S>>,
 }
@@ -69,7 +65,6 @@ impl<S: Duplex> LaunchSignals<S> {
         self.message(&HostMessage::Signal(signal))
     }
 
-    /// Input for the app, in chunks a frame carries.
     pub fn input(&self, bytes: &[u8]) -> Result<(), ProtocolError> {
         for chunk in bytes.chunks(MAX_CHUNK_BYTES) {
             self.message(&HostMessage::Stdin(chunk.to_vec()))?;
@@ -77,7 +72,6 @@ impl<S: Duplex> LaunchSignals<S> {
         Ok(())
     }
 
-    /// The host terminal of a terminal launch is now `size`.
     pub fn resize(&self, size: TerminalSize) -> Result<(), ProtocolError> {
         self.message(&HostMessage::Resize(size))
     }
@@ -88,10 +82,9 @@ impl<S: Duplex> LaunchSignals<S> {
     }
 }
 
-/// Start `launch` and relay its stdio until it exits.
-///
-/// `on_signals` receives a handle before the first byte is relayed, so a
-/// caller can forward its own Ctrl-C.
+/// Start `launch` and relay its stdio until it exits. `on_signals` receives a
+/// handle before the first byte is relayed, so a caller can forward its own
+/// signals from the start.
 pub fn launch<S: Duplex>(
     mut stream: S,
     launch: &Launch,
@@ -148,8 +141,8 @@ fn pump_stdin<S: Duplex>(input: Option<Box<dyn Read + Send>>, writer: Arc<Mutex<
         close(&writer);
         return;
     };
-    // Detached: a terminal's stdin may never end, and the launch returns as
-    // soon as the app exits; the thread ends with the next failed write.
+    // Detached: a terminal's stdin may never end, and the launch returns as soon
+    // as the app exits.
     std::thread::spawn(move || {
         let mut buffer = vec![0_u8; MAX_CHUNK_BYTES];
         loop {

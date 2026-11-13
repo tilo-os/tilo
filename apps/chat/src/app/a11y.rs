@@ -84,6 +84,7 @@ impl ChatApp {
                 if let Some(work) = &message.work {
                     node.with_description(crate::render_chat::agent_work_accessible_description(
                         work,
+                        !message.text.is_empty(),
                     ))
                 } else {
                     node

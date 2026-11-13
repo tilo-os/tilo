@@ -65,6 +65,13 @@ view player_bar(p: Player) {
 
 - Size classes in `rem`: `compact` (< 30rem), `medium` (< 52rem), `expanded` (< 75rem), `wide`.
   Large text moves a window into a narrower class, which is right.
+- The toolkit's own rule for a sidebar follows from the classes: a window stands its sidebar beside
+  the content only while the pane beside it keeps the class the content's kind asks for there
+  (`ui::widget::ContentKind::beside_sidebar_class`) — a column of text is no phone's screen, so it
+  asks for `medium` (`ui::widget::arrange::column_min_width`), where a grid of tiles or a surface
+  drawn on works narrower. Below that class the sidebar folds behind the bar's toggle and the
+  content takes the window. The window's own width decides it, never the display's: a window in a
+  strip, a tiled window and a phone follow one rule.
 - Also `space.orientation` (portrait, landscape, ultrawide) and, rarely, `space.width` in `rem`.
 - A view re-runs only when a class it read changes, not on every pixel of a resize. Boundaries
   have a little hysteresis so a window resized right at one doesn't flicker.
@@ -75,6 +82,11 @@ view player_bar(p: Player) {
 Logical units with edges snapped to device pixels (layout rounds every edge to the display's
 pixel grid, at fractional scales too); layouts reflow at 200 % text; sensible on portrait, phone
 and ultrawide; hit targets never shrink; leading and trailing instead of left and right.
+
+A page keeps one content gutter, `rhythm.group`, at its sides and its ends at every width: what a
+page holds stands one gutter in from the column, the same gutter separates it from what stands
+over and under it, and every app's page keeps the same one, so a notice over a list has as much
+room above it as below at a phone's width and a monitor's alike.
 
 ## 6. Checking
 
@@ -87,7 +99,29 @@ It also reads what a screen says and how its rows line up: every row at one dept
 at one x, nesting indents by one gutter, a box's rows end at one right edge, one choice is drawn
 selected once, a list offers one add entry, a name a screen reader announces is words rather than a
 code identifier, a destructive control says "Delete", a surface holds no surface of its own kind,
-and a narrow window keeps a 16 px gutter.
+a narrow window keeps a 16 px gutter, a list beside the page it opens highlights the row that page
+shows, a section's heading keeps clearly more room under the block over it than over the content it
+opens, the page's own sections stand under a rule that says where the writing they follow ends, and
+a surface whose corners round — a card, a notice — keeps a gutter from the edge of the
+column or window it stands in, where an edge would cut its shape, and the gap of a sibling from what
+stands over and under it, so a list under a notice is not read as a row of it. It reads that an item
+stands once: a list folds the branch of a row standing open into its item, since the document under
+that row lists it, so no step of a task is read both there and again as a row of the list.
+
+It reads a window as it stands at rest too, its bar hidden over the window's top edge, and holds a
+sidebar that declares a header row — the words that name its places and the buttons that add to
+them — to drawing it there: what a sidebar says of itself is on the window at every time, never
+only once the person reaches for the bar (`sidebar-header-on-reveal`).
+
+It reads a field's line where the field stands it: a field one band tall keeps its one line in the
+middle of the control, even where that band grew to a finger's target or a row stretched it to the
+face of the button beside it, while text that wraps, a box given rows of its own, a document's page
+and a field stretched to fill a pane start at the inset and grow down.
+
+It reads the words a window shows where their ink stands, the bar's own painted labels among
+them — the words of its tabs, its location, its pickers and its notices: two words drawn in one
+place are a `text-on-text` finding unless a surface of one's own stands between them, since
+whatever a person reads there is one run of letters, not two.
 
 It also reads the language a screen speaks: a window has one, so every word it says must resolve in
 that language, and a word only another language's catalogue holds is a `mixed-language` finding

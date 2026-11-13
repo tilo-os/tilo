@@ -12,8 +12,6 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc;
@@ -25,7 +23,7 @@ use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::PortalEffect;
 
-use common::{control, private_home};
+use crate::common::{control, private_home};
 
 /// A headless session with the agent door open, and its questions asked on the session's sheets.
 fn session(root: &std::path::Path, socket: &std::path::Path) -> (Session, Questions) {
@@ -132,7 +130,7 @@ fn press(session: &mut Session, effect: &str, args: Value) {
 /// Let the session run until `done` holds.
 #[track_caller]
 fn pump(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    common::wait_for(session, "what the test asked for", |session| {
+    crate::common::wait_for(session, "what the test asked for", |session| {
         done(session).then_some(())
     });
 }
@@ -143,7 +141,7 @@ fn admit(session: &mut Session, questions: &Questions, program: &Program) -> Val
     pump(session, |_| questions.pending().len() == 1);
     press(session, PortalEffect::SELECT.id, json!({"index": 1}));
     press(session, PortalEffect::CONFIRM.id, json!({}));
-    common::wait_for(session, "the program at the door to be served", |_| {
+    crate::common::wait_for(session, "the program at the door to be served", |_| {
         program.served.try_recv().ok()
     })
 }

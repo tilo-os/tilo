@@ -1,6 +1,3 @@
-//! What a frame costs the live window as the document grows: scrolling,
-//! typing in the middle and moving the caret through documents of 50, 500
-//! and 5000 blocks, each step charged one host frame on the UI thread.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_precision_loss,
@@ -47,9 +44,6 @@ fn clip(kind: &str, text: String) -> ClipBlock {
     }
 }
 
-/// A document of `blocks` blocks: headings, paragraphs of a few lines,
-/// bulleted and numbered list items, a 3×3 table and a missing image now
-/// and then.
 pub(crate) fn document(blocks: usize) -> Vec<ClipBlock> {
     let mut out = Vec::with_capacity(blocks);
     let mut table = 0;
@@ -100,14 +94,11 @@ pub(crate) fn document(blocks: usize) -> Vec<ClipBlock> {
     out
 }
 
-/// The editor's own diagnostic view of itself.
 pub(crate) fn observe(app: &App) -> serde_json::Value {
     app.controlled_native_input_snapshot_for_test()
         .expect("the editor publishes its input snapshot")
 }
 
-/// Paste `blocks` into the open record's first paragraph through the
-/// editor's own action, as a paste does.
 fn fill(app: &mut App, blocks: Vec<ClipBlock>) {
     let caret = observe(app)["caret_block"]
         .as_str()
@@ -127,14 +118,11 @@ fn fill(app: &mut App, blocks: Vec<ClipBlock>) {
         .expect("the paste is allowed");
 }
 
-/// A host: the window's damage, as a copying host keeps it, and the scene.
 pub(crate) struct Host {
     damage: SurfaceDamage,
     scene: vello::Scene,
 }
 
-/// One step: its UI-thread CPU time, and whether it repainted the window
-/// whole or drew anything.
 #[derive(Clone, Copy)]
 pub(crate) struct Step {
     pub(crate) cpu_ms: f64,
@@ -150,7 +138,6 @@ impl Host {
         }
     }
 
-    /// One host frame.
     pub(crate) fn frame(&mut self, app: &mut App) -> (bool, bool) {
         self.scene.reset();
         app.surface_frame_with_damage(&Window, &mut self.scene, &mut self.damage);
@@ -167,7 +154,6 @@ impl Host {
         }
     }
 
-    /// `events`, then one frame, on the UI thread's clock.
     pub(crate) fn step(&mut self, app: &mut App, events: Vec<WindowEvent>) -> Step {
         let before = ui::rt::thread_cpu_time();
         for event in events {
@@ -185,7 +171,6 @@ impl Host {
         }
     }
 
-    /// Frames until the window is at rest.
     pub(crate) fn settle(&mut self, app: &mut App) {
         for _ in 0..240 {
             self.frame(app);
@@ -214,8 +199,6 @@ fn press(button: ElementState) -> WindowEvent {
 
 pub(crate) const AT: (f64, f64) = (640.0, 450.0);
 
-/// The live window on a document of `blocks` blocks, settled, the pointer
-/// over the page.
 pub(crate) fn opened(app: &mut App, host: &mut Host, blocks: usize) {
     app.init_layout();
     host.settle(app);
@@ -234,7 +217,6 @@ pub(crate) fn opened(app: &mut App, host: &mut Host, blocks: usize) {
     );
 }
 
-/// Scroll to the middle of the document and click into the text there.
 pub(crate) fn caret_in_the_middle(app: &mut App, host: &mut Host) {
     let max = observe(app)["max_scroll"].as_f64().unwrap_or(0.0);
     host.step(app, vec![wheel(-max / 2.0, TouchPhase::Moved)]);
@@ -246,11 +228,8 @@ pub(crate) fn caret_in_the_middle(app: &mut App, host: &mut Host) {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ScrollInput {
-    /// A mouse wheel notch every fourth frame.
     Wheel,
-    /// A touchpad flick, released to glide.
     Fling,
-    /// A finger dragging the page up, lifting, and again.
     TouchDrag,
 }
 
@@ -326,7 +305,6 @@ fn quantiles(mut values: Vec<f64>) -> String {
     format!("p50 {p50:6.2} p95 {p95:6.2} max {max:6.2}")
 }
 
-/// Pin this thread to two of the CPUs it may run on, as a weak machine has.
 fn two_cores() {
     let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
         return;
@@ -362,16 +340,12 @@ fn two_cores() {
     eprintln!("pinned to cpus {},{}: {status:?}", cpus[0], cpus[1]);
 }
 
-/// Measurement: ten seconds of scrolling by wheel, fling and touch drag,
-/// typing in the middle and moving the caret, through documents of 50, 500
-/// and 5000 blocks.
 #[test]
 #[ignore = "measurement"]
 fn measure_frame_cost_by_document_length() {
     measure();
 }
 
-/// The same, on two cores.
 #[test]
 #[ignore = "measurement"]
 fn measure_frame_cost_on_two_cores() {
@@ -379,8 +353,6 @@ fn measure_frame_cost_on_two_cores() {
     measure();
 }
 
-/// The scopes counted while `steps` ran in the live window on a document
-/// of `blocks` blocks, `prepare` having run first.
 fn counted(
     blocks: usize,
     prepare: impl FnOnce(&mut App, &mut Host),

@@ -1,11 +1,5 @@
-//! Read-only projection of the canonical external accounts that can provide
-//! files.  Settings owns setup and credential custody; the storage daemon's
-//! cloud service mounts sync accounts at `~/Remote/<label>` and reports
-//! their health. Import accounts instead open a remote browser without a
-//! mount. Files owns neither credentials nor the mounted folders.
-//!
-//! This projection never opens [`accounts::SecretVault`] and never talks to
-//! the server, so it is safe to expose to people, search, and agents.
+//! The external accounts Files shows, read from Settings: where each one mounts,
+//! and what to say when it cannot.
 
 use std::path::{Path, PathBuf};
 
@@ -23,7 +17,6 @@ pub const MAX_REMOTE_ACCOUNTS: usize = 64;
 const MAX_LABEL_CHARS: usize = 120;
 const MAX_HOST_CHARS: usize = 253;
 
-/// A non-secret, bounded Files-facing account descriptor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteAccount {
     pub id: AccountId,
@@ -31,10 +24,7 @@ pub struct RemoteAccount {
     pub label: String,
     pub host: String,
     pub health: RemoteAccountHealth,
-    /// Whether the account opens a sync folder or the remote import browser.
     pub files_mode: FilesMode,
-    /// Where the cloud service mounts the account (`~/Remote/<label>`).
-    /// The folder exists only while the account is mounted.
     pub mount: Option<PathBuf>,
 }
 
@@ -43,7 +33,6 @@ impl RemoteAccount {
         self.files_mode == FilesMode::Import
     }
 
-    /// Import sources never advertise background synchronization.
     pub fn badge(&self) -> Option<String> {
         if self.is_import()
             && matches!(
@@ -118,8 +107,6 @@ impl RemoteAccountHealth {
         }
     }
 
-    /// Human-safe guidance about an account's folder. It deliberately says
-    /// nothing about credentials or server responses.
     pub fn unavailable_reason(self) -> &'static str {
         match self {
             Self::Disabled => "This account is disabled in Settings",
@@ -134,7 +121,6 @@ impl RemoteAccountHealth {
         }
     }
 
-    /// A short badge for the account's folder; `None` when all is well.
     pub fn badge(self) -> Option<&'static str> {
         match self {
             Self::Healthy => None,
@@ -147,10 +133,6 @@ impl RemoteAccountHealth {
     }
 }
 
-/// Load from an explicit Settings config root, with mounts under
-/// `home/Remote`. DAV URLs with userinfo/query or a non-HTTPS scheme are
-/// withheld. OAuth providers use fixed public service labels rather than
-/// copying configured authorization endpoints or credentials into the view.
 pub fn load_in(config_root: &Path, home: Option<&Path>) -> Vec<RemoteAccount> {
     let store = accounts::AccountStore::load_in(config_root);
     let health = AccountSyncStatusStore::load_in(config_root);
@@ -166,7 +148,6 @@ pub fn load_in(config_root: &Path, home: Option<&Path>) -> Vec<RemoteAccount> {
     projected
 }
 
-/// The folder under the home directory the cloud service mounts into.
 pub const MOUNTS_DIR: &str = "Remote";
 
 /// Name each account's folder exactly as the cloud service does: every
@@ -193,7 +174,6 @@ fn assign_mounts(projected: &mut [RemoteAccount], store: &accounts::AccountStore
     }
 }
 
-/// Whether the cloud service considers `account` a mountable file account.
 fn is_file_account(account: &Account) -> bool {
     if matches!(
         account.type_id.as_str(),
@@ -273,9 +253,6 @@ fn from_account(account: &Account, statuses: &AccountSyncStatusStore) -> Option<
     })
 }
 
-/// Return a display host only for an origin that is safe to present as a
-/// remote endpoint. This is intentionally small rather than accepting every
-/// URL form: account setup owns discovery and redirect policy.
 fn safe_https_host(raw: &str) -> Option<String> {
     let rest = raw.strip_prefix("https://")?;
     if rest.is_empty() || rest.contains(['@', '?', '#', '\\']) {
@@ -302,8 +279,6 @@ fn bounded_label(label: &str) -> String {
         .collect()
 }
 
-/// Stable, non-path identity used by the resource tree and search. Account
-/// ids can contain punctuation, so hex keeps action-address parsing simple.
 pub fn resource_id(id: &AccountId) -> String {
     format!("files.remote-account:{}", hex::encode(id.as_str()))
 }
@@ -319,7 +294,6 @@ pub fn type_id(kind: RemoteAccountKind) -> AccountTypeId {
     }
 }
 
-/// The account id a [`resource_id`] names.
 pub fn account_of_resource(resource: &str) -> Option<String> {
     let hex_id = resource.strip_prefix("files.remote-account:")?;
     String::from_utf8(hex::decode(hex_id).ok()?).ok()
@@ -384,9 +358,6 @@ mod tests {
             dav.config = serde_json::json!({"server_url":"https://files.example/dav"});
             store.upsert(dav);
             store.save_in(root.path()).unwrap();
-            // The storage daemon reserves mount names for every file provider,
-            // including disabled accounts. The Files resource must open DAV,
-            // rather than the earlier provider's identically named folder.
             let loaded = load_in(root.path(), Some(home.path()));
             let dav = loaded
                 .iter()
@@ -425,10 +396,8 @@ mod tests {
         assert_eq!(b.health, RemoteAccountHealth::NeverChecked);
     }
 
-    /// Only safe HTTPS origins are presented, identities never use raw ids, Nextcloud without files is no resource and no credentials are projected.
     #[test]
     fn remote_account_projection_is_safe_and_identity_scoped() {
-        // --- phase: only_safe_https_origins_are_presented ---
         {
             assert_eq!(
                 safe_https_host("https://cloud.example/dav"),
@@ -439,7 +408,6 @@ mod tests {
             assert_eq!(safe_https_host("https://cloud.example/?token=secret"), None);
         }
 
-        // --- phase: resource_identity_never_uses_the_raw_account_id ---
         {
             assert_eq!(
                 resource_id(&AccountId::from("work/account")),
@@ -447,7 +415,6 @@ mod tests {
             );
         }
 
-        // --- phase: nextcloud_without_files_is_not_a_files_resource ---
         {
             let mut account = Account::new("cloud", NEXTCLOUD_TYPE);
             account.display_name = "Personal cloud".into();
@@ -460,7 +427,6 @@ mod tests {
             assert!(from_account(&account, &AccountSyncStatusStore::default()).is_none());
         }
 
-        // --- phase: projection_uses_no_username_or_password ---
         {
             let mut account = Account::new("work", WEBDAV_TYPE);
             account.display_name = "Work files".into();

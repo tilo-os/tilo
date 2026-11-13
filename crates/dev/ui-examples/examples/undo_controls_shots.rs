@@ -1,22 +1,6 @@
 //! Offscreen renders of the [`UndoButton`] pair in every availability state,
 //! in **both** light and dark, for self-inspection without opening a window.
-//!
-//! Drives the real pipeline (`sync` → `build_layout` → `compute_layout` →
-//! `apply_layout` → `draw`) over a real [`State`] whose history was built by real
-//! committed actions, and publishes the status through the same
-//! `State::undo_status` → `UndoControl::set_undo_status` route the host uses — so
-//! what is painted here is what a user sees.
-//!
 //! Run: `cargo run -p ui-examples --example ui-shots -- undo_controls_shots`
-//! Out: `$UNDO_SHOTS_OUT` (default `/tmp/undo_controls_shots`) —
-//!       undo-{dark,light}-{empty,undoable,redoable,hovered}.png
-//!
-//!   * `empty`    — a fresh document: both controls dimmed and inert.
-//!   * `undoable` — one action performed: Undo live, Redo still dimmed.
-//!   * `redoable` — that action undone: Undo dimmed, Redo live.
-//!   * `hovered`  — pointer on the icon Undo, keyboard focus on the labelled
-//!     one: the two interactive states, both on controls that can actually
-//!     act (a control the host would never focus must never look focused).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -32,6 +16,7 @@ use tilo_ui::permissions::UserId;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::{Row, UndoButton, Widget};
 
 const WIDTH: u32 = 300;
@@ -172,7 +157,7 @@ fn shoot(theme: &Theme, out: &Path, case: Case) -> Result<(), String> {
 
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
-    row.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    row.draw_child(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
     r.render_png(&scene, theme.tokens.colors.surfaces.content, out);

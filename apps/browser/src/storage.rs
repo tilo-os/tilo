@@ -1,4 +1,4 @@
-//! Explicit browser data-root routing. Defaults preserve existing normal paths.
+//! Explicit browser data-root routing; the defaults are the platform's paths.
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 static ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -30,9 +30,9 @@ pub fn configure(root: Option<&str>) -> Result<(), String> {
     }
     Ok(())
 }
-/// Route this process's browser data for the window it opens: a private
-/// window gets an isolated private root, removed when it is done; any other
-/// window the root `TILO_BROWSER_APP_ROOT` names, else the platform's.
+/// Route this process's browser data for the window it opens: a private window gets an
+/// isolated private root, removed when it is done; any other window the root
+/// `TILO_BROWSER_APP_ROOT` names, else the platform's.
 pub fn prepare_window(private: bool) -> Result<(), String> {
     static PREPARED: OnceLock<Result<(), String>> = OnceLock::new();
     PREPARED
@@ -69,7 +69,6 @@ pub fn cache_dir() -> Option<PathBuf> {
         .or_else(|| tilo_paths::cache_dir().map(|p| p.join("tilo-browser")))
 }
 
-/// Create and mark an isolated private-storage directory.
 pub fn allocate_private_root() -> Result<PathBuf, String> {
     sweep_orphaned_private_roots();
     for _ in 0..16 {
@@ -115,9 +114,8 @@ fn write_private_root_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// Serialize private cache writes against native-helper root cleanup.
 ///
-/// Cleanup takes the same file lock exclusively before removing the root.
-/// Opening without `create` ensures a writer arriving after cleanup cannot
-/// recreate any part of the path.
+/// Cleanup takes the same file lock exclusively before removing the root, and opening
+/// without `create` ensures a writer arriving after cleanup cannot recreate the path.
 pub fn private_root_write_guard(
     directory: &Path,
 ) -> Result<Option<tilo_files::native::lock::FileLock>, String> {
@@ -153,8 +151,8 @@ fn sweep_orphaned_private_roots() {
     if RUNNING.swap(true, Ordering::AcqRel) {
         return;
     }
-    // Directory enumeration can be large. Keep it off the UI thread and admit
-    // only one cleanup worker per process; explicit window cleanup is unchanged.
+    // Directory enumeration can be large: keep it off the UI thread and admit one worker
+    // per process.
     if std::thread::Builder::new()
         .name("browser-private-orphans".into())
         .spawn(|| {
@@ -223,13 +221,12 @@ fn sweep_orphaned_private_entries(entries: impl Iterator<Item = PathBuf>) {
     }
 }
 
-/// One open Browser window of the profile: every tab is a window, and many
-/// are processes of their own, so "the Browser closes" is the last of them
-/// closing.
+/// One open Browser window of the profile: every tab is a window, and many are processes of
+/// their own, so "the Browser closes" is the last of them closing.
 pub use ui::storage::OpenWindow;
 
-/// Count a window among the profile's at `root`, which is made if it is not
-/// there yet: a first window opens before anything else writes to it.
+/// Count a window among the profile's at `root`, which is made if it is not there yet: a
+/// first window opens before anything else writes to it.
 pub fn open_window(root: &Path) -> std::io::Result<OpenWindow> {
     std::fs::create_dir_all(root)?;
     OpenWindow::open(root)
@@ -251,7 +248,6 @@ mod tests {
         root
     }
 
-    /// Private storage roots allocation and cleanup.
     #[test]
     fn private_roots_are_owned_unique_and_swept_within_budget() {
         {
@@ -268,7 +264,6 @@ mod tests {
             std::fs::remove_dir_all(second).unwrap();
         }
 
-        // Phase `allocation_sweeps_only_owned_roots_with_dead_processes`.
         #[cfg(unix)]
         {
             let parent = tempfile::tempdir().unwrap();

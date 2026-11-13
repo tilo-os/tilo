@@ -46,11 +46,11 @@ impl Resolver<'_> {
                 );
                 continue;
             };
-            if param.default.is_some() || param.place.is_some() {
+            if param.default.is_some() || param.place.is_some() || param.label.is_some() {
                 self.err(
                     "E130",
                     t.name.span,
-                    "a trigger's parameter is the record it runs for, and no call gives it: it takes no default or place",
+                    "a trigger's parameter is the record it runs for, and no call gives it: it takes no default, place or label",
                 );
             }
             let ty = self.resolve_type(&param.ty, false);

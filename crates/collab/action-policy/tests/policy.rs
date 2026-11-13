@@ -1,6 +1,6 @@
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Basis, Change, Context, Grant, GrantId, Ids, KindSet, Labels,
-    Level, Lifetime, Party, Preset, PresetError, Refusal, Role, Rule, Subject, TreePath,
+    Acting, ActionKind, Answer, Authority, Basis, Change, Context, Grant, GrantId, Ids, KindSet,
+    Labels, Level, Lifetime, Party, Preset, PresetError, Refusal, Role, Rule, Subject, TreePath,
     WorkspacePolicy, decide, describe, describe_node,
     roles::{self, governance},
     sentences,
@@ -335,7 +335,7 @@ fn grants_apply_only_to_their_subject() {
 
 #[test]
 fn wall_clock_context_preserves_epoch_and_expiry() {
-    use tilo_clock::{Duration, UNIX_EPOCH};
+    use tilo_clock::time::{Duration, UNIX_EPOCH};
 
     assert_eq!(Context::at_time(UNIX_EPOCH).now_unix_ms, 0);
     assert_eq!(
@@ -530,7 +530,7 @@ fn every_bound_applies() {
     assert!(
         verdict
             .explain()
-            .starts_with("Not allowed: the delegation's grants"),
+            .starts_with("Not allowed: the grants of those acting for them"),
         "{}",
         verdict.explain()
     );
@@ -1234,16 +1234,17 @@ fn a_standing_carries_the_person_and_every_bound() {
         bob.answer(&bob.node(&relative), ActionKind::Outside, &cx()),
         Answer::Ask
     );
-    let agent = Standing::person(workspace.clone(), BOB).bounded_by(
-        Subject::agent("ag"),
-        roles::agent_default(&[mail()]).assign(
-            "ag",
-            &Subject::agent("ag"),
-            &alice(),
-            &Lifetime::UntilRevoked,
-        ),
-    );
-    assert!(agent.is_bounded_by(&Subject::agent("ag")));
+    let agent = Standing::new(
+        workspace.clone(),
+        Acting::agent("ag").acting_for(Acting::person(BOB)),
+    )
+    .granted(roles::agent_default(&[mail()]).assign(
+        "ag",
+        &Subject::agent("ag"),
+        &alice(),
+        &Lifetime::UntilRevoked,
+    ));
+    assert_eq!(agent.people(), vec![BOB]);
     assert_eq!(
         agent.answer(&archive(), ActionKind::Undoable, &cx()),
         Answer::Allow
@@ -1381,7 +1382,7 @@ fn a_foreign_device_never_governs() {
     let workspace = workspace_with_members(&[]);
     let bound = roles::foreign_device_bound();
     let authority = Authority::person(workspace.party(ALICE))
-        .bounded_by(Party::new(vec![Subject::ForeignDevice], &bound));
+        .bounded_by(Party::new(vec![Subject::ForeignDevice], bound.iter()));
     assert_eq!(
         authority.decide(&send(), ActionKind::Outside, &cx()).answer,
         Answer::Ask
@@ -1578,6 +1579,10 @@ impl Labels for Names {
             (Level::Workspace, "r") => Some("Project workspace".into()),
             _ => None,
         }
+    }
+
+    fn everything(&self) -> String {
+        "Everything".to_owned()
     }
 }
 
@@ -1846,12 +1851,11 @@ fn an_agent_delegation_bounds_its_person_by_the_editor_preset() {
     let workspace = workspace_with_members(&[(BOB, Role::Viewer)]);
     let records = TreePath::workspace("r").app("notes").action("append");
     let set_role = roles::governance_action("r", governance::SET_ROLE);
-    let owner_agent = Standing::person(workspace.clone(), ALICE).with_bound(roles::agent_turn(
-        "r",
-        "scribe",
-        ALICE,
-        &[],
-    ));
+    let owner_agent = Standing::new(
+        workspace.clone(),
+        Acting::agent("scribe").acting_for(Acting::person(ALICE)),
+    )
+    .granted(roles::agent_grants("r", "scribe", ALICE, &[]));
     assert_eq!(
         owner_agent.answer(&records, ActionKind::Undoable, &cx()),
         Answer::Allow
@@ -1865,8 +1869,11 @@ fn an_agent_delegation_bounds_its_person_by_the_editor_preset() {
         Answer::Allow,
         "the owner governs"
     );
-    let viewer_agent =
-        Standing::person(workspace, BOB).with_bound(roles::agent_turn("r", "scribe", BOB, &[]));
+    let viewer_agent = Standing::new(
+        workspace,
+        Acting::agent("scribe").acting_for(Acting::person(BOB)),
+    )
+    .granted(roles::agent_grants("r", "scribe", BOB, &[]));
     assert_eq!(
         viewer_agent.answer(&records, ActionKind::Undoable, &cx()),
         Answer::Deny
@@ -2282,6 +2289,39 @@ fn the_device_panel_reads_the_session_kind_and_no_other_app_does() {
         .expect("an older workspace gains the panel's grant");
     assert_eq!(panel.granted_by, Subject::Person(ALICE.to_owned()));
     assert_eq!(reads(&gained.grants, roles::DEVICE_PANEL), Answer::Allow);
+}
+
+/// Every workspace has files, the Files app's record: the app authors there
+/// as part of the workspace's make-up, so a member the workspace lets change
+/// its content may start that record, and a viewer still may not.
+#[test]
+fn every_workspace_lets_its_files_app_author_its_files() {
+    let workspace = workspace_with_members(&[]);
+    let files = workspace
+        .grants
+        .iter()
+        .find(|grant| roles::is_files_app(grant))
+        .expect("a new workspace grants its files' app");
+    assert_eq!(files.subject, Subject::App(roles::FILES_APP.to_owned()));
+    assert_eq!(files.node, TreePath::workspace("r").app(roles::FILES_APP));
+    assert_eq!(files.kinds, KindSet::READ_UNDOABLE);
+    assert!(roles::is_code_defined(files) && roles::is_make_up(files));
+    assert!(workspace.app_authors(roles::FILES_APP, &cx()));
+    assert!(!workspace.app_authors("so.tilo.notes", &cx()));
+
+    // A workspace written before the files' app was part of its make-up
+    // gains its grant, given by its owner.
+    let mut older = workspace_with_members(&[]);
+    older.grants.retain(|grant| !roles::is_files_app(grant));
+    assert!(!older.app_authors(roles::FILES_APP, &cx()));
+    let gained = older.with_current_roles();
+    let files = gained
+        .grants
+        .iter()
+        .find(|grant| roles::is_files_app(grant))
+        .expect("an older workspace gains the files' app's grant");
+    assert_eq!(files.granted_by, Subject::Person(ALICE.to_owned()));
+    assert!(gained.app_authors(roles::FILES_APP, &cx()));
 }
 
 #[test]

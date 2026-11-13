@@ -1,15 +1,12 @@
-//! Music's identity for the toolkit-owned desktop media-control service.
-//!
-//! Snapshots, command delivery, publication, and host support live in `ui`.
-//! Music only supplies its identity and routes commands through its actions.
+//! Music's identity for the toolkit's desktop media service; snapshots and publication
+//! live in `ui`.
 
 pub use ui::mpris::{
     MprisCommand, MprisConfig, MprisHandle, OBJECT_PATH, PlaybackStatus, PlayerSnapshot,
     track_object_path,
 };
 
-/// Music's player. Its bus name, also named in the shell's playback handoff
-/// record, is the launched package's (see [`MprisConfig::new`]).
+/// Music's player; its bus name comes from the launched package.
 pub fn config() -> MprisConfig {
     let mut config = MprisConfig::new("tilo-music", "Tilo Music");
     config.desktop_entry = "music".into();
@@ -18,8 +15,7 @@ pub fn config() -> MprisConfig {
     config
 }
 
-/// What the platform player's system controls are told plays, from what
-/// MPRIS publishes.
+/// What the platform player's controls are told plays.
 pub(crate) fn now_playing_of(snap: &PlayerSnapshot) -> media::NowPlaying {
     media::NowPlaying {
         title: snap.title.clone(),
@@ -29,8 +25,7 @@ pub(crate) fn now_playing_of(snap: &PlayerSnapshot) -> media::NowPlaying {
     }
 }
 
-/// A press on the platform player's system controls, as the MPRIS command
-/// that asks the same.
+/// A press on the platform player's controls, as the MPRIS command.
 pub(crate) fn command_for(action: media::NowPlayingAction) -> MprisCommand {
     match action {
         media::NowPlayingAction::Play => MprisCommand::Play,

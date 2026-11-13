@@ -10,7 +10,7 @@ use tilolang_runtime::{
 };
 use tilolang_tilo::publish::Caller;
 
-use crate::fixtures::Replica;
+use crate::fixtures::{Replica, target};
 
 const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
@@ -64,13 +64,6 @@ fn agent(who: &str) -> Caller {
         actor: who.to_owned(),
         agent: true,
         on_behalf_of: Some("ada".to_owned()),
-    }
-}
-
-fn target(v: &Value) -> ResourceRef {
-    match v {
-        Value::Ref(r) => (*r.target).clone(),
-        other => panic!("a resource: {other:?}"),
     }
 }
 
@@ -305,6 +298,15 @@ fn the_task_shows_what_waits_on_it_and_who_proposed_it() {
     );
 }
 
+/// The project the task stands under, as its card's view takes it: the row a board draws leaves
+/// out the project the board is of.
+fn project_of(ada: &Replica, task: &Value) -> Value {
+    match read(ada, task, "project") {
+        Value::Opt(Some(held)) => *held,
+        other => panic!("a filed task stands under a project: {other:?}"),
+    }
+}
+
 /// The task's card view, which draws its row.
 fn card_view(ada: &Replica, task: &Value) -> tilolang_runtime::ViewInstance {
     ada.host
@@ -320,7 +322,7 @@ fn card_view(ada: &Replica, task: &Value) -> tilolang_runtime::ViewInstance {
                 .find(|v| v.name == "task_card")
                 .unwrap()
                 .id,
-            vec![task.clone(), Value::List(Vec::new())],
+            vec![task.clone(), project_of(ada, task), Value::List(Vec::new())],
         )
         .unwrap()
 }

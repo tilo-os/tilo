@@ -21,6 +21,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use super::ChatApp;
+use ui::widget::DrawChild;
 
 /// The [`ChatApp`] the window shows, as the view and the window share it.
 pub(crate) type SharedChat = Rc<RefCell<ChatApp>>;
@@ -61,6 +62,7 @@ impl ChatWindow {
 
 impl Widget for ChatWindow {
     ui::provides!(
+        dyn ui::widget::controls::ActionControls,
         dyn ui::widget::Collaborative,
         dyn ui::widget::Continuable,
         dyn ui::widget::FloatingSurfaceProvider,
@@ -179,7 +181,7 @@ impl Widget for ChatWindow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.state().draw(scene, tf, tr, theme, presence);
+        self.state().draw_child(scene, tf, tr, theme, presence);
     }
 
     fn draw_overlay(
@@ -480,5 +482,27 @@ impl FloatingSurfaceProvider for ChatWindow {
 
     fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
         self.state().on_floating_surface_event_source(id);
+    }
+}
+
+impl ui::widget::controls::ActionControls for ChatWindow {
+    /// The composer's send button is where Chat's `send` lands: a person's
+    /// press, an agent's send and the desk's send-to box are one action, so a
+    /// marker drawn for anyone sending rests on that button.
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let chat = self.chat.borrow();
+        let mut bindings: Vec<ui::widget::ControlBindingMetadata> = chat
+            .send_action
+            .as_ref()
+            .map(|send| ui::widget::ControlBindingMetadata {
+                control_id: super::Hit::Send.semantic_id(),
+                kind: ui::widget::ControlBindingKind::Action(send.clone()),
+            })
+            .into_iter()
+            .collect();
+        // What the chat paints over itself keeps the bindings it had: the
+        // controls assistive technology names route through their own keys.
+        bindings.extend(ui::widget::semantic_action_bindings(chat.accessibility()));
+        bindings
     }
 }

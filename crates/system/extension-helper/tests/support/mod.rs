@@ -49,7 +49,6 @@ pub fn sign(key: &[u8], data: &[u8]) -> Vec<u8> {
     sha256_hex(&[key, data].concat()).into_bytes()
 }
 
-/// A stand-in RPM: its header and payload as JSON.
 pub fn rpm(name: &str, version: &str) -> (String, Vec<u8>) {
     rpm_with(
         name,
@@ -88,7 +87,6 @@ impl Response for Body {
     }
 }
 
-/// The real signature check, with a tilo-crypto that is not at /usr/bin.
 struct RealVerify(PathBuf);
 
 impl Host for RealVerify {
@@ -97,7 +95,6 @@ impl Host for RealVerify {
     }
 }
 
-/// What the helper sees of the machine.
 #[derive(Default)]
 pub struct Fake {
     pub packages: RefCell<Vec<String>>,
@@ -108,9 +105,7 @@ pub struct Fake {
     pub unmerges: Cell<u32>,
     pub merged: RefCell<Vec<String>>,
     pub masked: Cell<bool>,
-    /// Renames out of the download cache fail as if it were another mount.
     pub cross_device: Cell<bool>,
-    /// Real rpm, rpm2archive and a real P-256 check through this tilo-crypto.
     pub real_tools: Option<PathBuf>,
     pub rpm_queries: Cell<u32>,
 }
@@ -231,7 +226,6 @@ impl Host for Fake {
     }
 }
 
-/// How to publish a manifest.
 pub struct Publish {
     pub fingerprint: Option<String>,
     pub key: &'static [u8],
@@ -250,7 +244,6 @@ impl Default for Publish {
     }
 }
 
-/// A Tilo root in a temporary directory with a fake network.
 pub struct Machine {
     _tmp: tempfile::TempDir,
     pub root: PathBuf,

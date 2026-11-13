@@ -1,42 +1,29 @@
 //! Events as the person looking at them sees them: each occurrence at its
 //! instant, in the viewer's time zone.
-//!
-//! An event keeps the wall time and zone it was authored in (a New York
-//! meeting at 09:00 `America/New_York`, a Google event at 07:00 `UTC`). The
-//! views place it at that instant on the viewer's clock: 15:00 and 09:00 for
-//! someone in Berlin in summer. Floating events and all-day dates have no
-//! instant and keep their wall time and dates everywhere.
 
 use chrono::{DateTime, Duration, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use chrono_tz::Tz;
 
 use crate::model::Event;
 
-/// The zone the views are drawn in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Viewer {
-    /// A named zone, or `None` for whatever the system clock reports.
     zone: Option<Tz>,
 }
 
 impl Viewer {
-    /// The device's zone: `$TZ` when it names one, else what
-    /// `/etc/localtime` links to, else the system clock's offsets.
     pub fn device() -> Self {
         Self {
             zone: device_zone_name().and_then(|name| name.parse::<Tz>().ok()),
         }
     }
 
-    /// A fixed zone, as a capture or a test pins it.
     pub fn named(zone: &str) -> Self {
         Self {
             zone: zone.parse::<Tz>().ok(),
         }
     }
 
-    /// The zone's IANA name, which new events are authored in; `None` when
-    /// the system names no zone.
     pub fn zone_name(&self) -> Option<&'static str> {
         self.zone.map(Tz::name)
     }
@@ -48,8 +35,6 @@ impl Viewer {
         }
     }
 
-    /// The instant the viewer's clock shows `wall` at: the earlier one in a
-    /// repeated hour, the first real minute after a skipped one.
     pub fn instant(&self, wall: NaiveDateTime) -> Option<DateTime<Utc>> {
         match self.zone {
             Some(zone) => crate::timezone::wall_to_utc(zone.name(), wall).map(|(at, _)| at),
@@ -64,7 +49,6 @@ impl Viewer {
         }
     }
 
-    /// `wall`, authored on the viewer's clock, as a wall time in `zone`.
     pub fn to_zone(&self, wall: NaiveDateTime, zone: &str) -> NaiveDateTime {
         if zone == "floating" || Some(zone) == self.zone_name() {
             return wall;
@@ -80,39 +64,27 @@ impl Viewer {
     }
 }
 
-/// The IANA name of the device's zone, if the system names one this
-/// calendar's zone database knows.
 fn device_zone_name() -> Option<String> {
     let name = ui::time::local_zone_name()?;
     crate::timezone::canonical_zone(&name).filter(|zone| zone != "floating")
 }
 
-/// One occurrence of an event as the viewer sees it.
 #[derive(Clone, Copy, Debug)]
 pub struct Shown<'a> {
     pub event: &'a Event,
-    /// The date the occurrence was generated for, in the event's own zone:
-    /// what identifies it in the series.
     pub original: NaiveDate,
-    /// Its start and end on the viewer's clock (dates at midnight for an
-    /// all-day event, the end exclusive).
     pub start: NaiveDateTime,
     pub end: NaiveDateTime,
-    /// How long it lasts: the instants' difference, which a repeated or
-    /// skipped wall hour makes differ from the walls'.
     pub elapsed: Duration,
 }
 
 impl Shown<'_> {
-    /// Whether the occurrence is on `day`: it starts that day, or runs into
-    /// it.
     pub fn on(&self, day: NaiveDate) -> bool {
         let from = day.and_time(NaiveTime::MIN);
         let to = from + Duration::days(1);
         self.start < to && (self.end > from || self.start >= from)
     }
 
-    /// The minutes of `day` it covers, `[start, end)`, for a timed one.
     pub fn minutes_on(&self, day: NaiveDate) -> (i64, i64) {
         let from = day.and_time(NaiveTime::MIN);
         let start = (self.start - from).num_minutes().clamp(0, 24 * 60);
@@ -143,15 +115,12 @@ pub fn wall_interval(event: &Event, date: NaiveDate) -> (NaiveDateTime, NaiveDat
     (start, end)
 }
 
-/// The override that applies to the occurrence on `date`: the one for that
-/// original date, or one moved onto it.
 fn override_on(event: &Event, date: NaiveDate) -> Option<&crate::model::OccurrenceOverride> {
     event.occurrence_overrides.iter().find(|edit| {
         edit.original_date == date || edit.start.is_some_and(|start| start.date() == date)
     })
 }
 
-/// The instants an occurrence spans; `None` for floating and all-day ones.
 pub fn instants(event: &Event, date: NaiveDate) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
     if event.all_day {
         return None;
@@ -169,16 +138,12 @@ pub fn instants(event: &Event, date: NaiveDate) -> Option<(DateTime<Utc>, DateTi
     Some((start, end))
 }
 
-/// Every occurrence of `event` the viewer sees between `from` and `to`
-/// (inclusive dates on the viewer's clock), in order.
 pub fn occurrences<'a>(
     event: &'a Event,
     from: NaiveDate,
     to: NaiveDate,
     viewer: &Viewer,
 ) -> Vec<Shown<'a>> {
-    // Zones put one instant on dates up to a day apart, and an all-day
-    // event that began earlier still covers the window.
     let reach = if event.all_day {
         event.all_day_span_days()
     } else {
@@ -274,9 +239,6 @@ mod tests {
 
     #[test]
     fn repeating_events_follow_their_own_zones_daylight_saving() {
-        // New York changes its clocks a week before Berlin does in
-        // October: a weekly 09:00 New York call is 15:00 in Berlin, then
-        // 14:00 for the week between, then 15:00 again.
         let berlin = Viewer::named("Europe/Berlin");
         let mut weekly = event("America/New_York", at(2026, 10, 19, 9, 0), 60);
         weekly.recurrence = Recurrence::Weekly;

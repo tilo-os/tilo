@@ -27,6 +27,8 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::platform::fabric::{DeviceId, PersonalFabricAction};
+use crate::platform::fabric::{FabricLink as _, NearbySpoolOffer, SharedLink};
 use runtime_collab::{
     MAX_NEARBY_TRANSFER_DESTINATIONS, MAX_NEARBY_TRANSFER_LABEL_BYTES,
     MAX_NEARBY_TRANSFER_NAME_BYTES, MAX_NEARBY_TRANSFER_STATUSES, MAX_NEARBY_TRANSFER_TARGETS,
@@ -35,12 +37,11 @@ use runtime_collab::{
     NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget,
 };
 use tilo_action_broker::services::{
-    NearbyTransferChange, NearbyTransferRequestContext, NearbyTransferServices, WorkspaceAuthority,
+    NearbyTransferChange, NearbyTransferRequestContext, NearbyTransferServices,
 };
+use tilo_broker_core::services::WorkspaceAuthority;
 use tilo_capture_studio::{Refusal, Sent};
 use tilo_desktop_model::capability::{Capability, FsMode};
-use tilo_device_fabric::link::{FabricLink as _, NearbySpoolOffer, SharedLink};
-use tilo_device_fabric::{DeviceId, PersonalFabricAction};
 use tilo_lock::MutexRecover as _;
 use tilo_nearby_service::{
     IncomingManifest, MAX_TRANSFER_BYTES, NearbyTransferStore, SecureNearbyDestination,
@@ -53,7 +54,7 @@ use tilo_network_actor::{
 use tilo_service::Wake;
 use ui::widget::ScreenshotSendDevice;
 
-use crate::fabric::Continuity;
+use crate::platform::fabric::Continuity;
 
 /// The one app the action door serves: the certified Files application.
 pub(crate) const FILES_APP_ID: &str = "so.tilo.file-explorer";
@@ -261,7 +262,7 @@ impl State {
             return *handle;
         }
         let handle =
-            NearbyTargetHandle::from_issued_bytes(tilo_device_fabric::random::nonzero::<16>());
+            NearbyTargetHandle::from_issued_bytes(crate::platform::fabric::nonzero::<16>());
         self.targets.insert(
             handle,
             TargetBinding {
@@ -288,7 +289,7 @@ impl State {
             return *handle;
         }
         let handle =
-            NearbyDestinationHandle::from_issued_bytes(tilo_device_fabric::random::nonzero::<16>());
+            NearbyDestinationHandle::from_issued_bytes(crate::platform::fabric::nonzero::<16>());
         self.destinations.insert(
             handle,
             DestinationBinding {
@@ -326,7 +327,7 @@ impl State {
             self.transfers.remove(&oldest);
         }
         let handle =
-            NearbyTransferHandle::from_issued_bytes(tilo_device_fabric::random::nonzero::<16>());
+            NearbyTransferHandle::from_issued_bytes(crate::platform::fabric::nonzero::<16>());
         self.transfers.insert(
             handle,
             TransferBinding {
@@ -797,7 +798,7 @@ impl NearbyTransfer {
         if bytes > MAX_TRANSFER_BYTES {
             return Err("that file is larger than one Nearby Send carries".to_owned());
         }
-        let transfer_id = tilo_device_fabric::random::nonzero::<16>();
+        let transfer_id = crate::platform::fabric::nonzero::<16>();
         let handle = self
             .inner
             .issue_transfer(context.peer_id(), context.channel(), transfer_id);
@@ -1586,7 +1587,8 @@ fn accept(
         committed_offset,
         prefix_hash,
     };
-    link.send_personal_fabric_action(&source, ready)?;
+    link.try_send_personal_fabric_action(&source, ready)
+        .map_err(|error| error.to_string())?;
     {
         let mut state = inner.state.lock_recover();
         state.offers.remove(&transfer_id);
@@ -1632,7 +1634,7 @@ fn cancel_incoming(inner: &Inner, store: &mut Option<NearbyTransferStore>, trans
         transfer_id,
         accepted: false,
     };
-    if let Err(error) = link.send_personal_fabric_action(&source, declined) {
+    if let Err(error) = link.try_send_personal_fabric_action(&source, declined) {
         tracing::warn!(%error, "a device was not told a nearby transfer was dropped");
     }
     if entry.is_some()
@@ -1715,7 +1717,7 @@ fn finish(
     };
     match store.finish_secure(transfer_id, &destination) {
         Ok(installed) => {
-            if let Err(error) = link.send_personal_fabric_action(source, result(true)) {
+            if let Err(error) = link.try_send_personal_fabric_action(source, result(true)) {
                 tracing::warn!(%error, "a device was not told the file landed");
             }
             tracing::info!(path = %installed.display(), "a file arrived from one of the person's devices");
@@ -1732,7 +1734,7 @@ fn finish(
         Err(reason) => {
             tracing::warn!(%reason, "a received file is not installed");
             let _ = store.cancel_incoming(transfer_id);
-            let _ = link.send_personal_fabric_action(source, result(false));
+            let _ = link.try_send_personal_fabric_action(source, result(false));
             settle(
                 inner,
                 transfer_id,
@@ -1767,7 +1769,7 @@ fn restart(
                 committed_offset: 0,
                 prefix_hash,
             };
-            if let Err(error) = link.send_personal_fabric_action(source, ready) {
+            if let Err(error) = link.try_send_personal_fabric_action(source, ready) {
                 tracing::warn!(%error, "a device was not told where to stream from");
             }
         }
@@ -1803,7 +1805,7 @@ fn cancelled(inner: &Inner, store: &mut Option<NearbyTransferStore>, transfer_id
             request_id: offered.request_id,
             transfer_id,
         };
-        if let Err(error) = link.send_personal_fabric_action(&target, discard) {
+        if let Err(error) = link.try_send_personal_fabric_action(&target, discard) {
             tracing::warn!(%error, "a device was not told a send was withdrawn");
         }
     }
@@ -1898,7 +1900,7 @@ fn studio(
             },
         );
     }
-    let transfer_id = tilo_device_fabric::random::nonzero::<16>();
+    let transfer_id = crate::platform::fabric::nonzero::<16>();
     match stage(inner, store, transfer_id, target, source, true) {
         Ok(()) => Sent::offered(label),
         Err(reason) => Sent::refused(label, Refusal::Refused(reason)),
@@ -1982,7 +1984,7 @@ impl Inner {
         let refuse = |why: &str| {
             tracing::debug!(%why, source = source.as_str(), "a nearby offer is refused");
             if let Some(link) = &self.link {
-                let _ = link.send_personal_fabric_action(
+                let _ = link.try_send_personal_fabric_action(
                     source,
                     PersonalFabricAction::NearbyTransferResult {
                         request_id,
@@ -2057,7 +2059,7 @@ impl Inner {
         }
         for (transfer_id, offer) in expired {
             if let Some(link) = &self.link {
-                let _ = link.send_personal_fabric_action(
+                let _ = link.try_send_personal_fabric_action(
                     &offer.source,
                     PersonalFabricAction::NearbyTransferResult {
                         request_id: offer.request_id,
@@ -2225,12 +2227,12 @@ mod transfers_between_devices {
                   sessions live until the whole transfer is over"
     )]
 
-    use std::collections::HashMap;
     use std::os::unix::ffi::OsStrExt as _;
     use std::path::Path;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
+    use crate::platform::fabric::{FabricLink as _, SharedLink};
     use runtime_collab::{
         NearbyTransferCommand, NearbyTransferDestination, NearbyTransferPhase, NearbyTransferReply,
         NearbyTransferSnapshot, NearbyTransferStatus,
@@ -2239,12 +2241,11 @@ mod transfers_between_devices {
     use tilo_desktop_model::{
         Capability, DesktopTree, FsMode, GRANT_SESSION, Workspace, WorkspaceId, WorkspaceSlot,
     };
-    use tilo_device_fabric::link::{FabricLink as _, SharedLink};
     use tilo_network_actor::HostIdentity;
-    use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+    use tilo_user_identity::DeviceCapabilities;
 
     use super::{FILES_APP_ID, NearbyTransfer};
-    use crate::fabric::Continuity;
+    use crate::platform::fabric::Continuity;
     use crate::sync::{Client, Entry, OwnPresence};
 
     /// How long the loopback sessions have to carry the whole transfer.
@@ -2259,7 +2260,7 @@ mod transfers_between_devices {
     /// One of the person's devices, its transfer engine, and its Files.
     struct Device {
         client: Client,
-        id: tilo_device_fabric::DeviceId,
+        id: crate::platform::fabric::DeviceId,
         nearby: Arc<NearbyTransfer>,
         /// Files, as the broker would admit it on its own connection.
         app: NearbyTransferRequestContext,
@@ -2310,7 +2311,7 @@ mod transfers_between_devices {
         tree: DesktopTree,
     }
 
-    impl tilo_action_broker::services::WorkspaceAuthority for Desk {
+    impl tilo_broker_core::services::WorkspaceAuthority for Desk {
         fn with_tree(&self, read: &mut dyn FnMut(&DesktopTree)) -> Result<(), String> {
             read(&self.tree);
             Ok(())
@@ -2349,31 +2350,17 @@ mod transfers_between_devices {
         spool: &Path,
         peer_id: u64,
     ) -> Device {
-        let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: person.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: label.to_owned(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: tilo_clock::unix_now_ns(),
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, person).expect("the person signs their own device");
+        let key = test_relay::signing_key(seed);
+        let cert = test_relay::certified(person, &key, label, DeviceCapabilities::member());
         let client = Client::start(
             Entry {
-                identity: Some(HostIdentity {
-                    device_cert: cert,
-                    device_signing_key: key,
-                    workspace_device_certs: HashMap::new(),
-                    workspace_revocations: HashMap::new(),
-                    identity_paths: None,
-                }),
+                identity: Some(HostIdentity::kept(cert, key)),
                 own: OwnPresence::default(),
                 hosts: Vec::new(),
                 continuity: permitted(),
                 wake: Arc::new(|| {}),
+                fabric: None,
+                relays: test_relay::loopback(),
             },
             None,
             None,
@@ -2382,7 +2369,7 @@ mod transfers_between_devices {
         )
         .expect("a loopback endpoint binds");
         // The fabric names a device by the key its session proves.
-        let id = tilo_device_fabric::DeviceId::new(hex::encode(client.publisher().as_bytes()))
+        let id = crate::platform::fabric::DeviceId::new(hex::encode(client.publisher().as_bytes()))
             .expect("a device id");
         let nearby = NearbyTransfer::open(
             Some(

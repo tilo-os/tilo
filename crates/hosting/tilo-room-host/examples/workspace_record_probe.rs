@@ -1,5 +1,5 @@
-//! Read a workspace record a relay wrote, field by field, to say exactly
-//! which field a build's decoder stops at.
+//! Read a workspace record a relay wrote (version 4), field by field, to say
+//! exactly which field a build's decoder stops at.
 //!
 //! usage: `workspace_record_probe FILE`
 #![allow(clippy::expect_used, reason = "an example fails loudly")]
@@ -23,6 +23,11 @@ struct Record {
     outgoing: Vec<Publication>,
     published: usize,
     collaboration: Ledger,
+    /// How many publications and join receipts the files beside the record
+    /// hold (`<record>.published`, `<record>.joins`): the record holds those
+    /// after them.
+    filed_publications: u64,
+    filed_receipts: u64,
 }
 
 #[derive(Deserialize)]
@@ -107,7 +112,8 @@ fn main() {
     match postcard::from_bytes::<Record>(&bytes) {
         Ok(record) => println!(
             "the whole record reads: version {}, workspace {}, {} publications, {} peer parts, \
-             {} invitations, {} join challenges, {} completions, {} membership challenges, {} administration",
+             {} invitations, {} join challenges, {} completions, {} membership challenges, {} administration; \
+             {} publications and {} completions in the files beside it",
             record.version,
             record.workspace,
             record.outgoing.len(),
@@ -116,7 +122,9 @@ fn main() {
             record.collaboration.join_challenges.len(),
             record.collaboration.join_completions.len(),
             record.collaboration.membership_challenges.len(),
-            record.collaboration.administration.len()
+            record.collaboration.administration.len(),
+            record.filed_publications,
+            record.filed_receipts
         ),
         Err(error) => println!("the whole record FAILS: {error}"),
     }
@@ -179,5 +187,7 @@ fn main() {
         "ledger.membership_challenges"
     );
     step!(Vec<AdministrationRecord>, "ledger.administration");
+    step!(u64, "filed_publications");
+    step!(u64, "filed_receipts");
     println!("  every field reads; {} bytes left", rest.len());
 }

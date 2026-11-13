@@ -1,10 +1,6 @@
-//! `cli` — SDK for Tilo CLI apps.
-//!
-//! Tilo apps come in two flavours: GUI (talks Wayland, uses the `ui`
-//! toolkit) and CLI (owns stdio, prints text, may be piped). Both run
-//! inside the same launcher-managed sandbox and talk to the same
-//! underlying services (workspace fs, collab broker, portal); this crate
-//! bundles the CLI-side ergonomics so a new terminal app is a few dozen lines.
+//! The SDK for Tilo terminal apps: stdio, workspace paths, and the same
+//! portal and workspace services a GUI app reaches, from a process that owns
+//! its terminal and may be piped.
 //!
 //! ```ignore
 //! use cli::{run_main, resolve_workspace_path};
@@ -18,21 +14,8 @@
 //! }
 //! ```
 //!
-//! [`run_main`] wraps the closure with `anyhow::Error` → stderr + non-zero
-//! exit, silent `SIGPIPE` handling (e.g. `| head`), and a `TILO_CLI_COMMAND`
-//! lookup exposed via [`invoked_command`].
-//!
-//! [`resolve_workspace_path`] returns a path a CLI can `open()`: under
-//! `/var/workspace/` inside Tilo ([`is_tilo_native`]), or under
-//! `~/.local/share/<package id>/` standalone (stock Linux, Flatpak). The
-//! fallback does not depend on `runtime-fs`, so the CLI also works when the
-//! FUSE driver is offline.
-//!
-//! This SDK exposes no grant API. CLI access is enforced outside the app by
-//! the launcher's sandbox and the capability model in `collab-types::caps`.
-//!
-//! [`output()`] builds a terminal-aware writer that emits ANSI OSC 8
-//! hyperlinks on an interactive terminal, degrading to plain text on pipes.
+//! It exposes no grant API: the launcher's sandbox and `collab-types::caps`
+//! decide what a CLI app reaches, as for a GUI app.
 
 use std::fs;
 use std::io::{self, Write};
@@ -56,10 +39,9 @@ pub fn invoked_command() -> Option<String> {
     std::env::var("TILO_CLI_COMMAND").ok()
 }
 
-/// Run a fallible closure as `main`, mirroring `main() -> ExitCode` while
-/// allowing `?` on any `anyhow::Error`: ignores `SIGPIPE` so `notes | head`
-/// doesn't panic on a closed pipe, prints the anyhow chain to stderr via
-/// `{:#}`, and exits `1` on error, `0` on `Ok`.
+/// Run a fallible closure as `main`: ignores `SIGPIPE` so `notes | head` does
+/// not panic on a closed pipe, prints the anyhow chain to stderr, and exits
+/// `1` on error, `0` on `Ok`.
 pub fn run_main<F: FnOnce() -> Result<()>>(f: F) -> ExitCode {
     #[cfg(unix)]
     // SAFETY: signal handler install is one-shot per process;
@@ -99,10 +81,8 @@ pub fn ensure_dir(dir: &Path) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("creating directory {}: {e}", dir.display()))
 }
 
-/// The directory every package's state directory is a child of, split out
-/// of [`standalone_state_dir`] because "where does this package keep its
-/// state" and "which packages have any" are different questions — the
-/// second is what lets a surface enumerate everything stored.
+/// The directory each package's state directory is a child of, which lets a
+/// surface enumerate everything stored.
 pub fn data_home() -> PathBuf {
     // An empty or relative XDG_DATA_HOME is invalid by the spec, not a path
     // to resolve against the working directory.
@@ -127,8 +107,8 @@ pub fn data_home() -> PathBuf {
     tilo_paths::temp_dir().unwrap_or_default()
 }
 
-/// The XDG data dir fallback for state outside Tilo; public so an app can
-/// point its own storage at the same spot.
+/// Where a package outside Tilo keeps state: an app may point its own
+/// storage here too.
 pub fn standalone_state_dir(pkg_id: &str) -> PathBuf {
     standalone_state_dir_in(&data_home(), pkg_id)
 }
@@ -146,17 +126,14 @@ mod tests {
     #[test]
     fn the_environment_names_the_command_package_and_state_dir() {
         let mut env = tilo_test_env::ScopedEnv::new();
-        // invoked_command reads TILO_CLI_COMMAND and is None once it is gone.
         env.set("TILO_CLI_COMMAND", "notes");
         assert_eq!(invoked_command().as_deref(), Some("notes"));
         env.remove("TILO_CLI_COMMAND");
         assert!(invoked_command().is_none());
-        // package_id falls back to the standalone id without TILO_PACKAGE_ID.
         env.remove("TILO_PACKAGE_ID");
         assert_eq!(package_id(), "tilo-standalone");
         env.set("TILO_PACKAGE_ID", "dev.example.notes");
         assert_eq!(package_id(), "dev.example.notes");
-        // the standalone state dir honours XDG_DATA_HOME.
         env.set("XDG_DATA_HOME", "/tmp/xdg");
         assert_eq!(
             standalone_state_dir("notes.tilo.sh"),
@@ -170,7 +147,6 @@ mod tests {
             [("ok", Ok(()), 0), ("err", Err(anyhow::anyhow!("boom")), 1)];
         for (name, result, want) in cases {
             let code = run_main(move || result);
-            // ExitCode isn't PartialEq, but we can format it.
             assert_eq!(
                 format!("{code:?}"),
                 format!("{:?}", ExitCode::from(want)),

@@ -384,7 +384,7 @@ fn assert_saved_body(
     expected: &str,
 ) {
     wait_for_saved_record(host, binding);
-    let path = app_state::DocStore::workspace_record_dir_at(
+    let path = app_state::DocStore::workspace_document_dir_at(
         &host.root(),
         APP,
         WORKSPACE,
@@ -729,7 +729,7 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
         let mut results = Vec::new();
         for mode in 0..3 {
             let host = ProbeHost::new();
-            let path = app_state::DocStore::workspace_record_dir_at(
+            let path = app_state::DocStore::workspace_document_dir_at(
                 &host.root(),
                 APP,
                 WORKSPACE,
@@ -837,11 +837,9 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
             )
             .unwrap();
         let checkout = component.record().clone();
-        let catalog = crate::font_catalog::FontCatalog::controlled_fixture(
-            crate::font_catalog::checkout_root(),
-            "de-DE",
-        );
-        let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
+        let mut renderer =
+            TextRenderer::with_font_catalog(&crate::font_catalog::fixture_catalog_in("de-DE"))
+                .expect("prepared canonical renderer fixture");
         renderer.set_text_scale(1.5);
         renderer.bump_generation();
         let mut app = App::from_component(

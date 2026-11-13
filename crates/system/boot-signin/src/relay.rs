@@ -1,18 +1,4 @@
 //! Another way in, with a way back to signing in.
-//!
-//! After "Can't sign in", the volume opens the way every encrypted install
-//! opens: systemd-cryptsetup tries its tokens and asks for the passphrase or
-//! recovery key (or a security key's PIN). Its questions reach the screen
-//! through a password agent, and Plymouth's own agent asks them again after
-//! an empty answer, so from there nobody could get back to the sign-in
-//! screen without restarting the computer.
-//!
-//! While the volume is attached that way, this agent stands in for
-//! Plymouth's: it asks systemd-cryptsetup's questions on the boot screen as
-//! they come, word for word, and passes the answers on. An empty answer
-//! means "back": `tilo-root-discover` stops the attempt and shows the
-//! sign-in screen again. Every other agent (another of the owner's devices,
-//! through `tilo-sibling-unlock`) answers exactly as before.
 
 use std::io::Read as _;
 use std::path::PathBuf;
@@ -24,14 +10,10 @@ use zeroize::Zeroizing;
 
 use crate::plymouth::Plymouth;
 
-/// How the attempt ended, as far as this agent saw it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Relayed {
-    /// The attaching program is gone: the volume opened, or it gave up.
     Done,
-    /// The person asked to go back to signing in.
     Back,
-    /// Plymouth could not ask; its own agent should take over again.
     SteppedAside,
 }
 
@@ -46,13 +28,11 @@ impl Relayed {
     }
 }
 
-/// The message the theme shows the way back for, while it applies.
 pub const OTHER_WAYS_ON: &str = "tilo-otherways:1";
 pub const OTHER_WAYS_OFF: &str = "tilo-otherways:0";
 
 pub struct Relay<'a> {
     pub plymouth: &'a Plymouth,
-    /// Where systemd's password requests appear.
     pub ask_dir: PathBuf,
     /// The volume's device, as systemd-cryptsetup names it in its passphrase
     /// request.
@@ -60,7 +40,6 @@ pub struct Relay<'a> {
     /// The systemd-cryptsetup attaching the volume. Its security-key PIN
     /// requests carry no device, only this process.
     pub pid: u32,
-    /// How often a waiting request, and the program asking it, are looked at.
     pub poll: Duration,
 }
 
@@ -249,7 +228,6 @@ esac
             relay(&self.plymouth, self.dir.path(), self.attach.id())
         }
 
-        /// A request from the attaching program; returns its socket.
         fn ask(&self, name: &str, id: &str, message: &str) -> UnixDatagram {
             let socket = self.dir.path().join(format!("sck.{name}"));
             let receiver = UnixDatagram::bind(&socket).unwrap();
@@ -331,7 +309,6 @@ esac
             let running = scope.spawn(move || relay.run());
             assert_eq!(received(&passphrase), b"+not it");
             fs::remove_file(fixture.dir.path().join("ask/ask.a")).unwrap();
-            // A security key's PIN request names no device, only the program.
             let pin = fixture.ask("b", "", "Please enter security token PIN:");
             assert_eq!(received(&pin), b"+PIN-1234");
             fs::remove_file(fixture.dir.path().join("ask/ask.b")).unwrap();
@@ -347,7 +324,6 @@ esac
     fn a_question_answered_elsewhere_leaves_the_screen_and_others_are_ignored() {
         let _serial = crate::test_support::serial();
         let mut fixture = Fixture::new("wait\n");
-        // Another volume's request, from another program, is not ours.
         let other = fixture.dir.path().join("sck.other");
         let _other = UnixDatagram::bind(&other).unwrap();
         fs::write(
@@ -368,7 +344,6 @@ esac
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
-            // Another of the owner's devices answered it.
             fs::remove_file(fixture.dir.path().join("ask/ask.a")).unwrap();
             std::thread::sleep(Duration::from_millis(100));
             let _ = fixture.attach.kill();
@@ -383,7 +358,6 @@ esac
         let _serial = crate::test_support::serial();
         let mut fixture = Fixture::new("");
         fixture.attach.kill().unwrap();
-        // Not waited for: it stays in the process table, ended.
         for _ in 0..500 {
             if !running(fixture.attach.id()) {
                 break;

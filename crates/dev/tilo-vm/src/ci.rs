@@ -1,15 +1,8 @@
-//! `swap --from sha:<commit>` and `--from ci:<tag>`: take a component's
-//! files out of CI's dev image of that build,
-//! `registry.tilo.so/tilo/tilo-vm:<tag>-ci`, the image `vm upgrade --from
-//! sha:` moves a VM onto. It holds the CI OS image's binaries with the
-//! dev-overrides rebuilds (the shell) on top, and dev images accept it
-//! (os/dev-image's container policy rejects the bare `tilo-ci` OS image).
-//!
-//! Main commits are tagged `main-<sha7>`, each
-//! an index of the architectures that built, so a
-//! pull takes the one the VM or device runs. The pull happens inside the VM
-//! when its image has podman; otherwise on this host with podman, for the
-//! VM's architecture, and the layer is uploaded.
+//! `swap --from sha:<commit>` and `--from ci:<tag>`: take a component's files
+//! out of CI's dev image of that build,
+//! `registry.tilo.so/tilo/tilo-vm:<tag>-ci`, the image `vm upgrade --from sha:`
+//! moves a VM onto. Main commits are tagged `main-<sha7>`, each an index of the
+//! architectures that built.
 
 use std::path::Path;
 
@@ -19,24 +12,17 @@ use crate::hypervisor::{CommandLine, Runner};
 
 pub const IMAGE: &str = "registry.tilo.so/tilo/tilo-vm";
 
-/// What `--from` names, resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
     Worktree,
     Layer(String),
-    /// A CI image tag, and the commit when the source named one.
-    Ci {
-        tag: String,
-        commit: Option<String>,
-    },
+    Ci { tag: String, commit: Option<String> },
 }
 
 fn is_hex(text: &str) -> bool {
     !text.is_empty() && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Parse `--from`. A `sha:` is resolved to a full commit through the
-/// worktree's git when there is one.
 pub fn parse(from: &str, worktree: Option<&Worktree>) -> Result<Source, CliError> {
     if from == "worktree" {
         return Ok(Source::Worktree);
@@ -80,7 +66,6 @@ pub fn image(tag: &str) -> String {
     format!("{IMAGE}:{}-ci", tag.strip_suffix("-ci").unwrap_or(tag))
 }
 
-/// podman's name for an architecture.
 pub fn podman_arch(arch: &str) -> &str {
     match arch {
         "x86_64" => "amd64",
@@ -89,9 +74,6 @@ pub fn podman_arch(arch: &str) -> &str {
     }
 }
 
-/// Host-side extraction commands: pull, create a stopped container, copy
-/// each path out (a trailing `/` copies the directory); then the cleanup
-/// that removes the container and the image, which only the layer outlives.
 pub fn host_commands(
     image: &str,
     arch: &str,
@@ -121,7 +103,6 @@ pub fn host_commands(
     (commands, cleanup)
 }
 
-/// What the pulled image says about itself, for the layer's provenance.
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Pulled {
     pub digest: Option<String>,
@@ -129,14 +110,10 @@ pub struct Pulled {
     pub revision: Option<String>,
 }
 
-/// The registry's manifest of `image`, without pulling it.
 pub fn manifest_command(image: &str) -> CommandLine {
     CommandLine::new("skopeo", &["inspect", "--raw"]).arg(format!("docker://{image}"))
 }
 
-/// The digest of `arch`'s image in a [`manifest_command`] answer: the
-/// matching entry of an index, or the digest of a single-image manifest.
-/// It is the digest a pull for `arch` reports, so it names the content.
 pub fn arch_digest(raw: &str, arch: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(raw).ok()?;
     let Some(manifests) = value.get("manifests").and_then(serde_json::Value::as_array) else {
@@ -162,8 +139,6 @@ pub fn arch_digest(raw: &str, arch: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The digest `image` has for `arch` in the registry now, or `None` when
-/// the registry (or skopeo) cannot say.
 pub fn registry_digest(runner: &mut dyn Runner, image: &str, arch: &str) -> Option<String> {
     let output = runner.output(&manifest_command(image)).ok()?;
     output
@@ -172,7 +147,6 @@ pub fn registry_digest(runner: &mut dyn Runner, image: &str, arch: &str) -> Opti
         .flatten()
 }
 
-/// `podman image inspect` of the pulled image: its digest and revision.
 pub fn inspect_command(image: &str) -> CommandLine {
     CommandLine::new(
         "podman",
@@ -186,7 +160,6 @@ pub fn inspect_command(image: &str) -> CommandLine {
     )
 }
 
-/// The [`inspect_command`] answer.
 pub fn parse_inspect(output: &str) -> Pulled {
     let mut words = output.split_whitespace();
     let mut next = || {
@@ -201,10 +174,6 @@ pub fn parse_inspect(output: &str) -> Pulled {
     }
 }
 
-/// Run the host extraction; `tree` receives `usr/...`.
-///
-/// # Errors
-/// podman failures; a missing path is [`CliError::MissingInImage`].
 pub fn extract_on_host(
     runner: &mut dyn Runner,
     image: &str,
@@ -225,7 +194,6 @@ pub fn extract_on_host(
             std::fs::create_dir_all(parent)
                 .map_err(CliError::io(format!("create {}", parent.display())))?;
         }
-        // The pull streams its progress; the rest is quick.
         let ok = if index == 0 {
             runner.interactive(command)?
         } else {
@@ -260,7 +228,6 @@ pub fn extract_on_host(
             break;
         }
     }
-    // Read before the cleanup removes the image.
     let pulled = runner
         .output(&inspect_command(image))
         .ok()
@@ -280,7 +247,6 @@ mod tests {
 
     #[test]
     fn ci_sources_parse_and_host_extraction_copies_each_manifest_path() {
-        // Phase: sources_parse.
         {
             assert_eq!(parse("worktree", None).unwrap(), Source::Worktree);
             assert_eq!(
@@ -317,7 +283,6 @@ mod tests {
             }
         }
 
-        // Phase: host_extraction_copies_each_manifest_path.
         #[cfg(unix)]
         {
             let (commands, cleanup) = host_commands(

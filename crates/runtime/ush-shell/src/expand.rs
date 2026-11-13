@@ -24,11 +24,9 @@ struct Seg {
     split: bool,
 }
 
-/// One field being built.
 #[derive(Debug, Clone, Default)]
 struct Field {
     segs: Vec<Seg>,
-    /// A quoted piece was here, so the field stays even when empty (`""`).
     kept: bool,
 }
 
@@ -51,7 +49,6 @@ impl Field {
     }
 }
 
-/// Fields being built: what a word expands to.
 #[derive(Debug, Default)]
 struct Builder {
     done: Vec<Field>,
@@ -101,7 +98,6 @@ impl Builder {
     }
 }
 
-/// What a parameter holds, before an operator works on it.
 struct ParamValue {
     values: Vec<String>,
     /// `$@` or `${a[@]}`: separate words even when quoted.
@@ -974,7 +970,6 @@ impl Shell {
         })
     }
 
-    /// The value of the variable `name`, with the shell's own dynamic ones.
     pub(crate) fn named(&mut self, name: &str) -> Option<String> {
         match name {
             "RANDOM" => Some(self.next_random().to_string()),
@@ -1211,7 +1206,6 @@ fn change_first(value: &str, upper: bool) -> String {
     }
 }
 
-/// `value` quoted so the shell reads it back as itself.
 pub(crate) fn quote(value: &str) -> String {
     if !value.is_empty()
         && value
@@ -1242,7 +1236,6 @@ fn unbackquote(text: &str, in_quotes: bool) -> String {
     out
 }
 
-/// The escapes of `$'…'` and `echo -e`, as text.
 pub(crate) fn ansi_c(text: &str) -> String {
     String::from_utf8_lossy(&ansi_c_bytes(text)).into_owned()
 }

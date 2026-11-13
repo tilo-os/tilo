@@ -1,14 +1,6 @@
-//! VPN: the tunnels `NetworkManager` knows, each switched on or off from
-//! the list, opened on a page of its own to change, export or delete it, and
-//! added from a `WireGuard` form, an installed plugin's type or a file.
-//!
-//! The list also offers the person's other devices as exits, and this
-//! device as one for them ([`devices`], docs/device-vpn.md). It takes
-//! further ways out from a [`VpnEntries`] source beside those.
-//!
-//! Keys and configuration files live in process-local buffers that are
-//! zeroed once used, and reach `NetworkManager` through a private file or
-//! its standard input, never an argument.
+//! VPN: the tunnels `NetworkManager` knows, each switched on or off from the
+//! list, opened on a page of its own to change, export or delete it, and added
+//! from a `WireGuard` form, an installed plugin's type or a file.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read as _;
@@ -42,9 +34,6 @@ use provider_settings_ui::widgets::{
 mod devices;
 mod kill_switch;
 
-/// A key, under its label: a key is longer than the room a trailing value
-/// has beside a label, so it takes the row's measure and breaks across two
-/// lines in a narrow window.
 fn key_row(label: &str, key: &str) -> Item {
     row(Box::new(
         ListRow::new(format!("setting/{label}"), label)
@@ -55,15 +44,10 @@ fn key_row(label: &str, key: &str) -> Item {
 
 crate::effects::effect_family!(VpnEffect => answer);
 
-/// The VPN list.
 pub(crate) const PAGE_VPN: &str = "vpn";
-/// Adding a VPN: its kinds.
 pub(crate) const PAGE_ADD: &str = "vpn-add";
-/// A new `WireGuard` tunnel.
 const PAGE_ADD_WIREGUARD: &str = "vpn-add:wireguard";
-/// A new profile of a plugin's type: `vpn-add:<service>`.
 const PAGE_ADD_PLUGIN: &str = "vpn-add:";
-/// A VPN's page: `vpn:<uuid>`.
 const PAGE_PROFILE: &str = "vpn:";
 
 pub(crate) fn profile_page_key(uuid: &str) -> String {
@@ -74,11 +58,8 @@ fn plugin_page_key(service: &str) -> String {
     format!("{PAGE_ADD_PLUGIN}{service}")
 }
 
-/// What `allowed_ips` a new tunnel routes unless told otherwise: everything.
 const ALL_ADDRESSES: &str = "0.0.0.0/0, ::/0";
 
-/// Whether `text` is an address a tunnel can route: an IP address, or one
-/// with a prefix no longer than the address.
 fn is_routed_address(text: &str) -> bool {
     let (address, prefix) = text
         .split_once('/')
@@ -97,45 +78,45 @@ fn is_routed_address(text: &str) -> bool {
 #[effect(operation = "settings.effect")]
 pub enum VpnEffect {
     /// Show the VPNs.
-    #[effect(view, label = "VPN")]
+    #[effect(view)]
     ShowVpns,
     /// Show a VPN's page: its settings, Export and Delete.
-    #[effect(view, row, label = "VPN settings")]
+    #[effect(view, row)]
     ShowVpnProfile {
         #[param("The VPN's id or name")]
         connection: String,
     },
     /// Show the kinds of VPN that can be added.
-    #[effect(view, label = "Add VPN")]
+    #[effect(view)]
     ShowAddVpn,
     /// Show the form of a new `WireGuard` tunnel.
-    #[effect(view, label = "Add WireGuard tunnel")]
+    #[effect(view)]
     ShowAddWireguard,
     /// Show the form of a new profile of an installed VPN plugin's type.
-    #[effect(view, label = "Add VPN of a plugin's type")]
+    #[effect(view)]
     ShowAddPluginVpn {
         #[param("The plugin's service type")]
         service: String,
     },
     /// Pick a `WireGuard` `.conf` file and set it up.
-    #[effect(attended, label = "Import WireGuard profile")]
+    #[effect(attended)]
     ImportWireguard,
     /// Pick an `OpenVPN` `.ovpn` file and set it up.
-    #[effect(attended, label = "Import OpenVPN profile")]
+    #[effect(attended)]
     ImportOpenvpn,
     /// Pick a `WireGuard` or `OpenVPN` file and set it up.
-    #[effect(attended, label = "Import from file")]
+    #[effect(attended)]
     ImportVpnFile,
     /// Ask for the private key of a new `WireGuard` tunnel with the password
     /// prompt.
-    #[effect(view, label = "Private key")]
+    #[effect(view, label = "net-vpn-private-key")]
     AskWireguardPrivateKey,
     /// Make a key pair for a new `WireGuard` tunnel: the public key is the
     /// one to give the server.
-    #[effect(label = "Generate keys")]
+    #[effect(label = "net-vpn-generate-keys")]
     GenerateWireguardKeys,
     /// Set up a `WireGuard` tunnel; what is omitted is what its form holds.
-    #[effect(job, label = "Create tunnel")]
+    #[effect(job)]
     CreateWireguard {
         name: Option<String>,
         #[param("This device's address in the tunnel with its prefix: 10.7.0.2/32")]
@@ -155,7 +136,7 @@ pub enum VpnEffect {
     },
     /// Set up a `WireGuard` tunnel from a pasted configuration; what is
     /// omitted is what its form holds.
-    #[effect(job, label = "Import configuration")]
+    #[effect(job)]
     ImportWireguardConfig {
         name: Option<String>,
         #[param(secret, "The configuration file's text")]
@@ -163,7 +144,7 @@ pub enum VpnEffect {
     },
     /// Make a profile of an installed plugin's type; what is omitted is what
     /// its form holds.
-    #[effect(job, label = "Create VPN")]
+    #[effect(job)]
     CreatePluginVpn {
         #[param("The plugin's service type")]
         service: String,
@@ -172,53 +153,53 @@ pub enum VpnEffect {
         server: Option<String>,
     },
     /// Bring a VPN up or down.
-    #[effect(job, row, idempotent, label = "VPN connection")]
+    #[effect(job, row, idempotent)]
     SetVpnConnected {
         #[param("The VPN's id or name")]
         connection: String,
         on: bool,
     },
     /// Bring a VPN up.
-    #[effect(job, row, label = "Connect")]
+    #[effect(job, row)]
     Connect {
         #[param("The VPN's id or name")]
         connection: String,
     },
     /// Bring a VPN down.
-    #[effect(job, row, label = "Disconnect")]
+    #[effect(job, row)]
     Disconnect {
         #[param("The VPN's id or name")]
         connection: String,
     },
     /// Delete a VPN from this device, with its keys.
-    #[effect(job, row, destructive, label = "Delete VPN")]
+    #[effect(job, row, destructive, label = "net-vpn-delete")]
     DeleteConnection {
         #[param("The VPN's id or name")]
         connection: String,
     },
     /// Rename a VPN.
-    #[effect(job, row, idempotent, label = "Name")]
+    #[effect(job, row, idempotent)]
     SetVpnName {
         #[param("The VPN's id or name")]
         connection: String,
         name: String,
     },
     /// Bring a VPN up by itself, or not.
-    #[effect(job, row, idempotent, label = "Connect automatically")]
+    #[effect(job, row, idempotent)]
     SetVpnAutoconnect {
         #[param("The VPN's id or name")]
         connection: String,
         on: bool,
     },
     /// Send every connection through a VPN, or only what it routes.
-    #[effect(job, row, idempotent, label = "Send all traffic")]
+    #[effect(job, row, idempotent, label = "net-vpn-all-traffic")]
     SetVpnAllTraffic {
         #[param("The VPN's id or name")]
         connection: String,
         on: bool,
     },
     /// Have a VPN ask this name server too; without any it asks its own.
-    #[effect(job, row, idempotent, label = "Add DNS server")]
+    #[effect(job, row, idempotent)]
     AddVpnDnsServer {
         #[param("The VPN's id or name")]
         connection: String,
@@ -226,7 +207,7 @@ pub enum VpnEffect {
         server: String,
     },
     /// Stop a VPN asking this name server.
-    #[effect(job, row, idempotent, label = "Remove DNS server")]
+    #[effect(job, row, idempotent)]
     RemoveVpnDnsServer {
         #[param("The VPN's id or name")]
         connection: String,
@@ -235,7 +216,7 @@ pub enum VpnEffect {
     },
     /// The largest packet a VPN sends, in bytes; chosen automatically when
     /// omitted.
-    #[effect(job, row, idempotent, label = "Packet size")]
+    #[effect(job, row, idempotent, label = "net-vpn-mtu-size")]
     SetVpnMtu {
         #[param("The VPN's id or name")]
         connection: String,
@@ -243,7 +224,7 @@ pub enum VpnEffect {
         mtu: Option<u32>,
     },
     /// Where a `WireGuard` tunnel's server is.
-    #[effect(job, row, idempotent, label = "Server")]
+    #[effect(job, row, idempotent)]
     SetVpnServer {
         #[param("The VPN's id or name")]
         connection: String,
@@ -251,7 +232,7 @@ pub enum VpnEffect {
         endpoint: String,
     },
     /// Have a `WireGuard` tunnel route this address too.
-    #[effect(job, row, idempotent, label = "Add routed address")]
+    #[effect(job, row, idempotent)]
     AddVpnRoutedAddress {
         #[param("The VPN's id or name")]
         connection: String,
@@ -259,7 +240,7 @@ pub enum VpnEffect {
         address: String,
     },
     /// Stop a `WireGuard` tunnel routing this address.
-    #[effect(job, row, idempotent, label = "Remove routed address")]
+    #[effect(job, row, idempotent)]
     RemoveVpnRoutedAddress {
         #[param("The VPN's id or name")]
         connection: String,
@@ -269,7 +250,7 @@ pub enum VpnEffect {
     /// Block this device's traffic while a VPN is set to connect and is not
     /// connected, or not; and whether the local network stays reachable
     /// meanwhile (kept as it was when omitted).
-    #[effect(idempotent, row, label = "Block traffic while the VPN is down")]
+    #[effect(idempotent, row, label = "net-vpn-kill-switch")]
     SetKillSwitch {
         #[param("The VPN's id or name")]
         connection: String,
@@ -278,7 +259,7 @@ pub enum VpnEffect {
         allow_local: Option<bool>,
     },
     /// How often a `WireGuard` tunnel tells its server it is there; 0 never.
-    #[effect(job, row, idempotent, label = "Keepalive")]
+    #[effect(job, row, idempotent)]
     SetVpnKeepalive {
         #[param("The VPN's id or name")]
         connection: String,
@@ -286,14 +267,14 @@ pub enum VpnEffect {
         seconds: u32,
     },
     /// Save a VPN as a file to set it up elsewhere: its keys are in it.
-    #[effect(attended, row, label = "Export")]
+    #[effect(attended, row)]
     ExportVpn {
         #[param("The VPN's id or name")]
         connection: String,
     },
     /// Send this device's traffic through another of the person's devices,
     /// or stop.
-    #[effect(job, row, idempotent, label = "Through your device")]
+    #[effect(job, row, idempotent)]
     SetDeviceVpn {
         #[param("The other device's id")]
         device: String,
@@ -301,20 +282,19 @@ pub enum VpnEffect {
     },
     /// Block this device's traffic while the tunnel to the device it routes
     /// through is down, or let it go out directly.
-    #[effect(idempotent, label = "Block traffic while the tunnel is down")]
+    #[effect(idempotent, label = "net-device-vpn-kill-switch")]
     SetDeviceVpnKillSwitch { on: bool },
     /// Let the person's other devices use this one as a VPN, or not.
-    #[effect(idempotent, label = "Let my other devices use this device as a VPN")]
+    #[effect(idempotent, label = "net-device-vpn-share")]
     SetDeviceExit { on: bool },
     /// Stop another of the person's devices using this one as a VPN.
-    #[effect(row, label = "Stop")]
+    #[effect(row)]
     StopDeviceExit {
         #[param("The other device's id")]
         device: String,
     },
 }
 
-/// Answer `effect`.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: VpnEffect,
@@ -328,27 +308,19 @@ pub(crate) fn answer(
     Ok(super::answer_begun(app, begun, cx))
 }
 
-/// A way out the VPN list offers beside the profiles, from another source
-/// ([`VpnEntries`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct VpnEntry {
-    /// Stable, unique among the source's entries.
     pub id: String,
     pub name: String,
-    /// What it is.
     pub detail: String,
     pub active: bool,
 }
 
-/// What else the VPN list offers, from another provider. The source binds
-/// each entry's switch to its own effect.
 pub(crate) trait VpnEntries {
     fn entries(&self) -> Vec<VpnEntry>;
-    /// `toggle`, bound through the app's `actions` to switching `entry`.
     fn bind(&self, actions: &Actions<Settings>, entry: &VpnEntry, toggle: Toggle) -> Toggle;
 }
 
-/// The form of a new `WireGuard` tunnel.
 struct WireguardForm {
     name: LocalState<String>,
     address: LocalState<String>,
@@ -357,9 +329,7 @@ struct WireguardForm {
     dns: LocalState<String>,
     keepalive: LocalState<String>,
     private_key: Arc<Mutex<String>>,
-    /// The public key of the private key generated here.
     public_key: Option<String>,
-    /// A pasted configuration and its name.
     config_name: LocalState<String>,
     config: Arc<Mutex<String>>,
 }
@@ -391,7 +361,6 @@ impl Drop for WireguardForm {
     }
 }
 
-/// The form of a new plugin profile.
 struct PluginForm {
     name: LocalState<String>,
     server: LocalState<String>,
@@ -406,31 +375,21 @@ impl Default for PluginForm {
     }
 }
 
-/// What the VPN part of the model keeps.
 #[derive(Default)]
 pub(crate) struct VpnState {
-    /// Each VPN's settings, read when its page opens.
     pub(super) settings: HashMap<String, VpnProfileSettings>,
-    /// Why a VPN's settings could not be read.
     pub(super) errors: HashMap<String, String>,
-    /// VPNs whose settings are being read.
     reading: HashSet<String>,
     /// VPNs changed while their settings were being read: that read may
     /// predate the change, so they are read again once it lands.
     stale: HashSet<String>,
-    /// VPNs being brought up or down.
     changing: HashSet<String>,
     wireguard: WireguardForm,
     plugin: PluginForm,
-    /// A file being picked to import, with the kind it must be.
     import: Option<(ui::portal::PortalChannel, Option<&'static str>)>,
-    /// Where a VPN is being exported to.
     export: Option<(ui::portal::OpenFileChannel, String)>,
-    /// The other ways out the list offers.
     entries: Option<Box<dyn VpnEntries>>,
-    /// The VPN whose page was asked for before the VPNs were read.
     wanted: Option<String>,
-    /// The person's devices as exits, and this one as theirs.
     pub(super) devices: devices::DeviceVpnState,
 }
 
@@ -445,7 +404,6 @@ fn read_config(path: &Path) -> Result<Zeroizing<String>, String> {
     Ok(text)
 }
 
-/// The kind of tunnel `path` sets up, by its name or, with none, `wanted`.
 fn kind_of_path(path: &Path, wanted: Option<&'static str>) -> Result<&'static str, String> {
     let name = path
         .file_name()
@@ -462,7 +420,6 @@ fn kind_of_path(path: &Path, wanted: Option<&'static str>) -> Result<&'static st
     }
 }
 
-/// Check the file at `path` and set it up as a tunnel: what an import lands.
 fn import_file(
     service: &dyn super::NetworkService,
     path: &Path,
@@ -478,8 +435,6 @@ fn import_file(
     })
 }
 
-/// What a tunnel's protocol is called: `WireGuard`, an installed plugin's
-/// name, else what its service type names.
 fn kind_shown(kind: &str, service: Option<&str>, plugins: &[VpnPlugin]) -> String {
     match (kind, service) {
         ("wireguard", _) => "WireGuard".into(),
@@ -494,8 +449,6 @@ fn kind_shown(kind: &str, service: Option<&str>, plugins: &[VpnPlugin]) -> Strin
     }
 }
 
-/// Turn off each of `active` (ids and names) that carries all traffic;
-/// what could not be turned off is said.
 pub(super) fn full_tunnels_off(
     service: &dyn super::NetworkService,
     active: &[(String, String)],
@@ -532,13 +485,10 @@ pub(super) fn full_tunnels_off(
 /// jumbo frames.
 const MTU_RANGE: std::ops::RangeInclusive<u32> = 576..=9000;
 
-/// What a tunnel's MTU starts at when the person takes it over: what
-/// `WireGuard` picks for itself, and Ethernet's for the others.
 fn custom_mtu(kind: &str) -> u32 {
     if kind == "wireguard" { 1420 } else { 1500 }
 }
 
-/// A number of seconds or bytes from a number field: whole, never negative.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -549,26 +499,22 @@ fn whole(value: f64) -> u32 {
 }
 
 impl VpnState {
-    /// Where a new `WireGuard` tunnel's private key is kept.
     pub(super) fn wireguard_private_key(&self) -> Arc<Mutex<String>> {
         Arc::clone(&self.wireguard.private_key)
     }
 
-    /// The public key of the private key given for a new tunnel.
     pub(super) fn set_wireguard_public_key(&mut self, public: String) {
         self.wireguard.public_key = Some(public);
     }
 }
 
 impl NetworkModel {
-    /// Offer the VPN list `entries` beside the profiles.
     #[allow(dead_code, reason = "the seam another source of exits plugs into")]
     pub(crate) fn set_vpn_entries(&mut self, entries: Box<dyn VpnEntries>) {
         self.vpn.entries = Some(entries);
         self.changed = true;
     }
 
-    /// The VPN `connection` names: by its id, else by its name.
     fn vpn(&self, connection: &str) -> Result<VpnInfo, String> {
         self.vpns
             .iter()
@@ -578,7 +524,6 @@ impl NetworkModel {
             .ok_or_else(|| t_args("net-vpn-unknown", &[("name", connection.into())]))
     }
 
-    /// The VPN in use, or Off: what the VPN row on the first page says.
     pub(super) fn vpn_summary(&self) -> String {
         if self.read_errors.vpns.is_some() {
             return t("net-vpn-unread");
@@ -589,7 +534,6 @@ impl NetworkModel {
             .map_or_else(|| t("net-vpn-off"), |vpn| vpn.name.clone())
     }
 
-    /// Read `uuid`'s settings on a worker, unless they are being read.
     fn read_vpn(&mut self, uuid: &str) {
         if !self.vpn.reading.insert(uuid.to_owned()) {
             return;
@@ -615,7 +559,6 @@ impl NetworkModel {
         }
     }
 
-    /// Take in `uuid`'s settings.
     pub(super) fn adopt_vpn_settings(&mut self, uuid: &str, settings: VpnProfileSettings) {
         self.vpn.reading.remove(uuid);
         self.vpn.errors.remove(uuid);
@@ -626,7 +569,6 @@ impl NetworkModel {
         self.changed = true;
     }
 
-    /// Start a picker for a file of `kind` (either kind for `None`).
     fn pick_vpn_file(&mut self, kind: Option<&'static str>) {
         if self.vpn.import.is_some() {
             return;
@@ -643,7 +585,6 @@ impl NetworkModel {
         self.vpn.import = Some((request.all_files().send(), kind));
     }
 
-    /// Set up the file at `path` on a worker: what a picked file starts.
     pub(super) fn import_vpn_path(&mut self, path: PathBuf, wanted: Option<&'static str>) {
         let service = Arc::clone(&self.service);
         self.notice = Some(t("net-vpn-importing"));
@@ -653,7 +594,6 @@ impl NetworkModel {
         );
     }
 
-    /// Take in a file picked to import or a place picked to export to.
     pub(super) fn poll_vpn_pickers(&mut self) {
         if let Some(outcome) = self
             .vpn
@@ -714,7 +654,6 @@ impl NetworkModel {
             self.read_vpn(&vpn.uuid);
             self.open_page(&profile_page_key(&vpn.uuid), vpn.name);
         }
-        // A VPN page shown before its settings were read reads them.
         if let Some(uuid) = self
             .page_key()
             .and_then(|key| key.strip_prefix(PAGE_PROFILE).map(str::to_owned))
@@ -726,7 +665,6 @@ impl NetworkModel {
         }
     }
 
-    /// A change to `vpn`'s profile.
     fn vpn_patch(&mut self, connection: &str, patch: VpnProfilePatch) -> Result<Begun, String> {
         let vpn = self.vpn(connection)?;
         if let Some(settings) = self.vpn.settings.get_mut(&vpn.uuid) {
@@ -759,7 +697,6 @@ impl NetworkModel {
         ))
     }
 
-    /// The name servers `connection` asks, as last read.
     fn vpn_dns(&self, connection: &str) -> Result<Vec<String>, String> {
         let vpn = self.vpn(connection)?;
         self.vpn
@@ -769,8 +706,6 @@ impl NetworkModel {
             .ok_or_else(|| t("net-vpn-settings-unread"))
     }
 
-    /// The addresses `connection`, a `WireGuard` tunnel, routes, as last
-    /// read.
     fn vpn_routed(&self, connection: &str) -> Result<Vec<String>, String> {
         let vpn = self.vpn(connection)?;
         let settings = self
@@ -821,8 +756,6 @@ impl NetworkModel {
         if !on {
             return Ok(self.change(change, Some(notice)));
         }
-        // One tunnel carries all traffic at a time: one that does turns off
-        // the others that do, whose routes would fight over it.
         let others = self.active_vpns(Some(&vpn.uuid));
         self.notice = Some(notice);
         self.in_flight += 1;
@@ -832,7 +765,6 @@ impl NetworkModel {
                 .vpn_settings(&vpn.uuid)
                 .is_ok_and(|settings| settings.all_traffic);
             if full_tunnel {
-                // What stays on is read back and shown as it stands.
                 let _ = full_tunnels_off(&*service, &others);
             }
             let result = service.change(&change);
@@ -844,7 +776,6 @@ impl NetworkModel {
         }))
     }
 
-    /// The VPNs up now, but `except`: their ids and names.
     pub(super) fn active_vpns(&self, except: Option<&str>) -> Vec<(String, String)> {
         self.vpns
             .iter()
@@ -853,7 +784,6 @@ impl NetworkModel {
             .collect()
     }
 
-    /// Begin `effect`.
     #[expect(clippy::too_many_lines, reason = "one arm per effect")]
     pub(super) fn begin_vpn(&mut self, effect: VpnEffect) -> Result<Begun, String> {
         self.changed = true;
@@ -870,8 +800,6 @@ impl NetworkModel {
             VpnEffect::ShowVpnProfile { connection } => {
                 let vpn = match self.vpn(&connection) {
                     Ok(vpn) => vpn,
-                    // Asked for at launch: the page opens once the VPNs are
-                    // read.
                     Err(_) if !self.loaded => {
                         self.vpn.wanted = Some(connection);
                         self.reach.pages.clear();
@@ -959,8 +887,6 @@ impl NetworkModel {
                         .unwrap_or_else(|| form.endpoint.get())
                         .trim()
                         .to_owned(),
-                    // A tunnel set up here routes everything; its profile
-                    // page edits what it routes.
                     allowed_ips: list_of(allowed_ips.as_deref().unwrap_or(ALL_ADDRESSES)),
                     keepalive: (keepalive > 0).then_some(keepalive),
                 };
@@ -1188,7 +1114,6 @@ impl NetworkModel {
         }
     }
 
-    /// Report a landed VPN change.
     pub(super) fn vpn_changed(
         &mut self,
         change: &NetworkChange,
@@ -1230,7 +1155,6 @@ impl NetworkModel {
                     ))
                 }
                 Err(error) => {
-                    // What is shown holds a change the device refused.
                     self.vpn.settings.remove(uuid);
                     self.reread_vpn(uuid);
                     Err(t_args("net-notice-policy-err", &[("error", error.into())]))
@@ -1253,7 +1177,6 @@ impl NetworkModel {
         }
     }
 
-    /// Take in a VPN set up: its page opens in place of the form.
     pub(super) fn vpn_created(&mut self, result: Result<String, String>) -> Result<String, String> {
         match result {
             Ok(uuid) => {
@@ -1271,11 +1194,8 @@ impl NetworkModel {
         }
     }
 
-    /// The published row of `vpn`.
     fn vpn_live(&self, vpn: &VpnInfo) -> LiveRow {
         let offer = |effect: VpnEffect| SettingsEffect::from(effect).bound();
-        // A setting is offered with its value to give; the connection is
-        // the row's own.
         let asking =
             |effect: VpnEffect, asking: &[&str]| SettingsEffect::from(effect).bound_asking(asking);
         let connection = vpn.uuid.clone();
@@ -1324,7 +1244,6 @@ impl NetworkModel {
         row
     }
 
-    /// `row` offering each setting of `settings`, with the value to give.
     fn setting_operations(
         mut row: LiveRow,
         connection: String,
@@ -1362,7 +1281,6 @@ impl NetworkModel {
                 &["server"],
             ))
             .operation(asking(
-                // Omitted, the MTU is chosen automatically.
                 VpnEffect::SetVpnMtu {
                     connection: connection.clone(),
                     mtu: None,
@@ -1414,8 +1332,6 @@ impl NetworkModel {
         row
     }
 
-    /// One row per VPN, per device to route through and per device using
-    /// this one.
     pub(super) fn vpn_rows(&self) -> Vec<LiveRow> {
         let mut rows: Vec<LiveRow> = self.vpns.iter().map(|vpn| self.vpn_live(vpn)).collect();
         rows.extend(self.device_vpn_rows());
@@ -1424,7 +1340,6 @@ impl NetworkModel {
 }
 
 impl Page<'_> {
-    /// The VPN pages, by key; `None` for a key that is not one.
     pub(super) fn vpn_pages(&self, key: &str) -> Option<Vec<SettingsSection>> {
         Some(match key {
             PAGE_VPN => std::iter::once(self.vpn_list())
@@ -1442,7 +1357,6 @@ impl Page<'_> {
         })
     }
 
-    /// The switch that brings `vpn` up or down.
     fn vpn_switch_control(&self, vpn: &VpnInfo, live: &ui::tilo_actions::ResourceSpec) -> Toggle {
         let connection = vpn.uuid.clone();
         let toggle = Toggle::from_state(&LocalState::new(self.set_to_connect(vpn)))
@@ -1491,8 +1405,6 @@ impl Page<'_> {
         kind_shown(&vpn.kind, service, &self.plugins)
     }
 
-    /// The VPN list: every tunnel with its switch, the other ways out, and
-    /// Add VPN.
     fn vpn_list(&self) -> SettingsSection {
         let mut content: Vec<Item> = Vec::new();
         if let Some(notice) = &self.notice {
@@ -1563,7 +1475,6 @@ impl Page<'_> {
         card(&t("net-vpn"), rows(content))
     }
 
-    /// The kinds of VPN that can be added.
     fn add_vpn(&self) -> SettingsSection {
         let mut lines: Vec<El> = vec![Box::new(self.drill_row(
             "settings.network.vpn.add.wireguard",
@@ -1601,8 +1512,6 @@ impl Page<'_> {
         card(&t("net-vpn-add"), rows(content))
     }
 
-    /// A new `WireGuard` tunnel: from its keys and server, or from a pasted
-    /// configuration.
     fn add_wireguard(&self) -> Vec<SettingsSection> {
         let form = &self.vpn.wireguard;
         let mut tunnel = vec![
@@ -1678,7 +1587,6 @@ impl Page<'_> {
         ]
     }
 
-    /// A `WireGuard` configuration pasted whole, kept in a secret buffer.
     fn paste_wireguard(&self) -> SettingsSection {
         let form = &self.vpn.wireguard;
         let initial = form.config.lock().map_or_else(
@@ -1718,8 +1626,6 @@ impl Page<'_> {
         )
     }
 
-    /// A new profile of a plugin's type: its name and server; the rest is
-    /// the plugin's own.
     fn add_plugin(&self, service: &str) -> SettingsSection {
         let form = &self.vpn.plugin;
         let name = self
@@ -1752,7 +1658,6 @@ impl Page<'_> {
         card(&name, rows(content))
     }
 
-    /// A VPN's page: its state, settings, Export and Delete.
     fn vpn_profile(&self, uuid: &str) -> Vec<SettingsSection> {
         let Some(vpn) = self.vpns.iter().find(|vpn| vpn.uuid == uuid) else {
             return vec![card(&t("net-vpn"), rows(vec![note(&t("net-vpn-gone"))]))];
@@ -1829,9 +1734,7 @@ impl Page<'_> {
         sections
     }
 
-    /// The editable settings of `vpn`, each its own action.
     fn vpn_settings_rows(&self, vpn: &VpnInfo, settings: &VpnProfileSettings) -> Vec<Item> {
-        // Every setting here acts on the VPN's own row.
         let live = self.vpn_live(vpn).into_resource();
         let uuid = vpn.uuid.clone();
         let text = |id: &str, value: String, placeholder: String| {
@@ -1899,8 +1802,6 @@ impl Page<'_> {
         out
     }
 
-    /// The packet size: Automatic or Custom, and for Custom the size,
-    /// in the same row.
     fn mtu_rows(&self, vpn: &VpnInfo, settings: &VpnProfileSettings) -> Vec<Item> {
         let live = self.vpn_live(vpn).into_resource();
         let uuid = vpn.uuid.clone();
@@ -1953,8 +1854,6 @@ impl Page<'_> {
         )]
     }
 
-    /// The name servers the tunnel asks, each removable, and the field to
-    /// add one; without any, it asks its own.
     fn dns_rows(&self, vpn: &VpnInfo, settings: &VpnProfileSettings) -> Vec<Item> {
         let live = self.vpn_live(vpn).into_resource();
         let uuid = vpn.uuid.as_str();
@@ -2001,8 +1900,6 @@ impl Page<'_> {
         out
     }
 
-    /// The addresses a `WireGuard` tunnel routes, each removable, and the
-    /// field to add one.
     fn routed_rows(&self, vpn: &VpnInfo, settings: &VpnProfileSettings) -> Vec<Item> {
         let live = self.vpn_live(vpn).into_resource();
         let uuid = vpn.uuid.as_str();
@@ -2049,10 +1946,7 @@ impl Page<'_> {
         out
     }
 
-    /// A `WireGuard` tunnel's own settings: its server and how often it
-    /// tells it it is there; what it routes has a card of its own.
     fn wireguard_settings_rows(&self, vpn: &VpnInfo, settings: &VpnProfileSettings) -> Vec<Item> {
-        // Every setting here acts on the VPN's own row.
         let live = self.vpn_live(vpn).into_resource();
         let uuid = vpn.uuid.as_str();
         let text = |id: &str, value: String, placeholder: String| {
@@ -2107,12 +2001,10 @@ impl Page<'_> {
 
 #[cfg(test)]
 impl NetworkModel {
-    /// The public key generated for a new tunnel.
     pub(super) fn vpn_public_key(&self) -> Option<String> {
         self.vpn.wireguard.public_key.clone()
     }
 
-    /// Fill the new tunnel's form as a person would.
     pub(super) fn fill_wireguard_form(
         &self,
         name: &str,
@@ -2127,7 +2019,6 @@ impl NetworkModel {
         form.endpoint.set(endpoint.into());
     }
 
-    /// Whether the new tunnel's private key buffer holds nothing.
     pub(super) fn vpn_private_key_is_empty(&self) -> bool {
         self.vpn
             .wireguard

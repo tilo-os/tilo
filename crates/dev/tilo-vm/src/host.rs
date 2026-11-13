@@ -1,16 +1,8 @@
-//! What this host offers for running dev VMs: which hypervisor adapter can
-//! work here, the resolved path of every external tool it would run, and
-//! the one install line that fixes what is missing.
-//!
-//! Humans watch dev VMs in the host's native hypervisor UI, so the default
-//! adapters are exactly those a UI can see: libvirt's rootless
-//! `qemu:///session` on Linux (virt-manager, GNOME Boxes), UTM on macOS and
-//! Hyper-V on Windows, or WHPX with QEMU on Windows ARM64 Home. The raw `qemu` adapter (`os/dev/vm.sh`) is the
-//! headless adapter for CI and scenario tests; it is used only when asked
-//! for by name.
-//!
-//! [`HostFacts::probe`] looks at the real host once; everything after it is
-//! a pure function of those facts, so each decision is unit-tested.
+//! What this host offers for running dev VMs: which hypervisor adapter can work
+//! here, the resolved path of every external tool it would run, and the install
+//! line that fixes what is missing. The default adapters are those a native
+//! hypervisor UI can see; the raw `qemu` adapter is used only when asked for by
+//! name.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -23,15 +15,12 @@ use crate::hypervisor::{CommandLine, Runner};
 /// virt-manager as "QEMU/KVM User session".
 pub const SESSION_URI: &str = "qemu:///session";
 
-/// How to see a libvirt dev VM in a UI.
 pub const VIRT_MANAGER_TIP: &str = "watch it in virt-manager: File > Add Connection > QEMU/KVM user session (GNOME Boxes shows session VMs too)";
 
-/// How software gets installed on this host, which decides the fix line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HostKind {
     RpmOstree,
-    /// An image-based Linux host with bootc only: packages go in the image.
     Bootc,
     Dnf,
     Apt,
@@ -63,17 +52,11 @@ pub struct HostFacts {
     pub os: String,
     pub arch: String,
     pub kind: HostKind,
-    /// Every match on `PATH`, in `PATH` order, for each tool of interest.
     pub path: BTreeMap<String, Vec<PathBuf>>,
-    /// Linux: can this user open `/dev/kvm` for reading and writing?
     pub kvm: Option<bool>,
-    /// Linux with virsh: the guests `virsh capabilities` lists on
-    /// [`SESSION_URI`], which only its QEMU driver answers. `Err` carries
-    /// virsh's words.
     pub session: Option<Result<Vec<Guest>, String>>,
     /// macOS: UTM.app's `utmctl`, found even when it is not on `PATH`.
     pub utm_app: Option<PathBuf>,
-    /// Windows: whether `PowerShell` has the Hyper-V module (`Get-VM`).
     pub hyperv: Option<bool>,
 }
 
@@ -85,7 +68,6 @@ pub struct Guest {
     pub domains: Vec<String>,
 }
 
-/// The value of attribute `name` in the tag that starts `tag`.
 fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     let tag = tag.split_once('>').map_or(tag, |(inside, _)| inside);
     ['\'', '"'].into_iter().find_map(|quote| {
@@ -94,7 +76,6 @@ fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
-/// The guests in `virsh capabilities` output.
 pub fn parse_guests(capabilities: &str) -> Vec<Guest> {
     capabilities
         .split("<guest>")
@@ -114,7 +95,6 @@ pub fn parse_guests(capabilities: &str) -> Vec<Guest> {
         .collect()
 }
 
-/// Tools `doctor` and the adapters care about.
 pub const TOOLS: &[&str] = &[
     "ssh",
     "git",
@@ -143,7 +123,6 @@ pub fn qemu_system(arch: &str) -> String {
     format!("qemu-system-{arch}")
 }
 
-/// Every executable named `tool` on `PATH`, in order.
 pub fn which_all(tool: &str) -> Vec<PathBuf> {
     let paths = std::env::var_os("PATH").unwrap_or_default();
     let extensions: Vec<String> = if cfg!(windows) && Path::new(tool).extension().is_none() {
@@ -164,8 +143,6 @@ pub fn which_all(tool: &str) -> Vec<PathBuf> {
             }
         }
     }
-    // MSYS2's ARM64 QEMU is commonly installed without adding its bin to
-    // the Windows PATH. Keep the detected binary and firmware in one prefix.
     if cfg!(windows)
         && (tool == "qemu-img" || tool == "qemu-system-aarch64")
         && let Some(home) = std::env::var_os("USERPROFILE")
@@ -177,8 +154,6 @@ pub fn which_all(tool: &str) -> Vec<PathBuf> {
             found.push(candidate);
         }
     }
-    // MSYS2 installs rsync in usr/bin, not beside CLANGARM64 QEMU. Probe its
-    // default per-user location without changing PATH for unrelated tools.
     if cfg!(windows)
         && tool == "rsync"
         && let Some(home) = std::env::var_os("USERPROFILE")
@@ -191,7 +166,6 @@ pub fn which_all(tool: &str) -> Vec<PathBuf> {
     found
 }
 
-/// The exact host rsync executable used by worktree and image transfers.
 pub fn rsync_program() -> Option<String> {
     if cfg!(windows) {
         which_all("rsync")
@@ -211,7 +185,6 @@ pub fn rsync_ssh_program() -> Option<PathBuf> {
 }
 
 impl HostFacts {
-    /// Look at this host.
     pub fn probe(runner: &mut dyn Runner) -> Self {
         let path: BTreeMap<String, Vec<PathBuf>> = TOOLS
             .iter()
@@ -279,7 +252,6 @@ impl HostFacts {
         }
     }
 
-    /// The first `tool` on `PATH`.
     pub fn first(&self, tool: &str) -> Option<&Path> {
         self.path
             .get(tool)
@@ -296,7 +268,6 @@ impl HostFacts {
     }
 }
 
-/// One external tool an adapter will run, with the path it resolved to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ToolPath {
     pub tool: String,
@@ -312,7 +283,6 @@ impl ToolPath {
     }
 }
 
-/// An adapter that works on this host, and exactly what it will run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Choice {
     pub adapter: &'static str,
@@ -343,7 +313,6 @@ impl Choice {
     }
 }
 
-/// Why an adapter cannot work here, and the line that fixes it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Missing {
     pub adapter: String,
@@ -351,7 +320,6 @@ pub struct Missing {
     pub fix: String,
 }
 
-/// The adapter a new VM gets on this OS: the one its native UI shows.
 pub fn default_adapter(os: &str) -> &'static str {
     match os {
         "macos" => "utm",
@@ -360,7 +328,6 @@ pub fn default_adapter(os: &str) -> &'static str {
     }
 }
 
-/// The default adapter, if it works here.
 pub fn auto(facts: &HostFacts) -> Result<Choice, Missing> {
     if facts.os == "windows" && facts.arch == "aarch64" && facts.hyperv != Some(true) {
         return evaluate(facts, "whpx");
@@ -368,9 +335,6 @@ pub fn auto(facts: &HostFacts) -> Result<Choice, Missing> {
     evaluate(facts, default_adapter(&facts.os))
 }
 
-/// Evaluate a registered or requested VM, honoring explicit software emulation.
-/// Native libvirt VMs still require KVM; emulated ones require the same tools
-/// and user session but not a hardware virtualization device.
 pub fn evaluate_vm(facts: &HostFacts, adapter: &str, emulated: bool) -> Result<Choice, Missing> {
     if adapter == "libvirt" && emulated {
         let tools = libvirt_tools(facts)?;
@@ -384,7 +348,6 @@ pub fn evaluate_vm(facts: &HostFacts, adapter: &str, emulated: bool) -> Result<C
     }
 }
 
-/// Can `adapter` work here?
 pub fn evaluate(facts: &HostFacts, adapter: &str) -> Result<Choice, Missing> {
     let missing = |detail: String, fix: String| Missing {
         adapter: adapter.to_owned(),
@@ -474,7 +437,6 @@ pub fn evaluate(facts: &HostFacts, adapter: &str) -> Result<Choice, Missing> {
                 "enable Hyper-V (Windows Pro, Enterprise or Education), in an admin PowerShell: Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V -All, then reboot".into(),
             )),
         },
-        // A dev device needs nothing but the SSH client that reaches it.
         "device" => facts
             .first("ssh")
             .map(|ssh| Choice {
@@ -489,9 +451,6 @@ pub fn evaluate(facts: &HostFacts, adapter: &str) -> Result<Choice, Missing> {
     }
 }
 
-/// virsh, the qemu-img beside it, and passt, which the VM's network runs on.
-/// tilo-vm writes the domain XML itself, so nothing else (no virt-install,
-/// no libvirt storage or network driver) is needed.
 pub fn libvirt_tools(facts: &HostFacts) -> Result<Vec<ToolPath>, Missing> {
     let missing = |detail: String| Missing {
         adapter: "libvirt".into(),
@@ -513,7 +472,6 @@ pub fn libvirt_tools(facts: &HostFacts) -> Result<Vec<ToolPath>, Missing> {
     ])
 }
 
-/// Linux: can this user use KVM? Unknown elsewhere counts as yes.
 pub fn kvm_usable(facts: &HostFacts) -> Result<(), Missing> {
     if facts.kvm == Some(false) {
         return Err(Missing {
@@ -525,12 +483,10 @@ pub fn kvm_usable(facts: &HostFacts) -> Result<(), Missing> {
     Ok(())
 }
 
-/// The probe [`HostFacts::probe`] runs against the session's QEMU driver.
 pub fn session_probe() -> String {
     format!("virsh --connect {SESSION_URI} capabilities")
 }
 
-/// Does libvirt's rootless session QEMU driver answer? Unprobed counts as yes.
 pub fn session_answers(facts: &HostFacts) -> Result<(), Missing> {
     if let Some(Err(why)) = &facts.session {
         let probe = session_probe();
@@ -546,11 +502,6 @@ pub fn session_answers(facts: &HostFacts) -> Result<(), Missing> {
     Ok(())
 }
 
-/// Can the session run an `arch` guest, with KVM or, when `emulated`, TCG?
-/// Unprobed counts as yes.
-///
-/// # Errors
-/// What libvirt lists instead, with the fix.
 pub fn session_domain(facts: &HostFacts, arch: &str, emulated: bool) -> Result<String, Missing> {
     let domain = if emulated { "qemu" } else { "kvm" };
     let probe = session_probe();
@@ -600,9 +551,6 @@ pub fn session_domain(facts: &HostFacts, arch: &str, emulated: bool) -> Result<S
     ))
 }
 
-/// `tool` beside `anchor` (the same toolchain), else an explanation. A
-/// `tool` elsewhere on `PATH` (an Android SDK's qemu-img, say) is named and
-/// refused rather than silently used.
 fn companion<'a>(
     facts: &'a HostFacts,
     tool: &str,
@@ -623,8 +571,6 @@ fn companion<'a>(
     }
 }
 
-/// The one line that installs libvirt's QEMU driver, virsh, qemu-img and
-/// passt (with virt-manager to watch VMs).
 pub fn libvirt_fix(facts: &HostFacts) -> String {
     let fedora = "libvirt-daemon-kvm libvirt-client virt-manager qemu-img passt";
     match facts.kind {
@@ -657,7 +603,6 @@ pub fn libvirt_fix(facts: &HostFacts) -> String {
 fn kvm_fix(facts: &HostFacts) -> String {
     let group = match facts.kind {
         HostKind::RpmOstree | HostKind::Bootc => {
-            // The kvm group lives in the image's /usr/lib/group, so usermod cannot see it.
             "grep -E '^kvm:' /usr/lib/group | sudo tee -a /etc/group && sudo usermod -aG kvm $USER"
         }
         _ => "sudo usermod -aG kvm $USER",
@@ -703,8 +648,6 @@ fn qemu_fix(facts: &HostFacts) -> String {
 pub mod tests {
     use super::*;
 
-    /// A Linux host with `tools` at the given paths, KVM usable and the
-    /// libvirt session answering.
     pub fn linux(kind: HostKind, tools: &[(&str, &str)]) -> HostFacts {
         let mut path: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
         for (tool, at) in tools {
@@ -738,8 +681,6 @@ pub mod tests {
 
     const ANDROID: &str = "/home/u/Android/Sdk/emulator/qemu-img";
 
-    /// Trimmed `virsh --connect qemu:///session capabilities` from a Fedora
-    /// 44 `x86_64` host.
     const CAPABILITIES: &str = "<capabilities>
   <host>
     <cpu><arch>x86_64</arch></cpu>
@@ -770,11 +711,8 @@ pub mod tests {
   </guest>
 </capabilities>";
 
-    /// Capabilities list each guest and its domain types; the session must offer KVM or, for emulation,
-    /// TCG; virt-install is irrelevant to libvirt; KVM and the session connection are checked.
     #[test]
     fn host_capabilities_and_session_checks_decide_emulation() {
-        // Phase: capabilities_list_each_guest_and_its_domain_types.
         {
             let guests = parse_guests(CAPABILITIES);
             let pairs: Vec<(&str, Vec<&str>)> = guests
@@ -797,7 +735,6 @@ pub mod tests {
             assert!(parse_guests("error: no capabilities").is_empty());
         }
 
-        // Phase: the_session_must_offer_kvm_or_for_emulation_tcg.
         {
             let mut facts = linux(HostKind::Dnf, LIBVIRT);
             facts.session = Some(Ok(parse_guests(CAPABILITIES)));
@@ -834,7 +771,6 @@ pub mod tests {
             );
         }
 
-        // Phase: virt_install_is_irrelevant_to_libvirt.
         {
             let without = linux(HostKind::Dnf, LIBVIRT);
             let mut with_it = LIBVIRT.to_vec();
@@ -857,7 +793,6 @@ pub mod tests {
             assert!(!TOOLS.contains(&"virt-install"));
         }
 
-        // Phase: kvm_and_the_session_connection_are_checked.
         {
             let mut facts = linux(HostKind::Dnf, LIBVIRT);
             facts.kvm = Some(false);
@@ -880,16 +815,12 @@ pub mod tests {
         }
     }
 
-    /// Linux defaults to a libvirt session with resolved paths; the qemu-img beside virsh wins; a stray
-    /// qemu-img is named and refused; fixes follow the host kind; raw QEMU is never the default; macOS and
-    /// Windows check their hypervisors; Windows ARM home chooses matching QEMU and firmware.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
     )]
     fn host_defaults_resolve_one_consistent_toolchain_per_platform() {
-        // Phase: linux_defaults_to_libvirt_session_with_resolved_paths.
         {
             let facts = linux(HostKind::Dnf, LIBVIRT);
             let choice = auto(&facts).unwrap();
@@ -900,7 +831,6 @@ pub mod tests {
             assert!(text.contains("virsh = /usr/bin/virsh"), "{text}");
         }
 
-        // Phase: the_qemu_img_beside_virsh_wins_over_an_earlier_one.
         {
             let facts = linux(
                 HostKind::Dnf,
@@ -917,7 +847,6 @@ pub mod tests {
             );
         }
 
-        // Phase: a_stray_qemu_img_is_named_and_refused.
         {
             let facts = linux(
                 HostKind::Dnf,
@@ -937,7 +866,6 @@ pub mod tests {
             );
         }
 
-        // Phase: fixes_follow_the_host_kind.
         {
             let image = linux(HostKind::RpmOstree, &[]);
             let fix = auto(&image).unwrap_err().fix;
@@ -983,7 +911,6 @@ pub mod tests {
             }
         }
 
-        // Phase: raw_qemu_is_never_the_default_and_points_people_at_libvirt.
         {
             let facts = linux(
                 HostKind::Dnf,
@@ -1001,7 +928,6 @@ pub mod tests {
             assert!(why.fix.contains("use libvirt instead"), "{}", why.fix);
         }
 
-        // Phase: macos_and_windows_check_their_hypervisors.
         {
             let mut mac = linux(HostKind::Macos, &[]);
             mac.os = "macos".into();
@@ -1026,7 +952,6 @@ pub mod tests {
             assert_eq!(auto(&win).unwrap().adapter, "hyperv");
         }
 
-        // Phase: windows_arm_home_chooses_matching_qemu_and_firmware.
         {
             let temp = tempfile::tempdir().unwrap();
             let prefix = temp.path().join("clangarm64");

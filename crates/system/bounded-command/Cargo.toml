@@ -11,6 +11,8 @@ homepage.workspace = true
 [dependencies]
 thiserror.workspace = true
 zeroize.workspace = true
+# The clock that also reads in a browser page, where std has none.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

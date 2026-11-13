@@ -44,7 +44,6 @@ impl FilesBackend {
         VPath::new(&hash.to_ascii_lowercase()).map_err(|_| ContentError::InvalidHash(hash.into()))
     }
 
-    /// Every stored address and its size.
     fn entries(&self, dir: &Dir) -> Result<Vec<(String, u64)>, ContentError> {
         let listed = match blocking::list(dir, &VPath::root()) {
             Ok(listed) => listed,
@@ -124,6 +123,10 @@ impl ContentBackend for FilesBackend {
         collected.hashes.sort();
         Ok(collected)
     }
+
+    fn max_item_bytes(&self) -> usize {
+        self.limits.max_item_bytes
+    }
 }
 
 #[cfg(test)]
@@ -163,5 +166,41 @@ mod tests {
             .expect("a files store collects");
         assert_eq!(collected.hashes, vec![kept]);
         assert!(store.put(b"67890").is_ok());
+    }
+
+    /// A page keeps what a window stored in its profile's app files
+    /// ([`ContentStore::local_for_app`] where files have no native path), so an
+    /// upload a private record names is still here after a reload — another
+    /// handle over the same app files — and no pass drops it behind the page's
+    /// back: only a caller that knows every name a record gives it collects it.
+    #[test]
+    fn a_page_keeps_an_upload_until_a_caller_that_knows_its_name_lets_it_go() {
+        let limits = ContentLimits::default();
+        let location = || {
+            let content = VPath::new("content").unwrap();
+            tilo_paths::AppPaths::memory("so.tilo.content")
+                .data()
+                .join(&content)
+        };
+        let page = ContentStore::new(FilesBackend::new(location(), limits));
+        let upload = page.put(b"a photo an unsent draft names").unwrap();
+
+        let reopened = ContentStore::new(FilesBackend::new(location(), limits));
+        assert_eq!(
+            reopened.read(&upload).as_deref(),
+            Some(&b"a photo an unsent draft names"[..]),
+            "the upload outlives the page that made it"
+        );
+
+        let named = reopened
+            .collect_unreferenced(&BTreeSet::from([upload.clone()]))
+            .expect("a files store collects");
+        assert!(named.hashes.is_empty(), "what a record names stays");
+        assert!(reopened.has(&upload));
+        let gone = reopened
+            .collect_unreferenced(&BTreeSet::new())
+            .expect("a files store collects");
+        assert_eq!(gone.hashes, vec![upload.clone()]);
+        assert!(!reopened.has(&upload));
     }
 }

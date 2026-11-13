@@ -583,6 +583,7 @@ impl Reader<'_> {
                 default: None,
                 place: false,
                 entry: false,
+                label: None,
             });
         }
         for param in &verb.params {
@@ -615,14 +616,25 @@ impl Reader<'_> {
                 default: (!param.required).then(DefaultMeta::none),
                 place: false,
                 entry: false,
+                label: None,
             });
         }
+        // What the action answers with, as the surface types it: the value a
+        // script reads back, `Unit` when the app declares no shape for it.
+        let result = verb.returns.as_ref().and_then(|returns| {
+            let ty = if returns.ty.is_any() {
+                FieldType::from_schema(&returns.schema)
+            } else {
+                returns.ty.clone()
+            };
+            self.ty(&ty, rename)
+        });
         self.meta.actions.push(ActionMeta {
             id: verb.id.clone(),
             name: action_name(&verb.id),
             doc: verb.description.clone().unwrap_or_default(),
             params,
-            result: None,
+            result,
             class: effect_class(verb.kind),
             proposal: None,
             reaches: Vec::new(),

@@ -889,22 +889,41 @@ fn a_links_how_is_a_case_of_the_hosts_link_how_enum() {
 }
 
 #[test]
-fn every_rich_input_is_given_its_drawers_people_by_the_system() {
+fn every_rich_input_is_given_its_drawers_members_by_the_system() {
     let (m, _) = lower(
         "type Chat {\n    topic: Text\n}\nview chat(c: Chat) {\n    state draft: RichText = RichText(\"\")\n    stack {\n        rich_input(bind: draft)\n    }\n}\nview loose() {\n    state draft: RichText = RichText(\"\")\n    rich_input(bind: draft)\n}",
     );
     let chat = host_imports(func(&m, "chat"));
-    for want in [Imp::Speakers, Imp::Members] {
-        assert!(chat.contains(&want), "{want:?} in {chat:?}");
-    }
     assert!(
-        strings(func(&m, "chat")).iter().any(|s| s == "people")
-            && strings(func(&m, "chat")).iter().any(|s| s == "speakers")
+        chat.contains(&Imp::Members),
+        "who can read what it writes into: {chat:?}"
     );
+    assert!(
+        !chat.contains(&Imp::Speakers),
+        "a drawer reads no history of what a mention lands in to say who is in the conversation: \
+         {chat:?}"
+    );
+    assert!(strings(func(&m, "chat")).iter().any(|s| s == "people"));
     let loose = host_imports(func(&m, "loose"));
     assert!(
-        loose.contains(&Imp::WorkspaceMembers) && !loose.contains(&Imp::Speakers),
+        loose.contains(&Imp::WorkspaceMembers) && !loose.contains(&Imp::Members),
         "without a resource, the workspace's members: {loose:?}"
+    );
+}
+
+#[test]
+fn a_rich_input_offers_the_people_of_the_conversation_it_is_given() {
+    let (m, _) = lower(
+        "type Comment {\n    text: Text\n}\ntype Log {\n    comments: Collection<Comment>\n}\nview chat(l: Log) {\n    state draft: RichText = RichText(\"\")\n    rich_input(bind: draft, speakers: speakers(l.comments))\n}",
+    );
+    let chat = host_imports(func(&m, "chat"));
+    assert!(
+        chat.contains(&Imp::Speakers),
+        "who spoke in the conversation, read from its own items: {chat:?}"
+    );
+    assert!(
+        chat.contains(&Imp::Members),
+        "and the members, which the system still gives: {chat:?}"
     );
 }
 
@@ -1294,4 +1313,129 @@ fn only_an_action_reads_the_day_it_is() {
         "type Note {\n    stamp: Date = Date(\"1970-01-01\")\n}\naction mark(n: Note) uses time { n.stamp = now.day() }",
     );
     assert!(imports(func(&m, "mark")).contains(&Imp::TimeDay));
+}
+
+/// A file is a value: a field holds one, an action takes one as its parameter, its parts read
+/// on it, an action makes one of what it holds, and a view asks the person for one and runs an
+/// action with it.
+#[test]
+fn a_file_is_a_field_a_parameter_and_the_persons_choice() {
+    let (m, _) = lower(
+        "type N {\n    body: RichText\n    picture: Option<File>\n}\n
+         action put(n: N, f: File) (did: \"added a file\") {\n    n.picture = f\n    n.body = RichText(f.name, f.url, \"{f.size}\")\n}\n
+         action read(n: N, f: File) {\n    match f.text() {\n        .ok(words) => { n.body = RichText(words) },\n        .err(why) => { n.body = RichText(why) }\n    }\n}\n
+         action write(n: N) -> File {\n    File.of_text(\"n.md\", n.body.text)\n}\n
+         action archive(n: N) -> File {\n    File.zip(\"n.zip\", [File.of_text(\"a.md\", n.body.text)])\n}\n
+         action bytes(n: N) -> File uses web {\n    File.of_bytes(\"n.html\", web.get(\"https://example.com\").body)\n}\n
+         action again(n: N) -> File {\n    File.at(\"n.png\", n.picture?.url ?? \"\")\n}\n
+         action export(n: N) -> Text {\n    n.body.text\n}\n
+         view v(n: N) {\n    stack {\n        button(\"Put\", on: file.choose(put(n), accept: [\"image/png\"]))\n        button(\"Save\", on: file.save(export(n), name: \"n.md\"))\n    }\n}",
+    );
+    let put = imports(func(&m, "put"));
+    assert!(put.contains(&Imp::FilePart), "its parts: {put:?}");
+    assert!(put.contains(&Imp::FileSize), "its size: {put:?}");
+    assert!(imports(func(&m, "read")).contains(&Imp::FileText));
+    assert!(imports(func(&m, "write")).contains(&Imp::FileOfText));
+    assert!(imports(func(&m, "archive")).contains(&Imp::FileZip));
+    assert!(imports(func(&m, "bytes")).contains(&Imp::FileOfBytes));
+    assert!(imports(func(&m, "again")).contains(&Imp::FileAt));
+    let view = imports(func(&m, "v"));
+    assert!(view.contains(&Imp::ActChoose), "the chooser: {view:?}");
+    assert!(view.contains(&Imp::ActSave), "the save: {view:?}");
+    // The parameter is the file itself: no form asks for it, the person's chooser fills it.
+    assert!(!Ty::File.asked_by_form());
+}
+
+/// The messages a declaration wrote, as `declaration.key text`: what a catalogue translates.
+fn messages(m: &Module) -> Vec<String> {
+    m.words
+        .iter()
+        .map(|w| format!("{}.{} {}", w.view, w.key, w.text))
+        .collect()
+}
+
+/// Whether `view` (by its id) says `words`.
+fn says(m: &Module, view: &str, words: &str) -> bool {
+    messages(m)
+        .iter()
+        .any(|w| w.starts_with(&format!("{view}.")) && w.ends_with(words))
+}
+
+/// The types and the chip view the words of a list are shown with: a view whose one parameter is
+/// words it shows, as the toolkit's own are.
+const WORDY: &str = "type Task {\n    title: Text\n    place: Text\n}\ntype Tasks {\n    items: Collection<Task>\n}\n\
+view chip(label: Text) {\n    text(label)\n}\n";
+
+/// A literal a `let` keeps is a message of the view where a prop of words shows it, as one written
+/// into the prop is: where the words were written is nothing a person reading the window sees.
+#[test]
+fn the_words_a_let_keeps_are_the_views_messages() {
+    let (m, ids) = lower(&format!(
+        "{WORDY}view todo(ts: Tasks) {{\n    let empty = \"No tasks yet\"\n    let tail = \"{{ts.items.len()}}\"\n    stack {{\n        text(empty)\n        text(tail)\n    }}\n}}"
+    ));
+    let todo = ids.get("todo").expect("the view's id");
+    assert!(says(&m, todo, "No tasks yet"), "{:#?}", messages(&m));
+    // A literal of no words is text, kept in a `let` as it is written anywhere else.
+    assert!(
+        !says(&m, todo, "{ts.items.len()}"),
+        "a literal of no words is text: {:#?}",
+        messages(&m)
+    );
+}
+
+/// A literal a branch chose is the words the prop shows whatever branch the person's day takes:
+/// an `if`'s arms and the words a `??` falls back to are the same message as a literal written
+/// where the prop is, and each is registered once.
+#[test]
+fn the_words_a_branch_chose_are_the_views_messages() {
+    let (m, ids) = lower(&format!(
+        "{WORDY}view todo(ts: Tasks) {{\n    let heading = if ts.items.is_empty() {{ \"Nothing to do\" }} else {{ \"Your day\" }}\n    let name = ts.items.find(t -> t.place == \"inbox\")?.title ?? \"Inbox\"\n    stack {{\n        ui.Chip(heading, tone: .neutral)\n        text(name)\n        text(if ts.items.is_empty() {{ \"Nothing to do\" }} else {{ \"Your day\" }})\n    }}\n}}"
+    ));
+    let todo = ids.get("todo").expect("the view's id");
+    for want in ["Nothing to do", "Your day", "Inbox"] {
+        assert!(says(&m, todo, want), "{want} in {:#?}", messages(&m));
+    }
+    // One text is one message of the view, however many branches and sites write it.
+    let heading = messages(&m)
+        .into_iter()
+        .filter(|w| w.starts_with(&format!("{todo}.")) && w.ends_with("Nothing to do"))
+        .count();
+    assert_eq!(heading, 1, "{:#?}", messages(&m));
+}
+
+/// A component's `Text` parameter shows the words given to it, so the literal a caller keeps in a
+/// `let` and passes on is the caller's message too: a sentence is translated where it is written,
+/// not by the view that lays it out.
+#[test]
+fn the_words_a_component_parameter_shows_are_the_callers() {
+    let (m, ids) = lower(&format!(
+        "{WORDY}view todo(ts: Tasks) {{\n    let label = \"All tasks\"\n    stack {{\n        chip(label)\n        ui.Chip(\"Chip says\", tone: .neutral)\n    }}\n}}"
+    ));
+    let todo = ids.get("todo").expect("the view's id");
+    let chip = ids.get("chip").expect("the chip view's id");
+    assert!(says(&m, todo, "All tasks"), "{:#?}", messages(&m));
+    assert!(
+        !says(&m, chip, "All tasks"),
+        "the words are the caller's: {:#?}",
+        messages(&m)
+    );
+    assert!(says(&m, todo, "Chip says"), "{:#?}", messages(&m));
+}
+
+/// A literal that reaches no prop of words is data: a tag a piece of code compares, an address a
+/// link opens. A `let` keeps it as the text it is, and the catalogue never names it.
+#[test]
+fn a_literal_no_prop_of_words_shows_stays_data() {
+    let (m, _) = lower(&format!(
+        "{WORDY}view todo(ts: Tasks) {{\n    let place = \"inbox\"\n    let address = \"https://tilo.coffee\"\n    stack {{\n        ui.Link(address)\n        text(if ts.items.any(t -> t.place == place) {{ \"Here\" }} else {{ \"Nowhere\" }})\n    }}\n}}"
+    ));
+    let said = messages(&m);
+    assert!(
+        !said
+            .iter()
+            .any(|w| w.ends_with("inbox") || w.ends_with("tilo.coffee")),
+        "a tag and an address are data: {said:#?}"
+    );
+    // The words the view shows are still its messages.
+    assert!(said.iter().any(|w| w.ends_with("Nowhere")), "{said:#?}");
 }

@@ -1,5 +1,5 @@
-//! Host-desktop entry point for the primary Files workspace: start the daemon
-//! only for saved, authorized state, never by creating an empty namespace.
+//! Host entry point for the primary Files workspace: start the daemon only for
+//! saved, authorized state, never by creating an empty namespace.
 use std::ffi::{OsStr, OsString};
 use std::os::unix::fs::DirBuilderExt as _;
 use std::os::unix::process::CommandExt as _;
@@ -49,7 +49,6 @@ fn paths(env: &dyn Fn(&str) -> Option<OsString>) -> Result<Paths> {
         runtime: runtime_dir.join("tilo/files-workspace"),
         storage: runtime_dir.join("tilo/files-storage"),
     };
-    // `storage` shares `runtime`'s base.
     for path in [&paths.state, &paths.identity, &paths.config, &paths.runtime] {
         ensure!(path.is_absolute(), "Files paths must be absolute");
     }

@@ -1,9 +1,10 @@
-//! A notice's own strip under the bar's row, where the window is compact:
+//! A notice's own strip, where the window is compact:
 //! the notice's whole text, on up to two lines, and its actions as buttons
 //! that name themselves, on the bar's own surface. The row stands as it does
-//! without a notice; the bar grows by the strip, so the window's content
-//! moves down once as the notice comes and back once it has gone, while
-//! the strip itself comes and goes on the standard motion.
+//! without a notice, and the strip comes and goes on the standard motion.
+//! The desktop's bar grows by the strip, so the window's content moves down
+//! once as the notice comes and back once it has gone; a window's own row
+//! ([`crate::slot_row`]) floats it over the app at the window's foot instead.
 
 use super::paint::{labelled_face, layered};
 use super::{Affine, CONTROL_PX, LOCATION_ICON_PX, Point, Rect, Scene, TextRenderer, Theme};
@@ -107,10 +108,10 @@ impl NoticeStrip {
             return false;
         }
         let gap = f64::from(theme.tokens.spacing.s2);
-        let measured = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        let measured = crate::text_render::with_layout_renderer(theme, |text| {
             let widths: Vec<f64> = actions
                 .iter()
-                .map(|name| labelled_face(Rect::ZERO, name).intrinsic_width(text, theme))
+                .map(|name| labelled_face(Rect::ZERO, name, false).intrinsic_width(text, theme))
                 .collect();
             let style = theme.text(TextRole::Body);
             let line_height = f64::from(style.line_height_px());
@@ -316,7 +317,7 @@ impl NoticeStrip {
                 y += measured.line_height;
             }
             for (i, (action, rect)) in notice.actions.iter().zip(&measured.buttons).enumerate() {
-                let face = labelled_face(*rect + origin, &action.name)
+                let face = labelled_face(*rect + origin, &action.name, action.primary)
                     .hovered(hovered == Some(i) && action.enabled)
                     .pressed(pressed == Some(i) && action.enabled)
                     .disabled(!action.enabled);

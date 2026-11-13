@@ -92,7 +92,7 @@ impl OwnerPolicyClock {
     pub fn new() -> Result<Self, PolicyClockError> {
         Ok(Self(Arc::new(Clock {
             state: Mutex::new(State {
-                observed: Instant::now(),
+                observed: tilo_clock::now(),
                 unix_ns: tilo_clock::try_unix_now_ns().ok_or(PolicyClockError)?,
                 failed: false,
             }),
@@ -115,11 +115,11 @@ impl OwnerPolicyClock {
                 return Err(error);
             }
         };
-        state.advance(Instant::now(), wall)
+        state.advance(tilo_clock::now(), wall)
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_test(initial_ns: u64) -> (Self, PolicyClockTestControl) {
-        let observed = Instant::now();
+        let observed = tilo_clock::now();
         let sample = Arc::new(Mutex::new(TestSample {
             monotonic: observed,
             wall_ns: initial_ns,
@@ -223,7 +223,7 @@ mod tests {
     }
     #[test]
     fn owner_policy_clock_rollback_and_forward_preserve_elapsed() {
-        let start = Instant::now();
+        let start = tilo_clock::now();
         let mut state = State {
             observed: start,
             unix_ns: 200,
@@ -239,7 +239,7 @@ mod tests {
     }
     #[test]
     fn owner_policy_clock_arithmetic_failure_is_terminal() {
-        let start = Instant::now();
+        let start = tilo_clock::now();
         let mut state = State {
             observed: start,
             unix_ns: u64::MAX,
@@ -292,7 +292,10 @@ mod tests {
         let reader = std::thread::spawn(move || time.now_ns());
         let deadline = tilo_test_env::hang_deadline();
         while Arc::strong_count(&origin.0) != 2 {
-            assert!(Instant::now() < deadline, "sampler did not retain origin");
+            assert!(
+                tilo_clock::now() < deadline,
+                "sampler did not retain origin"
+            );
             std::thread::yield_now();
         }
         drop(origin);

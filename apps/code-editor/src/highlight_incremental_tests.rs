@@ -28,7 +28,6 @@ fn check_sequence(sequence: &[(Language, &str)]) {
 
 #[test]
 fn incremental_highlights_match_a_fresh_parse_across_edit_sequences() {
-    // Each phase starts from an empty cache and checks every step against the full-fresh oracle.
     prefix_suffix_insert_delete_and_undo_style_reverts_match_fresh();
     comment_string_and_scope_changes_reparse_until_state_converges();
     unicode_newline_and_language_switches_match_fresh();
@@ -145,7 +144,6 @@ fn unicode_newline_and_language_switches_match_fresh() {
 
 #[test]
 fn incremental_highlights_reparse_only_until_grammar_state_converges() {
-    // Each phase builds a fresh cache and bounds the number of tokenized lines.
     same_text_is_free_but_language_change_reparses_every_line();
     unchanged_suffix_text_is_not_sufficient_when_multiline_state_changes();
     representative_fixture_prepend_and_revert_reuse_the_unaffected_functions();

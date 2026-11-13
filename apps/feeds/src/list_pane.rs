@@ -1,11 +1,9 @@
-//! The overview column: the articles of the chosen place, one
-//! [`ListRowFace`] each, under the refresh progress while feeds refresh;
-//! or the empty state when there is nothing to list.
+//! The overview column: the articles of the chosen place, one [`ListRowFace`]
+//! each, under the refresh progress; or the empty state.
 //!
-//! The rows are painted, and a [`ScrollRegion`] scrolls them: it owns the
-//! offset, the wheel, keyboard and touchpad gestures, the edge fades and the
-//! overlay scroll bar that fades when idle. The empty state is the retained [`EmptyState`],
-//! so its one action takes part in focus and activation like any button.
+//! The rows are painted and a [`ScrollRegion`] scrolls them. The empty state is
+//! the retained [`EmptyState`], so its one action takes part in focus and
+//! activation like any button.
 
 use std::collections::HashMap;
 
@@ -28,7 +26,10 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::app::{Core, Shared};
+use crate::i18n::CATALOG;
 use crate::model::{Article, Filter, Id, relative_time};
+use ui::i18n::ArgValue;
+use ui::widget::DrawChild;
 
 pub(crate) const EMPTY_LIBRARY_TITLE: &str = "No feeds yet";
 
@@ -37,27 +38,19 @@ pub(crate) const EMPTY_LIBRARY_TITLE: &str = "No feeds yet";
 pub(crate) struct RowHit {
     pub(crate) rect: Rect,
     pub(crate) id: Id,
-    /// The star action, while the row shows its actions.
     pub(crate) star: Option<Rect>,
 }
 
 /// What the list painted last frame, for hit-testing and scrolling.
 pub(crate) struct ListState {
     pub(crate) rect: Rect,
-    /// The rows' viewport, below the refresh progress.
     pub(crate) viewport: Rect,
-    /// Scrolls the painted rows.
     pub(crate) scroller: ScrollRegion,
-    /// The theme of the last paint, for the scroll bar's fade.
     pub(crate) theme: Theme,
-    /// Scroll the open article's row into view on the next paint.
     pub(crate) reveal: bool,
-    /// The rows' full height, with their insets.
     pub(crate) content: f64,
     pub(crate) rows: Vec<RowHit>,
     progress: ProgressBar,
-    /// What the frame being drawn paints, and what the last frame the host
-    /// presented painted ([`Core::list_damage`]).
     shown_drawing: Option<ListShown>,
     shown_presented: Option<ListShown>,
 }
@@ -67,17 +60,9 @@ pub(crate) struct ListState {
 /// host as a copy of the rows that stay on screen.
 #[derive(Clone, Debug, PartialEq)]
 struct ListShown {
-    /// What the rows are laid out and painted with besides the articles and
-    /// the offset; `None` while the refresh progress paints above them,
-    /// which repaints the list.
     frame: Option<ListFrame>,
-    /// The index of the first painted row, and what each painted row paints
-    /// from, its hover aside.
     first: usize,
     rows: Vec<u64>,
-    /// The hovered row (its index, whether its star is under the pointer)
-    /// and where it paints its lift and actions: they follow the pointer,
-    /// not the rows.
     hovered: Option<(usize, bool, Rect)>,
     offset: f64,
 }
@@ -120,7 +105,7 @@ impl Default for ListState {
             reveal: true,
             content: 0.0,
             rows: Vec::new(),
-            progress: ProgressBar::new(0.0).with_label("Refreshing feeds"),
+            progress: ProgressBar::new(0.0).with_label(crate::i18n::t("feeds-refreshing")),
             shown_drawing: None,
             shown_presented: None,
         }
@@ -128,7 +113,6 @@ impl Default for ListState {
 }
 
 impl ListState {
-    /// How far the rows are scrolled.
     pub(crate) fn scroll(&self) -> f64 {
         self.scroller.offset().y
     }
@@ -143,7 +127,6 @@ impl ListState {
 pub(crate) struct EmptyList {
     title: &'static str,
     icon: Icon,
-    /// The empty library offers its one action.
     add_feed: bool,
 }
 
@@ -459,7 +442,6 @@ impl Core {
         self.list.scroller.damage_changed_bars(regions);
     }
 
-    /// The frame just drawn is on screen.
     fn list_presented(&mut self) {
         self.list.shown_presented = self.list.shown_drawing.take();
         self.list.scroller.mark_presented();
@@ -504,7 +486,9 @@ impl Core {
         };
         self.list.progress.set_progress(fraction as f32);
         self.list.progress.apply_layout_external(bar);
-        self.list.progress.draw(scene, t, text, theme, presence);
+        self.list
+            .progress
+            .draw_child(scene, t, text, theme, presence);
         let top = bar.y1 + f64::from(spacing.s3);
         ui::surface::separator(
             scene,
@@ -518,7 +502,6 @@ impl Core {
         top
     }
 
-    /// Route `event` to the list. Returns whether the list used it.
     pub(crate) fn list_event(
         &mut self,
         event: &WindowEvent,
@@ -576,7 +559,10 @@ impl Core {
                     .accessibility(row.rect, format!("feeds.article:{}", row.id))
                     .with_children(vec![
                         AccessNode::new(Role::ToggleButton)
-                            .with_name(format!("Star {}", article.title))
+                            .with_name(CATALOG.t_args(
+                                "feeds-a11y-star",
+                                &[("article", ArgValue::Text(article.title.clone()))],
+                            ))
                             .with_state(AccessState::new().focusable(true).checked(article.starred))
                             .with_bounds(row.star.unwrap_or(row.rect))
                             .with_action_target(format!("feeds.star:{}", row.id)),
@@ -605,10 +591,8 @@ impl Core {
 pub(crate) struct ListPane {
     core: Shared,
     rect: Rect,
-    /// The empty state on show, and what it says.
     empty: Option<(EmptyList, EmptyState)>,
     empty_node: Option<NodeId>,
-    /// The empty state came or went: the tree must be rebuilt.
     structure_dirty: bool,
 }
 
@@ -625,7 +609,6 @@ impl ListPane {
         pane
     }
 
-    /// Show the empty state the library calls for.
     fn follow(&mut self) {
         let Ok(core) = self.core.try_borrow() else {
             return;
@@ -724,7 +707,7 @@ impl Widget for ListPane {
         if let Some((_, empty)) = self.empty.as_mut() {
             // Centred in the rows' viewport, below any refresh progress.
             empty.apply_layout_external(viewport);
-            empty.draw(scene, transform, text, theme, presence);
+            empty.draw_child(scene, transform, text, theme, presence);
         }
     }
 

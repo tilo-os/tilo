@@ -15,7 +15,7 @@ pub struct Tally {
     pub pinned: bool,
 }
 
-#[resource(kind = "test.window-bar-tally", label = "Tally")]
+#[resource(kind = "test.window-bar-tally", catalogue = "tests/locales")]
 impl Tally {
     /// Add one
     #[action(icon = "plus")]
@@ -26,7 +26,7 @@ impl Tally {
 
 /// What the tally's window shows: its views, its sidebar.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "test.window-bar-tally.view")]
+#[effect(operation = "test.window-bar-tally.view", catalogue = "tests/locales")]
 pub enum TallyView {
     /// Show the list
     #[effect(view, idempotent)]

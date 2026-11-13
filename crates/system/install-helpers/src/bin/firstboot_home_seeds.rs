@@ -1,8 +1,7 @@
 //! Absent-only firstboot defaults with durable, descriptor-anchored provenance.
-//!
 //! Existing files are never adopted as defaults, even after an interrupted run.
-//! A receipt is an authority to replace files later, so verification deliberately
-//! fails closed on changed metadata, links, custody paths and oversized input.
+//! A receipt is an authority to replace files later, so verification fails
+//! closed on changed metadata, links, custody paths and oversized input.
 #[cfg(target_os = "linux")]
 mod linux {
     use serde_json::{Value, json};
@@ -129,8 +128,8 @@ mod linux {
             })
     }
 
-    /// Python's filesystem codec uses surrogateescape for non-UTF-8 names. Keep
-    /// those bytes in receipts, rather than replacing, omitting or adopting them.
+    /// Python's filesystem codec uses surrogateescape for non-UTF-8 names; the
+    /// receipt keeps those bytes rather than replacing or omitting them.
     fn json_path(path: &OsStr) -> Result<String> {
         let mut remaining = path.as_bytes();
         let mut output = String::from("\"");
@@ -167,10 +166,9 @@ mod linux {
         u16::from_str_radix(std::str::from_utf8(escape).ok()?, 16).ok()
     }
 
-    /// serde rejects unpaired surrogates even though existing Python receipts can
-    /// contain them. Substitute collision-free tokens before parsing, then recover
-    /// raw filesystem bytes only in paths. Literal backslashes and genuine Unicode
-    /// surrogate pairs are left intact. No permissive JSON parser is introduced.
+    /// serde rejects unpaired surrogates even though existing receipts can contain
+    /// them, so collision-free tokens stand in before parsing and raw filesystem
+    /// bytes are recovered only in paths. No permissive JSON parser is used.
     fn parse_receipt(data: &[u8]) -> Result<(Value, String)> {
         let marker = loop {
             let candidate = format!("tilo-surrogate-{}-", uuid::Uuid::new_v4().simple());
@@ -297,8 +295,8 @@ mod linux {
             let decoded = decode_receipt_path(path, &surrogate_marker)?;
             let relative = Path::new(&decoded);
             let parts: Vec<_> = relative.components().collect();
-            // Path components normalize repeated separators and trailing slashes;
-            // compare the spelling as well as rejecting absolute and parent paths.
+            // Path components normalize repeated separators and trailing slashes; compare
+            // the spelling as well as rejecting absolute and parent paths.
             let normalized = parts
                 .iter()
                 .map(|part| part.as_os_str())
@@ -344,8 +342,9 @@ mod linux {
         Ok(())
     }
 
-    /// Publish one complete inode, without replacement, then durably remove scratch.
-    /// Never unlink the final name: after publication it may already be user data.
+    /// Publish one complete inode, without replacement, then durably remove
+    /// scratch. Never unlink the final name: after publication it may already be
+    /// user data.
     fn publish(
         directory: &File,
         name: &OsStr,
@@ -357,7 +356,6 @@ mod linux {
             writer(&temporary)?;
             let old = cstring(&temporary)?;
             let new = cstring(name)?;
-            // SAFETY: both names are NUL terminated and relative to a live directory.
             syscall(unsafe {
                 libc::renameat2(
                     directory.as_raw_fd(),
@@ -371,7 +369,6 @@ mod linux {
             Ok(())
         })();
         let temporary = cstring(&temporary)?;
-        // SAFETY: the scratch name belongs to this operation in a live directory.
         let cleanup = unsafe { libc::unlinkat(directory.as_raw_fd(), temporary.as_ptr(), 0) };
         if cleanup < 0 && io::Error::last_os_error().kind() != io::ErrorKind::NotFound {
             return Err(io::Error::last_os_error().into());
@@ -409,7 +406,6 @@ mod linux {
     fn readlink(directory: &File, name: &OsStr) -> Result<OsString> {
         let name = cstring(name)?;
         let mut buffer = vec![0_u8; 4097];
-        // SAFETY: buffer is writable for its length, and name is NUL terminated.
         let length = unsafe {
             libc::readlinkat(
                 directory.as_raw_fd(),
@@ -432,7 +428,6 @@ mod linux {
         let literal = cstring(&readlink(source, name)?)?;
         publish(destination, name, |temporary| {
             let temporary = cstring(temporary)?;
-            // SAFETY: strings are NUL terminated; the destination descriptor is live.
             syscall(unsafe {
                 libc::symlinkat(
                     literal.as_ptr(),
@@ -440,7 +435,6 @@ mod linux {
                     temporary.as_ptr(),
                 )
             })?;
-            // SAFETY: no-follow ownership changes only the newly created link.
             syscall(unsafe {
                 libc::fchownat(
                     destination.as_raw_fd(),
@@ -618,8 +612,6 @@ mod linux {
         }
         let proofs = open_at(&parent, proof_name, DIRECTORY)?;
         trusted(&proofs.metadata()?)?;
-        // Resolve only the parent: Fedora /home itself is a trusted alias, but
-        // neither the account directory nor any edge inside it may be redirected.
         let home_parent_path = home_path.parent().ok_or("invalid home")?;
         fs::create_dir_all(home_parent_path)?;
         let home_parent = open_directory(&fs::canonicalize(home_parent_path)?)?;
@@ -667,7 +659,6 @@ mod linux {
         )?;
         home.sync_all()?;
         proofs.sync_all()?;
-        // A same-name home substitution must not produce a successful transaction.
         verify_home_binding(&home_parent, home_name, &home)
     }
 
@@ -747,8 +738,6 @@ mod linux {
         }
         let parent = root_directory(destination.parent().ok_or("missing staging parent")?)?;
         let name = OsStr::new("online-accounts");
-        // Parse before publishing anything. The frame, including its key, is
-        // always zeroized when buffered in the privileged transport process.
         let accounts = tilo_install_helpers::account_handoff::InstallAccounts::read_from(
             &mut io::stdin().lock(),
         )?;
@@ -771,7 +760,6 @@ mod linux {
             Ok(())
         })();
         if result.is_err() {
-            // This directory was created exclusively by this invocation.
             fs::remove_dir_all(destination)?;
             parent.sync_all()?;
         }
@@ -780,12 +768,10 @@ mod linux {
 
     fn account_identity(user: &str) -> Result<(PathBuf, Owner)> {
         let name = CString::new(user)?;
-        // SAFETY: this single-threaded helper copies the NSS entry immediately.
         let account = unsafe { libc::getpwnam(name.as_ptr()) };
         if account.is_null() {
             return invalid("account consumer does not exist");
         }
-        // SAFETY: getpwnam succeeded; its strings and scalar fields are initialized.
         let (home, owner) = unsafe {
             (
                 PathBuf::from(OsStr::from_bytes(
@@ -862,8 +848,6 @@ mod linux {
                 .stdin(Stdio::from(transport))
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
-            // SAFETY: the child performs only async-signal-safe credential syscalls
-            // before exec. setuid changes real, effective and saved identity.
             unsafe {
                 command.pre_exec(move || {
                     if libc::setgroups(0, std::ptr::null()) != 0
@@ -886,9 +870,7 @@ mod linux {
                 &Owner { uid: 0, gid: 0 },
             )?;
         }
-        // Receipt publication precedes key removal, so a crash is retryable.
         let name = CString::new("transport")?;
-        // SAFETY: directory and NUL-terminated relative name are valid.
         if unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) } != 0
             && io::Error::last_os_error().kind() != io::ErrorKind::NotFound
         {
@@ -965,8 +947,6 @@ mod linux {
         }
         let argument = arguments.first().ok_or("expected one account name")?;
         let name = cstring(argument)?;
-        // SAFETY: name is NUL terminated. This single-threaded program copies the
-        // passwd entry before calling anything else that could use the NSS buffer.
         let account = unsafe { libc::getpwnam(name.as_ptr()) };
         if account.is_null() {
             return invalid(&format!(
@@ -974,7 +954,6 @@ mod linux {
                 argument.to_string_lossy()
             ));
         }
-        // SAFETY: successful getpwnam returns an initialized entry and pw_dir string.
         let (home, owner) = unsafe {
             (
                 PathBuf::from(OsStr::from_bytes(

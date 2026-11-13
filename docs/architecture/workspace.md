@@ -387,6 +387,86 @@ changes to Chapter 3") that expand into the resource's history, and filters
 mean the same at both levels. Undo, Activity and Replay read those two levels;
 nothing keeps a third log of the same changes.
 
+## Branching a workspace
+
+A person sets a workspace up once — a research environment, a development
+workspace for a product — and branches it: one branch per question, one per
+customer. A branch is a **new workspace of the person's own** that starts with
+everything the source holds and goes on apart from it. It never merges back;
+code comes back through git, not through Tilo.
+
+One verb makes it, on the desk's chrome beside `new-workspace`:
+`desktop:chrome` `branch-workspace` {`source`, `name`}, where `source` is the
+workspace's name, its decimal id or the id it is shared under. The desk,
+agents and automations use that action; the workspace menu and search offer it
+as "Branch workspace", and the CLI is `tilo workspace branch <source> <name>`.
+Tools that spell the workspace verbs `workspace.create` and `workspace.branch`
+on the control socket reach the same two actions. The action answers the new
+workspace's id at once; the copy runs off the session's loop, so the desk never
+waits for it, and the branch goes on the desk — with the person in it — once
+what it holds is there, so no app opens in it before its records are and founds
+an empty record of its own. The person is told when it is ready, and what did
+not come along if anything did not.
+
+**Who may branch.** Whoever reads the whole workspace: this device holds it and
+its governance names the person as its owner or as a member not removed
+(a workspace the device holds no governance of is the desk's own, and the
+person's unless it names someone else). A record sealed to readers that exclude
+this device is one it cannot read, so it is not branched. An agent may branch
+only the workspace it works in, and only as the person's grants let it take
+the desk's actions; a branch of another workspace is refused at the agent door.
+
+**What a branch copies**
+
+- **Records, with their history.** Every record the source holds on this
+  device is read whole and written into the branch as its founding write,
+  sealed under the branch's own channel keys. Each document is forked under a
+  writer of its own and gets one more change naming the branch as its
+  workspace; its record id stays (an id names a document only inside its
+  workspace, so references between the workspace's records keep working) and
+  so does where it was minted. A record an app also keeps on this device has
+  that copy's changes merged in first, and the branch's local copy is the very
+  document the branch's engine holds. No document is shared between the two
+  workspaces: an edit in either stays there, also after a restart.
+- **What the apps keep for the workspace on this device**
+  (`tilo-rooms/<workspace>/<app>`): every file, with each document in it forked
+  the same way and without the source's writer id, locks or load hints.
+- **The workspace's own files** (`.workspaces/<workspace>`), into the branch's
+  tree, each file sharing its source's extents where the file system can
+  (`FICLONE`) and copied where it cannot (`tilo_files::native::tree`), so a
+  large tree on Btrfs or XFS is a matter of seconds and no space.
+- **Terminal environments.** The runtime that keeps them branches them
+  (`ush`'s `branch-workspace`): each record forked with its history, naming the
+  branch as its workspace, its home and its grants of the source's files moved
+  to the same places in the branch's, and what it keeps outside its record (its
+  `/var` and legacy home) copied. Its id (`TILO_ENVIRONMENT`, `<branch>/<key>`)
+  and its `TILO_WORKSPACE` are the branch's, so its sessions and its agent door
+  act in the branch only. File actions not carried out yet stay with the
+  source. Images are the device's and shared already.
+- **The desk.** The source's strips, a window for each of this device's
+  windows in it (opened again by its app, in the branch), and what the
+  workspace grants its apps, its own files named as the branch's. The branch's
+  shared desk record is written from these windows, never copied from the
+  source's record of everyone's.
+- Secrets (the Secret Service, the passwords vault, provider keys) are the
+  person's on the device, not the workspace's: a branch on the same device has
+  them already.
+
+**What stays behind** — what is tied to other people:
+
+- Chat: every conversation, with each person's drafts and read marks. The
+  workspace's own emoji and its agents, which Chat keeps for the workspace,
+  come along.
+- Each person's own place in the workspace's tilolang apps, one record for all
+  of them.
+- Membership and governance: the branch's are new — a new workspace id, its
+  only member the person who branched it, as owner, its own channel keys. No
+  other member, invitation, pending invitation or channel state carries over.
+- Other people's windows, who is here (presence), and the source's history of
+  effects and its shortcuts.
+
+The source is read and never changed.
+
 ## The shell
 
 The shell's surfaces (launcher, top bar, overview, quick settings,

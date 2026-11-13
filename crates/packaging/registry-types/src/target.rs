@@ -1,28 +1,10 @@
-//! Execution targets a registry version may bind, and their canonical
-//! spellings.
+//! Execution targets a registry version may bind, and their canonical spellings: a target is signed
+//! verbatim, so two publishers describing one contract must produce the same bytes.
 //!
-//! A [`RegistryTarget`] is signed verbatim, so every accepted spelling must
-//! be canonical: two publishers describing the same contract must produce the
-//! same bytes, and a client must be able to decide support from the string
-//! alone.
-//!
-//! Five platform families are accepted:
-//!
-//! - `tilo-os` — native thin apps; `architecture` is `x86_64` or `aarch64`,
-//!   `isa` is the native feature level and `runtime`, when present, is the
-//!   exact runtime build the app links against ([`parse_native_runtime`]).
-//!   A thin app links Rust dylibs, which have no stable ABI, so the release
-//!   name alone (`tilo-runtime/2026.07`) says nothing about whether a device's
-//!   runtime can load it; only the build digest does.
-//! - `linux`, `windows` and `macos` — the same app as a self-contained native
-//!   executable for another desktop, under the same architecture and `isa`
-//!   rules. A `linux` build is for Linux desktops other than Tilo OS, which
-//!   installs only `tilo-os` builds.
-//! - `android` — the same app as an Android package (an APK, or an AAB for
-//!   store upload) for `aarch64` or `x86_64` devices, under the same
-//!   architecture and `isa` rules. Tilo OS never installs it.
-//!
-//! The browser has no registry family: its runtime compiles its apps in.
+//! - `tilo-os` — a native thin app; `runtime` is the exact build it links, since Rust dylibs have no
+//!   stable ABI and only the build digest says whether a device can load it.
+//! - `linux`, `windows`, `macos` and `android` — the same app as a self-contained executable or
+//!   package for another desktop. Tilo OS installs only `tilo-os` builds.
 
 use crate::entry::RegistryTarget;
 
@@ -45,18 +27,15 @@ pub const NATIVE_PLATFORMS: [&str; 5] = [
     ANDROID_PLATFORM,
 ];
 
-/// Native families outside Tilo OS — the other desktops and Android: the
-/// executable links the toolkit in, and its signed manifest carries a
-/// `[target]` naming the version exactly.
+/// Native families outside Tilo OS: the executable links the toolkit in, and its signed manifest
+/// names the exact version.
 pub const DESKTOP_PLATFORMS: [&str; 4] = [
     LINUX_PLATFORM,
     WINDOWS_PLATFORM,
     MACOS_PLATFORM,
     ANDROID_PLATFORM,
 ];
-/// Longest accepted `isa`.
 pub const MAX_TARGET_ISA_BYTES: usize = 256;
-/// Longest accepted `runtime`.
 pub const MAX_TARGET_RUNTIME_BYTES: usize = 256;
 
 const MAX_RUNTIME_VERSION_LEN: usize = 64;
@@ -65,21 +44,17 @@ const MAX_RUNTIME_VERSION_LEN: usize = 64;
 /// `tilo-runtime/2026.07+native.<32 hex>`.
 pub const NATIVE_RUNTIME_MARKER: &str = "+native.";
 
-/// Hex digits of the ABI digest after [`NATIVE_RUNTIME_MARKER`]: 128 bits of
-/// the runtime bundle's content digest.
+/// Hex digits of the ABI digest after [`NATIVE_RUNTIME_MARKER`]: 128 bits of the bundle's content
+/// digest.
 pub const NATIVE_RUNTIME_ID_HEX_LEN: usize = 32;
 
-/// The registry package that offers builds of the `tilo-runtime` family for
-/// Tilo OS. An app's `runtime` names the exact build; the versions of this
-/// package each provide one, so a device that lacks the build an app needs
-/// fetches it from the same registry before the app.
+/// The registry package offering `tilo-runtime` builds for Tilo OS. Each of its versions provides one
+/// build, so a device fetches the one an app names.
 pub const NATIVE_RUNTIME_PACKAGE_ID: &str = "so.tilo.runtime";
 
-/// Whether a registry package is a runtime rather than an app: the runtime
-/// thin apps link ([`NATIVE_RUNTIME_PACKAGE_ID`]) or a further one an app
-/// mounts, such as a browser engine (`so.tilo.runtime.<name>`). A version of
-/// one records in `target.runtime` the runtime it provides; a store lists
-/// none of them as apps and installs them for the apps that need them.
+/// Whether a registry package is a runtime rather than an app: the runtime thin apps link
+/// ([`NATIVE_RUNTIME_PACKAGE_ID`]) or one an app mounts, such as a browser engine. A version of one
+/// records the runtime it provides in `target.runtime`; no store lists them as apps.
 #[must_use]
 pub fn is_runtime_package_id(package_id: &str) -> bool {
     package_id == NATIVE_RUNTIME_PACKAGE_ID
@@ -88,9 +63,8 @@ pub fn is_runtime_package_id(package_id: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('.') && rest.len() > 1)
 }
 
-/// The package id prefix of a language pack: one locale's catalogues for
-/// every app (`so.tilo.language-pack.de-de`), the same as
-/// `tilo_app_package::LANGUAGE_PACK_ID_PREFIX`.
+/// The package id prefix of a language pack: one locale's catalogues for every app
+/// (`so.tilo.language-pack.de-de`), as `tilo_app_package::LANGUAGE_PACK_ID_PREFIX` has it.
 pub const LANGUAGE_PACK_PACKAGE_PREFIX: &str = "so.tilo.language-pack.";
 
 #[must_use]
@@ -100,8 +74,8 @@ pub fn is_language_pack_package_id(package_id: &str) -> bool {
         .is_some_and(|locale| !locale.is_empty())
 }
 
-/// The architecture, and the ISA, of a build that is data for every
-/// architecture: a language pack's. Only `tilo-os` targets take it.
+/// The architecture of a build that is data for every architecture: a language pack's, only on
+/// `tilo-os` targets.
 pub const ANY_ARCHITECTURE: &str = "any";
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
@@ -121,25 +95,18 @@ pub enum TargetError {
     NativeRuntime(String),
 }
 
-/// A validated native runtime id: the runtime release and the digest of the
-/// exact build (`tilo-runtime/<version>+native.<32 hex>`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NativeRuntime<'a> {
-    /// The whole id, exactly as an app manifest's `package.runtime` and the
-    /// registry target carry it.
+    /// The whole id, as a manifest's `package.runtime` and the registry target carry it.
     pub id: &'a str,
-    /// Runtime family, e.g. `tilo-runtime`.
     pub name: &'a str,
-    /// Release, e.g. `2026.07`.
     pub release: &'a str,
-    /// ABI digest after [`NATIVE_RUNTIME_MARKER`].
     pub digest: &'a str,
 }
 
 impl NativeRuntime<'_> {
-    /// The runtime bundle's version: its directory name under
-    /// `/usr/lib/tilo-runtime` and the per-user runtime root, and the
-    /// `version` its signed `bundle.toml` records.
+    /// The bundle's version: its directory name under `/usr/lib/tilo-runtime` and the per-user root,
+    /// and the `version` its signed `bundle.toml` records.
     pub fn bundle_version(&self) -> &str {
         self.id
             .split_once('/')
@@ -211,7 +178,6 @@ fn valid_runtime_version(version: &str) -> bool {
 }
 
 impl RegistryTarget {
-    /// Check the target is one this registry schema accepts.
     pub fn validate(&self) -> Result<(), TargetError> {
         self.validate_interfaces()?;
         if self.platform == TILO_OS_PLATFORM
@@ -260,16 +226,15 @@ impl RegistryTarget {
         Ok(())
     }
 
-    /// The exact native runtime build a `tilo-os` target binds, when it names
-    /// one in canonical form. A `tilo-os` version without one cannot say
-    /// which runtime it links, so a device cannot know whether it can load
-    /// it.
     /// Whether the build is data for every architecture ([`ANY_ARCHITECTURE`]).
     #[must_use]
     pub fn is_any_architecture(&self) -> bool {
         self.architecture == ANY_ARCHITECTURE
     }
 
+    /// The exact native runtime build a `tilo-os` target binds, when it names one in canonical form.
+    /// A `tilo-os` version without one cannot say which runtime it links, so a device cannot know
+    /// whether it can load it.
     pub fn native_runtime(&self) -> Option<NativeRuntime<'_>> {
         if self.platform != TILO_OS_PLATFORM {
             return None;
@@ -286,8 +251,6 @@ mod tests {
 
     const DIGEST: &str = "4b1d0c7e9a2f3b5c6d7e8f9012345678";
 
-    /// A language pack is built once for every architecture: `any`, only on
-    /// Tilo OS, with no runtime to bind.
     #[test]
     fn a_build_for_every_architecture_is_tilo_os_data() {
         let target =

@@ -302,11 +302,7 @@ fn fresh_device_library() -> Vec<Invoke<Ebook>> {
             author: (*author).to_owned(),
             subject: String::new(),
             added: STAGED_AT + index as u64,
-            content: LibraryEntry::stored(
-                &tilo_content::hash_bytes(text.as_bytes()),
-                text.len() as u64,
-            )
-            .unwrap_or_default(),
+            content: elsewhere(text.as_bytes()),
             index: ui::tilo_resource::Bytes::Empty,
         };
         if *fraction > 0.0 {
@@ -330,10 +326,8 @@ fn fresh_device_library() -> Vec<Invoke<Ebook>> {
 /// [`elsewhere_book`] joining the shelf with its index; its text, kept in
 /// a content store, is not in this one.
 fn elsewhere_shelved() -> Vec<Invoke<Ebook>> {
-    use crate::resource::StoredContent;
     let book = elsewhere_book();
     let segment = elsewhere_segment();
-    let text = tilo_content::hash_bytes(ELSEWHERE_TEXT);
     let entry = LibraryEntry {
         id: book.id.clone(),
         shared: false,
@@ -341,19 +335,22 @@ fn elsewhere_shelved() -> Vec<Invoke<Ebook>> {
         author: book.author.clone(),
         subject: String::new(),
         added: STAGED_AT,
-        content: LibraryEntry::stored(&text, ELSEWHERE_TEXT.len() as u64).unwrap_or_default(),
+        content: elsewhere(ELSEWHERE_TEXT),
         index: ui::tilo_resource::Bytes::Empty,
     };
     vec![
         crate::resource::shelve(&entry),
-        crate::resource::index_book(
-            &book.id,
-            StoredContent {
-                hash: tilo_content::hash_bytes(&segment),
-                size: u64::try_from(segment.len()).unwrap_or(u64::MAX),
-            },
-        ),
+        crate::resource::index_book(&book.id, elsewhere(&segment)),
     ]
+}
+
+/// `data` as a content store elsewhere keeps it: named, not here.
+fn elsewhere(data: &[u8]) -> ui::tilo_resource::Bytes {
+    ui::tilo_resource::Bytes::Blob {
+        hash: *blake3::hash(data).as_bytes(),
+        len: data.len() as u64,
+        sealed: None,
+    }
 }
 
 /// Adding the colour scheme `scheme` after the built-in ones.

@@ -1,6 +1,6 @@
-//! Another-device migration consent. A held, source-bound review is kept until
-//! the media writer consumes it. Original-source Copy authority is captured only
-//! for explicit offline continuation; ordinary immutable transfer is unchanged.
+//! Another device's migration consent: a held, source-bound review kept until the media
+//! writer consumes it.
+
 use imager_backend::setup::{
     flatpak_transfer::{NativeRunner, portable::PortableFlatpakSource},
     migration_intent::MigrationIntent,
@@ -72,8 +72,6 @@ impl OriginalSource {
         }
         self.capture_original_intent(cancel, true)
     }
-    /// Off-thread only. This establishes an actual durable Copy intent; it does
-    /// not establish an immutable epoch, raw-medium authority, or completed media.
     pub(crate) fn capture_copy_intent(
         &self,
         cancel: &AtomicBool,
@@ -160,7 +158,6 @@ impl OriginalSource {
                 HomePolicy::Copy,
             )
         };
-        // The held grant is independently reattested even on capture failure.
         self.validate()?;
         let intent = result?;
         imager_backend::migration::check_cancel(cancel)?;
@@ -242,8 +239,6 @@ impl Selection {
         self.picker = Some(picker.send());
         Ok(())
     }
-    /// The caller supplies an explicit already-granted directory selection.
-    /// It must denote the same home folder the person reviewed on this device.
     #[cfg(test)]
     pub fn start(&mut self, selected: PathBuf, expected: PathBuf) -> Result<(), &'static str> {
         self.start_with_choices(
@@ -263,8 +258,6 @@ impl Selection {
     ) -> Result<(), &'static str> {
         self.start_bound(selected, expected, choices, None)
     }
-    /// Renew content consent using the original held directory permission.
-    /// The worker refuses replacement of the directory or any granted ancestor.
     pub fn refresh(&mut self) -> Result<(), &'static str> {
         let (grant, choices) = if let Some(reviewed) = &self.reviewed {
             (reviewed.grant.clone(), reviewed.choices.clone())
@@ -295,8 +288,6 @@ impl Selection {
         if self.worker.is_some() || (self.mounted_busy() && !self.mounted_choosing()) {
             return Err("installer-portable-source-busy");
         }
-        // An explicit already-granted semantic selection completes the same
-        // permission operation as its platform picker, without a second UI door.
         self.picker = None;
         self.expected = None;
         self.reviewed = None;
@@ -507,8 +498,6 @@ impl Selection {
             }
         }
     }
-    /// Retain the exact original grant across media preparation. Callers must
-    /// choose offline continuation explicitly; SourceChanged never selects it.
     pub fn reviewed_original(&self) -> Option<Arc<OriginalSource>> {
         self.reviewed
             .as_ref()
@@ -613,7 +602,6 @@ impl Selection {
             controller.cancel_request();
         }
     }
-    /// Reviewed relative display names only; these do not authorize mounted reads.
     pub fn mounted_locations(&self) -> Vec<String> {
         {
             self.mounted
@@ -778,8 +766,6 @@ mod tests {
         let persisted: serde_json::Value =
             serde_json::from_slice(&std::fs::read(journal.join("migration-intent.json")).unwrap())
                 .unwrap();
-        // Copy is the canonical omitted/default policy; Computer explicitly
-        // persists access-read-write. Original categories survive unchanged.
         assert!(persisted["plan"].get("home_policy").is_none());
         assert_eq!(persisted["plan"]["categories"]["home"], true);
         assert_eq!(persisted["plan"]["categories"]["accounts"], true);
@@ -818,12 +804,6 @@ mod tests {
         );
     }
 
-    /// A temporary directory on tmpfs, where Home review takes the live
-    /// inventory route. Ext4 and XFS sources are deliberately not inventoried
-    /// at review time (the original system's offline boot reads them), so a
-    /// fixture there could not observe ACL policy refusals, byte summaries or
-    /// changed contents. `/tmp` is not tmpfs everywhere, so `/dev/shm` is
-    /// tried next.
     #[cfg(target_os = "linux")]
     fn live_review_tempdir() -> tempfile::TempDir {
         use std::os::fd::AsRawFd;
@@ -936,7 +916,6 @@ mod tests {
         assert_eq!(selection.projection()["prepared"], false);
         assert!(selection.reviewed_handle().is_none());
         assert_eq!(std::fs::read(&document).unwrap(), b"original document");
-        // Re-read through the existing parser: unsupported policy remains intact.
         let error = imager_backend::setup::portable_transfer::acl::policy(
             &std::fs::File::open(&document).unwrap(),
         )

@@ -1,33 +1,16 @@
 //! Captions: the tracks a video offers and the words on screen while it plays.
-//!
-//! `YouTube` publishes caption tracks as timed text in `WebVTT` (the same shape
-//! an Invidious instance serves), so one parser covers both sources: the
-//! worker resolves a video's tracks ([`CaptionTrack`]) and downloads the one
-//! the person chose, and the watch page asks [`active_cue`] where its playhead
-//! is. Nothing here needs the network or the toolkit, so the parsing is
-//! tested against real-shaped files.
 
 use serde::{Deserialize, Serialize};
 
-/// One caption track a video offers: its language, and the name of the track
-/// in that language ("English", "Deutsch (automatisch erzeugt)").
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaptionTrack {
-    /// The track's language code (`en`, `de`, `pt-BR`), which the person's
-    /// choice is remembered by.
     pub language: String,
-    /// What the track calls itself, as the source named it.
     pub label: String,
-    /// Where the timed text is served from.
     pub url: String,
-    /// Whether the source generated it by machine (`kind="asr"`): said in the
-    /// menu, because a machine transcript is not a transcript someone wrote.
     #[serde(default)]
     pub automatic: bool,
 }
 
-/// One line of a video's captions: the words spoken between `start_ms` and
-/// `end_ms`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaptionCue {
     pub start_ms: u64,
@@ -35,8 +18,6 @@ pub struct CaptionCue {
     pub text: String,
 }
 
-/// The cue the playhead is inside at `position_ms`: the last one that has
-/// started, if it has not ended yet.
 #[must_use]
 pub fn active_cue(cues: &[CaptionCue], position_ms: u64) -> Option<&CaptionCue> {
     let index = cues.partition_point(|cue| cue.start_ms <= position_ms);
@@ -44,10 +25,6 @@ pub fn active_cue(cues: &[CaptionCue], position_ms: u64) -> Option<&CaptionCue> 
     (position_ms < cue.end_ms).then_some(cue)
 }
 
-/// Read a `WebVTT` file's cues, in order, skipping the header, the styling
-/// blocks and the note/region blocks. Malformed cues are left out rather than
-/// failing the track: a caption file with one bad line still says the other
-/// nine hundred.
 #[must_use]
 pub fn parse_vtt(text: &str) -> Vec<CaptionCue> {
     let mut cues: Vec<CaptionCue> = Vec::new();
@@ -62,8 +39,6 @@ pub fn parse_vtt(text: &str) -> Vec<CaptionCue> {
             if next.is_empty() || next.contains("-->") {
                 break;
             }
-            // The cue's own id line ("2") would sit above its timing, never
-            // below it, so anything here is text.
             words.push(strip_markup(next));
             lines.next();
         }
@@ -78,23 +53,17 @@ pub fn parse_vtt(text: &str) -> Vec<CaptionCue> {
             text: content.to_string(),
         });
     }
-    // Sources do not always write cues in order (a machine transcript can
-    // interleave a correction); the playhead's lookup depends on it.
     cues.sort_by_key(|cue| (cue.start_ms, cue.end_ms));
     cues
 }
 
-/// `00:01:02.500 --> 00:01:05.000`, or `01:02.500 --> 01:05.000`: the two
-/// timestamps on a cue's timing line, in milliseconds.
 fn timing(line: &str) -> Option<(u64, u64)> {
     let line = line.trim();
     let (start, rest) = line.split_once("-->")?;
-    // Cue settings trail the end time ("align:start position:10%").
     let end = rest.split_whitespace().next()?;
     Some((timestamp(start)?, timestamp(end)?))
 }
 
-/// `HH:MM:SS.mmm` or `MM:SS.mmm`, in milliseconds.
 fn timestamp(text: &str) -> Option<u64> {
     let text = text.trim().trim_end_matches(',');
     let mut parts = text.split(':').rev();
@@ -113,8 +82,6 @@ fn timestamp(text: &str) -> Option<u64> {
     Some((total * 1000.0).round() as u64)
 }
 
-/// A cue's text without the tags a caption file carries: `<v Speaker>` voice
-/// spans, `<i>` emphasis, `<c.yellow>` classes and `&amp;` entities.
 fn strip_markup(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut in_tag = false;
@@ -162,7 +129,6 @@ mod tests {
         assert_eq!(cues[0].end_ms, 4_500);
         assert_eq!(cues[0].text, "Hello, and welcome\nto the show.");
         assert_eq!(cues[1].text, "Sponsor break & more");
-        // Out of order in the file, in order for the playhead.
         assert_eq!(cues[2].start_ms, 9_000);
     }
 

@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use ush_shell::{Host, MemoryHost, Output, Program, Shell, Stdio};
 
-/// The memory host, plus the suite's helper programs.
 struct SpecHost(MemoryHost);
 
 impl Host for SpecHost {
@@ -68,8 +67,6 @@ impl Host for SpecHost {
     }
 }
 
-/// A string as Python 2's `repr` writes it, which is what the suite's
-/// expected output holds.
 fn py_repr(s: &str) -> String {
     let quote = if s.contains('\'') && !s.contains('"') {
         '"'
@@ -106,7 +103,6 @@ struct Case {
     status: i32,
 }
 
-/// Read a spec file: each case's script and what bash gives for it.
 fn parse(file: &str, text: &str) -> Vec<Case> {
     let mut cases = Vec::new();
     let mut lines = text.lines();
@@ -153,7 +149,6 @@ fn parse(file: &str, text: &str) -> Vec<Case> {
     cases
 }
 
-/// A JSON string literal's value.
 fn json_string(raw: &str) -> String {
     let inner = raw.trim().trim_start_matches('"').trim_end_matches('"');
     let mut out = String::new();
@@ -203,8 +198,6 @@ fn run(case: &Case) -> (String, i32) {
     )
 }
 
-/// Run a case on a thread of its own, so a case that never ends is a
-/// failure with its name rather than a test run that never ends.
 fn run_bounded(case: &Case) -> Option<(String, i32)> {
     let (tx, rx) = std::sync::mpsc::channel();
     let code = Case {

@@ -2,9 +2,9 @@
 //! and reflink clones.
 //!
 //! Two snapshots of one copy-on-write file share every extent that was not
-//! written in between. A byte range that maps to the same physical bytes in
-//! both is unchanged and never needs to be read, let alone re-hashed. That
-//! turns "what changed in this 10 GiB image" into a metadata query.
+//! written in between, so a byte range mapping to the same physical bytes in
+//! both needs no read and no re-hash. That turns "what changed in this 10 GiB
+//! image" into a metadata query.
 
 use std::fs::File;
 use std::io;
@@ -77,7 +77,6 @@ struct FileCloneRange {
     dest_offset: u64,
 }
 
-/// One mapped extent of a file.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Extent {
     pub logical: u64,
@@ -92,7 +91,6 @@ impl Extent {
     }
 }
 
-/// Returns the extent map of `file`, flushing delayed allocation first.
 pub fn fiemap(file: &File) -> io::Result<Vec<Extent>> {
     let mut out = Vec::new();
     let mut start: u64 = 0;
@@ -124,11 +122,9 @@ pub fn fiemap(file: &File) -> io::Result<Vec<Extent>> {
     }
 }
 
-/// What the bytes at one position are made of.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Backing {
     Hole,
-    /// Physical address of this position and the extent flags.
     Mapped {
         physical: u64,
         flags: u32,
@@ -137,7 +133,6 @@ enum Backing {
 }
 
 fn backing_at(extents: &[Extent], pos: u64) -> (Backing, u64) {
-    // Returns the backing at `pos` and the position where it next can change.
     let idx = extents.partition_point(|e| e.end() <= pos);
     match extents.get(idx) {
         Some(e) if e.logical <= pos => (
@@ -189,10 +184,9 @@ fn same_bytes(a: Backing, b: Backing) -> bool {
 }
 
 /// Byte ranges of the new file (`new`, `new_len` bytes) that may hold
-/// different bytes from the old one (`old`, `old_len` bytes).
-///
-/// The result is conservative: anything the extent maps cannot prove equal
-/// is reported as changed. Ranges are sorted and merged.
+/// different bytes from the old one (`old`, `old_len` bytes). The result is
+/// conservative: anything the extent maps cannot prove equal is reported as
+/// changed. Ranges are sorted and merged.
 pub fn changed_ranges(
     old: &[Extent],
     old_len: u64,
@@ -230,7 +224,6 @@ pub fn changed_ranges(
     out
 }
 
-/// Compares the same file in two snapshots.
 pub fn diff_files(old: &File, new: &File) -> io::Result<Vec<Range<u64>>> {
     let old_len = old.metadata()?.len();
     let new_len = new.metadata()?.len();
@@ -251,8 +244,8 @@ pub fn reflink(src: &File, dst: &File) -> io::Result<()> {
 }
 
 /// Shares `len` bytes of `src` at `src_offset` into `dst` at `dst_offset`
-/// (`FICLONERANGE`). Offsets and length must be block aligned, except that
-/// the range may end at `src`'s end of file.
+/// (`FICLONERANGE`). Offsets and length must be block aligned, except that the
+/// range may end at `src`'s end of file.
 pub fn reflink_range(
     src: &File,
     src_offset: u64,

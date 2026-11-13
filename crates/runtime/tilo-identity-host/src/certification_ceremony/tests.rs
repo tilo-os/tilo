@@ -103,7 +103,7 @@ fn proposal(person: [u8; 32], label: &str) -> DeviceCert {
             .verifying_key()
             .to_bytes(),
         device_label: label.into(),
-        capabilities: EnrollmentRole::PersonalDevice.preset(),
+        capabilities: DeviceRole::Personal.capabilities(),
         issued_at_ns: NOW,
         expires_at_ns: None,
         signature: [0; 64],

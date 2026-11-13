@@ -100,7 +100,7 @@ impl VerifiedNativeEnrollmentIntent {
     fn validate(record: IntentRecord) -> Result<Self, String> {
         if !matches!(record.version, PREVIOUS_INTENT_VERSION | INTENT_VERSION)
             || record.complete.len() > MAX_WORKSPACE_JOIN_REQUEST_BYTES
-            || record.prepared_at_ns > now_ns(SystemTime::now())?
+            || record.prepared_at_ns > now_ns(tilo_clock::wall())?
         {
             return Err("invalid native enrollment intent version, time or bound".into());
         }
@@ -325,7 +325,7 @@ impl VerifiedNativeEnrollment {
             bootstrap.host.clone(),
             bootstrap.certified_roster.clone(),
             &bootstrap.revocations,
-            SystemTime::now(),
+            tilo_clock::wall(),
         )?;
         Ok(Self {
             intent,

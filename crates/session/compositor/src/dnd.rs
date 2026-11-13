@@ -26,7 +26,7 @@
 //! finger; its icon (the client's icon surface, or the image a hosted app
 //! gave) is drawn under it, in front of everything but the idle dim.
 //!
-//! [`SurfaceHost::drop_offered`]: crate::SurfaceHost::drop_offered
+//! [`SurfaceHost::drop_offered`]: tilo_session_core::surface::SurfaceHost::drop_offered
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -34,9 +34,8 @@ use std::os::fd::{AsFd as _, OwnedFd};
 use std::sync::Arc;
 
 use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
-use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
+use smithay::backend::renderer::{ImportAll, ImportDma, ImportMem, Renderer};
 use smithay::input::Seat;
 use smithay::input::pointer::{ButtonEvent, GrabStartData, MotionEvent};
 use smithay::input::touch::{
@@ -104,7 +103,7 @@ pub(crate) enum DragIcon {
     },
     /// A hosted app's image, its hotspot (logical) on the drag's point.
     Image {
-        frame: crate::HostFrame,
+        frame: tilo_session_core::surface::HostFrame,
         hotspot: Point<i32, Logical>,
     },
 }
@@ -258,7 +257,7 @@ impl State {
     pub(crate) fn start_host_drag(
         &mut self,
         offer: Vec<(String, Vec<u8>)>,
-        icon: Option<(crate::HostFrame, Point<i32, Logical>)>,
+        icon: Option<(tilo_session_core::surface::HostFrame, Point<i32, Logical>)>,
     ) -> bool {
         let Some(values) = host_offer(offer) else {
             return false;
@@ -401,7 +400,7 @@ impl State {
         output: &Output,
     ) -> Vec<OutputRenderElement<R>>
     where
-        R: Renderer + ImportAll + ImportMem,
+        R: Renderer + ImportAll + ImportMem + ImportDma,
         R::TextureId: Clone + Send + 'static,
     {
         let (Some(_), Some(icon)) = (&self.dnd.drag, &self.dnd.icon) else {
@@ -427,16 +426,14 @@ impl State {
             }
             DragIcon::Image { frame, hotspot } => {
                 let origin: Point<f64, Physical> = (at - hotspot.to_f64()).to_physical(scale);
-                match MemoryRenderBufferRenderElement::from_buffer(
-                    renderer,
-                    origin,
-                    frame.buffer(),
-                    None,
-                    None,
-                    None,
-                    Kind::Unspecified,
-                ) {
-                    Ok(element) => vec![OutputRenderElement::Memory(element)],
+                let placed = crate::uploads::Placed {
+                    at: origin,
+                    src: None,
+                    size: None,
+                    alpha: None,
+                };
+                match self.uploads.element(renderer, frame, placed) {
+                    Ok(element) => element.into_iter().collect(),
                     Err(error) => {
                         tracing::warn!(?error, "drag icon not imported");
                         Vec::new()
@@ -1005,7 +1002,7 @@ impl State {
         let xwm_of = |surface: &WlSurface| {
             self.space
                 .elements()
-                .find(|window| crate::xwayland::x11_wl_surface(window).as_ref() == Some(surface))
+                .find(|window| crate::state::surface_of(window).as_ref() == Some(surface))
                 .and_then(|window| window.x11_surface())
                 .and_then(X11Surface::xwm_id)
         };

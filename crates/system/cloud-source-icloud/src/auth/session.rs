@@ -30,10 +30,8 @@ pub struct StoredSession {
     #[serde(with = "secret")]
     pub(crate) trust_token: Zeroizing<String>,
     pub(crate) cookies: Cookies,
-    /// The account's `drivews` partition, e.g. `https://p42-drivews.icloud.com`.
     #[serde(default)]
     pub(crate) drive_url: String,
-    /// The account's `docws` partition.
     #[serde(default)]
     pub(crate) docs_url: String,
     /// `accountLogin` accepted the token but still wants a second factor.
@@ -113,7 +111,6 @@ impl StoredSession {
         &self.docs_url
     }
 
-    /// The idmsa account country `accountLogin` is told.
     pub fn account_country(&self) -> &str {
         &self.account_country
     }
@@ -139,12 +136,10 @@ impl StoredSession {
         &self.session_token
     }
 
-    /// The iCloud web cookies. Secret.
     pub fn cookies(&self) -> &Cookies {
         &self.cookies
     }
 
-    /// The per-request credential: the iCloud web cookies.
     pub fn credential(&self) -> Credential {
         Credential::Session {
             headers: vec![("Cookie".to_owned(), self.cookies.header())],
@@ -152,7 +147,6 @@ impl StoredSession {
         }
     }
 
-    /// Serialized for storage (JSON). Secret.
     pub fn to_json(&self) -> Zeroizing<String> {
         Zeroizing::new(serde_json::to_string(self).unwrap_or_default())
     }
@@ -172,7 +166,6 @@ impl StoredSession {
         serde_json::from_slice(&decoded).map_err(|_| AuthError::Protocol("stored session"))
     }
 
-    /// Take what an `accountLogin`/`validate` answer says about the account.
     fn apply(&mut self, info: &AccountInfo) -> Result<(), AuthError> {
         if let Some(dsid) = &info.ds_info.dsid {
             self.dsid = Some(dsid.clone());

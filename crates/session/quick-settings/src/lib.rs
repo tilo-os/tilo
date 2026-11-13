@@ -39,7 +39,7 @@ mod verbs;
 mod view;
 
 pub use effect::QsEffect;
-pub use faces::{available as control_available, subline};
+pub use faces::{available as control_available, control_id, control_named, subline};
 // The one reading of what plays, which the desk's widget, the lock
 // screen's card and the bar's pill show as this panel does.
 pub use resource::{Page, QuickSettings, QuickSettingsApp};
@@ -57,9 +57,6 @@ pub use status::SystemStatus;
 pub struct ClipboardView {
     /// Every copy in the history: the row's count.
     pub total: usize,
-    /// The line over the copies: how many there are, or what is being
-    /// searched for (typing while the section is open searches).
-    pub caption: String,
     /// The copies the section lists (the latest, or the matches).
     pub rows: Vec<hosted::HostedRow>,
 }
@@ -97,15 +94,6 @@ pub struct HandoffTarget {
     pub online: bool,
     /// This device.
     pub local: bool,
-}
-
-/// A single frame in the `QuickSettings` navigation stack. A section
-/// ([`QsSection`]) opens its own page in the controls' place.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum QsLevel {
-    Root,
-    /// One accessory's exact-device handoff to the person's other devices.
-    BluetoothDetails(String),
 }
 
 /// A part of Quick Settings whose page replaces the controls, with the

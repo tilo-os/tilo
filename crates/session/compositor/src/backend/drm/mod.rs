@@ -42,7 +42,7 @@ use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
 use smithay::backend::libinput::LibinputSessionInterface;
 use smithay::backend::allocator::Format as DrmFormat;
 use smithay::backend::allocator::format::FormatSet;
-use smithay::backend::renderer::ImportDma as _;
+use smithay::backend::renderer::{ImportDma as _, ImportMemWl as _};
 use smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags;
 use smithay::wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder};
 use smithay::backend::renderer::element::{RenderElement, RenderElementStates};
@@ -74,6 +74,7 @@ use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
 use crate::state::State;
 use crate::{Error, LoopData};
 use devices::{ModeInfo, select_mode};
+use tilo_session_core::surface::{BackdropImage, BackdropRequest};
 use wake_check::{LitState, WakeCheck, WakeStage, WakeVerdict};
 
 pub use crate::config::DisplayConfig;
@@ -474,8 +475,8 @@ impl Backend for DrmBackend {
         &mut self,
         state: &mut State,
         region: (usize, usize),
-        request: &crate::BackdropRequest,
-    ) -> Result<Option<crate::BackdropImage>, BackendError> {
+        request: &BackdropRequest,
+    ) -> Result<Option<BackdropImage>, BackendError> {
         let mut inner = self.inner.borrow_mut();
         if !inner.active {
             return Ok(None);
@@ -1371,6 +1372,14 @@ fn drive_primary(
         .copied()
         .collect();
     state.enable_dmabuf(formats, Some(primary.node));
+    // Shared memory is uploaded on the GPU that renders.
+    let shm_formats: Vec<_> = inner
+        .renderers
+        .single_renderer(&primary.render)
+        .map_err(|error| failed("renderer", error))?
+        .shm_formats()
+        .collect();
+    state.offer_shm_formats(shm_formats);
     let capture_formats: Vec<_> = inner
         .renderers
         .single_renderer(&primary.render)

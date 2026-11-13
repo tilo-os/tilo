@@ -60,7 +60,6 @@ fn toolbar_controls_align_and_move_into_the_overflow_menu_when_narrow() {
         "browser.library",
     ];
 
-    // Phase `every_toolbar_control_shares_the_address_fields_centre_line`.
     {
         let targets = targets_at(1200, 800);
         assert_on_centre_line(&targets, &ROW);
@@ -70,7 +69,6 @@ fn toolbar_controls_align_and_move_into_the_overflow_menu_when_narrow() {
                 "{id} is a square icon button"
             );
         }
-        // The overflow commands are menu rows, not row controls.
         for id in [
             "browser.devtools",
             "browser.find",
@@ -84,9 +82,6 @@ fn toolbar_controls_align_and_move_into_the_overflow_menu_when_narrow() {
         }
     }
 
-    // Phase `the_narrowest_regular_window_keeps_every_primary_command_and_a_readable_address_field`.
-    // The toolbar follows the shell's one compact tier: at the breakpoint
-    // every primary command is still on the row.
     {
         #[allow(
             clippy::cast_possible_truncation,
@@ -108,7 +103,6 @@ fn toolbar_controls_align_and_move_into_the_overflow_menu_when_narrow() {
         );
     }
 
-    // Phase `a_compact_window_keeps_navigation_and_moves_the_rest_to_the_menu`.
     {
         let targets = targets_at(390, 800);
         assert_on_centre_line(
@@ -128,10 +122,6 @@ fn toolbar_controls_align_and_move_into_the_overflow_menu_when_narrow() {
         );
     }
 
-    // Phase `the_compact_tier_is_judged_on_the_width_the_text_leaves`.
-    // A 1100px window at 2x text lays out as the 550px window it is to the
-    // eye: the same commands move into the menu and the address field stays
-    // readable.
     {
         let large = targets_with_theme(1100, 800, ui::theme::Theme::dark().with_text_scale(2.0));
         assert!(
@@ -174,7 +164,6 @@ fn find_bar_controls_share_the_find_fields_centre_line() {
         let targets = harness.targets();
         let field = targets["browser.find.input"];
         let window = targets["browser.root"];
-        // The field is a field, and the commands after it stay in the window.
         assert!(
             field.width() >= 200.0,
             "the find field is squeezed to {}",
@@ -200,14 +189,11 @@ fn find_bar_controls_share_the_find_fields_centre_line() {
     }
 }
 
-/// A download in progress adds its status to the row without breaking the
-/// row's centre line, and without starving the address field.
 #[test]
 fn download_status_shares_the_toolbar_rows_centre_line() {
     {
         use ui::webview::{FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
 
-        /// The test engine, with one download announced on the first drain.
         struct Downloading {
             inner: std::sync::Arc<ui::webview::test_engine::TestEngine>,
             pending: std::sync::Mutex<Vec<WebViewEvent>>,

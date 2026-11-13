@@ -1,19 +1,21 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "remote.connection-list"
 label = "Remote connections"
 version = 1
 fields = [
-  { path = "connections", type = "Collection<Connection>", stored = "collection" },
-  { path = "connections.*.name", type = "String", label = true },
-  { path = "connections.*.host", type = "Atom" },
-  { path = "connections.*.port", type = "u16" },
-  { path = "connections.*.user", type = "Atom" },
-  { path = "connections.*.kind", type = "ConnectionKind" },
-  { path = "connections.*.auth", type = "AuthMethod" },
-  { path = "connections.*.last_used_ms", type = "Option<i64>", readonly = true },
-  { path = "connections.*.group", type = "Atom" },
+  { path = "connections", type = { collection = { named = "Connection" } }, stored = "collection" },
+  { path = "connections.*.name", type = "text", label = true },
+  { path = "connections.*.host", type = "text" },
+  { path = "connections.*.port", type = "int" },
+  { path = "connections.*.user", type = "text" },
+  { path = "connections.*.kind", type = { named = "ConnectionKind" } },
+  { path = "connections.*.auth", type = { named = "AuthMethod" } },
+  { path = "connections.*.last_used_ms", type = { option = "int" }, readonly = true },
+  { path = "connections.*.group", type = "text" },
   { path = "connections.*.favorite", type = "bool" },
 ]
 
@@ -21,11 +23,11 @@ fields = [
 id = "add-connection"
 kind = "undoable"
 params = [
-  { name = "name", required = true, schema = { type = "string" } },
-  { name = "host", required = true, schema = { type = "string" } },
-  { name = "kind", required = true, schema = { oneOf = [{ type = "string", const = "ssh" }, { type = "string", const = "vnc" }, { type = "string", const = "rdp" }, { type = "string", const = "tilo" }] } },
-  { name = "port", required = false, schema = { type = ["integer", "null"], maximum = 65535, minimum = 0 } },
-  { name = "user", required = false, schema = { type = ["string", "null"] } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "host", type = "text", required = true, schema = { type = "string" } },
+  { name = "kind", type = { named = "ConnectionKind" }, required = true, schema = { oneOf = [{ type = "string", const = "ssh" }, { type = "string", const = "vnc" }, { type = "string", const = "rdp" }, { type = "string", const = "tilo" }] } },
+  { name = "port", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 65535, minimum = 0 } },
+  { name = "user", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -33,14 +35,45 @@ id = "delete-connection"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "connection", required = true, schema = { type = "string" } },
+  { name = "connection", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "mark-used"
 kind = "undoable"
 params = [
-  { name = "connection", required = true, schema = { type = "string" } },
-  { name = "at_ms", required = true, schema = { type = "integer" } },
+  { name = "connection", type = "text", required = true, schema = { type = "string" } },
+  { name = "at_ms", type = "int", required = true, schema = { type = "integer" } },
+]
+
+[[resources.types]]
+name = "AuthMethod"
+cases = [
+  { name = "password" },
+  { name = "public_key" },
+  { name = "device_identity" },
+]
+
+[[resources.types]]
+name = "Connection"
+fields = [
+  { name = "name", type = "text" },
+  { name = "host", type = "text" },
+  { name = "port", type = "int" },
+  { name = "user", type = "text" },
+  { name = "kind", type = { named = "ConnectionKind" } },
+  { name = "auth", type = { named = "AuthMethod" } },
+  { name = "last_used_ms", type = { option = "int" } },
+  { name = "group", type = "text" },
+  { name = "favorite", type = "bool" },
+]
+
+[[resources.types]]
+name = "ConnectionKind"
+cases = [
+  { name = "ssh" },
+  { name = "vnc" },
+  { name = "rdp" },
+  { name = "tilo" },
 ]
 

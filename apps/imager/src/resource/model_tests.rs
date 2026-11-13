@@ -1,5 +1,5 @@
-//! The imager's record on its own: reviewing images, the profile's field
-//! edits, merging and history, through the same door the host uses.
+//! The imager's record on its own: reviewing images, the profile's field edits, merging
+//! and history, through the same door the host uses.
 
 use super::*;
 use crate::model::{Filesystem, SourceKind, sample_recent_sources, sample_source};
@@ -29,7 +29,6 @@ fn recent_paths(imager: &Replica<Imager>) -> Vec<String> {
         .collect()
 }
 
-/// A new record holds no image, no history and the default profile.
 #[test]
 fn a_new_record_starts_with_empty_records() {
     let imager = Replica::<Imager>::new();
@@ -39,8 +38,6 @@ fn a_new_record_starts_with_empty_records() {
     assert_eq!(state.profile, InstallProfile::default());
 }
 
-/// Each profile field is its own field edit: setting one leaves the others
-/// as they were, and nothing secret is stored.
 #[test]
 fn profile_field_edits_set_one_field_and_store_no_secret() {
     let mut imager = Replica::<Imager>::new();
@@ -82,9 +79,6 @@ fn profile_field_edits_set_one_field_and_store_no_secret() {
     );
 }
 
-/// Reviewing an image remembers the one reviewed before at the front of
-/// the recent ones; reviewing it again moves it back to the front; the
-/// image itself only changes through reviewing or clearing.
 #[test]
 fn reviewing_images_keeps_them_in_recency_order() {
     let mut imager = Replica::<Imager>::new();
@@ -123,8 +117,6 @@ fn reviewing_images_keeps_them_in_recency_order() {
     assert_eq!(state.recent.len(), 3, "clearing keeps the history");
 }
 
-/// Two people editing different profile fields keep both; two people
-/// reviewing at once keep both remembered images, the tie broken by id.
 #[test]
 fn concurrent_edits_converge() {
     let mut ours = Replica::<Imager>::new();
@@ -155,8 +147,6 @@ fn concurrent_edits_converge() {
     assert!(a.id() < b.id(), "equal ranks sort by id");
 }
 
-/// An agent changes the profile and reviews images with one call each, and
-/// the person reads what it did in the app's own sentences.
 #[test]
 fn an_agents_changes_render_as_the_apps_sentences() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};

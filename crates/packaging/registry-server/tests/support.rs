@@ -13,14 +13,12 @@ use std::process::{Command, Output};
 use registry_server::{AppState, Storage};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-/// The registry CLI prepared for `arguments` against `data_dir`.
 pub fn server_command(data_dir: &Path, arguments: &[&str]) -> Command {
     let mut command = Command::new(tilo_test_env::package_binary!("tilo-registry-server"));
     command.arg("--data-dir").arg(data_dir).args(arguments);
     command
 }
 
-/// The registry CLI's output for `arguments` against `data_dir`.
 pub fn server(data_dir: &Path, arguments: &[&str]) -> std::io::Result<Output> {
     server_command(data_dir, arguments).output_locked()
 }
@@ -36,8 +34,6 @@ pub fn server_ok(data_dir: &Path, arguments: &[&str]) -> Output {
     output
 }
 
-/// The test server identity owned by `owner_pubkey_hex` and served from
-/// `base_url`.
 pub fn identity(
     owner_pubkey_hex: impl Into<String>,
     base_url: &str,
@@ -50,7 +46,6 @@ pub fn identity(
     }
 }
 
-/// Run the HTTP server on its own runtime for the rest of the test process.
 pub fn serve(storage: &Storage) -> SocketAddr {
     let storage = storage.clone();
     let identity = storage.load_identity().unwrap();
@@ -72,8 +67,6 @@ pub fn serve(storage: &Storage) -> SocketAddr {
     receiver.recv().unwrap()
 }
 
-/// The target every test artifact is built for: Tilo OS on x86_64-v3, needing
-/// `runtime`.
 pub fn target(runtime: Option<String>) -> registry_types::RegistryTarget {
     registry_types::RegistryTarget {
         platform: registry_types::TILO_OS_PLATFORM.into(),
@@ -84,8 +77,6 @@ pub fn target(runtime: Option<String>) -> registry_types::RegistryTarget {
     }
 }
 
-/// A Tapp artifact downloaded from `url`: `size` bytes, hashed `root_hash_hex`
-/// and `blake3_hex`, built for [`target`] with `runtime`.
 pub fn tapp(
     url: impl Into<String>,
     root_hash_hex: impl Into<String>,
@@ -102,7 +93,6 @@ pub fn tapp(
     }
 }
 
-/// Version `version` of a Tapp released at `released_at_unix`.
 pub fn version(
     version: impl Into<String>,
     released_at_unix: u64,
@@ -115,8 +105,6 @@ pub fn version(
     }
 }
 
-/// An entry of `package_id` published by `publisher_pubkey_hex`, with
-/// `versions`: everything else is the description the tests share.
 pub fn entry(
     package_id: impl Into<String>,
     publisher_pubkey_hex: impl Into<String>,
@@ -143,8 +131,6 @@ pub fn entry(
     }
 }
 
-/// The allowlist row of `pubkey_hex`, `can_add_new`, holding the Tilo
-/// namespace.
 pub fn publisher(
     pubkey_hex: impl Into<String>,
     can_add_new: bool,
@@ -157,7 +143,6 @@ pub fn publisher(
     }
 }
 
-/// An allowlist admitting `publishers`.
 pub fn allowlist(
     publishers: Vec<registry_server::PublisherRow>,
 ) -> registry_server::PublisherAllowlist {

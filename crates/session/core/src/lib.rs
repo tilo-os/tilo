@@ -7,4 +7,8 @@
 pub mod arrangement;
 pub mod desk;
 pub mod door;
+pub mod notice;
 pub mod presence;
+pub mod remote;
+pub mod shell;
+pub mod surface;

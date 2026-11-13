@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_reference::{ProgramStep, ResourceAt, StepChange, StepOutcome, StepPreview};
-use tilolang::lexer::{self, Tok};
+use tilolang_lex::lexer::{self, Tok};
 
 use crate::i18n::widget_format;
 use crate::icons::Icon;

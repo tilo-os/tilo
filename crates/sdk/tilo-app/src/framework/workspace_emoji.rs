@@ -191,9 +191,7 @@ impl EmojiSource for WindowEmoji {
 
     fn add(&self, name: &str, image: &[u8]) -> Result<(), String> {
         if !self.can_manage() {
-            return Err(ui_core::i18n::I18nManager::lookup_plain(
-                "workspace-emoji-not-allowed",
-            ));
+            return Err(ui_core::i18n::widget_text("workspace-emoji-not-allowed"));
         }
         self.add_small(name, make_small(image))
     }
@@ -218,7 +216,7 @@ impl EmojiSource for WindowEmoji {
         if !self.can_manage() {
             return;
         }
-        let lookup = ui_core::i18n::I18nManager::lookup_plain;
+        let lookup = ui_core::i18n::widget_text;
         let request = ui_core::portal::PickRequest::open(
             &lookup("workspace-emoji-choose-title"),
             &lookup("workspace-emoji-choose-accept"),
@@ -259,7 +257,7 @@ fn add_emoji(name: &str, png: Vec<u8>) -> tilo_resource::Invoke<Record> {
 
 /// Why nothing of the workspace's emoji can change: its record is not open.
 fn unavailable() -> String {
-    ui_core::i18n::I18nManager::lookup_plain("workspace-emoji-unavailable")
+    ui_core::i18n::widget_text("workspace-emoji-unavailable")
 }
 
 /// Register the workspace's emoji for the window whose wake scope `window`

@@ -1,6 +1,4 @@
-//! fs-verity on runtime bundles: the builder signs each file's digest, a
-//! launch trusts a sealed file unread, and anything short of a sealed file
-//! with the signed digest is hashed and refused if a byte differs.
+//! fs-verity on runtime bundles: the builder signs each file's digest and a launch trusts it.
 
 #![allow(
     clippy::unwrap_used,
@@ -117,7 +115,6 @@ fn verity_dir() -> Result<tempfile::TempDir, String> {
     Ok(dir)
 }
 
-/// Bytes this process has read through `read(2)` and friends.
 #[cfg(target_os = "linux")]
 fn bytes_read() -> u64 {
     fs::read_to_string("/proc/self/io")

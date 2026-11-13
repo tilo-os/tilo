@@ -3,7 +3,7 @@
 //! A two-switch device is any keyboard that emits an ordinary key pair: the first switch steps the
 //! focus on (as Tab does), the second activates what has focus (as Return does). With an automatic
 //! period the walking happens by itself and one switch is enough. Everything a person sees is drawn
-//! by the focused surface itself: the focus ring that the toolkit draws ([`crate::host`]'s surfaces
+//! by the focused surface itself: the focus ring that the toolkit draws ([`SurfaceHost`](tilo_session_core::surface::SurfaceHost)'s surfaces
 //! and the clients they stand for), so scanning needs nothing on screen of its own.
 //! The machine is pure: key edges and instants in, [`Scan`] steps out.
 

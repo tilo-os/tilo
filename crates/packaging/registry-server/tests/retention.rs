@@ -1,6 +1,6 @@
-//! Version retention end to end: a publisher drops old versions from its
-//! signed entry, the registry signs the shorter entry, and pruning removes
-//! the dropped artifacts only once no snapshot or version index lists them.
+//! Version retention end to end: a publisher drops old versions from its signed entry, the registry
+//! signs the shorter entry, and pruning removes the dropped artifacts only once no snapshot or
+//! version index lists them.
 
 #![cfg(unix)]
 #![allow(
@@ -63,8 +63,8 @@ fn registry() -> Registry {
     }
 }
 
-/// A staged package for `version` with one payload blob shared by every
-/// version and one of its own; the version and that blob's hash.
+/// A staged package for `version` with one payload blob shared by every version and one of its own;
+/// the version and that blob's hash.
 fn stage(storage: &Storage, scratch: &Path, version: &str) -> (RegistryVersion, String) {
     let identity = tilo_app_package::SigningIdentity::generate();
     let payload = scratch.join(version);
@@ -139,7 +139,6 @@ impl Registry {
         self.storage.load_payload_blob(blob).unwrap().is_some()
     }
 
-    /// Every version the current snapshot lists rebuilds from storage.
     fn assert_listed_versions_install(&self) {
         let current = self.storage.load_snapshot().unwrap().unwrap();
         registry_types::verify_snapshot(&current, &self.owner_hex, current.issued_at_unix).unwrap();
@@ -177,8 +176,7 @@ fn retention_prunes_only_versions_nothing_references() {
         .unwrap();
     assert_eq!(pruned.payload_blobs + pruned.thin_packages, 0);
 
-    // The dry run names the versions the policy drops and what goes then,
-    // and deletes nothing.
+    // The dry run names the versions the policy drops and what goes then, and deletes nothing.
     let policy = RetentionPolicy {
         releases: 5,
         prereleases: 5,
@@ -213,9 +211,8 @@ fn retention_prunes_only_versions_nothing_references() {
     registry.sign();
     registry.assert_listed_versions_install();
 
-    // The dropped versions are still in the retained history, which an
-    // operator may roll back to, and in the version index a client one
-    // snapshot behind was offered: nothing is deleted yet.
+    // The dropped versions are still in the retained history, which an operator may roll back to,
+    // and in the version index a client one snapshot behind was offered: nothing is deleted yet.
     let pruned = registry
         .storage
         .lock_snapshot()
@@ -231,8 +228,8 @@ fn retention_prunes_only_versions_nothing_references() {
             .unwrap();
     }
 
-    // Once the history and served indexes have moved past them, exactly the
-    // dropped versions' artifacts go and every listed version still installs.
+    // Once the history and served indexes have moved past them, exactly the dropped versions'
+    // artifacts go and every listed version still installs.
     for _ in 0..SNAPSHOT_HISTORY_RETAINED {
         registry.sign();
     }

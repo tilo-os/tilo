@@ -198,49 +198,13 @@ pub(super) type FileAnswer = std::pin::Pin<Box<dyn Future<Output = Result<Vec<u8
 
 impl JoinedChannel {
     /// Answer a command about the person's local files, JSON both ways:
-    /// selected discovery and opening, write attribution, external
-    /// moderation, or the file clipboard, told apart by their envelopes.
+    /// write attribution, external moderation, or the file clipboard, told
+    /// apart by their envelopes.
     pub(super) fn local_file_dispatch(
         self: Rc<Self>,
         bytes: &[u8],
         on_behalf_of: &[u8],
     ) -> Result<FileAnswer, BrokerError> {
-        #[cfg(target_os = "linux")]
-        if runtime_collab::open_selected::discovery::is_envelope(bytes) {
-            let future = self.selected_discovery_dispatch(bytes, on_behalf_of)?;
-            return Ok(Box::pin(async move {
-                let value = future.await.map_err(BrokerError::failed)?;
-                if !value.valid() {
-                    return Err(BrokerError::failed("invalid discovery response".into()));
-                }
-                let bytes =
-                    serde_json::to_vec(&value).map_err(|e| BrokerError::failed(e.to_string()))?;
-                if bytes.len() > runtime_collab::open_selected::discovery::MAX_BYTES {
-                    return Err(BrokerError::failed(
-                        "discovery response exceeds limit".into(),
-                    ));
-                }
-                Ok(bytes)
-            }));
-        }
-        #[cfg(target_os = "linux")]
-        if runtime_collab::open_selected::v2::is_envelope(bytes) {
-            let future = self.selected_open_v2_dispatch(bytes, on_behalf_of)?;
-            return Ok(Box::pin(async move {
-                let receipt = future.await.map_err(BrokerError::failed)?;
-                runtime_collab::open_selected::v2::encode_observed(&receipt)
-                    .map_err(|e| BrokerError::failed(e.to_string()))
-            }));
-        }
-        #[cfg(target_os = "linux")]
-        if runtime_collab::open_selected::is_envelope(bytes) {
-            let future = self.selected_open_dispatch(bytes, on_behalf_of)?;
-            return Ok(Box::pin(async move {
-                let receipt = future.await.map_err(BrokerError::failed)?;
-                runtime_collab::open_selected::encode_observed(&receipt)
-                    .map_err(|e| BrokerError::failed(e.to_string()))
-            }));
-        }
         if runtime_collab::write_attribution::is_envelope(bytes) {
             let reply = self.write_attribution_dispatch(bytes, on_behalf_of)?;
             return Ok(Box::pin(std::future::ready(Ok(reply))));
@@ -266,9 +230,9 @@ impl JoinedChannel {
 impl JoinedChannel {
     /// Answer a committed-document request. An `Await` is held until the
     /// read may have changed, and an Open whose record is still being
-    /// decided (the workspace's host's replay) or created on another device is
-    /// awaited, all on this `LocalSet`, so every channel's calls keep
-    /// flowing meanwhile.
+    /// decided (the workspace's host's replay, or the host it was asked of)
+    /// or created on another device is awaited, all on this `LocalSet`, so
+    /// every channel's calls keep flowing meanwhile.
     pub(super) async fn committed_document_answer(
         self: Rc<Self>,
         request: runtime_collab::committed_document::Request,
@@ -276,28 +240,15 @@ impl JoinedChannel {
         if let runtime_collab::committed_document::Request::Await { known_revision } = request {
             return self.await_committed_change(known_revision).await;
         }
-        if let Some(waiting) = self.committed_history_wait(&request) {
+        if let Some(waiting) = self.committed_arrival_wait(&request) {
             waiting.await;
         }
-        let prepared = match self.committed_creation_elsewhere(&request) {
-            Some(preparing) => Some(preparing.await),
-            None => None,
-        };
-        self.committed_document_dispatch_prepared(&request, prepared)
+        self.committed_document_dispatch(&request)
     }
 }
 
 /// A local effect's record on its way into workspace activity.
 pub(super) type Recording = std::pin::Pin<Box<dyn Future<Output = Result<(), BrokerError>>>>;
-
-/// A service's answer on its way.
-/// A change to an app's published action surface.
-pub(super) enum SurfaceChange {
-    /// The whole surface, replacing what was published.
-    Whole(Vec<runtime_collab::ExportedAction>),
-    /// A change to what was published.
-    Delta(runtime_collab::SurfaceDelta),
-}
 
 /// What the host answers once its work is done.
 pub(super) type Answer<T> = std::pin::Pin<Box<dyn Future<Output = Result<T, BrokerError>>>>;
@@ -420,22 +371,26 @@ impl JoinedChannel {
         } else {
             None
         };
-        if owner_required {
+        // The write as the owner took it: signed again where another local
+        // writer's later write passed its sequence.
+        let envelope = if owner_required {
             state.revalidate_admission(&route, &self.verified_identity)?;
             state
-                .commit_owner_request(
+                .commit_owner_document(
                     tilo_peer_state::owner_commit::OwnerCommitRequest {
                         workspace: route.cluster_id.clone(),
                         operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                             app: route.app_id.clone(),
                             record: route.record_id.clone(),
-                            envelope: Box::new(envelope.clone()),
+                            envelope: Box::new(envelope),
                         },
                     },
                     self.record_kind.clone(),
                 )
-                .await?;
-        }
+                .await?
+        } else {
+            envelope
+        };
         let current_identity = state.revalidate_admission(&route, &self.verified_identity)?;
         let authorized =
             state.authorize_certified_document(&route, &current_identity, &envelope)?;
@@ -694,18 +649,14 @@ impl JoinedChannel {
                 let _order = state.owner_commit_order.lock().await;
                 state.revalidate_admission(&route, &identity)?;
                 state
-                    .commit_owner_request(
-                        tilo_peer_state::owner_commit::OwnerCommitRequest {
-                            workspace: surface.route.cluster_id,
-                            operation:
-                                tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-                                    invocation: update.invocation().0,
-                                    redacted: serde_json::to_vec(&receipt)
-                                        .map_err(|e| BrokerError::failed(e.to_string()))?,
-                                },
+                    .commit_owner_request(tilo_peer_state::owner_commit::OwnerCommitRequest {
+                        workspace: surface.route.cluster_id,
+                        operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                            invocation: update.invocation().0,
+                            redacted: serde_json::to_vec(&receipt)
+                                .map_err(|e| BrokerError::failed(e.to_string()))?,
                         },
-                        None,
-                    )
+                    })
                     .await?;
                 state.revalidate_admission(&route, &identity)?;
                 Ok(())
@@ -1206,13 +1157,6 @@ impl JoinedChannel {
                 Err(refusal) => return Ok(ready(*refusal)),
             },
         };
-        if let tilo_actions::remote::RemoteActionMessage::CatalogueRequest { correlation, query } =
-            &request.message
-            && query.view_resource.is_some()
-        {
-            return Ok(self.resource_view_query(*correlation, query.clone()));
-        }
-
         if tilo_actions::remote::refuse(
             &request.message,
             tilo_actions::remote::ActionHostError::UnknownAction,
@@ -1525,12 +1469,12 @@ impl JoinedChannel {
         })
     }
 
-    /// Publish the app's action surface on this channel: a whole one, or a
-    /// change to the one it published, applied all or not at all.
+    /// Change the app's action surface on this channel (a reset delta
+    /// replaces it whole), applied all or not at all.
     pub(super) fn publish_surface(
         &self,
         claimed_app: &str,
-        change: SurfaceChange,
+        delta: &runtime_collab::SurfaceDelta,
     ) -> Result<(), BrokerError> {
         // No app changes another app's route: a channel held to read refuses.
         self.writable()?;
@@ -1544,26 +1488,20 @@ impl JoinedChannel {
         }
         let peer_id = self.peer_id;
         let unavailable = || BrokerError::failed("action surface registry unavailable".into());
-        let (actions, table) = match change {
-            SurfaceChange::Whole(rows) => (validate_published_surface(rows)?, None),
-            SurfaceChange::Delta(delta) => {
-                // Apply to a copy: a delta that does not apply, or whose
-                // result is not a valid surface, changes nothing.
-                let mut table = self
-                    .state
-                    .surface_tables
-                    .lock()
-                    .map_err(|_| unavailable())?
-                    .get(&peer_id)
-                    .cloned()
-                    .unwrap_or_default();
-                table.apply(&delta).map_err(|reason| {
-                    BrokerError::failed(format!("action surface delta refused: {reason}"))
-                })?;
-                (validate_published_surface(table.actions())?, Some(table))
-            }
-        };
-        let offers = !actions.is_empty();
+        // Apply to a copy: a delta that does not apply, or whose result is
+        // not a valid surface, changes nothing.
+        let mut table = self
+            .state
+            .surface_tables
+            .lock()
+            .map_err(|_| unavailable())?
+            .get(&peer_id)
+            .cloned()
+            .unwrap_or_default();
+        table.apply(delta).map_err(|reason| {
+            BrokerError::failed(format!("action surface delta refused: {reason}"))
+        })?;
+        let actions = validate_published_surface(table.actions()).map_err(BrokerError::failed)?;
         let surface = PublishedSurface {
             peer_id,
             app_id: route.app_id.clone(),
@@ -1571,24 +1509,11 @@ impl JoinedChannel {
             actions,
             live: true,
         };
-        {
-            let mut tables = self
-                .state
-                .surface_tables
-                .lock()
-                .map_err(|_| unavailable())?;
-            match table {
-                Some(table) => {
-                    tables.insert(peer_id, table);
-                }
-                // A whole surface supersedes any delta state: a later delta
-                // without `reset` finds no shapes and is refused, so the
-                // publisher resets.
-                None => {
-                    tables.remove(&peer_id);
-                }
-            }
-        }
+        self.state
+            .surface_tables
+            .lock()
+            .map_err(|_| unavailable())?
+            .insert(peer_id, table);
         self.state.launchable.retain(&surface);
         let previous = self
             .state
@@ -1600,9 +1525,10 @@ impl JoinedChannel {
             .advance_witness_publication(peer_id, WitnessPublicationKind::Surface);
         self.state
             .surface_republished(peer_id, &surface, previous.as_ref());
-        if offers {
-            self.state.launch_published(peer_id);
-        }
+        // A catalogue offering its record is what an `open` of it waits for:
+        // a directory alone is offered before the app is ready.
+        self.state
+            .launch_published(&surface, self.record_kind.as_deref());
         Ok(())
     }
 
@@ -1613,21 +1539,19 @@ impl JoinedChannel {
             .revalidate_admission(&self.route(), &self.verified_identity)?;
         let cluster = self.route().cluster_id;
         let actor = self.verified_identity.broker_actor();
-        let snapshot = self.state.action_catalogue_json_for(&cluster, &actor);
-        let initial = match snapshot {
-            Ok(snapshot) => Arc::<str>::from(snapshot),
-            Err(error) => return Err(BrokerError::failed(error)),
-        };
-        // The session's normal tracing filter passes only errors. Its flight
-        // recorder captures stderr; report numeric metadata without changing
-        // that filter or exporting any authorized catalogue contents.
-        eprintln!(
-            "collab: initial authorized action catalogue snapshot event_kind=ActionCatalogue serialized_bytes={}",
-            initial.len()
-        );
-        let (tx, rx) = watch::channel(Some(initial));
+        let rows = self
+            .state
+            .action_catalogue_for(&cluster, &actor)
+            .map_err(BrokerError::failed)?;
+        let follower = CatalogueFollower::new(&catalogue_rows(rows));
         if let Ok(mut subscribers) = self.state.action_catalogue_subscribers.lock() {
-            subscribers.insert(self.connection_id, (cluster, actor, tx));
+            // A connection follows one catalogue: a stream it held ends.
+            let held = (cluster, actor, Arc::downgrade(&follower));
+            if let Some((_, _, replaced)) = subscribers.insert(self.connection_id, held)
+                && let Some(replaced) = replaced.upgrade()
+            {
+                replaced.end();
+            }
         } else {
             return Err(BrokerError::failed(
                 "action catalogue subscriber registry unavailable".into(),
@@ -1639,7 +1563,7 @@ impl JoinedChannel {
                 self.peer_id,
                 &self.verified_identity,
             ),
-            reader: Rc::new(AsyncMutex::new(ActionCatalogueReader { rx, initial: true })),
+            follower,
         })
     }
 
@@ -1782,8 +1706,7 @@ impl JoinedChannel {
         self.state.refresh_action_directory_root_snapshot();
         // The directory can alter remote discoverability without an eager
         // action snapshot changing, so tell catalogue subscribers.
-        self.state.publish_action_catalogue();
-        self.state.launch_published(self.peer_id);
+        self.state.catalogue_changed();
         Ok(())
     }
 
@@ -2305,18 +2228,9 @@ impl WireConnection {
                 Ok(Reply::Done)
             }
             Operation::Publish {
-                channel,
-                publication: Publication::Actions(actions),
-            } => {
-                let actions = serde_json::from_str(&actions)
-                    .map_err(|error| format!("invalid published actions: {error}"))?;
-                let session = self.channel(channel)?;
-                let published =
-                    session.publish_surface(&session.route().app_id, SurfaceChange::Whole(actions));
-                drop(session);
-                published.map_err(Refusal::refusal)?;
-                Ok(Reply::Done)
-            }
+                publication: Publication::RetiredActions(_),
+                ..
+            } => Err("a whole surface is published as a reset change".into()),
             Operation::Publish {
                 channel,
                 publication: Publication::Surface(delta),
@@ -2324,8 +2238,7 @@ impl WireConnection {
                 let delta = serde_json::from_str(&delta)
                     .map_err(|error| format!("invalid surface change: {error}"))?;
                 let session = self.channel(channel)?;
-                let published =
-                    session.publish_surface(&session.route().app_id, SurfaceChange::Delta(delta));
+                let published = session.publish_surface(&session.route().app_id, &delta);
                 drop(session);
                 published.map_err(Refusal::refusal)?;
                 Ok(Reply::Done)
@@ -2406,9 +2319,7 @@ impl WireConnection {
                     }
                     Topic::Catalogue => {
                         let stream = session.catalogue_feed().map_err(failed)?;
-                        tokio::task::spawn_local(pump_pulled(stream, id, frames, |catalogue| {
-                            Event::Catalogue(catalogue.to_string())
-                        }))
+                        tokio::task::spawn_local(pump_pulled(stream, id, frames, Event::Catalogue))
                     }
                     Topic::TaskRuns => {
                         let feed = session.task_run_feed().map_err(failed)?;
@@ -2645,7 +2556,7 @@ impl Pulled for super::approved_checks::ReportedProgress {
 }
 
 impl Pulled for ActionCatalogueStreamServer {
-    type Item = Arc<str>;
+    type Item = String;
     async fn pull(&self) -> Result<Self::Item, BrokerError> {
         self.next().await
     }

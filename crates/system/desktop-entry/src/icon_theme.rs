@@ -1,27 +1,17 @@
-//! freedesktop.org icon-theme lookup: turning an `Icon=` value into a file.
+//! freedesktop.org icon-theme lookup: turning an `Icon=` value into a file. An
+//! application Tilo did not package names its icon rather than shipping pixels
+//! — `Icon=firefox`, `Icon=org.gnome.Nautilus` — and the Icon Theme
+//! Specification says where that name lives: a theme is a directory under a
+//! base directory (`~/.icons`, `$XDG_DATA_HOME/icons`, each
+//! `$XDG_DATA_DIRS/icons`, Flatpak's `exports/share/icons`) with an
+//! `index.theme` listing the sizes it serves and the themes it inherits, and
+//! every chain ends in `hicolor`.
 //!
-//! An application that Tilo did not package names its icon rather than
-//! shipping pixels — `Icon=firefox`, `Icon=org.gnome.Nautilus` — and the
-//! Icon Theme Specification says where that name lives:
-//!
-//! - a theme is a directory under one of the *base directories*
-//!   (`~/.icons`, `$XDG_DATA_HOME/icons`, each `$XDG_DATA_DIRS/icons`, and
-//!   Flatpak's `exports/share/icons`), described by its `index.theme`;
-//! - the index lists sub-directories with a nominal `Size`, a `Scale` and a
-//!   `Type` (`Fixed`, `Scalable` or `Threshold`) saying which requested sizes
-//!   each one serves;
-//! - a theme `Inherits` others, and every chain ends in `hicolor`, where
-//!   applications install their own icons;
-//! - an icon found nowhere in a theme is looked for directly in the base
-//!   directories and in `pixmaps`.
-//!
-//! Only PNG and SVG files are returned — the formats Tilo can draw. A name
-//! that is an absolute path is taken as that file.
-//!
-//! Flatpak writes its exports without an `index.theme` for `hicolor`, and a
-//! minimal host may not install the `hicolor-icon-theme` package at all, so
-//! when no base directory carries hicolor's index its layout is read off the
-//! directories that exist (`48x48/apps`, `24x24@2/apps`, `scalable/apps`).
+//! Only PNG and SVG files are returned, the formats Tilo can draw; a name that
+//! is an absolute path is taken as that file. Flatpak writes its exports
+//! without an `index.theme` for `hicolor`, and a minimal host may not install
+//! `hicolor-icon-theme` at all, so when no base directory carries hicolor's
+//! index its layout is read off the directories that exist.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -31,11 +21,10 @@ use tilo_lock::MutexRecover as _;
 /// The theme every inheritance chain ends in.
 pub const FALLBACK_THEME: &str = "hicolor";
 
-/// The theme consulted before `hicolor`. GTK's default, so a host app's
+/// The theme consulted before `hicolor`: GTK's default, so a host app's
 /// symbolic and generic icons resolve the way that app expects.
 pub const DEFAULT_THEME: &str = "Adwaita";
 
-/// Memoised answers kept per lookup before the table is dropped and rebuilt.
 const MEMO_LIMIT: usize = 4096;
 
 /// An inheritance chain deeper than this is a loop or a mistake.
@@ -69,24 +58,20 @@ impl IconFormat {
     }
 }
 
-/// A resolved icon: the file and how to decode it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct IconFile {
     pub path: PathBuf,
     pub format: IconFormat,
 }
 
-/// Where themes and loose icons are looked for, in precedence order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IconSearchPath {
-    /// Directories that contain theme directories (and loose icons).
     pub bases: Vec<PathBuf>,
     /// Directories of loose icons consulted last (`/usr/share/pixmaps`).
     pub pixmaps: Vec<PathBuf>,
 }
 
 impl IconSearchPath {
-    /// The current session's search path, Flatpak exports included.
     pub fn system() -> Self {
         let mut path = Self::default();
         if let Some(home) = tilo_paths::home() {
@@ -99,9 +84,9 @@ impl IconSearchPath {
         for dir in &data_dirs {
             path.push_base(dir.join("icons"));
         }
-        // Appended like the `applications` directories in `scan`: a session
-        // that already lists the exports keeps their place, and a hand-installed
-        // icon still overrides an exported one.
+        // Appended like the `applications` directories in `scan`: a session that
+        // already lists the exports keeps their place, and a hand-installed icon still
+        // overrides an exported one.
         if let Some(data_home) = tilo_paths::xdg::data_home() {
             path.push_base(data_home.join("flatpak/exports/share/icons"));
         }
@@ -115,8 +100,6 @@ impl IconSearchPath {
         path
     }
 
-    /// This path with `dir` searched before everything else — an
-    /// application's own icon directory.
     #[must_use]
     pub fn with_first_base(mut self, dir: PathBuf) -> Self {
         self.bases.retain(|base| base != &dir);
@@ -138,7 +121,6 @@ enum DirKind {
     Threshold,
 }
 
-/// One `index.theme` directory entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SubDir {
     path: String,
@@ -151,7 +133,6 @@ struct SubDir {
 }
 
 impl SubDir {
-    /// The spec's `DirectoryMatchesSize`.
     fn matches(&self, size: u32, scale: u32) -> bool {
         if self.scale != scale {
             return false;
@@ -165,7 +146,6 @@ impl SubDir {
         }
     }
 
-    /// The spec's `DirectorySizeDistance`, in device pixels.
     fn distance(&self, size: u32, scale: u32) -> u32 {
         let want = size.saturating_mul(scale);
         let (low, high) = match self.kind {
@@ -184,8 +164,6 @@ impl SubDir {
         low.saturating_sub(want).max(want.saturating_sub(high))
     }
 
-    /// Device pixels this directory's icons are drawn at, for breaking a
-    /// distance tie towards the larger (downscaling beats upscaling).
     fn device_size(&self) -> u32 {
         self.size.saturating_mul(self.scale)
     }
@@ -259,7 +237,6 @@ fn parse_index(contents: &str) -> Theme {
     }
 }
 
-/// `48x48` → (48, 1), `24x24@2` → (24, 2).
 fn parse_size_dir(name: &str) -> Option<(u32, u32)> {
     let (dims, scale) = match name.split_once('@') {
         Some((dims, scale)) => (dims, scale.parse::<u32>().ok().filter(|s| *s > 0)?),
@@ -282,7 +259,6 @@ fn sorted_dir_names(dir: &Path) -> Vec<String> {
     names
 }
 
-/// hicolor's layout read off the directories present under `bases`.
 fn discovered_layout(bases: &[PathBuf], theme: &str) -> Theme {
     let mut subdirs: Vec<SubDir> = Vec::new();
     for base in bases {
@@ -329,14 +305,11 @@ fn discovered_layout(bases: &[PathBuf], theme: &str) -> Theme {
     }
 }
 
-/// Reject names that would walk out of a theme directory.
 fn clean_name(name: &str) -> Option<&str> {
     let name = name.trim();
     if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
         return None;
     }
-    // A handful of entries still write `Icon=foo.png`; the spec says the
-    // value is a name, and every toolkit strips the extension.
     let stem = [".png", ".svg", ".xpm"]
         .iter()
         .find_map(|ext| {
@@ -354,7 +327,6 @@ fn clean_name(name: &str) -> Option<&str> {
 
 type MemoKey = (String, u32, u32);
 
-/// A theme-aware icon resolver with its answers memoised.
 #[derive(Debug)]
 pub struct IconLookup {
     search: IconSearchPath,
@@ -377,9 +349,6 @@ impl IconLookup {
         &self.search
     }
 
-    /// The file for icon `name` drawn `size` logical pixels square at
-    /// integer `scale`, or `None` when no theme, base or pixmaps directory
-    /// has a PNG or SVG of that name.
     pub fn find(&self, name: &str, size: u32, scale: u32) -> Option<IconFile> {
         let size = size.max(1);
         let scale = scale.max(1);
@@ -431,8 +400,6 @@ impl IconLookup {
         })
     }
 
-    /// The spec's `LookupIcon`: an exact size match first, else the
-    /// nearest directory.
     fn find_in_theme(
         &self,
         name: &str,
@@ -474,7 +441,6 @@ impl IconLookup {
         best.map(|(_, _, file)| file)
     }
 
-    /// The spec's `LookupFallbackIcon`.
     fn find_loose(&self, name: &str) -> Option<IconFile> {
         self.search
             .bases
@@ -529,9 +495,6 @@ fn shared() -> &'static Mutex<Option<Shared>> {
     SHARED.get_or_init(|| Mutex::new(None))
 }
 
-/// The session's icon resolver. Rebuilt — dropping every memoised answer —
-/// whenever the application scan in [`crate::cache`] notices something was
-/// installed or removed, since that is when new icons appear.
 pub fn system_lookup() -> Arc<IconLookup> {
     let generation = crate::cache::cached_scan_generation();
     let mut guard = shared().lock_recover();
@@ -548,7 +511,6 @@ pub fn system_lookup() -> Arc<IconLookup> {
     lookup
 }
 
-/// [`IconLookup::find`] against the session's themes.
 pub fn lookup(name: &str, size: u32, scale: u32) -> Option<IconFile> {
     system_lookup().find(name, size, scale)
 }
@@ -567,8 +529,6 @@ mod tests {
         std::fs::write(path, text).unwrap();
     }
 
-    /// A theme `Fixture` inheriting `Parent`, with sized, scaled and
-    /// scalable directories, and an index-less hicolor under a second base.
     fn fixture() -> (tempfile::TempDir, IconSearchPath) {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().join("share/icons");
@@ -630,7 +590,6 @@ mod tests {
             found(&lookup, "editor", 48, 1),
             "icons/Fixture/48x48/apps/editor.png"
         );
-        // Inside the threshold of the 48 directory.
         assert_eq!(
             found(&lookup, "editor", 50, 1),
             "icons/Fixture/48x48/apps/editor.png"
@@ -654,7 +613,6 @@ mod tests {
     fn with_no_exact_match_the_nearest_size_is_used_preferring_larger() {
         let (_dir, search) = fixture();
         let lookup = IconLookup::new(search, "Fixture");
-        // 32 is nearer the 48 directory's threshold band than 16.
         assert_eq!(
             found(&lookup, "tiny", 32, 1),
             "icons/Fixture/48x48/apps/tiny.png"
@@ -663,8 +621,6 @@ mod tests {
             found(&lookup, "tiny", 8, 1),
             "icons/Fixture/16x16/apps/tiny.png"
         );
-        // 32 device pixels is 16 from both 16x16 and 24x24@2 (48 device
-        // pixels): downscaling the larger looks better.
         assert_eq!(
             found(&lookup, "tie", 32, 1),
             "icons/Fixture/24x24@2/apps/tie.png"

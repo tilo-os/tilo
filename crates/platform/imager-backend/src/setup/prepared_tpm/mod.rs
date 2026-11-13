@@ -1,24 +1,15 @@
 //! Destination-bound protection for an interactive prepared setup.
 //!
-//! The ordinary installation journey no longer asks for a preparation
-//! passphrase. It still must not write another computer's identity, account
-//! tokens or file ciphertext into a package protected only by a login password
-//! chosen later. On the same computer, the target boot artifact is already
-//! signed and present on the live medium, so this module binds one
-//! machine-generated package secret to the exact signed target and this
-//! machine's TPM.
+//! A package must not carry another computer's identity, tokens or file ciphertext protected only by a
+//! login password chosen later. On the same computer the signed target boot artifact is already on the
+//! live medium, so one machine-generated secret is bound to that exact target and this machine's TPM.
 //!
-//! The public wire format — the signed target policy, the receiver identity and
-//! the sealed blob — lives in [`staging_handoff_model::prepared`] so the
-//! preparation side and the installed boot read one definition and neither can
-//! accept a field the other refuses. What only this platform backend may do
-//! stays here: reach this machine's TPM, read a caller-owned package, run the
-//! vetted privileged helper and resolve the original `SUDO_UID`.
+//! The wire format lives in [`staging_handoff_model::prepared`], so both sides read one definition;
+//! only this backend reaches the TPM, reads a caller-owned package, runs the privileged helper and
+//! resolves `SUDO_UID`.
 //!
-//! This is deliberately a *smaller* policy than a rollback token: the target
-//! NV floor does not exist yet at preparation time. It is still a signed
-//! `PolicyPCR -> PolicyAuthorize -> PolicyPCR` chain, not an unbound PCR0
-//! blob, and it refuses a target whose signed artifacts cannot be verified.
+//! The policy is smaller than a rollback token: a signed `PolicyPCR -> PolicyAuthorize -> PolicyPCR`
+//! chain, not an unbound PCR0 blob.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -32,8 +23,7 @@ pub use staging_handoff_model::prepared::{
     TARGET_UKI_FILE, TargetPolicyBundle, b64, sha256, unb64,
 };
 
-/// A target boot policy acquired for this same-computer preparation, and the
-/// exact bundle directory it was reviewed from.
+/// The exact bundle directory it was reviewed from.
 #[derive(Clone, Debug)]
 pub struct TargetAcquisition {
     target: SignedTarget,
@@ -57,14 +47,13 @@ impl TargetAcquisition {
         self.target.target_uki_sha256()
     }
 
-    /// The reviewed bundle a privileged helper re-reviews before sealing.
     pub fn bundle(&self) -> &Path {
         &self.bundle
     }
 }
 
-/// A stage a sealing request passes through, so the frontend keeps its own
-/// progress description while the backend does the work.
+/// A stage a sealing request passes through, so the frontend keeps its own progress description while
+/// the backend does the work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SealStage {
     ReadingPackage,
@@ -72,21 +61,15 @@ pub enum SealStage {
     WritingSidecar,
 }
 
-/// A request to resolve this same-computer preparation's target boot policy.
 pub struct AcquireRequest<'a> {
-    /// The release catalog's published policy for the target architecture, if
-    /// it publishes one.
     pub policy: Option<&'a TargetPolicyBundle>,
     pub cancel: &'a AtomicBool,
 }
 
-/// Everything one seal needs, in one typed request. The secret is the
-/// machine-generated package password and never a person's login password.
+/// The secret is the machine-generated package password, never a person's login password.
 pub struct SealPreparationRequest<'a> {
     pub target: &'a TargetAcquisition,
-    /// The canonical prepared package the secret belongs to.
     pub package: &'a Path,
-    /// The private preparation directory the public sidecar is written beside.
     pub sidecar_directory: &'a Path,
     pub source_public_key: [u8; 32],
     pub secret: &'a str,
@@ -94,9 +77,8 @@ pub struct SealPreparationRequest<'a> {
     pub progress: &'a dyn Fn(SealStage) -> io::Result<()>,
 }
 
-/// A fresh preparation secret. Hex keeps the canonical carrier's 15-character
-/// policy satisfied while giving 256 bits of machine randomness; it is never
-/// shown to the person and never used as a login password.
+/// Hex keeps the canonical carrier's 15-character policy satisfied while giving 256 bits of machine
+/// randomness; it is never shown to the person and never a login password.
 pub fn generate_secret() -> io::Result<Zeroizing<String>> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes).map_err(io::Error::other)?;

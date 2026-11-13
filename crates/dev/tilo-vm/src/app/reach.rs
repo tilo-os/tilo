@@ -1,11 +1,7 @@
-//! Reaching a device where it is now, waking it, and holding it awake.
-//!
-//! A device's recorded address is only a hint ([`crate::reach`]): every
-//! command takes it from the registry as it is now, tries it, and when it
-//! stops answering looks the device up by name and keeps the new address,
-//! retrying for a minute over a short loss of connectivity. A device that is
-//! not found is asleep or gone, and `vm wake` sends its magic packet. While
-//! someone drives a machine its tilo-vmd holds it awake (`vm awake`).
+//! Reaching a device where it is now, waking it, and holding it awake. A
+//! recorded address is only a hint: every command takes it from the registry,
+//! and when it stops answering looks the device up by name and keeps the new
+//! address. While someone drives a machine its tilo-vmd holds it awake.
 
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
@@ -24,10 +20,8 @@ use crate::remote;
 /// enough for a Wi-Fi roam or a DHCP renewal, short enough that a device
 /// that is asleep is reported as such.
 pub const REACH_BUDGET: Duration = Duration::from_secs(60);
-/// One authenticated attempt at the device's SSH port.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const RETRY_PAUSE: Duration = Duration::from_secs(3);
-/// How long `vm wake` waits for the woken machine's tilo-vmd.
 const WAKE_WAIT: Duration = Duration::from_secs(150);
 /// `vm wake` sends the packet again this often while it waits: one can be lost.
 const RESEND_EVERY: Duration = Duration::from_secs(15);
@@ -49,7 +43,6 @@ pub fn local_name(hostname: &str) -> String {
     format!("{label}.local")
 }
 
-/// When the lease ends, in this machine's time, and how far off that is.
 fn until(seconds: u64) -> String {
     let now = unix_now();
     let local = i64::try_from(seconds)
@@ -75,7 +68,6 @@ fn until(seconds: u64) -> String {
     format!("{at} (in {left})")
 }
 
-/// The lease in one line, as `vm status` and `vm awake` say it.
 pub fn describe_lease(lease: &AwakeLease) -> String {
     match (lease.until, lease.held, &lease.problem) {
         (Some(end), true, _) if lease.hold_until.is_some() => {
@@ -93,7 +85,6 @@ pub fn describe_lease(lease: &AwakeLease) -> String {
     }
 }
 
-/// Whether the device can be reached beyond the LAN, in one line.
 pub fn describe_peer(entry: &VmEntry, enrolled: bool) -> String {
     match &entry.peer {
         Some(route) => format!(
@@ -150,10 +141,6 @@ impl App {
         )
     }
 
-    /// Where to reach `vm` over SSH now. A device is taken at its address
-    /// as the registry has it now (an earlier step may have moved it), and
-    /// found again by name when that stops answering
-    /// ([`Self::reach_device`]).
     pub(super) fn endpoint(&mut self, vm: &Resolved) -> Result<SshEndpoint, CliError> {
         if vm.entry.hypervisor != DEVICE {
             return Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner);
@@ -161,14 +148,6 @@ impl App {
         self.reach_device(&vm.name, REACH_BUDGET, true)
     }
 
-    /// A device's SSH endpoint once its SSH port answers. When the recorded
-    /// address gives no route or no answer, the device is looked up as
-    /// `<hostname>.local`, and a new address that answers is recorded; until
-    /// `budget` runs out the address and the name are tried again, so a
-    /// Wi-Fi roam does not fail the command. After that it is asleep or gone.
-    ///
-    /// # Errors
-    /// [`CliError::DeviceAsleep`], or a registry that has no such device.
     pub(super) fn reach_device(
         &mut self,
         name: &str,
@@ -180,7 +159,6 @@ impl App {
         loop {
             let vm = self.resolve_vm(Some(name))?;
             let endpoint = hypervisor::adapter(DEVICE)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
-            // A wrapper in TILO_VM_SSH decides how the device is reached.
             if std::env::var_os("TILO_VM_SSH").is_some() {
                 return Ok(endpoint);
             }
@@ -206,8 +184,6 @@ impl App {
         }
     }
 
-    /// Look the device up as `<hostname>.local`; when it answers at another
-    /// address, record that one and say so.
     fn find_by_name(
         &mut self,
         vm: &Resolved,
@@ -246,7 +222,6 @@ impl App {
         Ok(Some(moved))
     }
 
-    /// Change one registry entry; `true` when that changed the file.
     pub(super) fn update_entry(
         &self,
         name: &str,
@@ -265,7 +240,6 @@ impl App {
         Ok(true)
     }
 
-    /// Ask a device for its hostname, MAC and wake setting.
     pub(super) fn net_facts(
         &mut self,
         endpoint: &SshEndpoint,
@@ -277,13 +251,10 @@ impl App {
         facts.hostname.is_some().then_some(facts)
     }
 
-    /// Record what [`Self::net_facts`] found; a MAC that was not found
-    /// keeps the recorded one.
     pub(super) fn record_net(&self, name: &str, facts: &NetFacts) -> Result<bool, CliError> {
         self.update_entry(name, |entry| apply_net(entry, facts))
     }
 
-    /// Refresh a device's net facts; its wake line for `vm status`.
     pub(super) fn refresh_net(&mut self, vm: &Resolved) -> Option<String> {
         if vm.entry.hypervisor != DEVICE {
             return None;
@@ -459,7 +430,6 @@ impl App {
         self.await_daemon(&vm, started, &format!("sent its magic packet {sent}"))
     }
 
-    /// Wait for tilo-vmd after a wake; the hello takes the keep-awake lease.
     fn await_daemon(
         &mut self,
         vm: &Resolved,
@@ -506,7 +476,6 @@ impl App {
     }
 }
 
-/// Copy what a device reported into its entry.
 pub fn apply_net(entry: &mut VmEntry, facts: &NetFacts) {
     if let Some(hostname) = &facts.hostname {
         entry.hostname = Some(hostname.clone());
@@ -538,7 +507,6 @@ fn asleep(vm: &Resolved, endpoint: &SshEndpoint, detail: &str) -> CliError {
 mod tests {
     use super::*;
 
-    /// The lease reads as when it ends and why, or why it is not held.
     #[test]
     fn the_lease_says_until_when_and_why() {
         let now = unix_now();
@@ -578,7 +546,6 @@ mod tests {
         assert_eq!(local_name("opi"), "opi.local");
     }
 
-    /// A device's wake line names what wakes it, or why `vm wake` cannot.
     #[test]
     fn a_devices_net_facts_are_recorded_and_described() {
         let mut entry = VmEntry::default();
@@ -594,7 +561,6 @@ mod tests {
             line.contains("not known to wake") && line.contains("yoga.local"),
             "{line}"
         );
-        // No MAC this time (it answered on loopback): the recorded one stays.
         apply_net(
             &mut entry,
             &NetFacts {

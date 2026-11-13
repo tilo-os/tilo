@@ -1,13 +1,7 @@
-//! `tilo-staging-handoff` against fixtures, for the destructive loopback
-//! proofs (`os/tests/staging_helper_loop.sh`, `os/tests/staging_reclaim_loop.sh`)
-//! and other test harnesses: the firmware variables, the staging ESP, lsblk's
-//! output and efibootmgr come from the environment here, never in the shipped
-//! binary.
-//!
-//! `TILO_STAGING_EFIVARS` (an efivarfs directory), `TILO_STAGING_ESP_DIR`
-//! (the staging ESP's contents), `TILO_STAGING_LSBLK_JSON` (lsblk's JSON) and
-//! `TILO_STAGING_EFIBOOTMGR` (an efibootmgr program); each unset one is the
-//! system's.
+//! `tilo-staging-handoff` against fixtures, for the destructive loopback proofs
+//! (`os/tests/staging_helper_loop.sh`, `os/tests/staging_reclaim_loop.sh`) and
+//! other test harnesses: the firmware variables, the staging ESP, lsblk's output
+//! and efibootmgr come from the environment here, never in the shipped binary.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -56,7 +50,7 @@ impl Host for Fixture {
 
 /// `decode-load-option EFIVAR`: the installer's decoding of a `Boot####`
 /// efivarfs file (attributes first), as JSON, or `null` when it is not a
-/// staging entry. The staging loop proof checks the imager's entry with it.
+/// staging entry.
 fn decode(path: &Path) -> ExitCode {
     let Ok(raw) = std::fs::read(path) else {
         eprintln!("cannot read {}", path.display());

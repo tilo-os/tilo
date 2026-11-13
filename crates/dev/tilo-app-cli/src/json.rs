@@ -37,7 +37,6 @@ fn sdk_json(source: &SdkSource) -> Value {
 }
 
 impl CreateOutcome {
-    /// The created (or, for a dry run, planned) app and its files.
     #[must_use]
     pub fn to_json(&self) -> Value {
         json!({
@@ -58,7 +57,6 @@ impl CreateOutcome {
 }
 
 impl AddOutcome {
-    /// Each file the artifact created or updated.
     #[must_use]
     pub fn to_json(&self) -> Value {
         let files = self
@@ -81,7 +79,6 @@ impl AddOutcome {
 }
 
 impl LocaleSyncOutcome {
-    /// The catalogs checked and rewritten, and differences left for a translator.
     #[must_use]
     pub fn to_json(&self) -> Value {
         json!({
@@ -122,7 +119,6 @@ impl DoctorReport {
 }
 
 impl ScenarioSuiteOutcome {
-    /// Passed scenario names and each failure with its source and detail.
     #[must_use]
     pub fn to_json(&self) -> Value {
         json!({
@@ -137,7 +133,6 @@ impl ScenarioSuiteOutcome {
 }
 
 impl PackageOutcome {
-    /// The verified package and the payload paths of its entrypoints.
     #[must_use]
     pub fn to_json(&self) -> Value {
         json!({
@@ -149,7 +144,6 @@ impl PackageOutcome {
 }
 
 impl PortabilityReport {
-    /// Every finding with its location, kind and remedy.
     #[must_use]
     pub fn to_json(&self) -> Value {
         let findings = |findings: &[crate::portability::PortabilityFinding]| {

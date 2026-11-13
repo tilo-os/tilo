@@ -1,14 +1,11 @@
 //! Page-space geometry shared by every part of the API.
 //!
-//! All coordinates are in **PDF points** in the page's *display* space: origin
-//! at the top-left of the visible (crop) box after the page's own `/Rotate`
-//! has been applied, x to the right, y downward. That is the space a viewer
-//! lays pages out in, so glyph boxes, link rects, annotation rects and search
-//! hits can be drawn without knowing anything about PDF user space.
+//! Coordinates are PDF points in the page's display space: origin at the
+//! top-left of the visible (crop) box after the page's own `/Rotate`, x right,
+//! y down.
 
 use serde::{Deserialize, Serialize};
 
-/// A point in page display space (points, y down).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Point {
     pub x: f32,
@@ -22,8 +19,8 @@ impl Point {
     }
 }
 
-/// An axis-aligned rectangle in page display space, stored by its corners
-/// (`x0 <= x1`, `y0 <= y1` for every rectangle this crate produces).
+/// An axis-aligned rectangle in page display space, by its corners; every
+/// rectangle this crate produces has `x0 <= x1` and `y0 <= y1`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Rect {
     pub x0: f32,
@@ -33,7 +30,6 @@ pub struct Rect {
 }
 
 impl Rect {
-    /// A rectangle from any two opposite corners.
     #[must_use]
     pub fn from_corners(a: Point, b: Point) -> Self {
         Self {
@@ -44,7 +40,6 @@ impl Rect {
         }
     }
 
-    /// A rectangle from its origin and size.
     #[must_use]
     pub fn from_xywh(x: f32, y: f32, w: f32, h: f32) -> Self {
         Self::from_corners(Point::new(x, y), Point::new(x + w, y + h))
@@ -65,7 +60,6 @@ impl Rect {
         Point::new((self.x0 + self.x1) * 0.5, (self.y0 + self.y1) * 0.5)
     }
 
-    /// Whether the rectangle has no area (a generated glyph without geometry).
     #[must_use]
     pub fn is_empty(&self) -> bool {
         !(self.width() > 0.0 && self.height() > 0.0)
@@ -81,7 +75,6 @@ impl Rect {
         self.x0 < other.x1 && other.x0 < self.x1 && self.y0 < other.y1 && other.y0 < self.y1
     }
 
-    /// The smallest rectangle covering both.
     #[must_use]
     pub fn union(&self, other: &Self) -> Self {
         Self {
@@ -92,13 +85,11 @@ impl Rect {
         }
     }
 
-    /// Length of the vertical overlap with `other` (0 when disjoint).
     #[must_use]
     pub fn vertical_overlap(&self, other: &Self) -> f32 {
         (self.y1.min(other.y1) - self.y0.max(other.y0)).max(0.0)
     }
 
-    /// Euclidean distance from `p` to the rectangle (0 inside).
     #[must_use]
     pub fn distance_to(&self, p: Point) -> f32 {
         let dx = (self.x0 - p.x).max(p.x - self.x1).max(0.0);
@@ -112,30 +103,25 @@ impl Rect {
     }
 }
 
-/// Display size of a page in points (after the page's own `/Rotate`).
+/// A page's display size in points, after its own `/Rotate`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PageSize {
     pub width: f32,
     pub height: f32,
 }
 
-/// How a page's PDF user space (points, y up, as stored in the file) maps to
-/// its display space: the visible box in user space plus the page's own
-/// clockwise `/Rotate`.
+/// How a page's user space (points, y up, as stored) maps to its display
+/// space, through the visible box and the page's own clockwise `/Rotate`.
 ///
-/// Records that must survive re-rendering (ink, shapes, markup quads) are
-/// stored in user space; drawing converts them with [`Self::to_display`].
+/// Records that must survive re-rendering are stored in user space.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PageGeometry {
-    /// The visible (crop) box in user space: `x0,y0` lower-left, `x1,y1`
-    /// upper-right.
+    /// The visible (crop) box in user space, `x0,y0` lower-left.
     pub user_box: Rect,
-    /// The page's own `/Rotate`.
     pub rotation: Rotation,
 }
 
 impl PageGeometry {
-    /// Size of the page before its own rotation.
     fn unrotated(&self) -> PageSize {
         PageSize {
             width: self.user_box.width(),
@@ -143,27 +129,23 @@ impl PageGeometry {
         }
     }
 
-    /// Display size (after the page's own rotation).
     #[must_use]
     pub fn size(&self) -> PageSize {
         self.rotation.apply_size(self.unrotated())
     }
 
-    /// User space → display space.
     #[must_use]
     pub fn to_display(&self, p: Point) -> Point {
         let flipped = Point::new(p.x - self.user_box.x0, self.user_box.y1 - p.y);
         self.rotation.apply_point(self.unrotated(), flipped)
     }
 
-    /// Display space → user space.
     #[must_use]
     pub fn to_user(&self, p: Point) -> Point {
         let flipped = self.rotation.invert_point(self.unrotated(), p);
         Point::new(flipped.x + self.user_box.x0, self.user_box.y1 - flipped.y)
     }
 
-    /// A user-space rectangle (any corner order) in display space.
     #[must_use]
     pub fn rect_to_display(&self, r: Rect) -> Rect {
         Rect::from_corners(
@@ -172,8 +154,6 @@ impl PageGeometry {
         )
     }
 
-    /// A display-space rectangle in user space, normalised so `x0,y0` is
-    /// the lower-left corner.
     #[must_use]
     pub fn rect_to_user(&self, r: Rect) -> Rect {
         Rect::from_corners(
@@ -183,8 +163,7 @@ impl PageGeometry {
     }
 }
 
-/// A clockwise quarter-turn rotation applied on top of the page's own
-/// `/Rotate` — how a user rotation record is expressed to the renderer.
+/// A user's rotation: clockwise quarter turns on top of the page's own `/Rotate`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Rotation {
     #[default]
@@ -195,8 +174,6 @@ pub enum Rotation {
 }
 
 impl Rotation {
-    /// Rotation from a number of degrees; any multiple of 90 (negative too)
-    /// is accepted, anything else is `None`.
     #[must_use]
     pub fn from_degrees(degrees: i32) -> Option<Self> {
         if degrees % 90 != 0 {
@@ -220,7 +197,6 @@ impl Rotation {
         }
     }
 
-    /// Number of clockwise quarter turns (0..=3).
     #[must_use]
     pub const fn quarter_turns(self) -> u8 {
         match self {
@@ -231,19 +207,16 @@ impl Rotation {
         }
     }
 
-    /// Composition of two rotations.
     #[must_use]
     pub fn then(self, other: Self) -> Self {
         Self::from_degrees(self.degrees().saturating_add(other.degrees())).unwrap_or_default()
     }
 
-    /// Whether width and height swap under this rotation.
     #[must_use]
     pub const fn swaps_axes(self) -> bool {
         matches!(self, Self::Cw90 | Self::Cw270)
     }
 
-    /// The size a page of `size` occupies once rotated.
     #[must_use]
     pub fn apply_size(self, size: PageSize) -> PageSize {
         if self.swaps_axes() {
@@ -256,7 +229,6 @@ impl Rotation {
         }
     }
 
-    /// Map a point of an unrotated page of `size` into the rotated page.
     #[must_use]
     pub fn apply_point(self, size: PageSize, p: Point) -> Point {
         match self {
@@ -267,7 +239,6 @@ impl Rotation {
         }
     }
 
-    /// Map a point of the rotated page back onto the unrotated page of `size`.
     #[must_use]
     pub fn invert_point(self, size: PageSize, p: Point) -> Point {
         match self {
@@ -278,7 +249,6 @@ impl Rotation {
         }
     }
 
-    /// Map a rectangle of an unrotated page of `size` into the rotated page.
     #[must_use]
     pub fn apply_rect(self, size: PageSize, r: Rect) -> Rect {
         Rect::from_corners(
@@ -320,7 +290,6 @@ mod tests {
             assert_eq!(Rotation::from_degrees(45), None);
         }
         {
-            // A 600x800 crop box offset by (10, 20), rotated 90° clockwise.
             let g = PageGeometry {
                 user_box: Rect {
                     x0: 10.0,

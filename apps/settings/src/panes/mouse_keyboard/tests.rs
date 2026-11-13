@@ -194,8 +194,6 @@ fn spelling_language_value(node: &ui::headless::InspectionNode) -> Option<&str> 
 pub(super) fn show_add_source(app: &mut TestApp<SettingsShell>, viewport: (u32, u32)) {
     crate::effects::show_pane(app, crate::categories::Category::Keyboard);
     app.settle();
-    // The layouts to add are read off the UI thread; the chooser offers
-    // them once the read has landed.
     tilo_test_env::wait_until("the device's layouts are read", || {
         app.settle();
         app.with_widget::<crate::window::Inspected, _>(|settings| {
@@ -230,8 +228,6 @@ pub(super) fn show_add_source(app: &mut TestApp<SettingsShell>, viewport: (u32, 
 
 #[test]
 fn dropdown_language_mounted_settings_flow_is_clear_and_keyboard_operable() {
-    // The pane follows the identity the process has bound, which the
-    // dictionary test swaps: a swap mid-test rebuilds the page under it.
     let _env = tilo_test_env::lock();
     let mut failures = Vec::new();
     for (name, viewport, theme) in [
@@ -329,8 +325,6 @@ fn dropdown_language_mounted_settings_flow_is_clear_and_keyboard_operable() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// An area over `catalog` and no devices, in a profile of its own (kept
-/// with it).
 fn area_with(catalog: Vec<CatalogEntry>) -> (tempfile::TempDir, InputArea) {
     let profile = tempfile::tempdir().unwrap();
     let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
@@ -338,9 +332,6 @@ fn area_with(catalog: Vec<CatalogEntry>) -> (tempfile::TempDir, InputArea) {
     (profile, area)
 }
 
-/// A shown page reads the attached devices when the compositor's
-/// snapshot changes, never on a timer; only a snapshot that cannot be
-/// watched is read once a second.
 #[test]
 fn attached_devices_are_read_when_their_snapshot_changes_not_on_a_timer() {
     let long_ago = || {
@@ -386,8 +377,6 @@ fn attached_devices_are_read_when_their_snapshot_changes_not_on_a_timer() {
     assert_eq!(area.wake_deadline(), None, "no page, no wake");
 }
 
-/// The area watches the file the compositor publishes the attached
-/// devices in, and every page showing them shares that one watch.
 #[test]
 fn the_input_area_watches_the_compositors_input_snapshot() {
     let runtime = tempfile::tempdir().unwrap();
@@ -422,7 +411,6 @@ fn catalog() -> Vec<CatalogEntry> {
     ]
 }
 
-/// Imported repeat settings show the live rate, or that repeat is off.
 #[test]
 #[expect(
     clippy::float_cmp,
@@ -472,8 +460,6 @@ fn imported_repeat_settings_show_the_live_rate_or_off() {
     assert_eq!(key_repeat_slider_value(&clamped), 1.0);
 }
 
-/// The Keyboard page lays out over imported repeat settings, its repeat
-/// row saying what they are.
 #[test]
 fn the_keyboard_page_shows_imported_repeat_settings() {
     let _env = tilo_test_env::lock();
@@ -639,7 +625,6 @@ fn each_tablet_is_one_card_holding_its_own_pad_buttons() {
             "event4",
             4,
         ),
-        // A remote is a pad no tablet has: a device of its own.
         device(
             InputDeviceKind::TabletPad,
             0x0331,
@@ -661,7 +646,6 @@ fn each_tablet_is_one_card_holding_its_own_pad_buttons() {
     assert_eq!(pad_buttons(&cards[2]), 18);
 }
 
-/// The Pointing page of a window whose area reports `devices` attached.
 fn pointing_with(devices: Option<InputHardwareSnapshot>) -> TestApp<SettingsShell> {
     let mut app = TestApp::<SettingsShell>::new().unwrap();
     app.with_widget::<crate::window::Inspected, _>(|surface| {
@@ -730,8 +714,6 @@ fn a_card_appears_for_each_attached_tablet() {
         !targets.contains_key(&format!("{pad_card}.button-0")),
         "a mode button runs no shortcut"
     );
-    // The page's controls change the tablet's entry through the section's
-    // verbs.
     app.harness()
         .click_named(&format!("{pen_card}.keep-aspect"))
         .unwrap();
@@ -740,7 +722,6 @@ fn a_card_appears_for_each_attached_tablet() {
         app.settings::<InputDevicePrefs>().get().tablets[&pen.key].keep_aspect,
         "the switch keeps this tablet's shape"
     );
-    // Unplugging removes the card.
     app.with_widget::<crate::window::Inspected, _>(|surface| {
         crate::panes::mouse_keyboard::area(surface)
             .unwrap()
@@ -757,7 +738,6 @@ fn a_card_appears_for_each_attached_tablet() {
     );
 }
 
-/// A tablet's live row offers its choices bound to it.
 #[test]
 fn a_tablets_row_offers_its_choices() {
     let _env = tilo_test_env::lock();
@@ -793,8 +773,6 @@ fn touchpad_choices_travel_as_stable_ids() {
 #[test]
 fn keyboard_preview_actions_are_published_and_do_not_apply_until_requested() {
     use ui::tilo_resource::Effect as _;
-    // The pane follows the identity the process has bound, which the
-    // dictionary test swaps: a swap mid-test rebuilds the page under it.
     let _env = tilo_test_env::lock();
     let mut app = TestApp::<SettingsShell>::new().unwrap();
     let before = app.settings::<InputPrefs>().get();
@@ -899,8 +877,6 @@ fn keyboard_preview_actions_are_published_and_do_not_apply_until_requested() {
 #[test]
 fn keyboard_map_read_is_published_as_a_read_and_never_changes_preferences() {
     use ui::tilo_resource::Effect as _;
-    // The pane follows the identity the process has bound, which the
-    // dictionary test swaps: a swap mid-test rebuilds the page under it.
     let _env = tilo_test_env::lock();
     let mut app = TestApp::<SettingsShell>::with_role(ui::permissions::Role::Viewer).unwrap();
     let effect = InputEffect::InspectKeyboardMap;
@@ -924,8 +900,6 @@ fn keyboard_map_read_is_published_as_a_read_and_never_changes_preferences() {
 #[test]
 fn keyboard_map_read_uses_the_mounted_preview_and_live_key_release_state() {
     use ui::tilo_resource::Effect as _;
-    // The pane follows the identity the process has bound, which the
-    // dictionary test swaps: a swap mid-test rebuilds the page under it.
     let _env = tilo_test_env::lock();
     let mut app = TestApp::<SettingsShell>::new().unwrap();
     let read = |app: &mut TestApp<SettingsShell>| {
@@ -984,8 +958,6 @@ fn keyboard_map_read_uses_the_mounted_preview_and_live_key_release_state() {
     };
     app.harness()
         .dispatch_to_root(&key(winit::event::ElementState::Pressed));
-    // A pressed physical key is named whenever the keys below it carry the
-    // layout's legends; an unlabelled drawing holds no key to press.
     assert_eq!(
         read(&mut app)["pressed_physical_keys"],
         serde_json::json!(if labelled_drawing {
@@ -1030,8 +1002,6 @@ fn keyboard_map_read_uses_the_mounted_preview_and_live_key_release_state() {
 #[test]
 fn physical_key_inspection_is_published_validated_and_never_applies_layout() {
     use ui::tilo_resource::Effect as _;
-    // The pane follows the identity the process has bound, which the
-    // dictionary test swaps: a swap mid-test rebuilds the page under it.
     let _env = tilo_test_env::lock();
     let mut app = TestApp::<SettingsShell>::new().unwrap();
     let before = app.settings::<InputPrefs>().get();
@@ -1094,13 +1064,8 @@ fn set(app: &mut TestApp<SettingsShell>, effect: InputEffect) -> bool {
     answered
 }
 
-/// Pointer and keyboard choices are the person's `input` section, the
-/// touchpad switch this device's, spelling the shared
-/// `text_assistance` section; a value outside the offered ones is refused.
 #[test]
 fn input_effects_write_the_input_section() {
-    // The pane follows the identity the process has bound, which the
-    // dictionary test swaps: a swap mid-test rebuilds the page under it.
     let _env = tilo_test_env::lock();
     let mut app = TestApp::<SettingsShell>::new().unwrap();
     edit_field(&mut app, INPUT, "touchpad_pointer_speed", 0.9).unwrap();
@@ -1155,12 +1120,8 @@ fn input_effects_write_the_input_section() {
     assert_eq!(app.settings::<InputPrefs>().get(), input);
 }
 
-/// Input sources are added, ordered, switched and removed by id; the
-/// last one stays.
 #[test]
 fn input_sources_are_added_ordered_and_removed() {
-    // The pane follows the identity the process has bound, which the
-    // dictionary test swaps: a swap mid-test rebuilds the page under it.
     let _env = tilo_test_env::lock();
     let mut app = TestApp::<SettingsShell>::new().unwrap();
     let sources = |app: &TestApp<SettingsShell>| {
@@ -1208,8 +1169,6 @@ fn input_sources_are_added_ordered_and_removed() {
     ));
 }
 
-/// A tablet's choices are kept per device id; a pad's controls by
-/// button and dial.
 #[test]
 fn tablet_verbs_keep_each_device_apart() {
     let _env = tilo_test_env::lock();

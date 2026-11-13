@@ -1,5 +1,5 @@
-//! Passes on change: the host's file events for the folder (`FSEvents` on
-//! macOS, `inotify` on Linux) and a periodic pass for the workspace.
+//! Passes on change: the host's file events for the folder and a periodic pass
+//! for the workspace.
 
 use std::io;
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -10,11 +10,9 @@ use tilo_files::native::{ChangeWatch, watch_tree_changes};
 
 use super::SyncFolder;
 
-/// How long the folder must be quiet before a pass: an editor's save is
-/// several events, and a copy of a large file many.
+/// How long the folder must be quiet before a pass: a save is several events.
 const SETTLE: Duration = Duration::from_millis(200);
 
-/// A folder kept in step until dropped.
 pub struct Watch {
     watcher: Option<ChangeWatch>,
     thread: Option<JoinHandle<()>>,
@@ -59,7 +57,6 @@ impl SyncFolder {
     }
 }
 
-/// Waits until no change arrived for [`SETTLE`].
 fn settle(changes: &mpsc::Receiver<()>) -> Result<(), RecvTimeoutError> {
     loop {
         match changes.recv_timeout(SETTLE) {

@@ -45,7 +45,7 @@ fn tools(request: &serde_json::Value) -> Vec<String> {
 async fn a_task_is_told_its_apps_in_full_and_looks_up_another() {
     let (root, host_device, _state, host, _laptop) = session().await;
     let set_cells = "sheets.workbook#set-cells";
-    let (url, sent) = model_endpoint(vec![
+    let (url, sent, _served) = model_endpoint(vec![
         tool_call(
             "l1",
             "list_operations",
@@ -135,7 +135,7 @@ async fn a_task_is_told_its_apps_in_full_and_looks_up_another() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reference_keeps_the_apps_it_described() {
     let (root, host_device, _state, host, _laptop) = session().await;
-    let (url, sent) = model_endpoint(
+    let (url, sent, _served) = model_endpoint(
         ["A1", "A2", "A3"]
             .map(|cell| set_cells_plan(&[], &[("Sheet1", cell, "x")]))
             .to_vec(),

@@ -29,6 +29,23 @@ fn moved() -> Vec<String> {
 }
 
 #[test]
+fn it_says_which_release_it_is() {
+    // `cli-release.sh build` sets TILO_CLI_VERSION from the tag it builds, so a person reporting
+    // a problem can say which release they have; a build from the tree says the crate's own.
+    let out = Command::new(tilo_test_env::package_binary!("tilo"))
+        .arg("--version")
+        .output_locked()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let said = String::from_utf8(out.stdout).unwrap();
+    let version = said
+        .trim()
+        .strip_prefix("tilo ")
+        .unwrap_or_else(|| panic!("{said:?}"));
+    assert!(!version.is_empty(), "{said:?}");
+}
+
+#[test]
 fn every_old_name_runs_its_help_through_the_alias() {
     let tmp = tempfile::tempdir().unwrap();
     let libexec = tmp.path().join("libexec");
@@ -68,4 +85,31 @@ fn every_old_name_runs_its_help_through_the_alias() {
         String::from_utf8(out.stderr).unwrap(),
         "tilo-vm: tilo-vm isn't on this computer\n"
     );
+}
+
+/// `tilo login --new-identity` makes one identity whose root this computer
+/// holds, in Tilo's own layout, and keeps it: a second run says so and
+/// prints the same user public key.
+#[test]
+fn a_new_identity_is_made_once() {
+    let scratch = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(tilo_test_env::package_binary!("tilo"))
+            .args(args)
+            .env("TILO_IDENTITY_DIR", scratch.path())
+            .output_locked()
+            .unwrap();
+        assert!(out.status.success(), "tilo {args:?}: {out:?}");
+        (
+            String::from_utf8(out.stdout).unwrap().trim().to_owned(),
+            String::from_utf8(out.stderr).unwrap(),
+        )
+    };
+    let (key, said) = run(&["login", "--new-identity", "--name", "Ada"]);
+    assert_eq!(key.len(), 64, "{key}");
+    assert!(said.contains("Made Ada's Tilo identity"), "{said}");
+    assert!(scratch.path().join("user-identity/privkey.bin").exists());
+    let (again, said) = run(&["login", "--new-identity", "--name", "Someone else"]);
+    assert_eq!(again, key);
+    assert!(said.contains("already holds Ada's"), "{said}");
 }

@@ -1,15 +1,11 @@
-//! Both ends of the Wayland forwarder.
-//!
-//! In the guest every windowed app runs under `waypipe server`, which gives
-//! the app its own Wayland display and carries the connection over vsock to
-//! the host. On the host one `waypipe client` per VM listens on a vsock port
-//! and opens one ordinary connection to the compositor for each app, so each
-//! window is a normal `xdg_toplevel`.
+//! Both ends of the Wayland forwarder: in the guest every windowed app runs
+//! under `waypipe server`, which gives it a Wayland display and carries the
+//! connection over vsock, while on the host one `waypipe client` per VM
+//! listens on a vsock port and opens one ordinary compositor connection per
+//! app, so each window is a normal `xdg_toplevel`.
 
 use crate::{HOST_CID, WAYPIPE_PORT};
 
-/// The variable through which a launch tells the guest which host port its
-/// forwarder listens on.
 pub const PORT_ENV: &str = "TILO_LEGACY_WAYPIPE_PORT";
 
 /// The host port of one user's forwarder. vsock ports are host-global, so
@@ -34,8 +30,6 @@ pub fn server_argv(waypipe: &str, port: u32, argv: &[String]) -> Vec<String> {
     out
 }
 
-/// `waypipe --vsock -s <port> client`, run on the host with
-/// `WAYLAND_DISPLAY` naming the compositor.
 #[must_use]
 pub fn client_argv(waypipe: &str, port: u32) -> Vec<String> {
     vec![
@@ -47,8 +41,6 @@ pub fn client_argv(waypipe: &str, port: u32) -> Vec<String> {
     ]
 }
 
-/// `waypipe -s <path> client`: the host side when the guest's vsock is
-/// mapped onto Unix sockets (see [`crate::link::AgentLink::Hybrid`]).
 #[must_use]
 pub fn client_argv_unix(waypipe: &str, path: &std::path::Path) -> Vec<String> {
     vec![

@@ -38,10 +38,8 @@ sha2.workspace = true
 data-encoding.workspace = true
 data-encoding-macro.workspace = true
 
-# Pure-Rust QR detection over image-decoded greyscale buffers. Image codecs
-# are limited to PNG and JPEG for screenshot/photo imports.
-rqrr = { workspace = true, default-features = true }
-image = { workspace = true, features = ["png", "jpeg"] }
+# Pure-Rust QR detection over the greyscale of an image the toolkit decodes.
+rqrr.workspace = true
 
 # Host-native screenshot/photo selection uses the XDG file portal.
 # `zeroize` clears derived HMAC keys.

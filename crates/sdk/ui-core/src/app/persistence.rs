@@ -152,13 +152,6 @@ impl App {
         &self.collaboration.manager
     }
 
-    /// The window's collaboration, for a test of what it does once the
-    /// transport fails.
-    #[cfg(test)]
-    pub(crate) fn collaboration_manager_mut(&mut self) -> &mut CollaborationManager {
-        &mut self.collaboration.manager
-    }
-
     pub fn record_tick(&mut self) -> bool {
         let _phase = tilo_resource::profiling::Phase::start("ui.record_tick");
         let _entry = self.enter_wake_scope();

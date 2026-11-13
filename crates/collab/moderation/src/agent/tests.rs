@@ -24,7 +24,7 @@ pub struct Card {
     pub text: String,
 }
 
-#[resource(kind = "test.board", label = "Board", params = board)]
+#[resource(kind = "test.board", params = board, catalogue = "tests/locales")]
 impl Board {
     /// Add a card.
     #[action]

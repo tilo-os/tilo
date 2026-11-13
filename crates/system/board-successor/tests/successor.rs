@@ -484,8 +484,12 @@ printf 'gate\n' >>'{}'
         ),
     );
     // The device's channel names no other image, so the board successor
-    // decides what the update switches to.
-    let channel = script("channel", "exit 0\n");
+    // decides what the update switches to. The image was installed from a
+    // registry: one installed from a local medium keeps itself instead.
+    let channel = script(
+        "channel",
+        "if [ \"$1\" = installed ]; then echo registry; fi\n",
+    );
     let run = |refuse: bool| {
         Command::new("bash")
             .arg(UPDATER)

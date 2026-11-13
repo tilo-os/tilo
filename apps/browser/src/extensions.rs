@@ -1,34 +1,27 @@
-//! Unpacked extension inventory and explicit manifest-scoped startup grants.
-//! CEF's Chrome runtime loads approved MV3 packages on the next browser launch.
+//! Unpacked extension inventory and manifest-scoped startup grants; Chromium loads
+//! the approved packages on the next launch.
 
 use std::path::{Path, PathBuf};
 
 use bounded_zip::{BoundedArchive, ZipError, ZipLimits};
 use ui::webview::ExtensionPermissionSet;
 
-/// Inventory record for one unpacked extension.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtensionInfo {
-    /// Stable identifier: the Firefox add-on id when the manifest
-    /// declares one, otherwise a slug of the name.
+    /// The manifest's add-on id when it declares one, otherwise a slug of its name.
     pub id: String,
     pub name: String,
     pub version: String,
     pub manifest_version: u64,
     pub description: String,
     pub permissions: Vec<String>,
-    /// Unpacked location on disk.
     pub path: PathBuf,
 }
 
 #[derive(Debug)]
 pub enum ExtensionError {
-    /// The Web Store sent no package: unreachable, refused or redirected away.
     Download(String),
-    /// The Web Store has no package of the item for this browser, above all
-    /// a Manifest V2 extension, which Chrome no longer runs.
     NoPackage,
-    /// The package is over a size or file-count limit.
     TooLarge,
     Archive(String),
     Manifest(String),
@@ -36,9 +29,8 @@ pub enum ExtensionError {
 }
 
 impl ExtensionError {
-    /// What the person reads when adding an extension failed this way: what
-    /// happened and what to do, in their words. The detail [`Display`]
-    /// gives is for the log.
+    /// What the person reads when adding an extension failed: what happened and
+    /// what to do. The detail [`Display`] gives is for the log.
     ///
     /// [`Display`]: std::fmt::Display
     #[must_use]
@@ -54,22 +46,18 @@ impl ExtensionError {
     }
 }
 
-/// Ad blockers carry their filter lists: Adblock Plus is 78 MB packed and
-/// 347 MB unpacked.
+/// Ad blockers carry their filter lists: Adblock Plus is 78 MB packed.
 const MAX_ARCHIVE_BYTES: usize = 256 * 1024 * 1024;
-/// Entry count and declared unpacked size are checked before anything is
-/// inflated or written to disk.
+/// Checked before anything is inflated or written to disk.
 const ARCHIVE_LIMITS: ZipLimits = ZipLimits {
     max_parts: 4_096,
     max_part_bytes: 256 * 1024 * 1024,
     max_total_bytes: 1024 * 1024 * 1024,
 };
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
-/// Largest `_locales/<locale>/messages.json` read for an extension's names.
 const MAX_MESSAGES_BYTES: u64 = 1024 * 1024;
-/// The manager and resource surface materialize at most this many locally
-/// installed extensions. This keeps a hostile or accidentally huge profile
-/// from turning a refresh into unbounded filesystem work.
+/// The most locally installed extensions the manager and the resource surface
+/// materialize, so a huge profile cannot turn a refresh into unbounded disk work.
 pub const MAX_INSTALLED_EXTENSIONS: usize = 100;
 const MAX_EXTENSION_NAME_BYTES: usize = 512;
 const MAX_EXTENSION_VERSION_BYTES: usize = 128;
@@ -104,7 +92,6 @@ impl From<std::io::Error> for ExtensionError {
     }
 }
 
-/// Root directory for unpacked extensions.
 pub fn extensions_dir() -> PathBuf {
     crate::storage::data_dir()
         .unwrap_or_else(|| std::env::temp_dir().join("tilo-browser"))
@@ -113,11 +100,10 @@ pub fn extensions_dir() -> PathBuf {
 
 /// Unpack an extension archive into `root` and inventory it.
 ///
-/// A CRX package must carry a valid CRX3 signature; its extension identifier
-/// is the one its signing key names and its public key is written into the
-/// unpacked manifest as `key`, so the unpacked copy keeps that identifier.
-/// Plain zips (`.xpi`, `.zip`) are accepted as unsigned packages. With
-/// `expected_id`, a package signed for any other identifier is refused.
+/// A CRX must carry a valid CRX3 signature, and its identifier is the one its
+/// signing key names; the public key is written into the unpacked manifest as
+/// `key`, so the copy keeps it. A plain zip is accepted unsigned. With
+/// `expected_id`, a package signed for another identifier is refused.
 fn install_package(
     archive: &[u8],
     root: &Path,
@@ -171,9 +157,8 @@ fn install_package(
         std::fs::remove_dir_all(&dest)?;
     }
     std::fs::create_dir_all(&dest)?;
-    // Bounded on the way to disk: the declared sizes checked above are the
-    // package's own claim, and a header that lies small must not fill the
-    // extensions directory through an unbounded inflate.
+    // Bounded on the way to disk: the sizes checked above are the package's own
+    // claim, and a header that lies small must not fill the directory.
     zip.extract_to(&dest)
         .map_err(|e| ExtensionError::Archive(e.to_string()))?;
     if let Some(manifest) = keyed_manifest {
@@ -183,8 +168,8 @@ fn install_package(
     Ok(info)
 }
 
-/// The manifest with the package's public key as `key`: Chromium derives an
-/// unpacked extension's identifier from that key, and the Web Store strips it.
+/// The manifest with the package's public key as `key`; the Web Store strips it,
+/// and Chromium derives the identifier from it.
 fn manifest_with_key(manifest: &str, public_key: &[u8]) -> Result<String, ExtensionError> {
     use base64::Engine;
     let mut value: serde_json::Value =
@@ -199,16 +184,12 @@ fn manifest_with_key(manifest: &str, public_key: &[u8]) -> Result<String, Extens
     serde_json::to_string(&value).map_err(|e| ExtensionError::Manifest(e.to_string()))
 }
 
-/// All extensions currently unpacked under [`extensions_dir`].
 pub fn list_installed() -> Vec<ExtensionInfo> {
     list_in(&extensions_dir())
 }
 
-/// Stable, address-safe resource identity for an installed extension.
-///
-/// Extension identifiers are validated when manifests are parsed, so this
-/// preserves the user-visible add-on identity without admitting an action
-/// address separator or a filesystem path.
+/// An address-safe resource identity for an installed extension: identifiers are
+/// validated when manifests are parsed, so no address separator or path gets in.
 pub fn resource_id(id: &str) -> String {
     format!("browser.extension:{id}")
 }
@@ -217,8 +198,7 @@ fn list_in(root: &Path) -> Vec<ExtensionInfo> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
     };
-    // The profile's own files (approvals, pins, update claims) are no
-    // extensions and count for none of the bound.
+    // The profile's own files (approvals, pins, update claims) are no extensions.
     let mut found: Vec<ExtensionInfo> = entries
         .flatten()
         .filter(|entry| {
@@ -233,8 +213,8 @@ fn list_in(root: &Path) -> Vec<ExtensionInfo> {
             let root = entry.path();
             let mut info =
                 parse_manifest_with(&text, |file| read_bounded(&root.join(file))).ok()?;
-            // A package installed from a signed CRX lives under the
-            // identifier its key names, which is the identity Chromium shows.
+            // A package from a signed CRX lives under the identifier its key
+            // names, which is what Chromium shows.
             if let Some(name) = entry.file_name().to_str()
                 && crate::crx::is_extension_id(name)
             {
@@ -258,7 +238,6 @@ fn read_manifest(path: &Path) -> Result<String, ExtensionError> {
     std::fs::read_to_string(path).map_err(ExtensionError::Io)
 }
 
-/// A file of at most [`MAX_MESSAGES_BYTES`], as text.
 pub(crate) fn read_bounded(path: &Path) -> Option<String> {
     let length = std::fs::metadata(path).ok()?.len();
     (length <= MAX_MESSAGES_BYTES)
@@ -266,13 +245,12 @@ pub(crate) fn read_bounded(path: &Path) -> Option<String> {
         .flatten()
 }
 
-/// An extension's messages in its default locale, keyed in lower case:
-/// Chromium resolves `__MSG_name__` without regard to case.
+/// An extension's messages in its default locale, keyed in lower case: Chromium
+/// resolves `__MSG_name__` without regard to case.
 pub type Messages = std::collections::HashMap<String, String>;
 
-/// Where an extension keeps its default locale's messages, relative to its
-/// root: `_locales/<default_locale>/messages.json`. `None` without a
-/// default locale, or with one that is no plain locale name.
+/// Where an extension keeps its default locale's messages: `_locales/<locale>/
+/// messages.json`. `None` without one, or with one that is no plain locale name.
 pub fn messages_file(manifest: &serde_json::Value) -> Option<String> {
     let locale = manifest
         .get("default_locale")
@@ -287,7 +265,6 @@ pub fn messages_file(manifest: &serde_json::Value) -> Option<String> {
     Some(format!("_locales/{locale}/messages.json"))
 }
 
-/// The messages a `messages.json` holds, ignoring any it cannot read.
 pub fn messages(text: &str) -> Messages {
     let Ok(serde_json::Value::Object(entries)) = serde_json::from_str(text) else {
         return Messages::new();
@@ -301,9 +278,8 @@ pub fn messages(text: &str) -> Messages {
         .collect()
 }
 
-/// `text` with each `__MSG_name__` replaced by its message, as Chromium
-/// shows an extension's name and titles. A name it has no message for stays
-/// as written rather than going blank.
+/// `text` with each `__MSG_name__` replaced by its message. A name with no message
+/// stays as written rather than going blank.
 pub fn localize(text: &str, messages: &Messages) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -330,9 +306,8 @@ fn parse_manifest(text: &str) -> Result<ExtensionInfo, ExtensionError> {
     parse_manifest_with(text, |_| None)
 }
 
-/// The manifest's inventory record, its names in the extension's default
-/// locale: `read` gives the text of a file of the package by its path
-/// within it.
+/// The manifest's inventory record with its names in the default locale; `read`
+/// gives a file of the package by its path within it.
 fn parse_manifest_with(
     text: &str,
     read: impl FnOnce(&str) -> Option<String>,
@@ -399,7 +374,6 @@ fn parse_manifest_with(
         })
         .transpose()?
         .unwrap_or_default();
-    // Firefox packages carry a stable add-on id.
     let nested_id = |top: &str| {
         value
             .get(top)
@@ -454,9 +428,8 @@ fn slug(name: &str) -> String {
     }
     let out = out.trim_matches('-');
     if out.is_empty() {
-        // Keep international display names valid even when no ASCII letter is
-        // available for a filesystem component. A deterministic digest avoids
-        // the dangerous empty component (`root.join(\"\") == root`).
+        // A digest keeps international names valid where no ASCII letter is
+        // available, and never an empty path component.
         format!("extension-{:.16}", blake3::hash(name.as_bytes()).to_hex())
     } else {
         out.to_string()
@@ -468,13 +441,10 @@ mod tests {
     use super::*;
     use std::io::{Cursor, Write};
 
-    /// Stage `archive` as a picked file and install it, as the browser does.
     fn install_from_bytes(archive: &[u8], root: &Path) -> Result<ExtensionInfo, ExtensionError> {
         stage_file(archive.to_vec())?.install(root)
     }
 
-    /// Stage `archive` as the Web Store item `expected_id` and install it, as
-    /// the browser does.
     fn install_verified_crx(
         archive: &[u8],
         root: &Path,
@@ -506,8 +476,6 @@ mod tests {
         buf.into_inner()
     }
 
-    /// Installing XPI and CRX3, listing and rejecting invalid archives.
-    /// A package named in its locales, as most Web Store extensions are.
     fn localized_zip(name: &str) -> Vec<u8> {
         let mut buf = Cursor::new(Vec::new());
         {
@@ -557,7 +525,6 @@ mod tests {
 
     #[test]
     fn an_offer_says_what_an_extension_may_do_as_chrome_does() {
-        // uBlock Origin Lite's manifest, as the Web Store serves it.
         let ublock = r#"{"manifest_version":3,"name":"uBlock Origin Lite","version":"1",
             "permissions":["activeTab","alarms","declarativeNetRequest","offscreen","scripting",
             "storage","unlimitedStorage","userScripts"],"host_permissions":["<all_urls>"]}"#;
@@ -568,7 +535,6 @@ mod tests {
                 "Block content on any page"
             ]
         );
-        // A tab-reading ad blocker limited to two sites by its content scripts.
         let narrow = r#"{"manifest_version":3,"name":"x","version":"1",
             "permissions":["tabs","storage","declarativeNetRequest"],
             "content_scripts":[{"matches":["*://*.example.org/*","https://news.example/*"]}]}"#;
@@ -593,7 +559,6 @@ mod tests {
         assert_eq!(staged.info.description, "Blocks ads for pages");
         let root = tempfile::tempdir().unwrap();
         let first = staged.install(root.path()).unwrap();
-        // Two such packages are two extensions, not one written over the other.
         let second = stage_file(localized_zip("Dark Reader"))
             .unwrap()
             .install(root.path())
@@ -613,7 +578,6 @@ mod tests {
             Some("uBlock Origin Lite"),
             "message names are matched as Chromium does, whatever their case"
         );
-        // A name with no message keeps what it says.
         assert_eq!(
             localize("__MSG_missing__", &Messages::new()),
             "__MSG_missing__"
@@ -632,7 +596,6 @@ mod tests {
             assert!(info.path.join("background.js").exists());
         }
 
-        // Phase `installs_signed_crx3_under_its_signed_identity_with_key`.
         {
             use crate::crx::fixtures::{Signer, crx};
             let signer = Signer::new();
@@ -642,8 +605,6 @@ mod tests {
             assert_eq!(info.name, "Dark Reader");
             assert_eq!(info.id, crate::crx::extension_id(&signer.spki));
             assert_eq!(info.path, root.path().join(&info.id));
-            // The unpacked manifest carries the key, so Chromium derives the
-            // same identifier when it loads the directory.
             let manifest: serde_json::Value = serde_json::from_str(
                 &std::fs::read_to_string(info.path.join("manifest.json")).unwrap(),
             )
@@ -654,11 +615,9 @@ mod tests {
             assert_eq!(crate::crx::extension_id(&der), info.id);
             assert_eq!(list_in(root.path())[0].id, info.id);
 
-            // A package signed for another extension is not the requested item.
             assert!(install_verified_crx(&package, root.path(), &"a".repeat(32)).is_err());
             assert!(install_verified_crx(&package, root.path(), &info.id).is_ok());
 
-            // An unsigned or tampered CRX never reaches the disk.
             let mut tampered = package;
             *tampered.last_mut().unwrap() ^= 1;
             let empty = tempfile::tempdir().unwrap();
@@ -863,9 +822,7 @@ mod approval_tests {
         };
         set_granted(&extension, &tabs).unwrap();
         assert_eq!(granted(&extension), tabs);
-        // A record is no extension.
         assert_eq!(list_in(root.path()).len(), 1);
-        // An update keeps it: the record is the extension's place's.
         std::fs::write(
             path.join("manifest.json"),
             r#"{"name":"fixture","version":"2","manifest_version":3,"optional_permissions":["tabs"]}"#,
@@ -900,7 +857,6 @@ mod approval_tests {
             asked(&[], &["<all_urls>"]),
             ["Read and change all your data on all websites"]
         );
-        // Nothing Chrome asks about: granted without a question.
         assert!(asked(&["storage", "alarms"], &[]).is_empty());
     }
 }
@@ -927,7 +883,6 @@ pub fn is_approved(extension: &ExtensionInfo) -> bool {
             .zip(manifest_digest(extension).ok())
             .is_some_and(|(approved, current)| approved == current)
 }
-/// Update startup approval for this installed extension.
 pub fn set_approved(extension: &ExtensionInfo, approved: bool) -> Result<(), ExtensionError> {
     let path = approval_path(extension)
         .ok_or_else(|| ExtensionError::Manifest("Extension path is invalid".into()))?;
@@ -947,23 +902,18 @@ pub fn approved_paths() -> Vec<PathBuf> {
     approved_in(&extensions_dir())
 }
 
-/// What updating an extension from the Web Store did.
 #[derive(Debug)]
 pub enum Updated {
-    /// The newer version is in place, on if it was.
     Installed(ExtensionInfo),
-    /// The newer version asks for more access than the person allowed: it
-    /// is off until they turn it on, as Chrome does.
     AwaitsApproval(ExtensionInfo),
 }
 
-/// Bring a Web Store extension up to date: fetch a newer version, verify it
-/// is the same extension, and unpack it over the old one, under `root`.
-/// `None` when it is current or not from the store.
+/// Bring a Web Store extension up to date: fetch a newer version, check that it is
+/// the same extension, and unpack it over the old one. `None` when it is current
+/// or not from the store.
 ///
 /// # Errors
-/// Returns an error when the store cannot be reached or the package does
-/// not verify or unpack.
+/// When the store cannot be reached, or the package does not verify or unpack.
 pub fn update_from_store(
     extension: &ExtensionInfo,
     chromium_version: &str,
@@ -994,13 +944,11 @@ pub fn update_from_store(
     Ok(Some(Updated::Installed(info)))
 }
 
-/// The name of the file by which a Browser claims a day's update check.
 const UPDATE_CLAIM: &str = ".tilo-update-day-";
 
-/// Claim the update check of day `unix_seconds` falls in for the
-/// extensions in `root`. Every Browser on the profile asks as it starts; the
-/// first each day is given it, so the store is asked once a day and no two
-/// Browsers unpack the same update over each other.
+/// Claim the update check of the day `unix_seconds` falls in. Every Browser on the
+/// profile asks as it starts; the first each day is given it, so the store is
+/// asked once a day and no two Browsers unpack the same update over each other.
 pub fn claim_update_check(root: &Path, unix_seconds: u64) -> bool {
     let claim = format!("{UPDATE_CLAIM}{}", unix_seconds / (24 * 60 * 60));
     if std::fs::create_dir_all(root).is_err()
@@ -1012,7 +960,6 @@ pub fn claim_update_check(root: &Path, unix_seconds: u64) -> bool {
     {
         return false;
     }
-    // Earlier days' claims are done with.
     for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
         let name = entry.file_name();
         if name
@@ -1025,15 +972,14 @@ pub fn claim_update_check(root: &Path, unix_seconds: u64) -> bool {
     true
 }
 
-/// Whether an update's access, `now`, goes beyond what was `allowed`: any
-/// line of it the person was not shown when they added it.
+/// Whether an update's access, `now`, goes beyond what was `allowed`.
 fn asks_for_more(allowed: &[String], now: &[String]) -> bool {
     now.iter().any(|line| !allowed.contains(line))
 }
 
-/// The Browser's own extension, which turns the others on and off as
-/// Chrome's extensions page does: turning one off keeps what it stored, its
-/// settings and logins, where Chromium's `DevTools` can only uninstall it.
+/// The Browser's own extension, which turns others on and off as Chrome's
+/// extensions page does: turning one off keeps what it stored, where Chromium's
+/// `DevTools` can only uninstall it.
 const MANAGER_FILES: [(&str, &str); 4] = [
     (
         "manifest.json",
@@ -1054,19 +1000,18 @@ const MANAGER_FILES: [(&str, &str); 4] = [
 ];
 
 /// The token the manager's worker reports to the engine with, beside it
-/// (`worker.js`): what extensions' rules acted on in the Browser's tabs.
+/// (`worker.js`).
 const MANAGER_TOKEN_FILE: &str = "tilo-bridge-token.js";
 
-/// Where the manager extension is, written beside the profile's extensions
-/// and never listed among them; `None` when it cannot be written.
+/// Where the manager extension is written, beside the profile's extensions and
+/// never listed among them.
 pub fn manager_dir() -> Option<PathBuf> {
     let dir = crate::storage::data_dir()?.join("extension-manager");
     write_manager(&dir)?;
     dir.canonicalize().ok()
 }
 
-/// Write the manager's files into `dir`, with its worker's token, which
-/// lasts from one start to the next.
+/// Write the manager's files into `dir`, with its worker's token.
 fn write_manager(dir: &Path) -> Option<()> {
     std::fs::create_dir_all(dir).ok()?;
     for (name, text) in MANAGER_FILES {
@@ -1086,45 +1031,37 @@ fn write_manager(dir: &Path) -> Option<()> {
     Some(())
 }
 
-/// The token the worker of the manager at `dir` reports to the engine with.
 pub fn manager_token(dir: &Path) -> Option<String> {
     tabs_token(&std::fs::read_to_string(dir.join(MANAGER_TOKEN_FILE)).ok()?)
 }
 
-/// The identifier Chromium gives the manager unpacked at `dir`.
 pub fn manager_id(dir: &Path) -> Option<String> {
     Some(crate::crx::extension_id(dir.to_str()?.as_bytes()))
 }
 
-/// What the engine starts with: the manager, then the extensions turned on.
 pub fn startup_paths() -> Vec<PathBuf> {
     let approved = approved_paths();
-    // The engine reads an extension's worker as it loads it.
     for path in &approved {
         prepare_tabs(path);
     }
     manager_dir().into_iter().chain(approved).collect()
 }
 
-/// The script that gives an extension the tab APIs Chromium does not give it
-/// here: the engine answers them (`extension_tabs.h` in the engine host).
+/// The script that gives an extension the tab APIs Chromium does not give it here
+/// (`extension_tabs.h` in the engine host).
 const TABS_SCRIPT: &str = include_str!("../chromium/src/extension_tabs.js");
 const TABS_FILE: &str = "tilo-extension-tabs.js";
-/// The worker earlier Browsers put in place of the extension's own, which
-/// named it on its first line after [`WORKER_MARK`].
+/// The worker earlier Browsers put in place of the extension's own, which named it
+/// on its first line after [`WORKER_MARK`].
 const WORKER_FILE: &str = "tilo-worker.js";
 const WORKER_MARK: &str = "// The extension's own worker: ";
-/// How much of a worker's start is read to tell it runs the tab script.
 const WORKER_HEAD_BYTES: u64 = 64 * 1024;
 
-/// Give the extension at `root` the tab APIs. Its own service worker runs the
-/// tab script first, and the tab script carries a token by which the engine
-/// knows the worker as this extension's (no other extension or page can read
-/// it). The worker keeps its address: extensions read it (`location`,
-/// `getManifest().background`) and resolve their own scripts against it.
-/// Its pages and worker may reach the engine whatever its security policy
-/// lets them connect to. Returns the token, or `None` for an extension
-/// without a worker: the engine knows its pages by their address.
+/// Give the extension at `root` the tab APIs: its own service worker runs the tab
+/// script first, and the script carries a token by which the engine knows the
+/// worker as this extension's, which no other extension or page can read. The
+/// worker keeps its address, since extensions resolve their own scripts against
+/// it. Returns the token, or `None` for an extension without a worker.
 pub fn prepare_tabs(root: &Path) -> Option<String> {
     let manifest_path = root.join("manifest.json");
     let shipped = read_manifest(&manifest_path).ok()?;
@@ -1142,9 +1079,8 @@ pub fn prepare_tabs(root: &Path) -> Option<String> {
     worker.map(|(token, _)| token)
 }
 
-/// Make the extension's worker run the tab script first: the token it
-/// carries, and whether the manifest names the extension's own worker again
-/// in place of one an earlier Browser put there.
+/// Make the extension's worker run the tab script first; the token it carries, and
+/// whether the manifest had to name the extension's own worker again.
 fn give_worker_tabs(root: &Path, manifest: &mut serde_json::Value) -> Option<(String, bool)> {
     let background = manifest.get_mut("background")?.as_object_mut()?;
     let worker = background.get("service_worker")?.as_str()?.to_owned();
@@ -1182,22 +1118,18 @@ fn give_worker_tabs(root: &Path, manifest: &mut serde_json::Value) -> Option<(St
     run_tabs_first(&root.join(&own), module)?;
     let restored = worker == WORKER_FILE;
     if restored {
-        // Back to the extension's own worker, now that it runs the script.
         background.insert("service_worker".into(), own.into());
     }
     Some((token, restored))
 }
 
-/// Where the tab script asks the engine (`kExtensionBridge` in the host).
 const BRIDGE_ORIGIN: &str = "https://extension-bridge.tilo.invalid";
 
-/// Let the extension's pages and worker reach the engine. Password managers
-/// and others list the only servers their pages may connect to
-/// (`connect-src`, or `default-src` without one), and Chromium refuses the
-/// tab script's requests to any other. Returns whether the policy changed.
+/// Let the extension's pages and worker reach the engine: a policy naming only the
+/// servers its pages may connect to would refuse the tab script. Whether the policy
+/// changed.
 fn admit_bridge(manifest: &mut serde_json::Value) -> bool {
     let policy = match manifest.get_mut("content_security_policy") {
-        // Manifest V2 has one policy for every page.
         Some(serde_json::Value::String(policy)) => policy,
         Some(serde_json::Value::Object(policies)) => match policies.get_mut("extension_pages") {
             Some(serde_json::Value::String(policy)) => policy,
@@ -1214,8 +1146,6 @@ fn admit_bridge(manifest: &mut serde_json::Value) -> bool {
     }
 }
 
-/// `policy` with the bridge among the places it may connect to; `None` when
-/// it already may.
 fn policy_with_bridge(policy: &str) -> Option<String> {
     let mut directives: Vec<String> = policy
         .split(';')
@@ -1231,7 +1161,6 @@ fn policy_with_bridge(policy: &str) -> Option<String> {
                 .is_some_and(|first| first.eq_ignore_ascii_case(name))
         })
     };
-    // The first of a directive is the one that counts.
     let connect = named("connect-src");
     let governing = connect.or_else(|| named("default-src"))?;
     let mut sources: Vec<&str> = directives
@@ -1258,15 +1187,12 @@ fn policy_with_bridge(policy: &str) -> Option<String> {
     Some(directives.join("; "))
 }
 
-/// Marks an extension whose pages' own policies admit the bridge.
 const PAGES_FILE: &str = "tilo-extension-pages";
-/// The most files of an extension looked through for its pages.
 const MAX_PAGE_SEARCH: usize = 8_192;
 const MAX_PAGE_BYTES: u64 = 2 * 1024 * 1024;
 
-/// Let the extension's pages that declare a policy of their own in a
-/// `<meta>` tag (as the popups of some password managers do) reach the
-/// engine too. Done once per unpacked copy: an update unpacks a new one.
+/// Let the pages that declare their own policy in a `<meta>` tag reach the engine
+/// too. Done once per unpacked copy: an update unpacks a new one.
 fn admit_bridge_in_pages(root: &Path) {
     if root.join(PAGES_FILE).exists() {
         return;
@@ -1310,8 +1236,6 @@ fn admit_bridge_in_pages(root: &Path) {
     let _ = std::fs::write(root.join(PAGES_FILE), "1");
 }
 
-/// `html` with the bridge admitted by each policy it declares in a `<meta>`;
-/// `None` when none needed it.
 fn page_with_bridge(html: &str) -> Option<String> {
     let mut out = String::with_capacity(html.len() + BRIDGE_ORIGIN.len());
     let mut rest = html;
@@ -1335,8 +1259,8 @@ fn page_with_bridge(html: &str) -> Option<String> {
     changed.then_some(out)
 }
 
-/// A `<meta http-equiv="Content-Security-Policy" content="…">` tag with
-/// the bridge admitted; `None` for any other tag, or one that admits it.
+/// A `<meta http-equiv="Content-Security-Policy">` tag with the bridge admitted;
+/// `None` for any other tag or one that admits it.
 fn tag_with_bridge(tag: &str) -> Option<String> {
     let (_, equiv, _) = attribute(tag, "http-equiv")?;
     if !equiv.eq_ignore_ascii_case("content-security-policy") {
@@ -1358,15 +1282,14 @@ fn tag_with_bridge(tag: &str) -> Option<String> {
     Some(out)
 }
 
-/// Where `needle` (ASCII) first is in `text`, whatever its case.
 fn find_ascii(text: &str, needle: &str) -> Option<usize> {
     text.as_bytes()
         .windows(needle.len())
         .position(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
-/// The quoted value of attribute `name` in `tag`, with what comes before
-/// it (up to its opening quote) and after it (from its closing quote).
+/// The quoted value of attribute `name` in `tag`, with the text before its opening
+/// quote and after its closing one.
 fn attribute<'a>(tag: &'a str, name: &str) -> Option<(&'a str, &'a str, &'a str)> {
     let mut from = 0;
     loop {
@@ -1388,8 +1311,6 @@ fn attribute<'a>(tag: &'a str, name: &str) -> Option<(&'a str, &'a str, &'a str)
     }
 }
 
-/// An attribute value's text; `None` for a character reference this does
-/// not know, which is then left alone.
 fn unescape(value: &str) -> Option<String> {
     let mut text = String::with_capacity(value.len());
     let mut rest = value;
@@ -1418,8 +1339,8 @@ fn unescape(value: &str) -> Option<String> {
     Some(text)
 }
 
-/// Write the prepared manifest. An extension the person turned on stays on:
-/// what changed is the Browser's own doing, not the extension's.
+/// Write the prepared manifest. An extension the person turned on stays on: what
+/// changed is the Browser's own doing.
 fn rewrite_manifest(root: &Path, before: &str, manifest: &serde_json::Value) -> Option<()> {
     let approval = approval_path_of(root);
     let approved = approval
@@ -1434,10 +1355,9 @@ fn rewrite_manifest(root: &Path, before: &str, manifest: &serde_json::Value) -> 
     Some(())
 }
 
-/// The statement that runs the tab script, first in a worker. It adds no
-/// line, so the worker's own lines keep their numbers, and does nothing in a
-/// page of the extension that loads the same script (pages have the tab
-/// script already).
+/// The statement that runs the tab script first in a worker. It adds no line, so
+/// the worker's own lines keep their numbers, and does nothing in a page, which has
+/// the script already.
 fn tabs_statement(module: bool) -> String {
     if module {
         format!(";import '/{TABS_FILE}';")
@@ -1446,8 +1366,8 @@ fn tabs_statement(module: bool) -> String {
     }
 }
 
-/// Make the worker at `path` run the tab script before anything of its own,
-/// once. Only its start is read when it does already.
+/// Make the worker at `path` run the tab script before anything of its own; only its
+/// start is read when it does already.
 fn run_tabs_first(path: &Path, module: bool) -> Option<()> {
     use std::io::Read as _;
     let statement = tabs_statement(module);
@@ -1461,8 +1381,8 @@ fn run_tabs_first(path: &Path, module: bool) -> Option<()> {
         return Some(());
     }
     let mut text = std::fs::read(path).ok()?;
-    // A start too long for the head (a licence header before its
-    // directives) is told from the whole worker.
+    // A start too long for the head (a licence header before its directives) is
+    // told from the whole worker.
     if runs_first(&text, &statement) {
         return Some(());
     }
@@ -1473,10 +1393,9 @@ fn run_tabs_first(path: &Path, module: bool) -> Option<()> {
     std::fs::rename(&partial, path).ok()
 }
 
-/// Whether the worker starting with `head` runs `statement` first already.
 fn runs_first(head: &[u8], statement: &str) -> bool {
-    // Where a directive ended without a semicolon, the statement's own
-    // semicolon now ends it, so the statement may start one byte earlier.
+    // Where a directive ended without a semicolon, the statement's own semicolon
+    // now ends it, so it may start one byte earlier.
     let end = prologue_end(head);
     let start = end.saturating_sub(1);
     head.get(start..(end + statement.len()).min(head.len()))
@@ -1487,8 +1406,8 @@ fn runs_first(head: &[u8], statement: &str) -> bool {
         })
 }
 
-/// Where a script's own statements start: after a byte-order mark and its
-/// directive prologue (`"use strict";`), which only applies while first.
+/// Where a script's own statements start: after a byte-order mark and the directive
+/// prologue (`"use strict";`), which only applies while first.
 fn prologue_end(text: &[u8]) -> usize {
     let mut end = if text.starts_with(b"\xEF\xBB\xBF") {
         3
@@ -1518,7 +1437,6 @@ fn prologue_end(text: &[u8]) -> usize {
                     let Some(close) = rest.windows(2).position(|pair| pair == b"*/") else {
                         return end;
                     };
-                    // A comment over lines ends the directive's line.
                     if rest.iter().take(close).any(|b| matches!(b, b'\n' | b'\r')) {
                         break;
                     }
@@ -1527,8 +1445,8 @@ fn prologue_end(text: &[u8]) -> usize {
                 _ => break,
             }
         }
-        // A directive is a string alone, up to a semicolon or its line's end,
-        // which a comment after it on the line may reach.
+        // A directive is a string alone, up to a semicolon or its line's end, which
+        // a comment after it may reach.
         end = match (text.get(i), text.get(i + 1)) {
             (Some(b';'), _) => i + 1,
             (None | Some(b'\n' | b'\r'), _) | (Some(b'/'), Some(b'/' | b'*')) => i,
@@ -1537,7 +1455,6 @@ fn prologue_end(text: &[u8]) -> usize {
     }
 }
 
-/// Past whitespace and comments.
 fn skip_blank(text: &[u8], mut at: usize) -> usize {
     loop {
         match (text.get(at), text.get(at + 1)) {
@@ -1559,7 +1476,6 @@ fn skip_blank(text: &[u8], mut at: usize) -> usize {
     }
 }
 
-/// The worker token the extension's tab script carries.
 pub fn tabs_token_of(root: &Path) -> Option<String> {
     tabs_token(&std::fs::read_to_string(root.join(TABS_FILE)).ok()?)
 }
@@ -1596,7 +1512,6 @@ fn approved_in(root: &Path) -> Vec<PathBuf> {
         .filter_map(|extension| extension.path.canonicalize().ok())
         .collect()
 }
-/// Remove an installed extension: its files, its approval and its pin.
 pub fn uninstall(extension: &ExtensionInfo, root: &Path) -> Result<(), ExtensionError> {
     let path = extension.path.canonicalize()?;
     let root = root.canonicalize()?;
@@ -1612,18 +1527,16 @@ pub fn uninstall(extension: &ExtensionInfo, root: &Path) -> Result<(), Extension
     Ok(())
 }
 
-/// Where what the person granted an extension of what it may ask for is
-/// kept: beside it, as its approval is.
+/// Where what the person granted is kept: beside the extension, as its approval is.
 fn granted_path(extension: &ExtensionInfo) -> Option<PathBuf> {
     let path = extension.path.canonicalize().ok()?;
     let key = blake3::hash(path.to_str()?.as_bytes()).to_hex();
     Some(path.parent()?.join(format!(".tilo-granted-{key}.json")))
 }
 
-/// What the person granted the extension of what its manifest lets it ask
-/// for later (`chrome.permissions.request`): kept across runs and updates,
-/// and gone with the extension. The engine holds it to what the manifest
-/// still offers.
+/// What the person granted of what the manifest lets the extension ask for later
+/// (`chrome.permissions.request`): kept across runs and updates, gone with the
+/// extension, and held to what the manifest still offers.
 pub fn granted(extension: &ExtensionInfo) -> ExtensionPermissionSet {
     let read = granted_path(extension)
         .and_then(|path| read_bounded(&path))
@@ -1646,8 +1559,7 @@ pub fn granted(extension: &ExtensionInfo) -> ExtensionPermissionSet {
     }
 }
 
-/// Keep what the extension holds now of what it may ask for; nothing
-/// leaves no file.
+/// Keep what the extension holds of what it may ask for; nothing leaves no file.
 pub fn set_granted(
     extension: &ExtensionInfo,
     granted: &ExtensionPermissionSet,
@@ -1665,10 +1577,9 @@ pub fn set_granted(
     Ok(())
 }
 
-/// What an extension asking for `asked` asks to do, as the person is asked
-/// it: one plain line per kind of access, as when it was added. Empty when
-/// none of it is access Chrome would ask about (`storage`, `alarms`), which
-/// Chrome grants without asking.
+/// What an extension asking for `asked` asks to do, one plain line per kind of
+/// access, as when it was added. Empty for access Chrome asks nobody about
+/// (`storage`, `alarms`).
 pub fn asked_summary(asked: &ExtensionPermissionSet) -> Vec<String> {
     let manifest = serde_json::json!({
         "permissions": asked.permissions,
@@ -1693,7 +1604,6 @@ fn pinned_in(root: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Whether the person pinned this extension's button to the toolbar.
 pub fn is_pinned(id: &str) -> bool {
     pinned_in(&extensions_dir())
         .iter()
@@ -1715,25 +1625,22 @@ fn set_pinned_in(root: &Path, id: &str, pinned: bool) -> Result<(), ExtensionErr
     Ok(())
 }
 
-/// Pin or unpin an extension's toolbar button.
 pub fn set_pinned(id: &str, pinned: bool) -> Result<(), ExtensionError> {
     let root = extensions_dir();
     std::fs::create_dir_all(&root)?;
     set_pinned_in(&root, id, pinned)
 }
 
-/// Summarize permissions declared by an installed extension.
 pub fn permission_summary(extension: &ExtensionInfo) -> Result<Vec<String>, ExtensionError> {
     summarize_manifest(&read_manifest(&extension.path.join("manifest.json"))?)
 }
 
-/// What the extension may do, as Chrome warns of it when it is added: one
-/// plain line per kind of access its manifest asks for, broadest first.
-/// Optional permissions are asked for later, by the extension, and are not
-/// listed.
+/// What the extension may do, as Chrome warns of it when it is added: one plain line
+/// per kind of access, broadest first. Optional permissions are asked for later and
+/// are not listed.
 ///
 /// # Errors
-/// Returns [`ExtensionError::Manifest`] when the manifest is not JSON.
+/// [`ExtensionError::Manifest`] when the manifest is not JSON.
 pub fn summarize_manifest(text: &str) -> Result<Vec<String>, ExtensionError> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|error| ExtensionError::Manifest(error.to_string()))?;
@@ -1750,8 +1657,8 @@ pub fn summarize_manifest(text: &str) -> Result<Vec<String>, ExtensionError> {
             .unwrap_or_default()
     };
     let permissions = strings("permissions");
-    // Sites: the host permissions, MV2's hosts among its permissions, and
-    // where its content scripts run.
+    // Sites: the host permissions, MV2's hosts among its permissions, and where
+    // its content scripts run.
     let mut patterns = strings("host_permissions");
     patterns.extend(
         permissions
@@ -1826,7 +1733,6 @@ pub fn summarize_manifest(text: &str) -> Result<Vec<String>, ExtensionError> {
         ),
         (&["debugger"][..], "browser-extension-debugger"),
     ] {
-        // Reading history is part of changing it.
         if key == "browser-extension-read-history" && has(&["history"]) {
             continue;
         }
@@ -1840,8 +1746,8 @@ pub fn summarize_manifest(text: &str) -> Result<Vec<String>, ExtensionError> {
     Ok(lines)
 }
 
-/// The site a match pattern names (`*://*.example.org/*` is `example.org`),
-/// or `None` for one that matches every site.
+/// The site a match pattern names (`*://*.example.org/*` is `example.org`); `None`
+/// for one that matches every site.
 fn site_of(pattern: &str) -> Option<String> {
     if pattern == "<all_urls>" {
         return None;
@@ -1852,15 +1758,13 @@ fn site_of(pattern: &str) -> Option<String> {
     (!host.is_empty() && host != "*").then(|| host.to_owned())
 }
 
-/// A verified package, read but not yet installed: what the person is shown
-/// before they agree to add it.
+/// A verified package, read but not yet installed: what the person is shown before
+/// they agree to add it.
 #[derive(Debug, Clone)]
 pub struct StagedPackage {
     pub info: ExtensionInfo,
-    /// What it may do, one line per kind of access.
     pub permissions: Vec<String>,
     pub bytes: std::sync::Arc<Vec<u8>>,
-    /// The identifier its CRX3 signature names; `None` for an unsigned zip.
     pub signed_id: Option<String>,
 }
 
@@ -1868,16 +1772,16 @@ impl StagedPackage {
     /// Unpack the staged package under `root`.
     ///
     /// # Errors
-    /// Returns [`ExtensionError::Archive`] if the package fails verification,
-    /// [`ExtensionError::Manifest`] if its manifest is invalid, or
-    /// [`ExtensionError::Io`] if unpacking it under `root` fails.
+    /// [`ExtensionError::Archive`] when verification fails,
+    /// [`ExtensionError::Manifest`] for an invalid manifest, and
+    /// [`ExtensionError::Io`] when unpacking under `root` fails.
     pub fn install(&self, root: &Path) -> Result<ExtensionInfo, ExtensionError> {
         install_package(&self.bytes, root, self.signed_id.as_deref())
     }
 }
 
-/// Verify a package from a file (a CRX3 signed by its own key, or an
-/// unsigned zip) and read its manifest.
+/// Verify a package from a file (a CRX3 signed by its own key, or an unsigned zip)
+/// and read its manifest.
 ///
 /// # Errors
 /// As [`stage_package`]; an unsigned zip needs only a valid manifest.
@@ -1914,8 +1818,8 @@ pub fn stage_file(bytes: Vec<u8>) -> Result<StagedPackage, ExtensionError> {
 /// touching the disk.
 ///
 /// # Errors
-/// Returns an error when the package is not a valid CRX3 signed for
-/// `expected_id`, or its manifest is missing or invalid.
+/// When the package is not a valid CRX3 signed for `expected_id`, or its manifest is
+/// missing or invalid.
 pub fn stage_package(bytes: Vec<u8>, expected_id: &str) -> Result<StagedPackage, ExtensionError> {
     if bytes.len() > MAX_ARCHIVE_BYTES {
         return Err(ExtensionError::TooLarge);
@@ -1947,9 +1851,8 @@ pub fn stage_package(bytes: Vec<u8>, expected_id: &str) -> Result<StagedPackage,
     })
 }
 
-/// The identifier Chromium gives this extension when it loads its directory:
-/// derived from the manifest `key` when there is one, otherwise from the
-/// absolute path.
+/// The identifier Chromium gives this extension's directory: derived from the
+/// manifest `key` when there is one, otherwise from the absolute path.
 pub fn chrome_id(extension: &ExtensionInfo) -> Option<String> {
     use base64::Engine;
     let manifest: serde_json::Value =
@@ -2005,7 +1908,6 @@ mod tabs_tests {
         assert_eq!(token.len(), 48);
         let worker = std::fs::read_to_string(dir.join("worker.js")).expect("worker");
         assert!(worker.contains(&format!("importScripts('{MANAGER_TOKEN_FILE}')")));
-        // Written again at the next start: the same token.
         write_manager(&dir).expect("the manager is written again");
         assert_eq!(manager_token(&dir), Some(token));
     }
@@ -2017,8 +1919,6 @@ mod tabs_tests {
             &[("bg/main.js", "self.mine = 1;\nself.two = 2;\n")],
         );
         let token = prepare_tabs(root.path()).expect("a worker is given the tab APIs");
-        // The worker keeps its address: an extension reads it and resolves
-        // its own scripts against it.
         assert_eq!(worker_of(&root), "bg/main.js");
         let worker = read(&root, "bg/main.js");
         assert_eq!(
@@ -2029,7 +1929,6 @@ mod tabs_tests {
         assert!(script.starts_with(&format!("globalThis.__tiloBridgeToken = \"{token}\";\n")));
         assert!(script.ends_with(TABS_SCRIPT));
         assert_eq!(tabs_token_of(root.path()).as_deref(), Some(token.as_str()));
-        // Again, as at every start: the same token, the script run once.
         assert_eq!(prepare_tabs(root.path()), Some(token));
         assert_eq!(read(&root, "bg/main.js"), worker);
         assert!(!root.path().join(WORKER_FILE).exists());
@@ -2037,8 +1936,6 @@ mod tabs_tests {
 
     #[test]
     fn an_extension_turned_on_stays_on_once_its_worker_is_wrapped() {
-        // As the Browser adds one from the store: unpacked into the
-        // profile, turned on, then read, which wraps its worker.
         let profile = tempfile::tempdir().unwrap();
         let root = profile.path().join("blocker");
         std::fs::create_dir(&root).unwrap();
@@ -2439,7 +2336,6 @@ mod lifecycle_tests {
         let signer = Signer::new();
         let id = crate::crx::extension_id(&signer.spki);
 
-        // phase: staging_verifies_and_summarises_without_touching_the_disk
         let staged = stage_package(package(&signer), &id).unwrap();
         assert_eq!(staged.info.name, "Lite");
         assert_eq!(staged.info.id, id);
@@ -2460,7 +2356,6 @@ mod lifecycle_tests {
         assert_eq!(installed.id, id);
         std::fs::remove_dir_all(&installed.path).unwrap();
 
-        // phase: installed_extensions_start_disabled_and_unpinned
         let info = install_verified_crx(&package(&signer), root.path(), &id).unwrap();
         assert_eq!(info.id, id);
         assert!(!is_approved(&info));
@@ -2474,7 +2369,6 @@ mod lifecycle_tests {
             Some("Read and change all your data on all websites")
         );
 
-        // phase: enabling_loads_the_directory_and_pinning_is_independent
         set_approved(&info, true).unwrap();
         assert_eq!(
             approved_in(root.path()),
@@ -2485,18 +2379,15 @@ mod lifecycle_tests {
         set_pinned_in(root.path(), &id, true).unwrap();
         assert_eq!(pinned_in(root.path()).len(), 1);
 
-        // phase: disabling_keeps_files_and_pin
         set_approved(&info, false).unwrap();
         assert!(approved_in(root.path()).is_empty());
         assert!(info.path.join("popup.html").exists());
         assert_eq!(pinned_in(root.path()), vec![id.clone()]);
 
-        // phase: reinstall_after_update_requires_a_fresh_approval
         set_approved(&info, true).unwrap();
         let updated = install_verified_crx(&package(&signer), root.path(), &id).unwrap();
         assert!(is_approved(&updated), "same package, same manifest digest");
 
-        // phase: uninstall_removes_files_approval_and_pin
         uninstall(&updated, root.path()).unwrap();
         assert!(!info.path.exists());
         assert!(list_in(root.path()).is_empty());
@@ -2511,7 +2402,6 @@ mod lifecycle_tests {
                     .starts_with(".tilo-approval-"))
         );
 
-        // phase: uninstall_refuses_directories_outside_the_profile
         let outside = tempfile::tempdir().unwrap();
         let foreign = ExtensionInfo {
             path: outside.path().to_owned(),

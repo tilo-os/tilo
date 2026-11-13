@@ -23,13 +23,19 @@ pub struct Answered {
 }
 
 impl Conversation {
-    /// Every tool call so far with its result, oldest first: the result as
-    /// it was, not as a compaction sends it.
-    pub fn answered(&self) -> Vec<Answered> {
+    /// Every tool call answered at or after history message `from`, oldest
+    /// first: the result as it was, not as a compaction sends it. Reading
+    /// from the messages added since costs a turn what it answered, where
+    /// re-reading the whole history would cost the run again.
+    ///
+    /// `from` is a turn's first message (a turn is appended whole, its calls
+    /// and their results together), so no call is read apart from its
+    /// results.
+    pub fn answered_since(&self, from: usize) -> Vec<Answered> {
         use agent_provider_config::protocol::Content;
         #[cfg(test)]
         if let Some(legacy) = &self.legacy {
-            return legacy.answered();
+            return legacy.answered_since(from);
         }
         let mut calls: HashMap<&str, (&str, &Value)> = HashMap::new();
         let mut answered = Vec::new();
@@ -38,6 +44,7 @@ impl Conversation {
             .messages()
             .iter()
             .enumerate()
+            .skip(from)
             .flat_map(|(at, message)| message.content.iter().map(move |content| (at, content)))
         {
             match content {
@@ -107,8 +114,8 @@ impl Conversation {
 
 #[cfg(test)]
 impl LegacyConversation {
-    /// Every tool call with its result, oldest first.
-    pub(super) fn answered(&self) -> Vec<Answered> {
+    /// Every tool call answered at or after message `from`, oldest first.
+    pub(super) fn answered_since(&self, from: usize) -> Vec<Answered> {
         let mut calls: HashMap<String, (String, Value)> = HashMap::new();
         let mut answered = Vec::new();
         for (at, message) in self.messages.iter().enumerate() {
@@ -145,12 +152,13 @@ impl LegacyConversation {
                         .unwrap_or_default();
                     let input = block.get("input").cloned().unwrap_or_default();
                     calls.insert(id.to_owned(), (name.to_owned(), input));
+                    continue;
                 }
                 let id = block
                     .get("tool_call_id")
                     .or_else(|| block.get("tool_use_id"))
                     .and_then(Value::as_str);
-                if let Some(id) = id {
+                if let Some(id) = id.filter(|_| at >= from) {
                     let (tool, input) = calls.get(id).cloned().unwrap_or_default();
                     answered.push(Answered {
                         call_id: id.to_owned(),

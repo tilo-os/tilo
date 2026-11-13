@@ -25,6 +25,10 @@ pub const COLUMN: usize = if cfg!(target_family = "wasm") {
     0
 };
 
+/// Whether this build runs on the web, for portable code that offers less
+/// there (and so selects no target itself).
+pub const WEB: bool = COLUMN == 2;
+
 /// One capability of a platform crate.
 pub trait Feature: Copy {
     /// The feature's availability on Linux, macOS and the web, in that order.

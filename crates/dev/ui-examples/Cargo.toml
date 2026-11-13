@@ -34,6 +34,9 @@ tilo-automerge.workspace = true
 # (`tilo_clock::testing`), so its redraw counters do not follow node load.
 tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 tilo-resource = { path = "../../sdk/tilo-resource" }
+# The desk a shot draws: the portable desktop surface, its model, and another device's window.
+tilo-desktop-surface = { path = "../../session/desktop-surface" }
+tilo-desktop-model = { path = "../../session/desktop-model" }
 tilo-ui = { path = "../../sdk/ui-core", default-features = false }
 vello.workspace = true
 winit.workspace = true
@@ -54,6 +57,10 @@ test = true
 name = "ui-shots"
 path = "examples/ui_shots.rs"
 test = true
+
+[[example]]
+name = "page-view-shots"
+path = "examples/page_view_shots.rs"
 
 [[example]]
 name = "ui-perf"

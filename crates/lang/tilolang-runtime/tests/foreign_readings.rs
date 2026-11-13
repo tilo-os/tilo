@@ -4,12 +4,8 @@
 //! declared types is an error that says which field of which row.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
-    use super::common::*;
+    use crate::common::*;
     use serde_json::json;
     use tilolang_runtime::{
         AmStore, Meta, ResourceRef, Runtime, SimpleAuthority, UiNode, Value, ViewInstance,

@@ -1,4 +1,5 @@
-//! Where the map and its floating chrome stand: the margin, the controls column, the panel, the overflow menu, the rects a press is hit-tested against, and the screen or desktop bounds the map may not spill past.
+//! Where the map and its floating chrome sit: the margin, the controls column, the panel, the
+//! overflow menu, and the rects a press is hit-tested against.
 
 use super::{
     ColumnMetrics, GeoBounds, Hit, LatLon, MapsApp, NAVIGATION_FLOAT_ID, Point, Projection, Rect,
@@ -6,19 +7,15 @@ use super::{
 };
 
 impl MapsApp {
-    /// The window margin every floating element keeps — the theme's `s4`.
+    /// The window margin every floating element keeps: the theme's `s4`.
     pub(super) fn margin(&self) -> f64 {
         f64::from(self.spacing.s4)
     }
 
-    /// The gap between neighbouring floating elements — the theme's `s3`,
-    /// the sibling step (HIG §7b), so the panel, the controls and the cards
-    /// share one rhythm.
     pub(super) fn gap(&self) -> f64 {
         f64::from(self.spacing.s3)
     }
 
-    /// The control column's geometry (the zoom, locate and traffic buttons).
     pub(super) fn controls(&self) -> ColumnMetrics {
         self.map_controls.metrics()
     }
@@ -28,9 +25,6 @@ impl MapsApp {
             .rect(self.rect, self.desktop_floating_bounds())
     }
 
-    /// The route card is useful over the map, but duplicates the route summary
-    /// and next steps inside the narrow navigation drawer. Hiding it while that
-    /// drawer is open avoids covering the fields the user is actively editing.
     pub(super) fn navigation_surface_visible_in_app(&self) -> bool {
         self.model.route.is_some()
             && !self.navigation_placement.is_return_pending()
@@ -49,9 +43,8 @@ impl MapsApp {
         }
     }
 
-    /// Compact live-navigation surface for the shell floating host. The source
-    /// stays app-owned so route changes immediately update an already-detached
-    /// overlay instead of snapshotting stale directions.
+    /// The shell's detached copy of the route; the source stays app-owned so a route change updates
+    /// it at once.
     pub fn active_navigation_request(
         &self,
     ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
@@ -93,51 +86,35 @@ impl MapsApp {
         Projection::new(self.model.center, self.model.zoom, self.view_center())
     }
 
-    /// Whether the layout is narrow enough that the panel becomes an overlay
-    /// drawer. Derived from the *current* allocated width every call, so a
-    /// resize between breakpoints reflows immediately — never cached.
+    /// Narrow enough that the panel becomes a drawer; read from the current width on every call so
+    /// a resize reflows at once.
     pub(super) fn overlay_mode(&self) -> bool {
-        // The theme's compact breakpoint; scaling breakpoints with the text
-        // is the shell family's policy (NavShell / SidebarDrawer), not an
-        // app's — this hand-rolled drawer reads the token and leaves it.
         self.rect.width() < f64::from(self.metrics.compact_breakpoint)
     }
 
-    /// Is the side panel currently on screen? Always in docked layouts; only
-    /// when the drawer is open in the overlay layout.
     pub(super) fn panel_visible(&self) -> bool {
         !self.overlay_mode() || self.nav_open
     }
 
-    /// Whether the docked panel column is occupying space with content (docked
-    /// and expanded). Bottom map cards keep clear of it; when collapsed the map
-    /// reclaims the column so they may use the full width.
     pub(super) fn panel_docked_expanded(&self) -> bool {
         !self.overlay_mode() && !self.panel_collapsed
     }
 
-    /// Panel width for the current window: the list-panel width when docked,
-    /// a drawer that stops short of the control column when narrow.
     pub(super) fn panel_w(&self) -> f64 {
-        // The panel carries text, so its width grows with the text scale
-        // (never shrinks): a 2× row keeps the character budget a 1× row has
-        // instead of eliding inside a 1× column. Bounds are combined with
-        // `max`/`min` rather than `clamp`: a degenerate rect can put them out
-        // of order, and `clamp` panics where these just pick the finite one.
+        // The panel carries text, so its width grows with the text scale and never shrinks.
+        // `max`/`min` rather than `clamp`, which panics when a degenerate rect puts the bounds out
+        // of order.
         let grow = f64::from(self.text_scale.clamp(1.0, 4.0));
         let list = f64::from(self.metrics.panel_width_list);
         let avail = (self.rect.width() - 2.0 * self.margin()).max(1.0);
         if self.overlay_mode() {
-            // The drawer never slides under the control column.
             let beside_controls = (avail - self.controls().size - self.gap()).max(1.0);
             (list * grow).min(beside_controls)
         } else {
-            // Docked: never more than 60 % so the map keeps room beside it.
             (list * grow).min(avail).min(self.rect.width() * 0.6)
         }
     }
 
-    /// The narrow window's top row: the drawer toggle — narrow layouts only.
     pub(super) fn menu_rect(&self) -> Option<Rect> {
         if !self.overlay_mode() {
             return None;
@@ -148,15 +125,12 @@ impl MapsApp {
         Some(Rect::new(x0, y0, x0 + side, y0 + side))
     }
 
-    /// The narrow window's search button, beside the drawer toggle.
     pub(super) fn search_button_rect(&self) -> Option<Rect> {
         let menu = self.menu_rect()?;
         let x0 = menu.x1 + f64::from(self.spacing.s2);
         Some(Rect::new(x0, menu.y0, x0 + menu.width(), menu.y1))
     }
 
-    /// The places panel. The narrow drawer ends above the footer row, so the
-    /// map's credit and scale stay in view while it is open.
     pub(super) fn panel_rect(&self) -> Rect {
         let x0 = self.rect.x0 + self.margin();
         let top = self
@@ -170,8 +144,6 @@ impl MapsApp {
         Rect::new(x0, top, x0 + self.panel_w(), bottom.max(top))
     }
 
-    /// The overflow button (attribution, offline maps, licences) in the
-    /// bottom-trailing corner.
     pub(super) fn overflow_rect(&self) -> Rect {
         let side = self.controls().size;
         let x1 = self.rect.x1 - self.margin();
@@ -179,8 +151,6 @@ impl MapsApp {
         Rect::new(x1 - side, y1 - side, x1, y1)
     }
 
-    /// The leading edge of the map the floating cards keep to: the window
-    /// margin, from the docked panel as from the window's edge.
     pub(super) fn map_left_edge(&self) -> f64 {
         if self.panel_docked_expanded() {
             self.panel_rect().x1 + self.margin()
@@ -189,10 +159,6 @@ impl MapsApp {
         }
     }
 
-    /// The part of the map nothing floats over: beside the docked panel, clear
-    /// of the control column and the footer row, and under the turn card when
-    /// it spans the top. Fitting a route frames it here, and the place card
-    /// and the loading text centre on it.
     pub(super) fn visible_map_area(&self) -> Rect {
         let gap = self.gap();
         let x0 = self.map_left_edge();
@@ -202,8 +168,6 @@ impl MapsApp {
             .map_or_else(|| self.rect.y0 + self.margin(), |menu| menu.y1 + gap);
         if self.navigation_surface_visible_in_app() {
             let nav = self.navigation_rect();
-            // A card across the top pushes the area down; one in the corner
-            // beside a wide map narrows it instead.
             if nav.x0 - gap - x0 >= (x1 - x0) * 0.5 {
                 x1 = x1.min(nav.x0 - gap);
             } else {
@@ -214,7 +178,6 @@ impl MapsApp {
         Rect::new(x0, y0, x1.max(x0 + 1.0), y1.max(y0 + 1.0))
     }
 
-    /// The geographic bounds currently visible in the map viewport.
     pub(super) fn viewport_bounds(&self) -> GeoBounds {
         let proj = self.projection();
         let nw = proj.unproject(Point::new(self.rect.x0, self.rect.y0));
@@ -222,7 +185,7 @@ impl MapsApp {
         GeoBounds::new(nw, se)
     }
 
-    /// Expand the viewport bbox by a margin so a small pan reuses the cache.
+    /// The viewport grown by a margin, so a small pan reuses the cache.
     pub(super) fn padded_viewport_bounds(&self) -> GeoBounds {
         let v = self.viewport_bounds();
         let dlat = (v.max.lat - v.min.lat) * 0.25;
@@ -288,12 +251,6 @@ impl MapsApp {
         result.handled()
     }
 
-    /// The area the floating map controls (zoom, locate, traffic) lay
-    /// themselves out in. Normally the whole window; while the navigation
-    /// card floats over the top-right corner, the cluster starts beneath it
-    /// so the controls stay visible and reachable rather than being covered.
-    /// Paint, pointer hit-testing and the accessibility rects all read the
-    /// controls' geometry from this one viewport.
     pub(super) fn map_controls_viewport(&self) -> Rect {
         let viewport = self.rect;
         if !self.navigation_surface_visible_in_app() {
@@ -313,11 +270,6 @@ impl MapsApp {
         if nav.intersect(column).area() <= 0.0 {
             return viewport;
         }
-        // Beneath the card when the whole column still clears the ⋯ overflow
-        // button at the bottom; otherwise beside the card's leading edge when
-        // that clears the docked side panel; otherwise the corner stays as it
-        // was (the card covers it) rather than laying the cluster out off the
-        // bottom of a short window or under the overflow button.
         let floor = self.overflow_rect().y0 - gap;
         if nav.y1 < self.rect.y1 && nav.y1 + column_h <= floor {
             return Rect::new(viewport.x0, nav.y1, viewport.x1, viewport.y1);

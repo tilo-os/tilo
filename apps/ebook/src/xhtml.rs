@@ -638,7 +638,6 @@ mod tests {
     /// XHTML parses headings, paragraphs, lists, quotes and rules, collapses whitespace, sanitises entities and yields nothing for garbage.
     #[test]
     fn xhtml_parses_prose_blocks_and_entities() {
-        // --- phase: parses_heading_and_paragraph ---
         {
             let src = r#"<html xmlns="http://www.w3.org/1999/xhtml"><body>
             <h1>Title</h1>
@@ -664,14 +663,12 @@ mod tests {
             }
         }
 
-        // --- phase: collapses_whitespace ---
         {
             let src = "<body><p>one\n   two\t three</p></body>";
             let blocks = parse_xhtml(src);
             assert_eq!(blocks[0].plain_text(), "one two three");
         }
 
-        // --- phase: parses_lists_quotes_and_hr ---
         {
             let src = r"<body>
             <ul><li>a</li><li>b</li></ul>
@@ -688,7 +685,6 @@ mod tests {
             assert!(blocks.iter().any(super::super::model::Block::is_separator));
         }
 
-        // --- phase: sanitizes_named_entities ---
         {
             let src = "<body><p>a&nbsp;b&mdash;c</p></body>";
             let blocks = parse_xhtml(src);
@@ -696,7 +692,6 @@ mod tests {
             assert!(blocks[0].plain_text().contains('\u{2014}'));
         }
 
-        // --- phase: empty_on_garbage ---
         {
             assert!(parse_xhtml("<<<not xml").is_empty());
         }
@@ -748,7 +743,6 @@ mod tests {
     /// z3998 verse keeps one block per stanza with each marked line starting a line, while headers, prose, quotes and `<br/>` keep their text and offsets.
     #[test]
     fn verse_lines_break_without_changing_blocks_or_text() {
-        // --- phase: standard_ebooks_stanzas_are_verse_blocks_of_lines ---
         {
             let blocks = parse_xhtml(POEM);
             assert_eq!(blocks.len(), 5, "{blocks:#?}");
@@ -779,7 +773,6 @@ mod tests {
             assert_eq!(lines(&blocks[4]).len(), 2);
         }
 
-        // --- phase: blockquoted_verse_and_class_named_stanzas ---
         {
             let src = r#"<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body>
               <blockquote epub:type="z3998:verse"><p><span>One line,</span><span class="i2">and two.</span></p></blockquote>
@@ -802,7 +795,6 @@ mod tests {
             );
         }
 
-        // --- phase: inline_spans_in_running_text_are_not_lines ---
         {
             let src = r#"<body class="verse"><p>Sing, <span class="name">goddess</span>, the wrath</p></body>"#;
             let blocks = parse_xhtml(src);
@@ -810,7 +802,6 @@ mod tests {
             assert_eq!(lines(&blocks[0]).len(), 1);
         }
 
-        // --- phase: prose_br_breaks_the_line_with_the_same_text ---
         {
             let blocks = parse_xhtml("<body><p>221B Baker Street<br/>London</p></body>");
             assert!(matches!(blocks[0], Block::Paragraph { .. }));
@@ -827,7 +818,6 @@ mod tests {
 
     #[test]
     fn mathml_lowers_to_structured_two_dimensional_math() {
-        // --- phase: presentation_mathml_lowers_to_shared_structured_math ---
         {
             let src = r#"<body xmlns="http://www.w3.org/1999/xhtml">
           <math xmlns="http://www.w3.org/1998/Math/MathML" display="block">
@@ -851,7 +841,6 @@ mod tests {
             assert_eq!(source, "(x^(2)+1)/(sqrt(y-3))");
         }
 
-        // --- phase: mathml_subscripts_and_superscripts_share_one_script_node ---
         {
             let src = r"<body><p><math><msubsup><mo>∑</mo><mi>i</mi><mi>n</mi></msubsup></math></p></body>";
             let blocks = parse_xhtml(src);
@@ -861,7 +850,6 @@ mod tests {
             assert!(matches!(expr.root.get(1), Some(MathNode::SubSup { .. })));
         }
 
-        // --- phase: inline_mathml_remains_structured_inside_prose ---
         {
             let src = r"<body><p>Einstein wrote <math><mi>E</mi><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></math> in 1905.</p></body>";
             let blocks = parse_xhtml(src);
@@ -877,7 +865,6 @@ mod tests {
             assert_eq!(blocks[0].plain_text(), "Einstein wrote E=mc^(2) in 1905.");
         }
 
-        // --- phase: mathml_limits_and_matrices_remain_two_dimensional ---
         {
             let src = r#"<body><math display="block"><mrow>
           <munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover>

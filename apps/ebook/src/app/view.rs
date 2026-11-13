@@ -188,7 +188,7 @@ impl BooksApp {
                     .read(&hash)
                     .ok_or_else(|| "its contents are not on this device".to_string())?;
                 content::open_handed_book(&bytes, None).map(|mut handed| {
-                    handed.content = Some(hash);
+                    handed.content = Some(ui::tilo_resource::Bytes::kept_as(&bytes, &hash));
                     content::placed(handed)
                 })
             },

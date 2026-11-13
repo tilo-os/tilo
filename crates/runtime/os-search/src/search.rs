@@ -16,17 +16,12 @@ use crate::entry::{EntryId, SearchEntry, opening};
 use crate::index::{Changes, ResourceIndex};
 use tilo_lock::MutexRecover as _;
 
-/// Rows asked for per catalogue page.
 const PAGE: u32 = 128;
 /// Entries one walk collects at most; a host search is not an archive.
 const MAX_ENTRIES: usize = 4096;
-/// Pages one publisher is asked for at most in one walk.
 const MAX_PAGES: usize = 64;
-/// How deep a walk follows a publisher's resource tree.
 const MAX_DEPTH: usize = 8;
-/// How long one answer from the action host may take.
 const ANSWER: Duration = Duration::from_secs(5);
-/// Per-page work bounds, the ones the MCP projection asks for.
 const LIMITS: CatalogueLimits = CatalogueLimits {
     max_bytes: Some(64 * 1024),
     max_work: Some(512),
@@ -36,9 +31,7 @@ const LIMITS: CatalogueLimits = CatalogueLimits {
 /// Why a host search's result did not open.
 #[derive(Debug, PartialEq)]
 pub enum OpenError {
-    /// This runtime does not offer that resource to its owner (any more).
     NotOffered,
-    /// The action host refused or could not answer.
     Host(ActionHostError),
     Failed(ActionFailure),
 }
@@ -50,14 +43,9 @@ impl From<ActionHostError> for OpenError {
 }
 
 /// The resources the action host offers this runtime's owner, as one index
-/// every host search reads.
-///
-/// Only what the catalogue offers `caller` is ever indexed, so a resource
-/// the owner may not see, an app that closed without keeping its actions
-/// launchable, or a revoked grant never reaches a host search, and leaves
-/// it at the next [`Self::refresh`]. Opening re-resolves the action as
-/// `caller` and invokes it through the host, so authority is checked when
-/// the person acts, not when the host indexed.
+/// every host search reads. Only what the catalogue offers `caller` is
+/// indexed, and opening re-resolves the action as `caller`, so authority is
+/// checked when the person acts.
 pub struct OsSearch {
     host: Arc<dyn ActionHost + Send + Sync>,
     caller: Caller,
@@ -77,12 +65,6 @@ impl OsSearch {
         self.index.lock_recover()
     }
 
-    /// Walk the catalogue and make what it offers the index.
-    ///
-    /// # Errors
-    ///
-    /// Any unanswered page leaves the index as it was: a partial walk
-    /// would read as every unwalked resource having been revoked.
     pub async fn refresh(&self) -> Result<Changes, ActionHostError> {
         let providers = self
             .ask(CatalogueQuery {
@@ -174,7 +156,6 @@ impl OsSearch {
         Ok(found.into_iter().map(|(_, entry)| entry).collect())
     }
 
-    /// The best `limit` indexed entries for `query`.
     pub fn search(&self, query: &str, limit: usize) -> Vec<SearchEntry> {
         self.index()
             .search(query, limit)
@@ -183,7 +164,6 @@ impl OsSearch {
             .collect()
     }
 
-    /// The indexed entry a host search names by `id`.
     pub fn entry(&self, id: &str) -> Option<SearchEntry> {
         let id = id.parse().ok()?;
         self.index().get(id).cloned()

@@ -14,7 +14,7 @@ impl TileSource for Apps {
         })
     }
 
-    fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
+    fn launch(&mut self, _: &Workspace, id: TabId, app: &str, _: Option<TabId>) -> Option<Tab> {
         Some(Tab {
             id,
             title: app.to_owned(),

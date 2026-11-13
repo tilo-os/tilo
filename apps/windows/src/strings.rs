@@ -1,6 +1,6 @@
 //! Fluent strings for the Windows compatibility manager.
 
-ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 /// Resolve a Windows Apps Fluent key.
 pub fn t(key: &str) -> String {
@@ -112,5 +112,27 @@ mod tests {
             ),
             "Expires in 9m 40s"
         );
+    }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source beside
+/// it, so a device set to German reads a German window.
+#[cfg(test)]
+mod german_catalogue_tests {
+    use super::CATALOG;
+
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalogue = &CATALOG;
+        assert!(
+            catalogue.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalogue.languages()
+        );
+        catalogue.set_locale("de-DE");
+        assert_eq!(catalogue.t("windows-cancel"), "Abbrechen");
+        catalogue.set_locale("en-US");
+        assert_eq!(catalogue.t("windows-cancel"), "Cancel");
     }
 }

@@ -429,6 +429,26 @@ fn every_kind_of_value_prints_the_same_program_back() {
 /// A program that holds one of each kind of step, so a rendering of it
 /// covers each of them.
 fn every_step(folder: Binding) -> Shortcut {
+    let mut shortcut = every_other_step(folder);
+    shortcut.steps.extend(
+        [("chat", "", false), ("messages", "derived:messages", true)].map(
+            |(id, record, joined)| {
+                Step::new(
+                    id,
+                    StepKind::Read {
+                        app: "so.tilo.chat".into(),
+                        record: record.into(),
+                        joined,
+                    },
+                )
+            },
+        ),
+    );
+    shortcut
+}
+
+/// [`every_step`] but the record reads.
+fn every_other_step(folder: Binding) -> Shortcut {
     Shortcut {
         id: "kinds".into(),
         name: "Every step".into(),

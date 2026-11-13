@@ -84,8 +84,33 @@ pub struct VulkanDrmDeviceIdentity {
 pub fn vulkan_drm_device_identity(device: &wgpu::Device) -> Option<VulkanDrmDeviceIdentity> {
     let guard = unsafe { device.as_hal::<vulkan::Api>() }?;
     let hal_device: &vulkan::Device = &guard;
-    let phys = hal_device.raw_physical_device();
-    let instance = hal_device.shared_instance().raw_instance();
+    physical_drm_identity(
+        hal_device.shared_instance().raw_instance(),
+        hal_device.raw_physical_device(),
+    )
+}
+
+/// [`vulkan_drm_device_identity`] of an adapter not yet opened: what picks
+/// the adapter on a given GPU.
+pub fn vulkan_drm_adapter_identity(adapter: &wgpu::Adapter) -> Option<VulkanDrmDeviceIdentity> {
+    let guard = unsafe { adapter.as_hal::<vulkan::Api>() }?;
+    let hal_adapter: &vulkan::Adapter = &guard;
+    physical_drm_identity(
+        hal_adapter.shared_instance().raw_instance(),
+        hal_adapter.raw_physical_device(),
+    )
+}
+
+/// Whether `device` draws on the GPU whose render node is `node`
+/// ([`tilo_presentation::device_numbers`]): memory allocated there is its own.
+pub fn is_on_render_node(device: &wgpu::Device, node: (u32, u32)) -> bool {
+    vulkan_drm_device_identity(device).is_some_and(|identity| identity.render == Some(node))
+}
+
+fn physical_drm_identity(
+    instance: &ash::Instance,
+    phys: vk::PhysicalDevice,
+) -> Option<VulkanDrmDeviceIdentity> {
     let supported = unsafe { instance.enumerate_device_extension_properties(phys).ok()? }
         .iter()
         .any(|extension| {
@@ -811,15 +836,18 @@ const SAMPLED_USAGE: vk::ImageUsageFlags = vk::ImageUsageFlags::from_raw(
 );
 
 /// An ioctl request code as the C library types it: glibc's `unsigned long`, musl's `int`, which
-/// carries the same 32 bits.
-#[cfg(not(target_env = "musl"))]
-fn ioctl_request(code: u32) -> libc::c_ulong {
-    libc::c_ulong::from(code)
-}
-
-#[cfg(target_env = "musl")]
-fn ioctl_request(code: u32) -> libc::c_int {
-    libc::c_int::from_ne_bytes(code.to_ne_bytes())
+/// carries the same 32 bits in the low end of whichever is wider.
+const fn ioctl_request(code: u32) -> libc::Ioctl {
+    let code = code.to_ne_bytes();
+    let mut bytes = [0_u8; std::mem::size_of::<libc::Ioctl>()];
+    let mut at = bytes.len() - code.len();
+    let mut read = 0;
+    while read < code.len() {
+        bytes[at] = code[read];
+        at += 1;
+        read += 1;
+    }
+    libc::Ioctl::from_ne_bytes(bytes)
 }
 
 /// `DMA_BUF_IOCTL_EXPORT_SYNC_FILE`: `_IOWR('b', 2, struct dma_buf_export_sync_file)`.

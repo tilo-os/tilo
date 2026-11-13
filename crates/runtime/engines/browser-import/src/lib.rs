@@ -1,29 +1,10 @@
-//! Importing from another browser, as an engine library beside the shared
-//! runtime (`libtilo_browser_import_engine.so`).
+//! Importing from another browser, as its own library in the runtime bundle
+//! (`libtilo_browser_import_engine.so`).
 //!
-//! Browser imports bookmarks and history from a Chromium or Firefox profile
-//! the person granted (`browser-continuity`'s capture). Those profiles keep
-//! history in `SQLite` databases, so the capture carries `SQLite`'s C library,
-//! about 1.7 MB of code, which Browser never runs until the person imports.
-//! Linked into the tapp it was most of Browser's download; here it is a
-//! library of its own in the runtime bundle that only Browser names
-//! `DT_NEEDED`, and the tapp carries only Browser's own code.
-//!
-//! The website-session codecs (`tilo-browser-sessions`) are here too, so
-//! their account custody resolves to the accounts engine.
-//!
-//! Imager reads profiles too, but its own code calls `SQLite`'s inline
-//! statement API, whose C calls must resolve in the app's link (a Rust dylib
-//! exports no C symbols), so it links `SQLite` itself and never this library.
-//!
-//! Like `runtime-dylib`, this crate re-exports the crate it provides, which
-//! records it as provided by this library for the apps' `-C prefer-dynamic`
-//! link. Outside the thin build (`thin`) it is empty: see the manifest.
+//! Like `runtime-dylib` it re-exports what it provides, which records it
+//! as provided by this library for the apps' `-C prefer-dynamic` link.
+//! Outside the thin build it is empty.
 
-// Load the runtime explicitly, as thin apps do: rustc ignores an `--extern`
-// nothing names, and without it in the crate graph this library would link
-// its own copy of every crate the runtime already provides, which the app's
-// link then refuses (each crate may show up once).
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 #[cfg(feature = "thin")]

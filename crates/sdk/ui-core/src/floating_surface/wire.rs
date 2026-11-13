@@ -50,7 +50,8 @@ pub struct Recipient {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
     /// The name the chip shows: the agent's or the person's, the
-    /// conversation's, or the name the new agent takes.
+    /// conversation's, or the name the new agent takes — empty for a new
+    /// agent nobody named, which the shell names by what it is asked.
     pub name: String,
     /// A line under the name in the search's rows (who keeps an agent, who
     /// is in a conversation); never on the chip.
@@ -709,8 +710,14 @@ pub enum FloatingSurfaceHostMessage {
     /// an assistive technology does on that control, through the same path; a
     /// control its window no longer shows presses nothing.
     PressTarget {
+        /// The control's name, in the person's language.
         name: String,
+        /// Its role as the listing named it (`Button`, `Document`).
         role: String,
+        /// What it does, when the shell names it by that instead of its name: the identity a
+        /// window's app publishes for a control that runs its action or edits its record.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        identity: Option<String>,
         action: crate::window_targets::TargetAction,
     },
 }

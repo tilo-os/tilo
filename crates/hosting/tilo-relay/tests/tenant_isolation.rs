@@ -403,7 +403,7 @@ impl TwoTenants {
         let carol = TestUser::fresh("Carol, invited to Globex");
         let carol_phone = carol.enrol("carol-phone", DeviceCapabilities::member());
         let state = tempfile::tempdir().unwrap();
-        let relay = Relay::start(
+        let relay = crate::common::start_relay(
             RelayConfig {
                 state_root: state.path().to_path_buf(),
                 ..RelayConfig::default()
@@ -489,7 +489,9 @@ impl TwoTenants {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_tenants_inviter_reaches_nothing_in_another_tenants_room() {
-    let t = TwoTenants::start().await;
+    // The fixture's setup future is larger than the lint's ceiling on the stack: it builds two
+    // tenants' people, their devices and two governed workspaces.
+    let t = Box::pin(TwoTenants::start()).await;
     let workspaces = t.workspaces();
     let before = t.globex_governance().await;
     let ann = subscribed(&t.relay, &t.ann_laptop, t.acme.workspace_id).await;
@@ -598,7 +600,9 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_room() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_room() {
-    let t = TwoTenants::start().await;
+    // The fixture's setup future is larger than the lint's ceiling on the stack: it builds two
+    // tenants' people, their devices and two governed workspaces.
+    let t = Box::pin(TwoTenants::start()).await;
     let before = t.globex_governance().await;
     let bob_in_globex = subscribed(&t.relay, &t.bob_phone, t.globex.workspace_id).await;
     received_until_quiet(&bob_in_globex).await;
@@ -733,7 +737,9 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_room(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
-    let t = TwoTenants::start().await;
+    // The fixture's setup future is larger than the lint's ceiling on the stack: it builds two
+    // tenants' people, their devices and two governed workspaces.
+    let t = Box::pin(TwoTenants::start()).await;
     let ann_in_acme = subscribed(&t.relay, &t.ann_laptop, t.acme.workspace_id).await;
     let bob_in_globex = subscribed(&t.relay, &t.bob_phone, t.globex.workspace_id).await;
     crate::common::wait_until_subscribed(
@@ -823,23 +829,15 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
-    let t = TwoTenants::start().await;
+    // The fixture's setup future is larger than the lint's ceiling on the stack: it builds two
+    // tenants' people, their devices and two governed workspaces.
+    let t = Box::pin(TwoTenants::start()).await;
     let before = t.globex_governance().await;
     // The host's own agent: a device of the relay's person with no
     // capabilities, delegated Acme alone.
-    let agent = t.provider.enrol(
-        "acme-agent",
-        DeviceCapabilities {
-            can_own_workspaces: false,
-            can_admit_devices: false,
-            can_act_as_host: false,
-            can_read_all_workspaces: false,
-            foreign: false,
-            can_administer_devices: false,
-            agent: None,
-            stand_in: false,
-        },
-    );
+    let agent = t
+        .provider
+        .enrol("acme-agent", DeviceCapabilities::nothing());
     let issued = tilo_clock::unix_now_ns();
     let delegation = Delegation::sign(
         &t.provider.user_sk,

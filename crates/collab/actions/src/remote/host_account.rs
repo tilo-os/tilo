@@ -24,9 +24,9 @@
 //! says so with a [`Refusal`]: a typed [`Reason`], the words for whoever ran
 //! it, and the [`NextStep`]s that would let it through, each with the
 //! provider's URL. The first action that needs a Linux machine on a host
-//! that sells them, with no card on file, is refused with
-//! [`Reason::NoPaymentMethod`] and [`NextStepKind::AddPaymentMethod`]:
-//! nothing asks for a card before that.
+//! that sells them, or a Browser page action past the period's free ones,
+//! with no card on file, is refused with [`Reason::NoPaymentMethod`] and
+//! [`NextStepKind::AddPaymentMethod`]: nothing asks for a card before that.
 //!
 //! Every type here is written field for field, with enums tagged by their
 //! variant, so it crosses both JSON (the action door) and postcard (a
@@ -92,6 +92,9 @@ pub struct Limits {
     /// Workspaces of the account's own the host keeps; `None` when the host
     /// sets no such bound.
     pub max_workspaces: Option<u32>,
+    /// Browser page actions an account without a payment method may run in
+    /// the billing period; `None` when the host gives none.
+    pub free_browser_actions: Option<u32>,
 }
 
 /// One plan a host offers.
@@ -140,6 +143,8 @@ pub struct Usage {
     /// When the period started and ends, Unix milliseconds.
     pub period_start_ms: u64,
     pub period_end_ms: u64,
+    /// Browser page actions the account ran in the period.
+    pub browser_actions: u64,
     /// Per workspace, most used first.
     pub workspaces: Vec<WorkspaceUsage>,
 }
@@ -310,8 +315,10 @@ pub struct NextStep {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reason {
-    /// The action needs a Linux machine, the host sells them, and the
-    /// account has no payment method on file.
+    /// The action needs what the host sells, the account has no payment
+    /// method on file, and the free use of it is spent: a Linux machine on a
+    /// host that sells them, or Browser past the page actions its billing
+    /// period gives.
     NoPaymentMethod,
     /// The workspace's VM size is not one the plan includes.
     SizeNotInPlan { size: String, allowed: Vec<String> },

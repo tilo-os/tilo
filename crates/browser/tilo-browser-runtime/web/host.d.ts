@@ -3,7 +3,7 @@ export {createPanorama} from './panorama';
 export type {CaptureSource, PanoramaCamera, CaptureBounds, PanoramaReceipt, PanoramaObserver} from './panorama';
 import type {DesktopNavigationV1} from "./navigation";
 export type * from "./navigation";
-import type {CertifiedActionsV1,PrivateInvocation} from './peer';
+import type {PrivateInvocation} from './peer';
 /**
  * What a mount runs: the id of any application compiled into the runtime
  * (`so.tilo.word-processor`, `so.tilo.ebook`, …), or `desktop` for the
@@ -67,7 +67,6 @@ export interface MountOptions {
   };
   onNavigation?: (controller: DesktopNavigationV1) => void;
   app?: Application;
-  actionsV1?: CertifiedActionsV1;
   profile?: string;
   device?: string;
   workspace?: string;

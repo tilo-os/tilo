@@ -1,6 +1,6 @@
 //! The community a computer is set up for (`community.toml`), joined as its session starts: nobody
-//! opens a directory, and the site's door is asked once, through the same join the sheet's Join
-//! asks.
+//! opens a directory, and the site is asked once for its home's door, which the computer enters
+//! through as the sheet's Join does.
 //! What the person decided is theirs, and is kept with their workspaces: a later session here, and
 //! every other computer of theirs, joins nothing on its own once they joined the community — or
 //! joined it and left. A seat that could not be reached is asked once more when the machine's
@@ -16,9 +16,7 @@ use test_http::{Reply, Responder};
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
 
-use crate::{
-    COMMUNITY_WORKSPACE, a_device, community_site, held, invitation_for, this_computer, wait_until,
-};
+use super::{COMMUNITY_WORKSPACE, a_device, community_site, held, this_computer, wait_until};
 
 /// A computer's session, keeping the desk it is left with beside `state` : the same session that
 /// starts where the last one ended, beside what the person decided there.
@@ -55,27 +53,18 @@ fn written() {
     tilo_durable_writer::global().flush();
 }
 
-/// A community site: its entry names the home workspace `name`, and its door
-/// admits `person` into [`COMMUNITY_WORKSPACE`] while `admits` says so,
-/// counting every join asked of it.
+/// A community site: its entry names the home workspace `name` and the door into
+/// [`COMMUNITY_WORKSPACE`], answering while `admits` says so (a site that cannot be reached
+/// otherwise), and counting every time it was asked. The door itself is never asked here: a
+/// computer enters through it on its session with the door's host.
 fn community_lounge(
     name: &'static str,
-    person: [u8; 32],
     admits: Arc<AtomicBool>,
     asked: Arc<AtomicU32>,
 ) -> Responder {
-    let invitation = invitation_for(COMMUNITY_WORKSPACE, person);
     Responder::handle(move |request| {
         let body = match (request.method.as_str(), request.target.as_str()) {
-            ("GET", "/entry.json") => serde_json::json!({
-                "home": {
-                    "name": name,
-                    "host": { "origin": "https://rooms.tilo.sh/" },
-                    "admission": "/directory/",
-                },
-            })
-            .to_string(),
-            ("POST", "/directory/join") => {
+            ("GET", "/entry.json") => {
                 asked.fetch_add(1, Ordering::SeqCst);
                 if !admits.load(Ordering::SeqCst) {
                     return Some(
@@ -84,7 +73,14 @@ fn community_lounge(
                             .body(r#"{"error":"the lounge is full"}"#),
                     );
                 }
-                invitation.clone()
+                serde_json::json!({
+                    "home": {
+                        "name": name,
+                        "host": { "origin": "https://rooms.tilo.sh/" },
+                        "admission": format!("/directory/{COMMUNITY_WORKSPACE}/"),
+                    },
+                })
+                .to_string()
             }
             _ => return Some(Reply::status(404)),
         };
@@ -171,21 +167,20 @@ impl tilo_session::Service for Cable {
 /// and in use from here on. Returns the root's directory.
 fn their_other_computer(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
     let person = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
-    let device = ed25519_dalek::SigningKey::from_bytes(&[0x24; 32]);
+    let device = ed25519_dalek::SigningKey::from_bytes(&tilo_test_env::node_key());
     a_device(env, &person, &device, "The desktop")
 }
 
 /// A computer set up for a community joins it as its session starts, with nobody opening a
-/// directory: the same door, and the same verified invitation, the sheet's Join asks.
+/// directory: through the same door the sheet's Join enters by.
 #[test]
 fn a_computer_set_up_for_a_community_joins_it_as_its_session_starts() {
     let _settled = ui::motion::testing::settled();
     let mut env = tilo_test_env::ScopedEnv::new();
-    let (_identity, person) = this_computer(&mut env);
+    let (_identity, _person) = this_computer(&mut env);
     let asked = Arc::new(AtomicU32::new(0));
     let responder = community_lounge(
         "tilo.sh",
-        person,
         Arc::new(AtomicBool::new(true)),
         Arc::clone(&asked),
     );
@@ -205,27 +200,17 @@ fn a_computer_set_up_for_a_community_joins_it_as_its_session_starts() {
     assert_eq!(
         asked.load(Ordering::SeqCst),
         1,
-        "the site's door was asked once, and not again"
+        "the site was asked once for its home, and not again"
     );
-    let joins: Vec<test_http::Request> = responder
+    let asked_of_the_site: Vec<(String, String)> = responder
         .drain_requests()
         .into_iter()
-        .filter(|request| request.method == "POST" && request.target.ends_with("/join"))
+        .map(|request| (request.method, request.target))
         .collect();
-    assert_eq!(joins.len(), 1, "one join was asked");
     assert_eq!(
-        joins[0].target, "/directory/join",
-        "at the door the site names"
-    );
-    let body: serde_json::Value =
-        serde_json::from_slice(&joins[0].body).expect("the join request a door reads");
-    assert_eq!(
-        body,
-        serde_json::json!({
-            "userPublicKey": hex::encode(person),
-            "displayName": "Ada",
-        }),
-        "as this person, by the name they go by rather than their device's"
+        asked_of_the_site,
+        [("GET".to_owned(), "/entry.json".to_owned())],
+        "the door is entered on the session with its host, never asked over HTTP"
     );
 }
 
@@ -235,11 +220,10 @@ fn a_computer_set_up_for_a_community_joins_it_as_its_session_starts() {
 fn a_community_that_was_left_is_not_joined_again() {
     let _settled = ui::motion::testing::settled();
     let mut env = tilo_test_env::ScopedEnv::new();
-    let (_identity, person) = this_computer(&mut env);
+    let (_identity, _person) = this_computer(&mut env);
     let asked = Arc::new(AtomicU32::new(0));
     let responder = community_lounge(
         "tilo.sh",
-        person,
         Arc::new(AtomicBool::new(true)),
         Arc::clone(&asked),
     );
@@ -291,11 +275,10 @@ fn a_community_that_was_left_is_not_joined_again() {
 fn a_persons_other_computer_does_not_join_their_community_again() {
     let _settled = ui::motion::testing::settled();
     let mut env = tilo_test_env::ScopedEnv::new();
-    let (_identity, person) = this_computer(&mut env);
+    let (_identity, _person) = this_computer(&mut env);
     let asked = Arc::new(AtomicU32::new(0));
     let responder = community_lounge(
         "tilo.sh",
-        person,
         Arc::new(AtomicBool::new(true)),
         Arc::clone(&asked),
     );
@@ -357,16 +340,16 @@ fn a_computer_whose_administrator_names_no_community_joins_nothing() {
     );
 }
 
-/// A seat that cannot be reached is not hammered: the join is asked once, and once more when the
+/// A site that cannot be reached is not hammered: it is asked once, and once more when the
 /// machine's network comes back, which is when a join that never reached its site can land.
 #[test]
 fn a_community_that_could_not_be_reached_is_asked_again_when_a_network_comes_back() {
     let _settled = ui::motion::testing::settled();
     let mut env = tilo_test_env::ScopedEnv::new();
-    let (_identity, person) = this_computer(&mut env);
+    let (_identity, _person) = this_computer(&mut env);
     let asked = Arc::new(AtomicU32::new(0));
     let admits = Arc::new(AtomicBool::new(false));
-    let responder = community_lounge("tilo.sh", person, Arc::clone(&admits), Arc::clone(&asked));
+    let responder = community_lounge("tilo.sh", Arc::clone(&admits), Arc::clone(&asked));
     let _config = community_site(&mut env, &responder.url());
     let state = tempfile::tempdir().expect("a directory for this computer's state");
     let cable = Cable::offline();
@@ -376,14 +359,14 @@ fn a_community_that_could_not_be_reached_is_asked_again_when_a_network_comes_bac
         services: vec![Box::new(cable.service())],
         ..Options::default()
     });
-    wait_until(&mut session, "the community's door was asked", |_| {
+    wait_until(&mut session, "the community's site was asked", |_| {
         asked.load(Ordering::SeqCst) == 1
     });
     run_turns(&mut session, 10);
     assert_eq!(
         asked.load(Ordering::SeqCst),
         1,
-        "a door that refused is not asked again in a loop"
+        "a site that could not be reached is not asked again in a loop"
     );
     assert_eq!(
         community_here(&session),

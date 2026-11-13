@@ -3,16 +3,11 @@
 
 use ui::date::civil_from_days;
 
-/// `utc_min` (minutes since the epoch, UTC) on the local clock the person
-/// reads, through `ui::clock` so a capture shows the pinned time.
 pub fn local_minutes(utc_min: i64) -> i64 {
     let offset = ui::clock::local_now().offset().local_minus_utc();
     utc_min.saturating_add(i64::from(offset) / 60)
 }
 
-/// The message-list column: the toolkit's list style (`9:42 AM` today,
-/// `Yesterday`, `Mon` this week, `Jun 24`, `Jun 24, 2025`), both arguments
-/// minutes since the epoch on the local clock ([`local_minutes`]).
 pub fn format_relative(ts_min: i64, now_min: i64) -> String {
     match (wall(ts_min), wall(now_min)) {
         (Some(at), Some(now)) => ui::format::Formats::current().list_date(at, now),
@@ -20,15 +15,12 @@ pub fn format_relative(ts_min: i64, now_min: i64) -> String {
     }
 }
 
-/// The reader header: the toolkit's timestamp style, in the person's date
-/// and clock formats. `ts_min` is minutes since the epoch on the local clock.
 pub fn format_absolute(ts_min: i64) -> String {
     wall(ts_min).map_or_else(String::new, |at| {
         ui::format::Formats::current().timestamp(at)
     })
 }
 
-/// Local minutes since the epoch as a wall-clock date and time.
 fn wall(local_min: i64) -> Option<ui::format::NaiveDateTime> {
     let day = local_min.div_euclid(1440);
     let mins = local_min.rem_euclid(1440);
@@ -45,7 +37,6 @@ mod tests {
     use super::*;
     use ui::date::days_from_civil;
 
-    /// Epoch-minutes for a Y/M/D H:M (UTC).
     fn minutes_of(y: i64, mo: u32, d: u32, h: u32, mi: u32) -> i64 {
         days_from_civil(y, mo, d)
             .saturating_mul(1440)

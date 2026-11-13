@@ -13,13 +13,11 @@
 use std::time::{Duration, SystemTime};
 
 use collab_types::canonical::from_canonical_bytes;
-use collab_types::channel::DocumentHandle;
 use collab_types::identity::{AvatarBytes, Identity};
 use collab_types::{
-    Artifact, ArtifactId, ArtifactKind, Attestation, AttestationId, Channel, ChannelEvent,
-    ChannelId, ChannelSettingsDelta, Claim, Clearance, Ed25519PublicKey, MemberRef, OpKind, Role,
-    RoleAttestation, Signature, SignedOp, Space, SpaceId, canonical_bytes, generate_keypair,
-    sign_event, sign_op, verify_event, verify_op,
+    ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelEvent, ChannelId, Claim,
+    Clearance, Ed25519PublicKey, OpKind, Role, RoleAttestation, Signature, SignedOp,
+    canonical_bytes, generate_keypair, sign_event, sign_op, verify_event, verify_op,
 };
 
 fn fake_pk(byte: u8) -> Ed25519PublicKey {
@@ -69,12 +67,6 @@ fn every_wire_type_round_trips_deterministically() {
         assert_round_trips(&format!("artifact kind {k:?}"), &k);
     }
     assert_round_trips(
-        "claim member-of",
-        &Claim::MemberOf {
-            space: SpaceId::new(),
-        },
-    );
-    assert_round_trips(
         "claim custom",
         &Claim::Custom {
             kind: "com.example.badge".into(),
@@ -103,46 +95,6 @@ fn every_wire_type_round_trips_deterministically() {
         },
     );
     assert_round_trips(
-        "space",
-        &Space {
-            id: SpaceId::new(),
-            name: "ACME".into(),
-            trust_root: fake_pk(9),
-            default_identity_label: Some("Ada".into()),
-            channels: vec![],
-            member_directory: vec![],
-        },
-    );
-    assert_round_trips(
-        "channel",
-        &Channel {
-            id: ChannelId::new(),
-            space: SpaceId::new(),
-            name: "#engineering".into(),
-            owner: fake_pk(11),
-            default_role: Role::Commenter,
-            members: vec![MemberRef {
-                identity: fake_pk(12),
-                role: Role::Editor,
-                attestation: AttestationId::new(),
-            }],
-            observe_default: true,
-            min_clearance: Some(Clearance::CONFIDENTIAL),
-            artifacts: vec![],
-            presence_visible_for_viewers: true,
-        },
-    );
-    assert_round_trips(
-        "artifact",
-        &Artifact {
-            id: ArtifactId::new(),
-            kind: ArtifactKind::Note,
-            channel: ChannelId::new(),
-            classification: Some(Clearance::INTERNAL),
-            crdt_doc: Some(DocumentHandle(vec![9, 9, 9])),
-        },
-    );
-    assert_round_trips(
         "signed op",
         &SignedOp::new_unsigned(
             b"automerge change blob".to_vec(),
@@ -160,7 +112,6 @@ fn every_wire_type_round_trips_deterministically() {
     let events = [
         ChannelEvent::Genesis {
             channel_id: ChannelId::new(),
-            space: SpaceId::new(),
             name: "g".into(),
             owner: pk,
             created_at: t(1),
@@ -188,16 +139,6 @@ fn every_wire_type_round_trips_deterministically() {
             new_name: "renamed".into(),
             signed_by: pk,
             signature: fake_sig(0x05),
-        },
-        ChannelEvent::SettingsUpdate {
-            delta: ChannelSettingsDelta {
-                default_role: Some(Role::Editor),
-                observe_default: Some(true),
-                min_clearance: Some(Clearance::CONFIDENTIAL),
-                presence_visible_for_viewers: Some(false),
-            },
-            signed_by: pk,
-            signature: fake_sig(0x06),
         },
     ];
     for (i, e) in events.iter().enumerate() {
@@ -231,23 +172,24 @@ fn decode_rejects_trailing_or_truncated_bytes() {
     // (`deny_unknown_fields` on the struct only takes effect for name-based
     // deserialisers like JSON; the exact-length check is the
     // postcard-equivalent protection.)
-    let s = Space {
-        id: SpaceId::new(),
-        name: "x".into(),
-        trust_root: fake_pk(1),
-        default_identity_label: None,
-        channels: vec![],
-        member_directory: vec![],
-    };
-    let mut bytes = canonical_bytes(&s).unwrap();
+    let op = SignedOp::new_unsigned(
+        b"x".to_vec(),
+        ArtifactId::new(),
+        fake_pk(1),
+        AttestationId::new(),
+        OpKind::Change,
+        t(1),
+        1,
+    );
+    let mut bytes = canonical_bytes(&op).unwrap();
     bytes.push(0xff);
     assert!(
-        from_canonical_bytes::<Space>(&bytes).is_err(),
+        from_canonical_bytes::<SignedOp>(&bytes).is_err(),
         "trailing byte should fail exact-length decode"
     );
     bytes.push(0xff);
     bytes.push(0xff);
-    assert!(from_canonical_bytes::<Space>(&bytes).is_err());
+    assert!(from_canonical_bytes::<SignedOp>(&bytes).is_err());
 
     // Case: truncated attestation.
     let a = Attestation {

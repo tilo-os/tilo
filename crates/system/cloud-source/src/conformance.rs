@@ -1,7 +1,5 @@
 //! The provider conformance suite.
 //!
-//! One suite, three layers, no changes to the checks between them:
-//!
 //! 1. **In-process fakes**, on every PR: the provider's fake server, with
 //!    fault injection ([`Fault`]).
 //! 2. **Real self-hostable servers** in containers in CI (Nextcloud, a plain
@@ -15,29 +13,6 @@
 //! source's back), and a [`SwitchableCredential`] in front of the real
 //! credential. Going offline and injecting faults are optional; checks that
 //! need them skip when the fixture returns `false`.
-//!
-//! **Isolation.** The source's [`CloudSource::root`] must be an empty folder
-//! dedicated to this fixture (a fresh `conformance-<uuid>` folder in a live
-//! account), and the fixture deletes it when dropped. Checks create only
-//! what they need under it, so runs never see each other.
-//!
-//! A provider crate enables the `conformance` feature from its
-//! dev-dependencies, implements [`Fixture`] and expands
-//! [`conformance_suite!`](crate::conformance_suite) once per layer:
-//!
-//! ```ignore
-//! cloud_source::conformance_suite!(fake, FakeFixture::start());
-//! cloud_source::conformance_suite!(live, match LiveFixture::from_env() {
-//!     Some(fixture) => fixture,
-//!     None => return, // secrets absent: skipped
-//! });
-//! ```
-//!
-//! Checks that depend on an optional capability consult
-//! [`CloudSource::capabilities`] and pass trivially when it is not declared,
-//! so a provider's declared capabilities are exactly what is verified.
-//!
-//! The checks panic on failure: they are test bodies.
 
 #![allow(
     clippy::panic,
@@ -61,14 +36,11 @@ use crate::{
     ItemKind, Notify, Revision, UploadTarget,
 };
 
-/// A fault a fake server can inject into its next response(s).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fault {
     /// The next request is answered 429 with `Retry-After: 1`.
     RateLimited,
-    /// The next request is answered 503.
     ServerError,
-    /// The next body is cut off before its declared length.
     TruncatedBody,
     /// The next download body is cut off by closing the connection, with
     /// no `Content-Length` declared: only the client's own length check can
@@ -77,11 +49,9 @@ pub enum Fault {
     /// The next request is answered 401 as if the token had expired; the
     /// credential works again afterwards.
     ExpiredCredential,
-    /// The server forgets every change cursor it issued.
     CursorReset,
 }
 
-/// A provider under test in one of the three layers.
 pub trait Fixture {
     /// The source under test. Its root is an empty folder owned by this
     /// fixture, and it authenticates through [`Fixture::credentials`].
@@ -89,7 +59,6 @@ pub trait Fixture {
     /// An independent client to the same account and root, standing in for
     /// another device or the provider's web UI.
     fn remote(&self) -> &dyn CloudSource;
-    /// The credential source [`Fixture::source`] uses.
     fn credentials(&self) -> &SwitchableCredential;
     /// Make the server unreachable for the source (connection refused or
     /// reset), or reachable again. `false` when this layer cannot.
@@ -134,7 +103,6 @@ impl SwitchableCredential {
         self.bogus.store(bogus, Ordering::SeqCst);
     }
 
-    /// How often the source reported a rejected credential.
     pub fn rejections(&self) -> usize {
         self.rejections.load(Ordering::SeqCst)
     }
@@ -262,7 +230,6 @@ pub fn put_remote(fixture: &dyn Fixture, path: &str, bytes: &[u8]) {
     upload_bytes(remote, target, bytes);
 }
 
-/// Delete the item at `path` through the fixture's independent client.
 pub fn remove_remote(fixture: &dyn Fixture, path: &str) {
     let remote = fixture.remote();
     let item = must(remote, path);
@@ -280,7 +247,6 @@ fn read_all(source: &dyn CloudSource, id: &ItemId) -> Vec<u8> {
     body
 }
 
-/// The item at `path`, found by listing from the root.
 pub fn lookup(source: &dyn CloudSource, path: &str) -> Option<Item> {
     let mut folder = source.root();
     let mut found = None;
@@ -415,7 +381,6 @@ pub fn create_refuses_to_overwrite(fixture: &dyn Fixture) {
     }
 }
 
-/// Replacing with the current revision succeeds and yields a new one.
 pub fn replace_with_revision(fixture: &dyn Fixture) {
     put_remote(fixture, "doc.txt", b"v1");
     let source = fixture.source();
@@ -470,7 +435,6 @@ pub fn chunked_and_resumed_uploads(fixture: &dyn Fixture) {
     const MAX_CHUNK: u64 = 16 << 20;
     let source = fixture.source();
     let caps = source.capabilities();
-    // Without sessions an upload is one request; keep it modest.
     let chunk = if caps.resumable_upload {
         caps.upload_chunk.min(MAX_CHUNK)
     } else {
@@ -522,7 +486,6 @@ pub fn chunked_and_resumed_uploads(fixture: &dyn Fixture) {
     assert_eq!(read_all(source, &item.id), bytes);
 }
 
-/// Folder creation, rename/move with preconditions, and delete.
 pub fn folders_moves_and_deletes(fixture: &dyn Fixture) {
     put_remote(fixture, "move-me.txt", b"payload");
     put_remote(fixture, "taken.txt", b"occupied");
@@ -724,7 +687,6 @@ pub fn rejected_credentials_are_reported(fixture: &dyn Fixture) {
     source.list(&source.root()).expect("list after sign-in");
 }
 
-/// Declared revision history lists, reads and restores older versions.
 pub fn revision_history(fixture: &dyn Fixture) {
     let source = fixture.source();
     if !source.capabilities().revisions {
@@ -869,7 +831,6 @@ pub fn truncated_ranged_reads_are_errors(fixture: &dyn Fixture) {
     assert_eq!(body, &bytes[1_000..41_000]);
 }
 
-/// An expired credential is reported once and the refreshed one works.
 pub fn expired_credentials_recover(fixture: &dyn Fixture) {
     let source = fixture.source();
     let before = fixture.credentials().rejections();
@@ -884,7 +845,6 @@ pub fn expired_credentials_recover(fixture: &dyn Fixture) {
         .expect("the refreshed credential works");
 }
 
-/// A forgotten cursor restarts the enumeration instead of losing changes.
 pub fn cursor_resets_restart_enumeration(fixture: &dyn Fixture) {
     put_remote(fixture, "before.txt", b"b");
     let source = fixture.source();

@@ -1,6 +1,3 @@
-//! Historical schema fixtures built through the supported typed field writer.
-//! Atom preserves the old scalar strings; Vec preserves the old playlist List.
-//! Catalogue identities deliberately live only in their map keys.
 use std::collections::BTreeMap;
 
 use automerge::{AutoCommit, ROOT};
@@ -75,8 +72,6 @@ pub(super) struct LegacyLibrary {
     saved_albums: BTreeMap<String, bool>,
     followed_artists: BTreeMap<String, bool>,
     playlist_tombstones: BTreeMap<String, bool>,
-    // Some(false) is an explicit legacy false; None leaves an absent key absent.
-    // Plain bool defaults would omit false on the initial typed write.
     #[model(rename = "recommendations/input/likes")]
     likes_input: Option<bool>,
     #[model(rename = "recommendations/input/saved-albums")]

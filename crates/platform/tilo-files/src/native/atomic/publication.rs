@@ -4,28 +4,20 @@ use std::fmt;
 use std::io;
 use std::path::Path;
 
-/// Requested privacy semantics for a file or explicitly validated held directory.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Privacy {
-    /// Use the platform's ordinary inherited creation policy.
     Inherit,
-    /// Restrict access to the effective owner.
     OwnerOnly,
 }
 
-/// Namespace publication behavior.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PublishMode {
-    /// Atomically replace an existing target.
     Replace,
-    /// Publish only when the target name is absent.
     IfAbsent,
 }
 
-/// What is known about a failed publication operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PublicationState {
-    /// Publication was not submitted or is proven not to have happened.
     NotPublished,
     /// Publication happened, but its durability commit did not complete.
     PublishedDurabilityUnknown,
@@ -47,7 +39,6 @@ impl CommitGuard {
     }
 }
 
-/// An I/O failure annotated with the publication phase in which it occurred.
 pub struct PublicationError {
     state: PublicationState,
     source: io::Error,
@@ -71,29 +62,24 @@ impl PublicationError {
         }
     }
 
-    /// Return what is known about namespace publication.
     #[must_use]
     pub fn state(&self) -> PublicationState {
         self.state
     }
 
-    /// Return the original I/O failure.
     #[must_use]
     pub fn io_error(&self) -> &io::Error {
         &self.source
     }
 
-    /// Wrap this typed error in an [`io::Error`] without losing its phase.
     #[must_use]
     pub fn into_io_error(self) -> io::Error {
         let kind = self.source.kind();
         io::Error::new(kind, self)
     }
 
-    /// Retry only a known post-publication durability commit.
-    ///
-    /// The retained native file and parent handles are reused. No rename is
-    /// issued. Other states return this error unchanged.
+    /// Retries only a known post-publication durability commit: the retained file and parent handles
+    /// are reused and no rename is issued. Other states return the error unchanged.
     pub fn retry_commit(mut self) -> Result<(), Self> {
         let Some(guard) = self.pending_commit.as_ref() else {
             return Err(self);
@@ -131,7 +117,6 @@ impl Error for PublicationError {
     }
 }
 
-/// Recover publication phase information from the compatibility I/O wrapper.
 #[must_use]
 pub fn publication_state(error: &io::Error) -> Option<PublicationState> {
     error
@@ -140,22 +125,56 @@ pub fn publication_state(error: &io::Error) -> Option<PublicationState> {
         .map(PublicationError::state)
 }
 
-/// Durably replace `path` through an opened parent directory.
-///
-/// # Errors
-///
-/// Returns a [`PublicationError`] carrying the known publication state when
-/// the parent cannot be opened or staging, rename or a barrier fails.
 pub fn replace(path: &Path, bytes: &[u8], privacy: Privacy) -> Result<(), PublicationError> {
     publish_path(path, bytes, PublishMode::Replace, privacy, None)
 }
 
-/// Durably publish `path` only when the target name is absent.
-///
-/// # Errors
-///
-/// Returns a [`PublicationError`]; an existing target is reported as
-/// `AlreadyExists` without publication.
+/// Appends durably: written and synced before this returns. The file is one a publication made, so its
+/// name and every byte appended before are durable already.
+pub fn append(path: &Path, bytes: &[u8]) -> Result<(), PublicationError> {
+    use std::io::Write as _;
+    let not_written = |error| PublicationError::new(PublicationState::NotPublished, error);
+    let unknown = |error| PublicationError::new(PublicationState::PublicationUnknown, error);
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .map_err(not_written)?;
+    append_checkpoint(AppendCheckpoint::BeforeWrite).map_err(not_written)?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_data())
+        .map_err(unknown)?;
+    append_checkpoint(AppendCheckpoint::Written).map_err(unknown)
+}
+
+/// Where an append can be made to fail in a test: before anything is written, or once it is written and
+/// synced but not acknowledged.
+#[derive(Clone, Copy)]
+enum AppendCheckpoint {
+    BeforeWrite,
+    Written,
+}
+
+#[cfg(feature = "test-support")]
+fn append_checkpoint(at: AppendCheckpoint) -> io::Result<()> {
+    use crate::native::atomic::test_support::{self, Checkpoint, CheckpointEvent};
+    test_support::checkpoint(&CheckpointEvent {
+        checkpoint: match at {
+            AppendCheckpoint::BeforeWrite => Checkpoint::BeforePublish,
+            AppendCheckpoint::Written => Checkpoint::AfterPublish,
+        },
+        stage: None,
+    })
+}
+
+#[cfg(not(feature = "test-support"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the test-support build injects failures through the same signature"
+)]
+const fn append_checkpoint(_at: AppendCheckpoint) -> io::Result<()> {
+    Ok(())
+}
+
 pub fn publish_if_absent(
     path: &Path,
     bytes: &[u8],

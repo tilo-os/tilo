@@ -4,11 +4,8 @@ use crate::{CalDavConfig, RemoteCalendar};
 #[cfg(all(test, feature = "live"))]
 mod tests;
 
-/// The Google `CalDAV` v2 discovery endpoint (not the retired DAV endpoint).
 pub const GOOGLE_CALDAV_URL: &str = "https://apidata.googleusercontent.com/caldav/v2/";
 
-/// Google `CalDAV` v2 collection URL, with the provider-confirmed calendar ID
-/// encoded as one path segment (usually the primary email address).
 pub fn google_config(email: &str) -> CalDavConfig {
     let calendar_id = url::form_urlencoded::byte_serialize(email.as_bytes())
         .collect::<String>()
@@ -21,7 +18,6 @@ pub fn google_config(email: &str) -> CalDavConfig {
     }
 }
 
-/// Reject credential-bearing URLs outside the configured service origin.
 pub(crate) fn same_origin_url(base: &url::Url, href: &str) -> Result<url::Url, String> {
     let target = base.join(href).map_err(|_| "invalid calendar URL")?;
     if target.origin() != base.origin()
@@ -36,9 +32,6 @@ pub(crate) fn same_origin_url(base: &url::Url, href: &str) -> Result<url::Url, S
     Ok(target)
 }
 
-/// Discover calendars using a canonical account's current credential. Call this
-/// blocking helper off the UI/async thread. Google refresh tokens stay in Custodian;
-/// Nextcloud uses the existing password, including adopted credentials.
 #[cfg(feature = "live")]
 pub fn discover_calendars(
     service: &tilo_dav::oauth::Service,

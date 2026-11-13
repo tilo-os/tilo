@@ -13,7 +13,6 @@ pub use crate::prefs::{AutomaticDisplayPrefs, NightLightPrefs, SharedDisplayPref
 use crate::resource::Settings;
 
 impl DisplayModel {
-    /// The person's display arrangement, as stored now.
     fn arrangement(&self) -> Arrangement {
         self.storage
             .settings::<SharedDisplayPrefs>()
@@ -322,8 +321,6 @@ impl DisplayModel {
     }
 }
 
-/// The switch that lets a display nearby offer itself as this device's
-/// input.
 fn automatic_input(cx: &ViewCx<AutomaticDisplayPrefs>) -> provider_settings_ui::widgets::Item {
     cx.setting(t("display-shared-auto-input"))
         .described(t("display-shared-auto-description"))
@@ -333,7 +330,6 @@ fn automatic_input(cx: &ViewCx<AutomaticDisplayPrefs>) -> provider_settings_ui::
         )
 }
 
-/// Every display of `layout` and whether its device has it switched on.
 fn shared_displays(layout: &Layout) -> impl Iterator<Item = (&ResolvedDisplay, bool)> {
     let active = layout.displays.iter().map(|display| (display, true));
     active.chain(layout.inactive.iter().map(|display| (display, false)))
@@ -370,8 +366,6 @@ mod tests {
         }]
     }
 
-    /// The offline peer of [`devices`] and a local device with the same
-    /// panel.
     fn offline_and_local() -> (
         settings_store::person_displays::PersonDevice,
         settings_store::person_displays::PersonDevice,
@@ -385,7 +379,6 @@ mod tests {
         (offline, local)
     }
 
-    /// The screens `devices` show, as the device fabric observes them.
     fn screens(
         devices: &[&settings_store::person_displays::PersonDevice],
     ) -> Vec<settings_store::device_displays::DeviceDisplay> {
@@ -409,7 +402,6 @@ mod tests {
             .collect()
     }
 
-    /// The shared display `output` of `device`, as an agent addresses it.
     fn shared(device: &str) -> String {
         format!("settings.shared-display:{device}:edid:panel-1")
     }
@@ -431,7 +423,6 @@ mod tests {
         }
     }
 
-    /// The tiles of the device arrangement canvas.
     fn tiles(app: &mut App) -> Vec<ui::a11y::AccessNode> {
         fn visit(widget: &dyn ui::widget::Widget, found: &mut Vec<ui::a11y::AccessNode>) {
             if widget.name() == "DisplayArrangement" {
@@ -454,7 +445,6 @@ mod tests {
         })
     }
 
-    /// The accessible names of the device arrangement canvas.
     fn canvas_names(app: &mut App) -> Vec<String> {
         read_model(app, |model| {
             let mut found = Vec::new();

@@ -1,12 +1,11 @@
 //! Native capture on macOS through `AVFoundation`: one `AVCaptureSession` per
-//! capture, whose data output hands each picture or run of samples to a
-//! delegate on a dispatch queue of its own. Pictures go through a single
-//! latest-frame slot, so a slow UI never queues camera-sized allocations.
+//! capture, whose data output hands each picture or run of samples to a delegate on
+//! a dispatch queue of its own, through a single latest-frame slot.
 //!
-//! A camera or microphone session starts only once macOS has the person's
-//! answer (`requestAccessForMediaType`, which asks at most once per app). A
-//! session's runtime error is [`CaptureState::Failed`], its device going
-//! away [`CaptureState::Ended`].
+//! A camera or microphone session starts only once macOS has the person's answer
+//! (`requestAccessForMediaType`, which asks at most once per app). A session's
+//! runtime error is [`CaptureState::Failed`], its device going away
+//! [`CaptureState::Ended`].
 
 #[cfg(avf_microphone)]
 mod audio;
@@ -42,10 +41,8 @@ use objc2_foundation::{
 use crate::{CaptureError, CaptureState, Device, DeviceKind, Wake};
 use tilo_lock::MutexRecover as _;
 
-/// What the delegate does with each sample buffer.
 type OnSample = Box<dyn Fn(&CMSampleBuffer) + Send + Sync>;
 
-/// An output's delegate and the queue it is called on.
 type Feed = (Retained<SampleDelegate>, DispatchRetained<DispatchQueue>);
 
 define_class!(
@@ -86,11 +83,9 @@ impl SampleDelegate {
     }
 }
 
-/// What the delegate hands over, and where the capture is.
 struct Shared<T> {
     latest: Option<T>,
     state: Option<CaptureState>,
-    /// Told when `state` changes.
     wake: Option<Wake>,
 }
 
@@ -106,9 +101,9 @@ impl<T> Default for Shared<T> {
 
 type Slot<T> = Arc<Mutex<Shared<T>>>;
 
-/// A later state replaces an earlier one, except that [`CaptureState::Live`]
-/// never replaces anything. A change wakes whoever asked to hear of it;
-/// the `Live` every picture settles does not, once it holds.
+/// A later state replaces an earlier one, except that [`CaptureState::Live`] never
+/// replaces anything, so the `Live` every picture settles does not wake a listener
+/// again.
 fn settle<T>(slot: &Slot<T>, state: CaptureState) {
     let mut shared = slot.lock_recover();
     let changed = if state == CaptureState::Live {
@@ -169,7 +164,6 @@ pub(crate) fn devices(kind: DeviceKind) -> Vec<Device> {
         .collect()
 }
 
-/// The device `id` names ([`Device::id`]), or the default one, as an input.
 #[cfg(any(avf_camera, avf_microphone))]
 fn device_input(
     kind: DeviceKind,
@@ -191,12 +185,11 @@ fn device_input(
     Ok((device, Retained::into_super(input)))
 }
 
-/// A configured session and what feeds it; dropping it stops the capture.
 struct Capture {
     session: Retained<AVCaptureSession>,
-    /// Set once the capture is dropped, so a late permission answer does not
-    /// start it. Apart from the delegate's slot, so that stopping never waits
-    /// on a delegate that waits on the slot.
+    /// Set once the capture is dropped, so a late permission answer does not start it.
+    /// Apart from the delegate's slot, so that stopping never waits on a delegate that
+    /// waits on the slot.
     stopped: Arc<Mutex<bool>>,
     observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
     _delegate: Retained<SampleDelegate>,
@@ -204,8 +197,6 @@ struct Capture {
 }
 
 impl Capture {
-    /// `input` feeding `output`, whose delegate is `delegate` on `queue`;
-    /// its failures and `device` going away land in `slot`.
     fn new<T: Send + 'static>(
         input: &AVCaptureInput,
         output: &AVCaptureOutput,
@@ -276,14 +267,12 @@ impl Capture {
         unsafe { AVCaptureDevice::requestAccessForMediaType_completionHandler(media, &answered) };
     }
 
-    /// Start now, for an input macOS asks about by itself (the screen).
     #[cfg(avf_screen)]
     fn start_now<T>(&self, slot: &Slot<T>) {
         start(&self.session, &self.stopped, slot);
     }
 }
 
-/// Start `session` unless its capture was dropped meanwhile.
 fn start<T>(session: &AVCaptureSession, stopped: &Mutex<bool>, slot: &Slot<T>) {
     let stopped = stopped.lock_recover();
     if *stopped {
@@ -320,7 +309,6 @@ impl Drop for Capture {
     }
 }
 
-/// Call `then` with every `name` notification `object` posts.
 fn observe(
     name: &NSString,
     object: &AnyObject,

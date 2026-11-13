@@ -2,7 +2,6 @@
 
 use std::path::PathBuf;
 
-/// Apps run as this account. The guest image creates it.
 pub const DEFAULT_USER: &str = "tilo";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -15,7 +14,6 @@ pub struct GuestUser {
 }
 
 impl GuestUser {
-    /// Look `name` up in a passwd file's contents.
     #[must_use]
     pub fn from_passwd(passwd: &str, name: &str) -> Option<Self> {
         passwd.lines().find_map(|line| {

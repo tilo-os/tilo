@@ -76,7 +76,7 @@ def source_requirements():
              'apps/imager/packaging/qualify-capture-release.py',
              'tools/ci/native-stores.sh', 'tools/ci/native-store-autoclear.py', 'tools/ci/native-store-virtio.py',
              'tools/apps/pack-runtime-package.sh', 'tools/apps/stage_sdk_services.py',
-             'scripts/headless-examples/_control.py',
+             'scripts/headless-examples/real_apps.py',
              'scripts/browser/cef-lock.json', 'scripts/browser/build-host.py',
              'tools/apps/browser_runtime_release.py', 'tools/apps/app_package_isa.py'}
     # Full admission also measures non-Rust prerequisites (PAM, publisher roots,

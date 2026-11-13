@@ -4,7 +4,7 @@ use taffy::style_helpers::length;
 use taffy::{Size, Style};
 
 use super::arranged::{Arranged, Layout, Resolved, Slot, wrapper_style};
-use super::units::{Length, WidthClass};
+use super::units::Length;
 
 /// The readable width of a page, in `rem`.
 // ratchet-allow(pixel_const): a width in rem, which the text size scales, not pixels
@@ -16,7 +16,6 @@ pub struct PageLayout {
     /// instead of being as tall as what it holds, and keeps its gutter above and below rather
     /// than beside it.
     fill: bool,
-    class: Option<WidthClass>,
     /// One row of the page's content, which a virtual list stacks: the gutter at the sides
     /// only, and the row's own spacing above and below.
     row: Option<RowSpacing>,
@@ -33,17 +32,13 @@ enum RowSpacing {
     Foot,
 }
 
-impl PageLayout {
-    /// The width class of the last layout.
-    #[must_use]
-    pub const fn class(&self) -> Option<WidthClass> {
-        self.class
-    }
-
-    fn gutter(&self, resolved: &Resolved) -> f32 {
-        resolved.gap(crate::tokens::Rhythm::Group)
-            * self.class.unwrap_or(WidthClass::Medium).gutter_steps()
-    }
+/// The gutter a page keeps between its content and the column it is read in: the toolkit's
+/// content gutter (`Rhythm::Group`), the same at every width, as the shell's columns and the
+/// Rust pages keep it. A page's sides, its ends and the gap a notice has over and under it are
+/// then one distance at every window size, so what stands in a page stands the same distance
+/// from everything around it.
+fn content_gutter(resolved: &Resolved) -> f32 {
+    resolved.gap(crate::tokens::Rhythm::Group)
 }
 
 impl Layout for PageLayout {
@@ -51,8 +46,12 @@ impl Layout for PageLayout {
         "Page"
     }
 
+    fn readable_column(&self) -> Option<Length> {
+        self.measure
+    }
+
     fn container(&self, resolved: &Resolved, lead: f32) -> Style {
-        let gutter = length(self.gutter(resolved));
+        let gutter = length(content_gutter(resolved));
         // A page that fills its pane is a surface that lays out its own parts (a board's lanes,
         // a desk's strips): it takes the pane's whole width, and what it holds keeps its own
         // gutter at the sides. Its height gutter stays the page's.
@@ -60,20 +59,15 @@ impl Layout for PageLayout {
         let side = if self.fill {
             length(lead)
         } else {
-            length(self.gutter(resolved) + lead)
+            length(content_gutter(resolved) + lead)
         };
         let (top, bottom) = match self.row {
             Some(RowSpacing::After(gap)) => (length(resolved.gap(gap)), length(0.0_f32)),
             Some(RowSpacing::Foot) => {
                 (length(resolved.gap(crate::tokens::Rhythm::Section)), gutter)
             }
-            // A page that fills its pane lays out its own parts from the page gutter itself
-            // (a board's lanes start one standard content gap under the bar). Only content
-            // that grows with what it holds keeps the wider side gutter at its ends.
-            None if self.fill => {
-                let edge = length(resolved.gap(crate::tokens::Rhythm::Group));
-                (edge, edge)
-            }
+            // The page's ends keep the content gutter: what grows with what it holds and what
+            // fills the pane alike start the same distance under the bar.
             None => (gutter, gutter),
         };
         Style {
@@ -112,16 +106,9 @@ impl Layout for PageLayout {
         }
         style
     }
-
-    fn settle(&mut self, allocated: Size<f32>, resolved: &Resolved) -> bool {
-        let class = WidthClass::with_history(allocated.width / resolved.rem, self.class);
-        let changed = self.class != Some(class);
-        self.class = Some(class);
-        changed
-    }
 }
 
-/// Content bounded to a readable width and centred, with a gutter that scales with the space.
+/// Content bounded to a readable width and centred, one content gutter in from the column.
 pub type Page = Arranged<PageLayout>;
 
 impl Arranged<PageLayout> {
@@ -131,7 +118,6 @@ impl Arranged<PageLayout> {
         Self::with_layout(PageLayout {
             measure: Some(Length::Rem(MEASURE_REM)),
             fill: false,
-            class: None,
             row: None,
         })
     }
@@ -142,7 +128,6 @@ impl Arranged<PageLayout> {
         Self::with_layout(PageLayout {
             measure: None,
             fill: false,
-            class: None,
             row: None,
         })
     }
@@ -182,10 +167,11 @@ impl Arranged<PageLayout> {
         self
     }
 
-    /// The width this page keeps its content at: none for a page across the column (`full`).
-    #[must_use]
-    pub const fn readable_measure(&self) -> Option<Length> {
-        self.layout.measure
+    /// Keep what this page holds at `measure`: none to stand across its column, as a page that
+    /// fills does. A column whose content says the column it is read in takes it on again as
+    /// that content changes.
+    pub const fn set_readable_measure(&mut self, measure: Option<Length>) {
+        self.layout.measure = measure;
     }
 }
 
@@ -203,7 +189,6 @@ impl Default for Arranged<PageLayout> {
 #[derive(Debug)]
 pub struct TranscriptEdges {
     resolved: Option<Resolved>,
-    class: Option<WidthClass>,
     /// The gap the first row has above it.
     first: crate::tokens::Rhythm,
 }
@@ -214,7 +199,6 @@ impl TranscriptEdges {
     pub const fn new(first: crate::tokens::Rhythm) -> Self {
         Self {
             resolved: None,
-            class: None,
             first,
         }
     }
@@ -225,20 +209,11 @@ impl crate::widget::virtual_list::ListEdges for TranscriptEdges {
         self.resolved = Some(Resolved::of(theme));
     }
 
-    fn edges(&mut self, width: f64) -> (f64, f64) {
+    fn edges(&mut self, _width: f64) -> (f64, f64) {
         let Some(resolved) = self.resolved else {
             return (0.0, 0.0);
         };
-        let width = crate::num::f32_of_f64(width);
-        let class = WidthClass::with_history(width / resolved.rem, self.class);
-        self.class = Some(class);
-        let layout = PageLayout {
-            measure: None,
-            fill: false,
-            class: Some(class),
-            row: Some(RowSpacing::After(self.first)),
-        };
-        let lead = (layout.gutter(&resolved) - resolved.gap(self.first)).max(0.0);
+        let lead = (content_gutter(&resolved) - resolved.gap(self.first)).max(0.0);
         (f64::from(lead), 0.0)
     }
 }

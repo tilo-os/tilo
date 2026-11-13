@@ -1,6 +1,5 @@
-//! A setup machine without Unix ownership and links cannot give a written
-//! disk's account its SSH login or home files (see the Unix
-//! `installed_root`), nor label with the image's policy.
+//! A setup machine without Unix ownership and links cannot give a written disk's
+//! account its SSH login or home files, nor label with the image's policy.
 
 use std::io;
 use std::path::Path;

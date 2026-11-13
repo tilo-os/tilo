@@ -772,21 +772,36 @@ fn triggered_children(
     });
     if let Some(event) = &triggers.like {
         parts[LIKE] = Box::new(Follow::new(
-            event_button("transport.like", Icon::Heart, "Like", Some(event)),
+            event_button(
+                "transport.like",
+                Icon::Heart,
+                &crate::i18n::widget_format("media-like", &[]),
+                Some(event),
+            ),
             shared,
             like_face,
         ));
     }
     if let Some(event) = &triggers.lyrics {
         parts[LYRICS] = Box::new(Follow::new(
-            event_button("transport.lyrics", Icon::Captions, "Lyrics", Some(event)),
+            event_button(
+                "transport.lyrics",
+                Icon::Captions,
+                &crate::i18n::widget_format("media-lyrics", &[]),
+                Some(event),
+            ),
             shared,
             |b, state| toggle(b, state.lyrics, false),
         ));
     }
     if let Some(event) = &triggers.shuffle {
         parts[SHUFFLE] = Box::new(Follow::new(
-            event_button("transport.shuffle", Icon::Shuffle, "Shuffle", Some(event)),
+            event_button(
+                "transport.shuffle",
+                Icon::Shuffle,
+                &crate::i18n::widget_format("media-shuffle", &[]),
+                Some(event),
+            ),
             shared,
             |b, state| toggle(b, state.shuffle, state.idle),
         ));
@@ -834,18 +849,24 @@ fn triggered_children(
     }
     if let Some(event) = &triggers.repeat {
         parts[REPEAT] = Box::new(Follow::new(
-            event_button("transport.repeat", Icon::Repeat, "Repeat", Some(event)),
+            event_button(
+                "transport.repeat",
+                Icon::Repeat,
+                &crate::i18n::widget_format("media-repeat", &[]),
+                Some(event),
+            ),
             shared,
             |b, state| {
                 let repeat = state.repeat.unwrap_or_default();
-                let (icon, name) = match repeat {
-                    TransportRepeat::One => (Icon::Repeat1, "Repeat one"),
-                    TransportRepeat::All => (Icon::Repeat, "Repeat all"),
-                    TransportRepeat::Off => (Icon::Repeat, "Repeat"),
+                let (icon, key) = match repeat {
+                    TransportRepeat::One => (Icon::Repeat1, "media-repeat-one"),
+                    TransportRepeat::All => (Icon::Repeat, "media-repeat-all"),
+                    TransportRepeat::Off => (Icon::Repeat, "media-repeat"),
                 };
+                let name = crate::i18n::widget_format(key, &[]);
                 b.set_icon(icon);
-                b.set_accessible_name(name);
-                b.set_tooltip(Some(name.to_owned()));
+                b.set_accessible_name(&name);
+                b.set_tooltip(Some(name));
                 toggle(b, Some(repeat != TransportRepeat::Off), state.idle)
             },
         ));
@@ -856,7 +877,7 @@ fn triggered_children(
             event_slider(
                 Slider::from_state(&crate::LocalState::new(0.0))
                     .with_id("transport.position")
-                    .with_accessible_name("Position")
+                    .with_accessible_name(&crate::i18n::widget_format("media-position", &[]))
                     .value_text({
                         let shared = shared.clone();
                         move |fraction| time(fraction * shared.state.borrow().duration_ms)
@@ -883,21 +904,34 @@ fn triggered_children(
     });
     if let Some(event) = &triggers.queue {
         parts[QUEUE] = Box::new(Follow::new(
-            event_button("transport.queue", Icon::ListMusic, "Queue", Some(event)),
+            event_button(
+                "transport.queue",
+                Icon::ListMusic,
+                &crate::i18n::widget_format("media-queue", &[]),
+                Some(event),
+            ),
             shared,
             |b, state| toggle(b, state.queue, false),
         ));
     }
     if let Some(event) = &triggers.mute {
         parts[MUTE] = Box::new(Follow::new(
-            event_button("transport.mute", Icon::Volume2, "Mute", Some(event)),
+            event_button(
+                "transport.mute",
+                Icon::Volume2,
+                &crate::i18n::widget_format("media-mute", &[]),
+                Some(event),
+            ),
             shared,
             |b, state| {
                 let muted = state.volume <= 0.0;
                 b.set_icon(speaker(state.volume));
-                let name = if muted { "Unmute" } else { "Mute" };
-                b.set_accessible_name(name);
-                b.set_tooltip(Some(name.to_owned()));
+                let name = crate::i18n::widget_format(
+                    if muted { "media-unmute" } else { "media-mute" },
+                    &[],
+                );
+                b.set_accessible_name(&name);
+                b.set_tooltip(Some(name));
                 false
             },
         ));
@@ -907,25 +941,29 @@ fn triggered_children(
         event_slider(
             Slider::from_state(&crate::LocalState::new(1.0))
                 .with_id("transport.volume")
-                .with_accessible_name("Volume"),
+                .with_accessible_name(&crate::i18n::widget_format("media-volume", &[])),
             volume.as_ref(),
         ),
         shared,
         follow_volume,
     ));
     parts[VOLUME_MENU] = Box::new(Follow::new(
-        Button::icon_only("transport.volume-menu", Icon::Volume2, "Volume")
-            .control_size(ControlSize::Regular)
-            .with_popover(VolumePanel {
-                slider: event_slider(
-                    Slider::from_state(&crate::LocalState::new(1.0))
-                        .with_id("transport.volume-menu.slider")
-                        .with_accessible_name("Volume"),
-                    volume.as_ref(),
-                ),
-            })
-            .side(PopoverSide::Above)
-            .aligned(PanelAlign::Trailing),
+        Button::icon_only(
+            "transport.volume-menu",
+            Icon::Volume2,
+            &crate::i18n::widget_format("media-volume", &[]),
+        )
+        .control_size(ControlSize::Regular)
+        .with_popover(VolumePanel {
+            slider: event_slider(
+                Slider::from_state(&crate::LocalState::new(1.0))
+                    .with_id("transport.volume-menu.slider")
+                    .with_accessible_name(&crate::i18n::widget_format("media-volume", &[])),
+                volume.as_ref(),
+            ),
+        })
+        .side(PopoverSide::Above)
+        .aligned(PanelAlign::Trailing),
         shared,
         |menu, state| {
             menu.button_mut().set_icon(speaker(state.volume));
@@ -1230,7 +1268,8 @@ fn bound_slider(slider: Slider, action: Option<&ActionBinding<f64>>) -> Slider {
 /// ground behind it: a filled heart is a liked song, an outline one is not.
 fn like_face(button: &mut Button, state: &TransportState) -> bool {
     let liked = state.liked == Some(true) && !state.idle;
-    button.set_accessible_name(if liked { "Unlike" } else { "Like" });
+    let name = crate::i18n::widget_format(if liked { "media-unlike" } else { "media-like" }, &[]);
+    button.set_accessible_name(&name);
     button.set_icon(if liked {
         Icon::HeartFilled
     } else {
@@ -1340,7 +1379,12 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
             dirty: true,
         }),
         Box::new(Follow::new(
-            button("transport.like", Icon::Heart, "Like", actions.like.as_ref()),
+            button(
+                "transport.like",
+                Icon::Heart,
+                &crate::i18n::widget_format("media-like", &[]),
+                actions.like.as_ref(),
+            ),
             shared,
             like_face,
         )),
@@ -1348,7 +1392,7 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
             view_button(
                 "transport.lyrics",
                 Icon::Captions,
-                "Lyrics",
+                &crate::i18n::widget_format("media-lyrics", &[]),
                 shared,
                 TransportEvent::Lyrics,
             ),
@@ -1359,7 +1403,7 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
             button(
                 "transport.shuffle",
                 Icon::Shuffle,
-                "Shuffle",
+                &crate::i18n::widget_format("media-shuffle", &[]),
                 actions.shuffle.as_ref(),
             ),
             shared,
@@ -1408,20 +1452,21 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
             button(
                 "transport.repeat",
                 Icon::Repeat,
-                "Repeat",
+                &crate::i18n::widget_format("media-repeat", &[]),
                 actions.repeat.as_ref(),
             ),
             shared,
             |b, state| {
                 let repeat = state.repeat.unwrap_or_default();
-                let (icon, name) = match repeat {
-                    TransportRepeat::One => (Icon::Repeat1, "Repeat one"),
-                    TransportRepeat::All => (Icon::Repeat, "Repeat all"),
-                    TransportRepeat::Off => (Icon::Repeat, "Repeat"),
+                let (icon, key) = match repeat {
+                    TransportRepeat::One => (Icon::Repeat1, "media-repeat-one"),
+                    TransportRepeat::All => (Icon::Repeat, "media-repeat-all"),
+                    TransportRepeat::Off => (Icon::Repeat, "media-repeat"),
                 };
+                let name = crate::i18n::widget_format(key, &[]);
                 b.set_icon(icon);
-                b.set_accessible_name(name);
-                b.set_tooltip(Some(name.to_owned()));
+                b.set_accessible_name(&name);
+                b.set_tooltip(Some(name));
                 toggle(b, Some(repeat != TransportRepeat::Off), state.idle)
             },
         )),
@@ -1436,7 +1481,7 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
                 bound_slider(
                     Slider::from_state(&crate::LocalState::new(0.0))
                         .with_id("transport.position")
-                        .with_accessible_name("Position")
+                        .with_accessible_name(&crate::i18n::widget_format("media-position", &[]))
                         .value_text({
                             let shared = shared.clone();
                             move |fraction| time(fraction * shared.state.borrow().duration_ms)
@@ -1490,9 +1535,12 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
             |b, state| {
                 let muted = state.volume <= 0.0;
                 b.set_icon(speaker(state.volume));
-                let name = if muted { "Unmute" } else { "Mute" };
-                b.set_accessible_name(name);
-                b.set_tooltip(Some(name.to_owned()));
+                let name = crate::i18n::widget_format(
+                    if muted { "media-unmute" } else { "media-mute" },
+                    &[],
+                );
+                b.set_accessible_name(&name);
+                b.set_tooltip(Some(name));
                 false
             },
         )),
@@ -1500,7 +1548,7 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
             bound_slider(
                 Slider::from_state(&crate::LocalState::new(1.0))
                     .with_id("transport.volume")
-                    .with_accessible_name("Volume"),
+                    .with_accessible_name(&crate::i18n::widget_format("media-volume", &[])),
                 actions.volume.as_ref(),
             ),
             shared,
@@ -1508,26 +1556,34 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
         )),
         Box::new({
             let shared = shared.clone();
-            Button::icon_only("transport.more", Icon::MoreHorizontal, "More controls")
-                .control_size(ControlSize::Regular)
-                .on_view(move || {
-                    let origin = shared.origin.get().to_vec2();
-                    shared.push(TransportEvent::More(shared.more.get() + origin));
-                })
+            Button::icon_only(
+                "transport.more",
+                Icon::MoreHorizontal,
+                &crate::i18n::widget_format("media-more-controls", &[]),
+            )
+            .control_size(ControlSize::Regular)
+            .on_view(move || {
+                let origin = shared.origin.get().to_vec2();
+                shared.push(TransportEvent::More(shared.more.get() + origin));
+            })
         }),
         Box::new(Follow::new(
-            Button::icon_only("transport.volume-menu", Icon::Volume2, "Volume")
-                .control_size(ControlSize::Regular)
-                .with_popover(VolumePanel {
-                    slider: bound_slider(
-                        Slider::from_state(&crate::LocalState::new(1.0))
-                            .with_id("transport.volume-menu.slider")
-                            .with_accessible_name("Volume"),
-                        actions.volume.as_ref(),
-                    ),
-                })
-                .side(PopoverSide::Above)
-                .aligned(PanelAlign::Trailing),
+            Button::icon_only(
+                "transport.volume-menu",
+                Icon::Volume2,
+                &crate::i18n::widget_format("media-volume", &[]),
+            )
+            .control_size(ControlSize::Regular)
+            .with_popover(VolumePanel {
+                slider: bound_slider(
+                    Slider::from_state(&crate::LocalState::new(1.0))
+                        .with_id("transport.volume-menu.slider")
+                        .with_accessible_name(&crate::i18n::widget_format("media-volume", &[])),
+                    actions.volume.as_ref(),
+                ),
+            })
+            .side(PopoverSide::Above)
+            .aligned(PanelAlign::Trailing),
             shared,
             |menu, state| {
                 menu.button_mut().set_icon(speaker(state.volume));

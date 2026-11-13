@@ -34,6 +34,14 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::record::InstanceRecord;
 use tilolang_tilo::runtime::Value;
 
+#[path = "host/indexes.rs"]
+mod indexes;
+/// Tasks in a hosted window, and Today reading it from Tasks' own record.
+#[path = "host/tasks.rs"]
+mod tasks;
+#[path = "host/wakes.rs"]
+mod wakes;
+
 const APP: &str = "so.tilo.lang.counter";
 
 fn counter() -> Bundle {
@@ -72,6 +80,8 @@ struct Broker {
     /// The actions the broker learned, as a peer's log keeps them: what one undo takes back
     /// across the workspace.
     actions: Actions,
+    /// The other routes the connection joined.
+    routes: Rc<RefCell<Vec<RouteSpec>>>,
 }
 
 impl PeerTransport for Broker {
@@ -94,21 +104,6 @@ impl PeerTransport for Broker {
         Ok(())
     }
 
-    fn action_of(&self, workspace: &str, change: &[u8; 32]) -> Option<CommitHistory> {
-        self.actions
-            .borrow()
-            .iter()
-            .rev()
-            .find(|action| {
-                action.workspace == workspace
-                    && action
-                        .parts
-                        .iter()
-                        .any(|part| part.changes.contains(change))
-            })
-            .cloned()
-    }
-
     fn poll(&mut self) -> Vec<CollabEvent> {
         self.inbox.borrow_mut().drain(..).collect()
     }
@@ -125,6 +120,15 @@ impl PeerTransport for Broker {
     fn take_action_directory_requests(&mut self) -> Vec<ActionDirectoryRequest> {
         std::mem::take(&mut self.directory.borrow_mut().asked)
     }
+
+    fn join_route(
+        &mut self,
+        route: RouteSpec,
+        _: collaboration::record::RecordKind,
+    ) -> Result<(), String> {
+        self.routes.borrow_mut().push(route);
+        Ok(())
+    }
 }
 
 /// The window, as the test drives it from the far end of the patch connection.
@@ -133,8 +137,9 @@ struct Window {
     root: Option<patch::Node>,
     /// The tree of the lane beside the root: the item the window shows.
     detail: Option<patch::Node>,
-    /// The resource the detail lane shows.
-    detail_target: Option<patch::ResourceRef>,
+    /// The item the window shows beside its list: what a press showed in place, as the
+    /// window heard it from the instance.
+    in_place: Option<patch::ResourceRef>,
     /// The instance asked the window to come forward.
     activated: bool,
     /// What the instance says each bound control holds, by key: its type is what a window
@@ -143,9 +148,28 @@ struct Window {
     /// The form the instance shows for the action waiting for its arguments, as the window
     /// last had it.
     form: Option<Box<patch::Form>>,
+    /// How many of the window's presses the instance said ran.
+    took: u64,
+    /// The patches taken in.
+    patched: usize,
 }
 
 impl Window {
+    /// A window at the other end of `transport`, shown nothing yet.
+    fn over(transport: ChannelTransport) -> Self {
+        Self {
+            transport,
+            root: None,
+            detail: None,
+            in_place: None,
+            activated: false,
+            bound: BTreeMap::new(),
+            form: None,
+            took: 0,
+            patched: 0,
+        }
+    }
+
     /// Take in what the instance sent: the root's tree, kept up to date with its patches.
     fn take(&mut self) {
         while let Some(batch) = self.transport.recv().unwrap() {
@@ -160,6 +184,7 @@ impl Window {
                         lane: Lane::Root,
                         patches,
                     } => {
+                        self.patched = self.patched.saturating_add(patches.len());
                         let root = self.root.as_mut().expect("a patch after the open");
                         for change in patches {
                             change.apply(root).expect("the patch applies");
@@ -167,12 +192,10 @@ impl Window {
                     }
                     ToUi::Open {
                         lane: Lane::Detail,
-                        target,
                         tree,
                         ..
                     } => {
                         self.detail = Some(tree);
-                        self.detail_target = Some(target);
                     }
                     ToUi::Patch {
                         lane: Lane::Detail,
@@ -183,11 +206,16 @@ impl Window {
                             change.apply(detail).expect("the patch applies");
                         }
                     }
+                    ToUi::Front {
+                        shows: Some((_, resource)),
+                        ..
+                    } => self.in_place = Some(resource),
                     ToUi::Activate => self.activated = true,
                     ToUi::Bound { key, value, .. } => {
                         self.bound.insert(key, value);
                     }
                     ToUi::Form(form) => self.form = form,
+                    ToUi::Took { fired } => self.took = fired,
                     _ => {}
                 }
             }
@@ -228,13 +256,14 @@ fn value_of(hosted: &Hosted) -> i64 {
     }
 }
 
-/// A host with one counter instance on a broker the test plays, and its window.
+/// Written when a host's wake is: work off the frame has something for its loop.
 static WOKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn wake() -> tilolang_tilo::background::Waker {
     Arc::new(|| WOKEN.store(true, std::sync::atomic::Ordering::SeqCst))
 }
 
+/// A host with one counter instance on a broker the test plays, and its window.
 fn running(person: &str) -> (TilolangHost, Window, Sent, Inbox, RouteSpec) {
     running_app(person, APP, counter())
 }
@@ -282,12 +311,12 @@ fn running_on(
 
 /// What the instance `number` for `person` on `route` is.
 fn spec(number: u64, person: &str, route: &RouteSpec) -> Spec {
-    Spec {
-        app: route.app_id.clone(),
-        workspace: route.cluster_id.to_string(),
-        instance: number,
-        person: person.to_owned(),
-    }
+    Spec::new(
+        route.app_id.clone(),
+        route.cluster_id.to_string(),
+        number,
+        person,
+    )
 }
 
 /// The instance `attributes` names, of `bundle`, in `host` on `route`, over `doc` as the workspace
@@ -311,6 +340,7 @@ fn instance_on(
         joined: None,
         directory,
         actions,
+        routes: Rc::default(),
     });
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
@@ -330,38 +360,59 @@ fn instance_on(
         Arc::new(bundle),
         &kept,
         Box::new(ChannelTransport::new(ours).unwrap()),
-        &Phrases::new("en-US"),
+        &Rc::new(Phrases::new("en-US")),
+        host.formats(),
         wake(),
     );
     host.add(hosted, Some(watched));
-    let window = Window {
-        transport: ChannelTransport::new(theirs).unwrap(),
-        root: None,
-        detail: None,
-        detail_target: None,
-        activated: false,
-        bound: BTreeMap::new(),
-        form: None,
-    };
+    let window = Window::over(ChannelTransport::new(theirs).unwrap());
     (window, sent, inbox)
 }
 
-/// Run the host as its loop does: a frame whenever something woke it, until nothing has for a
-/// while (work off the frame, the record's publication, wakes it when it is ready).
-fn settle(host: &mut TilolangHost, window: &mut Window) {
-    let mut quiet_since = std::time::Instant::now();
+/// How long a host may take to be done with what it owes before the test says so: a failure, not
+/// a wait — nothing is settled by it.
+const SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Run the host's loop without its wait: a frame whenever it owes one, until it owes nothing — no
+/// instance being opened, no change being applied, and no window with a frame coming. Every
+/// frame's patches are taken in `windows`, as a window that draws them does, and `carry` is what
+/// the test's broker does between frames.
+///
+/// Nothing is awaited by letting time pass: the host says whether it owes work, whether it is
+/// opening an instance, and what it reads off the frame wakes it when it is ready.
+fn settle_all(
+    host: &mut TilolangHost,
+    windows: &mut [&mut Window],
+    mut carry: impl FnMut(&mut TilolangHost) -> bool,
+) {
+    let began = std::time::Instant::now();
     loop {
+        let mut changed = host.turn();
+        for window in &mut *windows {
+            window.take();
+        }
+        changed |= carry(host);
         let woken = WOKEN.swap(false, std::sync::atomic::Ordering::SeqCst);
-        let changed = host.turn();
-        window.take();
-        if changed || woken {
-            quiet_since = std::time::Instant::now();
-        } else if quiet_since.elapsed() > std::time::Duration::from_millis(300) {
+        if !changed && !woken && !host.owes_work() {
             return;
-        } else {
-            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            began.elapsed() < SETTLE_LIMIT,
+            "the host owes work after {}s: {} opening, {} running",
+            began.elapsed().as_secs(),
+            host.opening(),
+            host.instances().count()
+        );
+        if !changed {
+            // Nothing moved: what the host owes is work off its frame, which wakes it.
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
+}
+
+/// [`settle_all`] of one window, with no broker of its own.
+fn settle(host: &mut TilolangHost, window: &mut Window) {
+    settle_all(host, &mut [window], |_| false);
 }
 
 fn documents_sent(sent: &Sent) -> usize {
@@ -396,6 +447,7 @@ fn opened_from_own_copy_in(
         joined: None,
         directory: Rc::default(),
         actions: Rc::default(),
+        routes: Rc::default(),
     });
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
@@ -411,29 +463,17 @@ fn opened_from_own_copy_in(
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
     let hosted = Hosted::with_record(
-        Spec {
-            app: APP.to_owned(),
-            workspace: route.cluster_id.to_string(),
-            instance: 1,
-            person: person.to_owned(),
-        },
+        Spec::new(APP, route.cluster_id.to_string(), 1, person),
         record,
         Arc::new(counter()),
         &kept,
         Box::new(ChannelTransport::new(ours).unwrap()),
-        &Phrases::new("en-US"),
+        &Rc::new(Phrases::new("en-US")),
+        host.formats(),
         wake(),
     );
     host.add(hosted, Some(watched));
-    let window = Window {
-        transport: ChannelTransport::new(theirs).unwrap(),
-        root: None,
-        detail: None,
-        detail_target: None,
-        activated: false,
-        bound: BTreeMap::new(),
-        form: None,
-    };
+    let window = Window::over(ChannelTransport::new(theirs).unwrap());
     (host, window, sent, route)
 }
 
@@ -521,18 +561,7 @@ fn a_press_in_the_window_is_a_step_on_the_instances_connection_and_undo_takes_it
     // The person presses + in the window: its control is bound to the instance's own action, so
     // the window sends the invocation, and the instance runs it and commits it as their step.
     let before = documents_sent(&sent);
-    let address = hosted
-        .published()
-        .iter()
-        .find(|action| action.action_label == "Increment")
-        .expect("the instance publishes the action the button runs")
-        .address
-        .clone();
-    window.send(&[ToApp::Invoke {
-        address,
-        argument: None,
-    }]);
-    settle(&mut host, &mut window);
+    press_increment(&mut host, &mut window);
     let hosted = host.instances().next().unwrap();
     assert_eq!(value_of(hosted), 1, "the press reached the runtime");
     assert!(
@@ -575,6 +604,108 @@ fn a_press_in_the_window_is_a_step_on_the_instances_connection_and_undo_takes_it
         (true, false),
         "and it is ada's to undo again"
     );
+}
+
+/// A press of an action the window chose (its bar, its palette) shows in the frame that ran it:
+/// what it changed and that it ran reach the window together, so the window takes them in with
+/// one frame rather than one for what it made and another for its having run.
+#[test]
+fn a_chosen_press_shows_and_is_told_in_the_frame_that_ran_it() {
+    let (mut host, mut window, _sent, _inbox, _route) = running("ada");
+    settle(&mut host, &mut window);
+    let address = host
+        .instances()
+        .next()
+        .unwrap()
+        .published()
+        .iter()
+        .find(|action| action.action_label == "Increment")
+        .expect("the instance publishes the action the button runs")
+        .address
+        .clone();
+    window.send(&[ToApp::Invoke {
+        address,
+        argument: None,
+    }]);
+    let patched = window.patched;
+    host.turn();
+    window.take();
+    assert_eq!(
+        value_of(host.instances().next().unwrap()),
+        1,
+        "the press ran"
+    );
+    assert!(window.patched > patched, "what it changed was sent");
+    assert_eq!(window.took, 1, "and that it ran, in the same frame");
+}
+
+/// The person at `window` presses the counter's +: the instance runs the action it publishes.
+fn press_increment(host: &mut TilolangHost, window: &mut Window) {
+    let address = host
+        .instances()
+        .next()
+        .unwrap()
+        .published()
+        .iter()
+        .find(|action| action.action_label == "Increment")
+        .expect("the instance publishes the action the button runs")
+        .address
+        .clone();
+    window.send(&[ToApp::Invoke {
+        address,
+        argument: None,
+    }]);
+    settle(host, window);
+}
+
+/// What grace did in her window on another device reaches ada's hosted window as the workspace's
+/// committed read of the record: ada sees it, beside the press she made meanwhile, and the read
+/// is acknowledged, so her connection's reader confirms it and the record takes her next change.
+#[test]
+fn another_devices_edit_shows_in_a_hosted_window_beside_its_own() {
+    let (mut host, mut window, _sent, inbox, route) = running("ada");
+    settle(&mut host, &mut window);
+    let held = host.instances().next().unwrap().record().doc().clone();
+    let (mut elsewhere, mut graces, _, _, _) =
+        running_on("grace", APP, counter(), Rc::default(), held);
+    settle(&mut elsewhere, &mut graces);
+    press_increment(&mut elsewhere, &mut graces);
+    let theirs = elsewhere
+        .instances()
+        .next()
+        .unwrap()
+        .record()
+        .doc()
+        .clone()
+        .save();
+
+    press_increment(&mut host, &mut window);
+    let mine = host
+        .instances()
+        .next()
+        .unwrap()
+        .record()
+        .doc()
+        .clone()
+        .get_heads();
+    let read = collaboration::CommittedDocument::for_test(theirs, None);
+    inbox
+        .borrow_mut()
+        .push_back(CollabEvent::CommittedDocument {
+            route,
+            read: read.clone(),
+        });
+    settle(&mut host, &mut window);
+
+    let hosted = host.instances().next().unwrap();
+    assert_eq!(value_of(hosted), 2, "grace's press shows beside ada's");
+    let mut record = hosted.record().doc().clone();
+    assert!(
+        mine.iter()
+            .all(|head| record.get_change_by_hash(head).is_some()),
+        "ada's own press is kept"
+    );
+    assert!(read.was_applied(), "the read is acknowledged once merged");
 }
 
 /// The last change a window's press sent the workspace.
@@ -741,17 +872,6 @@ fn one_undo_takes_back_every_unit_of_an_action_and_sends_the_reverts_as_one_acti
         assert_eq!(action.commit, undo_a.id());
         assert_eq!(action.parts.len(), 2, "the undo names both units");
     }
-    drop(history);
-    let undo = host
-        .instances()
-        .next()
-        .unwrap()
-        .record()
-        .manager()
-        .action_of(&cluster.to_string(), &undo_a.parts[0].changes[0])
-        .expect("the log knows the undo");
-    assert_eq!(undo.commit, undo_a.id());
-    assert_eq!(undo.parts.len(), 2);
 }
 
 #[test]
@@ -1060,25 +1180,12 @@ fn a_slow_open_does_not_hold_up_another_instances_frame() {
     }));
     let (ours, theirs) = Channel::pair().unwrap();
     host.open(
-        Spec {
-            app: APP.to_owned(),
-            workspace: route.cluster_id.to_string(),
-            instance: 2,
-            person: "grace".to_owned(),
-        },
+        Spec::new(APP, route.cluster_id.to_string(), 2, "grace"),
         Arc::new(counter()),
         manager,
         ours,
     );
-    let mut second = Window {
-        transport: ChannelTransport::new(theirs).unwrap(),
-        root: None,
-        detail: None,
-        detail_target: None,
-        activated: false,
-        bound: BTreeMap::new(),
-        form: None,
-    };
+    let mut second = Window::over(ChannelTransport::new(theirs).unwrap());
 
     // The first instance's window presses +: its next frame comes at once, while the second
     // instance still waits for its workspace.
@@ -1117,134 +1224,6 @@ fn a_slow_open_does_not_hold_up_another_instances_frame() {
     }
     assert_eq!(host.opening(), 0);
     assert_eq!(host.instances().count(), 2);
-}
-
-/// How many of `rounds` waits of the host's loop would end at once, nothing written to its wake:
-/// each a wait that asks whether anything has something for the host, without waiting.
-fn wakeups(host: &TilolangHost, rounds: usize) -> usize {
-    let wake = tilolang_host::wait::Wake::new().unwrap();
-    (0..rounds)
-        .filter(|_| {
-            tilolang_host::wait::wait(None, wake.fd(), host, 0)
-                .unwrap()
-                .any()
-        })
-        .count()
-}
-
-#[test]
-fn the_hosts_wake_ends_one_wait_per_writing_once_consumed() {
-    let (mut host, mut window, _sent, _inbox, _route) = running("ada");
-    settle(&mut host, &mut window);
-    let wake = tilolang_host::wait::Wake::new().unwrap();
-    let waker = wake.waker();
-    let woken = |wake: &tilolang_host::wait::Wake| {
-        (0..100)
-            .filter(|_| {
-                tilolang_host::wait::wait(None, wake.fd(), &host, 0)
-                    .unwrap()
-                    .wake
-            })
-            .count()
-    };
-    assert_eq!(woken(&wake), 0, "an unwritten wake ended a wait");
-    for _ in 0..1000 {
-        waker();
-    }
-    assert!(woken(&wake) > 0, "a written wake did not end the wait");
-    wake.consume().unwrap();
-    assert_eq!(woken(&wake), 0, "the consumed wake still ended waits");
-}
-
-#[test]
-fn an_idle_hosts_loop_does_not_wake_until_a_window_has_something() {
-    let (mut host, mut window, _sent, _inbox, _route) = running("ada");
-    settle(&mut host, &mut window);
-    assert_eq!(
-        wakeups(&host, 100),
-        0,
-        "an idle running instance woke its host"
-    );
-
-    // A second instance whose workspace has not answered its join, its window sending before
-    // the instance runs: what it sent waits for the instance, and the loop sleeps meanwhile.
-    let answer = Rc::new(std::cell::Cell::new(false));
-    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
-    let mut manager = CollaborationManager::with_peer_transport(SlowBroker {
-        route: route.clone(),
-        answer: Rc::clone(&answer),
-        asked: false,
-    });
-    assert!(manager.send(CollabRequest::Hello {
-        app_id: route.app_id.clone(),
-        cluster_id: route.cluster_id,
-        record: None,
-        record_kind: None,
-        handle: Some("grace".to_owned()),
-    }));
-    let (ours, theirs) = Channel::pair().unwrap();
-    host.open(
-        Spec {
-            app: APP.to_owned(),
-            workspace: route.cluster_id.to_string(),
-            instance: 2,
-            person: "grace".to_owned(),
-        },
-        Arc::new(counter()),
-        manager,
-        ours,
-    );
-    let mut second = Window {
-        transport: ChannelTransport::new(theirs).unwrap(),
-        root: None,
-        detail: None,
-        detail_target: None,
-        activated: false,
-        bound: BTreeMap::new(),
-        form: None,
-    };
-    second.send(&[ToApp::Fire {
-        lane: Lane::Root,
-        key: "early".to_owned(),
-        event: "pressed before it opened".to_owned(),
-        value: None,
-    }]);
-    host.turn();
-    assert_eq!(host.opening(), 1);
-    assert_eq!(
-        wakeups(&host, 100),
-        0,
-        "what an opening instance's window sent woke its host before the instance could read it"
-    );
-
-    // What a running window sends wakes the loop, and its frame takes it.
-    let (key, event) = window.increment();
-    window.send(&[ToApp::Fire {
-        lane: Lane::Root,
-        key,
-        event,
-        value: None,
-    }]);
-    assert_eq!(
-        wakeups(&host, 1),
-        1,
-        "a press in a running window did not wake its host"
-    );
-    host.turn();
-    window.take();
-    assert_eq!(wakeups(&host, 100), 0, "the frame left the press unread");
-
-    // An opening instance's window closing wakes the loop, which ends that opening.
-    drop(second);
-    assert_eq!(
-        wakeups(&host, 1),
-        1,
-        "an opening window's closing did not wake its host"
-    );
-    host.turn();
-    assert_eq!(host.opening(), 0);
-    assert_eq!(host.take_ended(), vec![2]);
-    assert_eq!(wakeups(&host, 100), 0);
 }
 
 /// Ask the instance's directory `query`, as the broker does, and take its answer.
@@ -1376,6 +1355,65 @@ fn the_instance_offers_an_action_directory_the_door_and_agents_browse() {
             assert_eq!(revision.as_deref(), Some(found.revision.as_str()));
         }
         other => panic!("Increment resolves: {other:?}"),
+    }
+}
+
+/// The app's root record is listed at the directory's top level to an agent as to a person: its
+/// `open` changes only the caller's own window, so it discloses the record under the caller's
+/// policy rather than keeping it, and every action on it, the publisher's alone. Its level lists
+/// the actions an agent takes there.
+#[test]
+fn an_agent_lists_the_apps_root_record_and_its_actions() {
+    let directory = Rc::new(RefCell::new(Directory::default()));
+    let (mut host, mut window, _sent, _inbox, _route) =
+        running_with("ada", APP, counter(), Rc::clone(&directory));
+    settle(&mut host, &mut window);
+    let top = page(&mut host, &mut window, &directory, query());
+    let prefix = format!("tl:{APP}:root-");
+    let root = top
+        .rows
+        .iter()
+        .find(|row| row.resource.starts_with(&prefix) && row.action.is_none())
+        .unwrap_or_else(|| panic!("the root record is at the top: {:?}", top.rows))
+        .clone();
+    let visibility = root
+        .visibility
+        .as_ref()
+        .expect("a listed resource names its visibility");
+    assert!(
+        visibility.contract.discloses_resource(),
+        "the root record is disclosed only to its publisher through `{}`",
+        visibility.action
+    );
+    let level = page(
+        &mut host,
+        &mut window,
+        &directory,
+        ActionDirectoryQuery {
+            parent_resource: root.resource.clone(),
+            ..query()
+        },
+    );
+    // The broker refuses a page whose action row names another contract than its descriptor's.
+    for row in level.rows.iter().filter(|row| row.action.is_some()) {
+        let descriptor = row
+            .descriptor
+            .as_ref()
+            .expect("an action row carries its action");
+        let visibility = row
+            .visibility
+            .as_ref()
+            .expect("an action row names its visibility");
+        assert_eq!(visibility.contract, descriptor.contract, "{row:?}");
+    }
+    for action in ["open", "increment", "decrement"] {
+        assert!(
+            level.rows.iter().any(|row| {
+                row.resource == root.resource && row.action.as_deref() == Some(action)
+            }),
+            "{action} is on the root's level: {:?}",
+            level.rows
+        );
     }
 }
 
@@ -1568,10 +1606,12 @@ fn broker_labels(sent: &Sent) -> Vec<String> {
         .collect()
 }
 
-/// The event that puts `shown` into the field `input`: a rich field is edited whole, as the
-/// toolkit sends what the person typed into it, a text field by the splice each key is.
+/// The event that puts `shown` into the field `input` of the page of `lane` showing `target`: a
+/// rich field is edited whole, as the toolkit sends what the person typed into it, a text field
+/// by the splice each key is.
 fn key_edit(
     rich: bool,
+    lane: Lane,
     target: &patch::ResourceRef,
     input: &str,
     seq: usize,
@@ -1581,14 +1621,14 @@ fn key_edit(
 ) -> ToApp {
     if rich {
         ToApp::EditRich {
-            lane: Lane::Detail,
+            lane,
             target: target.clone(),
             key: input.to_owned(),
             rich: typed_rich(shown),
         }
     } else {
         ToApp::Splice {
-            lane: Lane::Detail,
+            lane,
             target: target.clone(),
             key: input.to_owned(),
             seq: (seq as u64).saturating_add(1),
@@ -1599,19 +1639,15 @@ fn key_edit(
     }
 }
 
-/// A notebook of `held` notes, the first of them open in the window as the person made it; what
-/// the instance did while the person typed `typed` into the open note's field whose placeholder
-/// is `field`, a key at a time, each followed by the host's frames until it is quiet, as its loop
-/// runs them.
-fn typing(held: usize, field: &str, typed: &str) -> Typed {
-    let directory = Rc::new(RefCell::new(Directory::default()));
-    let (mut host, mut window, sent, inbox, _route) =
-        running_with("ada", NOTES, notes(), Rc::clone(&directory));
-    settle(&mut host, &mut window);
-    // The person starts a note from the empty notebook: it opens beside the list.
-    let button = node_with(window.root.as_ref().unwrap(), "label", "New note")
-        .expect("the empty notebook offers a new note")
-        .clone();
+/// The window's own "New note": the press that makes a note and shows it beside the list.
+fn press_new_note(window: &mut Window) {
+    let button = node_with(
+        window.root.as_ref().expect("the notebook is shown"),
+        "label",
+        "New note",
+    )
+    .expect("the notebook offers a new note")
+    .clone();
     let event = button
         .events
         .keys()
@@ -1624,6 +1660,19 @@ fn typing(held: usize, field: &str, typed: &str) -> Typed {
         event,
         value: None,
     }]);
+}
+
+/// A notebook of `held` notes, the first of them open in the window as the person made it; what
+/// the instance did while the person typed `typed` into the open note's field whose placeholder
+/// is `field`, a key at a time, each followed by the host's frames until it owes none, as its
+/// loop runs them.
+fn typing(held: usize, field: &str, typed: &str) -> Typed {
+    let directory = Rc::new(RefCell::new(Directory::default()));
+    let (mut host, mut window, sent, inbox, _route) =
+        running_with("ada", NOTES, notes(), Rc::clone(&directory));
+    settle(&mut host, &mut window);
+    // The person starts a note from the empty notebook: it opens beside the list.
+    press_new_note(&mut window);
     settle(&mut host, &mut window);
     // An agent adds the rest, which moves nobody's view.
     let new_note = host
@@ -1640,8 +1689,10 @@ fn typing(held: usize, field: &str, typed: &str) -> Typed {
         deliver(&inbox, (id as u64).saturating_add(100), &new_note, "ada");
     }
     settle(&mut host, &mut window);
+    // The note the press made shows beside the tree, its page the window's own: the field is
+    // in the tree's lane, as the window draws it.
     let field_node = node_with(
-        window.detail.as_ref().expect("the note is open"),
+        window.root.as_ref().expect("the notebook is shown"),
         "placeholder",
         field,
     )
@@ -1654,7 +1705,10 @@ fn typing(held: usize, field: &str, typed: &str) -> Typed {
         Some(_) => false,
         None => panic!("the instance says what the field `{field}` holds"),
     };
-    let target = window.detail_target.clone().expect("the note is open");
+    let target = window
+        .in_place
+        .clone()
+        .expect("the press showed the note beside the list");
     let documents = documents_sent(&sent);
     let (mut built, mut relabeled) = (0, 0);
     let mut seen: u64 = 0;
@@ -1663,7 +1717,7 @@ fn typing(held: usize, field: &str, typed: &str) -> Typed {
     for (seq, key) in typed.chars().enumerate() {
         let at = u32::try_from(shown.len()).unwrap();
         shown.push(key);
-        let edit = key_edit(rich, &target, &input, seq, at, &shown, key);
+        let edit = key_edit(rich, Lane::Root, &target, &input, seq, at, &shown, key);
         let (before, before_sweeps) = (visited(&host), swept(&host));
         let ((), phases) = tilo_resource::profiling::observe(|| {
             window.send(&[edit]);
@@ -1816,33 +1870,21 @@ fn title_of(host: &TilolangHost, target: &patch::ResourceRef) -> String {
 fn an_edit_lands_in_the_note_it_was_typed_into_whatever_the_window_shows_when_it_arrives() {
     let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", NOTES, notes());
     settle(&mut host, &mut window);
-    let new_note = |window: &mut Window| {
-        let button = node_with(window.root.as_ref().unwrap(), "label", "New note")
-            .expect("the notebook offers a new note")
-            .clone();
-        let event = button.events.keys().next().unwrap().clone();
-        window.send(&[ToApp::Fire {
-            lane: Lane::Root,
-            key: button.key,
-            event,
-            value: None,
-        }]);
-    };
-    new_note(&mut window);
+    press_new_note(&mut window);
     settle(&mut host, &mut window);
     let first = window
-        .detail_target
+        .in_place
         .clone()
-        .expect("the first note is open");
-    let title = node_with(window.detail.as_ref().unwrap(), "placeholder", "Untitled")
+        .expect("the first note shows beside the list");
+    let title = node_with(window.root.as_ref().unwrap(), "placeholder", "Untitled")
         .expect("the note has its title field")
         .key
         .clone();
     // The person typed into the first note's title; the window sent it just as their next
     // press made a second note, which the instance shows by the time the typing arrives.
-    new_note(&mut window);
+    press_new_note(&mut window);
     window.send(&[ToApp::Splice {
-        lane: Lane::Detail,
+        lane: Lane::Root,
         target: first.clone(),
         key: title,
         seq: 1,
@@ -1852,9 +1894,9 @@ fn an_edit_lands_in_the_note_it_was_typed_into_whatever_the_window_shows_when_it
     }]);
     settle(&mut host, &mut window);
     let second = window
-        .detail_target
+        .in_place
         .clone()
-        .expect("the second note is open");
+        .expect("the second note shows beside the list");
     assert_ne!(first, second, "the press opened the second note");
     assert_eq!(
         title_of(&host, &first),
@@ -1977,6 +2019,7 @@ fn applier_of(
         joined: None,
         directory: Rc::default(),
         actions: Rc::default(),
+        routes: Rc::default(),
     });
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
@@ -1989,15 +2032,10 @@ fn applier_of(
     let record = InstanceRecord::new(doc, manager, route.clone(), person);
     let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
     let applier = tilolang_host::hosted::Applier::open(
-        Spec {
-            app: app.to_owned(),
-            workspace: route.cluster_id.to_string(),
-            instance: 1 << 62,
-            person: person.to_owned(),
-        },
+        Spec::new(app, route.cluster_id.to_string(), 1 << 62, person),
         record,
         bundle,
-        &Phrases::new("en-US"),
+        &Rc::new(Phrases::new("en-US")),
         wake(),
         theirs.into(),
     )
@@ -2033,18 +2071,24 @@ fn apply(
     let mut line = serde_json::to_vec(change).unwrap();
     line.push(b'\n');
     (&*connection).write_all(&line).unwrap();
-    for _ in 0..200 {
+    let began = std::time::Instant::now();
+    while !applier.answered() {
         applier.turn();
-        if applier.answered() {
-            let mut answer = String::new();
-            std::io::BufReader::new(connection)
-                .read_line(&mut answer)
-                .unwrap();
-            return serde_json::from_str(&answer).unwrap();
+        assert!(
+            began.elapsed() < SETTLE_LIMIT,
+            "the change was never answered"
+        );
+        if !applier.owes() {
+            // The change's line is on its way, or the workspace it writes to: it arrives on the
+            // connection it comes on, which the applier reads on its own frames.
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    panic!("the change was never answered");
+    let mut answer = String::new();
+    std::io::BufReader::new(connection)
+        .read_line(&mut answer)
+        .unwrap();
+    serde_json::from_str(&answer).unwrap()
 }
 
 /// An agent task acting for ada, as the broker admitted it.
@@ -2182,13 +2226,12 @@ fn a_change_of_any_root_no_window_made_yet_makes_that_root_first() {
         Some(&shell),
         "not the root the shell opens with"
     );
-    let hide = &bundle
-        .meta
-        .actions
-        .iter()
-        .find(|action| action.name == "hide_app_menus")
-        .expect("the shell's top bar has its actions")
-        .id;
+    // As the door publishes it: by its name.
+    let hide = "hide_app_menus";
+    assert!(
+        bundle.meta.actions.iter().any(|action| action.name == hide),
+        "the shell's top bar has its actions"
+    );
     let (mut applier, connection, sent) =
         applier_of("ada", &app, &bundle, automerge::AutoCommit::new());
     let answer = apply(
@@ -2196,7 +2239,7 @@ fn a_change_of_any_root_no_window_made_yet_makes_that_root_first() {
         &connection,
         &runtime_portal::tilolang_host::Change {
             resource: tilolang_tilo::publish::resource_id(&app, &format!("root-{shell}")),
-            action: hide.clone(),
+            action: hide.to_owned(),
             arguments: serde_json::Map::new(),
             invoker: task_invoker(),
             context: None,
@@ -2214,40 +2257,49 @@ fn a_change_of_any_root_no_window_made_yet_makes_that_root_first() {
 /// answered why: the record is never left holding, building on and keeping a change the workspace
 /// has none of. Here the surface the workspace decides the record's changes by publishes the
 /// counter's record but none of its actions.
+///
+/// The surface a process decides an app's changes by is the process's, and this test names the
+/// counter's app a surface no other test may inherit: it runs in a process of its own.
 #[test]
 fn a_change_the_workspace_refuses_is_never_kept() {
-    let (address, doc) = increment();
-    collaboration::app_surface::register_package(
-        APP,
-        b"[[resources]]\nkind = \"tl.so.tilo.lang.counter.Counter\"\nlabel = \"Counter\"\nversion = 1\n",
-    );
-    let before = doc.clone().get_heads();
-    let (mut applier, connection, sent) = applier("ada", doc);
-    let answer = apply(
-        &mut applier,
-        &connection,
-        &runtime_portal::tilolang_host::Change {
-            resource: address.resource,
-            action: address.action,
-            arguments: serde_json::Map::new(),
-            invoker: task_invoker(),
-            context: None,
-            preview: None,
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_change_the_workspace_refuses_is_never_kept",
+        || {
+            let (address, doc) = increment();
+            collaboration::app_surface::register_package(
+                APP,
+                b"[[resources]]\nkind = \"tl.so.tilo.lang.counter.Counter\"\nlabel = \"Counter\"\nversion = 1\n",
+            );
+            let before = doc.clone().get_heads();
+            let (mut applier, connection, sent) = applier("ada", doc);
+            let answer = apply(
+                &mut applier,
+                &connection,
+                &runtime_portal::tilolang_host::Change {
+                    resource: address.resource,
+                    action: address.action,
+                    arguments: serde_json::Map::new(),
+                    invoker: task_invoker(),
+                    context: None,
+                    preview: None,
+                },
+            );
+            let why = answer["failed"]
+                .as_str()
+                .unwrap_or_else(|| panic!("refused, with why: {answer}"));
+            assert!(why.contains("publishes no"), "{why}");
+            assert_eq!(
+                applier.record().doc().clone().get_heads(),
+                before,
+                "the record holds nothing of the refused change"
+            );
+            assert_eq!(
+                documents_sent(&sent),
+                0,
+                "nothing was handed to the workspace"
+            );
         },
-    );
-    let why = answer["failed"]
-        .as_str()
-        .unwrap_or_else(|| panic!("refused, with why: {answer}"));
-    assert!(why.contains("publishes no"), "{why}");
-    assert_eq!(
-        applier.record().doc().clone().get_heads(),
-        before,
-        "the record holds nothing of the refused change"
-    );
-    assert_eq!(
-        documents_sent(&sent),
-        0,
-        "nothing was handed to the workspace"
     );
 }
 
@@ -2312,6 +2364,47 @@ fn a_record_whose_first_change_is_an_unnamed_stamp_is_handed_to_its_workspace_wh
             }
         }
     }
+}
+
+/// A package whose window writes when something was fetched, as Mail's does: the clock the
+/// person reads, from the moment the app keeps.
+const CLOCKED: &str = "so.tilo.lang.clocked";
+
+/// The text of the clocked package: a ledger whose one moment its window writes as a clock.
+const CLOCKED_SOURCE: &str = r#"app so.tilo.lang.clocked "Clocked" (icon: .hash, category: .utility)
+
+/// Something read at a moment.
+type Ledger {
+    key: Text merge register
+    /// When it was read, as the clock the person read it at.
+    at: Time = Time("1970-01-01T00:00:00Z")
+}
+
+root Ledger
+
+default view ledger for Ledger
+
+/// The window: when the ledger was read, as the person reads a clock.
+view ledger(l: Ledger) {
+    std.page(l) {
+        section("Fetched") {
+            ui.Text("{l.at.clock()}")
+        }
+    }
+}
+
+/// A ledger read at 10:41.
+scenario "fetched" {
+    let l = root Ledger
+    l.at = Time("2026-06-30T10:41:00Z")
+}
+"#;
+
+/// The clocked package, compiled from [`CLOCKED_SOURCE`].
+fn clocked() -> Bundle {
+    let compiled = tilolang::compile_package(CLOCKED_SOURCE, &tilolang::IdsLock::new(), &[])
+        .unwrap_or_else(|diagnostics| panic!("the clocked package compiles: {diagnostics:?}"));
+    Bundle::new(&compiled, [])
 }
 
 const MAIL: &str = "so.tilo.lang.mail";
@@ -2408,6 +2501,163 @@ fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
     );
 }
 
+/// The person's formats with the clock `time`.
+fn with_clock(time: tilo_formats::TimeStyle) -> tilo_formats::RegionFormats {
+    tilo_formats::RegionFormats {
+        time,
+        ..tilo_formats::RegionFormats::default()
+    }
+}
+
+#[test]
+fn a_hosted_window_writes_the_clock_the_person_reads() {
+    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", CLOCKED, clocked());
+    assert!(host.set_formats(with_clock(tilo_formats::TimeStyle::H12)));
+    host.instances_mut()
+        .next()
+        .expect("the instance runs")
+        .stage("fetched");
+    settle(&mut host, &mut window);
+    let written = shown(&window);
+    assert!(
+        written.contains("10:41 AM"),
+        "a 12-hour clock reads the moment the app wrote: {written}"
+    );
+
+    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", CLOCKED, clocked());
+    assert!(host.set_formats(with_clock(tilo_formats::TimeStyle::H24)));
+    host.instances_mut()
+        .next()
+        .expect("the instance runs")
+        .stage("fetched");
+    settle(&mut host, &mut window);
+    let written = shown(&window);
+    assert!(
+        written.contains("10:41") && !written.contains("10:41 AM"),
+        "a 24-hour clock reads it without the half of the day: {written}"
+    );
+}
+
+#[test]
+fn a_clock_the_person_changes_is_written_again_in_the_window() {
+    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", CLOCKED, clocked());
+    assert!(host.set_formats(with_clock(tilo_formats::TimeStyle::H24)));
+    host.instances_mut()
+        .next()
+        .expect("the instance runs")
+        .stage("fetched");
+    settle(&mut host, &mut window);
+    let before = shown(&window);
+    assert!(
+        before.contains("10:41"),
+        "the 24-hour clock first: {before}"
+    );
+
+    // The person picks the 12-hour clock in Settings: the host hears it on its door, and what
+    // the instance already wrote reads in it.
+    assert!(
+        host.set_formats(with_clock(tilo_formats::TimeStyle::H12)),
+        "another clock is a change"
+    );
+    settle(&mut host, &mut window);
+    let after = shown(&window);
+    assert!(
+        after.contains("10:41 AM"),
+        "the notice is written again in the clock the person chose: {after}"
+    );
+}
+
+/// A package whose window writes the day the week it shows began on, as the person's region
+/// starts its week: the "this week" a view reads.
+const WEEKS: &str = "so.tilo.lang.week";
+
+/// The text of the week package: a ledger whose window writes the day this week began on.
+const WEEKS_SOURCE: &str = r#"app so.tilo.lang.week "Week" (icon: .hash, category: .utility)
+
+/// Something the person looks at this week.
+type Ledger {
+    key: Text merge register
+    /// When it was read.
+    at: Date = Date("2026-10-29")
+}
+
+root Ledger
+
+default view ledger for Ledger
+
+/// The window: the day this week began on, as the person's region starts a week.
+view ledger(l: Ledger) {
+    std.page(l) {
+        section("This week") {
+            ui.Text("{l.at.start_of_week()}")
+        }
+    }
+}
+
+/// A ledger read on the 29th of October.
+scenario "this week" {
+    let l = root Ledger
+    l.at = Date("2026-10-29")
+}
+"#;
+
+/// The week package, compiled from [`WEEKS_SOURCE`].
+fn weeks() -> Bundle {
+    let compiled = tilolang::compile_package(WEEKS_SOURCE, &tilolang::IdsLock::new(), &[])
+        .unwrap_or_else(|diagnostics| panic!("the week package compiles: {diagnostics:?}"));
+    Bundle::new(&compiled, [])
+}
+
+/// The person's formats with the week starting on `first_day`.
+fn with_first_day(first_day: tilo_formats::FirstDayOfWeek) -> tilo_formats::RegionFormats {
+    tilo_formats::RegionFormats {
+        first_day,
+        ..tilo_formats::RegionFormats::default()
+    }
+}
+
+/// A person who starts their week on Sunday in Settings sees the week their window shows move
+/// with them: the session says so on the host's door, and the instance writes the day again.
+#[test]
+fn a_week_start_the_person_changes_is_written_again_in_the_window() {
+    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", WEEKS, weeks());
+    host.instances_mut()
+        .next()
+        .expect("the instance runs")
+        .stage("this week");
+    settle(&mut host, &mut window);
+    let monday = shown(&window);
+    assert!(
+        monday.contains("2026-10-26"),
+        "until the person says otherwise, Thursday the 29th stands in the week that began on \
+         Monday: {monday}"
+    );
+
+    // Sunday in Settings, said on the host's door as the session says it: the same day stands in
+    // the week that began the Sunday before it, and the window shows that week.
+    let (session, door) = runtime_portal::tilolang_host::pair().expect("a door");
+    runtime_portal::tilolang_host::send_locale(
+        &session,
+        &runtime_portal::tilolang_host::Locale {
+            formats: with_first_day(tilo_formats::FirstDayOfWeek::Sunday),
+            language: String::new(),
+        },
+    )
+    .expect("the formats cross the door");
+    let Some(runtime_portal::tilolang_host::Handed::Locale(locale)) =
+        runtime_portal::tilolang_host::receive(&door).expect("the door carries them")
+    else {
+        panic!("the door carries the person's formats as formats");
+    };
+    assert!(host.set_locale(&locale), "another first day is a change");
+    settle(&mut host, &mut window);
+    let sunday = shown(&window);
+    assert!(
+        sunday.contains("2026-10-25"),
+        "the week the person starts on Sunday is the one their window shows: {sunday}"
+    );
+}
+
 /// The text the form the window shows holds for the field `key`, or none while no form is open
 /// or the form has no such field.
 fn form_text(window: &Window, key: &str) -> Option<String> {
@@ -2471,209 +2721,50 @@ fn reminder_of(hosted: &Hosted, task: &Value) -> String {
 
 const TASKS: &str = "so.tilo.lang.tasks";
 
-/// The node of the form's tree at `key`.
-fn form_node<'a>(window: &'a Window, key: &str) -> Option<&'a patch::Node> {
-    fn at<'a>(node: &'a patch::Node, key: &str) -> Option<&'a patch::Node> {
-        if node.key == key {
-            return Some(node);
-        }
-        node.children.iter().find_map(|child| at(child, key))
-    }
-    at(&window.form.as_ref()?.tree, key)
-}
-
-/// The choices a `choice` node offers, as the value a pick holds and the words it reads as.
-fn choices_of(node: &patch::Node) -> Vec<(String, String)> {
-    let Some(patch::Value::List(cases)) = node.props.get("cases") else {
-        panic!("a choice with cases: {node:?}");
-    };
-    cases
-        .iter()
-        .map(|case| {
-            let patch::Value::List(parts) = case else {
-                panic!("a case: {case:?}");
-            };
-            match parts.as_slice() {
-                [patch::Value::Text(value), patch::Value::Text(label), ..] => {
-                    (value.clone(), label.clone())
-                }
-                other => panic!("a case's value and label: {other:?}"),
-            }
-        })
-        .collect()
-}
-
-/// The palette runs "New task", which still needs the title: its form asks for it, and the
-/// person types it. Returns the task the form made.
-fn a_task_typed_into_the_palettes_form(host: &mut TilolangHost, window: &mut Window) -> Value {
-    // The palette takes "New task", which still needs the title: its form asks for it.
-    let new_task = host
-        .instances()
-        .next()
-        .expect("the instance runs")
-        .published()
-        .iter()
-        .find(|action| action.action_label == "New task")
-        .expect("the tasks publish the action that makes one")
-        .address
-        .clone();
-    window.send(&[ToApp::Invoke {
-        address: new_task,
-        argument: None,
-    }]);
-    settle(host, window);
-    assert_eq!(
-        window.form.as_ref().map(|form| form.title.as_str()),
-        Some("New task…"),
-        "the form stands for the action, asking what it was not given"
-    );
-    type_into(window, "form~title", "Call Ada");
-    settle(host, window);
-    assert_eq!(form_text(window, "form~title").as_deref(), Some("Call Ada"));
-    submit_form(window);
-    settle(host, window);
-    assert!(
-        window.form.is_none(),
-        "the form closes once the action runs: {:?}",
-        window.form.as_ref().map(|form| form.error.clone())
-    );
-    tasks_of(host.instances().next().expect("the instance runs"))
-        .first()
-        .cloned()
-        .expect("the task it made")
-}
-
-/// "Remind me…" asks when, the moments a person names offered to pick from, and one way into the
-/// rest: the entry they type a moment into with the calendar at its end.
-fn a_reminder_asks_when(host: &mut TilolangHost, window: &mut Window) {
-    let remind = host
-        .instances()
-        .next()
-        .expect("the instance runs")
-        .published()
-        .iter()
-        .find(|action| action.action_label == "Remind me…")
-        .expect("the task offers its reminder")
-        .address
-        .clone();
-    window.send(&[ToApp::Invoke {
-        address: remind,
-        argument: None,
-    }]);
-    settle(host, window);
-    assert_eq!(
-        window.form.as_ref().map(|form| form.title.as_str()),
-        Some("Remind me…"),
-        "the reminder's form asks when"
-    );
-    assert_eq!(
-        form_text(window, "form~when").as_deref(),
-        Some(""),
-        "it starts with no moment, the task having no reminder"
-    );
-    assert!(
-        !window.form.as_ref().expect("the form").ready,
-        "a moment is required: nothing reads yet, so submit waits"
-    );
-    assert!(
-        !form_node(window, "form~when~field")
-            .expect("the moment's field")
-            .props
-            .contains_key("label"),
-        "a form of one question says what it asks in its title"
-    );
-    let choices = choices_of(form_node(window, "form~when~quick").expect("the moments offered"));
-    assert!(
-        choices.iter().all(|(_, label)| label != "None"),
-        "a required moment offers no way to leave it unanswered: {choices:?}"
-    );
-    assert_eq!(
-        form_node(window, "form~when~quick")
-            .expect("the moments offered")
-            .props
-            .get("case:as"),
-        Some(&patch::Value::Text("time".to_owned())),
-        "every moment says when it is, at the choice's trailing edge"
-    );
-    let picker = form_node(window, "form~when~pick").expect("one way into the rest");
-    assert_eq!(
-        picker
-            .children
-            .iter()
-            .map(|child| (child.kind.as_str(), child.key.as_str()))
-            .collect::<Vec<_>>(),
-        [
-            ("ui.TextInput", "form~when~text"),
-            ("ui.DateField", "form~when"),
-        ],
-        "a moment is typed into the entry, or picked from the calendar at its end"
-    );
-    assert_eq!(
-        form_node(window, "form~when")
-            .expect("the calendar")
-            .props
-            .get("compact"),
-        Some(&patch::Value::Bool(true)),
-        "the calendar is a chip beside the entry, not a field of its own"
-    );
-    assert!(
-        !window.form.as_ref().expect("the form").confirm,
-        "the moments answer the form on one pick: its footer stands as Cancel alone"
-    );
-    assert_eq!(
-        window.form.as_ref().expect("the form").answers,
-        [form_node(window, "form~when~quick")
-            .expect("its choices")
-            .key
-            .clone()],
-        "picking a moment answers the form by itself"
-    );
-}
-
-/// The person picks a moment from the ones the form offers, and that pick answers the form: the
-/// reminder is set without a second press.
-fn the_moment_picked_answers_the_reminder(
-    host: &mut TilolangHost,
-    window: &mut Window,
-    task: &Value,
-) {
-    let choices = choices_of(form_node(window, "form~when~quick").expect("the moments offered"));
-    let (moment, _) = choices
-        .iter()
-        .find(|(_, label)| label == "Tomorrow morning")
-        .unwrap_or_else(|| panic!("tomorrow morning is offered: {choices:?}"));
-    type_into(window, "form~when~quick", moment);
-    settle(host, window);
-    assert_eq!(
-        form_text(window, "form~when").as_deref(),
-        Some(moment.as_str()),
-        "the field reads as the moment the pick names"
-    );
-    submit_form(window);
-    settle(host, window);
-    assert!(
-        window.form.is_none(),
-        "the form closes once the action runs: {:?}",
-        window.form.as_ref().map(|form| form.error.clone())
-    );
-    assert_eq!(
-        &reminder_of(host.instances().next().expect("the instance runs"), task),
-        moment,
-        "the task is reminded at the moment picked"
-    );
-}
-
-/// The palette runs an action whose arguments it does not give, and the form asks for them by
-/// their types: a task is added by typing its title, and its reminder set by picking the moment
-/// it names, both through the invocation the palette sends for any command
-/// (forms-and-diagrams.md §1).
+/// A window a German person reads names another app's change by that app's own name: the names of
+/// the apps installed here arrive on the instance's connection with the workspace's people's
+/// names, and are what its history reads. The language the names are read in is the process's, so
+/// this test reads them in a process of its own.
 #[test]
-fn the_palette_asks_the_form_for_a_title_and_a_moment() {
-    let (app, bundle) = shipped(&shipped_dir().join("tasks"));
-    assert_eq!(app, TASKS);
-    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", &app, bundle);
-    settle(&mut host, &mut window);
-    let task = a_task_typed_into_the_palettes_form(&mut host, &mut window);
-    a_reminder_asks_when(&mut host, &mut window);
-    the_moment_picked_answers_the_reminder(&mut host, &mut window, &task);
+fn a_hosted_window_names_another_app_as_the_names_it_was_sent() {
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_hosted_window_names_another_app_as_the_names_it_was_sent",
+        || {
+            use tilolang_tilo::names::Unnamed;
+            use tilolang_tilo::runtime::{NameHost as _, Principal};
+
+            let today = Principal::new("app:so.tilo.lang.today".to_owned());
+            let (mut host, mut window, _sent, inbox, _route) = running("ada");
+            settle(&mut host, &mut window);
+            assert_eq!(
+                Unnamed.name(&today),
+                "Today",
+                "the words its id makes, before the session named it"
+            );
+            collaboration::history_source::authors::set_names_language("de-DE");
+            inbox.borrow_mut().push_back(CollabEvent::Context {
+                collaborators: Vec::new(),
+                permissions: Vec::new(),
+                apps: vec![collab_types::history::NamedApp {
+                    id: "so.tilo.lang.today".to_owned(),
+                    name: "Today".to_owned(),
+                    names: [("de-DE".to_owned(), "Heute".to_owned())]
+                        .into_iter()
+                        .collect(),
+                }],
+            });
+            settle(&mut host, &mut window);
+            assert_eq!(
+                Unnamed.name(&today),
+                "Heute",
+                "the app's own name in the window's language"
+            );
+            assert_eq!(
+                Unnamed.name(&Principal::new("app:org.example.Editor".to_owned())),
+                "Editor",
+                "an app installed nowhere near this device reads as the words its id makes"
+            );
+        },
+    );
 }

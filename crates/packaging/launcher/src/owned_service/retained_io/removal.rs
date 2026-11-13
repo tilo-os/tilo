@@ -1,5 +1,5 @@
-//! Root-created private namespace on the actual admitted source filesystem.
-//! Files enter only through original-credential atomic rename, never root reads.
+//! Root-created private namespace on the actual admitted source filesystem. Files enter
+//! only through original-credential atomic rename, never root reads.
 use super::{RetainedIoAuthority, Token, root};
 use crate::fd::{identity as id, open_beneath as open};
 use crate::owned_service::refused;
@@ -34,8 +34,7 @@ struct Custody {
     authority: Arc<dyn RetainedIoAuthority>,
 }
 pub(super) struct Removal(Option<Custody>);
-/// Opaque root-held namespace witness; neither names nor serialized claims can
-/// construct it. It retains no flock, so an authorized later worker can recover.
+/// Opaque root-held namespace witness; neither names nor serialized claims can construct it.
 pub struct RetainedNativeOwner {
     source: File,
     guard: File,
@@ -45,11 +44,6 @@ pub struct RetainedNativeOwner {
 }
 impl RetainedNativeOwner {
     /// Observe only namespace metadata after the worker has actually stopped.
-    /// This does not read file contents or confer a restore/delete capability.
-    ///
-    /// # Errors
-    /// Refuses non-root callers, changed or unprotected namespaces, and entries
-    /// still requiring recovery; propagates namespace metadata I/O failures.
     pub fn confirm_retirement(&self) -> io::Result<()> {
         root()?;
         check_namespace(
@@ -233,8 +227,8 @@ impl Removal {
     pub(super) fn confirm_empty(&self) -> io::Result<()> {
         root()?;
         let custody = self.0.as_ref().ok_or(io::ErrorKind::NotConnected)?;
-        // Target revocation must stop I/O, but cannot prevent observing retained
-        // source namespace obligations after confirmed worker death.
+        // Target revocation must stop I/O, but cannot prevent observing retained source namespace
+        // obligations after confirmed worker death.
         check_namespace(
             &custody.source,
             &custody.guard,
@@ -251,10 +245,6 @@ impl Removal {
     }
 }
 // Both leaves persist under the actual protected source-record namespace.
-// Dropping a worker releases only the exclusive session lock. It never discards
-// operation receipts or captured entries; process-held lists are not recovery.
-// Root registration retirement and canonical history adoption remain required
-// before this draft can enable destructive operations.
 fn delegated_leaf(guard: &File, name: &std::ffi::CStr, token: &Token) -> io::Result<File> {
     let created = unsafe { libc::mkdirat(guard.as_raw_fd(), name.as_ptr(), 0o700) } == 0;
     if !created && io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
@@ -278,8 +268,8 @@ fn delegated_leaf(guard: &File, name: &std::ffi::CStr, token: &Token) -> io::Res
     }
     Ok(file)
 }
-// The signed shim receives descriptors from the same original source mount;
-// independently binding each pathname would produce cross-mount EXDEV.
+// The signed shim receives descriptors from the same original source mount; independently binding each
+// pathname would produce cross-mount EXDEV.
 pub(super) fn prepare(facts: &Facts) -> io::Result<()> {
     root()?;
     let raw = unsafe { libc::fcntl(FD, libc::F_DUPFD_CLOEXEC, 128) };

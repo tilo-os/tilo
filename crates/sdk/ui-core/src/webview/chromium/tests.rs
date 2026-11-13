@@ -691,8 +691,10 @@ fn an_idle_host_never_wakes_its_supervisor_and_its_exit_is_seen_at_once() {
             untimed_waits(&engine) >= 1
         });
         std::fs::write(profile.join("go"), b"").unwrap();
+        // The failed flag is set before its report is queued, and the
+        // report is read straight after: wait for the report itself.
         wait_for("the host's exit is reported", || {
-            engine.shared.failed.load(Ordering::Acquire)
+            engine.shared.failure_reported()
         });
         // The output is still held open: only the exit itself can have
         // woken the supervisor.

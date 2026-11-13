@@ -1,8 +1,6 @@
-//! The live host withdraws a component's whole action surface when one of
-//! its actions breaks its contract: agents, Ctrl+K and screen readers then
-//! lose every Settings action at once, and the only trace is a log line per
-//! frame. Open every pane through the framework host Settings really runs
-//! in and require the surface it would publish to pass validation.
+//! The live host withdraws a component's whole action surface when one of its
+//! actions breaks its contract: agents, Ctrl+K and screen readers then lose
+//! every Settings action at once, and the only trace is a log line per frame.
 
 use settings::SettingsShell;
 use settings::categories::Category;
@@ -38,20 +36,19 @@ fn every_pane_publishes_a_surface_that_passes_contract_validation() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// The controls on screen bound to an action no resource of the surface
-/// publishes: the live host refuses to publish a surface holding one
-/// ("stale control action binding"), and every Settings action is gone.
 fn stale_control_bindings(app: &mut TestApp<SettingsShell>) -> Vec<(String, String)> {
     let resources = app.harness().resources();
     ui::widget::controls::control_action_bindings(app.harness().root_widget())
         .into_iter()
         .filter_map(|binding| match binding.kind {
             ui::widget::ControlBindingKind::Action(address)
-                // The window's search and History are the host's doors.
                 if !address.resource.starts_with("tilo.host:")
                     && ui::tilo_actions::door::resolve(&resources, &address).is_none() =>
             {
-                Some((binding.control_id, format!("{}#{}", address.resource, address.action)))
+                Some((
+                    binding.control_id,
+                    format!("{}#{}", address.resource, address.action),
+                ))
             }
             _ => None,
         })
@@ -106,9 +103,6 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
             )
         })
         .collect::<Vec<_>>();
-    // The sidebar virtualizes its control inventory. Match the actual
-    // admitted semantic rows, rather than expecting offscreen categories to
-    // occupy controls in this frame.
     let frame = app.harness().inspection();
     let tree = navigation_semantics(&frame.root).expect("the retained navigation list");
     let mut visible = Vec::new();
@@ -148,9 +142,6 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
     assert_eq!(crate::support::selected(&mut app), Category::Bluetooth);
 }
 
-/// A `settings://models/<id>` link opens Settings at Agent Models. Where the
-/// device has no such model (this harness reaches no model service), the
-/// window says so over the pane, and dismissing that leaves Agent Models.
 #[test]
 fn a_model_link_opens_agent_models() {
     let mut app = TestApp::<SettingsShell>::launched(&["settings://models/u2net-subject"])
@@ -191,12 +182,6 @@ fn a_model_link_opens_agent_models() {
     );
 }
 
-/// Every section of the person's settings is published with its field
-/// edits, so an agent or assistive technology changes any of it by path,
-/// without a pane showing it, and the section's own check refuses what it
-/// does not hold. The session keeps and publishes every one, whether or not
-/// Settings is open; Settings' controls change them through the session's
-/// actions.
 #[test]
 fn every_settings_section_is_edited_by_path() {
     let mut app = TestApp::<SettingsShell>::new().expect("settings opens headlessly");

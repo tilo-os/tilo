@@ -1,18 +1,6 @@
 //! Read, or rewrite a key in, a UKI's sealed command line or its `.osrel`:
 //! `/usr/libexec/tilo-uki-cmdline`, a link to `tilo-esp-write`.
 //!
-//! ```text
-//! tilo-uki-cmdline show [UKI]
-//! tilo-uki-cmdline blank KEY [UKI]
-//! tilo-uki-cmdline remove KEY [UKI]
-//! tilo-uki-cmdline set KEY=VALUE [UKI]
-//! tilo-uki-cmdline append KEY[=VALUE] [UKI]
-//! tilo-uki-cmdline replace OLD=VALUE NEW=VALUE [UKI]
-//! tilo-uki-cmdline osrel [UKI]
-//! tilo-uki-cmdline set-osrel KEY=VALUE [KEY=VALUE ...] UKI
-//! tilo-uki-cmdline boot-digest UKI
-//! ```
-//!
 //! Run on a booted machine: the ESP is mounted at /boot on the sealed layout,
 //! so the UKI is under /boot/EFI/Linux and root can write it. With no path it
 //! finds the single UKI there, in either the image build's layout or the one
@@ -26,56 +14,6 @@
 //! size, every following section keeps its file offset, and the PE stays
 //! loadable. Rewriting the section shorter would move the rest of the image
 //! and change what fails, which would prove nothing about the generation.
-//!
-//! `set` is the other side of the same coin, and it is what closes the
-//! composefs seal. `bootc container ukify` and `bootc install` compute
-//! different digests for the same image (bootc#2334), so install refuses the
-//! UKI and names the value it wants. *Rebuilding* the UKI with that value does
-//! not converge: a rebuild produces a new rootfs layer, so install then
-//! computes a third digest, and a fourth. Rewriting the digest inside the UKI
-//! that already exists cannot move the target — `/boot` is the one tree
-//! excluded from the composefs digest — so it converges in exactly two
-//! passes. Both digests are 128 hex characters, so the replacement is
-//! length-preserving like `blank`.
-//!
-//! `set-osrel` is the third of the family, and it is what makes a derived UKI
-//! *identifiable*. systemd-boot discovers any `*.efi` at the top level of
-//! `\EFI\Linux` as a Type #2 entry and takes its menu title from the `.osrel`
-//! section's `PRETTY_NAME`, its ordering from `SORT_KEY`. A repair image
-//! derived from a deployment therefore appears in the boot menu under the
-//! deployment's own name — indistinguishable from the thing it exists to
-//! repair — unless those two values are changed.
-//!
-//! It cannot be length-preserving (the replacement is shorter, the added key
-//! is new), so it works differently: `.osrel` is a small text section with raw
-//! slack after it (629 bytes of content in a 1024-byte raw section, on the
-//! image this was written against). The new content is written into that
-//! slack and the section's **`VirtualSize`** header field is updated. No file
-//! offset moves, so every following section is untouched — the same property
-//! the length-preserving edits have, bought a different way. It refuses when
-//! the new content does not fit the raw section, or when the raw section is
-//! larger than the gap to the next section's virtual address. `append` and
-//! `remove` edit `.cmdline` the same way.
-//!
-//! Why not a Type #1 loader entry instead, which would carry a title in a
-//! plain text file: bootc's composefs backend parses every `.conf` in
-//! `/boot/loader/entries` as one of its own, and a foreign one makes `bootc
-//! status` fail outright ("efi does not start with custom prefix"), taking
-//! `bootc upgrade` with it. Type #2 needs no `.conf` at all, so bootc never
-//! sees it. Established by putting one on a booted machine, not by reading.
-//!
-//! Two things it deliberately does not do:
-//!
-//! * It does not fix up the PE checksum. Nothing on this path verifies one,
-//!   and a UKI whose signature had to be re-made would no longer be the
-//!   artefact under test.
-//! * It does not touch anything but those bytes, so the boot it produces
-//!   measures normally into PCR 11 — with a different value, because the
-//!   command line changed, which is the whole point. The result is a UKI that
-//!   measures perfectly and carries no generation.
-//!
-//! Exit status: 0 done, 1 refused or failed (the reason on stderr), including
-//! a usage error, which prints the usage above.
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -142,7 +80,6 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// One row of a PE section table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Section {
     /// File offset of the section's 40-byte header.
@@ -154,7 +91,6 @@ pub struct Section {
     pub raw_offset: u32,
 }
 
-/// `data[start:start + len]` as Python slices: cut to the end of `data`.
 fn clamp(data: &[u8], start: usize, len: usize) -> &[u8] {
     let end = start.saturating_add(len).min(data.len());
     data.get(start.min(end)..end).unwrap_or_default()
@@ -176,7 +112,6 @@ fn u32_at(data: &[u8], at: usize) -> Result<u32> {
         .ok_or_else(|| Error::new("truncated PE headers"))
 }
 
-/// The PE machine field (`0xaa64` for ARM64, `0x8664` for x86-64).
 pub fn machine(data: &[u8]) -> Result<u16> {
     let pe = signature(data)?;
     u16_at(data, pe.saturating_add(4))
@@ -190,7 +125,6 @@ fn signature(data: &[u8]) -> Result<usize> {
     Ok(pe)
 }
 
-/// Every section of the PE in `data`, in table order.
 pub fn section_table(data: &[u8]) -> Result<Vec<Section>> {
     let pe = signature(data)?;
     let count = u16_at(data, pe.saturating_add(6))?;
@@ -268,10 +202,8 @@ pub fn find_cmdline(data: &[u8]) -> Result<(usize, usize)> {
         .ok_or_else(|| Error::new("this PE has no .cmdline section, so it is not a UKI"))
 }
 
-/// A section's geometry, and how far its content may grow in place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Room {
-    /// File offset of the section's header.
     pub header: usize,
     pub raw_offset: usize,
     pub raw_size: usize,
@@ -307,7 +239,6 @@ fn find_room(data: &[u8], name: &str, missing: &str) -> Result<Room> {
     })
 }
 
-/// The `.cmdline` section's geometry, without moving another PE section.
 pub fn find_cmdline_room(data: &[u8]) -> Result<Room> {
     find_room(
         data,
@@ -351,7 +282,6 @@ pub fn write_section(data: &mut [u8], room: &Room, new: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// `bytes.rstrip(chars)`.
 fn rstrip<'a>(bytes: &'a [u8], chars: &[u8]) -> &'a [u8] {
     let end = bytes
         .iter()
@@ -499,7 +429,6 @@ pub fn remove_cmdline(path: &Path, key: &[u8]) -> Result<(Vec<u8>, usize, usize)
     })
 }
 
-/// The `.osrel` section's text.
 pub fn read_osrel(data: &[u8]) -> Result<String> {
     let room = find_osrel(data)?;
     let content = clamp(data, room.raw_offset, room.raw_size.min(room.virtual_size));
@@ -573,7 +502,6 @@ fn efi_files(directory: &Path, found: &mut Vec<PathBuf>, descend: bool) {
     }
 }
 
-/// The single UKI under `/boot/EFI/Linux`, in either layout.
 fn default_uki() -> Result<PathBuf> {
     // Two layouts, both real:
     //   /boot/EFI/Linux/<kver>.efi                           as the image build writes it
@@ -783,7 +711,6 @@ fn run(args: &[OsString], out: &mut dyn std::io::Write) -> Result<()> {
     rewrite(action, args, out)
 }
 
-/// `blank`, `set` and `replace`: the length-preserving edits.
 fn rewrite(action: &str, args: &[OsString], out: &mut dyn std::io::Write) -> Result<()> {
     let write = |out: &mut dyn std::io::Write, text: String| {
         writeln!(out, "{text}").map_err(|e| Error::new(e.to_string()))
@@ -856,12 +783,10 @@ fn rewrite(action: &str, args: &[OsString], out: &mut dyn std::io::Write) -> Res
     write(out, format!("  {}", cmdline_text(&read(&path)?)?))
 }
 
-/// Whether `argv0` names this tool rather than `tilo-esp-write`.
 pub fn invoked_as(argv0: &OsStr) -> bool {
     Path::new(argv0).file_name() == Some(OsStr::new(NAME))
 }
 
-/// The command line after the program name.
 pub fn main(args: &[OsString]) -> ExitCode {
     let mut stdout = std::io::stdout().lock();
     match run(args, &mut stdout) {

@@ -10,6 +10,13 @@
 # BASE_REF, re-run `snapshot-rpms`.
 FROM ${BASE_REF} AS builder-base
 
+# The same bytes from the same base and snapshot: t keys every check compiled in this image by
+# them. rpm dates what it installs by SOURCE_DATE_EPOCH (the build's clock) instead of the wall
+# clock, and the transaction leaves its database finalized and no diagnostic state (DNF's history
+# and log, ldconfig's aux-cache, fontconfig's caches, a machine ID), as the packages layer does.
+ARG SOURCE_DATE_EPOCH=0
+COPY --chmod=0755 os/scripts/finalize-rpmdb.sh /usr/libexec/tilo/finalize-rpmdb
+COPY --chmod=0755 os/scripts/clean-dnf-layer-state.sh /usr/libexec/tilo/clean-dnf-layer-state
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
 # Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
@@ -42,7 +49,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         glib2-devel \
         nasm \
         gstreamer1-devel gstreamer1-plugins-base-devel \
-    && dnf clean all
+    && dnf clean all \
+    && /usr/libexec/tilo/finalize-rpmdb
 
 # Fedora's sccache RPM is built without the S3 backend. Use the same pinned,
 # full-feature static client as the canonical CI builder so the nested image

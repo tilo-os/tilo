@@ -279,8 +279,8 @@ impl HostTree<'_> {
         false
     }
 
-    /// `order` kept inside the keyboard scope: the focused desktop window's
-    /// content ([`crate::widget::Widget::scopes_keyboard_focus`]).
+    /// `order` kept inside the keyboard scope: the focused desktop window
+    /// ([`crate::widget::Widget::scopes_keyboard_focus`]).
     pub(crate) fn within_keyboard_scope(&self, order: Vec<NodeId>) -> Vec<NodeId> {
         let scopes: Vec<NodeId> = self
             .node_map
@@ -712,6 +712,11 @@ pub(crate) trait HostCore {
     ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
         self.widget_reached();
         let document = self.document();
+        // The host reaching a component's widget is input that component's
+        // next sync takes up.
+        if let Some(binding) = document.bindings.binding_ref(node) {
+            binding.note_input();
+        }
         // SAFETY: exclusive host access prevents overlapping target references.
         unsafe {
             crate::bound_dispatch::mutate_bound_node(

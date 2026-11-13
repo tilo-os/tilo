@@ -19,10 +19,8 @@ const FILE_FLAGS: OFlags = OFlags::NOFOLLOW
     .union(OFlags::CLOEXEC);
 
 impl Identity {
-    /// The identity of what `path` names now, following symbolic links;
-    /// `None` when nothing is there. Rewriting a file or touching its times
-    /// moves its change time, which no unprivileged process can set, and
-    /// adding or removing an entry moves a directory's times.
+    /// The identity of what `path` names now, following symbolic links; `None` when nothing is there.
+    /// Rewriting a file keeps it, so a caller can compare against what it recorded.
     pub fn of_path(path: &Path) -> io::Result<Option<Self>> {
         match std::fs::metadata(path) {
             Ok(metadata) => Self::from_metadata(&metadata).map(Some),
@@ -31,8 +29,8 @@ impl Identity {
         }
     }
 
-    /// Identify the inode an open file reads from: replacing the path's
-    /// entry afterwards cannot name another file's identity.
+    /// The inode an open file reads from, so replacing the path's entry afterwards cannot name another
+    /// file's identity.
     pub fn of_file(file: &std::fs::File) -> io::Result<Self> {
         Self::from_metadata(&file.metadata()?)
     }
@@ -58,12 +56,8 @@ pub struct CheckedCopy {
 }
 
 impl CheckedCopy {
-    /// Create missing parents without following links, then retain the parent
-    /// descriptor. `..` is rejected rather than allowed to escape the walk.
-    ///
-    /// # Errors
-    /// Rejects links, parent components and paths without a file name;
-    /// preserves native traversal, creation and synchronization errors.
+    /// Creates missing parents without following links, then retains the parent descriptor; `..` is
+    /// rejected rather than resolved.
     pub fn open(path: &Path) -> io::Result<Self> {
         let name = path.file_name().ok_or_else(|| {
             io::Error::new(
@@ -111,10 +105,8 @@ impl CheckedCopy {
         })
     }
 
-    /// Open and validate before flock: a FIFO must never make opening block.
-    ///
-    /// # Errors
-    /// Rejects symbolic links and nonregular locks; preserves open and lock errors.
+    /// Open and validate before `flock`: a FIFO must never make opening block. Rejects symbolic links
+    /// and nonregular files.
     pub fn lock(&self) -> io::Result<FileLock> {
         let file = File::from(fs::openat(
             &self.directory,
@@ -139,8 +131,8 @@ impl CheckedCopy {
         }
     }
 
-    /// Read bytes and identify the same opened regular file. Only absence
-    /// returns `None`; links and nonregular files are errors.
+    /// Read bytes and identify the same opened regular file; only absence returns `None`, links and
+    /// nonregular files are refused.
     pub fn read(&self) -> io::Result<(Vec<u8>, Option<Identity>)> {
         let Some(mut file) = self.open_file()? else {
             return Ok((Vec::new(), None));
@@ -152,22 +144,14 @@ impl CheckedCopy {
     }
 
     /// Validate and identify the opened inode, never metadata from a path.
-    ///
-    /// # Errors
-    /// Rejects links and nonregular files; preserves open and metadata errors.
     pub fn identity(&self) -> io::Result<Option<Identity>> {
         self.open_file()?
             .map(|file| Identity::from_metadata(&regular_metadata(&file)?))
             .transpose()
     }
 
-    /// Atomically publish a synced sibling, then sync the retained directory.
-    /// A durability error can occur after publication; callers must forget
-    /// their cached identity on any error and re-read before the next merge.
-    ///
-    /// # Errors
-    /// Rejects unsafe existing entries; preserves creation, write, sync,
-    /// rename and metadata errors. A failed temporary is removed on drop.
+    /// Atomically publish a synced sibling, then sync the retained directory; a durability error can
+    /// occur after publication.
     pub fn write(&self, bytes: &[u8]) -> io::Result<Identity> {
         // Refuse an unsafe existing copy rather than silently repairing it.
         self.identity()?;

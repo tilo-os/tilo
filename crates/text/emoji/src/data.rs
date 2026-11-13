@@ -1,8 +1,6 @@
-//! Reader for the checked-in data files written by `tools/regenerate.py`.
-//!
-//! The files are tab-separated records keyed by their first field; `#` lines
-//! are comments. The files are generated, so a malformed record is skipped
-//! rather than trusted.
+//! Reader for the checked-in data files `tools/regenerate.py` writes:
+//! tab-separated records keyed by their first field, `#` lines for comments. A
+//! malformed record is skipped rather than trusted.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -11,8 +9,8 @@ use crate::{Catalogue, Emoji, Gender, Group, SkinTone, Subgroup};
 
 const VS16: char = '\u{FE0F}';
 
-/// Lookup key: the text without emoji presentation selectors, so fully- and
-/// minimally-qualified spellings resolve to the same entry.
+/// The text without emoji presentation selectors, so fully- and minimally
+/// qualified spellings resolve to the same entry.
 pub(crate) fn key(text: &str) -> String {
     text.chars().filter(|&c| c != VS16).collect()
 }

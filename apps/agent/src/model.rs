@@ -1329,7 +1329,7 @@ impl Conversation {
     }
 
     pub fn body(&self, tools: &[agent_provider_config::protocol::ToolDefinition]) -> Value {
-        use agent_provider_config::protocol::Content;
+        use agent_provider_config::protocol::{Content, ModelRequest, ToolChoice};
         #[cfg(test)]
         if let Some(legacy) = &self.legacy {
             let mut body = legacy.body(tools, &self.compacted, self.output_tokens);
@@ -1349,47 +1349,27 @@ impl Conversation {
             }
             return body;
         }
-        let request = self.history.request(tools.to_vec(), self.output_tokens);
-        let mut request = self.finished_request(request, &self.compacted);
-        let Some((through, note)) = &self.folded else {
-            for (offset, (index, message)) in self.directions.iter().enumerate() {
-                request.messages.insert(index + offset, message.clone());
-            }
-            return serde_json::json!(self.with_continuation(request));
+        // Only what is sent is built: a long run's history keeps every turn
+        // it ever took (for read-back and for validating call ids), while the
+        // messages sent are the ones the fold left, so a turn costs what it
+        // sends however many turns came before it.
+        let (messages, said) = self.sent_messages();
+        let mut request = ModelRequest {
+            messages,
+            tool_choice: if tools.is_empty() {
+                ToolChoice::None
+            } else {
+                ToolChoice::Required
+            },
+            tools: tools.to_vec(),
+            max_output_tokens: self.output_tokens,
         };
-        // The folded turns give way to their note, and the person's words
-        // said among them follow it; pictures shown among them are not sent
-        // again.
-        let folded = |index: usize| (2..*through).contains(&index);
-        let history = std::mem::take(&mut request.messages);
-        let count = history.len();
-        let mut directions = self.directions.iter().peekable();
-        let mut said = Vec::new();
-        let mut place =
-            |index: usize,
-             message: &agent_provider_config::protocol::Message,
-             out: &mut Vec<agent_provider_config::protocol::Message>| {
-                if !folded(index) {
-                    out.push(message.clone());
-                    return;
-                }
-                said.extend(message.content.iter().filter_map(|content| match content {
-                    Content::Text { text } => Some(text.clone()),
-                    _ => None,
-                }));
-            };
-        for (index, message) in history.into_iter().enumerate() {
-            while let Some((at, direction)) = directions.next_if(|(at, _)| *at == index) {
-                place(*at, direction, &mut request.messages);
-            }
-            if !folded(index) {
-                request.messages.push(message);
-            }
+        if let Some(first) = &self.first {
+            first.apply_to(&mut request);
         }
-        for (at, direction) in directions {
-            place((*at).min(count), direction, &mut request.messages);
-        }
-        if let Some(first) = request.messages.get_mut(1) {
+        if let Some((_, note)) = &self.folded
+            && let Some(first) = request.messages.get_mut(1)
+        {
             first.content.push(Content::Text { text: note.clone() });
             if !said.is_empty() {
                 first.content.push(Content::Text {
@@ -1430,29 +1410,50 @@ impl Conversation {
         request
     }
 
-    /// The history's messages with the first turn's parts in place and each
-    /// tool result in `compacted` sent as what it maps to.
-    fn finished_request(
-        &self,
-        mut request: agent_provider_config::protocol::ModelRequest,
-        compacted: &HashMap<String, String>,
-    ) -> agent_provider_config::protocol::ModelRequest {
-        use agent_provider_config::protocol::Content;
-        if let Some(first) = &self.first {
-            first.apply_to(&mut request);
-        }
-        for content in request
-            .messages
-            .iter_mut()
-            .flat_map(|message| message.content.iter_mut())
-        {
-            if let Content::ToolResult(result) = content
-                && let Some(aside) = compacted.get(&result.call_id)
-            {
-                result.content.clone_from(aside);
+    /// The history's messages as this conversation sends them: the first
+    /// turn, the person's words and pictures at the turns they said them at,
+    /// and every turn after the fold — each result put aside as what it was
+    /// replaced with. The turns the fold covers are left out, and what the
+    /// person said among them comes back for the note that replaces them.
+    fn sent_messages(&self) -> (Vec<agent_provider_config::protocol::Message>, Vec<String>) {
+        use agent_provider_config::protocol::{Content, Message};
+        let history = self.history.messages();
+        let through = self.folded_through();
+        let folded = |index: usize| (2..through).contains(&index);
+        let mut sent: Vec<Message> = Vec::new();
+        let mut said: Vec<String> = Vec::new();
+        let mut directions = self.directions.iter().peekable();
+        let mut place = |index: usize, message: &Message, sent: &mut Vec<Message>| {
+            if !folded(index) {
+                sent.push(message.clone());
+                return;
             }
+            said.extend(message.content.iter().filter_map(|content| match content {
+                Content::Text { text } => Some(text.clone()),
+                _ => None,
+            }));
+        };
+        for (index, message) in history.iter().enumerate() {
+            while let Some((at, direction)) = directions.next_if(|(at, _)| *at == index) {
+                place(*at, direction, &mut sent);
+            }
+            if folded(index) {
+                continue;
+            }
+            let mut message = message.clone();
+            for content in &mut message.content {
+                if let Content::ToolResult(result) = content
+                    && let Some(aside) = self.compacted.get(&result.call_id)
+                {
+                    result.content.clone_from(aside);
+                }
+            }
+            sent.push(message);
         }
-        request
+        for (at, direction) in directions {
+            place((*at).min(history.len()), direction, &mut sent);
+        }
+        (sent, said)
     }
 
     /// The history index of each turn's assistant message after the first

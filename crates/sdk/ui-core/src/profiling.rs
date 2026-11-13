@@ -21,6 +21,8 @@
 
 #[cfg(test)]
 pub(crate) mod frame_probe;
+/// What the layout solver did, in counts rather than guesses.
+pub mod layout_counts;
 pub(crate) mod resource_trace;
 
 use crate::num::{f32_of_f64, f64_of_u64, f64_of_usize, usize_of_f64};

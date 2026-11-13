@@ -14,6 +14,9 @@
  * - `certificate-rejected`: the host did not take the device's certificate.
  *   The page certifies the device again with the identity it holds
  *   (`recover({kind: 'reauthenticate'})`), once.
+ * - `workspace-deleted`: the workspace's owner deleted it. Nothing brings it
+ *   back, so the page never joins again: `refuse` says so, and the page
+ *   forgets the workspace.
  * - `device-revoked`, a page with no door to join through again, a second
  *   refusal soon after joining again, or a failed re-certification: `refuse`
  *   says what happened (`refusalText`); there is nothing to try again.
@@ -33,7 +36,9 @@ export const REJOINED = 'tilo-rejoined';
 /** How long a join again by itself keeps the next one from happening. */
 export const REJOIN_WINDOW_MS = 2 * 60 * 1000;
 /** The failure codes a host's refusal ends a session with. */
-export const REFUSALS = new Set(['not-admitted', 'host-changed', 'device-revoked', 'certificate-rejected']);
+export const REFUSALS = new Set(['not-admitted', 'host-changed', 'device-revoked', 'certificate-rejected', 'workspace-deleted']);
+/** The refusals nothing brings back: joining again would be turned away too. */
+const FINAL = new Set(['device-revoked', 'certificate-rejected', 'workspace-deleted']);
 
 function recentRejoin({storage = globalThis.sessionStorage, now = Date.now()} = {}) {
   let kept;
@@ -69,8 +74,10 @@ export const UNREACHED = 'tilo-unreached';
 const UNREACHED_WINDOW_MS = 10 * 60 * 1000;
 
 /** Whether `error` is a host not answering at all (restarting, or the
- * network between): nothing it refused. */
+ * network between): nothing it refused. A session that never got through
+ * to its host fails `unanswered` (`hostUnreached` in peer.mjs). */
 export const hostUnreachable = error => (error?.name === 'HostAdmissionError' && error.code === 'unavailable')
+  || error?.code === 'unanswered'
   || /^(fetch failed|Failed to fetch|NetworkError|Load failed)/.test(String(error?.message ?? ''));
 
 /**
@@ -104,6 +111,9 @@ export function refusalText(code, name = null) {
   if (code === 'device-revoked') {
     return `This browser was removed from your devices, so it can’t open ${workspace} anymore.`;
   }
+  if (code === 'workspace-deleted') {
+    return `${name || 'This workspace'} was deleted by its owner, so it can’t be opened anymore.`;
+  }
   if (code === 'host-changed') {
     return `${name || 'This workspace'} was reset, so this browser can’t open it anymore. Ask the person who shared it for a new invitation.`;
   }
@@ -136,7 +146,7 @@ export function followRefusal({
         } catch (error) {
           console.warn('session: certifying this browser again failed', error?.code ?? error?.name ?? 'error');
         }
-      } else if (code !== 'device-revoked' && code !== 'certificate-rejected' && canRejoin(code)
+      } else if (!FINAL.has(code) && canRejoin(code)
         && !rejoinedRecently({storage, now: now()})) {
         stop();
         noteRejoin({storage, now: now(), name: displayName()});

@@ -1,19 +1,9 @@
-//! Weather — thin binary entry point. All logic lives in the library.
-//!
-//! Modes:
-//!   * default — the framework app ([`weather::WeatherShell`]), including its
-//!     `--shots --scenario NAME` captures.
-//!   * `--probe` — exercise the live networking stack and print what came
-//!     back.
+//! The weather binary: the app, or `--probe` for the live network stack.
 
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// An app runs as a sandboxed process, so a wrapped integer here costs one app,
+// not the session. The lints that crash (indexing, string slices, unwrap, panic)
+// stay denied: `shell`, `ui` and `crates/` keep the full set.
 #![allow(
     clippy::arithmetic_side_effects,
     reason = "app-local arithmetic; see the note above"
@@ -43,10 +33,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Exercise the live networking stack the app uses (`net` + `api`) against the
-/// keyless Open-Meteo endpoints and print what came back. This is the same
-/// [`weather::net::WeatherService`] the event loop drives. Invoked with
-/// `--probe`; it touches no UI and no window.
 fn run_probe() -> Result<(), Box<dyn std::error::Error>> {
     use ui::time::Duration;
     use weather::model::SavedLocation;
@@ -54,8 +40,6 @@ fn run_probe() -> Result<(), Box<dyn std::error::Error>> {
     use weather::units::Units;
 
     let svc = WeatherService::spawn();
-    // A saved place (real coordinates) + a free-text geocode — the two live
-    // request kinds the app issues.
     let berlin = SavedLocation::new("Berlin", "Berlin", "Germany", "DE", 52.52, 13.41, "auto");
     let _ = svc.request(Request::Forecast {
         location_id: berlin.id,

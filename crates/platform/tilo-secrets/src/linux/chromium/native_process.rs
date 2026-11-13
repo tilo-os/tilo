@@ -28,7 +28,6 @@ struct Evidence {
     opens: usize,
     closes: usize,
 }
-/// The owner bus path itself, which the fixture binds.
 fn start_owner_bus() -> PrivateBus {
     let owner = unsafe { libc::getuid() };
     assert_ne!(owner, 0);
@@ -177,8 +176,6 @@ fn server(bus: &PrivateBus, case: Case, evidence: &Arc<Mutex<Evidence>>) -> zbus
 }
 #[test]
 fn native_selected_slack_key_qualifies_only_on_isolated_real_secret_service() {
-    // An explicit native image marker prevents accidental host-keyring contact,
-    // even when a developer runs all tests with this qualification feature.
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     let marker = std::fs::OpenOptions::new()
         .read(true)

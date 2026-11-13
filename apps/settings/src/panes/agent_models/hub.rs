@@ -1,17 +1,4 @@
 //! Hugging Face in Agent Models.
-//!
-//! The signed catalog's recommendation is a starting point, not the only
-//! source: a person searches the Hub with the window bar's search (the
-//! pane's [`crate::area::PaneQuery`]; it draws no field of its own), opens
-//! any model by its id or link (their own fine-tunes and private models
-//! included), reviews each
-//! variant's files, size, fit for this device and licence, and downloads
-//! one, or adds a GGUF file from this device. Gated models download with
-//! the person's Hugging Face sign-in (in the browser, or with a code entered
-//! on another device) or a pasted access token; either is kept in this
-//! device's vault, where only the model manager reads it.
-//! The model manager does every network and store operation; this module
-//! shows what it answers, and every control is an [`AgentModelsEffect`].
 
 use std::sync::Arc;
 
@@ -42,16 +29,10 @@ use provider_settings_ui::widgets::{
     thing_row, value_row,
 };
 
-/// What Agent Models keeps of the Hub between frames.
 pub(crate) struct HubBrowser {
-    /// What the window bar's search holds while it searches the Hub.
     pub(crate) query: String,
-    /// The file family searches look for.
     pub(crate) format: HubFormat,
-    /// Searches on their way.
     pub(crate) searching: usize,
-    /// Bumped whenever the window bar's search is emptied or closed: a
-    /// search started before lands without showing its results.
     pub(crate) cleared: u64,
     reference: LocalState<String>,
     token: LocalState<String>,
@@ -59,13 +40,10 @@ pub(crate) struct HubBrowser {
     pub(crate) results: Option<Result<Vec<HubSearchResult>, String>>,
     /// The model last shown, or why it could not be read.
     pub(crate) offer: Option<Result<HubModelOffer, String>>,
-    /// The variant whose download is being reviewed.
     pub(crate) reviewing: Option<String>,
-    /// A search or lookup is on its way.
     pub(crate) working: bool,
     /// What is stored here, or why that cannot be read.
     pub(crate) token_state: Result<HubTokenState, String>,
-    /// A sign-in waiting for the person; it ends with what it stored.
     signing_in: Option<SignInWait<HubTokenState>>,
 }
 
@@ -87,22 +65,16 @@ impl HubBrowser {
         }
     }
 
-    /// Whether a sign-in waits for the person.
     pub(crate) fn signing_in(&self) -> bool {
         self.signing_in.is_some()
     }
 
-    /// Stop the sign-in under way.
     pub(crate) fn cancel_sign_in(&mut self) {
         if let Some(wait) = self.signing_in.take() {
             wait.cancel();
         }
     }
 
-    /// Sign in with Hugging Face: in the browser, or (`by_code`) with a code
-    /// entered on Hugging Face's page from any device. A worker waits for
-    /// the person, asks `userinfo` who signed in and stores the sign-in
-    /// through `control` where a pasted token goes.
     pub(crate) fn sign_in(
         &mut self,
         by_code: bool,
@@ -164,8 +136,6 @@ impl HubBrowser {
         Ok(())
     }
 
-    /// Take the sign-in's news: the notice to show when it ended, and
-    /// whether anything changed.
     pub(crate) fn poll(&mut self) -> (bool, Option<String>) {
         let Some(wait) = self.signing_in.as_mut() else {
             return (false, None);
@@ -220,16 +190,12 @@ impl HubBrowser {
         (self.searching == 0).then(|| self.search_typed())
     }
 
-    /// The window bar's search was emptied or closed: the pane shows what
-    /// it showed before a search.
     pub(crate) fn clear(&mut self) {
         self.query.clear();
         self.results = None;
         self.cleared += 1;
     }
 
-    /// After a search for `query` in `format` landed, the search what is
-    /// typed now asks for, when that is another.
     pub(crate) fn follow_up(&self, query: &str, format: &str) -> Option<AgentModelsEffect> {
         (self.searching == 0
             && !self.query.is_empty()
@@ -244,14 +210,12 @@ impl HubBrowser {
         }
     }
 
-    /// The token typed into the token field, emptied as it is taken.
     pub(crate) fn take_typed_token(&self) -> String {
         let token = self.token.with(|token| token.trim().to_owned());
         self.token.set(String::new());
         token
     }
 
-    /// The shown model's variant `name`, offered at `repo`'s `revision`.
     pub(crate) fn offered(
         &self,
         repo: &str,
@@ -266,7 +230,6 @@ impl HubBrowser {
         }
     }
 
-    /// The shown model's variant `name`, when it can be downloaded here.
     pub(crate) fn downloadable(&self, name: &str) -> Option<&HubVariantOffer> {
         match &self.offer {
             Some(Ok(offer)) => offer
@@ -276,7 +239,6 @@ impl HubBrowser {
         }
     }
 
-    /// Finding a model, the shown model, and the token.
     pub(crate) fn sections(
         &self,
         actions: &Actions<Settings>,
@@ -338,8 +300,6 @@ impl HubBrowser {
             ),
             AgentModelsEffect::SHOW_HUB_MODEL,
         );
-        // The person chooses the file in the file chooser, which hands it
-        // over open: neither Settings nor the model service takes a path.
         body.push(note(&t("agent-hub-file")));
         body.push(row(Box::new(invoking(
             actions,
@@ -370,8 +330,6 @@ impl HubBrowser {
         section(&t("agent-hub-title"), rows(body))
     }
 
-    /// A field and the button that sends what it holds as `bound`'s one
-    /// argument.
     fn push_field(
         actions: &Actions<Settings>,
         body: &mut Vec<Item>,
@@ -559,8 +517,6 @@ impl HubBrowser {
         section(&t("agent-hub-token-title"), rows(body))
     }
 
-    /// One row per search result and per variant of the shown model, each
-    /// with what can be done to it: the same doors the controls use.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let offer = |effect: AgentModelsEffect| SettingsEffect::from(effect).bound();
         let mut found = Vec::new();
@@ -602,7 +558,6 @@ impl HubBrowser {
     }
 }
 
-/// The window bar's search on Agent Models searches Hugging Face.
 impl crate::area::PaneQuery for super::AgentModelsArea {
     fn set_query_text(&self, text: &str) {
         let search = {
@@ -622,8 +577,6 @@ impl crate::area::PaneQuery for super::AgentModelsArea {
     }
 }
 
-/// Answer one of the Hub's effects; the download itself is manager work
-/// ([`super::ManagerWork`]).
 pub(crate) fn answer(
     app: &SettingsApp,
     mut model: std::cell::RefMut<'_, AgentModelsModel>,
@@ -640,7 +593,6 @@ pub(crate) fn answer(
         }
         AgentModelsEffect::OpenHubModelPage { repo } => {
             let reference = HubRef::parse(&repo).map_err(|_| t("agent-hub-changed"))?;
-            // The portal reports a failure to open on its own.
             drop(model.opener.open(&model_page_url(&reference.repo)));
             Ok(Effected::done())
         }
@@ -720,8 +672,6 @@ pub(crate) fn answer(
     }
 }
 
-/// Search the Hub for `query` in `format` (GGUF when none): a search the
-/// window bar's search starts, or an agent's.
 fn search(
     app: &SettingsApp,
     mut model: std::cell::RefMut<'_, AgentModelsModel>,
@@ -764,8 +714,6 @@ fn search(
     ))
 }
 
-/// Change the stored Hugging Face token on a worker, then read back
-/// whether one is stored, which the token group shows.
 fn token_job(
     app: &SettingsApp,
     cx: &mut EffectCx<Settings>,
@@ -793,8 +741,6 @@ fn token_job(
     )
 }
 
-/// The licence confirmation of one variant: what downloads, from where, at
-/// which commit, under which licence, with accept and cancel.
 fn push_confirm(
     actions: &Actions<Settings>,
     body: &mut Vec<Item>,
@@ -890,14 +836,12 @@ fn result_row(
     )
 }
 
-/// The file family named `name` on the model manager's command line.
 fn parse_format(name: &str) -> Option<HubFormat> {
     [HubFormat::Gguf, HubFormat::Safetensors]
         .into_iter()
         .find(|format| format_name(*format) == name)
 }
 
-/// The search filter's name on the model manager's command line.
 pub(crate) const fn format_name(format: HubFormat) -> &'static str {
     match format {
         HubFormat::Gguf => "gguf",
@@ -933,36 +877,26 @@ fn fit_reason(variant: &HubVariantOffer) -> String {
     }
 }
 
-/// The model manager's Hugging Face half: searching and reading the Hub,
-/// downloading from it, adding a file from this device and the stored token.
-/// Where the manager cannot do it, every request is refused as unavailable.
 #[allow(
     clippy::missing_errors_doc,
     reason = "every operation shares the adapter's one error contract, documented on LocalModelControl"
 )]
 pub trait HubControl {
-    /// Search Hugging Face for models with `format`'s files.
     fn hub_search(&self, _query: &str, _format: &str) -> Result<Vec<HubSearchResult>, String> {
         Err(t("agent-hub-unavailable"))
     }
-    /// A Hugging Face model, by id or link, as this device can pick it.
     fn hub_model(&self, _reference: &str) -> Result<HubModelOffer, String> {
         Err(t("agent-hub-unavailable"))
     }
-    /// Download `variant` of `repo` at `revision`, accepting its licence.
     fn hub_install(&self, _repo: &str, _revision: &str, _variant: &str) -> Result<(), String> {
         Err(t("agent-hub-unavailable"))
     }
-    /// Ask the person to choose a GGUF model file: its name and the file,
-    /// opened by the file chooser, or `None` when they cancelled.
     fn choose_model_file(&self) -> Result<Option<(String, std::fs::File)>, String> {
         choose_model_file()
     }
-    /// Hand `file`, called `name`, to the model store, which copies it in.
     fn import_file(&self, _name: &str, _file: std::fs::File) -> Result<(), String> {
         Err(t("agent-hub-unavailable"))
     }
-    /// What Hugging Face token or sign-in is stored on this device.
     fn hub_token(&self) -> Result<HubTokenState, String> {
         Ok(HubTokenState::None)
     }
@@ -1008,8 +942,6 @@ impl HubControl for super::ModelManagerCli {
     }
 }
 
-/// Ask the model manager something it answers in JSON; the Hub may take a
-/// while.
 pub(crate) fn manager_answer<T: serde::de::DeserializeOwned>(args: &[&str]) -> Result<T, String> {
     crate::device_read::off_ui_thread();
     let output = super::manager_run(args, std::time::Duration::from_secs(2 * 60))?;
@@ -1020,8 +952,6 @@ pub(crate) fn manager_answer<T: serde::de::DeserializeOwned>(args: &[&str]) -> R
         .map_err(|error| format!("model service returned an invalid answer: {error}"))
 }
 
-/// Ask the person for a GGUF model file in the file chooser: its name and
-/// the file it opened, or `None` when they cancelled.
 pub(crate) fn choose_model_file() -> Result<Option<(String, std::fs::File)>, String> {
     let result =
         ui::portal::PickRequest::open(&t("agent-hub-file-choose"), &t("agent-hub-add-file"))
@@ -1040,8 +970,6 @@ pub(crate) fn choose_model_file() -> Result<Option<(String, std::fs::File)>, Str
     }
 }
 
-/// Hand the model manager `file`, called `name`, as its standard input; the
-/// model service receives it as a descriptor and copies it into the store.
 pub(crate) fn manager_import(name: &str, file: std::fs::File) -> Result<(), String> {
     crate::device_read::off_ui_thread();
     let mut command = std::process::Command::new("tilo-model-manager");
@@ -1078,7 +1006,6 @@ pub(crate) fn manager_request(args: &[&str]) -> Result<(), String> {
     }
 }
 
-/// Download `variant` of `repo` at `revision`, accepting its licence.
 pub(crate) fn manager_install(repo: &str, revision: &str, variant: &str) -> Result<(), String> {
     manager_request(&[
         "hub-install",
@@ -1089,8 +1016,6 @@ pub(crate) fn manager_install(repo: &str, revision: &str, variant: &str) -> Resu
     ])
 }
 
-/// Where the person's token lives in the device vault; the model manager
-/// reads it from there for gated and private models.
 fn token_binding() -> Result<(accounts::CredentialRef, ServiceAuthorization), String> {
     let authorization = ServiceAuthorization::new(TOKEN_SERVICE, TOKEN_PURPOSE, HUB_ORIGIN)
         .map_err(|error| error.to_string())?;
@@ -1100,13 +1025,10 @@ fn token_binding() -> Result<(accounts::CredentialRef, ServiceAuthorization), St
     Ok((reference, authorization))
 }
 
-/// What the model manager reports of the token or sign-in stored here; a
-/// sign-in that is due is renewed on the way.
 pub(crate) fn token_state() -> Result<HubTokenState, String> {
     manager_answer(&["hub-account"])
 }
 
-/// A Hugging Face account as Settings names it.
 fn account_label(account: &HubAccount) -> String {
     match &account.name {
         Some(name) => format!("{name} ({})", account.username),
@@ -1114,7 +1036,6 @@ fn account_label(account: &HubAccount) -> String {
     }
 }
 
-/// Store `token` (a pasted one, or a sign-in) in this device's vault.
 pub(crate) fn store_token(token: &str) -> Result<(), String> {
     crate::device_read::off_ui_thread();
     let (reference, authorization) = token_binding()?;
@@ -1123,7 +1044,6 @@ pub(crate) fn store_token(token: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// Remove the stored token.
 pub(crate) fn forget_token() -> Result<(), String> {
     crate::device_read::off_ui_thread();
     let (reference, authorization) = token_binding()?;

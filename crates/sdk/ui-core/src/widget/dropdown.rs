@@ -26,6 +26,7 @@
 //! events to it exclusively — how the out-of-layout list becomes hit-testable and click-outside
 //! dismissal works.
 
+use crate::i18n::widget_text;
 use crate::num::f32_of_f64;
 use crate::widget::autocomplete::{Suggestion, SuggestionList};
 use crate::widget::{AppModel, EventCtx, ModelPath};
@@ -143,6 +144,9 @@ pub struct Dropdown {
     /// above the control instead of running off the bottom of the window.
     /// `None` until a paint has reported one (bare harnesses never do).
     viewport: Option<Rect>,
+    /// The theme the field and the open list are placed and measured in, from
+    /// the latest layout or paint; `None` before either.
+    theme: Option<Rc<Theme>>,
 
     /// When `false`: skipped by focus, rejects input, renders dimmed.
     /// Default `true`.
@@ -294,6 +298,7 @@ impl Dropdown {
             is_hovered: false,
             last_cursor: Point::ZERO,
             viewport: None,
+            theme: None,
             enabled: true,
             menu: None,
             fill: false,
@@ -513,7 +518,7 @@ impl Dropdown {
     /// overlay pass) hands it over here so a control near the bottom edge
     /// still opens upward.
     pub fn set_viewport(&mut self, viewport: Rect) {
-        self.viewport = Some(viewport);
+        self.note_viewport(viewport);
     }
 
     /// Builder form of [`Self::set_viewport`].
@@ -577,6 +582,8 @@ impl Dropdown {
         &mut self,
         shortcuts: impl IntoIterator<Item = (&'a str, &'a str)>,
     ) {
+        // A row's keys take their own column: the list is measured again.
+        self.layout_dirty = true;
         self.shortcuts = shortcuts
             .into_iter()
             .filter(|(_, keys)| !keys.is_empty())
@@ -614,8 +621,9 @@ impl Dropdown {
     /// invoke [`Self::on_change`].
     pub fn set_selected(&mut self, selected: impl Into<String>) {
         let selected = selected.into();
-        // A value outside the options (loaded ahead of them) is measured too.
-        if selected != self.selected && !self.values.contains(&selected) {
+        // A value outside the options (loaded ahead of them) is measured too,
+        // and an open list shows the chosen row checked.
+        if selected != self.selected {
             self.layout_dirty = true;
         }
         self.selected = selected;
@@ -653,6 +661,7 @@ impl Dropdown {
             0.0
         };
         self.place(rect);
+        self.place_list();
     }
 
     /// Stack a short caption above the field ("Level", "Source") in the
@@ -676,6 +685,17 @@ impl Dropdown {
     /// Adopt the theme's geometry: the field height, the caption height and
     /// the styles the width is measured with.
     fn adopt_theme(&mut self, theme: &Theme) {
+        // The open list is measured in the theme's own type — its UI face and
+        // "Always distinguish similar letters" — so a row placed in layout is
+        // as wide as the one painted in it.
+        let changed = self.theme.as_ref().is_none_or(|held| {
+            held.text_scale.to_bits() != theme.text_scale.to_bits() || held.tokens != theme.tokens
+        });
+        if changed {
+            self.theme = Some(Rc::new(theme.clone()));
+            // Rows measured in the previous type are measured again.
+            self.list.forget_width();
+        }
         self.field_height = self.control_size.height(theme);
         // Preserve compact pointer controls; coarse direct input needs real
         // non-overlapping targets, not inflated neighbouring hit rectangles.
@@ -711,7 +731,7 @@ impl Dropdown {
         });
         let search = if self.supports_filter() {
             field_width_for(
-                [crate::i18n!("dropdown-search-placeholder").as_str()],
+                [widget_text("dropdown-search-placeholder").as_str()],
                 true,
                 &self.label_style,
                 text,
@@ -803,8 +823,8 @@ impl Dropdown {
         self.rows_at = rows_at;
         // A list that filters keeps room for its empty-result line, so it
         // keeps its width while a query narrows it.
-        let hint = (rows.is_empty() || self.supports_filter())
-            .then(|| crate::i18n!("dropdown-no-matches"));
+        let hint =
+            (rows.is_empty() || self.supports_filter()).then(|| widget_text("dropdown-no-matches"));
         self.list.set_rows(rows);
         self.list.set_status(hint);
         self.list.set_anchor(self.rect);
@@ -857,6 +877,44 @@ impl Dropdown {
     /// The open list's panel.
     fn list_rect(&self) -> Rect {
         self.list.rect().unwrap_or(Rect::ZERO)
+    }
+
+    /// Place what the open list holds: the filter field's press target, its
+    /// rows and the panel they show in, measured in the theme's own type. The
+    /// frame's layout places them, and so does every change that moves the
+    /// list — opening it, filtering it, a value it shows — so a frame read
+    /// before it draws (a test, assistive technology, a press on a window that
+    /// has laid out and not yet painted) finds the field and every row where
+    /// they are painted.
+    fn place_list(&mut self) {
+        // While a query takes the field it leads with a search glyph, so its
+        // text starts past it.
+        let filtering = self.open && self.supports_filter();
+        self.query_rect = if filtering {
+            content_rect(self.rect, true, &self.label_style)
+        } else {
+            Rect::ZERO
+        };
+        if !self.open {
+            // A list on its way out is drawn with the rows it closed with:
+            // nothing to place, and nothing to measure for a closed control.
+            return;
+        }
+        self.refresh_list();
+        let Some(theme) = self.theme.clone() else {
+            // No layout or paint has given the theme yet (an externally placed
+            // control before its first paint): its rows measure expensive
+            // geometry nothing can read. The first layout after a paint does.
+            return;
+        };
+        // Rows measured already keep their width: a paint measured them in
+        // this type, and placing them again shapes nothing.
+        if !self.list.is_measured() {
+            crate::text_render::with_layout_renderer(&theme, |text| {
+                self.list.measure(text, &theme);
+            });
+        }
+        self.list.place_scroll();
     }
 
     /// The stable key of the option whose value is `value`.
@@ -940,7 +998,9 @@ impl Dropdown {
         self.filter_composition.clear();
         self.typing.reset();
         self.list.clear();
-        self.refresh_list();
+        // The list hangs from the field at once: opening one moves nothing
+        // else in the window, so no layout pass waits for it.
+        self.place_list();
         let filtered = self.filtered();
         self.list.set_highlight(Some(self.selected_row(&filtered)));
     }
@@ -976,6 +1036,9 @@ impl Dropdown {
         self.filter.clear();
         self.filter_selection = Selection::collapsed(0);
         self.filter_composition.clear();
+        // The query's press target goes with it; the leaving list keeps the
+        // rows it closed with.
+        self.place_list();
     }
 
     /// Store `value` through the binding and mirror it locally.
@@ -1177,9 +1240,21 @@ impl Dropdown {
 }
 
 impl Dropdown {
+    /// Record the bounds a frame painted in. An open list is placed inside
+    /// them, so a window that moved asks for the layout that puts it there.
+    fn note_viewport(&mut self, viewport: Rect) {
+        if self.viewport == Some(viewport) {
+            return;
+        }
+        self.viewport = Some(viewport);
+        self.layout_dirty |= self.open;
+    }
+
     /// The filter changed: the list shows what it matches, from the top.
     fn filter_edited(&mut self) {
-        self.refresh_list();
+        // Different rows, and so another list hanging from the field. The
+        // field keeps its width, so nothing else in the window moves.
+        self.place_list();
         self.list.set_highlight(Some(0));
         self.list.scroll_px(f64::NEG_INFINITY);
     }
@@ -1222,12 +1297,16 @@ impl Widget for Dropdown {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if let Some(binding) = &mut self.binding
             && let Pulled::Value(selected) = binding.pull(state, root)
+            && selected != self.selected
         {
             self.selected = selected;
+            // The chosen row of an open list shows checked: what it holds
+            // changed, and nothing else in the window moved.
+            self.place_list();
         }
         if self.align_highlight_on_sync {
             self.align_highlight_on_sync = false;
-            self.refresh_list();
+            self.place_list();
             let filtered = self.filtered();
             self.list.set_highlight(Some(self.selected_row(&filtered)));
         }
@@ -1294,7 +1373,7 @@ impl Widget for Dropdown {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.place(crate::widget::layout_rect(taffy, node, origin));
-        self.layout_dirty = false;
+        self.place_list();
     }
 
     /// The width every option needs, so a parent that measures its children
@@ -1356,6 +1435,10 @@ impl Widget for Dropdown {
         self.outer == Rect::ZERO || self.layout_dirty
     }
 
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -1365,7 +1448,7 @@ impl Widget for Dropdown {
         presence: &PresenceCtx,
     ) {
         if let Some(viewport) = presence.viewport.get() {
-            self.viewport = Some(viewport);
+            self.note_viewport(viewport);
         }
         // An externally placed dropdown learns the theme here: its caption
         // takes the theme's height from now on.
@@ -1378,6 +1461,7 @@ impl Widget for Dropdown {
         {
             self.caption_height = self.theme_caption_height;
             self.place(self.outer);
+            self.place_list();
         }
         let disabled = !self.effectively_enabled();
         let filtering = self.open && self.supports_filter();
@@ -1386,7 +1470,7 @@ impl Widget for Dropdown {
         } else {
             (self.placeholder.clone(), true)
         };
-        let content = paint_face(
+        paint_face(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             &FacePaint {
                 outer: self.outer,
@@ -1405,17 +1489,16 @@ impl Widget for Dropdown {
                 disabled,
             },
         );
-        self.query_rect = if filtering { content } else { Rect::ZERO };
         if filtering {
             self.filter_composition.draw(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 QueryView {
                     text: &self.filter,
                     selection: &self.filter_selection,
-                    placeholder: &crate::i18n!("dropdown-search-placeholder"),
+                    placeholder: &widget_text("dropdown-search-placeholder"),
                     show_caret: self.is_focused,
                 },
-                content,
+                self.query_rect,
                 &self.control_size.label_style(theme),
                 QueryInk::of(&theme.tokens.colors),
             );
@@ -1441,12 +1524,10 @@ impl Widget for Dropdown {
             return;
         }
         if let Some(viewport) = presence.viewport.get() {
-            self.viewport = Some(viewport);
+            self.note_viewport(viewport);
         }
-        // A leaving list is drawn with the rows it closed with.
-        if self.open {
-            self.refresh_list();
-        }
+        // The list stands where the layout placed it, drawn as it is: the
+        // rows it closed with while it leaves.
         let list = self.list_rect();
         let pose = self.appear.pose(list, self.rect.center());
         self.list_pose = pose;
@@ -1606,21 +1687,21 @@ impl Widget for Dropdown {
         use crate::a11y::{AccessNode, AccessState, Role};
         // Explicit names are Fluent ids. Keep the legacy value/placeholder
         // fallback for unlabeled standalone dropdowns.
-        let name = if let Some(name) = &self.accessible_name {
-            Some(if self.name_resolved {
-                name.clone()
-            } else {
-                crate::i18n!(name)
-            })
-        } else if let Some(caption) = &self.caption {
-            Some(caption.clone())
-        } else if self.has_selected_value() {
-            Some(self.selected_label().to_string())
-        } else if !self.placeholder.is_empty() {
-            Some(self.placeholder.clone())
-        } else {
-            None
+        let name = match &self.accessible_name {
+            Some(name) => crate::i18n::spoken_name(name, self.name_resolved),
+            None => self.caption.clone(),
         };
+        // What the chooser shows stands in for a name where nothing named it,
+        // so a reader hears what it is set to; it is the chooser's own value,
+        // never the words for what it sets, so a row that holds those says
+        // them instead.
+        let found = name.is_none().then(|| {
+            if self.has_selected_value() {
+                self.selected_label().to_string()
+            } else {
+                self.placeholder.clone()
+            }
+        });
         let value = if self.open && !self.filter.is_empty() {
             Some(self.filter.clone())
         } else {
@@ -1633,16 +1714,18 @@ impl Widget for Dropdown {
             Role::ComboBox
         };
         let value = if self.menu.is_some() { None } else { value };
-        let mut node = AccessNode::new(role)
-            .with_optional_name(name)
-            .with_optional_value(value)
-            .with_state(
-                AccessState::new()
-                    .focusable(self.is_focusable())
-                    .focused(self.is_focused())
-                    .disabled(!self.is_enabled())
-                    .expanded(self.open),
-            );
+        let mut node = match found.filter(|found| !found.is_empty()) {
+            Some(found) => AccessNode::new(role).with_found_name(found),
+            None => AccessNode::new(role).with_optional_name(name),
+        }
+        .with_optional_value(value)
+        .with_state(
+            AccessState::new()
+                .focusable(self.is_focusable())
+                .focused(self.is_focused())
+                .disabled(!self.is_enabled())
+                .expanded(self.open),
+        );
         // Surface the chosen option's ordinal so the reader can say "2 of 5".
         if let Some(idx) = self.values.iter().position(|value| *value == self.selected) {
             node = node.with_position(idx.saturating_add(1), self.options.len());
@@ -1651,7 +1734,7 @@ impl Widget for Dropdown {
             node = node.with_action_target(self.test_id().unwrap_or("dropdown"));
         }
         if self.open && self.supports_filter() {
-            node = node.with_description(crate::i18n!("dropdown-search-description"));
+            node = node.with_description(widget_text("dropdown-search-description"));
         }
         if self.open {
             node = node
@@ -1912,8 +1995,9 @@ struct FacePaint<'a> {
 }
 
 /// Paint the caption, the field, its leading icon, its value and its
-/// chevron; returns the rect the value occupies.
-fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) -> Rect {
+/// chevron. Where the value stands is the layout's to say: the filter query
+/// takes it from `query_rect`.
+fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) {
     let theme = ctx.theme;
     let style = face.size.label_style(theme);
     if let Some(caption) = face.caption {
@@ -2035,7 +2119,6 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) -> Rect {
     if face.disabled {
         ctx.scene.pop_layer();
     }
-    content
 }
 
 /// An immediate-mode dropdown: the closed [`Dropdown`] look for a painted

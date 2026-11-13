@@ -58,6 +58,21 @@ pub fn snapshot() -> io::Result<Snapshot> {
         .dictionary_snapshot()
 }
 
+/// How many times the shell's records this process reads have changed: what
+/// [`snapshot`] copies out of them changes only where this moved, so a reader
+/// that shows words compares it instead of taking the snapshot again.
+#[must_use]
+pub fn revision() -> u64 {
+    #[cfg(feature = "broker-transport")]
+    {
+        crate::collaboration::channel_settings::installed().map_or(0, |records| records.revision())
+    }
+    #[cfg(not(feature = "broker-transport"))]
+    {
+        0
+    }
+}
+
 /// Submit an explicit user edit through the app's existing settings capability.
 /// The host validates current identity, app authority and revision again.
 ///

@@ -9,7 +9,6 @@ use ui::tilo_resource::{self, Id, Identified, Invoke, Keyed, Model, Refusal, res
 
 const MAX_PROFILES: usize = 16;
 
-/// One saved address, an item of the person's [`AddressBook`].
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Model)]
 #[serde(deny_unknown_fields)]
 pub struct AddressProfile {
@@ -75,9 +74,8 @@ impl std::fmt::Debug for AddressProfile {
     }
 }
 
-/// The address book, a record of Browser's in the workspace: whether
-/// autofill is on, and the saved profiles. Every way in keeps each profile
-/// valid and the book within its limit.
+/// The address book: whether autofill is on, and the saved profiles. Every way in keeps
+/// each profile valid and the book within its limit.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 #[model(check = AddressBook::valid)]
 pub struct AddressBook {
@@ -87,7 +85,20 @@ pub struct AddressBook {
     pub profiles: Keyed<AddressProfile>,
 }
 
-#[resource(kind = "browser.address-book", label = "Address book")]
+impl AddressBook {
+    /// What the record holds: whether autofill is on and the profiles it fills forms from.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(
+    kind = "browser.address-book",
+    read_content = AddressBook::read_document
+)]
 impl AddressBook {}
 
 impl AddressBook {
@@ -104,17 +115,13 @@ impl AddressBook {
     }
 }
 
-/// The address book a window fills forms from: the person's record, or
-/// nothing in a private window.
-///
-/// Contains personal data: deliberately has no Debug implementation.
+/// The address book a window fills forms from: the person's record, or nothing in a
+/// private window. Deliberately has no Debug implementation.
 pub struct AutofillStore {
     record: Option<PersonRecord<AddressBook>>,
     saved: AddressBook,
 }
 impl AutofillStore {
-    /// The person's address book, or an empty one nothing is saved to in a
-    /// private window or without the person's record.
     pub fn open(mode: BrowsingMode, record: Option<PersonRecord<AddressBook>>) -> Self {
         let record = record.filter(|_| !mode.is_private());
         let saved = record
@@ -134,11 +141,9 @@ impl AutofillStore {
             .then(|| self.saved.profiles.iter().find(|profile| profile.id == id))
             .flatten()
     }
-    /// Turn address autofill on or off.
     pub fn set_enabled(&mut self, enabled: bool) -> Result<(), String> {
         self.edit(&AddressBook::paths().enabled.set(enabled))
     }
-    /// Save a validated address profile.
     pub fn put(&mut self, profile: AddressProfile) -> Result<(), String> {
         if !self.enabled() {
             return Err("Enable address autofill before adding profiles".into());
@@ -146,8 +151,8 @@ impl AutofillStore {
         if !profile.valid() {
             return Err("Address profile fields are invalid or too long".into());
         }
-        // A saved profile changes field by field, so a concurrent edit of
-        // another of its fields is kept.
+        // A saved profile changes field by field, so a concurrent edit of another of its
+        // fields is kept.
         let mut after = self.saved.profiles.clone();
         match after.find_mut(&profile.id()) {
             Some(saved) => *saved = profile,
@@ -158,7 +163,6 @@ impl AutofillStore {
             .edits(&self.saved.profiles, &after);
         self.edit_all(&edits)
     }
-    /// Delete a saved address profile by ID.
     pub fn delete(&mut self, id: &str) -> Result<(), String> {
         self.edit(
             &AddressBook::paths()
@@ -212,7 +216,6 @@ pub mod tests {
         }
     }
 
-    /// The person's address book, as a capture's profile keeps it.
     pub fn address_book() -> (
         ui::framework::testing::TestApp<crate::BrowserShell>,
         PersonRecord<AddressBook>,
@@ -225,7 +228,6 @@ pub mod tests {
         (app, record)
     }
 
-    /// Profile lifecycle: opt-in, private isolation and capacity.
     #[test]
     fn address_profiles_opt_in_edit_capacity_and_private_isolation() {
         {
@@ -280,7 +282,6 @@ pub mod tests {
         }
     }
 
-    /// Rejected input never reaches the record.
     #[test]
     fn invalid_fields_leave_the_book_untouched() {
         let (_app, record) = address_book();

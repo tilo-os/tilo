@@ -1,5 +1,5 @@
-//! Fixed held-object metadata and bounded selected lookup operations.
-//! No content access or source permission constructor exists.
+//! Fixed held-object metadata over the initialized target worker. No content access or
+//! source permission constructor exists.
 #[cfg(test)]
 use super::Write;
 use super::{AsRawFd, File, MetadataExt, Read, Record, UnixStream, io, namespaces, refused};
@@ -75,8 +75,8 @@ pub(super) fn measure(file: &File) -> io::Result<Facts> {
         rustix::fs::AtFlags::STATX_DONT_SYNC,
         "Target observation mount identity unavailable",
     )?;
-    // rustix types `f_type` as the kernel's signed word on every C library;
-    // musl's own `statfs` types it unsigned.
+    // rustix types `f_type` as the kernel's signed word on every C library; musl's own `statfs` types
+    // it unsigned.
     let fs = rustix::fs::fstatfs(file)?;
     let mut mount: libc::statvfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstatvfs(file.as_raw_fd(), &raw mut mount) } != 0 {
@@ -99,8 +99,7 @@ pub(super) fn serve(mut stream: UnixStream, record: &Record) -> io::Result<()> {
     stream.set_write_timeout(None)?;
     let mut admitted_view = None;
     loop {
-        // Idle has no expiry. Once a frame begins, one absolute deadline bounds
-        // its complete exchange. Root shuts the exact channel on cancellation.
+        // Idle has no expiry.
         let mut first = [0];
         match stream.read_exact(&mut first) {
             Ok(()) => {}
@@ -111,10 +110,8 @@ pub(super) fn serve(mut stream: UnixStream, record: &Record) -> io::Result<()> {
         let mut io = Handoff::new(&mut stream, &cancellation, Duration::from_secs(10))?;
         let mut rest = [0; 3];
         io.read_exact(&mut rest)?;
-        let lookup = rest == *b"OL1";
-        let read = rest == *b"OR1";
         let exposure = rest == *b"ME1";
-        if first != *b"T" || (!lookup && !read && !exposure && rest != *b"OM1") {
+        if first != *b"T" || (!exposure && rest != *b"OM1") {
             return Err(refused("Target observation request differs"));
         }
         let mut nonce = [0; 32];
@@ -141,26 +138,6 @@ pub(super) fn serve(mut stream: UnixStream, record: &Record) -> io::Result<()> {
         if namespaces()? != record.namespaces {
             return Err(refused("Target observation worker namespace changed"));
         }
-        if read {
-            super::selected_read::serve_request(
-                &mut io,
-                &file,
-                record,
-                &nonce,
-                admitted_view.as_ref(),
-            )?;
-            continue;
-        }
-        if lookup {
-            super::selected_lookup::serve_request(
-                &mut io,
-                &file,
-                record,
-                &nonce,
-                admitted_view.as_ref(),
-            )?;
-            continue;
-        }
         serve_measurement(&mut io, &file, record, &nonce, exposure, &mut admitted_view)?;
     }
 }
@@ -180,8 +157,8 @@ fn serve_measurement(
                     .raw_os_error()
                     .is_some_and(|code| (1..=4095).contains(&code)) =>
         {
-            // Actual native operation refusal keeps FUSE/session custody;
-            // it is neither an object measurement nor a source grant.
+            // Actual native operation refusal keeps FUSE/session custody; it is neither an object
+            // measurement nor a source grant.
             super::shim::verify_dropped(record.uid, record.gid)?;
             if namespaces()? != record.namespaces {
                 return Err(refused("Exposure worker namespace changed"));

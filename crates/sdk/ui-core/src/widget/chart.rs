@@ -766,6 +766,8 @@ impl Widget for Chart {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        // A page shown as HTML shows it as one image.
+        crate::scene_parts::picture();
         let style = if self.area {
             self.style
         } else {
@@ -986,6 +988,8 @@ impl Widget for Sparkline {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        // A page shown as HTML shows it as one image.
+        crate::scene_parts::picture();
         Sparkline::paint(
             scene,
             transform,

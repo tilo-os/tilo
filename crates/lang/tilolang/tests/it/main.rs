@@ -27,6 +27,7 @@ mod principal;
 mod roundtrip;
 mod search;
 mod semantics;
+mod shadowing;
 mod text_math;
 mod titles;
 mod triggers;

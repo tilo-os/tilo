@@ -1,8 +1,4 @@
 //! Stream adapter for a broker-owned signal-cli multi-account connection.
-//!
-//! The broker supplies authenticated stream handles with deadlines, and a
-//! device-local durable journal. There is no default journal or ambient socket.
-//! This adapter does not log in, change trust, authorize recipients or retry.
 
 use std::io::{BufRead, Write};
 
@@ -11,10 +7,8 @@ use zeroize::Zeroizing;
 use crate::signal::{self, Acknowledgment, Incoming, MAX_FRAME_BYTES};
 use crate::{Error, Route};
 
-/// Maximum interleaved receive events before a send response is required.
 pub const MAX_INTERLEAVED_EVENTS: usize = 64;
 
-/// Host-provided persistence at the external-send boundary.
 pub trait SendJournal {
     /// Atomically reserve a never-before-used operation and persist its exact
     /// route and payload as STARTED before returning. Reuse, including reuse
@@ -36,7 +30,6 @@ pub enum JournalError {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Completion {
-    /// The adapter accepted the write; no server ACK was observed yet.
     Submitted(crate::ProtocolReference),
     Acknowledged(crate::ProtocolReference),
     Uncertain,
@@ -51,7 +44,6 @@ pub enum SendError {
     Uncertain,
 }
 
-/// Host-owned final routing inputs and the journal held for this operation.
 pub struct SendContext<'a, J> {
     pub accounts: &'a accounts::AccountStore,
     pub expected_owner: &'a crate::journal::Owner,
@@ -114,7 +106,6 @@ impl<R: BufRead, W: Write> Session<R, W> {
         self.send(context.journal, route, operation, text)
             .map_err(CheckedSendError::Transport)
     }
-    /// Bind host-owned handles to one explicitly selected account.
     pub fn new(account: String, reader: R, writer: W) -> Result<Self, Error> {
         Self::for_account(account.clone(), account, reader, writer)
     }

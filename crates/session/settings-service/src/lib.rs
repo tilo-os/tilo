@@ -37,11 +37,19 @@ use effects::SettingEffect;
 
 /// The resource holding the settings people look for by name.
 pub const INDEX: &str = "settings";
+/// The prefix of a section's resource id, after which its kind follows: every section is
+/// published as `settings:<kind>`.
+pub const SECTION_PREFIX: &str = "settings:";
+
+/// Whether the resource `id` is one of the settings this service publishes: a section of the
+/// person's settings, or the index people look settings up in.
+#[must_use]
+pub fn keeps(id: &str) -> bool {
+    id == INDEX || id.starts_with(SECTION_PREFIX)
+}
 pub const INDEX_KIND: &str = "settings.index";
 /// The kind of one setting under [`INDEX`].
 pub const SETTING_KIND: &str = "settings.setting";
-/// The id of a setting's resource, by the setting's id.
-const SETTING_PREFIX: &str = "setting:";
 /// Between a setting's id and the name of one of its values, in the id of
 /// the value's resource: each value of a choice is an action of its own,
 /// on a resource of its own.
@@ -62,21 +70,20 @@ static NAMES: ui::i18n::EmbeddedCatalog = {
 /// The id of the resource of the setting `id`.
 #[must_use]
 pub fn setting_resource(id: &str) -> String {
-    format!("{SETTING_PREFIX}{id}")
+    format!("{}{id}", index::PUBLISHED_PREFIX)
 }
 
 /// The id of the resource of the value named `option` of the setting `id`.
 #[must_use]
 pub fn option_resource(id: &str, option: &str) -> String {
-    format!("{SETTING_PREFIX}{id}{OPTION_SEPARATOR}{option}")
+    format!("{}{id}{OPTION_SEPARATOR}{option}", index::PUBLISHED_PREFIX)
 }
 
 /// The id of the setting whose resource (or whose value's resource) is
 /// `resource`; `None` for another resource.
 #[must_use]
 pub fn setting_of(resource: &str) -> Option<&str> {
-    let id = resource.strip_prefix(SETTING_PREFIX)?;
-    Some(id.split_once(OPTION_SEPARATOR).map_or(id, |(id, _)| id))
+    index::setting_of_resource(resource)
 }
 
 /// The field edit of a section setting the field at `path` (names joined by
@@ -285,7 +292,7 @@ impl SettingsService {
 
     /// The settings people look for by name that search changes in place.
     fn index(&self, sections: &[ResourceSpec]) -> ResourceSpec {
-        ResourceSpec::new(INDEX, INDEX_KIND, "Settings").with_children(
+        ResourceSpec::new(INDEX, INDEX_KIND, crate::i18n::t("settings-resource")).with_children(
             index::SETTINGS
                 .iter()
                 .filter_map(|setting| self.publish(setting, sections)),
@@ -348,7 +355,7 @@ impl SettingsService {
 
 /// The address of the action `action` of the section `kind`.
 fn section_action(kind: &str, action: &str) -> ActionAddress {
-    ActionAddress::new(format!("settings:{kind}"), action)
+    ActionAddress::new(format!("{SECTION_PREFIX}{kind}"), action)
 }
 
 /// The published action `action` of `section`.
@@ -451,7 +458,7 @@ impl Service for SettingsService {
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
-        let kind = resource.strip_prefix("settings:")?;
+        let kind = resource.strip_prefix(SECTION_PREFIX)?;
         self.stored(kind)
     }
 

@@ -1,14 +1,10 @@
-//! A document references a blob; it never carries one.
-//!
-//! This is the invariant a 146 kB image broke: stored inline, one change
-//! exceeded the publish ceiling and was dropped, and because automerge holds a
+//! A document references a blob; it never carries one. Stored inline, a 146 kB
+//! image made one change exceed the publish ceiling, and because automerge holds a
 //! change whose ancestors are missing, every other machine's copy froze at that
-//! point — silently, and for good. The bytes are a binary input the caller keeps
-//! in its content store; only the hash and a small descriptor go in the document.
-//!
-//! Asserted on the *saved* bytes rather than on the in-memory model, because
-//! what replicates is what `save` produces: a test that only checked the model
-//! would still have passed while the wire carried the image.
+//! point. So the bytes are a binary input the caller keeps in its content store,
+//! and only the hash and a small descriptor go in the document. Asserted on the
+//! saved bytes rather than the in-memory model, because what replicates is what
+//! `save` produces.
 
 use tilo_content::{ContentInputs, ContentStore};
 use tilo_doc::Document;
@@ -34,7 +30,6 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 
 #[test]
 fn saved_documents_carry_blob_references_with_mime_and_descriptor_not_bytes() {
-    // Phase `a_saved_document_carries_the_reference_and_not_the_bytes`.
     {
         let bytes = png();
         let mut doc = Document::new();
@@ -48,8 +43,8 @@ fn saved_documents_carry_blob_references_with_mime_and_descriptor_not_bytes() {
 
         let saved = doc.save();
 
-        // A body of 4 kB of one value is findable by any window scan, so this fails
-        // loudly if inlining ever comes back.
+        // A body of 4 kB of one value is findable by any window scan, so this fails loudly if
+        // inlining comes back.
         assert!(
             !contains(&saved, &bytes[..64]),
             "the saved document carries the image's own bytes ({} bytes saved)",
@@ -60,8 +55,7 @@ fn saved_documents_carry_blob_references_with_mime_and_descriptor_not_bytes() {
             "the saved document carries the image's body"
         );
 
-        // The hash is the address the content store is keyed by, so it is the one
-        // thing that must survive.
+        // The hash is the address the content store is keyed by.
         assert!(
             contains(&saved, hash.as_bytes()),
             "the saved document does not carry the blob's hash {hash}"
@@ -75,11 +69,9 @@ fn saved_documents_carry_blob_references_with_mime_and_descriptor_not_bytes() {
             bytes.len()
         );
     }
-    // Phase `the_mime_survives_in_a_document_that_also_has_text`.
     {
-        // The minimal case is not the case a reader meets: a real document has
-        // paragraphs and block structure around the image, and automerge encodes a
-        // bigger document differently.
+        // A real document has paragraphs and block structure around the image, and automerge
+        // encodes a bigger document differently.
         let mut doc = Document::new();
         let p = doc.insert_block(None, "paragraph");
         doc.splice_text(&p, 0, 0, "An opening paragraph with some length to it.");
@@ -99,14 +91,11 @@ fn saved_documents_carry_blob_references_with_mime_and_descriptor_not_bytes() {
             "the mime is not findable in a {}-byte document with text in it",
             saved.len()
         );
-        // The hash is deliberately *not* asserted here, and that is the finding this
-        // test records. In a document holding nothing but a blob it is plain ASCII in
-        // the saved bytes; add paragraphs and it stops being findable, because it is
-        // a map key and automerge encodes keys differently once the document is worth
-        // compressing. A scan for the hash therefore works on a toy document and
-        // fails on a real one — the worst shape a check can have. Anything looking
-        // for an image reference in bytes off the wire should look for the mime,
-        // which is a scalar value and survives both.
+        // The hash is deliberately not asserted here: in a document holding nothing but a blob it
+        // is plain ASCII in the saved bytes, and with paragraphs it stops being findable, because
+        // it is a map key and automerge encodes keys differently once the document is worth
+        // compressing. Anything looking for an image reference in bytes off the wire should look
+        // for the mime, a scalar value that survives both.
         assert!(
             !contains(&saved, &[0xA5u8; 64]),
             "the image's bytes are in a document with text in it"
@@ -122,18 +111,17 @@ fn saved_documents_carry_blob_references_with_mime_and_descriptor_not_bytes() {
             "the reference no longer resolves once the document has text in it"
         );
     }
-    // Phase `the_descriptor_travels_with_the_reference`.
     {
-        // The intrinsic size has to cross too. Without it a peer whose bytes have
-        // not arrived guesses a size, and every paragraph below the image moves when
-        // they land — on a shared document, while somebody is typing into it.
+        // The intrinsic size has to cross too: without it a peer whose bytes have not arrived
+        // guesses, and every paragraph below the image moves when they land, while somebody is
+        // typing.
         let mut doc = Document::new();
         let hash = doc.attach(&png(), &mut ContentInputs::new());
         let saved = doc.save();
 
-        // The descriptor is written as scalars beside the hash, so the sniffed mime
-        // is literal ASCII in the saved bytes. The `blob_*` attrs belong to the
-        // materialised snapshot and are added at read time, so they never appear.
+        // The descriptor is written as scalars beside the hash, so the sniffed mime is literal
+        // ASCII in the saved bytes; the `blob_*` attrs belong to the materialized snapshot and
+        // never appear.
         assert!(
             contains(&saved, b"image/png"),
             "the descriptor's mime did not survive the save"
@@ -148,8 +136,8 @@ fn saved_documents_carry_blob_references_with_mime_and_descriptor_not_bytes() {
 
 #[test]
 fn every_version_s_inputs_stay_referenced() {
-    // A content store may only collect what no version of any document names, so the document
-    // must still list an image after it was taken out again.
+    // A content store may only collect what no version of any document names, so the document must
+    // still list an image after it was taken out again.
     let mut doc = Document::new();
     let mut inputs = ContentInputs::new();
     let first = doc.attach(&png(), &mut inputs);

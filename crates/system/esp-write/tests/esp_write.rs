@@ -1,7 +1,5 @@
 //! tilo-esp-write applies only its caller's allowed ESP changes, atomically,
 //! and never follows a symlink; tilo-deployment's plans are what it accepts.
-//!
-//! Every case runs the built helper as its unit does, against a fixture ESP.
 #![allow(
     clippy::unwrap_used,
     clippy::indexing_slicing,
@@ -40,7 +38,6 @@ fn uid() -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_owned()
 }
 
-/// The text of `text` from `start` up to (not including) `end`.
 fn between<'a>(text: &'a str, start: &str, end: &str) -> &'a str {
     let from = text.find(start).unwrap();
     let to = text.find(end).unwrap();
@@ -192,12 +189,10 @@ impl Fixture {
         names
     }
 
-    /// tilo-deployment's `entries` pass, with this helper as its writer.
     fn run_entries(&self, source: Option<&str>, fail_writer: bool) -> Output {
         self.run_deployment(source, fail_writer, false)
     }
 
-    /// The `entries` pass followed by the shipped repair-entry derivation.
     fn run_entries_and_repair(&self) -> Output {
         self.run_deployment(None, false, true)
     }
@@ -316,7 +311,6 @@ fn applies_counters_and_the_repair_entry() {
             .contains(r#"tilo-esp-write: caller=boot-entries {"op": "mkdir", "path": "EFI/tilo"}"#),
         "{stdout}"
     );
-    // The plan and its staged files are gone once applied.
     assert_eq!(f.plan_dir_entries(), Vec::<String>::new());
 }
 
@@ -485,7 +479,6 @@ fn dev_kernel_initrd_entries_are_counted_by_their_composefs_identity() {
         f.entries_in("entries.staged"),
         ["bootc_fedora-44-0+3.conf", "bootc_fedora-44-1.conf"]
     );
-    // A repeated pass leaves the counted entry and the tries it has spent.
     let counted = f.esp.join("loader/entries.staged/bootc_fedora-44-0+3.conf");
     let spent = counted.with_file_name("bootc_fedora-44-0+2-1.conf");
     fs::rename(&counted, &spent).unwrap();
@@ -538,12 +531,10 @@ fn malformed_dev_kernel_initrd_entries_are_refused() {
     }
     let entry = |body: &str| format!("title Tilo\n{body}options root=UUID=0000 {one}\n");
     let shapes = [
-        // Outside bootc's managed directory, or not its file names.
         format!("linux /vmlinuz\ninitrd {managed}/initrd\n"),
         "linux /EFI/Linux/other/vmlinuz\ninitrd /EFI/Linux/other/initrd\n".to_owned(),
         format!("linux {managed}/../vmlinuz\ninitrd {managed}/initrd\n"),
         format!("linux {managed}/Image\ninitrd {managed}/initrd\n"),
-        // Kernel and initrd from different deployments.
         format!(
             "linux {managed}/vmlinuz\ninitrd /EFI/Linux/bootc_composefs-{}/initrd\n",
             "b".repeat(128)
@@ -691,7 +682,6 @@ fn the_signer_only_replaces_managed_artefacts() {
     // A new .efi would be a new boot menu entry: the signer may not add one.
     assert_refused(&sign("EFI/Linux/bootc/new.efi"), "may only replace");
     assert!(!f.esp.join("EFI/Linux/bootc/new.efi").exists());
-    // Nor touch loader entries, or anything but an install.
     assert_refused(
         &sign("loader/entries/bootc_fedora-44-1.conf"),
         "may not install",
@@ -763,7 +753,6 @@ fn symlinks_on_the_esp_are_refused() {
     );
     assert_refused(&out, "symlink");
     assert!(!outside.join("target").exists());
-    // Nor is a symlinked rename source or remove target followed.
     symlink(
         outside.join("entry"),
         f.esp.join("loader/entries/bootc_link.conf"),
@@ -814,7 +803,6 @@ fn the_plan_directory_must_be_the_callers_alone() {
     );
     assert_refused(&out, "0700");
     assert!(!f.esp.join("EFI/Linux/tilo-repair.efi").exists());
-    // Someone else's directory is not read, nor cleared.
     assert_eq!(f.plan_dir_entries(), ["plan.json", "repair.efi"]);
     fs::set_permissions(&f.plan_dir, fs::Permissions::from_mode(0o700)).unwrap();
     let out = f.run_plan(

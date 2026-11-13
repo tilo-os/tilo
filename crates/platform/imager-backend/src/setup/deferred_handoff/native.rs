@@ -25,9 +25,8 @@ use std::{
     },
 };
 
-/// The same-computer route only migrates a normal first installed account.
-/// Arbitrary source/target UID mapping requires an authenticated identity
-/// transport and is refused here instead of inferring it from a plan field.
+/// Only a normal first installed account; UID mapping needs an authenticated identity transport and
+/// is refused rather than inferred from a plan field.
 pub const ORIGINAL_UID: u32 = super::super::migration_handoff::DEFERRED_ORIGINAL_UID;
 pub const SCHEMA: u32 = 1;
 const PURPOSE: &str = "same-computer-retained-selection";
@@ -44,8 +43,7 @@ fn refused(message: impl Into<String>) -> io::Error {
 }
 
 fn source_uid_matches(uid: u32) -> bool {
-    // Test fixtures run as the build account. Production only admits the
-    // reviewed UID 1000 source Home.
+    // Fixtures run as the build account; production admits only the reviewed UID 1000 source Home.
     cfg!(test) || uid == ORIGINAL_UID
 }
 
@@ -185,8 +183,7 @@ fn publish_journal(
     Ok(())
 }
 
-/// One selected file in a mail profile, with both its opaque discovery ID and
-/// the source-owned name that survives a fresh discovery epoch.
+/// The opaque discovery id and the source-owned name that survives a fresh discovery epoch.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MailFile {
@@ -220,8 +217,8 @@ struct MailProfile {
     accounts: Vec<MailAccount>,
 }
 
-/// The private selection journal. It is private source data, never media
-/// metadata, and every field is checked against a freshly resolved source.
+/// Private source data, never media metadata; every field is checked against a freshly resolved
+/// source.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Journal {
@@ -235,8 +232,7 @@ pub struct Journal {
     exclusions: Vec<NativePath>,
     mail: Vec<MailProfile>,
     browser: Vec<BrowserProfile>,
-    /// Exact selected GOA identities and services. This is private source
-    /// metadata: only the journal digest in the reviewed plan leaves the Home.
+    /// Private source metadata: only the journal digest in the reviewed plan leaves the Home.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     selected_accounts: Vec<SelectedAccount>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -285,8 +281,7 @@ impl Journal {
         })
     }
 
-    /// Read a previously written journal from the retained Home. The caller
-    /// must already hold that Home through a revalidated retained-source mount.
+    /// The caller must already hold the Home through a revalidated retained-source mount.
     pub fn open(home: &Path, plan: &Plan) -> io::Result<Self> {
         let binding = plan
             .deferred_handoff
@@ -397,12 +392,9 @@ fn add_selected_accounts(
     Ok(())
 }
 
-/// Write the person's sealed choices into the source Home and return the
-/// opaque locator the reviewed plan carries across installation.
-///
-/// # Errors
-/// Refuses a replaced source Home, selections that differ from the plan, or
-/// a journal that cannot be kept private.
+/// Writes the sealed choices into the source Home and returns the opaque locator the reviewed plan
+/// carries across installation. Refuses a replaced Home, a selection that differs from the plan, or
+/// a journal that cannot stay private.
 pub fn prepare(input: &Prepare<'_>) -> io::Result<Prepared> {
     let metadata = std::fs::symlink_metadata(input.source_home)?;
     if !metadata.is_dir()
@@ -453,8 +445,7 @@ pub fn prepare(input: &Prepare<'_>) -> io::Result<Prepared> {
         journal.browser.push(selected.clone());
     }
     if !journal.browser.is_empty() && !input.browser_in_package {
-        // Website session stores and saved passwords remain in their source
-        // vault; the copied profile data does not claim they were transferred.
+        // Website sessions and saved passwords stay in their source vault.
         journal.reconnect.push("browser:sessions".into());
         journal.reconnect.push("browser:credentials".into());
     }
@@ -701,8 +692,8 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
 #[serde(deny_unknown_fields)]
 pub struct BrowserReceipt {
     pub profiles: Vec<String>,
-    /// Private target path for the verified projection. Never serialized into
-    /// a public receipt because it names the destination account's Home.
+    /// Private target path for the verified projection; never serialized into a public receipt
+    /// because it names the destination account's Home.
     #[serde(skip)]
     pub projection: PathBuf,
 }
@@ -720,17 +711,10 @@ pub struct Receipt {
     pub reconnect: Vec<String>,
 }
 
-/// Reopen the retained source's private journal and import exactly the saved
-/// mail and browser selections into the current target Home.
-///
-/// The caller supplies the already resolved retained source directory and the
-/// active target person; neither is read from the journal. Files and original
-/// applications remain owned by the existing installed migration helper, which
-/// receives the same plan and therefore the same exclusions and app inventory.
-///
-/// # Errors
-/// Refuses a changed source, a journal edited after review, a vanished selected
-/// child, or an unavailable target. It never widens the saved selection.
+/// Reopens the retained source's private journal and imports the saved mail and browser selections
+/// into the current target Home; neither is read from the journal. Files and applications stay with
+/// the installed migration helper, which gets the same plan and exclusions. Refuses a changed
+/// source, a journal edited after review, a vanished child or an unavailable target.
 pub fn import_selected_from_source(
     plan: &Plan,
     source_home: &Path,
@@ -840,9 +824,8 @@ fn import_mail(
             })
             .ok_or_else(|| invalid("A selected mail profile no longer exists at the source"))?;
         let selection = current_mail_selection(saved, reviewed)?;
-        // The retained source Home is already granted and pinned; the streamed
-        // import reads the folders straight from it instead of building a
-        // bundle of every message in memory first.
+        // The retained Home is already granted and pinned, so the streamed import reads the folders
+        // directly instead of building a bundle in memory.
         let imported =
             account_transfer::import_reviewed(target_home, reviewed, &selection, binding, cancel)
                 .map_err(|error| {
@@ -881,10 +864,8 @@ fn import_browser(
     let browser_plan = selected
         .plan(format!("deferred:{}", plan.operation_id), target_person)
         .map_err(|error| io::Error::other(format!("Selected browser plan failed: {error}")))?;
-    // The Browser app consumes a launcher-granted projection at its canonical
-    // location. Building it here is the same capture the authenticated
-    // installation route uses; only the binding signature differs, and it is
-    // issued by the active device for this reviewed migration operation.
+    // The Browser app consumes a launcher-granted projection at its canonical location; this is the
+    // same capture the installation route uses, signed by the active device for this operation.
     let operation_root = browser_operation_directory_path(target_home, &plan.operation_id)?;
     let operation_directory = browser_operation_directory(target_home, &plan.operation_id)?;
     let stable = browser_continuity::completion::deferred_projection(&operation_root);
@@ -999,8 +980,7 @@ mod tests {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
-    /// The active device that signs a deferred first-launch completion. The key
-    /// and certificate are the real identity-host custody, not a fixture grant.
+    /// The real identity-host custody, not a fixture grant.
     fn provision_device(
         root: &Path,
         identity: &PreparedIdentity,

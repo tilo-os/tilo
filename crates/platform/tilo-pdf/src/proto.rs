@@ -1,20 +1,17 @@
 //! The client ↔ helper protocol.
 //!
-//! Messages are postcard frames behind a u32-LE length prefix
-//! ([`FRAMING`]).
-//! File descriptors travel as separate one-byte `SCM_RIGHTS` messages
-//! ([`runtime_portal::fd_transport`]) at points the protocol fixes: after an
-//! `Open` request (the document), after a `Render` request that attaches a
-//! new pixel buffer, and after an `Exported` response (the PDF, in a
-//! memory file sealed where the platform can seal).
+//! Messages are postcard frames behind a u32-LE length prefix ([`FRAMING`]).
+//! Descriptors travel as separate one-byte `SCM_RIGHTS` messages
+//! ([`runtime_portal::fd_transport`]) at fixed points: after an `Open` request
+//! (the document), after a `Render` that attaches a new pixel buffer, and
+//! after an `Exported` response (the PDF, in a sealed memory file).
 //!
-//! Pixel buffers are memory files the client owns and reuses: the helper maps each
-//! once and renders straight into it, so a page render moves no pixel through
-//! the socket and touches no fresh memory. Like a Wayland `wl_shm` buffer, a
-//! pixel buffer is writable by the helper; a compromised helper can alter
-//! pixels the client displays, never anything the client interprets.
-//! Frames are never read through a buffer, so a descriptor message is always
-//! the next thing on the stream when it is expected.
+//! Pixel buffers are memory files the client owns and reuses: the helper maps
+//! each one once and renders straight into it, so a page render moves no pixel
+//! through the socket. A buffer is writable by the helper, so a compromised
+//! helper can alter pixels the client displays, never anything the client
+//! interprets. Frames never pass through a buffer, so a descriptor message is
+//! always the next thing on the stream when it is expected.
 
 #[cfg(unix)]
 use std::io;
@@ -51,7 +48,6 @@ const FD_MARKER: &[u8] = b"F";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OpenKind {
     Pdf,
-    /// An image (PNG, JPEG, …) to wrap as a one-page document.
     Image,
 }
 
@@ -79,7 +75,6 @@ pub enum Request {
         buffer_len: u64,
         attach: bool,
     },
-    /// Forget pixel buffer `buffer` (the client no longer reuses it).
     ReleaseBuffer {
         buffer: u64,
     },
@@ -115,21 +110,14 @@ pub enum Request {
     Abort,
 }
 
-/// Why a request failed inside the helper.
 #[cfg(unix)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FailureKind {
-    /// The bytes are not a readable document.
     Format,
-    /// The document needs a (different) password.
     Password,
-    /// A page, document id or argument was out of range.
     Invalid,
-    /// The request exceeds a resource limit.
     Limit,
-    /// The engine failed for another reason.
     Engine,
-    /// The helper could not confine itself, so it serves nothing.
     Sandbox,
 }
 
@@ -181,7 +169,6 @@ pub enum Response {
     },
 }
 
-/// One end of the helper connection.
 #[cfg(unix)]
 pub struct Channel {
     stream: UnixStream,

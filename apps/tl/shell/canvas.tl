@@ -69,6 +69,7 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
                 x: (pointed.at(0) ?? 0) + caret_inset(pointed),
                 y: (pointed.at(1) ?? 0) + caret_inset(pointed),
                 width: caret_room(pointed.at(2) ?? 0),
+                height: caret_line(),
             ) {
                 ui.TextInput(
                     bind: typed,
@@ -99,6 +100,13 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
 /// dragged one narrower than a line, and a line's measure otherwise.
 fn caret_room(width: Int) -> Int {
     if width > 0 and width < 444 { width - 2 * caret_step() } else { 420 }
+}
+
+/// How tall the caret's line stands, in canvas pixels: one line of text and its field's room. The
+/// caret is where the person just pointed, so it is in view already: a pin as tall as a window
+/// would have the canvas pan to show it.
+fn caret_line() -> Int {
+    40
 }
 
 /// How far inside a dragged rectangle the caret stands, in canvas pixels: clear of the

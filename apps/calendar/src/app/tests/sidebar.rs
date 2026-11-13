@@ -1,4 +1,5 @@
 use super::*;
+use ui::widget::DrawChild;
 
 #[test]
 #[allow(
@@ -6,7 +7,6 @@ use super::*;
     reason = "one scenario, one labelled phase per merged case"
 )]
 fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
-    // Case `toggling_calendar_visibility_flips_the_flag`.
     {
         let mut app = CalendarApp::new_demo();
         let mut state = demo_document(&app);
@@ -39,15 +39,10 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
             .visible;
         assert_ne!(before, after);
     }
-    // Case `hiding_a_synced_calendar_drops_its_events_and_rechecking_restores_them`.
     {
-        // The standout defect: unchecking a calendar must hide its already-synced
-        // events on the spot (and re-checking must bring them back with no
-        // re-sync). Assert on the real draw path — the Day timeline's click
-        // hit-map, which is exactly what a user clicks.
         fn draws(app: &mut CalendarApp, tr: &mut TextRenderer, theme: &Theme, eid: Id) -> bool {
             let mut scene = Scene::new();
-            app.draw(
+            app.draw_child(
                 &mut scene,
                 Affine::IDENTITY,
                 tr,
@@ -68,8 +63,6 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
 
-        // A synced event tagged with an existing (checked) calendar, on the
-        // anchored day so the Day timeline lays it out.
         let start = app
             .anchor
             .and_time(NaiveTime::from_hms_opt(10, 0, 0).unwrap());
@@ -118,7 +111,6 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
             "re-checking the calendar restores the event with no re-sync"
         );
     }
-    // Case `selecting_a_hidden_collection_never_reveals_its_events`.
     {
         let mut app = CalendarApp::new_demo();
         let mut state = demo_document(&app);
@@ -135,7 +127,6 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
             "the collection filter narrows results but never bypasses the sidebar visibility setting"
         );
     }
-    // Case `opening_a_hidden_collection_explains_why_its_events_are_not_shown`.
     {
         let mut app = CalendarApp::new_demo();
         let mut doc = demo_document(&app);
@@ -150,7 +141,6 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
             "the collection view must explain its intentionally empty result"
         );
     }
-    // Case `show_all_calendars_operation_clears_a_collection_filter`.
     {
         let mut app = CalendarApp::new_demo();
         let mut doc = demo_document(&app);
@@ -169,7 +159,6 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
             Some(crate::resource::t("calendar-showing-all").as_str())
         );
     }
-    // Case `collapsing_an_account_folds_its_calendars_in_the_sidebar`.
     {
         fn account_section(app: &CalendarApp, id: &str) -> ui::widget::NavSection {
             app.show_shell();
@@ -218,10 +207,6 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
     }
 }
 
-/// What the person does in the shell's sidebar comes back as the
-/// calendar's own actions: choosing a list shows its tasks, a calendar's
-/// row shows or hides it, a task's row completes it and its Open action
-/// opens it, and folding an account is kept.
 #[test]
 fn the_sidebar_runs_what_the_person_does_as_the_calendars_actions() {
     let mut app = CalendarApp::new_demo();
@@ -255,7 +240,6 @@ fn the_sidebar_runs_what_the_person_does_as_the_calendars_actions() {
         "the row's check shows or hides the calendar"
     );
 
-    // The list shows what the calendar shows now.
     let mut harness = sidebar_harness(&app, size);
     let (sections, _) = app.places.shown().expect("the places are shown");
     let place = sections
@@ -290,5 +274,3 @@ fn the_sidebar_runs_what_the_person_does_as_the_calendars_actions() {
         "the task's check completes it"
     );
 }
-
-// --- end-to-end click routing through the real handle_event -----------

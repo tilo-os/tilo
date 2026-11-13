@@ -7,15 +7,12 @@ use tilo_doc::export::{BlockKind, ExportBlock, TablePlan};
 use tilo_doc::snapshot::AttrVal;
 use tilo_doc::{BlockView, DocSnapshot, InlinePlan, MarkSpan};
 
-/// Options controlling the shape of the emitted HTML.
 #[derive(Debug, Clone)]
 pub struct HtmlOptions {
     /// When `true`, emit only the body markup (no `<!doctype>`, `<html>`,
     /// `<head>`, `<style>` wrapper) — for embedding in a larger page. `false`
     /// (default) emits a complete standalone document.
     pub fragment: bool,
-    /// Optional document title used in `<title>` for a full document. Ignored
-    /// for fragments.
     pub title: Option<String>,
     /// Indentation unit used for pretty-printing (e.g. `"  "`). Cosmetic only.
     pub indent: String,
@@ -58,7 +55,6 @@ pub fn render_html_fragment_under(
     ))
 }
 
-/// [`render_html`] over a snapshot whose images are already resolved.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "mirrors render_html, which takes HtmlOptions by value"
@@ -88,8 +84,6 @@ pub(crate) fn render_resolved(snap: &Resolved<'_>, opts: HtmlOptions) -> String 
     out
 }
 
-/// Emit the document's named styles as a `<style>` block of CSS
-/// classes. Empty string when there are no styles.
 fn render_styles(snap: &Resolved<'_>) -> String {
     if snap.styles.is_empty() {
         return String::new();
@@ -131,13 +125,11 @@ fn style_prop_to_css(prop: &str, val: &AttrVal) -> Option<String> {
                 _ => "font-style: italic;".to_string(),
             }
         }
-        // `name` is metadata, not a visual property; anything else is unrecognised.
         _ => return None,
     };
     Some(css)
 }
 
-/// CSS class name for a style id.
 fn style_class(id: &str) -> String {
     let safe: String = id
         .chars()
@@ -156,8 +148,6 @@ fn indent_for(opts: &HtmlOptions, depth: usize) -> String {
     opts.indent.repeat(depth)
 }
 
-/// Render a slice of sibling blocks. Consecutive `list_item`s group into
-/// nested `<ul>`/`<ol>` by `level`; other kinds dispatch individually.
 fn render_blocks(
     out: &mut String,
     snap: &Resolved<'_>,
@@ -168,8 +158,6 @@ fn render_blocks(
     let mut i = 0;
     while let Some(block) = blocks.get(i) {
         if ExportBlock::new(block).kind() == BlockKind::ListItem {
-            // Consume the maximal run of consecutive list items and render it
-            // as one (possibly nested) list.
             let mut j = i;
             while blocks
                 .get(j)
@@ -220,8 +208,6 @@ fn render_paragraph(out: &mut String, block: &BlockView, opts: &HtmlOptions, dep
     let attrs = block_attrs(block);
     let _ = write!(out, "{pad}<p{attrs}>");
     if block.text.is_empty() {
-        // Preserve a visible blank line without emitting an empty element
-        // some renderers collapse.
         out.push_str("<br>");
     } else {
         out.push_str(&render_inline(&block.text, &block.marks));
@@ -245,14 +231,12 @@ fn render_quote(
         out.push_str(&render_inline(&block.text, &block.marks));
         out.push_str("</p>\n");
     }
-    // Child blocks (multi-paragraph quotes) render inside the blockquote.
     render_blocks(out, snap, &block.children, opts, depth.saturating_add(1));
     let _ = writeln!(out, "{pad}</blockquote>");
 }
 
 fn render_code(out: &mut String, block: &BlockView, opts: &HtmlOptions, depth: usize) {
     let pad = indent_for(opts, depth);
-    // Code is rendered verbatim — escaped, no inline marks applied.
     let _ = write!(out, "{pad}<pre><code>");
     out.push_str(&escape_text(&block.text));
     out.push_str("</code></pre>\n");
@@ -295,7 +279,6 @@ fn render_list(out: &mut String, items: &[BlockView], opts: &HtmlOptions, depth:
             }
         }
 
-        // Open lists until we reach this item's level.
         while open.last().map_or(-1, |&(l, _)| l) < level {
             let new_level = open.last().map_or(0, |&(l, _)| l.saturating_add(1)).max(0);
             open.push((new_level, ordered));
@@ -316,7 +299,6 @@ fn render_list(out: &mut String, items: &[BlockView], opts: &HtmlOptions, depth:
         out.push_str("</li>\n");
     }
 
-    // Close any still-open lists, deepest first.
     while let Some((open_level, open_ord)) = open.pop() {
         close_list(out, open_level, open_ord, opts, depth);
     }
@@ -330,7 +312,6 @@ fn open_list(
     opts: &HtmlOptions,
     depth: usize,
 ) {
-    // `level` is always a value `render_list` already clamped to 0..=64.
     #[allow(
         clippy::cast_sign_loss,
         clippy::cast_possible_truncation,
@@ -341,7 +322,6 @@ fn open_list(
         let item = ExportBlock::new(item);
         let lst = list_style_type(item.num_format());
         let mut attrs = format!(" style=\"list-style-type: {lst}\"");
-        // The first item carries where the list's numbering starts.
         let start = item.num_start();
         if start != 1 {
             let _ = write!(attrs, " start=\"{start}\"");
@@ -353,7 +333,6 @@ fn open_list(
 }
 
 fn close_list(out: &mut String, level: i64, ordered: bool, opts: &HtmlOptions, depth: usize) {
-    // `level` is always a value `render_list` already clamped to 0..=64.
     #[allow(
         clippy::cast_sign_loss,
         clippy::cast_possible_truncation,
@@ -371,8 +350,6 @@ fn render_table(
     opts: &HtmlOptions,
     depth: usize,
 ) {
-    // Rows are child blocks, each row's children its cells. Tolerates
-    // the flat shape (cells directly under the table with a `cols` attr).
     let plan = TablePlan::new(block);
 
     let pad = indent_for(opts, depth);
@@ -384,7 +361,6 @@ fn render_table(
         let _ = writeln!(out, "{row_pad}<tr>");
         for cell in row {
             let _ = write!(out, "{cell_pad}<td>");
-            // A cell may carry its own children (block content) or be a leaf.
             if cell.children.is_empty() {
                 out.push_str(&render_inline(&cell.text, &cell.marks));
             } else {
@@ -418,23 +394,17 @@ fn render_image(
         Some(bytes) => {
             let mime = tilo_content::image_format(bytes).map_or("image/png", |media| media.mime);
             let data = base64::engine::general_purpose::STANDARD.encode(bytes);
-            // The data URI is self-contained; no escaping needed beyond the
-            // base64 alphabet (no `"` in b64).
             let _ = writeln!(
                 out,
                 "{pad}<img src=\"data:{mime};base64,{data}\"{alt_attr}>"
             );
         }
         None => {
-            // Missing/absent blob: emit an inert img with the alt note so
-            // structure stays preserved and well-formed.
             let _ = writeln!(out, "{pad}<img src=\"\"{alt_attr}>");
         }
     }
 }
 
-/// Compose the attribute string for a block element: the resolved style
-/// class plus a best-effort `text-align` from an `align` attr.
 fn block_attrs(block: &BlockView) -> String {
     let class = if let Some(AttrVal::Str(sid)) = block.attrs.get("style") {
         Some(style_class(sid))
@@ -484,7 +454,6 @@ fn mark_tags(active: &[&MarkSpan]) -> (String, String) {
 
     let has = |name: &str| active.iter().any(|m| m.name == name);
 
-    // 1. Link wraps everything.
     if let Some(href) = active.iter().find_map(|m| {
         if m.name == "link" || m.name == "href" {
             mark_str(m)
@@ -500,7 +469,6 @@ fn mark_tags(active: &[&MarkSpan]) -> (String, String) {
         close_stack.push("</a>");
     }
 
-    // 2. A <span style> carrying color / font / size, if any of those are set.
     let mut decls: Vec<String> = Vec::new();
     if let Some(c) = active
         .iter()
@@ -531,7 +499,6 @@ fn mark_tags(active: &[&MarkSpan]) -> (String, String) {
         close_stack.push("</span>");
     }
 
-    // 3. Boolean inline styles.
     if has("strong") || has("bold") {
         open.push_str("<strong>");
         close_stack.push("</strong>");
@@ -566,12 +533,10 @@ fn attr_as_str(val: &AttrVal) -> String {
     }
 }
 
-/// The string payload of a valued mark (link href, color, font family), if any.
 fn mark_str(m: &MarkSpan) -> Option<String> {
     m.value.as_str().map(std::string::ToString::to_string)
 }
 
-/// CSS `font-size` for a `size`/`fontSize` mark (Int pt, or numeric string).
 fn css_size_from_mark(m: &MarkSpan) -> String {
     use tilo_doc::document::MarkValue;
     match &m.value {
@@ -581,7 +546,6 @@ fn css_size_from_mark(m: &MarkSpan) -> String {
     }
 }
 
-/// CSS `font-size` for a style-map `size`/`fontSize` property.
 fn css_size(val: &AttrVal) -> String {
     match val {
         AttrVal::Int(n) => format!("{n}pt"),
@@ -633,7 +597,6 @@ fn css_value(v: &str) -> String {
 fn sanitize_href(href: &str) -> String {
     let trimmed = href.trim();
     let lower = trimmed.to_ascii_lowercase();
-    // Strip leading control/whitespace that browsers ignore when matching schemes.
     let scheme_probe: String = lower
         .chars()
         .filter(|c| !c.is_whitespace() && *c != '\0')

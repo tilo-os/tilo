@@ -1,7 +1,5 @@
 use super::*;
 
-/// The mailbox starts with a selection; wide shows three columns, narrow
-/// pushes the message and the drawer, and reflowing restores the columns.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -33,10 +31,6 @@ fn pane_layout_reflows_between_wide_and_narrow_and_navigates_folders() {
         assert!(!app.shared.borrow().narrow);
     }
 
-    // Phase `narrow_mailboxes_open_over_a_settled_layout`: the header
-    // rows of the columns behind the mailboxes screen are laid out
-    // hidden, and the layout still settles (it panics in
-    // `layout_for_test` otherwise).
     {
         let (mut app, _doc) = app();
         app.nav.open_sidebar();
@@ -61,7 +55,6 @@ fn pane_layout_reflows_between_wide_and_narrow_and_navigates_folders() {
         assert!(app.shared.borrow().detail_pushed);
         assert!(app.shared.borrow().selected.is_some());
 
-        // Back is the window bar's slot; Escape goes back too.
         assert!(
             app.nav.can_go_back() && !app.nav.window_toolbar().leading.is_empty(),
             "Back shown in the window's bar while the message is pushed"
@@ -121,10 +114,6 @@ fn pane_layout_reflows_between_wide_and_narrow_and_navigates_folders() {
         );
     }
 
-    // Phase `narrow_list_reaches_the_mailboxes_by_the_bars_toggle`: too
-    // narrow to dock the mailboxes beside the list, they are the push
-    // stack's first screen. The list is the top-level page: the window
-    // bar's sidebar toggle reaches the mailboxes, with no Back beside it.
     {
         let (mut app, _doc) = app();
         app.layout_for_test(560.0, 860.0);
@@ -185,15 +174,26 @@ fn accessibility_routes_panes_reader_attachments_and_context_menu() {
                 .any(|node| node.role == A11yRole::Document),
             "the covered reader is omitted in the compact overview"
         );
-        let message_target = overview
+        let list = overview
             .children
             .iter()
             .find(|node| node.role == A11yRole::List)
-            .and_then(|list| {
-                list.children
-                    .iter()
-                    .find(|node| node.role == A11yRole::ListItem)
-            })
+            .expect("the compact overview exposes its visible message list");
+        let toggle = list
+            .children
+            .iter()
+            .find(|node| node.action_target.as_deref() == Some("mail.bulk:toggle"))
+            .and_then(|node| node.name.clone())
+            .expect("the list has a bulk-selection toggle");
+        assert_eq!(
+            toggle,
+            crate::i18n::t("mail-a11y-bulk-select"),
+            "the toggle reads as the menu entry that starts bulk selection"
+        );
+        let message_target = list
+            .children
+            .iter()
+            .find(|node| node.role == A11yRole::ListItem)
             .and_then(|row| row.action_target.clone())
             .expect("visible message row has a stable activation target");
 
@@ -337,8 +337,6 @@ fn accessibility_routes_panes_reader_attachments_and_context_menu() {
         );
 
         app.compose.open_blank();
-        // Beside the list the composer stands where the message is read:
-        // a part of the window, the list still published beside it.
         let window = app.accessibility().expect("window semantics");
         assert_eq!(window.role, A11yRole::Window);
         let compose = window
@@ -398,8 +396,6 @@ fn accessibility_routes_panes_reader_attachments_and_context_menu() {
         );
     }
 }
-/// Opening (row, resource, Enter) records the read action; explicit preview (P,
-/// resource preview) and the legacy read-only route stay read-neutral.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -510,7 +506,6 @@ fn opening_marks_read_through_the_document_action_and_preview_stays_neutral() {
         }));
     }
 
-    // The removed read-only operation protocol cannot bypass the authoritative door.
     {
         let mut hosted =
             ui::framework::testing::TestApp::<crate::resource::MailShell>::capture(None).unwrap();
@@ -596,12 +591,23 @@ fn opening_marks_read_through_the_document_action_and_preview_stays_neutral() {
             .iter()
             .find(|node| node.role == ui::a11y::Role::Document)
             .expect("reader document");
+        let banner = crate::i18n::t("mail-a11y-preview-unread");
+        assert_ne!(
+            banner, "mail-a11y-preview-unread",
+            "the preview banner is a catalogue message"
+        );
         assert!(
             reader
-                .description
-                .as_deref()
-                .is_some_and(|text| text.contains("without changing its read state")),
-            "assistive technology receives the same explicit preview distinction"
+                .children
+                .iter()
+                .any(|node| node.name.as_deref() == Some(banner.as_str())),
+            "assistive technology receives the reader's preview banner"
+        );
+        let count = app.shared.borrow().selected_thread_messages().len();
+        assert_eq!(
+            reader.description.as_deref(),
+            Some(MailApp::thread_messages(count).as_str()),
+            "the conversation's size is a catalogue message of its own"
         );
     }
 

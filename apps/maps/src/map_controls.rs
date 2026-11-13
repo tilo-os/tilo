@@ -1,9 +1,6 @@
-//! Floating map controls shared by every Maps surface.
-//!
-//! This component owns the History/zoom/location/traffic stack's UI state,
-//! geometry,
-//! drawing, hit-testing, and tooltip dwell. Geographic effects remain in the
-//! app and are requested through [`MapControlAction`].
+//! The floating map controls: the History, zoom, location and traffic stack's state, geometry,
+//! drawing, hit-testing and tooltip dwell. Geographic effects stay in the app, requested through
+//! [`MapControlAction`].
 
 use ui::time::Instant;
 
@@ -15,10 +12,6 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, HistoryControl, TooltipHost};
 
-/// The geometry of the control column, read from the theme: icon buttons of
-/// the Regular control height, the zoom pair an `s2` apart (one group), the
-/// locate and traffic buttons an `s3` from it and from each other, and the
-/// whole column an `s4` from the map's edges like every floating map surface.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct ColumnMetrics {
     pub size: f64,
@@ -38,9 +31,6 @@ impl ColumnMetrics {
         }
     }
 
-    /// Height of the whole column below its top margin: four controls, the
-    /// zoom pair gap and two sibling gaps. The app lays the navigation card
-    /// and the overflow button out around this.
     pub(super) fn column_height(self) -> f64 {
         4.0 * self.size + self.pair_gap + 2.0 * self.group_gap
     }
@@ -54,8 +44,6 @@ impl Default for ColumnMetrics {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MapControlAction {
-    /// The window's History control, which the map's corner holds since the
-    /// full-bleed map has no header row.
     History,
     ZoomIn,
     ZoomOut,
@@ -115,7 +103,6 @@ impl MapControlAction {
         Self::Layers,
     ];
 
-    /// What the control is called: its accessible name and its tooltip.
     pub(super) fn label(self) -> String {
         crate::failure::t(match self {
             Self::History => "maps-history",
@@ -176,13 +163,10 @@ impl MapControls {
         Layout::new(self.viewport, self.metrics, self.history.is_some())
     }
 
-    /// Show the window's History control at the top of the column, or none.
     pub(super) fn set_history(&mut self, control: Option<HistoryControl>) {
         self.history = control;
     }
 
-    /// Height of the column below its top margin, with the History control
-    /// and its group gap while it shows.
     pub(super) fn column_height(&self) -> f64 {
         let history = if self.history.is_some() {
             self.metrics.size + self.metrics.group_gap
@@ -200,7 +184,6 @@ impl MapControls {
         self.traffic_enabled = enabled;
     }
 
-    /// Where each shown control is drawn.
     pub(super) fn rects(&self) -> impl Iterator<Item = Rect> {
         let layout = self.layout();
         MapControlAction::ALL
@@ -216,9 +199,6 @@ impl MapControls {
             .find(|action| layout.rect(*action).contains(point))
     }
 
-    /// Retarget both immediate hover feedback and the shared delayed tooltip.
-    /// Extra targets let the app's narrow-menu and overflow buttons participate
-    /// without duplicating a second tooltip controller.
     pub(super) fn on_pointer(
         &mut self,
         point: Point,
@@ -252,9 +232,6 @@ impl MapControls {
         self.tooltip.needs_frame()
     }
 
-    /// Paint the column: icon buttons on their raised face so they read over
-    /// any basemap tone. The layers button stands on the selection lift
-    /// while a layer (traffic) is on.
     pub(super) fn draw(
         &self,
         scene: &mut Scene,
@@ -286,7 +263,6 @@ impl MapControls {
         }
     }
 
-    /// Paint the delayed tooltip after the app's other floating surfaces.
     pub(super) fn draw_tooltip(
         &mut self,
         scene: &mut Scene,
@@ -356,10 +332,6 @@ mod tests {
             assert_eq!(controls.hovered, None);
         }
 
-        // Phase `controls_keep_token_gaps_and_never_touch`.
-        // HIG §7 "nothing touches": the zoom pair sits an `s2` apart, the
-        // groups an `s3`, and the column the app lays out around is exactly
-        // the four faces plus those gaps — no control shares an edge.
         {
             let controls = controls();
             let sp = Theme::dark().tokens.spacing;

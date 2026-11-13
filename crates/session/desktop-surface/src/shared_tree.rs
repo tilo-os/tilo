@@ -1,8 +1,7 @@
 //! Snapshot compatibility for hosts whose workspace carries a desktop tree. Stream bindings and
-//! presentation belong to the receiving device.
-use tilo_desktop_model::{
-    DesktopTree, OutputPartition, TabId, TileContent, WindowWidth, WorkspaceSlot,
-};
+//! presentation belong to the receiving device, and a person's own windows
+//! ([`tilo_desktop_model::personal`]) to the desk they were opened on.
+use tilo_desktop_model::{DesktopTree, OutputPartition, TabId, WindowWidth, WorkspaceSlot};
 
 pub(crate) fn projection(mut tree: DesktopTree) -> DesktopTree {
     let local: Vec<_> = tree
@@ -11,7 +10,7 @@ pub(crate) fn projection(mut tree: DesktopTree) -> DesktopTree {
         .flat_map(|w| &w.strips)
         .flat_map(|s| &s.window_groups)
         .flat_map(|g| &g.tabs)
-        .filter(|tab| matches!(tab.tile, TileContent::PeerWindow { .. }))
+        .filter(|tab| tab.is_personal())
         .map(|tab| tab.id)
         .collect();
     for tab in local {
@@ -64,7 +63,9 @@ pub(crate) fn receive(
                 let tabs: Vec<_> = group
                     .tabs
                     .iter()
-                    .filter(|t| local_tabs.contains(&t.id))
+                    // A person's own window is never in what the workspace sends: it stays on
+                    // the desk it was opened on.
+                    .filter(|t| local_tabs.contains(&t.id) || t.is_personal())
                     .cloned()
                     .collect();
                 if let Some(existing) = target.window_groups.iter_mut().find(|g| g.id == group.id) {

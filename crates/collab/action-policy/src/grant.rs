@@ -3,7 +3,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use tilo_clock::{SystemTime, UNIX_EPOCH};
+use tilo_clock::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{EarlierIds, KindSet, TreePath};
 

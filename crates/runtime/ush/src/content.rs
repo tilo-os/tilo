@@ -1,21 +1,15 @@
-//! An environment's content store on this device: where what a `write` or
-//! `append` names by reference is kept.
+//! An environment's content store on this device: where what a `write` or `append`
+//! names by reference is kept.
 //!
-//! An action carries at most [`MAX_TEXT_BYTES`] inside the record. Anything
-//! larger — `cat big.log > copy`, a `tee`, a `sort -o` — is streamed into
-//! this store as the command writes it ([`EnvironmentContent::keep`]), and
-//! the action names it by its hash (`tilo.content:<hash>`). The device that
-//! carries the action out reads it back from here. It is Tilo's content
-//! store ([`tilo_content`]) in a directory of the environment's own, beside
-//! its `/var` and outside every guest, with no bound on an item's size: a
-//! write is never refused for being large.
+//! An action carries at most [`MAX_TEXT_BYTES`] in the record; anything larger is
+//! streamed into Tilo's content store ([`tilo_content`]) in a directory of the
+//! environment's own, outside every guest and with no bound on an item's size, and the
+//! action names it by hash (`tilo.content:<hash>`).
 //!
-//! Content is kept while a task of the record still names it: a redo of a
-//! write the record still lists writes the same bytes again. What no task
-//! names any more is collected ([`EnvironmentContent::collect`]) — never
-//! while a session is still streaming content its action has not named yet:
-//! every [`Kept`] holds the store's keeping lock shared until its action is
-//! recorded, and collection only runs when it can take that lock alone.
+//! Content lives while a task of the record still names it. Collection
+//! ([`EnvironmentContent::collect`]) never runs while a session is streaming content
+//! its action has not named yet: every [`Kept`] holds the keeping lock shared until its
+//! action is recorded.
 //!
 //! [`MAX_TEXT_BYTES`]: tilo_environment::files::MAX_TEXT_BYTES
 
@@ -28,11 +22,8 @@ use tilo_environment::Environment;
 use tilo_environment::files::FileAction;
 use ush_tilo::{Keeping, Kept};
 
-/// Held shared by every content on its way to being named by an action;
-/// collection takes it alone.
 const KEEPING_LOCK: &str = ".keeping.lock";
 
-/// One environment's content store on this device.
 #[derive(Debug, Clone)]
 pub struct EnvironmentContent {
     dir: PathBuf,
@@ -117,7 +108,6 @@ impl EnvironmentContent {
     }
 }
 
-/// Every content hash a task of `environment` names.
 #[must_use]
 pub fn named(environment: &Environment) -> BTreeSet<String> {
     environment
@@ -131,7 +121,6 @@ pub fn named(environment: &Environment) -> BTreeSet<String> {
         .collect()
 }
 
-/// Content being streamed into the store.
 struct Streaming {
     writer: Option<std::io::PipeWriter>,
     putting: Option<std::thread::JoinHandle<io::Result<tilo_content::Stored>>>,

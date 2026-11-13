@@ -1,17 +1,4 @@
 //! Everything Settings does, as one typed effect vocabulary.
-//!
-//! Settings edits no document of its own: a preference lives in the
-//! session's settings records (read and written through the app's settings
-//! document, `crate::store`), a device's state lives in the device. Every
-//! change a control, the palette, an agent or a script makes is therefore a
-//! [`SettingsEffect`], answered by [`crate::SettingsApp`]'s
-//! [`ResourceSurface::effect`](ui::framework::ResourceSurface::effect).
-//!
-//! The vocabulary is composed of one `#[derive(Effect)]` enum per area of
-//! Settings (`settings_effects!`): each area declares its own effects and
-//! answers them in its own module, and every effect id is unique across the
-//! whole vocabulary. A control binds one of an area's effects with
-//! [`effect`], which names it as part of [`SettingsEffect`].
 
 use ui::framework::{EffectAnswer, EffectCx};
 use ui::tilo_resource::{self, ActionRef, Effect, EffectDecl};
@@ -20,7 +7,6 @@ use crate::categories::Category;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 
-/// The operation every Settings effect travels under.
 pub const OPERATION: &str = "settings.effect";
 
 /// One area's effect vocabulary as Settings answers it: its declarations,
@@ -29,55 +15,37 @@ pub const OPERATION: &str = "settings.effect";
 /// that dispatches effects names no area: an area brings its family
 /// ([`effect_family!`]) and [`crate::area::registry`] lists them.
 pub struct EffectFamily {
-    /// Every effect the area declares.
     pub declarations: fn() -> Vec<EffectDecl>,
-    /// Read the area's effect `id` back from its arguments.
+    pub rows: fn() -> Vec<tilo_resource::effect::EffectRow>,
     pub decode: DecodeEffect,
-    /// Answer one of the area's effects.
     pub answer: AnswerEffect,
 }
 
-/// [`EffectFamily::decode`].
 pub type DecodeEffect = fn(
     &str,
     &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Box<dyn AreaEffect>, tilo_resource::EffectDecodeError>;
 
-/// [`EffectFamily::answer`].
 pub type AnswerEffect =
     fn(&SettingsApp, Box<dyn std::any::Any>, &mut EffectCx<Settings>) -> EffectAnswer;
 
-/// An area's effect vocabulary: the `#[derive(Effect)]` enum and the family
-/// that answers it.
 pub trait AreaVocabulary: Effect + Clone + PartialEq + std::fmt::Debug + 'static {
-    /// Its family.
     const FAMILY: &'static EffectFamily;
 }
 
-/// One area's effect, behind a reference: what [`SettingsEffect`] holds.
 pub trait AreaEffect: std::fmt::Debug {
-    /// [`Effect::id`].
     fn id(&self) -> &'static str;
-    /// [`Effect::arguments`].
     fn arguments(&self) -> serde_json::Map<String, serde_json::Value>;
-    /// [`Effect::bound`].
     fn bound(&self) -> tilo_actions::ActionSpec;
-    /// [`Effect::bound_asking`].
     fn bound_asking(&self, asking: &[&str]) -> tilo_actions::ActionSpec;
-    /// [`Effect::bound_asking_params`].
     fn bound_asking_params(
         &self,
         params: Vec<tilo_actions::ActionParam>,
     ) -> tilo_actions::ActionSpec;
-    /// A copy of the effect.
     fn clone_effect(&self) -> Box<dyn AreaEffect>;
-    /// Whether `other` is the same effect.
     fn same_as(&self, other: &dyn AreaEffect) -> bool;
-    /// The effect, to compare or take back as its own type.
     fn as_any(&self) -> &dyn std::any::Any;
-    /// The effect, to answer as its own type.
     fn into_any(self: Box<Self>) -> Box<dyn std::any::Any>;
-    /// Its area's family.
     fn family(&self) -> &'static EffectFamily;
 }
 
@@ -126,14 +94,13 @@ impl<E: AreaVocabulary> AreaEffect for E {
     }
 }
 
-/// Make `$ty`, an area's `#[derive(Effect)]` enum, a vocabulary of
-/// [`SettingsEffect`] answered by `$answer(app, effect, cx)`.
 #[macro_export]
 macro_rules! effect_family {
     ($ty:ty => $answer:path) => {
         impl $crate::effects::AreaVocabulary for $ty {
             const FAMILY: &'static $crate::effects::EffectFamily = &$crate::effects::EffectFamily {
                 declarations: <$ty as ui::tilo_resource::Effect>::declarations,
+                rows: <$ty as ui::tilo_resource::Effect>::rows,
                 decode: |id, arguments| {
                     <$ty as ui::tilo_resource::Effect>::decode(id, arguments)
                         .map(|effect| Box::new(effect) as Box<dyn $crate::effects::AreaEffect>)
@@ -148,8 +115,6 @@ macro_rules! effect_family {
 }
 pub use crate::effect_family;
 
-/// Every effect Settings answers: one area's effect. See the
-/// [module docs](self).
 pub struct SettingsEffect(Box<dyn AreaEffect>);
 
 impl Clone for SettingsEffect {
@@ -189,13 +154,18 @@ impl Effect for SettingsEffect {
         })
     }
 
+    fn rows() -> Vec<ui::tilo_resource::effect::EffectRow> {
+        crate::area::registry()
+            .families
+            .iter()
+            .flat_map(|family| (family.rows)())
+            .collect()
+    }
+
     fn id(&self) -> &'static str {
         self.0.id()
     }
 
-    // A row binds one area's effect. Flattening every area's declarations
-    // here repeats unrelated metadata work for each row. The child
-    // vocabulary shares this union's operation and payload.
     fn bound(&self) -> tilo_actions::ActionSpec {
         self.0.bound()
     }
@@ -228,7 +198,6 @@ impl Effect for SettingsEffect {
     }
 }
 
-/// Answer `effect` on `app`, in the module of its area.
 pub fn answer(
     app: &SettingsApp,
     effect: SettingsEffect,
@@ -271,7 +240,6 @@ fn after_area_read(
 
 effect_family!(NavigationEffect => answer_navigation);
 
-/// Settings' own part: moving between the panes.
 pub const PART: crate::area::Part = crate::area::Part {
     areas: &[],
     families: &[(10, NavigationEffect::FAMILY)],
@@ -285,33 +253,17 @@ pub const PART: crate::area::Part = crate::area::Part {
 /// and the published rows of a live window name an area only once it has
 /// read ([`SettingsApp::publishes_area`]).
 pub struct LiveArea {
-    /// The profiling phase its rows are measured under.
     pub name: &'static str,
-    /// The pane that shows the area, and so reads it when shown.
     pub pane: Category,
-    /// Whether the area has read what its rows show.
     pub is_open: fn(&SettingsApp) -> bool,
-    /// Its rows, reading the area first if it has not.
     pub rows: fn(&SettingsApp) -> Vec<ui::framework::LiveRow>,
-    /// How the window's warm-up reads the area off the UI thread, for an
-    /// area whose read blocks on the device; `None` reads it in a sync.
     pub background: Option<BackgroundRead>,
 }
 
-/// An area's device read on the background executor
-/// ([`crate::device_read::DeviceRead`]): started by the warm-up, and taken
-/// in by the area's model on the UI thread once it has ended.
 pub struct BackgroundRead {
-    /// Start the read; `false` when the area reads in a sync instead.
     pub start: fn(&SettingsApp) -> bool,
-    /// Whether the started read has ended.
     pub finished: fn(&SettingsApp) -> bool,
-    /// What waits off the UI thread for the started read to end
-    /// ([`crate::device_read::DeviceRead::wait`]).
     pub wait: fn(&SettingsApp) -> Option<crate::device_read::Wait>,
-    /// The effects answered on the area's model: one that arrives before
-    /// the read has ended is answered once it has, rather than waiting for
-    /// it on the UI thread.
     pub answers: fn() -> Vec<EffectDecl>,
 }
 
@@ -327,28 +279,17 @@ pub struct BackgroundRead {
 /// nothing: it publishes every area at once.
 #[derive(Default)]
 pub struct AreaReads {
-    /// Publish only the areas that have read.
     deferred: std::cell::Cell<bool>,
-    /// The window has drawn a frame, so reading may begin.
     presented: std::cell::Cell<bool>,
-    /// A wake for the next read is on its way.
     woken: std::cell::Cell<bool>,
-    /// The index in [`crate::area::Registry::live_areas`] reading continues from.
     next: std::cell::Cell<usize>,
-    /// The area whose read runs on the background executor; it wakes the
-    /// window when it ends, so no sync asks for another meanwhile.
     in_flight: std::cell::Cell<Option<usize>>,
 }
 
-/// What one step of the warm-up did ([`AreaReads::step`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
-    /// An area read, or its background read was taken in: the next sync
-    /// goes on.
     Read,
-    /// An area reads on the background executor; its end wakes the window.
     Waiting,
-    /// Every area has read; every area is published from now on.
     Done,
 }
 
@@ -357,16 +298,12 @@ thread_local! {
     static DEFERRED_IN_TESTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Make the windows this thread attaches next read their areas as a live
-/// window does, over the stand-ins a test reads.
 #[cfg(test)]
 pub fn defer_area_reads_in_tests(deferred: bool) {
     DEFERRED_IN_TESTS.with(|cell| cell.set(deferred));
 }
 
 impl AreaReads {
-    /// The reads of a window whose areas reach this device's hardware
-    /// and services when `devices`.
     pub fn of(devices: bool) -> Self {
         #[cfg(test)]
         let deferred = devices || DEFERRED_IN_TESTS.with(std::cell::Cell::get);
@@ -378,27 +315,19 @@ impl AreaReads {
         }
     }
 
-    /// Whether only the areas that have read are published.
     pub fn deferred(&self) -> bool {
         self.deferred.get()
     }
 
-    /// The window drew a frame.
     pub fn presented(&self) {
         self.presented.set(true);
     }
 
-    /// Whether this sync reads the next area: the window has drawn and not
-    /// every area has read. Taking it consumes the pending wake.
     pub fn take_due(&self) -> bool {
         self.woken.set(false);
         self.deferred.get() && self.presented.get()
     }
 
-    /// The next area to read in `app`, with its index: the first after the
-    /// last one read that has not. Each area is passed once, so reading
-    /// ends after one pass even if an area's rows never read it; then every
-    /// area is published.
     fn take_next(&self, app: &SettingsApp) -> Option<(usize, &'static LiveArea)> {
         let start = self.next.get();
         let live_areas = &crate::area::registry().live_areas;
@@ -417,9 +346,6 @@ impl AreaReads {
         Some((index, area))
     }
 
-    /// Read on in `app`: take in the background read that has ended, or
-    /// start the next area's read — on the background executor when its
-    /// read blocks, else here. At most one background read runs at a time.
     pub fn step(&self, app: &SettingsApp) -> Step {
         if let Some(index) = self.in_flight.get() {
             let Some(area) = crate::area::registry().live_areas.get(index).copied() else {
@@ -435,7 +361,6 @@ impl AreaReads {
                 return Step::Waiting;
             }
             self.in_flight.set(None);
-            // The area builds its model from what was read, here.
             let _ = (area.rows)(app);
             return Step::Read;
         }
@@ -468,10 +393,6 @@ impl AreaReads {
     }
 }
 
-/// The live rows Settings publishes — the devices, networks, accounts and
-/// other entities outside any document that it shows — with the effects
-/// each offers bound to it: one per pane, then each area's that
-/// [`SettingsApp::publishes_area`].
 pub fn rows(app: &SettingsApp) -> Vec<ui::framework::LiveRow> {
     use ui::tilo_resource::profiling::measure;
     let mut rows = measure("settings.rows.panes", pane_rows);
@@ -490,10 +411,6 @@ pub fn row(app: &SettingsApp, id: &str) -> Option<ui::framework::LiveRow> {
     rows(app).into_iter().find(|row| row.id() == id)
 }
 
-/// An area's live rows, kept while what they were made from holds. Every
-/// publication asks each area for its rows; an area listing every installed
-/// app made hundreds of action declarations each time, on every click and
-/// keystroke, though nothing they show had changed.
 pub struct RowsMemo<K> {
     kept: std::cell::RefCell<Option<(K, Vec<ui::framework::LiveRow>)>>,
 }
@@ -507,8 +424,6 @@ impl<K> Default for RowsMemo<K> {
 }
 
 impl<K: PartialEq> RowsMemo<K> {
-    /// The rows made from `key`: those kept when they were made from it,
-    /// else what `make` makes now.
     pub fn rows(
         &self,
         key: K,
@@ -545,7 +460,6 @@ pub fn row_pending(app: &SettingsApp, id: &str) -> bool {
     pending
 }
 
-/// The effects that differ from their declaration on this device now.
 pub fn statuses(app: &SettingsApp) -> Vec<ui::framework::EffectStatus> {
     app.areas()
         .iter()
@@ -553,8 +467,6 @@ pub fn statuses(app: &SettingsApp) -> Vec<ui::framework::EffectStatus> {
         .collect()
 }
 
-/// `effect` of one area, named as part of [`SettingsEffect`], for binding a
-/// control: `cx.bind(toggle, effect(AppearanceEffect::SET_HIGH_CONTRAST))`.
 #[must_use]
 pub const fn effect<E, A: serde::Serialize>(
     effect: ActionRef<E, A>,
@@ -562,13 +474,11 @@ pub const fn effect<E, A: serde::Serialize>(
     ActionRef::new(effect.id, effect.params, *effect.kind())
 }
 
-/// The live row of `category`'s pane.
 #[must_use]
 pub fn pane_row_id(category: Category) -> String {
     format!("settings.section:{}", category.slug())
 }
 
-/// What opens `category`'s pane, offered on its row ([`pane_row_id`]).
 #[must_use]
 pub fn open_pane(category: Category) -> SettingsEffect {
     NavigationEffect::OpenPane {
@@ -577,7 +487,6 @@ pub fn open_pane(category: Category) -> SettingsEffect {
     .into()
 }
 
-/// Open `category`'s pane in `app` through its row, as the sidebar does.
 #[cfg(test)]
 pub fn show_pane(
     app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
@@ -587,8 +496,6 @@ pub fn show_pane(
         .expect("the pane opens");
 }
 
-/// The page a Settings window `root` shows: what its content scroller (the
-/// right-most one) holds.
 #[cfg(test)]
 pub fn page_of(root: &dyn ui::widget::Widget) -> &dyn ui::widget::Widget {
     fn scrollers<'a>(
@@ -611,13 +518,11 @@ pub fn page_of(root: &dyn ui::widget::Widget) -> &dyn ui::widget::Widget {
         .expect("the window's content scroller")
 }
 
-/// The pane whose live row is `row` ([`pane_row_id`]).
 #[must_use]
 pub fn pane_of_row(row: &str) -> Option<Category> {
     Category::from_slug(row.strip_prefix("settings.section:")?)
 }
 
-/// One row per pane, each opening it.
 fn pane_rows() -> Vec<ui::framework::LiveRow> {
     // The pane rows change only with the language, and the host asks for
     // the rows on every frame it publishes: they are built once per
@@ -650,23 +555,20 @@ fn pane_rows() -> Vec<ui::framework::LiveRow> {
     })
 }
 
-/// How a search hit or an agent's `open` names a setting:
-/// `settings.setting:<id>`, an id of [`settings_store::index::SETTINGS`].
 pub const SETTING_ANCHOR: &str = "settings.setting:";
 
-/// Moving between the panes of Settings.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum NavigationEffect {
     /// Open a pane of Settings.
-    #[effect(view, label = "Open settings pane")]
+    #[effect(view)]
     OpenPane {
         #[param("The pane: its id, such as `appearance` or `network`")]
         pane: String,
     },
     /// Open the pane a setting is on, scrolled to it, with the keyboard on
     /// its control.
-    #[effect(view, label = "Show a setting")]
+    #[effect(view)]
     ShowSetting {
         #[param("The setting: its id, such as `keyboard.layout` or `appearance.style`")]
         setting: String,
@@ -796,6 +698,10 @@ mod tests {
             SettingsEffect::declarations()
         }
 
+        fn rows() -> Vec<ui::tilo_resource::effect::EffectRow> {
+            SettingsEffect::rows()
+        }
+
         fn id(&self) -> &'static str {
             self.0.id()
         }
@@ -872,8 +778,6 @@ mod tests {
         );
     }
 
-    /// One vocabulary: every effect id names exactly one effect, and each
-    /// decodes back to the value that encoded it.
     #[test]
     fn effect_ids_are_unique_and_round_trip() {
         let mut seen = std::collections::HashSet::new();

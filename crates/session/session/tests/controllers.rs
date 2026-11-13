@@ -18,15 +18,13 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use common::window::{Client, pump};
+use crate::common::window::{Client, pump};
 use os_actions::{ForwardedGamepadEvent, GamepadButton};
 use settings_store::hardware::ShortcutConfig;
 use tilo_compositor::{Compositor, InputEvent};
@@ -178,7 +176,7 @@ fn session_with(fake: &Fake) -> (Session, ScopedEnv) {
 /// Step the session until `done` holds.
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    common::wait_for(session, "what the test asked for", |session| {
+    crate::common::wait_for(session, "what the test asked for", |session| {
         done(session).then_some(())
     });
 }

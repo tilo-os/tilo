@@ -3,9 +3,7 @@
 use runtime_fs::{
     FsOwner, FsRight, NativeGrantAuthority,
     selected_file::SelectedFileBackend,
-    workspace_server::{
-        PendingHandoffRegistry, WorkspaceBackend, serve_workspace_connected_with_handoffs,
-    },
+    workspace_server::{WorkspaceBackend, serve_workspace_connected},
 };
 use std::{
     fs::File,
@@ -20,8 +18,6 @@ use std::{
     path::Path,
     sync::Arc,
 };
-
-use super::handoff;
 
 fn refused() -> io::Error {
     io::ErrorKind::PermissionDenied.into()
@@ -129,28 +125,6 @@ fn home_backend(
     session
         .bind_retained_source_owner(&grant, source_owner)
         .map_err(io::Error::other)?;
-    let verifier_fd = launcher::owned_service::RETAINED_NATIVE_HISTORY_VERIFIER_FD;
-    let present = unsafe { libc::fcntl(verifier_fd, libc::F_GETFD) };
-    if present >= 0 {
-        let verifier: File = unsafe { std::os::fd::FromRawFd::from_raw_fd(verifier_fd) };
-        session
-            .bind_retained_history_verifier(&grant, verifier)
-            .map_err(io::Error::other)?;
-    } else if io::Error::last_os_error().raw_os_error() != Some(libc::EBADF) {
-        return Err(io::Error::last_os_error());
-    }
-    let permit_fd = launcher::owned_service::RETAINED_SELECTED_REPLACEMENT_PERMIT_FD;
-    let present = unsafe { libc::fcntl(permit_fd, libc::F_GETFD) };
-    if present >= 0 {
-        let permit: File = unsafe { std::os::fd::FromRawFd::from_raw_fd(permit_fd) };
-        // SDK independently checks sealed root custody, exact owner/native
-        // locus and current session; generic Home grants stay unchanged.
-        session
-            .bind_selected_replace_authority(&grant, permit)
-            .map_err(io::Error::other)?;
-    } else if io::Error::last_os_error().raw_os_error() != Some(libc::EBADF) {
-        return Err(io::Error::last_os_error());
-    }
     // Root derives this persistent journal beside the protected captures
     // from the actual retained source registration; no source pathname grants it.
     let state: File = unsafe {
@@ -210,7 +184,6 @@ pub fn run(home: bool) -> io::Result<()> {
     let published = std::fs::symlink_metadata(&path)?;
     let (stream, _) = listener.accept()?;
     verify_root_peer(&stream)?;
-    let registry = Arc::new(PendingHandoffRegistry::default());
     // A duplicate of this exact root-connected endpoint is only a local liveness
     // witness. POLLIN means RPC traffic; it must never be confused with death.
     let witness = Arc::new(stream.try_clone()?);
@@ -232,19 +205,11 @@ pub fn run(home: bool) -> io::Result<()> {
         .worker_threads(2)
         .enable_all()
         .build()?;
-    let mut handoffs =
-        handoff::Handoffs::start(listener, registry.clone(), runtime.handle().clone())?;
-    let server = serve_workspace_connected_with_handoffs(
-        stream,
-        backend,
-        runtime.handle().clone(),
-        Some(registry),
-    )?;
+    let server = serve_workspace_connected(stream, backend, runtime.handle().clone())?;
     let result = server.wait();
     // Preserve source scope until every callback has really returned. Runtime
     // shutdown waits for native I/O; there is no abandoned timeout success.
     session.close();
-    let handoff_result = handoffs.retire();
     drop(runtime);
     // The native mutation queue is owned by this authority. Its Drop joins
     // queued/active jobs after the closed session rejects further effects.
@@ -255,5 +220,5 @@ pub fn run(home: bool) -> io::Result<()> {
         return Err(refused());
     }
     std::fs::remove_file(path)?;
-    result.and(handoff_result)
+    result
 }

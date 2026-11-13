@@ -1,6 +1,6 @@
 //! What text typed on the canvas finds and stands, and how a query starts.
 
-use super::{found, most_specific, placed, query_state_from_outcome};
+use super::{found_resource, most_specific, placed, query_state_from_outcome};
 use tilo_desktop_search::{Hit, InvokeTarget, ResourceKind, Target};
 
 /// The query's starting state is the app's own search invocation result: a run that was taken
@@ -72,12 +72,12 @@ fn the_text_places_the_top_result_of_the_hits_a_place_can_show() {
     ];
     let showable = |resource: &str| resource == "tl:so.tilo.lang.chat";
     assert_eq!(
-        found("Chat", &|_| hits.clone(), showable).as_deref(),
+        found_resource(&hits, "Chat", showable).as_deref(),
         Some("tl:so.tilo.lang.chat"),
         "a hit the arrangement cannot place does not stand in the way of one it can"
     );
     assert_eq!(
-        found("Chat", &|_| hits.clone(), |_| false),
+        found_resource(&hits, "Chat", |_| false),
         None,
         "and with nothing placeable, nothing is placed"
     );
@@ -124,7 +124,7 @@ fn the_text_places_the_row_that_opens_the_resource_not_one_that_acts_on_it() {
          not another row about it"
     );
     assert_eq!(
-        found("my mails", &|_| hits.clone(), |_| true).as_deref(),
+        found_resource(&hits, "my mails", |_| true).as_deref(),
         Some("tl:so.tilo.lang.mail:root"),
         "and the canvas stands its resource"
     );

@@ -78,7 +78,6 @@ fn read(volume: &CloudVolume, path: &str) -> Vec<u8> {
     let ino = volume.resolve(path).unwrap();
     volume.read_ino(ino, 0, 4096).unwrap()
 }
-// This is setup only: mutations asserted by the sync test use real upload.
 fn seed_import_file(fixture: &Fixture) -> ItemId {
     let id = uuid::Uuid::new_v4().to_string();
     let payload = serde_json::json!({
@@ -208,13 +207,9 @@ fn production_service_and_files_engine_independent_import() {
         .iter()
         .find(|entry| entry.id == id.as_str())
         .expect("seeded binary import entry");
-    // Run the production socket and descriptor-pinned publication engine too.
-    // This does not claim coverage of the Files app's UI/action admission.
     let selected = vec![entry.clone()];
     let destination = dirs.path().join("independent");
     std::fs::create_dir(&destination).unwrap();
-    // The import engine intentionally refuses symlink ancestors; resolve the
-    // test runner's temporary-root alias during setup, before admission.
     let destination = destination.canonicalize().unwrap();
     let socket = dirs.path().join("files/control.sock");
     service
@@ -293,8 +288,6 @@ fn cursor(dir: &Path) -> serde_json::Value {
 }
 
 fn durable_cached_read(root: &ItemId, dir: &Path, expected: &[u8]) {
-    // A rejected credential distinguishes a durable cache read from silently
-    // downloading the same bytes again after restart.
     let offline = GDrive::new(
         config(Some(root)),
         Arc::new(StaticCredential(Credential::Bearer {

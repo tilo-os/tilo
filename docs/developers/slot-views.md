@@ -164,7 +164,7 @@ slot: the session draws the view it ships with again rather than leaving the
 slot blank.
 
 The window menu is the slot with a tilolang host today
-([`mount::slots::surface`](../../crates/session/session/src/mount/slots.rs)).
+([`slots::surface`](../../crates/session/session/src/slots.rs)).
 
 ## What you cannot bind
 

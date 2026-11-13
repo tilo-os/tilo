@@ -359,22 +359,35 @@ mod tests {
     #[test]
     fn the_catalogue_offers_the_nearest_rows_of_a_wide_query() {
         let mut tasks = entry("so.tilo.tasks", "Tasks", tilo());
+        let action = |at: usize, label: &str| CatalogueAction {
+            resource: "tasks.task".into(),
+            action: format!("add-{at}"),
+            label: label.into(),
+            description: None,
+        };
         tasks.actions = (0..MAX_ROWS + 4)
-            .map(|at| CatalogueAction {
-                resource: "tasks.task".into(),
-                action: format!("add-{at}"),
-                label: format!("Add task {at}"),
-                description: None,
-            })
+            // Every one of these matches the query's word as one of its own:
+            // nothing tells them apart but the order the catalogue offers
+            // them in.
+            .map(|at| action(at, &format!("Add task {at}")))
+            // The nearest comes last: the row the query names is nearer than
+            // the rows that only say the word, so a catalogue that kept the
+            // rows that came first would leave it out.
+            .chain([action(MAX_ROWS + 4, "Task")])
             .collect();
         let catalogue = StoreCatalogue::new(vec![tasks], "workspace");
-        let hits = catalogue.query("add task");
+        let hits = catalogue.query("task");
         assert_eq!(hits.len(), MAX_ROWS, "the card is not the Store");
+        let titles: Vec<&str> = hits.iter().map(|hit| hit.title.as_str()).collect();
+        assert!(
+            titles.contains(&"Task"),
+            "the rows kept are the nearest, not whichever came first: {titles:?}"
+        );
         let mut scores: Vec<i32> = hits.iter().map(|hit| hit.score).collect();
         scores.sort_unstable_by(|a, b| b.cmp(a));
         assert!(
             scores.first() > scores.last(),
-            "the rows kept are the nearest, not whichever came first"
+            "the rows are cut from the nearest down: {scores:?}"
         );
     }
 

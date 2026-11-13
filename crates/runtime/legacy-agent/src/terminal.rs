@@ -1,11 +1,7 @@
-//! A launch on a pseudo-terminal of its own ([`Stdio::Terminal`]).
-//!
-//! The app's three streams are the terminal's other end, and the terminal
-//! is the controlling terminal of a session the app leads: it gets the
-//! line discipline, `isatty`, job-control signals from the keys and
-//! `SIGWINCH` on a resize, as it would in a terminal on the guest. The
-//! agent holds the master: the host's keys are written to it and
-//! everything the app prints is read from it.
+//! A launch on a pseudo-terminal of its own: the app's three streams are the
+//! terminal's other end, and it leads the session that owns it, so it gets the
+//! line discipline, `isatty`, job-control signals and `SIGWINCH`. The agent
+//! holds the master: the host writes keys to it and reads prints from it.
 //!
 //! [`Stdio::Terminal`]: legacy_agent_protocol::Stdio::Terminal
 
@@ -17,14 +13,12 @@ use std::process::{Command, Stdio};
 
 use legacy_agent_protocol::TerminalSize;
 
-/// Both ends of a new pseudo-terminal.
 pub struct Pty {
     pub master: File,
     pub slave: File,
 }
 
 impl Pty {
-    /// A pseudo-terminal of `size`; both ends close on exec.
     pub fn open(size: TerminalSize) -> io::Result<Self> {
         let (mut master, mut slave) = (-1, -1);
         let mut winsize = winsize(size);
@@ -82,8 +76,6 @@ impl Pty {
     }
 }
 
-/// Tell the terminal behind `master` it is now `size`; the kernel signals
-/// its foreground process group.
 pub fn resize(master: &File, size: TerminalSize) -> io::Result<()> {
     let winsize = winsize(size);
     // SAFETY: TIOCSWINSZ reads the struct, which lives across the call.
@@ -131,7 +123,6 @@ mod tests {
         master.write_all(b"hello\n").unwrap();
         let mut seen = Vec::new();
         let mut buffer = [0_u8; 1024];
-        // The slave's last holder is gone once the shell exits: EIO.
         while let Ok(read) = master.read(&mut buffer) {
             if read == 0 {
                 break;

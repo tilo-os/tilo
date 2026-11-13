@@ -1,15 +1,11 @@
-//! The macOS backend: generic passwords in the login Keychain, with the app
-//! id as the service and the key as the account.
+//! The macOS backend: generic passwords in the login Keychain, with the app id as the
+//! service and the key as the account.
 //!
-//! The login Keychain binds every item to the partition of the code that
-//! stored it: `teamid:<team>` for a Developer ID signature, which every later
-//! build of the same app shares, and `cdhash:<hash>` for an ad-hoc or linker
-//! signature, which the next build does not. Another partition reads an item
-//! only after the person confirms with their Keychain password, in a dialog
-//! a process waits on for as long as nobody answers it.
-//!
-//! So a build without a Developer ID signature never lets the Keychain ask:
-//! an item another build stored fails at once, saying why and what to do.
+//! The login Keychain binds every item to the partition of the code that stored it:
+//! `teamid:<team>` for a Developer ID signature, which every later build of the app
+//! shares, and `cdhash:<hash>` for an ad-hoc signature, which the next build does not.
+//! Another partition reads an item only after the person confirms with their Keychain
+//! password.
 
 use std::sync::OnceLock;
 
@@ -18,17 +14,11 @@ use security_framework::passwords;
 
 use crate::{Protection, Secret, SecretBackend, SecretError};
 
-/// `errSecItemNotFound`.
 const NOT_FOUND: i32 = -25300;
-/// `errSecUserCanceled` and `errSecAuthFailed`.
 const DENIED: [i32; 2] = [-128, -25293];
-/// `errSecInteractionNotAllowed`: the Keychain wanted to ask.
 const WOULD_ASK: i32 = -25308;
-/// Code Signing Services' errors (`errSecCS*`): the Keychain could not check
-/// the signature an item's access list names, or this process's own.
 const CODE_SIGNING: std::ops::RangeInclusive<i32> = -67099..=-67000;
 
-/// A Developer ID Application signature.
 const DEVELOPER_ID: &str = "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] \
      exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists";
 
@@ -36,9 +26,6 @@ unsafe extern "C" {
     fn SecKeychainSetUserInteractionAllowed(allowed: u8) -> i32;
 }
 
-/// Whether this process carries a Developer ID signature, whose Keychain
-/// items every later build of the same app reads. Anything else, including
-/// a signature that cannot be checked, is not.
 pub(crate) fn developer_id_signed() -> bool {
     static SIGNED: OnceLock<bool> = OnceLock::new();
     *SIGNED.get_or_init(|| {
@@ -54,8 +41,8 @@ pub(crate) fn developer_id_signed() -> bool {
 pub(crate) struct Keychain;
 
 impl Keychain {
-    /// The login Keychain, which from now on never asks the person anything
-    /// in a process without a Developer ID signature.
+    /// The login Keychain, which from now on never asks the person anything in a process
+    /// without a Developer ID signature.
     pub(crate) fn new() -> Self {
         if !developer_id_signed() {
             // SAFETY: a process-wide switch that takes a plain flag.
@@ -114,12 +101,9 @@ mod tests {
     use super::*;
     use security_framework::base::Error;
 
-    /// Cargo's test binaries carry only the linker's ad-hoc signature.
     #[test]
     fn a_build_without_developer_id_names_the_item_instead_of_asking() {
         assert!(!developer_id_signed());
-        // Asked, refused without asking, and a signature the Keychain could
-        // not check (`errSecCSSignatureUnsupported`).
         for code in [-25308, -25293, -67045] {
             let SecretError::Failed(message) = error(Error::from_code(code), "so.tilo.x", "k")
             else {

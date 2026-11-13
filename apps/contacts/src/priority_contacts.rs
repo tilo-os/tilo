@@ -1,9 +1,8 @@
 //! Narrow Contacts → shell priority projection.
 //!
 //! Only launcher-started Contacts publishes (`TILO_PACKAGE_ID`); tests, shots
-//! and standalone binaries stay hermetic. The shell independently verifies
-//! the sender's process ancestry before accepting a replacement. Other
-//! platforms have no such list, and `ui::notify` says so.
+//! and standalone binaries stay hermetic. The shell verifies the sender's
+//! process ancestry before accepting a replacement.
 
 use std::sync::{LazyLock, Mutex};
 
@@ -16,11 +15,10 @@ const PACKAGE_ID: &str = "so.tilo.contacts";
 static ENABLED: LazyLock<bool> =
     LazyLock::new(|| std::env::var("TILO_PACKAGE_ID").as_deref() == Ok(PACKAGE_ID));
 
-/// The list the shell last accepted. A list it did not accept is published
-/// again on the next change instead of becoming a silently stale projection.
+/// The list the shell last accepted; one it did not accept is published again
+/// on the next change.
 static ACCEPTED: Mutex<Vec<PriorityContact>> = Mutex::new(Vec::new());
 
-/// The favourites, sorted by id, as the shell's priority list.
 fn projection(store: &Contacts) -> Vec<PriorityContact> {
     let mut projection: Vec<PriorityContact> = store
         .contacts
@@ -41,9 +39,8 @@ fn projection(store: &Contacts) -> Vec<PriorityContact> {
     projection
 }
 
-/// Hand the favourites to the shell unless it already accepted exactly
-/// them. Never blocks: publishing waits on the session bus, so it runs in
-/// the background.
+/// Hand the favourites to the shell unless it already accepted exactly them.
+/// Publishing waits on the session bus, so it runs in the background.
 pub(crate) fn publish_if_changed(store: &Contacts) {
     if !*ENABLED {
         return;

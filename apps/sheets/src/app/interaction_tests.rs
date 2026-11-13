@@ -1,19 +1,13 @@
-//! The painted chrome answers the pointer and the keyboard: the command bar
-//! opens menus whose rows act on the sheet, Ctrl+B and the Bold command share
-//! one path, the settings sheet applies a choice, and a tab's colour is picked
-//! from its popover. Each case drives the production `handle_event` over the
-//! rects the last paint left behind.
-
 use super::tests::{char_event, ctrl_mods, doc_workbook, feed, measured_app_with_doc, paint_frame};
 use super::*;
 use crate::model::FormatCategory;
 use automerge::AutoCommit;
+use ui::widget::Tone;
 
 fn mouse(state: ElementState) -> WindowEvent {
     ui::synthetic_input::mouse_input(state, ui::winit::event::MouseButton::Left)
 }
 
-/// Move the pointer to `p` and press and release the left button there.
 fn click(app: &mut SheetsApp, doc: &mut AutoCommit, p: Point) {
     let moved = ui::synthetic_input::cursor_moved(p.x, p.y);
     feed(app, doc, &moved, Modifiers::default());
@@ -31,7 +25,6 @@ fn click(app: &mut SheetsApp, doc: &mut AutoCommit, p: Point) {
     );
 }
 
-/// A seeded app, laid out and painted once at 1280 × 800.
 fn painted() -> (SheetsApp, AutoCommit, TextRenderer, Theme) {
     let (mut app, doc, mut tr, theme) = measured_app_with_doc(1280.0, 800.0, 1.0);
     app.sync(&doc, &automerge::ROOT);
@@ -39,10 +32,7 @@ fn painted() -> (SheetsApp, AutoCommit, TextRenderer, Theme) {
     (app, doc, tr, theme)
 }
 
-/// Press the window bar's action named `name` (a menu's item too), as the
-/// desktop hands the press to the app.
 fn press_bar(app: &mut SheetsApp, doc: &mut AutoCommit, name: &str) {
-    // The slots are declared as the sheet settles.
     Widget::settle(app, &mut Edits::lend(doc), &automerge::ROOT);
     let id = app
         .window_bar()
@@ -97,10 +87,44 @@ fn the_window_bar_names_the_workbook_and_the_sheet_in_view() {
     );
 }
 
-/// The commands, the menus and the sheet tabs act on pointer and keyboard.
+#[test]
+fn a_comment_wears_the_colour_the_member_list_announces_for_its_author() {
+    let (mut app, mut doc, mut tr, theme) = painted();
+    let sheet = app.sheet_ids[0].clone();
+    let mut book = ui::tilo_resource::Replica::<Workbook>::from_doc(doc.clone());
+    book.apply(Workbook::COMMENT.with(crate::resource::verbs::Comment {
+        sheet,
+        range: "C3".into(),
+        text: "Amira asked to swap Tuesday afternoon with Wen.".into(),
+    }))
+    .unwrap();
+    doc = book.doc().clone();
+    app.sync(&doc, &automerge::ROOT);
+    let c3 = app.grid.cell_screen_rect(2, 2).center();
+    click(&mut app, &mut doc, c3);
+    paint_frame(&mut app, &mut tr, &theme);
+    let author = app.open_thread().expect("the open thread").author.clone();
+
+    let mut presence = ui::presence::PresenceCtx::default();
+    presence.set_presence_hue(
+        ui::permissions::UserId(author.clone()),
+        ui::tokens::PresenceHue::Violet,
+    );
+    let markers = app.comment_markers(&presence);
+    assert_eq!(
+        markers[0].1,
+        Tone::Presence(ui::tokens::PresenceHue::Violet),
+        "the marker wears the colour the member list gives its author"
+    );
+    assert_eq!(
+        app.comment_markers(&ui::presence::PresenceCtx::default())[0].1,
+        Tone::of_identity(&author),
+        "someone who announced no colour keeps the one their identity derives"
+    );
+}
+
 #[test]
 fn painted_chrome_answers_pointer_and_keyboard() {
-    // Case `format_menu_applies_the_chosen_format`.
     {
         let (mut app, mut doc, _tr, _theme) = painted();
         press_bar(&mut app, &mut doc, "Percent");
@@ -112,7 +136,6 @@ fn painted_chrome_answers_pointer_and_keyboard() {
         );
     }
 
-    // Case `bold_command_and_ctrl_b_share_one_path`.
     {
         let (mut app, mut doc, mut tr, theme) = painted();
         app.grid.select_only((1, 1));
@@ -134,7 +157,6 @@ fn painted_chrome_answers_pointer_and_keyboard() {
         assert!(!app.active_cell_bold, "Ctrl+B takes it off again");
     }
 
-    // Case `settings_sheet_applies_a_choice_and_closes_on_done`.
     {
         let (mut app, mut doc, mut tr, theme) = painted();
         press_bar(&mut app, &mut doc, "Document settings");
@@ -168,7 +190,6 @@ fn painted_chrome_answers_pointer_and_keyboard() {
         assert_eq!(app.settings_panel, SettingsPanel::None, "Done closes it");
     }
 
-    // Case `tab_colour_is_picked_from_its_popover`.
     {
         let (mut app, mut doc, mut tr, theme) = painted();
         app.open_tab_menu(0);
@@ -182,8 +203,6 @@ fn painted_chrome_answers_pointer_and_keyboard() {
         click(&mut app, &mut doc, row.center());
         assert!(app.tab_colour.is_open(), "the row opens the colour popover");
         paint_frame(&mut app, &mut tr, &theme);
-        // The first swatch: the popover's padding, the picker's own and half a
-        // pointer target in.
         let panel = app.tab_colour.rect();
         let sp = &theme.tokens.spacing;
         let first = Point::new(
@@ -211,7 +230,6 @@ fn painted_chrome_answers_pointer_and_keyboard() {
 /// them, and the tab editor never covers a neighbour.
 #[test]
 fn floating_surfaces_keep_clear_of_edges_and_openers() {
-    // Case `the_tab_menu_and_colour_popover_stand_clear_of_the_tab`.
     {
         let (mut app, _doc, mut tr, theme) = painted();
         app.open_tab_menu(0);
@@ -232,7 +250,6 @@ fn floating_surfaces_keep_clear_of_edges_and_openers() {
         );
     }
 
-    // Case `the_tab_editor_makes_room_instead_of_covering_neighbours`.
     {
         let (mut app, mut doc, mut tr, theme) = painted();
         let before = app.tab_rects.clone();
@@ -269,8 +286,6 @@ fn floating_surfaces_keep_clear_of_edges_and_openers() {
     }
 }
 
-/// The commands are the window bar's slots: File and Format as menus, Bold
-/// in the row, the rest in its menu; the formula bar leads the window.
 #[test]
 fn the_commands_are_the_window_bars_and_the_formula_bar_leads() {
     let (app, _doc, _tr, _theme) = painted();
@@ -312,9 +327,8 @@ fn a_comment_is_marked_on_its_cell_opens_from_it_and_names_its_author() {
     click(&mut app, &mut doc, a1);
     paint_frame(&mut app, &mut tr, &theme);
 
-    // The marker: on the commented cell, and only there.
     let c3 = app.grid.cell_screen_rect(2, 2);
-    let markers = app.comment_markers();
+    let markers = app.comment_markers(&ui::presence::PresenceCtx::default());
     assert_eq!(markers.len(), 1, "one comment, one marker");
     assert_eq!(markers[0].0, c3, "the marker is on the commented cell");
     assert!(app.open_thread().is_none(), "the thread waits on its cell");
@@ -325,7 +339,6 @@ fn a_comment_is_marked_on_its_cell_opens_from_it_and_names_its_author() {
         "no thread is shown before its cell is chosen"
     );
 
-    // Opening it from its cell: a press on the cell shows the thread beside it.
     click(&mut app, &mut doc, c3.center());
     paint_frame(&mut app, &mut tr, &theme);
     let thread = app
@@ -362,8 +375,6 @@ fn a_comment_is_marked_on_its_cell_opens_from_it_and_names_its_author() {
     assert_eq!(app.author_name(""), "Someone");
 }
 
-/// Right-clicking a cell selects it and opens the edit menu, and a structural
-/// row insert from that menu is one verb over the whole selected range.
 #[test]
 fn a_cell_right_click_opens_the_edit_menu_and_inserts_the_range_as_one_verb() {
     let (mut app, mut doc, _tr, _theme) = painted();
@@ -415,8 +426,6 @@ fn a_cell_right_click_opens_the_edit_menu_and_inserts_the_range_as_one_verb() {
     );
 }
 
-/// Find is navigation over the whole workbook: revealing a match on another
-/// sheet switches to it, selects the cell, and says where it went.
 #[test]
 fn find_navigates_to_a_match_on_another_sheet() {
     use ui::widget::{FindOptions, Findable};
@@ -442,15 +451,11 @@ fn find_navigates_to_a_match_on_another_sheet() {
     );
 }
 
-/// While the window bar's search options cover the top of the grid, a match
-/// revealed stands below them; once they close, the same match goes back to
-/// the top of the body.
 #[test]
 fn a_revealed_match_stands_clear_of_the_window_searchs_options() {
     use crate::grid::GridCmd;
     use ui::widget::{FindOptions, Findable};
     let (mut app, mut doc, _tr, _theme) = painted();
-    // A cell of the sheet's first row, and one far below it.
     let first = (1, 0);
     let needle = (1, 40);
     app.apply_cmds(
@@ -473,8 +478,6 @@ fn a_revealed_match_stands_clear_of_the_window_searchs_options() {
 
     let body = app.grid.body_rect();
     let cover = Rect::new(body.x0, app.grid_rect.y0, body.x1, body.y0 + 120.0);
-    // Scroll well past the match, so revealing it would put it at the
-    // body's top.
     app.grid.select_only((1, 120));
     app.set_find_cover(Some(cover));
     app.reveal(0);
@@ -484,8 +487,6 @@ fn a_revealed_match_stands_clear_of_the_window_searchs_options() {
         "the match stands just below what the search covers: {cell:?} under {cover:?}"
     );
 
-    // A cell of the first row comes down under the options rather than
-    // staying hidden behind them.
     app.grid.select_only(first);
     app.grid.ensure_active_visible();
     let cell = app.grid.cell_screen_rect(first.0, first.1);
@@ -494,7 +495,6 @@ fn a_revealed_match_stands_clear_of_the_window_searchs_options() {
         "the first row scrolls up behind the options: {cell:?} under {cover:?}"
     );
 
-    // The options close: the same match goes back to the top of the body.
     app.set_find_cover(None);
     app.grid.select_only((1, 120));
     app.reveal(0);
@@ -503,4 +503,24 @@ fn a_revealed_match_stands_clear_of_the_window_searchs_options() {
         (cell.y0 - body.y0).abs() < 0.5,
         "with nothing covering it, the match stands at the body's top: {cell:?}"
     );
+}
+
+#[test]
+fn a_sideways_wheel_the_columns_cannot_follow_is_left_to_the_desk() {
+    let (mut app, mut doc, _tr, _theme) = painted();
+    let wheel = |dx: f64| ui::winit::event::WindowEvent::MouseWheel {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        delta: MouseScrollDelta::PixelDelta(ui::winit::dpi::PhysicalPosition::new(-dx, 0.0)),
+        phase: ui::winit::event::TouchPhase::Moved,
+    };
+    assert!(
+        !feed(&mut app, &mut doc, &wheel(-24.0), Modifiers::default()),
+        "the sheet shows its first column: a swipe before it is the desk's"
+    );
+    app.pending.redraw = false;
+    assert!(
+        feed(&mut app, &mut doc, &wheel(24.0), Modifiers::default()),
+        "the later columns are the sheet's"
+    );
+    assert!(app.pending.redraw, "the sheet repaints where it scrolled");
 }

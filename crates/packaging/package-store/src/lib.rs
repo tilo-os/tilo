@@ -1,24 +1,4 @@
 //! `package-store` — the device's installed packages.
-//!
-//! One registry and one [`InstalledPackage`] type describe every installed
-//! and preinstalled package; the launcher, the shell, settings, the relay,
-//! the app host and `tilo-install` all read and write them through this
-//! crate, so there is exactly one answer to "what is installed and where".
-//!
-//! - [`registry`] — the `registry.toml` rows.
-//! - [`catalog`] — the user's store merged over the read-only system store:
-//!   what a session can run.
-//! - [`layout`] — where a store keeps its files, and where the stores are.
-//! - [`mounts`] — which installed trees running apps have mounted.
-//! - `lease` (feature `lease`) — the hold a launch keeps on its payload
-//!   tree from choosing it until its sandbox exits.
-//! - [`size_limit`] — the size limit an application installs under here.
-//! - [`integrity`] — replay an installed package's signature chain against
-//!   its files.
-//! - `PackageStore` (feature `store`) — install, remove, pin and collect.
-//!   Payload bytes live in the fs crate's content store; each payload tree
-//!   is materialised once from it by reflink, and a package's `.tapp` may be
-//!   thin because only blobs the store lacks are fetched.
 
 pub mod catalog;
 pub mod dev_env;
@@ -80,8 +60,6 @@ pub enum StoreError {
     Payload(String),
     #[error("content store: {0}")]
     Content(String),
-    /// Installation selected the package, but the final content-store close
-    /// failed. The selected row remains committed; this is not a rollback.
     #[error("selected {id} {version} ({root}), but closing the content store failed: {source}")]
     CommittedSelection {
         id: String,

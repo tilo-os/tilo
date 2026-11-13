@@ -14,9 +14,6 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
-/// The default `--shots` render writes a PNG; on a host without extended
-/// attributes the projection-backed scenarios are not offered, so they fail
-/// instead of producing misleading images.
 #[test]
 fn shots_flag_writes_png_and_refuses_unavailable_projection_scenarios() {
     #[cfg(windows)]

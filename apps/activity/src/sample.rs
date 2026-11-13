@@ -27,16 +27,29 @@ fn person(name: &str, rgb: [u8; 3]) -> wire::Author {
         identity: format!("person:{}", name.to_lowercase()),
         relation: wire::Relation::Person,
         on_behalf_of: None,
+        ..wire::Author::default()
+    }
+}
+
+/// The person reading this history: their own changes are their own.
+fn reader(name: &str, rgb: [u8; 3]) -> wire::Author {
+    wire::Author {
+        relation: wire::Relation::Reader,
+        ..person(name, rgb)
     }
 }
 
 fn agent(name: &str, person: &str) -> wire::Author {
     wire::Author {
         name: name.to_owned(),
-        rgb: [120, 110, 220],
+        rgb: [214, 130, 77],
         identity: format!("agent:{}", name.to_lowercase()),
         relation: wire::Relation::Software,
+        kind: ui::tilo_actions::ActorKind::Agent,
         on_behalf_of: Some(person.to_owned()),
+        // It acted for the person reading this history.
+        for_reader: true,
+        ..wire::Author::default()
     }
 }
 
@@ -68,7 +81,7 @@ fn entry(
 }
 
 fn feed() -> wire::Feed {
-    let ada = person("Ada", [214, 96, 77]);
+    let ada = reader("Ada", [214, 96, 77]);
     let grace = person("Grace", [70, 150, 110]);
     let mut entries = vec![
         entry(
@@ -136,7 +149,7 @@ fn feed() -> wire::Feed {
 }
 
 fn summary(caught_up: bool) -> wire::Summary {
-    let ada = person("Ada", [214, 96, 77]);
+    let ada = reader("Ada", [214, 96, 77]);
     let grace = person("Grace", [70, 150, 110]);
     let briefs = if caught_up {
         Vec::new()

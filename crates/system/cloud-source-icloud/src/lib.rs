@@ -1,13 +1,6 @@
 //! iCloud Drive as a [`cloud_source::CloudSource`], over the web API
 //! iCloud.com itself uses.
 //!
-//! **Best effort.** Apple does not document or support this API; it is
-//! re-implemented from rclone's `iclouddrive` backend and pyicloud, and may
-//! change without notice. The source declares [`Support::BestEffort`] and
-//! the UI labels it so.
-//!
-//! # Signing in
-//!
 //! Signing in (SRP, the two-factor code, the trust token, `accountLogin`)
 //! and keeping the session alive is credential custody's job
 //! (`account_custody::icloud`). What it produces is an
@@ -16,8 +9,6 @@
 //! refused with [`auth::AuthError::AdvancedDataProtection`]: their Drive keys
 //! never reach Apple's web servers.
 //!
-//! # Endpoints
-//!
 //! - `setup.icloud.com/setup/ws/1/validate` names the account's `drivews`
 //!   and `docws` partitions (looked up once per source).
 //! - `drivews`: `retrieveItemDetails(InFolders)` for metadata and listings,
@@ -25,35 +16,6 @@
 //! - `docws`: `download/by_id` for a signed content URL (ranged `GET`),
 //!   `upload/web` for an upload slot, then `update/documents` to commit the
 //!   uploaded bytes under a name.
-//!
-//! Items are identified by their drivewsid (`FILE::com.apple.CloudDocs::…`),
-//! which survives renames and moves within a zone. Revisions are drivews
-//! `etag`s.
-//!
-//! # Changes
-//!
-//! There is no change feed and no push: [`ChangeFeed::Poll`],
-//! [`Notify::None`]. The daemon polls every [`POLL_INTERVAL`], walking the
-//! tree with [`ICloudDrive::list_folders`], which lists up to
-//! [`LIST_BATCH`] folders per request, so a poll costs one request per tree
-//! level per batch rather than one per folder, and compares item etags.
-//! Folder etags are not declared recursive: Apple does not say whether a
-//! folder's etag changes when something deep below it does.
-//!
-//! # Preconditions
-//!
-//! Moves, renames and trashing send the expected etag and Apple refuses a
-//! stale one (`ETAG_CONFLICT`). Uploads and ranged reads check the etag with
-//! a metadata read first: a race of one round trip remains.
-//!
-//! # Session quirks
-//!
-//! HTTP 401, 421 (`LOGIN_TOKEN_EXPIRED`), 450 (re-authentication required)
-//! and 423 (missing PCS grant) all mean the web session is no longer
-//! accepted: the credential is reported rejected and the call fails with
-//! [`Error::Unauthorized`], so custody renews it. Every other status reads
-//! as for any provider ([`cloud_source::http::classify`]): 429 and 503 are
-//! [`Error::RateLimited`].
 
 #![allow(
     clippy::missing_errors_doc,
@@ -93,7 +55,6 @@ use http::{Cookies, ICLOUD_ORIGIN};
 /// refreshes on navigation, not on a timer.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
-/// Folders per `retrieveItemDetailsInFolders` request.
 pub const LIST_BATCH: usize = 32;
 
 /// Where a source finds the account, and which folder is its root.
@@ -101,7 +62,6 @@ pub const LIST_BATCH: usize = 32;
 /// persists.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ICloudConfig {
-    /// `https://setup.icloud.com/setup/ws/1`.
     pub setup: Url,
     /// The folder mounted as the source's root: iCloud Drive's root by
     /// default, a subfolder for an isolated conformance run.
@@ -109,7 +69,6 @@ pub struct ICloudConfig {
 }
 
 impl ICloudConfig {
-    /// Apple's production setup service, the whole of iCloud Drive.
     pub fn apple() -> Self {
         Self::with_endpoints(&auth::Endpoints::apple())
     }
@@ -152,7 +111,6 @@ pub struct ICloudDrive {
     inner: Arc<Inner>,
 }
 
-/// The session cookies for one request.
 struct Session {
     cookie: Zeroizing<String>,
     fingerprint: [u8; 32],
@@ -163,7 +121,6 @@ enum Service {
     Docs,
 }
 
-/// A write's per-item status said the outcome is unknown.
 const UNKNOWN_STATUS: &str = "UNKNOWN";
 
 impl ICloudDrive {
@@ -229,7 +186,6 @@ impl ICloudDrive {
     /// credential source.
     fn status_error(&self, status: StatusCode, headers: &HeaderMap) -> Error {
         match status.as_u16() {
-            // Apple rejects a session with 421, 423 or 450 as well as 401.
             401 | 421 | 423 | 450 => {
                 cloud_source::http::unauthorized(self.inner.credentials.as_ref())
             }
@@ -253,7 +209,6 @@ impl ICloudDrive {
         }
     }
 
-    /// The account's drivews/docws partitions, from `validate`.
     fn services(&self) -> Result<Services> {
         if let Ok(guard) = self.inner.services.read()
             && let Some(services) = guard.as_ref()
@@ -310,7 +265,6 @@ impl ICloudDrive {
         http::read_json(self.send(&session, self.inner.http.get(url))?)
     }
 
-    /// The details of one item, without children.
     fn details(&self, id: &ItemId) -> Result<DriveItem> {
         let body = json!([{
             "items": [{"drivewsid": id.as_str(), "partialData": false, "includeHierarchy": false}]
@@ -409,7 +363,6 @@ impl ICloudDrive {
             .find(|child| fold(&child.name) == wanted))
     }
 
-    /// Run a drivews write on one item and check its per-item status.
     fn write_item(&self, path: &str, body: &Value) -> Result<Option<DriveItem>> {
         let answer: api::Items = self.post(&Service::Drive, path, body)?;
         let item = answer
@@ -503,7 +456,6 @@ impl ICloudDrive {
     }
 }
 
-/// A write whose outcome Apple did not report.
 fn is_unknown(item: &DriveItem) -> bool {
     item.status
         .as_deref()
@@ -557,7 +509,6 @@ fn is_icloud_host(url: &Url) -> bool {
         .is_some_and(|host| host == "icloud.com" || host.ends_with(".icloud.com"))
 }
 
-/// `base` + `/path`, keeping `base`'s own path.
 fn join(base: &Url, path: &str) -> Url {
     let mut url = base.clone();
     let prefix = base.path().trim_end_matches('/');
@@ -757,7 +708,6 @@ impl CloudSource for ICloudDrive {
     }
 }
 
-/// The current time as docws wants it.
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

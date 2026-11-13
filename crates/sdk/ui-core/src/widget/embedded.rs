@@ -23,6 +23,7 @@ use winit::event::{Modifiers, WindowEvent};
 
 use super::Widget;
 use crate::bound_dispatch::BoundNodeMap;
+use crate::widget::DrawChild;
 use crate::{PresenceCtx, Theme, text_render::TextRenderer};
 
 /// A widget laid out and driven by the widget that owns it.
@@ -236,7 +237,7 @@ impl<W: Widget + 'static> Embedded<W> {
         let theme = recoloured.as_ref().unwrap_or(theme);
         let owner = self.child_viewport(presence);
         self.widget
-            .draw(scene, transform * self.transform, text, theme, presence);
+            .draw_child(scene, transform * self.transform, text, theme, presence);
         presence.viewport.set(owner);
         self.widget.mark_drawn();
     }

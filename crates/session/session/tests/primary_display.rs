@@ -14,11 +14,9 @@
               outlives every call made into it"
 )]
 
-mod common;
-
 use std::time::Duration;
 
-use common::window::Client;
+use crate::common::window::Client;
 use settings_store::hardware::{
     DisplayConfig, DisplaySet, DisplayTransaction, OutputConfig as StoredOutput,
 };
@@ -32,7 +30,7 @@ const HEIGHT: i32 = 700;
 /// Let the session run until `done` holds.
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
-    common::wait_for(session, "what the test asked of the session", |session| {
+    crate::common::wait_for(session, "what the test asked of the session", |session| {
         done(session).then_some(())
     });
 }

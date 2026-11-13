@@ -25,7 +25,6 @@ use tilo_lock::MutexRecover as _;
 #[derive(Clone, Debug)]
 pub struct ServeOptions {
     pub address: SocketAddr,
-    /// Rebuild and reload on source changes.
     pub watch: bool,
     pub debounce: Duration,
     /// Open the app in a workspace others join from their own browser
@@ -56,11 +55,8 @@ struct Server {
     workspace: Option<SharedWorkspace>,
 }
 
-/// Where the shared workspace's page and door are served.
 const ROOM_PATH: &str = "/__tilo/room";
-/// The largest request body the workspace's door reads.
 const MAX_BODY: usize = 64 * 1024;
-/// The join page: a name, then the app in the workspace.
 const JOIN_PAGE: &str = include_str!("workspace.html");
 
 impl Server {
@@ -297,7 +293,8 @@ fn refresh_surface(project: &Project) -> Result<()> {
 }
 
 /// The shared workspace's page and door: `GET /` (what the page opens), `GET
-/// /play` (the join page), `POST /join` (admit a person), `GET /people`
+/// /play` (the join page), `POST /join` (name a person and answer the door
+/// they enter through), `GET /people`
 /// (everyone admitted, by name) and `/record` (which record of the app
 /// everyone opens).
 fn shared_route(
@@ -346,8 +343,7 @@ fn shared_route(
                     json(
                         "200 OK",
                         serde_json::json!({
-                            "invitation": admission.invitation,
-                            "admissionToken": admission.admission_token,
+                            "door": admission.door,
                             "origin": workspace.origin,
                         }),
                     )

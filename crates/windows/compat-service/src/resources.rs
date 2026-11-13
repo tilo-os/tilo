@@ -136,8 +136,6 @@ impl LaunchResourceBroker for SystemResourceBroker {
             gates.remove(lease_id);
         }
         if let Ok(mut audio) = self.audio.lock() {
-            // Dropping the lease kills both private broker processes before
-            // the socket tree is removed, revoking existing client fds.
             audio.remove(lease_id);
         }
     }

@@ -1,7 +1,6 @@
 //! Date helpers for birthdays, over the calendar arithmetic in `ui::date`
 //! so the model can validate and print a date without pulling `chrono`.
 
-/// Number of days in `month` of `year` (1..=12).
 pub fn days_in_month(year: i32, month: u32) -> u32 {
     ui::date::days_in_month(i64::from(year), month)
 }

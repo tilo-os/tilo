@@ -12,10 +12,11 @@
 //! `crates/sdk/ui-core/clippy.toml` rejects `Instant::now` and
 //! `SystemTime::now` everywhere else in the crate.
 
+pub use tilo_clock::time::{Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH};
 pub use tilo_clock::{
-    Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH, from_std, is_synchronised,
-    local_zone_name, now, pin_wall, to_std, try_unix_now, try_unix_now_ms, try_unix_now_ns,
-    unix_now, unix_now_i64, unix_now_ms, unix_now_ms_i64, unix_now_ns, wall, wall_frozen,
+    from_std, is_synchronised, local_zone_name, now, pin_wall, to_std, try_unix_now,
+    try_unix_now_ms, try_unix_now_ns, unix_now, unix_now_i64, unix_now_ms, unix_now_ms_i64,
+    unix_now_ns, wall, wall_frozen,
 };
 
 /// A file-system timestamp, as `std::fs::Metadata::modified` reports it, in

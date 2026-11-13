@@ -7,9 +7,6 @@
 //! <root>/layers/<name>/home/      the layer's own home directory
 //! <root>/layers/<name>/layer.toml metadata
 //! ```
-//!
-//! An ephemeral layer is an ordinary on-disk layer marked for deletion when its
-//! session ends. It can be promoted to a kept layer before teardown.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -18,7 +15,6 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now;
 
-/// Whether a layer survives the end of its session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LayerKind {
@@ -37,11 +33,9 @@ impl fmt::Display for LayerKind {
     }
 }
 
-/// A layer's metadata, as persisted in `layer.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Layer {
     pub name: String,
-    /// Name of the base under `<root>/bases`.
     pub base: String,
     pub kind: LayerKind,
     /// Seconds since the Unix epoch.
@@ -51,12 +45,10 @@ pub struct Layer {
     /// layer can be built on top of a kept one without copying it.
     #[serde(default)]
     pub stacked_on: Vec<String>,
-    /// Free-text note, shown in listings. Set with `tinker keep --note`.
     #[serde(default)]
     pub note: String,
 }
 
-/// The layer store.
 pub struct Store {
     root: PathBuf,
 }
@@ -385,7 +377,6 @@ mod tests {
             assert_eq!(kept.kind, LayerKind::Kept);
             assert_eq!(kept.name, "rust-dev");
             assert_eq!(kept.note, "cargo + clang");
-            // The work done before the decision has to survive the decision.
             assert_eq!(
                 std::fs::read(s.upper_dir("rust-dev").join("marker")).unwrap(),
                 b"work"

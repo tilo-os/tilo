@@ -189,9 +189,6 @@ fn recommendations_each_signal_can_be_disabled_and_genres_name_their_provenance(
     assert!(suggestions(&lib, 50).is_empty());
 }
 
-/// The library never holds feedback about music it does not hold: songs
-/// and artists only ever join it, so feedback naming one that is not there
-/// is refused, and a suggestion row for it offers nothing to play.
 #[test]
 fn recommendations_feedback_names_only_music_of_the_library() {
     let lib = Library::default();

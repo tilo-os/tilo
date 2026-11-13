@@ -41,7 +41,6 @@ fn start(fetcher: &Arc<PatternFetcher>, granule: u64) -> Hydrator {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn placeholders_look_exact_and_reads_fill_only_touched_granules() {
-    // Phase `a_placeholder_looks_exact_to_stat_and_readdir_without_hydrating`.
     fn a_placeholder_looks_exact_to_stat_and_readdir_without_hydrating() {
         let Some(s) = fanotify_scratch("hydrate_stat") else {
             return;
@@ -64,7 +63,6 @@ fn placeholders_look_exact_and_reads_fill_only_touched_granules() {
         assert_eq!(h.residency(&path).unwrap(), Residency::Placeholder);
         h.stop();
     }
-    // Phase `a_partial_read_fills_only_the_granules_it_touches`.
     fn a_partial_read_fills_only_the_granules_it_touches() {
         let Some(s) = fanotify_scratch("hydrate_partial") else {
             return;
@@ -90,7 +88,6 @@ fn placeholders_look_exact_and_reads_fill_only_touched_granules() {
         assert_eq!(fetcher.calls().len(), 1);
         h.stop();
     }
-    // Phase `a_full_read_makes_the_file_resident_and_unmarked`.
     fn a_full_read_makes_the_file_resident_and_unmarked() {
         let Some(s) = fanotify_scratch("hydrate_full") else {
             return;
@@ -120,7 +117,6 @@ fn placeholders_look_exact_and_reads_fill_only_touched_granules() {
         assert_eq!(h.stats().events.load(Ordering::Relaxed), before);
         h.stop();
     }
-    // Phase `mmap_of_a_placeholder_sees_the_real_bytes`.
     fn mmap_of_a_placeholder_sees_the_real_bytes() {
         let Some(s) = fanotify_scratch("hydrate_mmap") else {
             return;
@@ -139,7 +135,6 @@ fn placeholders_look_exact_and_reads_fill_only_touched_granules() {
         assert_eq!(bytes, &pattern(4, 0, size as usize)[..]);
         h.stop();
     }
-    // Phase `a_write_into_a_placeholder_keeps_the_surrounding_bytes`.
     fn a_write_into_a_placeholder_keeps_the_surrounding_bytes() {
         let Some(s) = fanotify_scratch("hydrate_write") else {
             return;
@@ -162,15 +157,10 @@ fn placeholders_look_exact_and_reads_fill_only_touched_granules() {
         assert_eq!(buf, want);
         h.stop();
     }
-    // Phase `a_placeholder_looks_exact_to_stat_and_readdir_without_hydrating` (defined above).
     a_placeholder_looks_exact_to_stat_and_readdir_without_hydrating();
-    // Phase `a_partial_read_fills_only_the_granules_it_touches` (defined above).
     a_partial_read_fills_only_the_granules_it_touches();
-    // Phase `a_full_read_makes_the_file_resident_and_unmarked` (defined above).
     a_full_read_makes_the_file_resident_and_unmarked();
-    // Phase `mmap_of_a_placeholder_sees_the_real_bytes` (defined above).
     mmap_of_a_placeholder_sees_the_real_bytes();
-    // Phase `a_write_into_a_placeholder_keeps_the_surrounding_bytes` (defined above).
     a_write_into_a_placeholder_keeps_the_surrounding_bytes();
 }
 
@@ -191,7 +181,6 @@ fn fs_native_xattr(path: &std::path::Path) -> Option<Vec<u8>> {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn fetches_are_shared_prefetched_and_fail_with_eio_when_unreachable() {
-    // Phase `concurrent_readers_share_fills_and_each_range_is_fetched_once`.
     fn concurrent_readers_share_fills_and_each_range_is_fetched_once() {
         let Some(s) = fanotify_scratch("hydrate_concurrent") else {
             return;
@@ -231,7 +220,6 @@ fn fetches_are_shared_prefetched_and_fail_with_eio_when_unreachable() {
         assert!(total <= size);
         h.stop();
     }
-    // Phase `an_unreachable_source_fails_the_read_with_eio`.
     fn an_unreachable_source_fails_the_read_with_eio() {
         let Some(s) = fanotify_scratch("hydrate_eio") else {
             return;
@@ -253,7 +241,6 @@ fn fetches_are_shared_prefetched_and_fail_with_eio_when_unreachable() {
         assert_eq!(&buf[..], &pattern(6, 0, 16)[..]);
         h.stop();
     }
-    // Phase `time_to_first_byte_is_one_fetch`.
     fn time_to_first_byte_is_one_fetch() {
         let Some(s) = fanotify_scratch("hydrate_ttfb") else {
             return;
@@ -279,7 +266,6 @@ fn fetches_are_shared_prefetched_and_fail_with_eio_when_unreachable() {
         );
         h.stop();
     }
-    // Phase `a_sequential_reader_is_fetched_ahead_and_nothing_is_fetched_twice`.
     fn a_sequential_reader_is_fetched_ahead_and_nothing_is_fetched_twice() {
         let Some(s) = fanotify_scratch("hydrate_readahead") else {
             return;
@@ -324,13 +310,9 @@ fn fetches_are_shared_prefetched_and_fail_with_eio_when_unreachable() {
         assert_eq!(h.residency(&path).unwrap(), Residency::Resident);
         h.stop();
     }
-    // Phase `concurrent_readers_share_fills_and_each_range_is_fetched_once` (defined above).
     concurrent_readers_share_fills_and_each_range_is_fetched_once();
-    // Phase `an_unreachable_source_fails_the_read_with_eio` (defined above).
     an_unreachable_source_fails_the_read_with_eio();
-    // Phase `time_to_first_byte_is_one_fetch` (defined above).
     time_to_first_byte_is_one_fetch();
-    // Phase `a_sequential_reader_is_fetched_ahead_and_nothing_is_fetched_twice` (defined above).
     a_sequential_reader_is_fetched_ahead_and_nothing_is_fetched_twice();
 }
 
@@ -340,7 +322,6 @@ fn fetches_are_shared_prefetched_and_fail_with_eio_when_unreachable() {
     reason = "each phase keeps one former test's body verbatim"
 )]
 fn hydrators_adopt_placeholders_replace_versions_and_gate_writers() {
-    // Phase `a_restarted_hydrator_adopts_placeholders_and_keeps_local_writes`.
     fn a_restarted_hydrator_adopts_placeholders_and_keeps_local_writes() {
         let Some(s) = fanotify_scratch("hydrate_adopt") else {
             return;
@@ -408,7 +389,6 @@ fn hydrators_adopt_placeholders_replace_versions_and_gate_writers() {
         assert_eq!(buf, pattern(10, 0, 4096));
         h.stop();
     }
-    // Phase `replacing_a_file_with_a_placeholder_keeps_open_readers_on_the_old_version`.
     fn replacing_a_file_with_a_placeholder_keeps_open_readers_on_the_old_version() {
         let Some(s) = fanotify_scratch("hydrate_replace") else {
             return;
@@ -434,7 +414,6 @@ fn hydrators_adopt_placeholders_replace_versions_and_gate_writers() {
         assert_eq!(buf, pattern(13, MIB, 4096));
         h.stop();
     }
-    // Phase `a_gated_file_refuses_writers_with_ebusy_and_still_serves_readers`.
     fn a_gated_file_refuses_writers_with_ebusy_and_still_serves_readers() {
         let Some(s) = fanotify_scratch("hydrate_gate") else {
             return;
@@ -482,7 +461,6 @@ fn hydrators_adopt_placeholders_replace_versions_and_gate_writers() {
         );
         h.stop();
     }
-    // Phase `an_asking_gate_lets_the_write_policy_decide`.
     fn an_asking_gate_lets_the_write_policy_decide() {
         let Some(s) = fanotify_scratch("hydrate_ask") else {
             return;
@@ -515,15 +493,10 @@ fn hydrators_adopt_placeholders_replace_versions_and_gate_writers() {
         assert!(policy.asked.load(Ordering::Relaxed) >= 2);
         h.stop();
     }
-    // Phase `a_restarted_hydrator_adopts_placeholders_and_keeps_local_writes` (defined above).
     a_restarted_hydrator_adopts_placeholders_and_keeps_local_writes();
-    // Phase `without_a_serving_group_a_placeholder_reads_as_holes_until_adopted` (defined above).
     without_a_serving_group_a_placeholder_reads_as_holes_until_adopted();
-    // Phase `replacing_a_file_with_a_placeholder_keeps_open_readers_on_the_old_version` (defined above).
     replacing_a_file_with_a_placeholder_keeps_open_readers_on_the_old_version();
-    // Phase `a_gated_file_refuses_writers_with_ebusy_and_still_serves_readers` (defined above).
     a_gated_file_refuses_writers_with_ebusy_and_still_serves_readers();
-    // Phase `an_asking_gate_lets_the_write_policy_decide` (defined above).
     an_asking_gate_lets_the_write_policy_decide();
 }
 

@@ -14,7 +14,7 @@
 //! heads it currently holds ([`Envelope::SyncRequest`]); the host
 //! replies with exactly the changes the peer is missing
 //! ([`Envelope::SyncResponse`]), computed against its materialized
-//! pinned doc (see `tilo_relay::workspace::WorkspaceRuntime::changes_since`).
+//! pinned doc.
 //! Applying the response converges the peer regardless of what the
 //! queue delivered.
 //!

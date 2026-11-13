@@ -12,6 +12,7 @@
 
 mod agent_queries;
 mod atomic;
+mod blobs;
 mod bundle;
 mod capture;
 mod chained;
@@ -27,6 +28,7 @@ mod done_days;
 mod engines;
 mod fixtures;
 mod foreign;
+mod headings;
 #[cfg(feature = "record")]
 mod history_views;
 mod incremental;
@@ -37,10 +39,14 @@ mod lanes;
 mod legacy;
 mod legibility;
 mod library;
+mod link_editor;
 mod links;
 mod make_from;
 mod marks;
 mod naming;
+mod note_import;
+mod notebook_order;
+mod notes;
 mod notices;
 mod outbox;
 mod outcomes;
@@ -56,7 +62,6 @@ mod rich_text;
 mod scenarios;
 #[cfg(feature = "record")]
 mod shell_record;
-mod sorting;
 mod suggest;
 mod surface;
 mod sync;

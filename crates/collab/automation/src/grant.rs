@@ -38,6 +38,74 @@ pub fn step_node(
         .action(address.action.clone())
 }
 
+/// What a refusal names a record read as, where it names an invoked action.
+pub const READ_STEP: &str = "read";
+
+/// The node a read of `record` of `app` is decided at, as the workspace
+/// decides any reader's read of it: the record, in the workspace the run reads
+/// in (or any workspace, for a run confined to none).
+#[must_use]
+pub fn read_node(workspace: Option<&str>, app_id: &str, record: &str) -> TreePath {
+    let base = match workspace {
+        Some(workspace) => TreePath::workspace(workspace),
+        None => TreePath::root().any(Level::Workspace),
+    };
+    base.app(app_id).resource(record)
+}
+
+/// The nodes a read step is decided at: its record, and for a chain read
+/// joined its first part, which stands for every part after it.
+#[must_use]
+pub fn read_nodes(
+    workspace: Option<&str>,
+    app_id: &str,
+    record: &str,
+    joined: bool,
+) -> Vec<TreePath> {
+    let mut nodes = vec![read_node(workspace, app_id, record)];
+    if joined {
+        nodes.push(read_node(
+            workspace,
+            app_id,
+            &tilo_actions::record_sync::record_part(record, 0),
+        ));
+    }
+    nodes
+}
+
+/// The rules the read steps of `steps` need: reading any record of each app
+/// they read, in any workspace. A rule cannot name the app's record of the
+/// workspace (its id is empty) nor the parts of a chain read joined (each a
+/// record of its own), so it names the app's records.
+fn read_rules(steps: &[Step], out: &mut Vec<Rule>) {
+    for step in steps {
+        match &step.kind {
+            StepKind::Read { app, .. } => {
+                let node = TreePath::root()
+                    .any(Level::Workspace)
+                    .app(app.clone())
+                    .any(Level::Resource);
+                let rule = Rule::new(node, KindSet::READ, Answer::Allow);
+                if !out.contains(&rule) {
+                    out.push(rule);
+                }
+            }
+            StepKind::If {
+                then, otherwise, ..
+            } => {
+                read_rules(then, out);
+                read_rules(otherwise, out);
+            }
+            StepKind::ForEach { body, .. } => read_rules(body, out),
+            StepKind::Invoke { .. }
+            | StepKind::SetVar { .. }
+            | StepKind::Ask { .. }
+            | StepKind::Ai { .. }
+            | StepKind::Task { .. } => {}
+        }
+    }
+}
+
 /// [`step_node`] of a field edit acting at `at` below its resource (as
 /// [`edit_reach`] reads it): the node the workspace decides the edit at.
 #[must_use]
@@ -347,7 +415,7 @@ fn collect(steps: &[Step], catalog: &ActionCatalog, out: &mut Vec<Permission>) {
                 collect(otherwise, catalog, out);
             }
             StepKind::ForEach { body, .. } => collect(body, catalog, out),
-            StepKind::SetVar { .. } | StepKind::Ask { .. } => {}
+            StepKind::SetVar { .. } | StepKind::Ask { .. } | StepKind::Read { .. } => {}
         }
     }
 }
@@ -495,14 +563,17 @@ fn migrate_rules(permissions: &[Permission]) -> Vec<Rule> {
 
 /// The whole grant a program needs: its steps' least privilege, the
 /// settling of what they queue outside and the migrating of what they
-/// change, then its triggers' reads. What a bot's stored grant must equal.
+/// change, the records its steps read, then its triggers' reads. What a bot's stored grant must equal.
 #[must_use]
 pub fn derived_rules(shortcut: &crate::Shortcut, catalog: &ActionCatalog) -> Vec<Rule> {
     let permissions = least_privilege(&shortcut.steps, catalog);
     let mut out = rules(&permissions);
+    let mut reads = Vec::new();
+    read_rules(&shortcut.steps, &mut reads);
     for rule in settle_rules(&permissions)
         .into_iter()
         .chain(migrate_rules(&permissions))
+        .chain(reads)
         .chain(trigger_rules(&shortcut.triggers))
     {
         if !out.contains(&rule) {
@@ -514,14 +585,15 @@ pub fn derived_rules(shortcut: &crate::Shortcut, catalog: &ActionCatalog) -> Vec
 
 /// The rules of `shortcut.grant` that no step and no trigger could use,
 /// judged by shape alone: an action rule must name the app and action of
-/// some step (or lowered `Ai` step), a read rule must be one a trigger
-/// needs. The governor runs this without a catalogue, so a program can never
+/// some step (or lowered `Ai` step), a read rule must be one a read step or
+/// a trigger needs. The governor runs this without a catalogue, so a program can never
 /// carry authority its steps do not even mention.
 #[must_use]
 pub fn unused_rules(shortcut: &crate::Shortcut) -> Vec<Rule> {
     let mut keys: Vec<ActionKey> = Vec::new();
     step_keys(&shortcut.steps, &mut keys);
-    let reads = trigger_rules(&shortcut.triggers);
+    let mut reads = trigger_rules(&shortcut.triggers);
+    read_rules(&shortcut.steps, &mut reads);
     shortcut
         .grant
         .iter()
@@ -558,7 +630,7 @@ fn step_keys(steps: &[Step], out: &mut Vec<ActionKey>) {
                 step_keys(otherwise, out);
             }
             StepKind::ForEach { body, .. } => step_keys(body, out),
-            StepKind::SetVar { .. } | StepKind::Ask { .. } => {}
+            StepKind::SetVar { .. } | StepKind::Ask { .. } | StepKind::Read { .. } => {}
         }
     }
 }
@@ -855,9 +927,9 @@ mod tests {
                 ActionKind::Undoable,
             ),
             permission(
-                "so.tilo.chat",
-                "chat.workspace",
-                "read-workspace",
+                "so.tilo.discord",
+                "discord.guild",
+                "plan-event",
                 ActionKind::Read,
             ),
         ]);

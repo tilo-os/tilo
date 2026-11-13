@@ -1,52 +1,28 @@
-//! Hardware decoder discovery, ranking, and reporting.
+//! Hardware decoder discovery, ranking and reporting: autoplugging picks a decoder
+//! by rank, and distributions do not agree on the rank a hardware decoder deserves,
+//! so this lifts them by policy and reports the element the pipeline plugged.
 //!
-//! Autoplugging picks a decoder by *rank*, and distributions do not agree on
-//! what rank a hardware decoder should receive. This module raises hardware
-//! decoders above software ones according to policy and reports the element
-//! selected by the pipeline.
-//!
-//! [`HwReport`] is filled from the element instantiated by `GStreamer`, rather
-//! than from configuration.
-//!
-//! `TILO_MEDIA_HWDEC` overrides the policy:
-//!
-//! | value | effect |
-//! |---|---|
-//! | `auto` (default) | prefer hardware, fall back to software |
-//! | `off` | demote every hardware decoder; software only |
-//! | `va` / `nvcodec` / `v4l2` / `d3d11` / `vulkan` | force that family to the top |
-//!
-//! The real-time path (screen sharing, calls, recording) names its encoders
-//! and decoders outright instead of autoplugging; its element tables and the
-//! order they are tried in live in [`realtime`], under the same variables
-//! (`TILO_MEDIA_HWENC` for encoders, `TILO_MEDIA_HWDEC` for decoders).
+//! `TILO_MEDIA_HWDEC`: `auto` (the default) prefers hardware and falls back to
+//! software, `off` demotes every hardware decoder, and `va`, `nvcodec`, `v4l2`,
+//! `d3d11` or `vulkan` forces that family to the top.
 
-/// Which decoder family a chosen element belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecoderKind {
-    /// VA-API — Intel, AMD, and anything else with a libva driver.
     Va,
-    /// NVIDIA NVDEC via the `nvcodec` plugin.
     NvCodec,
-    /// Linux `V4L2` stateless / stateful codecs — embedded system-on-chip
-    /// parts, Raspberry Pi.
     V4l2,
     Vulkan,
-    /// Direct3D 11/12 video (present for completeness; not reachable here).
+    // Direct3D 11/12 video (present for completeness; not reachable here).
     D3d,
-    /// Apple `VideoToolbox`.
     VideoToolbox,
-    /// A CPU decoder — `avdec_*`, `openh264dec`, `dav1d`, `vp8dec`, …
     Software,
 }
 
 impl DecoderKind {
-    /// Whether a decoder of this kind runs on fixed-function video hardware.
     pub fn is_hardware(self) -> bool {
         !matches!(self, DecoderKind::Software)
     }
 
-    /// The family name used by `TILO_MEDIA_HWDEC` and reported in logs.
     pub fn as_str(self) -> &'static str {
         match self {
             DecoderKind::Va => "va",
@@ -59,17 +35,14 @@ impl DecoderKind {
         }
     }
 
-    /// Classify a decoder by its `GStreamer` element name.
-    ///
-    /// Names are matched against the prefix each plugin uses. `vaapi*` is the
-    /// old gstreamer-vaapi plugin and `va*` the new one in -bad; both are
-    /// VA-API. Ordering matters: `vah264dec` must not be read as `v4l2`, and
-    /// the software `vp8dec` / `vp9dec` must not be read as VA-API, so the
-    /// software names are tested first.
+    /// Classify a decoder by its `GStreamer` element name: `vaapi*` is the old
+    /// gstreamer-vaapi plugin and `va*` the new one in -bad, both VA-API. Ordering
+    /// matters — `vah264dec` must not read as `v4l2`, and the software `vp8dec` and
+    /// `vp9dec` must not read as VA-API — so software names are tested first.
     pub fn classify(element_name: &str) -> Self {
         let n = element_name.to_ascii_lowercase();
-        // Software decoders whose names would otherwise collide with a
-        // hardware prefix (`vp8dec` starts with "vp", `dav1ddec` with "d").
+        // Software decoders whose names would otherwise collide with a hardware
+        // prefix (`vp8dec` starts with "vp", `dav1ddec` with "d").
         if n.starts_with("avdec_")
             || n.starts_with("openh264")
             || n.starts_with("dav1d")
@@ -103,21 +76,17 @@ impl DecoderKind {
     }
 }
 
-/// The hardware-decode policy for this process, from `TILO_MEDIA_HWDEC`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HwPolicy {
-    /// Prefer hardware; fall back to software when none can decode the stream.
     Auto,
     /// Software only.
     Off,
-    /// Force one family to outrank everything, including other hardware.
     Force(DecoderKind),
 }
 
 impl HwPolicy {
-    /// Read the policy from the environment. An unrecognised value is
-    /// [`HwPolicy::Auto`] with a warning — a typo must not silently disable
-    /// hardware decode.
+    // An unrecognised value is [`HwPolicy::Auto`] with a warning: a typo must not
+    // silently disable hardware decode.
     pub fn from_env() -> Self {
         match std::env::var("TILO_MEDIA_HWDEC") {
             Err(_) => HwPolicy::Auto,
@@ -125,8 +94,8 @@ impl HwPolicy {
         }
     }
 
-    /// Parse one `TILO_MEDIA_HWDEC` value. Separated from the environment read
-    /// so the mapping is exercised directly, without mutating process state.
+    // Separated from the environment read so the mapping is exercised directly,
+    // without mutating process state.
     pub fn parse(v: &str) -> Self {
         match v.trim().to_ascii_lowercase().as_str() {
             "" | "auto" | "1" | "on" => HwPolicy::Auto,
@@ -147,49 +116,42 @@ impl HwPolicy {
     }
 }
 
-/// What the pipeline did, filled from the elements `GStreamer` instantiated.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HwReport {
-    /// The video decoder element's name, e.g. `nvh264dec0`, `vah264dec0`,
-    /// `avdec_h264-0`. `None` until a decoder has been plugged.
+    /// The decoder element's name, e.g. `nvh264dec0`, `vah264dec0`, `avdec_h264-0`.
+    /// `None` until a decoder has been plugged.
     pub decoder_element: Option<String>,
-    /// The decoder's family, classified from its name.
     pub decoder_kind: Option<DecoderKind>,
-    /// The caps the video sink negotiated, verbatim, describing which
-    /// memory the frames arrive in (`memory:DMABuf`, `memory:CUDAMemory`, or
-    /// plain system memory).
     pub negotiated_caps: Option<String>,
-    /// Every element the pipeline instantiated whose name looks like a
-    /// decoder, in the order they appeared. Kept for diagnostics when the
-    /// chosen decoder is not the expected one.
+    /// Every instantiated element whose name looks like a decoder, in the order they
+    /// appeared. Diagnostics for when the chosen decoder is not the expected one.
     pub decoder_candidates: Vec<String>,
 }
 
 impl HwReport {
-    /// Whether a hardware decoder is doing the work. `false` both when a
-    /// software decoder was plugged and when nothing has been plugged yet —
-    /// so a caller can never read "not yet known" as "yes".
+    /// Whether a hardware decoder is doing the work. `false` both for a software
+    /// decoder and before anything has been plugged, so "not yet known" never reads as
+    /// yes.
     pub fn is_hardware(&self) -> bool {
         self.decoder_kind.is_some_and(DecoderKind::is_hardware)
     }
 
-    /// Whether frames arrive as dmabufs (the zero-copy path).
     pub fn is_dmabuf(&self) -> bool {
         self.negotiated_caps
             .as_deref()
             .is_some_and(|c| c.contains("memory:DMABuf"))
     }
 
-    /// Record a newly instantiated element, keeping it only if it looks like a
-    /// video decoder. Returns `true` when this became the chosen decoder.
+    /// Record a newly instantiated element, keeping it only if it looks like a video
+    /// decoder. `true` when this became the chosen decoder.
     pub fn note_element(&mut self, name: &str) -> bool {
         if !looks_like_video_decoder(name) {
             return false;
         }
         self.decoder_candidates.push(name.to_string());
-        // The first video decoder plugged is the one decoding the primary
-        // video stream; a later one belongs to another stream (a second video
-        // track, an embedded thumbnail) and must not overwrite the report.
+        // The first video decoder plugged decodes the primary stream; a later one
+        // belongs to another stream (a second video track, an embedded thumbnail) and
+        // must not overwrite the report.
         if self.decoder_element.is_none() {
             self.decoder_element = Some(name.to_string());
             self.decoder_kind = Some(DecoderKind::classify(name));
@@ -198,7 +160,6 @@ impl HwReport {
         false
     }
 
-    /// A one-line summary for a log or a test failure message.
     pub fn describe(&self) -> String {
         match (&self.decoder_element, self.decoder_kind) {
             (Some(el), Some(kind)) => format!(
@@ -219,10 +180,8 @@ impl HwReport {
 }
 
 /// Whether an element name is a video decoder rather than a parser, converter,
-/// demuxer, or audio decoder.
-///
-/// Element instance names carry a trailing index (`nvh264dec0`), so this
-/// matches on a `dec` segment rather than a suffix.
+/// demuxer or audio decoder. Element instances carry a trailing index
+/// (`nvh264dec0`), so this matches a `dec` segment rather than a suffix.
 pub fn looks_like_video_decoder(name: &str) -> bool {
     // Audio decoders and generic converters would otherwise match on "dec".
     const AUDIO: &[&str] = &[
@@ -240,7 +199,6 @@ pub fn looks_like_video_decoder(name: &str) -> bool {
         "sbc",
         "audio",
     ];
-    // A known video codec token, or an explicit video-decoder plugin prefix.
     const VIDEO: &[&str] = &[
         "h264",
         "h265",
@@ -274,7 +232,6 @@ pub fn looks_like_video_decoder(name: &str) -> bool {
     VIDEO.iter().any(|c| n.contains(c))
 }
 
-/// A decoder element discovered in the registry, with the rank it carries.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecoderEntry {
     pub name: String,
@@ -282,15 +239,13 @@ pub struct DecoderEntry {
     pub rank: u32,
 }
 
-/// `GStreamer`'s `GST_RANK_PRIMARY`. Software decoders sit here; hardware ones
-/// are lifted above it so autoplugging reaches them first.
+// `GST_RANK_PRIMARY`. Software decoders sit here; hardware ones are lifted above
+// it so autoplugging reaches them first.
 pub const RANK_PRIMARY: u32 = 256;
-/// The rank a preferred hardware decoder is raised to.
 pub const RANK_HW_PREFERRED: u32 = RANK_PRIMARY + 128;
-/// The rank a forced family is raised to — above every other hardware family.
 pub const RANK_HW_FORCED: u32 = RANK_PRIMARY + 256;
-/// Where a demoted decoder lands: below software, but still reachable if it is
-/// the only element that can handle the stream.
+// Below software, so a forced family that cannot handle the stream falls back to
+// the CPU rather than to another GPU.
 pub const RANK_DEMOTED: u32 = 1;
 
 /// The rank `policy` assigns to a decoder of `kind`.
@@ -316,9 +271,9 @@ pub fn rank_for(policy: HwPolicy, kind: DecoderKind) -> u32 {
             if kind == want {
                 RANK_HW_FORCED
             } else if kind.is_hardware() {
-                // Other hardware families stay available but below software,
-                // so a forced family that cannot handle the stream falls back
-                // to a CPU decoder rather than to a different GPU one.
+                // Other hardware families stay available but below software, so a forced
+                // family that cannot handle the stream falls back to a CPU decoder rather than
+                // to a different GPU one.
                 RANK_DEMOTED
             } else {
                 RANK_PRIMARY
@@ -327,12 +282,10 @@ pub fn rank_for(policy: HwPolicy, kind: DecoderKind) -> u32 {
     }
 }
 
-/// The rank a decoder is given: a hardware family gets the rank `policy`
-/// assigns, while a software decoder keeps the rank its plugin `shipped`
-/// with. Flattening every CPU decoder to one rank would throw away the
-/// ordering the plugins encode between themselves — dav1d above libaom for
-/// AV1, libvpx above libavcodec for VP9 — and let the alphabet pick
-/// instead.
+/// A hardware family gets the rank `policy` assigns, while a software decoder keeps
+/// the rank its plugin `shipped` with. Flattening every CPU decoder to one rank would
+/// throw away the ordering the plugins encode between themselves — dav1d above libaom
+/// for AV1, libvpx above libavcodec for VP9 — and let the alphabet pick.
 pub fn effective_rank(policy: HwPolicy, kind: DecoderKind, shipped: u32) -> u32 {
     if kind.is_hardware() {
         rank_for(policy, kind)
@@ -360,7 +313,6 @@ mod tests {
             assert_eq!(DecoderKind::classify("nvh264dec0"), DecoderKind::NvCodec);
             assert_eq!(DecoderKind::classify("vah264dec0"), DecoderKind::Va);
             assert_eq!(DecoderKind::classify("avdec_h264-0"), DecoderKind::Software);
-            // And the ones other hardware produces.
             assert_eq!(DecoderKind::classify("vaapih265dec"), DecoderKind::Va);
             assert_eq!(DecoderKind::classify("v4l2h264dec"), DecoderKind::V4l2);
             assert_eq!(DecoderKind::classify("v4l2slh264dec0"), DecoderKind::V4l2);
@@ -372,8 +324,8 @@ mod tests {
             assert_eq!(DecoderKind::classify("d3d11h264dec"), DecoderKind::D3d);
         }
         {
-            // `vp8dec`/`vp9dec` are libvpx on the CPU but start with "v"; calling
-            // them VA-API would report hardware decode that never happened.
+            // `vp8dec`/`vp9dec` are libvpx on the CPU but start with "v"; calling them
+            // VA-API would report hardware decode that never happened.
             assert_eq!(DecoderKind::classify("vp9dec0"), DecoderKind::Software);
             assert_eq!(DecoderKind::classify("vp8dec0"), DecoderKind::Software);
             assert_eq!(DecoderKind::classify("dav1ddec0"), DecoderKind::Software);
@@ -421,8 +373,8 @@ mod tests {
         {
             let mut r = HwReport::default();
             r.note_element("nvh264dec0");
-            // A second video track's decoder must not rewrite the report — the
-            // preview is showing the first stream.
+            // A second video track's decoder must not rewrite the report: the preview is
+            // showing the first stream.
             assert!(!r.note_element("avdec_h264-1"));
             assert_eq!(r.decoder_element.as_deref(), Some("nvh264dec0"));
             assert!(r.is_hardware(), "still reporting the real primary decoder");
@@ -467,12 +419,11 @@ mod tests {
             let p = HwPolicy::Force(DecoderKind::Va);
             assert!(rank_for(p, DecoderKind::Va) > rank_for(p, DecoderKind::NvCodec));
             assert!(rank_for(p, DecoderKind::Va) > rank_for(p, DecoderKind::Software));
-            // A forced family that cannot handle the stream must fall through to
-            // software, not to a different GPU family.
+            // A forced family that cannot handle the stream must fall through to software,
+            // not to a different GPU family.
             assert!(rank_for(p, DecoderKind::Software) > rank_for(p, DecoderKind::NvCodec));
         }
         {
-            // dav1ddec ships one above libaom's av1dec; vp9dec above avdec_vp9.
             let dav1d = 257;
             let libaom = 256;
             for p in [

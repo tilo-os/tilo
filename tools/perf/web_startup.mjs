@@ -1,6 +1,7 @@
 // Startup of the web shell, measured in a real browser.
 //
-// The page already marks its startup phases (`tilo:module`, `tilo:wasm-ready`,
+// The page already marks its startup phases (`tilo:module`, `tilo:compiled`,
+// `tilo:runtime`, `tilo:peer`, `tilo:wasm-ready`,
 // `tilo:storage`, `tilo:assets`, `tilo:mounted`, `tilo:first-frame`), all on the
 // navigation timeline, so a slow phase names itself instead of hiding in
 // "loading". This runner serves a built bundle, opens a page, waits for the
@@ -15,7 +16,7 @@ import {launch, serve, sleep} from '../../tools/web/chrome.mjs';
 import {writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 
-const PHASES = ['module', 'wasm-ready', 'storage', 'assets', 'mounted', 'first-frame'];
+const PHASES = ['module', 'compiled', 'runtime', 'peer', 'wasm-ready', 'storage', 'assets', 'mounted', 'first-frame'];
 
 /** Records the interval between presented frames until the page is read. */
 const FRAME_RECORDER = () => {

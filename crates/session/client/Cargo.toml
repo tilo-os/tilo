@@ -1,0 +1,174 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "tilo-session-client"
+description = "A participant's client of the collaboration plane: the workspaces it takes part in, who is here in each, and this device's own word on them; and the certified relay session a page, an agent or a program is a device of its person by, with its commit outbox, reconnect replay and live plane."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+# One test binary for the crate's integration tests, whose files it includes as
+# modules: a file per binary linked the whole crate once each.
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[dependencies]
+# The answer to a command, which a page awaits and a program waits on.
+oneshot.workspace = true
+# The desk's model: the workspaces a participant takes part in, and the windows presence places
+# people in.
+tilo-desktop-model = { path = "../desktop-model" }
+# The toolkit's clock and presence vocabulary, which a participant's face is drawn with on every
+# host.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+collab-types = { path = "../../collab/collab-types" }
+# The workspace's live plane: the board of who is here, and the tracks presence travels on.
+tilo-live = { path = "../../collab/tilo-live", features = ["plane"] }
+# This device's workspaces as its host keeps them, and where a device hosting one is reached.
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+# The certificates that say which person a device belongs to, and their revocations.
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+# What members say on a workspace's plane.
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+# How a workspace numbers itself on the plane.
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# The identity layer's device side: certification, invitations and the link to a person's host,
+# over iroh natively and over the browser's WebTransport in a page.
+tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
+# The session client every device reaches its host with, over its link.
+tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+# The action host another device of a workspace is, reached through the session.
+tilo-actions = { path = "../../collab/actions" }
+# Sorts without a copy of std's sort per call site, which kept the web desktop's start module large.
+tilo-sort = { path = "../../platform/tilo-sort" }
+# The signed hint a workspace's governance keeps of its host's address.
+tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+# A plane's WebTransport session: the browser's own in a page.
+tilo-net = { path = "../../platform/tilo-net", features = ["webtransport"] }
+# `moq-lite` itself: a session's live plane is a publisher and a subscriber.
+moq-net.workspace = true
+bytes.workspace = true
+n0-future = "0.3"
+web-time = "1"
+rand.workspace = true
+# What asking another device's actions hears back.
+tilo-session-core = { path = "../core" }
+# The action a message from another member is, and the claims access answers it with, holding
+# every message to the workspace's own policy.
+tilo-action-policy = { path = "../../collab/action-policy" }
+# This device's channels: the groups its workspaces' sealed records are in, and the governance that
+# settles who reads each one.
+tilo-channels = { path = "../../collab/channels" }
+channel-crypto = { path = "../../collab/channel-crypto" }
+# The channel state and ingress gates a workspace's sealed records are held to, as the broker keeps
+# them on every host.
+tilo-broker-core = { path = "../../collab/broker-core" }
+# The vault's master key: the platform secret store, or the sealed file store a headless machine
+# names.
+tilo-secrets.workspace = true
+tilo-paths.workspace = true
+# A freshly drawn vault key.
+getrandom.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+rand_core.workspace = true
+serde_json.workspace = true
+# This device signs its workspaces' commits with its own key.
+ed25519-dalek.workspace = true
+blake3.workspace = true
+# The map beside every board.
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# The id a membership command is asked under.
+uuid.workspace = true
+# This device's identity: the certificate it presents and the key it signs with, from the store
+# its host keeps them in.
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+# The endpoint every device dials: presence names a publisher and where it is reached with it.
+iroh-base.workspace = true
+tokio = { workspace = true, features = ["sync", "macros"] }
+serde.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+hex.workspace = true
+tracing.workspace = true
+
+[features]
+default = []
+# This process runs apps itself: its writes are decided against, and signed with, the surfaces of
+# the apps it runs.
+toolkit = []
+
+[dev-dependencies]
+pollster.workspace = true
+# A workspace whose governance admits a newcomer after a record reached it.
+tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
+web-time = { version = "1", features = ["serde"] }
+# A state directory for an engine, and a vault root for the channel state kept in it.
+tempfile.workspace = true
+# The host a test asks through the page's door, as a session's device answers it.
+tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
+# A test that must hold the wall clock of its whole process (and the
+# helper threads reading it) takes the process to itself.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["test-support"] }
+# A workspace's documents are automerge, which a test binary serves from its own workers.
+tilo-automerge-isolate.workspace = true
+# The crowded entry's step trace (`TILO_CROWD_WIRE`): the host's timings
+# beside the wire's.
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+test-http = { path = "../../dev/test-http" }
+tilo-relay = { path = "../../hosting/tilo-relay", features = ["web", "test-support"] }
+# The fetch proxy's host side, as the page's test of it drives it.
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net" }
+# A relay listener on loopback, as the live plane's acceptance test drives it.
+tilo-live = { path = "../../collab/tilo-live", features = ["plane", "relay", "iroh"] }
+# The call's native side sends and hears a real tone, as a call does.
+opus = "0.4"
+automerge.workspace = true
+tilo-automerge.workspace = true
+# A session's codec negotiation, run against the host's advert for its
+# browser members (no GStreamer: the pure negotiation only).
+tilo-media = { path = "../../platform/tilo-media" }
+iroh.workspace = true
+url.workspace = true
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+tokio-rustls.workspace = true
+rustls.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tilo-paths.workspace = true
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+serde_json.workspace = true
+tilo-test-env = { path = "../../dev/test-env", features = ["tokio"] }
+# A relay on this machine's loopback, which is what a test's devices relay through.
+test-relay = { path = "../../dev/test-relay" }
+# The broker's verdict, for the browser's to be checked against.
+tilo-action-broker = { path = "../../collab/tilo-action-broker" }
+# A call's voice channel is a real Chat channel, written by Chat's own model.
+chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
+# A refused commit reaches the app that made it, mounted headlessly.
+tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
+uuid.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# A vault key an earlier build left with `secret-tool`, moved into the platform store.
+bounded-command = { path = "../../system/bounded-command" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+iroh.workspace = true
+tilo-live = { path = "../../collab/tilo-live", features = ["plane", "iroh"] }
+# A login code is a Tilo link, read under the grammar the page writes it with.
+tilo-reference = { path = "../../collab/reference" }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The web has no system random source; the page supplies the browser's.
+getrandom = { workspace = true, features = ["wasm_js"] }
+
+[lints]
+workspace = true

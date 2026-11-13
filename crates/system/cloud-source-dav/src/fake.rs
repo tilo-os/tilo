@@ -1,12 +1,5 @@
 //! An in-memory `WebDAV`/Nextcloud server on the shared test responder.
 //!
-//! Enough of RFC 4918 (PROPFIND, GET with ranges and `If-Match`, PUT with
-//! `If-Match`/`If-None-Match`, MKCOL, MOVE with `Overwrite`, DELETE), RFC
-//! 6578 `sync-collection` (optional) and Nextcloud's chunked uploads,
-//! versions and recursive folder `ETag`s to exercise a real client. Faults
-//! can be injected into the next request, and the server can go offline
-//! (connections are dropped unanswered).
-//!
 //! Test support only (feature `fake-server`).
 
 #![allow(
@@ -26,18 +19,14 @@ use tilo_dav::Url;
 use crate::paths::{format_http_date, percent_decode};
 use crate::{DavConfig, Flavor};
 
-/// The login the fake accepts.
 pub const USER: &str = "ada";
 pub const PASSWORD: &str = "correct horse";
 
-/// A fault for the next matching request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FakeFault {
     /// 429 with `Retry-After: 1`.
     RateLimited,
-    /// 503.
     ServerError,
-    /// The next GET declares its full length but sends half the body.
     TruncatedBody,
     /// The next GET sends half the body, declares no length and closes
     /// the connection.
@@ -48,14 +37,12 @@ pub enum FakeFault {
     /// The next `PROPFIND` or `REPORT` sends half of its `multistatus` body,
     /// declares no length and closes the connection.
     ClosedListing,
-    /// 401 once.
     ExpiredCredential,
     /// The next `PROPFIND` or `REPORT` answers 200 with an HTML page instead
     /// of a `multistatus`.
     NotMultistatus,
 }
 
-/// Request counters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     pub propfinds: usize,
@@ -97,7 +84,6 @@ struct State {
     stats: Stats,
 }
 
-/// A running fake server. Dropping it stops the server.
 pub struct FakeDav {
     responder: Responder,
     state: Arc<Mutex<State>>,
@@ -111,17 +97,14 @@ const RESTORE_TARGET: &str = "/remote.php/dav/versions/ada/restore/target";
 const GENERIC_PREFIX: &str = "/dav/";
 
 impl FakeDav {
-    /// A plain `WebDAV` server rooted at `/dav/`.
     pub fn generic() -> Self {
         Self::start(false, false)
     }
 
-    /// A Nextcloud server for user [`USER`].
     pub fn nextcloud() -> Self {
         Self::start(true, false)
     }
 
-    /// A plain `WebDAV` server that also answers `sync-collection`.
     pub fn generic_with_sync_collection() -> Self {
         Self::start(false, true)
     }
@@ -177,12 +160,10 @@ impl FakeDav {
         self.state.lock().expect("fake state")
     }
 
-    /// `http://127.0.0.1:<port>/`: the `server_url` of a Nextcloud account.
     pub fn server_url(&self) -> Url {
         Url::parse(&format!("{}/", self.responder.url())).expect("fake url")
     }
 
-    /// The collection URL of the account root.
     pub fn root_url(&self) -> Url {
         let prefix = if self.nextcloud {
             FILES_PREFIX
@@ -217,7 +198,6 @@ impl FakeDav {
         matches!(self.config().flavor, Flavor::Nextcloud { .. })
     }
 
-    /// Create or replace a file, creating parent folders.
     pub fn put(&self, path: &str, bytes: &[u8]) {
         let mut state = self.lock();
         let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
@@ -231,7 +211,6 @@ impl FakeDav {
         state.write(&parts.join("/"), bytes.to_vec());
     }
 
-    /// Create a folder (and its parents).
     pub fn mkdir(&self, path: &str) {
         let mut state = self.lock();
         let mut prefix = String::new();
@@ -243,7 +222,6 @@ impl FakeDav {
         }
     }
 
-    /// Delete an item and everything below it.
     pub fn remove(&self, path: &str) {
         self.lock().remove_tree(path.trim_matches('/'));
     }
@@ -286,7 +264,6 @@ impl FakeDav {
         state.log_floor = state.seq.saturating_add(1);
     }
 
-    /// Forget every issued sync token.
     pub fn reset_cursors(&self) {
         let mut state = self.lock();
         state.log_floor = state.seq.saturating_add(1);
@@ -296,7 +273,6 @@ impl FakeDav {
         self.lock().stats
     }
 
-    /// Requests received since the last call.
     pub fn requests(&self) -> Vec<Request> {
         self.responder.drain_requests()
     }
@@ -367,7 +343,6 @@ impl State {
         let seq = self.seq;
         self.log.push((seq, path.to_owned()));
         if self.nextcloud {
-            // Nextcloud folder ETags change with their contents.
             let mut current = parent(path).to_owned();
             loop {
                 let etag = format!("\"{}d\"", self.seq);
@@ -653,7 +628,6 @@ fn files_prefix(state: &State) -> &'static str {
     }
 }
 
-/// The files-area path of a `Destination` header.
 fn destination(state: &State, request: &Request) -> Option<String> {
     let raw = request.header("destination")?;
     let url = Url::parse(raw).ok()?;
@@ -778,7 +752,6 @@ fn files(state: &mut State, request: &Request, path: &str, cut: Option<Cut>) -> 
                 Some(Cut::Get(declare_length) | Cut::Listing(declare_length)) => {
                     reply.body(slice).cut_short(declare_length)
                 }
-                // A GET answers with the file whatever a listing fault says.
                 Some(Cut::NotMultistatus) | None => reply.body(slice),
             }
         }

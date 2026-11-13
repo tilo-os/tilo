@@ -215,7 +215,6 @@ pub fn report_request_id(package_id: &str, note: &str, now_unix: u64, nonce: &[u
 mod tests {
     use super::*;
 
-    /// Endpoint validation, request identity binding and unforgeable receipts.
     #[test]
     fn moderation_client_endpoints_requests_and_receipts_are_trustworthy() {
         {

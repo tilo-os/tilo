@@ -10,24 +10,23 @@
 //! its bound, so its copy goes on following the record however long the
 //! workspace keeps writing. Every other device taking part in a channel does the
 //! same with its own copy and publishes the checkpoint
-//! ([`tilo_peer_state::PeerPublicationMut::compact_sealed_history`]): the
+//! ([`tilo_peer_state::PeerPublication::draft_sealed_compaction`]): the
 //! governor's copy follows that checkpoint like any other member write, and
 //! no device's history waits for someone else to fold it.
 
 use channel_crypto::ChannelContentKeys;
-use collab_types::{ArtifactId, ContentRetention, EncryptionMetadata, SignedOp};
-#[cfg(feature = "agents")]
+use collab_types::{ArtifactId, ContentRetention, SignedOp};
 use ed25519_dalek::SigningKey;
-#[cfg(feature = "agents")]
 use neighbour_wire::NeighbourMsg;
-#[cfg(feature = "agents")]
 use tilo_peer_state::StatePeer;
+
+use tilo_peer_state::UnmergedReason;
 
 use super::{GovernedWorkspace, SystemTime, Workspaces};
 
 /// Member writes followed before a failed compaction is tried again. A
-/// record whose merged snapshot outgrew one mutation never compacts; trying
-/// on every write opened and merged its whole history each time.
+/// record whose history does not merge yet does not compact; trying on every
+/// write opened and merged its whole history each time.
 const COMPACTION_RETRY: usize = 256;
 
 /// The content keys of one record's channel, as the node holds them.
@@ -52,15 +51,115 @@ impl RecordKeys {
     }
 
     /// Seal content of the record under the channel's current epoch.
+    #[cfg(feature = "agents")]
     fn seal(
         &self,
         retention: ContentRetention,
-    ) -> impl FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> + '_ {
+    ) -> impl FnMut(&[u8]) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> + '_ {
         move |plaintext| {
             self.keys
                 .seal_content(self.artifact, retention, plaintext)
                 .map_err(|error| error.to_string())
         }
+    }
+
+    /// Compact `record`'s sealed history in `candidate` as the host's `key`,
+    /// into `rebuilt` when the operator rebuilt the record, else into its
+    /// merged history.
+    fn compact(
+        &self,
+        candidate: &mut StatePeer,
+        (app, record): (&str, &str),
+        rebuilt: Option<Vec<u8>>,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        let mut open = self.open();
+        // A snapshot larger than one op goes in segments: the first a
+        // checkpoint, the rest following it.
+        let mut seal = |frame: &[u8]| {
+            self.keys
+                .seal_content(self.artifact, ContentRetention::of_frame(frame), frame)
+                .map_err(|error| error.to_string())
+        };
+        let author = key.verifying_key().to_bytes();
+        let operator_rebuilt = rebuilt.is_some();
+        let drafted = candidate.publication().draft_sealed_compaction(
+            (app, record),
+            rebuilt,
+            &mut open,
+            &mut seal,
+            author,
+            now,
+        );
+        let mut ops = match drafted {
+            Ok(ops) => ops,
+            Err(strict) if operator_rebuilt => return Err(strict),
+            Err(strict) => match self.without_unsent(candidate, (app, record))? {
+                Some(read) => candidate.publication().draft_sealed_compaction(
+                    (app, record),
+                    Some(read),
+                    &mut open,
+                    &mut seal,
+                    author,
+                    now,
+                )?,
+                None => return Err(strict),
+            },
+        };
+        for op in &mut ops {
+            collab_types::sign_op(op, key).map_err(|error| error.to_string())?;
+        }
+        candidate
+            .publication_mut()
+            .admit_sealed_compaction(app, record, ops, now)
+    }
+}
+
+impl RecordKeys {
+    /// `record` of `app` as it reads without the writes of its history stuck behind a change
+    /// their own writer never sent, when those are all its history leaves out besides a writer's
+    /// second change of one sequence: what the governor, the record's store, compacts it into, so
+    /// its history folds again rather than holding them until it fills. `None` when its history
+    /// holds no such write, and merges or waits as any other.
+    fn without_unsent(
+        &self,
+        candidate: &StatePeer,
+        (app, record): (&str, &str),
+    ) -> Result<Option<Vec<u8>>, String> {
+        let Some(opened) =
+            candidate
+                .publication()
+                .opened_document(app, record, &mut self.open())?
+        else {
+            return Ok(None);
+        };
+        let unsent = opened
+            .unmerged
+            .iter()
+            .filter(|write| matches!(write.reason, UnmergedReason::BehindUnsent { .. }))
+            .count();
+        let forks = opened
+            .unmerged
+            .iter()
+            .filter(|write| matches!(write.reason, UnmergedReason::AlreadyHeld { .. }))
+            .count();
+        if unsent == 0 || unsent.saturating_add(forks) != opened.unmerged.len() {
+            return Ok(None);
+        }
+        for write in &opened.unmerged {
+            if let UnmergedReason::BehindUnsent { missing } = &write.reason {
+                tracing::warn!(
+                    %app,
+                    %record,
+                    writer = %hex::encode(write.author),
+                    seq = write.seq,
+                    ?missing,
+                    "the governor compacts a sealed record without a write built on a change its writer never sent"
+                );
+            }
+        }
+        Ok(Some(opened.document))
     }
 }
 
@@ -177,8 +276,122 @@ impl GovernedWorkspace {
     }
 }
 
+/// `record` of `app` of `workspace` with every write of its history, saved,
+/// read from `peer`, a copy of the governor's state, and opened with
+/// `device`'s keys where it is sealed: what a reader that must see all of a
+/// record reads without holding the workspace while it does.
+///
+/// # Errors
+///
+/// Why it does not read whole: a sealed write of it does not open or merge,
+/// or its channel's keys are not here.
+pub(super) async fn whole_document(
+    peer: &StatePeer,
+    device: Option<&super::DeviceKeys>,
+    workspace: &str,
+    (app, record): (&str, &str),
+) -> Result<Vec<u8>, String> {
+    if !peer.publication().is_sealed_record(app, record) {
+        return peer
+            .document(app, record)
+            .ok_or_else(|| "the host holds no copy of it".to_owned());
+    }
+    let device = device.ok_or("it is sealed and this host has no channel keys")?;
+    let route = collab_types::ChannelRoute::new(app, record);
+    let keys = match device.channel_keys(workspace, &route, false).await {
+        None => return Err("it is sealed for a channel this host holds no keys of".to_owned()),
+        Some(Err(error)) => return Err(format!("its channel's keys did not open: {error}")),
+        Some(Ok(keys)) => keys,
+    };
+    let keys = RecordKeys {
+        keys,
+        artifact: collab_types::document_artifact_id(app, workspace, record),
+    };
+    let opened = peer
+        .publication()
+        .opened_document(app, record, &mut keys.open())
+        .map_err(|error| format!("its sealed history does not open: {error}"))?
+        .ok_or("its sealed history holds no write")?;
+    // A write stuck behind a change its writer never sent is no part of the record anyone will
+    // ever read: the record is whole without it.
+    let unmerged: Vec<String> = opened
+        .unmerged
+        .iter()
+        .filter(|write| !matches!(write.reason, UnmergedReason::BehindUnsent { .. }))
+        .map(ToString::to_string)
+        .collect();
+    if unmerged.is_empty() {
+        Ok(opened.document)
+    } else {
+        Err(format!(
+            "{} sealed writes of its history do not merge: {}",
+            unmerged.len(),
+            unmerged.join("; ")
+        ))
+    }
+}
+
+/// The writes of `record` of `app` of `workspace`, as `peer` (a copy of the governor's state)
+/// holds it, stuck behind a change their own writer never sent, opened with `device`'s keys: no
+/// device will ever send what they wait for (see [`UnmergedReason::BehindUnsent`]). The governor
+/// is the record's store, which every write of it reaches, so what it names so is what the
+/// relay's fold leaves out of the record for good. Empty for a record held in the clear, or one
+/// this host holds no keys of.
+pub(crate) async fn unsent_writes(
+    peer: &StatePeer,
+    device: Option<&super::DeviceKeys>,
+    workspace: &str,
+    (app, record): (&str, &str),
+) -> Vec<SignedOp> {
+    if !peer.publication().is_sealed_record(app, record) {
+        return Vec::new();
+    }
+    let Some(device) = device else {
+        return Vec::new();
+    };
+    let route = collab_types::ChannelRoute::new(app, record);
+    let Some(Ok(keys)) = device.channel_keys(workspace, &route, false).await else {
+        return Vec::new();
+    };
+    let keys = RecordKeys {
+        keys,
+        artifact: collab_types::document_artifact_id(app, workspace, record),
+    };
+    let opened = match peer
+        .publication()
+        .opened_document(app, record, &mut keys.open())
+    {
+        Ok(Some(opened)) => opened,
+        Ok(None) => return Vec::new(),
+        Err(error) => {
+            tracing::warn!(%workspace, %app, %record, %error, "a sealed record does not open");
+            return Vec::new();
+        }
+    };
+    let history = peer.publication().sealed_history(app, record);
+    let mut unsent = Vec::new();
+    for write in &opened.unmerged {
+        if !matches!(write.reason, UnmergedReason::BehindUnsent { .. }) {
+            continue;
+        }
+        unsent.extend(
+            history
+                .iter()
+                .filter(|op| *op.author.as_bytes() == write.author && op.seq == write.seq)
+                .cloned(),
+        );
+    }
+    unsent
+}
+
 /// Publish `changes` to `record` of `app` into `candidate` as `key`'s write:
 /// sealed with `keys` for a sealed record, in the clear otherwise.
+///
+/// The first sealed write of a record is the whole record, its cleartext base
+/// with `changes`: a reader holding only the record's ciphertext history — a
+/// page that joins later, whose host replays nothing the workspace's
+/// governance already covers — reads the record from it, where a change
+/// alone would wait forever for a base that never comes.
 #[cfg(feature = "agents")]
 pub(super) fn publish_changes(
     candidate: &mut StatePeer,
@@ -192,6 +405,24 @@ pub(super) fn publish_changes(
         None => candidate
             .publication_mut()
             .publish_incremental(app, record, changes, key, now),
+        Some(keys) if !candidate.publication().is_sealed_record(app, record) => {
+            let mut document = match candidate.document(app, record) {
+                Some(base) => {
+                    automerge::AutoCommit::load(&base).map_err(|error| error.to_string())?
+                }
+                None => automerge::AutoCommit::new(),
+            };
+            tilo_automerge::ApplyIncoming::load_incoming(&mut document, &changes)
+                .map_err(|error| error.to_string())?;
+            refound(
+                candidate,
+                Some(keys),
+                (app, record),
+                document.save(),
+                key,
+                now,
+            )
+        }
         Some(keys) => candidate.publication_mut().publish_sealed_incremental(
             app,
             record,
@@ -318,6 +549,28 @@ impl crate::compaction::ParticipantKeys for Workspaces {
                 .ok()
         })
     }
+
+    fn unsent<'a>(
+        &'a self,
+        route: &'a crate::compaction::Route,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<SignedOp>> + Send + 'a>> {
+        Box::pin(async move {
+            let Ok(state) = self.workspace(&route.cluster_id).await else {
+                return Vec::new();
+            };
+            let (peer, device) = {
+                let governed = state.lock().await;
+                (governed.peer().clone(), governed.device.clone())
+            };
+            unsent_writes(
+                &peer,
+                device.as_ref(),
+                &route.cluster_id,
+                (&route.app_id, &route.record_id),
+            )
+            .await
+        })
+    }
 }
 
 impl Workspaces {
@@ -335,6 +588,90 @@ impl Workspaces {
             device.channel_keys(workspace, &route, true).await,
             Some(Ok(_))
         )
+    }
+
+    /// Everything the governor's copy holds of `record` of `app` in
+    /// `workspace`: its cleartext base and, for a sealed record, every write
+    /// of its history opened with the channel's keys this relay holds, none
+    /// merged. What an operator repairing a record that does not read whole
+    /// reads it from; `None` for a record not held here.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here, or the record is sealed and its
+    /// channel's keys are not here.
+    pub async fn record_history(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+    ) -> Result<Option<tilo_peer_state::OpenedHistory>, super::CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        let governed = state.lock().await;
+        let keys = governed
+            .record_keys(app, record)
+            .await
+            .map_err(super::CollaborationError::new)?;
+        let mut sealed_shut = |_: &SignedOp| Err("this host holds no keys of it".to_owned());
+        let history = match &keys {
+            Some(keys) => {
+                governed
+                    .peer()
+                    .publication()
+                    .opened_history(app, record, &mut keys.open())
+            }
+            None => governed
+                .peer()
+                .publication()
+                .opened_history(app, record, &mut sealed_shut),
+        };
+        drop(governed);
+        Ok(history)
+    }
+
+    /// Replace the sealed history of `record` of `app` in `workspace` with
+    /// `rebuilt`, the record as an operator rebuilt it from that history
+    /// ([`Self::record_history`]) where it does not merge whole: one sealed
+    /// checkpoint, compacted by this host as the workspace's governor and
+    /// published like any compaction, which every member takes in place of
+    /// exactly the writes it covers.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here, the record is held in the clear or
+    /// its channel's keys are not here, or the compaction could not be made,
+    /// committed or published.
+    pub async fn compact_record_into(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+        rebuilt: Vec<u8>,
+    ) -> Result<(), super::CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        let mut governed = state.lock().await;
+        let keys = governed
+            .record_keys(app, record)
+            .await
+            .map_err(super::CollaborationError::new)?
+            .ok_or_else(|| super::CollaborationError::new("the record is held in the clear"))?;
+        let now = tilo_clock::wall();
+        let mut candidate = governed.peer().clone();
+        keys.compact(
+            &mut candidate,
+            (app, record),
+            Some(rebuilt),
+            &self.inner.host.key,
+            now,
+        )
+        .map_err(super::CollaborationError::new)?;
+        let collaboration = governed.collaboration().clone();
+        governed.commit(candidate, &self.inner.host.key, now, |_, _| {
+            Ok(collaboration)
+        })?;
+        self.settle(&mut governed).await?;
+        drop(governed);
+        Ok(())
     }
 
     /// Seal the records the workspaces this relay takes part in hold in the clear, from
@@ -391,7 +728,7 @@ impl Workspaces {
                     let settled = match workspace.commit(
                         candidate,
                         &self.inner.host.key,
-                        SystemTime::now(),
+                        tilo_clock::wall(),
                         |_, _| Ok(collaboration),
                     ) {
                         Ok(_) => self.settle(&mut workspace).await,
@@ -436,6 +773,72 @@ impl Workspaces {
                 }
             }
             drop(workspace);
+        }
+    }
+
+    /// Repair every sealed record of the workspaces this host governs whose store holds writes
+    /// stuck behind a change their own writer never sent: written before a page's writes waited
+    /// for their record, they kept every reader from the record, and no fold since left them
+    /// out. Each such record's channel is folded without them now, as its next fold would
+    /// ([`crate::compaction::Compactor::repair`]). Runs once as the host starts.
+    #[cfg(any(feature = "agents", feature = "web"))]
+    pub(crate) async fn fold_away_unsent(&self, compactor: &crate::compaction::Compactor) {
+        let workspaces: Vec<_> = self
+            .inner
+            .workspaces
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect();
+        for state in workspaces {
+            let (peer, device, name, workspace_id) = {
+                let governed = state.lock().await;
+                (
+                    governed.peer().clone(),
+                    governed.device.clone(),
+                    governed.workspace().to_owned(),
+                    governed.workspace_id(),
+                )
+            };
+            let mut holed = Vec::new();
+            for (app, record) in peer.sealed_routes() {
+                if !unsent_writes(&peer, device.as_ref(), &name, (&app, &record))
+                    .await
+                    .is_empty()
+                {
+                    holed.push((app, record));
+                }
+            }
+            if holed.is_empty() {
+                continue;
+            }
+            let Some(workspace) = self
+                .inner
+                .host
+                .workspaces
+                .lock()
+                .await
+                .get(&workspace_id)
+                .cloned()
+            else {
+                continue;
+            };
+            for (app, record) in holed {
+                let channel = neighbour_wire::app_document_channel(&app, &record);
+                let route = crate::compaction::Route {
+                    app_id: app,
+                    cluster_id: name.clone(),
+                    record_id: record,
+                };
+                if let Err(error) = compactor
+                    .repair(&workspace, workspace_id, channel, &route)
+                    .await
+                {
+                    tracing::warn!(workspace = %name, app = %route.app_id, record = %route.record_id,
+                        %error, "a record's writes stuck behind a change their writer never sent were not folded away");
+                }
+            }
         }
     }
 
@@ -498,16 +901,15 @@ impl Workspaces {
             workspace.compaction_wait = workspace.compaction_wait.saturating_sub(1);
             return Ok(());
         }
-        let now = SystemTime::now();
+        let now = tilo_clock::wall();
         let mut candidate = workspace.peer().clone();
         let mut compacted = 0usize;
         for (app, record) in &due {
             let compaction = match workspace.record_keys(app, record).await {
-                Ok(Some(keys)) => candidate.publication_mut().compact_sealed_history(
-                    app,
-                    record,
-                    &mut keys.open(),
-                    &mut keys.seal(ContentRetention::Checkpoint),
+                Ok(Some(keys)) => keys.compact(
+                    &mut candidate,
+                    (app, record),
+                    None,
                     &self.inner.host.key,
                     now,
                 ),
@@ -534,6 +936,8 @@ impl Workspaces {
     }
 }
 
+#[cfg(all(test, feature = "agents"))]
+mod chain_head_tests;
 #[cfg(all(any(test, feature = "test-support"), feature = "agents"))]
 pub mod fixtures;
 #[cfg(all(test, feature = "agents"))]

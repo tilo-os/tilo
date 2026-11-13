@@ -1,8 +1,3 @@
-//! End-to-end: HTML *import* via the word processor's open path. HTML *export*
-//! is provided by `tilo_doc_codecs::export_html`; this proves the read side — a `.html` file (whether
-//! hand-written or produced by `tilo_doc_codecs::export_html::render_html`) opens into the canonical
-//! CRDT model with its headings, paragraphs, bold runs, and links intact.
-
 #![allow(
     clippy::unwrap_used,
     clippy::string_slice,
@@ -21,8 +16,6 @@ fn temp_path(name: &str) -> PathBuf {
     p
 }
 
-/// Author a document in the canonical model, then return its `tilo_doc_codecs::export_html`-rendered
-/// HTML — the exact bytes the editor's HTML *export* would write.
 fn render_doc_to_html() -> String {
     let mut doc = automerge::AutoCommit::new();
     let c = word_processor::model::init(&mut doc).unwrap();
@@ -38,7 +31,6 @@ fn render_doc_to_html() -> String {
         dm.splice_text(&h, 0, 0, "Report");
 
         let p = dm.insert_block(Some(&h), "paragraph");
-        // "See bold and a link here": mark "bold" strong, "a link" as a link.
         dm.splice_text(&p, 0, 0, "See bold and a link here");
         dm.add_mark(&p, 4, 8, "strong", true); // "bold"
         dm.add_mark(&p, 13, 19, "link", "https://tilo.so/"); // "a link"
@@ -51,12 +43,9 @@ fn render_doc_to_html() -> String {
     )
 }
 
-/// Opening HTML recovers headings, bold and links, and small handwritten HTML opens at its first heading.
 #[test]
 fn html_opens_with_headings_bold_and_links_recovered() {
-    // Phase: open_html_recovers_headings_bold_link.
     {
-        // export (`tilo_doc_codecs::export_html`) → file → import (HtmlCodec) round-trip.
         let html = render_doc_to_html();
         let path = temp_path("doc.html");
         std::fs::write(&path, html.as_bytes()).unwrap();
@@ -68,7 +57,6 @@ fn html_opens_with_headings_bold_and_links_recovered() {
         );
         let snap = snapshot(&launched(&path));
 
-        // The first block is the H1 heading "Report".
         let first = &snap.blocks[0];
         assert_eq!(first.kind, "heading", "first block is a heading: {snap:?}");
         assert_eq!(first.text, "Report");
@@ -100,9 +88,7 @@ fn html_opens_with_headings_bold_and_links_recovered() {
         std::fs::remove_file(&path).ok();
     }
 
-    // Phase: open_small_handwritten_html_first_heading.
     {
-        // A tiny hand-written HTML file opens and yields the expected first heading.
         let path = temp_path("small.htm");
         std::fs::write(&path, b"<h1>Hello HTML</h1><p>body</p>").unwrap();
 

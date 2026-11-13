@@ -648,14 +648,17 @@ fn background_gate(presentation: super::owner_background_work::Presentation) {
         .unwrap()
         .to_owned();
     close(&mut frame, 1);
-    let key =
-        durable_store::StorageKey::record(probe::APP, probe::WORKSPACE, checkout.id.storage_key());
+    let key = durable_store::StorageKey::document(
+        probe::APP,
+        probe::WORKSPACE,
+        checkout.id.storage_key(),
+    );
     let mirror = Rc::new(durable_store::MemoryStore::new());
     mirror
         .hydrate(
             key,
             backend
-                .read(&durable_store::StorageKey::record(
+                .read(&durable_store::StorageKey::document(
                     probe::APP,
                     probe::WORKSPACE,
                     checkout.id.storage_key(),
@@ -1125,7 +1128,7 @@ fn background_exact_offer_never_settles_unrelated_same_store_typing() {
     assert_eq!(writes.len(), 1);
     assert_eq!(
         writes[0].key,
-        durable_store::StorageKey::record(probe::APP, probe::WORKSPACE, aid.storage_key())
+        durable_store::StorageKey::document(probe::APP, probe::WORKSPACE, aid.storage_key())
     );
 }
 
@@ -1166,5 +1169,57 @@ fn a_save_status_change_is_no_structure_change() {
         "a status that changed no size re-solves no layout"
     );
     let (mut frame, _, _) = frame(&queue, vec![owner]);
+    close(&mut frame, 1);
+}
+/// A worker wakes its component's owner from another thread, and the window
+/// that shows it is idle: its idle pass serves the model as the live window
+/// does, so the wake is taken up and the window comes to rest. Left queued, a
+/// still window counted the wake as work for ever and every capture of it ran
+/// frames nothing asked for.
+#[test]
+fn an_idle_pass_serves_the_owner_a_worker_woke_so_the_window_rests() {
+    let host = ProbeHost::new();
+    let queue = OwnerWakeQueue::default();
+    let (owner, seen, _) = prepared(&host, &queue, 9100, true);
+    let (mut frame, _, _) = frame(&queue, vec![owner]);
+    settle_first_writes(&host, &mut frame, std::slice::from_ref(&seen));
+    let syncs = seen.syncs.get();
+    let wake = seen.wake.borrow().clone().unwrap();
+    wake.wake();
+    assert!(
+        frame.frame_schedule().queued_work,
+        "a woken owner is work the window owes"
+    );
+    frame.idle();
+    assert!(
+        seen.syncs.get() > syncs,
+        "the idle pass ran the owner's model"
+    );
+    assert!(!frame.has_pending_owner_models(), "the wake was taken up");
+    assert!(
+        !frame.frame_schedule().queued_work,
+        "a window at rest owes no frame: {:?}",
+        frame.queued_work_sources()
+    );
+    close(&mut frame, 1);
+}
+
+/// A capture of a window that rests draws nothing: it runs the idle pass and
+/// finds what it needs already there, as a live window draws no frame between
+/// two interactions.
+#[test]
+fn a_capture_of_a_still_window_runs_no_frame() {
+    let host = ProbeHost::new();
+    let queue = OwnerWakeQueue::default();
+    let (owner, seen, _) = prepared(&host, &queue, 9104, true);
+    let (mut frame, _, _) = frame(&queue, vec![owner]);
+    settle_first_writes(&host, &mut frame, std::slice::from_ref(&seen));
+    frame.idle();
+    let frames = frame.relayout_frames;
+    assert!(frame.settle_for_capture(crate::time::Duration::from_millis(50)));
+    assert_eq!(
+        frame.relayout_frames, frames,
+        "a window at rest lays nothing out again"
+    );
     close(&mut frame, 1);
 }

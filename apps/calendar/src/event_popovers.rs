@@ -1,9 +1,4 @@
 //! Transient pickers used by the calendar event editor.
-//!
-//! [`EventPopovers`] owns the mutually-exclusive popover state, the embedded
-//! date/time widgets, their layout and drawing, and the hit map used to route
-//! pointer input.  The root calendar only receives semantic edits to apply to
-//! its model; it does not need to coordinate picker focus or backing scrims.
 
 use crate::input_context::InputContext;
 use chrono::{NaiveDate, Timelike};
@@ -17,6 +12,7 @@ use ui::presence::PresenceCtx;
 use ui::widget::{DatePicker, TimePicker, floating_surface};
 
 use crate::model::Event;
+use ui::widget::DrawChild;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum PopoverKind {
@@ -37,12 +33,8 @@ pub(crate) enum PopoverEdit {
 pub(crate) struct PopoverAnchors {
     pub start_date: Rect,
     pub end_date: Rect,
-    /// The time fields: a time spinner opens under the field it edits, not
-    /// under the date beside it.
     pub start_time: Rect,
     pub end_time: Rect,
-    /// The area every popover is kept inside (the window); a click on it
-    /// outside the open popover dismisses it.
     pub panel: Rect,
 }
 
@@ -87,7 +79,6 @@ impl EventPopovers {
         self.hits.clear();
     }
 
-    /// Open a picker and seed its widget from the event being edited.
     pub fn open(&mut self, kind: PopoverKind, event: &Event) {
         self.close();
         match kind {
@@ -97,8 +88,6 @@ impl EventPopovers {
                 self.date_picker.set_focus(true);
             }
             PopoverKind::EndDate => {
-                // The form shows an inclusive final day for an all-day
-                // event, whereas RFC 5545 stores its end date exclusively.
                 self.date_picker.set_selected(if event.all_day {
                     event.all_day_last_date()
                 } else {
@@ -121,9 +110,6 @@ impl EventPopovers {
         self.active = kind;
     }
 
-    /// Route input to the active picker and return a semantic model edit.  All
-    /// popover pointer hit-testing (outside dismiss, padding guard) is
-    /// resolved here using the regions built by [`Self::draw`].
     pub fn handle_event(
         &mut self,
         input: &mut InputContext<'_>,
@@ -179,8 +165,6 @@ impl EventPopovers {
         edit
     }
 
-    /// Route the event into whichever picker the open popover owns (part of
-    /// [`Self::handle_event`]).
     fn dispatch_picker_event(
         &mut self,
         kind: PopoverKind,
@@ -224,9 +208,6 @@ impl EventPopovers {
         }
     }
 
-    /// A left click the picker didn't consume, resolved against the hit map
-    /// — outside the popover dismisses it, its own padding swallows the
-    /// click (part of [`Self::handle_event`]).
     fn handle_hit_fallback(&mut self, pointer: Point, handled: &mut bool) {
         let hit = self
             .hits
@@ -241,8 +222,6 @@ impl EventPopovers {
         *handled = true;
     }
 
-    /// Paint the open picker on a floating panel under the field it edits,
-    /// kept inside `anchors.panel`.
     pub fn draw(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -289,7 +268,7 @@ impl EventPopovers {
                 floating_surface::paint(scene, transform, backing, theme);
                 self.date_picker.apply_layout_external(rect);
                 self.date_picker
-                    .draw(scene, transform, text, &on_panel, presence);
+                    .draw_child(scene, transform, text, &on_panel, presence);
                 self.hits.push((backing, Hit::Guard));
             }
             PopoverKind::StartTime | PopoverKind::EndTime => {
@@ -303,7 +282,7 @@ impl EventPopovers {
                 let backing = rect.inflate(pad, pad);
                 floating_surface::paint(scene, transform, backing, theme);
                 picker.apply_layout_external(rect);
-                picker.draw(scene, transform, text, &on_panel, presence);
+                picker.draw_child(scene, transform, text, &on_panel, presence);
                 self.hits.push((backing, Hit::Guard));
             }
         }

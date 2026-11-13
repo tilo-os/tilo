@@ -1,17 +1,14 @@
 //! Publisher-signed reads of a publisher's own pending entry.
 //!
-//! A pending entry names uploads that are still private, so only its
-//! publisher may read it: `GET /entries/<package id>/pending` with the
-//! publisher key in [`UPLOAD_PUBLISHER_HEADER`](crate::upload::UPLOAD_PUBLISHER_HEADER),
-//! the Unix time in [`PENDING_TIME_HEADER`], and in
-//! [`UPLOAD_SIGNATURE_HEADER`](crate::upload::UPLOAD_SIGNATURE_HEADER) an
-//! Ed25519 signature over [`pending_read_message`]. A new release builds on
-//! it, since a replacement pending entry must keep every version the one it
-//! replaces lists.
+//! A pending entry names uploads that are still private, so only its publisher may read it:
+//! `GET /entries/<package id>/pending` with the publisher key in
+//! [`UPLOAD_PUBLISHER_HEADER`](crate::upload::UPLOAD_PUBLISHER_HEADER), the Unix time in
+//! [`PENDING_TIME_HEADER`], and a signature over [`pending_read_message`] in
+//! [`UPLOAD_SIGNATURE_HEADER`](crate::upload::UPLOAD_SIGNATURE_HEADER). A replacement pending entry
+//! must keep every version the one it replaces lists.
 
 use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
 
-/// Domain separator of a pending-read signature.
 pub const PENDING_READ_DOMAIN: &[u8] = b"tilo-registry-pending-read-v1\0";
 
 /// Header carrying the Unix time the read was signed at.
@@ -20,7 +17,6 @@ pub const PENDING_TIME_HEADER: &str = "tilo-signed-at";
 /// How far a read's signing time may be from the registry's clock.
 pub const PENDING_READ_SKEW_SECS: u64 = 300;
 
-/// The bytes a pending-read signature covers.
 #[must_use]
 pub fn pending_read_message(package_id: &str, signed_at_unix: u64) -> Vec<u8> {
     let mut message = PENDING_READ_DOMAIN.to_vec();
@@ -30,7 +26,6 @@ pub fn pending_read_message(package_id: &str, signed_at_unix: u64) -> Vec<u8> {
     message
 }
 
-/// Sign a read of `package_id`'s pending entry at `signed_at_unix`; hex.
 #[must_use]
 pub fn sign_pending_read(key: &SigningKey, package_id: &str, signed_at_unix: u64) -> String {
     hex::encode(
@@ -39,9 +34,8 @@ pub fn sign_pending_read(key: &SigningKey, package_id: &str, signed_at_unix: u64
     )
 }
 
-/// Whether `signature_hex` is `publisher`'s read of `package_id` signed at
-/// `signed_at_unix`, and that time is within [`PENDING_READ_SKEW_SECS`] of
-/// `now_unix`.
+/// Whether `signature_hex` is `publisher`'s read of `package_id` at `signed_at_unix`, within
+/// [`PENDING_READ_SKEW_SECS`] of `now_unix`.
 #[must_use]
 pub fn verify_pending_read(
     publisher: &[u8; 32],

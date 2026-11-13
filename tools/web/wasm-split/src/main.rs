@@ -25,7 +25,9 @@
 //! A split point is a pair of functions the Rust side declares by name
 //! (`__wasm_split_00___<module>___00_import_<hash>_<name>` imported from
 //! `./__wasm_split.js`, `…_export_…` exported); see
-//! crates/browser/tilo-web-desktop/src/split.rs.
+//! crates/browser/tilo-web-desktop/src/split.rs. A module may also answer
+//! exports the page calls once it loaded the module, which the linked
+//! module names in its `tilo_split_exports` section (`split::LAZY_EXPORTS`).
 
 mod data;
 mod dedupe;
@@ -90,14 +92,6 @@ fn main() -> Result<()> {
         shared_files.push(file);
     }
     for module in &outputs.modules {
-        let component = module
-            .component_name
-            .as_deref()
-            .context("split point without a name")?;
-        let hash = module
-            .hash_id
-            .as_deref()
-            .context("split point without a hash")?;
         let file = format!("{name}.{}.wasm", module.module_name);
         std::fs::write(out.join(&file), &module.bytes)?;
         let mut needs: Vec<usize> = module.relies_on_chunks.iter().copied().collect();
@@ -107,11 +101,19 @@ fn main() -> Result<()> {
             .map(|index| format!("shared{index}"))
             .collect::<Vec<_>>()
             .join(", ");
-        writeln!(
-            glue,
-            "export const __wasm_split_load_{}_{hash}_{component} = (modules[{:?}] = loader({file:?}, [{deps}])).export;",
-            module.module_name, module.module_name
-        )?;
+        let loader = format!(
+            "(modules[{:?}] = loader({file:?}, [{deps}]))",
+            module.module_name
+        );
+        match (&module.hash_id, &module.component_name) {
+            (Some(hash), Some(component)) => writeln!(
+                glue,
+                "export const __wasm_split_load_{}_{hash}_{component} = {loader}.export;",
+                module.module_name
+            )?,
+            // Only the page loads a module of lazy exports.
+            _ => writeln!(glue, "{loader};")?,
+        }
         manifest["modules"]
             .as_array_mut()
             .expect("array")
@@ -191,11 +193,15 @@ function loaded(_callback, data) {
 
 /** Nothing to fetch: every app is in the module already. */
 export function prefetch(_module) {}
+
+/** Nothing to load: every lazy export is in the module already. */
+export function load(_module) { return Promise.resolve(); }
 "#;
 
 /// The loaders' common part. A loader fetches and compiles its module once
-/// (again after a failure), instantiates it against the start module's
-/// exports and those of the modules loaded before it, and reports through
+/// (again after a failure), beside the modules it needs rather than after
+/// them, instantiates it against the start module's exports and those of the
+/// modules loaded before it, and reports through
 /// the callback the Rust side passed: `table[callback](data, loaded)`.
 /// Compiling needs nothing from the start module, so `prefetch` can start it
 /// while the start module itself still downloads: the page does so for the
@@ -228,10 +234,15 @@ function loader(file, needs) {
   });
   let pending;
   const load = () => pending ??= (async () => {
+    // This module downloads and compiles while the code it needs loads:
+    // only instantiating it waits for that code's exports. Started after
+    // them, it was a round trip and a download more on every first load.
+    const own = compile();
+    own.catch(() => {});
     await Promise.all(needs.map(need => need.load()));
     const main = initSync(undefined);
     const imports = {env: {memory: main.memory}, __wasm_split: {...main, ...linked}};
-    const instance = await WebAssembly.instantiate(await compile(), imports);
+    const instance = await WebAssembly.instantiate(await own, imports);
     Object.assign(linked, instance.exports);
   })().catch(error => {
     pending = undefined;
@@ -244,7 +255,8 @@ function loader(file, needs) {
   // A failure is the load's to report: it compiles again.
   const prefetch = () => {
     const asked = needs.map(need => need.prefetch());
-    return Promise.all(asked).then(() => compile().then(() => true, () => false));
+    const own = compile().then(() => true, () => false);
+    return Promise.all(asked).then(() => own);
   };
   const exported = (callback, data) => {
     load().then(() => true, () => false).then(loaded => {
@@ -260,5 +272,12 @@ function loader(file, needs) {
  * few at a time can wait for one before starting the next. */
 export function prefetch(module) {
   return Object.hasOwn(modules, module) ? modules[module].prefetch() : Promise.resolve(false);
+}
+
+/** Load split module `module` and the shared code it needs: the page does,
+ * before it calls the exports the module answers (`tilo_split_exports`).
+ * Rejects when it could not be loaded; an unknown name has nothing to load. */
+export function load(module) {
+  return Object.hasOwn(modules, module) ? modules[module].load() : Promise.resolve();
 }
 "#;

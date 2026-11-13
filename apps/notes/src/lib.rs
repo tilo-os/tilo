@@ -27,7 +27,6 @@ pub mod app;
 mod cpu_profile;
 pub mod effect;
 mod files;
-mod legacy;
 pub mod main_panel;
 pub mod markdown;
 pub mod metadata;

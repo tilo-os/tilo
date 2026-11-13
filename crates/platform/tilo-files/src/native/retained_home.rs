@@ -1,7 +1,5 @@
-//! Names in the launcher's retained-Home projection. These are routing hints,
-//! not grants: opening requires independently retained file/parent objects and
-//! admission by the host under the original invocation. This module opens no
-//! files and never constructs a filesystem root from an app-supplied path.
+//! Names in the launcher's retained-Home projection: routing hints, not grants, since
+//! opening one requires independent authority.
 #[cfg(unix)]
 use std::path::Component;
 use std::path::Path;
@@ -9,14 +7,13 @@ use std::path::Path;
 #[cfg(unix)]
 const ROOT: &str = "/run/tilo/retained-home";
 
-/// Whether a path can be represented in the retained-Home protocol.
-/// This conveys no access authority, including for symbolic links.
+/// Whether a path can be represented in the retained-Home protocol; this conveys no access authority.
 pub fn contains(path: &Path) -> bool {
     components(path).is_some()
 }
 
-/// Lossless relative names for a host request, rejecting parent traversal.
-/// No file is opened and no path is canonicalized.
+/// Lossless relative names for a host request, rejecting parent traversal. No file is opened and no
+/// path is canonicalized.
 #[cfg(unix)]
 pub fn components(path: &Path) -> Option<Vec<Vec<u8>>> {
     use std::os::unix::ffi::OsStrExt as _;

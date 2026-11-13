@@ -1,28 +1,15 @@
 //! One mounted cloud account: metadata, hydration, write-back and sync.
 //!
-//! [`CloudVolume`] is the engine behind a `~/Remote/<account>` mount. It is
-//! independent of FUSE: the kernel adapter ([`super::fuse`]) and the tests
-//! call the same inode-level operations.
+//! [`CloudVolume`] is the engine behind a `~/Remote/<account>` mount, independent of FUSE: the kernel
+//! adapter ([`super::fuse`]) and the tests call the same inode-level operations.
 //!
-//! - **Metadata** is the account's [`Tree`], filled from the provider's
-//!   change feed or by walking listings, and persisted, so the folder lists
-//!   instantly and offline after a restart.
-//! - **Reads** hydrate on demand: the missing ranges of the requested
-//!   window (widened for sequential readers) are fetched with ranged,
-//!   revision-pinned reads and written into a [`FileArea`]: the file-backed,
-//!   range-resident, budgeted cache the storage daemon's content store keeps
-//!   its content in, keyed here by remote revision. A read never pulls a
-//!   whole large file unless the reader asks for all of it. Native documents
-//!   are bounded, revision-checked Office exports cached as complete bodies;
-//!   attributes hydrate them too, because provider sizes describe no Office file.
-//! - **Writes** go to a staged copy outside the cache. When the last writer
-//!   closes, an upload is queued in the persisted outbox and sent in the
-//!   background with the revision the edit started from as its precondition.
-//!   Creates, folder creation, renames and deletes queue the same way, so
-//!   everything works offline and resumes after a restart.
-//! - **Conflicts** keep both versions with the storage daemon's conflict
-//!   copy name (`<name>.sync-conflict-<hash>`): the remote version keeps the
-//!   name, the local edit is uploaded next to it.
+//! Metadata is the account's [`Tree`], filled from the provider's change feed or by walking listings
+//! and persisted, so the folder lists instantly and offline after a restart. Reads hydrate on demand:
+//! the missing ranges of the requested window are fetched with ranged, revision-pinned reads into a
+//! [`FileArea`] keyed by remote revision. Writes go to a staged copy outside the cache, and when the
+//! last writer closes an upload is queued in the persisted outbox; creates, folder creation, renames
+//! and deletes queue the same way, so everything works offline. A conflict keeps both versions under
+//! the storage daemon's conflict-copy name, the remote version keeping the name.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
@@ -49,7 +36,6 @@ use crate::store::area::{AreaKey, Residency, hash_file};
 use crate::store::{FileArea, Retention};
 use tilo_lock::MutexRecover as _;
 
-/// The cache key of one remote revision of one item.
 type RevKey = AreaKey;
 
 fn rev_key(id: &ItemId, revision: Option<&Revision>) -> RevKey {
@@ -60,11 +46,10 @@ fn rev_key(id: &ItemId, revision: Option<&Revision>) -> RevKey {
     *hasher.finalize().as_bytes()
 }
 
-/// The account's content cache under `dir`, holding at most `budget`
-/// resident bytes.
+/// The account's content cache under `dir`, holding at most `budget` resident bytes.
 fn open_content(dir: &Path, budget: u64) -> io::Result<FileArea> {
-    // Leftovers of the cache layout before the content store held it; a
-    // cache, so they are dropped rather than converted.
+    // Leftovers of the cache layout before the content store held it; a cache, so they are dropped
+    // rather than converted.
     for stale in ["partial", "blobs"] {
         let _ = fs::remove_dir_all(dir.join(stale));
     }
@@ -72,7 +57,6 @@ fn open_content(dir: &Path, budget: u64) -> io::Result<FileArea> {
     FileArea::open(dir, budget)
 }
 
-/// Reads up to `len` bytes at `offset` of the file at `path`.
 fn read_file_at(path: &Path, offset: u64, len: usize) -> io::Result<Vec<u8>> {
     let file = File::open(path)?;
     let size = file.metadata()?.len();
@@ -97,26 +81,21 @@ fn read_file_at(path: &Path, offset: u64, len: usize) -> io::Result<Vec<u8>> {
 
 pub type Errno = i32;
 
-/// Inode of the account root.
 pub const ROOT_INO: u64 = 1;
 /// Fetch granularity: missing ranges are rounded out to this.
 const GRANULE: u64 = 1 << 20;
-/// Largest read-ahead window for a sequential reader.
 const READAHEAD_MAX: u64 = 16 << 20;
-/// Prefix of ids of items created locally and not uploaded yet. NUL never
-/// occurs in a provider id or a file name.
+/// Prefix of ids of items created locally and not uploaded yet. NUL never occurs in a provider id or
+/// a file name.
 const LOCAL_PREFIX: &str = "\u{0}local:";
-/// Provider requests (revisions, restores, share links) one volume runs at
-/// once; more are refused rather than queued behind a slow provider.
+/// Provider requests (revisions, restores, share links) one volume runs at once; more are refused
+/// rather than queued behind a slow provider.
 pub const MAX_REQUESTS: u64 = 4;
-/// Default [`VolumeConfig::idle_poll_max`].
 pub const DEFAULT_IDLE_POLL_MAX: Duration = Duration::from_secs(600);
-/// Largest jitter applied to an idle poll wait, in thousandths (±10 %).
 const IDLE_JITTER_PERMILLE: i32 = 100;
 
-/// The health a provider failure leaves an account in: whatever the provider
-/// calls worth retrying (a refused or broken connection, a cut body, a 5xx,
-/// a rate limit) is an outage, not a broken account.
+/// The health a provider failure leaves an account in: what the provider calls worth retrying (a
+/// refused or broken connection, a cut body, a 5xx, a rate limit) is an outage, not a broken account.
 fn health_of(error: &Error) -> MountHealth {
     match error {
         Error::Unauthorized => MountHealth::NeedsAuthentication,
@@ -138,7 +117,6 @@ pub struct DirectoryEntry {
     pub kind: Kind,
 }
 
-/// What `stat` shows for an inode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Attr {
     pub ino: u64,
@@ -149,25 +127,17 @@ pub struct Attr {
 }
 
 pub struct VolumeConfig {
-    /// Private per-account directory: metadata, outbox, staged edits and
-    /// the content cache.
     pub dir: PathBuf,
-    /// Resident content bytes the cache may hold.
     pub cache_budget: u64,
-    /// How often a provider without change notification is asked for
-    /// changes while idle.
     pub poll_interval: Duration,
-    /// The longest a provider without a change feed (one whose changes are
-    /// found by walking listings) is left unpolled: every pass that finds
-    /// nothing doubles the wait from `poll_interval` up to this, and a
-    /// change or local activity resets it.
+    /// The longest a provider without a change feed is left unpolled: every pass that finds nothing
+    /// doubles the wait from `poll_interval` up to this, and a change or local activity resets it.
     pub idle_poll_max: Duration,
 }
 
-/// How long a walking provider waits after `idle_passes` consecutive passes
-/// that changed nothing: `base` doubled per idle pass up to `max`, scaled by
-/// `jitter_permille` (clamped to ±10 %), and never below `base`, so a rate
-/// limit is never polled faster than configured.
+/// How long a walking provider waits after `idle_passes` passes that changed nothing: `base` doubled
+/// per idle pass up to `max`, scaled by `jitter_permille` (clamped to ±10 %) and never below `base`,
+/// so a rate limit is never polled faster than configured.
 pub fn idle_wait(
     idle_passes: u32,
     base: Duration,
@@ -186,8 +156,8 @@ pub fn idle_wait(
     jittered.clamp(base, max.max(base))
 }
 
-/// A jitter sample in [-`IDLE_JITTER_PERMILLE`, `IDLE_JITTER_PERMILLE`],
-/// so mounts started together do not poll in lockstep.
+/// A jitter sample in [-`IDLE_JITTER_PERMILLE`, `IDLE_JITTER_PERMILLE`], so mounts started together
+/// do not poll in lockstep.
 fn idle_jitter() -> i32 {
     use std::hash::BuildHasher;
     let span = u64::try_from(IDLE_JITTER_PERMILLE)
@@ -203,7 +173,6 @@ fn idle_jitter() -> i32 {
         .saturating_sub(IDLE_JITTER_PERMILLE)
 }
 
-/// A queued local change, executed in order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Op {
     Upload(ItemId),
@@ -229,16 +198,11 @@ impl Op {
     }
 }
 
-/// Local state of an item with a staged edit.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Local {
-    /// File name in the staging directory holding the current content.
     staged: Option<String>,
-    /// The remote revision the edit started from (the upload precondition).
     base: Option<Revision>,
-    /// Changed since the last upload.
     dirty: bool,
-    /// Bumped by every write, to tell whether an upload sent the latest.
     #[serde(skip)]
     generation: u64,
     #[serde(skip)]
@@ -275,10 +239,8 @@ struct Inner {
     outbox: VecDeque<Op>,
     handles: HashMap<u64, Handle>,
     next_fh: u64,
-    /// Folders listed at least once in this process (poll walks).
     listed: HashSet<ItemId>,
-    /// `tree.json` is behind: the tree, the cursor or the pending set
-    /// changed since it was last written.
+    /// `tree.json` is behind: the tree, the cursor or the pending set changed since it was written.
     tree_dirty: bool,
 }
 
@@ -312,7 +274,6 @@ impl Inner {
         }
     }
 
-    /// The tree, for a change `tree.json` must catch up with.
     fn tree_mut(&mut self) -> &mut Tree {
         self.tree_dirty = true;
         &mut self.tree
@@ -360,24 +321,19 @@ fn io_errno(error: &io::Error) -> Errno {
     error.raw_os_error().unwrap_or(libc::EIO)
 }
 
-/// A mounted cloud account.
 pub struct CloudVolume {
     source: Arc<dyn CloudSource>,
     dir: PathBuf,
     staging: PathBuf,
-    /// Cached remote content; released at shutdown, so the account's
-    /// directory can be opened again.
+    /// Cached remote content; released at shutdown, so the account's directory can be opened again.
     content: Mutex<Option<Arc<FileArea>>>,
     poll_interval: Duration,
     idle_poll_max: Duration,
     inner: Mutex<Inner>,
-    /// Serialises `tree.json` writes, so an older snapshot never lands
-    /// after a newer one.
+    /// Serialises `tree.json` writes, so an older snapshot never lands after a newer one.
     saving: Mutex<()>,
-    /// Serialises fetches of one revision so concurrent readers of the same
-    /// range download it once.
+    /// Serialises fetches of one revision, so concurrent readers of the same range download it once.
     flights: Mutex<HashMap<RevKey, Arc<Mutex<()>>>>,
-    /// Serialises outbox execution.
     uploading: Mutex<()>,
     /// Serialises local mutations with the import transition, including open handles.
     mutation: Mutex<bool>,
@@ -387,29 +343,25 @@ pub struct CloudVolume {
     quota: Mutex<Option<cloud_source::Quota>>,
     on_health: Box<dyn Fn(MountHealth) + Send + Sync>,
     wake: Condvar,
-    /// Bumped whenever a local change is queued.
     queued: Mutex<u64>,
-    /// Bumped by local activity (listings, opens, queued changes); resets a
-    /// walking provider's idle poll interval.
+    /// Bumped by local activity (listings, opens, queued changes); resets a walking provider's idle
+    /// poll interval.
     activity: AtomicU64,
-    /// The sync loop is in an idle wait and wants to be woken by activity.
     idling: AtomicBool,
-    /// Someone asked for a sync now: the sync loop ends its wait, forgets
-    /// its failure back-off and runs a pass.
+    /// Someone asked for a sync now: the sync loop ends its wait, forgets its failure back-off and
+    /// runs a pass.
     sync_requested: AtomicBool,
-    /// Background sync and uploads wait until resumed. Reads still fetch
-    /// on demand and local edits still queue.
+    /// Background sync and uploads wait until resumed; reads still fetch on demand and local edits
+    /// still queue.
     paused: AtomicBool,
-    /// Idle waits that local activity cut short to the poll interval.
     idle_waits_cut: AtomicU64,
-    /// Provider requests (revisions, restores, share links) running now.
     requests: AtomicU64,
     stop: AtomicBool,
 }
 
 impl CloudVolume {
-    /// Open the volume for `source`, restoring persisted metadata and
-    /// queued changes from `config.dir`.
+    /// Open the volume for `source`, restoring persisted metadata and queued changes from
+    /// `config.dir`.
     pub fn open(
         source: Arc<dyn CloudSource>,
         config: VolumeConfig,
@@ -446,8 +398,8 @@ impl CloudVolume {
         };
         inner.ino_by_id.insert(root.clone(), ROOT_INO);
         inner.id_by_ino.insert(ROOT_INO, root);
-        // An edit whose writer was still open when the process stopped has
-        // no queued upload yet; nobody will close it now.
+        // An edit whose writer was still open when the process stopped has no queued upload yet; nobody
+        // will close it now.
         let unsent: Vec<ItemId> = inner
             .local
             .iter()
@@ -496,7 +448,7 @@ impl CloudVolume {
         Ok(frozen)
     }
 
-    /// Freeze only a quiescent, clean volume. A failed preparation changes nothing.
+    /// Freeze only a quiescent, clean volume; a failed preparation changes nothing.
     pub fn prepare_import(&self) -> Result<(), String> {
         let mut frozen = self
             .mutation
@@ -549,7 +501,6 @@ impl CloudVolume {
         }
     }
 
-    /// The account's storage quota as of the last sync.
     pub fn quota(&self) -> Option<cloud_source::Quota> {
         *self.quota.lock_recover()
     }
@@ -562,12 +513,10 @@ impl CloudVolume {
         self.staging.join(name)
     }
 
-    /// Write `tree.json` if the tree or cursor changed since the last
-    /// write. Items and cursor go out together in one atomic write, so a
-    /// crash never leaves a cursor newer than the items it covers.
+    /// Write `tree.json` if the tree or cursor changed. Items and cursor go out in one atomic write, so
+    /// a crash never leaves a cursor newer than the items it covers.
     fn save_tree(&self) -> io::Result<()> {
         let _saving = self.saving.lock_recover();
-        // Snapshot under the volume lock; serialise and write without it.
         let file = {
             let mut inner = self.inner();
             if !std::mem::take(&mut inner.tree_dirty) {
@@ -598,7 +547,6 @@ impl CloudVolume {
         self.content().map_or(Ok(()), |content| content.flush())
     }
 
-    /// The content cache, until the volume shuts down.
     fn content(&self) -> Option<Arc<FileArea>> {
         self.content.lock_recover().clone()
     }
@@ -700,8 +648,8 @@ impl CloudVolume {
         }
     }
 
-    /// Native size is not provider metadata: export before reporting attributes,
-    /// without holding the tree lock during network I/O.
+    /// Native size is not provider metadata: export before reporting attributes, without holding the
+    /// tree lock during network I/O.
     fn attr(&self, id: &ItemId) -> Result<Attr, Errno> {
         let native = self
             .inner()
@@ -710,8 +658,8 @@ impl CloudVolume {
             .filter(|item| matches!(item.kind, ItemKind::Native(_)))
             .cloned();
         if let Some(item) = native {
-            // Unsupported native items stay visible without fabricated link
-            // bytes. Their reads fail, not the whole folder's listing.
+            // Unsupported native items stay visible without fabricated link bytes: their reads fail, not
+            // the whole folder's listing.
             if let ItemKind::Native(document) = &item.kind
                 && preferred_export(document).is_err()
             {
@@ -781,7 +729,6 @@ impl CloudVolume {
             .collect()
     }
 
-    /// The inode at a `/`-separated path below the root (tools and tests).
     pub fn resolve(&self, path: &str) -> Result<u64, Errno> {
         let mut ino = ROOT_INO;
         for part in path.split('/').filter(|p| !p.is_empty()) {
@@ -790,9 +737,8 @@ impl CloudVolume {
         Ok(ino)
     }
 
-    /// The provider id of the item at `path`, which the server must already
-    /// know: an item created here and not yet uploaded has no provider
-    /// history or link.
+    /// The provider id of the item at `path`, which the server must already know: an item created here
+    /// and not yet uploaded has no provider history or link.
     fn remote_id(&self, path: &str) -> Result<ItemId, Error> {
         let ino = self.resolve(path).map_err(|_| Error::NotFound)?;
         let id = self.inner().id(ino).map_err(|_| Error::NotFound)?;
@@ -802,8 +748,8 @@ impl CloudVolume {
         Ok(id)
     }
 
-    /// Describe the cached projection without obtaining authoritative sizes:
-    /// inode lookup would hydrate native exports merely to report their size.
+    /// Describe the cached projection without obtaining authoritative sizes: inode lookup would hydrate
+    /// native exports merely to report their size.
     pub fn describe_at(&self, path: &str) -> Result<FileDescription, Error> {
         let inner = self.inner();
         let mut id = inner.tree.root().clone();
@@ -833,7 +779,6 @@ impl CloudVolume {
         })
     }
 
-    /// The provider's revisions of the file at `path`.
     pub fn revisions_at(&self, path: &str) -> Result<Vec<cloud_source::RevisionInfo>, Error> {
         if !self.source.capabilities().revisions {
             return Err(Error::Unsupported("revisions"));
@@ -842,9 +787,8 @@ impl CloudVolume {
         self.source.revisions(&id)
     }
 
-    /// Make `revision` the current version of the file at `path`. Refused
-    /// while a local edit of the file waits to upload, which the restore
-    /// would otherwise race.
+    /// Make `revision` the current version of the file at `path`. Refused while a local edit of the file
+    /// waits to upload, which the restore would otherwise race.
     pub fn restore_revision_at(&self, path: &str, revision: &str) -> Result<(), Error> {
         let _mutation = self.mutation().map_err(|_| Error::Forbidden)?;
         if !self.source.capabilities().revisions {
@@ -872,7 +816,6 @@ impl CloudVolume {
         self.source.share_link(&id)
     }
 
-    /// What the provider offers beyond files and folders.
     pub fn control_capabilities(&self) -> CloudCapabilities {
         let capabilities = self.source.capabilities();
         CloudCapabilities {
@@ -881,10 +824,9 @@ impl CloudVolume {
         }
     }
 
-    /// Answer a file request. Except for cached descriptions, this may
-    /// block on a provider round trip: call it
-    /// off the FUSE threads and the control pipe. The error is the
-    /// provider's, which carries no credential.
+    /// Answer a file request. Except for cached descriptions this may block on a provider round trip, so
+    /// call it off the FUSE threads and the control pipe. The error is the provider's and carries no
+    /// credential.
     pub fn answer(&self, request: &FileRequest) -> Result<FileReply, String> {
         let result = match request {
             FileRequest::Revisions { path } => self.revisions_at(path).map(|revisions| {
@@ -899,8 +841,8 @@ impl CloudVolume {
         result.map_err(|error| error.to_string())
     }
 
-    /// Take a provider-request slot; `false` when [`MAX_REQUESTS`] already
-    /// run. Give it back with [`Self::finish_request`].
+    /// Take a provider-request slot; `false` when [`MAX_REQUESTS`] already run. Give it back with
+    /// [`Self::finish_request`].
     pub fn begin_request(&self) -> bool {
         self.requests
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |running| {
@@ -947,8 +889,8 @@ impl CloudVolume {
             self.report(health_of(&error));
             errno_of(&error)
         })?;
-        // The helper verifies transfer stability, but a representation can have
-        // changed since the tree snapshot even if the provider reused a revision.
+        // The helper verifies transfer stability, but a representation can have changed since the tree
+        // snapshot even if the provider reused a revision.
         let current = self
             .source
             .stat(&item.id)
@@ -962,8 +904,8 @@ impl CloudVolume {
         Ok(files.path_of(&key))
     }
 
-    /// Make `range` (plus `ahead` bytes after it) of the current revision of
-    /// `id` resident; returns where to read it.
+    /// Make `range` (plus `ahead` bytes after it) of the current revision of `id` resident; returns where
+    /// to read it.
     fn hydrate(&self, id: &ItemId, range: Range<u64>, ahead: u64) -> Result<PathBuf, Errno> {
         let mut refreshed = false;
         loop {
@@ -992,8 +934,8 @@ impl CloudVolume {
             match self.fetch(id, &key, size, revision.as_ref(), &missing) {
                 Ok(()) => {}
                 Err(Error::Conflict { .. }) if !refreshed => {
-                    // The file changed remotely since it was listed: take
-                    // the new metadata and read that version.
+                    // The file changed remotely since it was listed: take the new metadata and read that
+                    // version.
                     refreshed = true;
                     let fresh = self.source.stat(id).map_err(|e| errno_of(&e))?;
                     self.apply_upsert(fresh);
@@ -1007,8 +949,7 @@ impl CloudVolume {
                     if !matches!(error, Error::Conflict { .. }) {
                         self.report(health_of(&error));
                     }
-                    // What was asked for may still be resident even if the
-                    // read-ahead failed.
+                    // What was asked for may still be resident even if the read-ahead failed.
                     if let Residency::Complete(path) = files.residency(&key, size, &range) {
                         return Ok(path);
                     }
@@ -1057,7 +998,6 @@ impl CloudVolume {
         Ok(())
     }
 
-    /// Read through an open handle.
     pub fn read(&self, fh: u64, offset: u64, len: u32) -> Result<Vec<u8>, Errno> {
         let (id, ahead) = {
             let mut inner = self.inner();
@@ -1111,13 +1051,11 @@ impl CloudVolume {
         read_file_at(&path, offset, len).map_err(|e| io_errno(&e))
     }
 
-    /// Read without a handle (tools and tests).
     pub fn read_ino(&self, ino: u64, offset: u64, len: u32) -> Result<Vec<u8>, Errno> {
         let id = self.inner().id(ino)?;
         self.read_id(&id, offset, len, 0)
     }
 
-    /// Give `id` a staged copy of its current content (or an empty one).
     fn ensure_staged(&self, id: &ItemId, truncate: bool) -> Result<(), Errno> {
         let (has, native, size) = {
             let inner = self.inner();
@@ -1371,7 +1309,6 @@ impl CloudVolume {
         Ok(attr)
     }
 
-    /// Remove `id` locally and queue its remote deletion.
     fn remove_locally(&self, inner: &mut Inner, id: &ItemId) {
         let mut doomed = vec![id.clone()];
         let mut index = 0;
@@ -1508,9 +1445,8 @@ impl CloudVolume {
         Ok(())
     }
 
-    /// `rename(source, target)` over an existing file: the target keeps
-    /// its identity and history and takes the source's content, the way an
-    /// editor's atomic save means it.
+    /// `rename(source, target)` over an existing file: the target keeps its identity and history and
+    /// takes the source's content, the way an editor's atomic save means it.
     fn replace(&self, source: &Item, target: &Item) -> Result<(), Errno> {
         if matches!(target.kind, ItemKind::Native(_)) {
             return Err(libc::EACCES);
@@ -1548,20 +1484,18 @@ impl CloudVolume {
         Ok(())
     }
 
-    /// Queued local changes not yet on the server.
     pub fn pending(&self) -> usize {
         self.inner().outbox.len()
     }
 
-    /// Send queued changes until the queue is empty or the server is
-    /// unreachable. Returns how many were completed.
+    /// Send queued changes until the queue is empty or the server is unreachable. Returns how many were
+    /// completed.
     pub fn upload_pending(&self) -> Result<usize, Error> {
         self.upload_queued(false)
     }
 
-    /// [`Self::upload_pending`] as background write-back does it: a paused
-    /// volume sends nothing, not even a change queued while a pass that
-    /// began before the pause is running.
+    /// [`Self::upload_pending`] as background write-back does it: a paused volume sends nothing, not even
+    /// a change queued while a pass that began before the pause runs.
     pub fn upload_pending_unless_paused(&self) -> Result<usize, Error> {
         self.upload_queued(true)
     }
@@ -1574,8 +1508,7 @@ impl CloudVolume {
             let Some(op) = self.inner().outbox.front().cloned() else {
                 return Ok(done);
             };
-            // Looked at after the change: one queued after a pause is never
-            // sent before the resume.
+            // Looked at after the change: one queued after a pause is never sent before the resume.
             if unless_paused && self.is_paused() {
                 return Ok(done);
             }
@@ -1592,16 +1525,15 @@ impl CloudVolume {
             }
             {
                 let mut inner = self.inner();
-                // A created file or folder takes its server id while the
-                // change runs, and the queued entry is renamed with it: look
-                // for it under the id its inode has now. Left behind, it
-                // would hold a paused volume "not synced" forever.
+                // A created file or folder takes its server id while the change runs, and the queued entry
+                // is renamed with it: look it up under the id its inode has now, or it would hold a paused
+                // volume "not synced" forever.
                 let mut sent = op;
                 if let Some(current) = ino.and_then(|ino| inner.id_by_ino.get(&ino)).cloned() {
                     *sent.id_mut() = current;
                 }
-                // A write that closed during the upload queued its own upload
-                // onto this entry: it still has to go.
+                // A write that closed during the upload queued its own upload onto this entry: it still has
+                // to go.
                 let resend = match &sent {
                     Op::Upload(id) => inner.local.get(id).is_some_and(|local| {
                         local.dirty && local.writers == 0 && Some(local.generation) != generation
@@ -1628,8 +1560,7 @@ impl CloudVolume {
             Op::Delete { id, revision } => match self.source.delete(id, revision.as_ref()) {
                 Ok(()) | Err(Error::NotFound) => Ok(()),
                 Err(Error::Conflict { .. }) => {
-                    // Changed remotely after the local delete: the newer
-                    // content survives.
+                    // Changed remotely after the local delete: the newer content survives.
                     match self.source.stat(id) {
                         Ok(item) => {
                             self.apply_upsert(item);
@@ -1659,7 +1590,6 @@ impl CloudVolume {
                 return Ok(());
             };
             if local.writers > 0 {
-                // Requeued when the writer closes.
                 return Ok(());
             }
             let Some(name) = local.staged.clone() else {
@@ -1693,8 +1623,8 @@ impl CloudVolume {
                 self.keep_both(id, &item, &parent, &staged)
             }
             Err(Error::NotFound) if !is_local(id) => {
-                // Deleted remotely while edited here: the edit survives as a
-                // conflict copy where the file was.
+                // Deleted remotely while edited here: the edit survives as a conflict copy where the file
+                // was.
                 self.keep_both(id, &item, &parent, &staged)
             }
             Err(error) => Err(error),
@@ -1722,8 +1652,7 @@ impl CloudVolume {
             if unchanged {
                 inner.local.remove(&uploaded.id);
             } else if let Some(local) = inner.local.get_mut(&uploaded.id) {
-                // Written again while uploading: the next upload starts
-                // from what was just sent.
+                // Written again while uploading: the next upload starts from what was just sent.
                 local.base.clone_from(&uploaded.revision);
                 if local.writers == 0 {
                     inner.queue(Op::Upload(uploaded.id.clone()));
@@ -1740,8 +1669,8 @@ impl CloudVolume {
         self.report(MountHealth::Healthy);
     }
 
-    /// Upload the local content next to the remote version under the
-    /// conflict-copy name; the original name shows the remote version.
+    /// Upload the local content next to the remote version under the conflict-copy name; the original
+    /// name shows the remote version.
     fn keep_both(
         &self,
         id: &ItemId,
@@ -1763,7 +1692,6 @@ impl CloudVolume {
             staged,
         ) {
             Ok(copy) => copy,
-            // The same bytes were already kept under this name.
             Err(Error::AlreadyExists) => self
                 .source
                 .list(parent)?
@@ -1799,7 +1727,7 @@ impl CloudVolume {
             let _ = content.adopt_file(&key, staged, Retention::Cached);
         }
         if is_local(id) {
-            // The name belongs to someone else's new file now; list it.
+            // The name belongs to someone else's new file now: list what is there.
             if let Ok(children) = self.source.list(parent) {
                 for child in children {
                     self.apply_upsert(child);
@@ -1816,7 +1744,6 @@ impl CloudVolume {
         let parent = Self::parent_ready(&item).ok_or(Error::Offline)?;
         let created = match self.source.create_folder(&parent, &item.name) {
             Ok(created) => created,
-            // Someone made the same folder: merge into it.
             Err(Error::AlreadyExists) => self
                 .source
                 .list(&parent)?
@@ -1845,15 +1772,14 @@ impl CloudVolume {
                 }
                 Ok(())
             }
-            // Gone remotely, or the name is taken there: the next sync
-            // shows the server's state.
+            // Gone remotely, or the name is taken there: the next sync shows the server's state.
             Err(Error::NotFound | Error::AlreadyExists) => Ok(()),
             Err(error) => Err(error),
         }
     }
 
-    /// Replace `old` by the server's `item` everywhere: tree, inode, staged
-    /// state, queued changes, open handles and children's parent links.
+    /// Replace `old` by the server's `item` everywhere: tree, inode, staged state, queued changes, open
+    /// handles and children's parent links.
     fn remap(inner: &mut Inner, old: &ItemId, item: Item) {
         let new = item.id.clone();
         if *old == new {
@@ -1901,8 +1827,8 @@ impl CloudVolume {
         }
     }
 
-    /// A folder moved on a provider whose ids are paths: every descendant
-    /// got a new id too. Match them by name against fresh listings.
+    /// A folder moved on a provider whose ids are paths: every descendant got a new id too. Match them
+    /// by name against fresh listings.
     fn remap_subtree(&self, old: &ItemId, moved: Item) -> Result<(), Error> {
         let mut pending = vec![(old.clone(), moved)];
         while let Some((old_id, new_item)) = pending.pop() {
@@ -1933,9 +1859,6 @@ impl CloudVolume {
         Ok(())
     }
 
-    // ---- remote → local --------------------------------------------------
-
-    /// Apply a remote upsert; whether it changed the tree.
     fn apply_upsert(&self, item: Item) -> bool {
         let mut inner = self.inner();
         if inner.pending(&item.id) {
@@ -1955,7 +1878,6 @@ impl CloudVolume {
         true
     }
 
-    /// Apply a remote removal; whether it changed the tree.
     fn apply_remove(&self, id: &ItemId) -> bool {
         let mut inner = self.inner();
         if inner.pending(id) {
@@ -1974,13 +1896,12 @@ impl CloudVolume {
         true
     }
 
-    /// Pull remote changes once: the cursor feed, or a walk of listings.
     pub fn sync_once(&self) -> Result<(), Error> {
         self.sync_pass().map(|_| ())
     }
 
-    /// One sync pass; whether it changed the tree or the cursor.
-    /// `tree.json` is written only when it did (or a local change is due).
+    /// One sync pass; whether it changed the tree or the cursor. `tree.json` is written only when it did
+    /// (or a local change is due).
     fn sync_pass(&self) -> Result<bool, Error> {
         let _sync = self
             .syncing
@@ -2101,7 +2022,6 @@ impl CloudVolume {
         Ok(changed)
     }
 
-    /// Wake the uploader (a change was queued).
     pub fn kick(&self) {
         self.activity.fetch_add(1, Ordering::SeqCst);
         let mut queued = self.queued.lock_recover();
@@ -2110,23 +2030,21 @@ impl CloudVolume {
         self.wake.notify_all();
     }
 
-    /// Note local use of the mount (a listing, an open): a walking provider
-    /// that backed off while idle is polled again within `poll_interval`.
+    /// Note local use of the mount (a listing, an open): a walking provider that backed off while idle is
+    /// polled again within `poll_interval`.
     pub fn touched(&self) {
         self.activity.fetch_add(1, Ordering::SeqCst);
         if self.idling.load(Ordering::SeqCst) {
-            // Taken so the notification cannot fall between the sync loop's
-            // check of `activity` and its wait.
+            // Taken so the notification cannot fall between the sync loop's check of `activity` and its
+            // wait.
             let queued = self.queued.lock_recover();
             drop(queued);
             self.wake.notify_all();
         }
     }
 
-    /// The idle wait after a walking pass: up to `wait`, cut to
-    /// `poll_interval` (counted from the start of the wait) once activity
-    /// moves past `seen`; ends early when stopped. Whether there was
-    /// activity.
+    /// The idle wait after a walking pass: up to `wait`, cut to `poll_interval` once activity moves past
+    /// `seen`; ends early when stopped. Whether there was activity.
     fn wait_idle(&self, wait: Duration, seen: u64) -> bool {
         let start = Instant::now();
         let mut queued = self.queued.lock_recover();
@@ -2161,8 +2079,7 @@ impl CloudVolume {
         active
     }
 
-    /// Wait up to `timeout` for a change queued after `seen` (or a stop);
-    /// updates `seen`.
+    /// Wait up to `timeout` for a change queued after `seen` (or a stop); updates `seen`.
     fn wait_queued(&self, seen: &mut u64, timeout: Duration) {
         let queued = self.queued.lock_recover();
         let (queued, _) = self
@@ -2174,7 +2091,6 @@ impl CloudVolume {
         *seen = *queued;
     }
 
-    /// Wait up to `timeout`, until stopped or until a sync is asked for.
     fn wait_stop(&self, timeout: Duration) {
         let queued = self.queued.lock_recover();
         let _ = self
@@ -2185,7 +2101,6 @@ impl CloudVolume {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
 
-    /// Wait while paused (or until stopped).
     fn wait_resumed(&self) {
         let queued = self.queued.lock_recover();
         let _ = self
@@ -2196,23 +2111,19 @@ impl CloudVolume {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
 
-    /// Sync now: end the sync loop's wait, forget its failure back-off and
-    /// run a pass; queued uploads are tried again too. A paused volume
-    /// stays paused. A change-notification wait already in flight (a
-    /// healthy push provider, at most 90 s) ends first: such a provider
-    /// reports remote changes as they happen anyway.
+    /// Sync now: end the sync loop's wait, forget its failure back-off and run a pass; queued uploads are
+    /// tried again too, and a paused volume stays paused. A change-notification wait already in flight
+    /// ends first, since such a provider reports changes as they happen anyway.
     pub fn sync_now(&self) {
         self.sync_requested.store(true, Ordering::SeqCst);
         self.kick();
     }
 
-    /// Pause background sync and uploads until [`Self::resume`]. A pass
-    /// already running finishes.
+    /// Pause background sync and uploads until [`Self::resume`]; a pass already running finishes.
     pub fn pause(&self) {
         self.paused.store(true, Ordering::SeqCst);
     }
 
-    /// Resume after [`Self::pause`] and sync now.
     pub fn resume(&self) {
         self.paused.store(false, Ordering::SeqCst);
         self.sync_now();
@@ -2222,14 +2133,11 @@ impl CloudVolume {
         self.paused.load(Ordering::SeqCst)
     }
 
-    /// How many idle waits local activity has cut short to the poll
-    /// interval.
     pub fn idle_waits_cut(&self) -> u64 {
         self.idle_waits_cut.load(Ordering::SeqCst)
     }
 
-    /// Run sync and write-back on background threads until
-    /// [`Self::shutdown`].
+    /// Run sync and write-back on background threads until [`Self::shutdown`].
     pub fn spawn_workers(self: &Arc<Self>) -> Vec<std::thread::JoinHandle<()>> {
         let syncer = Arc::clone(self);
         let uploader = Arc::clone(self);
@@ -2270,8 +2178,8 @@ impl CloudVolume {
             let walking =
                 capabilities.change_feed == ChangeFeed::Poll && capabilities.notify == Notify::None;
             if let (Some(changed), true) = (changed, walking) {
-                // Each pass lists every folder: back off while nothing
-                // changes, and come back on a change or local activity.
+                // Each pass lists every folder: back off while nothing changes, and come back on a change
+                // or local activity.
                 idle_passes = if changed {
                     0
                 } else {
@@ -2322,14 +2230,12 @@ impl CloudVolume {
         }
     }
 
-    /// Stop the workers and persist state.
     pub fn shutdown(&self) {
         self.stop.store(true, Ordering::SeqCst);
         self.kick();
         let _ = self.save_local();
         let _ = self.save_tree();
         let _ = self.flush_content();
-        // Dropping the last handle flushes and closes the cache.
         self.content.lock_recover().take();
     }
 }
@@ -2370,10 +2276,8 @@ mod tests {
     fn idle_wait_jitter_is_bounded_and_never_undercuts_the_poll_interval() {
         assert_eq!(idle_wait(2, BASE, MAX, 100), Duration::from_secs(132));
         assert_eq!(idle_wait(2, BASE, MAX, -100), Duration::from_secs(108));
-        // Out-of-range jitter is clamped to ±10 %.
         assert_eq!(idle_wait(2, BASE, MAX, 5000), Duration::from_secs(132));
         assert_eq!(idle_wait(2, BASE, MAX, -5000), Duration::from_secs(108));
-        // Never faster than configured, never past the cap.
         assert_eq!(idle_wait(0, BASE, MAX, -100), BASE);
         assert_eq!(idle_wait(9, BASE, MAX, 100), MAX);
         assert_eq!(idle_wait(3, BASE, Duration::from_secs(5), 0), BASE);

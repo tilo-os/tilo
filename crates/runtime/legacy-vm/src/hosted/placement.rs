@@ -1,21 +1,9 @@
-//! Which host runs a workspace's VM, when a Tilo host has more than one
-//! machine for VMs, and how many machines it wants.
-//!
-//! A VM's disk, memory and snapshot live on the host that first woke it, so
-//! a VM stays where it was placed: the host holding it runs it, and while
-//! that host is down the VM waits for it. A VM placed for the first time goes
-//! to the first host, in the hosts' order, with room for its size; the first
-//! host is the one always up, so the others fill only when it is full.
-//!
-//! The hosts wanted keep room ahead of demand: one more once the VMs awake
-//! take more than three quarters of the budget of the hosts up, or as soon as
-//! a VM waits for room, or to bring back a host that holds a waiting VM. They
-//! never shrink here: taking a host away leaves its VMs waiting for it, so
-//! that is an operator's choice, not a load's.
-//!
-//! [`place`] and [`hosts_wanted`] decide; [`Placer`] keeps the record of
-//! placements, asks each host's [`Request::Status`](super::control::Request)
-//! and scales the hosts.
+//! Which host runs a workspace's VM, when a Tilo host has more than one machine for
+//! VMs, and how many machines it wants. A VM stays where it was placed: its disk,
+//! memory and snapshot live there, so while that host is down the VM waits for it.
+//! Hosts are added when the awake VMs take more than three quarters of the budget,
+//! when a VM waits for room, or to bring back a host that holds a waiting VM; they
+//! are never removed here, since that is an operator's choice.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -30,16 +18,13 @@ use super::size::VmSize;
 /// host is wanted.
 const HEADROOM_PERCENT: u64 = 75;
 
-/// A host as the placer last saw it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HostView {
     pub name: String,
-    /// Up and answering.
     pub ready: bool,
     pub load: HostLoad,
 }
 
-/// Where a VM runs, or that it waits.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Placement {
     Host(String),
@@ -47,10 +32,12 @@ pub enum Placement {
     Wait,
 }
 
-/// Where the VM `vm` of `size` runs: the host `placed` names for it, or,
-/// placed nowhere yet, the first host up with room for it.
+/// Where the VM runs: the host `placed` names for it, or, placed nowhere yet, the first host up
+/// with room. A new VM needs one clone's worth ([`memory::CLONE_MIB`]) whatever its size, which
+/// bounds the CPU and memory it may grow into; the host's own admission is the authority, and a
+/// host with no room answers Busy, which is what starts another machine.
 #[must_use]
-pub fn place(hosts: &[HostView], placed: Option<&str>, size: VmSize) -> Placement {
+pub fn place(hosts: &[HostView], placed: Option<&str>, _size: VmSize) -> Placement {
     if let Some(holder) = placed {
         return match hosts.iter().find(|host| host.name == holder) {
             Some(host) if host.ready => Placement::Host(host.name.clone()),
@@ -59,7 +46,7 @@ pub fn place(hosts: &[HostView], placed: Option<&str>, size: VmSize) -> Placemen
     }
     hosts
         .iter()
-        .find(|host| host.ready && host.load.free_mib() >= size.memory_mib())
+        .find(|host| host.ready && host.load.free_mib() >= super::memory::CLONE_MIB)
         .map_or(Placement::Wait, |host| Placement::Host(host.name.clone()))
 }
 
@@ -88,9 +75,30 @@ pub fn hosts_wanted(hosts: &[HostView], waiting_mib: u64, holders: &[usize], max
     wanted.clamp(1, max.max(1))
 }
 
-/// The hosts' count, as whatever runs them keeps it.
+/// A host as the placer reaches it: the name a placement answers with and a members file lists, and
+/// the address its Status answers at.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Host {
+    pub name: String,
+    pub status: String,
+}
+
+impl Host {
+    #[must_use]
+    pub fn new(name: &str, status: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            status: status.to_owned(),
+        }
+    }
+}
+
+/// The hosts there are, and how to start more of them.
 pub trait Scale: Send + Sync {
-    fn hosts(&self) -> Result<usize, String>;
+    /// The hosts up, in the order new VMs fill them, each with where it
+    /// answers.
+    fn hosts(&self) -> Result<Vec<Host>, String>;
+    /// Start hosts up to `count`, the first `count` of [`Scale::hosts`].
     fn set_hosts(&self, count: usize) -> Result<(), String>;
 }
 
@@ -101,7 +109,6 @@ struct Record {
     placed: BTreeMap<String, String>,
 }
 
-/// A VM waiting for room, as last asked for.
 #[derive(Clone, Copy, Debug)]
 struct Waiting {
     mib: u64,
@@ -114,14 +121,11 @@ pub type ReadLoad = Box<dyn Fn(&str) -> Option<HostLoad> + Send + Sync>;
 /// How long a waiting VM counts as demand after it last asked.
 const WAITING_FOR_MS: u64 = 15_000;
 
-/// Places VMs on hosts named `<prefix><n>`, reading each host's status at
-/// `<host><status_suffix>`, and scales them.
+/// Places VMs on the hosts [`Scale`] names, and scales them.
 pub struct Placer {
     record_path: PathBuf,
     record: std::sync::Mutex<Record>,
     waiting: std::sync::Mutex<BTreeMap<String, Waiting>>,
-    prefix: String,
-    status_suffix: String,
     max: usize,
     scale: Box<dyn Scale>,
     read: ReadLoad,
@@ -135,11 +139,10 @@ fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Placer {
-    /// A placer keeping its record at `record_path`, with hosts
-    /// `<prefix>0`, `<prefix>1`, … up to `max`, whose loads `read` reads.
+    /// A placer keeping its record at `record_path`, on the hosts `scale`
+    /// names, whose loads `read` reads, starting at most `max` of them.
     pub fn new(
         record_path: &Path,
-        prefix: &str,
         max: usize,
         scale: Box<dyn Scale>,
         read: ReadLoad,
@@ -155,8 +158,6 @@ impl Placer {
             record_path: record_path.to_path_buf(),
             record: std::sync::Mutex::new(record),
             waiting: std::sync::Mutex::new(BTreeMap::new()),
-            prefix: prefix.to_owned(),
-            status_suffix: String::new(),
             max,
             scale,
             read,
@@ -164,30 +165,20 @@ impl Placer {
         })
     }
 
-    /// Read hosts' status at `<host><suffix>` (the address `read` is given).
-    #[must_use]
-    pub fn with_status_suffix(mut self, suffix: &str) -> Self {
-        suffix.clone_into(&mut self.status_suffix);
-        self
-    }
-
     fn views(&self) -> Result<Vec<HostView>, String> {
-        let count = self.scale.hosts()?;
-        Ok((0..count)
-            .map(|index| {
-                let name = format!("{}{index}", self.prefix);
-                let load = (self.read)(&format!("{name}{}", self.status_suffix));
+        Ok(self
+            .scale
+            .hosts()?
+            .into_iter()
+            .map(|host| {
+                let load = (self.read)(&host.status);
                 HostView {
                     ready: load.is_some(),
                     load: load.unwrap_or_default(),
-                    name,
+                    name: host.name,
                 }
             })
             .collect())
-    }
-
-    fn index_of(&self, host: &str) -> Option<usize> {
-        host.strip_prefix(&self.prefix)?.parse().ok()
     }
 
     /// Answer where `vm` runs: [`Reply::Placed`], or [`Reply::Busy`] while it
@@ -222,7 +213,7 @@ impl Placer {
                 lock(&self.waiting).insert(
                     id,
                     Waiting {
-                        mib: vm.size.memory_mib(),
+                        mib: super::memory::CLONE_MIB,
                         at_ms: (self.clock)(),
                     },
                 );
@@ -232,7 +223,6 @@ impl Placer {
         }
     }
 
-    /// Look at the hosts' loads and want as many hosts as they need.
     pub fn rescale(&self) {
         if let Ok(views) = self.views() {
             self.rescale_with(&views);
@@ -253,7 +243,7 @@ impl Placer {
             let holders: Vec<usize> = waits
                 .iter()
                 .filter_map(|(id, _)| record.placed.get(id))
-                .filter_map(|host| self.index_of(host))
+                .filter_map(|host| views.iter().position(|view| view.name == *host))
                 .collect();
             let unplaced: u64 = waits
                 .iter()
@@ -277,12 +267,60 @@ impl Placer {
             .map_err(|e| format!("{}: {e}", self.record_path.display()))
     }
 
-    /// Answer one request on the placer's listener.
     pub fn handle(&self, request: Request) -> Reply {
         match request {
             Request::Place { vm } => self.place(&vm),
             _ => Reply::Error("a placer answers Place only".to_owned()),
         }
+    }
+}
+
+/// The hosts a stack runs, named by hand with where each answers: a stack that knows its machines
+/// places on them and starts none. A stateful set starts hosts instead.
+pub struct FixedHosts(Vec<Host>);
+
+impl FixedHosts {
+    /// The hosts `text` names, written `NAME=ADDR[,NAME=ADDR]`.
+    ///
+    /// # Errors
+    ///
+    /// A host is not `NAME=ADDR`, or none is named.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let hosts = text
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                let (name, status) = part
+                    .split_once('=')
+                    .ok_or_else(|| format!("{part:?} is not NAME=ADDR"))?;
+                let (name, status) = (name.trim(), status.trim());
+                if name.is_empty() || status.is_empty() {
+                    return Err(format!("{part:?} is not NAME=ADDR"));
+                }
+                Ok(Host::new(name, status))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if hosts.is_empty() {
+            return Err("no host is named".to_owned());
+        }
+        Ok(Self(hosts))
+    }
+}
+
+impl Scale for FixedHosts {
+    fn hosts(&self) -> Result<Vec<Host>, String> {
+        Ok(self.0.clone())
+    }
+
+    fn set_hosts(&self, count: usize) -> Result<(), String> {
+        if count > self.0.len() {
+            eprintln!(
+                "tilo-legacy hosted place: {} hosts are named here; not starting {count}",
+                self.0.len()
+            );
+        }
+        Ok(())
     }
 }
 
@@ -311,6 +349,7 @@ pub fn read_load(address: &str) -> Option<HostLoad> {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use super::super::memory::CLONE_MIB;
     use super::*;
 
     const GIB: u64 = 1024;
@@ -337,7 +376,8 @@ mod tests {
         );
         assert_eq!(
             place(&hosts, None, VmSize::Default),
-            Placement::Host("vm-host-1".into())
+            Placement::Host("vm-host-0".into()),
+            "a VM is placed by what it takes now, not by what it may grow into"
         );
         assert_eq!(
             place(&hosts, Some("vm-host-0"), VmSize::Default),
@@ -357,7 +397,57 @@ mod tests {
         );
         assert_eq!(
             place(&[host("vm-host-0", 12, 12)], None, VmSize::Small),
-            Placement::Wait
+            Placement::Wait,
+            "a host whose VMs take all its memory places nothing more"
+        );
+        let nearly = [HostView {
+            load: HostLoad {
+                budget_mib: Some(12 * GIB),
+                awake_mib: 12 * GIB - CLONE_MIB,
+                waiting_mib: 0,
+            },
+            ..host("vm-host-0", 12, 0)
+        }];
+        assert_eq!(
+            place(&nearly, None, VmSize::Xlarge),
+            Placement::Host("vm-host-0".into())
+        );
+    }
+
+    #[test]
+    fn hundreds_of_workspaces_fill_a_fleet_by_what_they_take() {
+        // The customer's scale: 300 workspaces, each holding a clone's worth,
+        // placed across the nodes a stack runs them on.
+        let mut hosts: Vec<HostView> = (0..8)
+            .map(|n| HostView {
+                name: format!("vm-host-{n}"),
+                ready: true,
+                load: HostLoad {
+                    budget_mib: Some(62 * GIB),
+                    awake_mib: 0,
+                    waiting_mib: 0,
+                },
+            })
+            .collect();
+        for workspace in 0..300 {
+            let Placement::Host(name) = place(&hosts, None, VmSize::Small) else {
+                panic!("workspace {workspace} waits with eight nodes up");
+            };
+            let host = hosts
+                .iter_mut()
+                .find(|host| host.name == name)
+                .expect("the host it was placed on");
+            host.load.awake_mib = host.load.awake_mib.saturating_add(CLONE_MIB);
+        }
+        let used = hosts.iter().filter(|host| host.load.awake_mib > 0).count();
+        assert_eq!(used, 2, "300 workspaces take two nodes, not eighty");
+        for host in &hosts {
+            assert!(host.load.awake_mib <= 62 * GIB, "{}", host.name);
+        }
+        assert_eq!(
+            hosts.first().map(|host| host.load.free_mib()),
+            Some(62 * GIB - 195 * CLONE_MIB),
+            "the placer reads what a host really has left"
         );
     }
 
@@ -416,8 +506,10 @@ mod tests {
     struct ByCount(Arc<Hosts>);
 
     impl Scale for ByCount {
-        fn hosts(&self) -> Result<usize, String> {
-            Ok(*self.0.count.lock().unwrap())
+        fn hosts(&self) -> Result<Vec<Host>, String> {
+            Ok((0..*self.0.count.lock().unwrap())
+                .map(|index| Host::new(&format!("vm-host-{index}"), &format!("vm-host-{index}")))
+                .collect())
         }
         fn set_hosts(&self, count: usize) -> Result<(), String> {
             *self.0.count.lock().unwrap() = count;
@@ -444,7 +536,6 @@ mod tests {
             let reader = Arc::clone(&reader);
             Placer::new(
                 &dir.path().join("placements.json"),
-                "vm-host-",
                 3,
                 Box::new(ByCount(Arc::clone(&hosts))),
                 Box::new(move |name| reader.loads.lock().unwrap().get(name).copied()),
@@ -465,7 +556,6 @@ mod tests {
                 host: "vm-host-0".into()
             }
         );
-        // phase: the warm host fills; a new VM waits, and a host is wanted for it
         hosts
             .loads
             .lock()
@@ -478,7 +568,6 @@ mod tests {
             Reply::Busy("Starting another machine for it, about 3 minutes.".into())
         );
         assert_eq!(*hosts.count.lock().unwrap(), 2);
-        // phase: the new host is up; the waiting VM goes there
         hosts.loads.lock().unwrap().insert(
             "vm-host-1".into(),
             HostLoad {
@@ -493,7 +582,6 @@ mod tests {
                 host: "vm-host-1".into()
             }
         );
-        // phase: a placer started again keeps both placements, room or not
         drop(first);
         let again = placer();
         hosts
@@ -515,5 +603,60 @@ mod tests {
                 host: "vm-host-0".into()
             }
         );
+    }
+
+    #[test]
+    fn a_stack_of_named_hosts_is_placed_on_and_never_grown() {
+        let dir = tempfile::tempdir().unwrap();
+        let loads = Arc::new(Mutex::new(BTreeMap::from([(
+            "127.0.0.1:7701".to_owned(),
+            HostLoad {
+                budget_mib: Some(4 * GIB),
+                awake_mib: 0,
+                waiting_mib: 0,
+            },
+        )])));
+        let reader = Arc::clone(&loads);
+        let placer = Placer::new(
+            &dir.path().join("placements.json"),
+            1,
+            Box::new(FixedHosts::parse("vm-host-0=127.0.0.1:7701").unwrap()),
+            Box::new(move |address| reader.lock().unwrap().get(address).copied()),
+            Arc::new(|| 1_000),
+        )
+        .unwrap();
+        let request = |workspace: &str, size| VmRequest {
+            workspace: workspace.into(),
+            environment: "default".into(),
+            account: "acct-1".into(),
+            size,
+        };
+        assert_eq!(
+            placer.place(&request("ws1", VmSize::Small)),
+            Reply::Placed {
+                host: "vm-host-0".into()
+            },
+            "the host the stack names answers, at the address it named"
+        );
+        loads
+            .lock()
+            .unwrap()
+            .get_mut("127.0.0.1:7701")
+            .unwrap()
+            .awake_mib = 4 * GIB;
+        assert_eq!(
+            placer.place(&request("ws2", VmSize::Small)),
+            Reply::Busy("Starting another machine for it, about 3 minutes.".into())
+        );
+        assert_eq!(
+            FixedHosts::parse("vm-host-0=127.0.0.1:7701")
+                .unwrap()
+                .hosts()
+                .unwrap(),
+            [Host::new("vm-host-0", "127.0.0.1:7701")]
+        );
+        for wrong in ["vm-host-0", "=127.0.0.1:7701", "vm-host-0=", ""] {
+            assert!(FixedHosts::parse(wrong).is_err(), "{wrong:?} names a host");
+        }
     }
 }

@@ -4,49 +4,62 @@
 //! roster calls each participant, and what this device calls its own person. An instance that
 //! runs in the window's process asks the window directly. One that runs elsewhere, in a
 //! tilolang host, names people by what its window told it last ([`Told`]).
+//!
+//! Naming is by what a participant is ([`actor_name`]): a person by their name, an app by its own
+//! name, an agent by the name it goes by. A history row, a presence mark and a catch-up line say
+//! who acted, never an internal id and never part of one.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use collaboration::history_source::authors::{ParticipantNames, actor_name, name_words};
+
 use crate::runtime::{NameHost, Principal};
 
-/// The label of the participant `id` when nobody named them: a sample person a scenario named
-/// (`person("Mia")`) by that name, software by the label of its kind (so an agent never reads
-/// as a person), and anyone else by the first characters of their id.
+/// The name of the participant `id` when nobody named them, by what they are: a sample person a
+/// scenario named (`person("Mia")`) by that name, an app by its own name, an agent by its name.
+/// A person the reader has no name for is
+/// [`UNKNOWN_AUTHOR_NAME`](collaboration::history_source::authors::UNKNOWN_AUTHOR_NAME), never
+/// their key.
 #[must_use]
 pub fn unnamed(id: &str) -> String {
-    const KEPT: usize = 8;
+    named(id, &Unnamed)
+}
+
+/// The name of the participant `id` to a reader who calls people, apps and agents as `names`
+/// does: a sample person a scenario named by that name, a package acting on its own records (one
+/// of its own actions, or an update to a later build) as the app itself, and anyone else by
+/// [`actor_name`].
+#[must_use]
+pub fn named(id: &str, names: &dyn ParticipantNames) -> String {
     if let Some(name) = id.strip_prefix("scenario:") {
         return name.to_owned();
     }
-    // A package updating its own records: "Board, updating to version 1a2b3c4d".
-    if let Some((app, module)) = crate::authority::migration_of(id) {
-        let version: String = module.chars().take(KEPT).collect();
-        return format!("{}, updating to version {version}", app_named(app));
-    }
-    // An app running one of its own actions: "Board, on its own".
     if let Some(app) = crate::authority::trigger_of(id) {
-        return format!("{}, on its own", app_named(app));
+        return names.app(app);
     }
-    if let Some(kind) = id.strip_prefix("agent:") {
-        return format!("{} (agent)", app_named(kind));
+    if let Some((app, _)) = crate::authority::migration_of(id) {
+        return names.app(app);
     }
-    if id.chars().count() <= KEPT * 2 {
-        id.to_owned()
-    } else {
-        id.chars().take(KEPT).collect()
+    actor_name(id, names)
+}
+
+/// What a participant reads as when the reader's own process knows no name for them.
+pub struct Unnamed;
+
+impl ParticipantNames for Unnamed {
+    /// An agent by its name, and that it is one: a row of history, a face and a mark say so
+    /// beside a person's changes.
+    fn agent(&self, name: &str) -> String {
+        format!("{} (agent)", name_words(name))
     }
 }
 
-/// The app `app` as a person reads it: its own name, capitalized (`so.tilo.board` is `Board`).
-fn app_named(app: &str) -> String {
-    let app = app.rsplit('.').next().unwrap_or(app);
-    let mut chars = app.chars();
-    chars
-        .next()
-        .map(|first| first.to_uppercase().chain(chars).collect())
-        .unwrap_or_default()
+impl NameHost for Unnamed {
+    fn name(&self, who: &Principal) -> String {
+        unnamed(&who.0)
+    }
 }
 
 /// What the window said it calls the participants.
@@ -109,29 +122,29 @@ impl NameHost for Told {
     }
 }
 
-/// Names nobody told: each participant by [`unnamed`].
-pub struct Unnamed;
-
-impl NameHost for Unnamed {
-    fn name(&self, who: &Principal) -> String {
-        unnamed(&who.0)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_participant_is_named_as_the_window_said_and_shortened_when_nobody_did() {
+    fn a_participant_is_named_as_the_window_said_and_by_what_they_are_when_nobody_did() {
         let id = "95522b97c3d1e0f4a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4";
         let told = Told::new(id, Rc::new(Unnamed));
-        assert_eq!(told.name(&Principal::new(id.to_owned())), "95522b97");
+        assert_eq!(
+            told.name(&Principal::new(id.to_owned())),
+            "Unknown participant",
+            "a key nobody named is never shown, in full or cut short"
+        );
         assert_eq!(
             told.name(&Principal::new("agent:planner".to_owned())),
             "Planner (agent)"
         );
-        assert_eq!(unnamed("trigger:t.board"), "Board, on its own");
+        assert_eq!(
+            told.name(&Principal::new("app:so.tilo.lang.today".to_owned())),
+            "Today",
+            "an app is its own name"
+        );
+        assert_eq!(unnamed("trigger:t.board"), "Board");
         assert!(told.tell(
             "Ada".to_owned(),
             vec![("ben-id".to_owned(), "Ben".to_owned())]

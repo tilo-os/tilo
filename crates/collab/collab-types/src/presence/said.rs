@@ -28,6 +28,24 @@ pub struct Presence {
     pub key: PresenceKey,
     /// What they say there.
     pub payload: Payload,
+    /// The run (its `agent-run:` id) the workspace's host says this for: an
+    /// agent's or a key's run the host executes, shown as a member of its
+    /// own that the host speaks for ([`stand_in`]). A reader takes it only
+    /// from the device the workspace's governance pins as its host. `None`
+    /// for what a device says of itself.
+    #[serde(default)]
+    pub on_behalf: Option<String>,
+}
+
+/// The publisher a reader keys the member for `run` by, which the host
+/// `host` speaks for: one member per run, apart from the host's own and
+/// every other run's, the same on every reader.
+#[must_use]
+pub fn stand_in(host: [u8; 32], run: &str) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new_derive_key("tilo presence: a run the host speaks for");
+    hasher.update(&host);
+    hasher.update(run.as_bytes());
+    *hasher.finalize().as_bytes()
 }
 
 impl Presence {
@@ -42,6 +60,7 @@ impl Presence {
             },
             cluster,
             payload,
+            on_behalf: None,
         }
     }
 
@@ -60,6 +79,7 @@ impl Presence {
             },
             cluster,
             payload: Payload::Pointer { x, y },
+            on_behalf: None,
         }
     }
 
@@ -78,6 +98,7 @@ impl Presence {
             },
             cluster,
             payload: Payload::Left,
+            on_behalf: None,
         }
     }
 
@@ -94,7 +115,16 @@ impl Presence {
             cluster: workspace.into(),
             key,
             payload,
+            on_behalf: None,
         }
+    }
+
+    /// This frame, said by the workspace's host for `run`, the agent's or
+    /// key's run it executes ([`Self::on_behalf`]).
+    #[must_use]
+    pub fn spoken_for(mut self, run: impl Into<String>) -> Self {
+        self.on_behalf = Some(run.into());
+        self
     }
 
     /// The frame's bytes, as the presence track carries them.

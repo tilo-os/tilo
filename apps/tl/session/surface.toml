@@ -167,6 +167,11 @@ id = "rename"
 kind = "outside"
 
 [[resources.verbs.params]]
+name = "tab"
+required = false
+type = "text"
+
+[[resources.verbs.params]]
 name = "group"
 required = false
 type = "text"
@@ -356,6 +361,25 @@ name = "name"
 required = false
 type = "text"
 
+[[resources.verbs.params]]
+name = "background"
+required = false
+type = "bool"
+
+[[resources.verbs]]
+id = "branch-workspace"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "source"
+required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "name"
+required = false
+type = "text"
+
 [[resources.verbs]]
 id = "join-workspace"
 kind = "read"
@@ -444,6 +468,15 @@ type = "bool"
 id = "workspace-menu"
 kind = "read"
 params = []
+
+[[resources.verbs]]
+id = "about"
+kind = "read"
+
+[[resources.verbs.params]]
+name = "open"
+required = false
+type = "bool"
 
 [[resources.verbs]]
 id = "fixed-shortcut"

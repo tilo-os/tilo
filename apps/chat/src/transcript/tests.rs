@@ -15,15 +15,13 @@ fn deliver(app: &mut TestApp<ChatShell>, arguments: serde_json::Value) {
         .expect("the delivery is admitted");
 }
 
-fn read_page(app: &mut TestApp<ChatShell>, channel: &str, page: Option<u8>) -> serde_json::Value {
-    app.effect(&ChatEffect::ReadMessages {
-        channel: channel.into(),
-        page_size: page,
-        cursor: None,
-    })
-    .expect("the channel reads")
-    .value
-    .expect("a page")
+/// `channel`'s messages as the record's parts hold them, each by its id.
+fn held(app: &mut TestApp<ChatShell>, channel: &str) -> Vec<(String, crate::record::Message)> {
+    crate::testing::mounted_messages(app)
+        .iter()
+        .filter(|(_, message)| message.channel.as_str() == channel)
+        .map(|(id, message)| (id.as_str().to_owned(), message.clone()))
+        .collect()
 }
 
 #[test]
@@ -54,8 +52,7 @@ fn a_channel_made_under_a_chosen_id_takes_posts_there_and_is_made_once() {
         .is_err()
     );
     crate::testing::mounted_post(&mut app, "launch-workspace", "first post");
-    let page = read_page(&mut app, "launch-workspace", None);
-    assert_eq!(page["messages"][0]["text"], "first post");
+    assert_eq!(held(&mut app, "launch-workspace")[0].1.text, "first post");
 }
 
 #[test]
@@ -72,17 +69,17 @@ fn a_delivered_message_shows_its_authors_name_to_readers_and_stays_the_deliverer
         1_700_000_000,
         "The fix is live",
     );
-    let page = read_page(&mut app, "c_chat", None);
-    let message = page["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|message| message["id"] == id.as_str())
-        .expect("the delivered message reads under the id its delivery derives");
-    assert_eq!(message["authorName"], "Dana from Support");
-    assert_eq!(message["ts"], "1700000000");
+    let (_, message) = held(&mut app, "c_chat")
+        .into_iter()
+        .find(|(held, _)| held == id.as_str())
+        .expect("the delivered message is held under the id its delivery derives");
+    assert_eq!(
+        shown_author(&message, &|id: &str| id.to_owned()),
+        "Dana from Support"
+    );
+    assert_eq!(message.ts, 1_700_000_000);
     assert_ne!(
-        message["author"], "Dana from Support",
+        message.author.0, "Dana from Support",
         "the author stays whoever delivered it"
     );
 }
@@ -94,12 +91,9 @@ fn delivering_the_same_message_at_the_same_time_again_changes_nothing() {
                           "ts": 1_700_000_000});
     deliver(&mut app, delivery.clone());
     deliver(&mut app, delivery);
-    let page = read_page(&mut app, "c_chat", None);
-    let count = page["messages"]
-        .as_array()
-        .unwrap()
+    let count = held(&mut app, "c_chat")
         .iter()
-        .filter(|message| message["text"] == "hello")
+        .filter(|(_, message)| message.text == "hello")
         .count();
     assert_eq!(count, 1);
 }
@@ -123,21 +117,6 @@ fn a_delivery_to_a_voice_channel_or_without_an_author_is_refused() {
         )
         .is_err()
     );
-}
-
-#[test]
-fn read_messages_asked_for_more_than_a_page_reads_a_full_page() {
-    let mut app = app();
-    for n in 0..40 {
-        deliver(
-            &mut app,
-            json!({"channel": "c_chat", "author": "Dana", "body": format!("line {n}"),
-                   "ts": 1_700_000_000 + n}),
-        );
-    }
-    let page = read_page(&mut app, "c_chat", Some(200));
-    assert_eq!(page["messages"].as_array().map(Vec::len), Some(32));
-    assert!(page["nextCursor"].is_string(), "there is more to read");
 }
 
 #[test]

@@ -3,17 +3,13 @@
 //! value, and a network failure is a value too.
 
 #[cfg(test)]
-#[path = "common/mod.rs"]
-mod common;
-
-#[cfg(test)]
 mod cases {
     use std::cell::RefCell;
     use std::rc::Rc;
 
     use serde_json::json;
 
-    use super::common::*;
+    use crate::common::*;
     use tilolang_runtime::run::{JournalEntry, RunOutcome, WebRequest, WebResponse};
     use tilolang_runtime::web::{WebReply, WebTransport};
     use tilolang_runtime::{

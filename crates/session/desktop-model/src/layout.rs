@@ -39,27 +39,6 @@ pub enum TileContent {
         #[serde(default)]
         note: String,
     },
-    /// A window a peer has open, before this machine has bound a local
-    /// instance to the tab. The peer's `surface_id` only resolves on
-    /// their compositor so it is dropped, keeping only the app id. Never
-    /// projected into a workspace document, since a `PeerWindow` is by
-    /// construction somebody else's.
-    PeerWindow {
-        /// The wayland app-id the peer's window announces.
-        app_id: String,
-        /// The peer's own resolved tab title.
-        label: String,
-        /// What this machine is doing about it, for the card. Empty means
-        /// nobody has looked yet; writing the note records that the
-        /// decision was made, so a refusal or launch only ever starts once.
-        #[serde(default)]
-        note: String,
-        /// Set when this machine has no copy of the app to open: whether
-        /// one can be installed here, or why it cannot. The card offers the
-        /// install from this, never from the wording of `note`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        missing: Option<MissingApp>,
-    },
     /// A legacy (X11 / Wayland) window that runs only on the device `host`
     /// (its hex device key), shown on every other device as that window,
     /// never relaunched there: a legacy app's state lives in its process,
@@ -106,13 +85,15 @@ enum TileRecord {
         #[serde(default)]
         note: String,
     },
+    /// Another device's window, as a desk held it before it opened its own instance of the
+    /// app: read as that app's window ([`TileContent::LocalApp`]), never written.
     PeerWindow {
         app_id: String,
         label: String,
         #[serde(default)]
         note: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        missing: Option<MissingApp>,
+        missing: Option<RetiredMissingApp>,
     },
     HostedWindow {
         app_id: String,
@@ -143,16 +124,12 @@ impl From<TileRecord> for TileContent {
                 label,
                 note,
             },
-            TileRecord::PeerWindow {
+            // Another device's window, as this device once held it before opening its own
+            // instance of the app: the app opens it here like any other window.
+            TileRecord::PeerWindow { app_id, label, .. } => Self::LocalApp {
                 app_id,
                 label,
-                note,
-                missing,
-            } => Self::PeerWindow {
-                app_id,
-                label,
-                note,
-                missing,
+                note: String::new(),
             },
             TileRecord::HostedWindow {
                 app_id,
@@ -184,17 +161,6 @@ impl From<TileContent> for TileRecord {
                 label,
                 note,
             },
-            TileContent::PeerWindow {
-                app_id,
-                label,
-                note,
-                missing,
-            } => Self::PeerWindow {
-                app_id,
-                label,
-                note,
-                missing,
-            },
             TileContent::HostedWindow {
                 app_id,
                 label,
@@ -210,16 +176,10 @@ impl From<TileContent> for TileRecord {
     }
 }
 
-/// Why a window another device has open has no instance here yet.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum MissingApp {
-    /// Not installed, and a configured registry offers it to this device:
-    /// the person may install it, which opens it in the same tab.
-    Installable {
-        /// The registry's name for the app, for the install button.
-        display_name: String,
-    },
-    /// Not installed, and nothing this device can install provides it.
+/// Why a [`TileRecord::PeerWindow`] had no instance yet, as it was written.
+#[derive(Clone, Serialize, Deserialize)]
+enum RetiredMissingApp {
+    Installable { display_name: String },
     Unavailable,
 }
 
@@ -556,12 +516,6 @@ mod tile_record_tests {
                 app_id: "so.tilo.notes".into(),
                 label: "Notes".into(),
                 note: String::new(),
-            },
-            TileContent::PeerWindow {
-                app_id: "so.tilo.files".into(),
-                label: "Files".into(),
-                note: "opening".into(),
-                missing: Some(MissingApp::Unavailable),
             },
             TileContent::HostedWindow {
                 app_id: "xterm".into(),

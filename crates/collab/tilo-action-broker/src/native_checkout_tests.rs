@@ -27,7 +27,6 @@ async fn checkout_channel(
             workspace.route.cluster_id.clone(),
             native_media::PeerProcess::from_socket(&socket).unwrap(),
             crate::services::AuthenticatedApplicationLaunch {
-                creation: None,
                 continuation_instance: Some(73),
                 launch_ticket: None,
                 windowless: false,

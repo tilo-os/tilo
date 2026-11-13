@@ -251,7 +251,6 @@ fn root_only_unclassified_authentication_never_admits_the_calling_process() {
         .expect("root controller plus non-root sender are independently mandatory");
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
 
-    // The existing exact-UID route remains independent and unchanged.
     let (host, app) = UnixStream::pair().unwrap();
     arm(&host).unwrap();
     let (_owned, proof) = UnixStream::pair().unwrap();

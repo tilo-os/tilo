@@ -1,11 +1,10 @@
-//! Serving the workspace filesystem protocol from a host's own workspace,
-//! a client of [`tilo_fs_client::FsClient`] browses, stats and uses explicit
-//! file handles.
+//! Serving the workspace filesystem protocol from the host's own workspace,
+//! which a [`tilo_fs_client::FsClient`] browses, stats and opens.
 //!
-//! The host supplies a [`WorkspaceBackend`]; its calls may block (reading a
-//! file can hydrate it from a peer), so they run on the host's runtime,
-//! never on the connection's. Legacy path backends remain read only; explicit
-//! file capabilities may implement writes. `mkdir` and `remove` remain refused.
+//! The host supplies a [`WorkspaceBackend`], whose calls may block (reading a
+//! file can hydrate it from a peer) and so run on the host's runtime, never on
+//! the connection's. Path backends stay read only; explicit file capabilities
+//! may write. `mkdir` and `remove` are refused.
 
 use std::{
     future::Future,
@@ -24,52 +23,36 @@ use crate::{DirEntry, EntryKind, MAX_READ_CHUNK, Metadata, OpenMode};
 
 pub(crate) const MAX_BACKEND_CALLS: usize = 8;
 
-/// An already-admitted live file capability supplied by the authenticated host.
-/// Methods must enforce their own current authority and bounded I/O deadlines.
-/// A handle never resolves an ambient path or grants access to its parent.
+/// A live file capability the authenticated host already admitted. Its own
+/// authority and I/O deadlines hold for every call, and it never resolves an
+/// ambient path or reaches the file's parent.
 pub trait WorkspaceFileBackend: Send + Sync + 'static {
-    /// Optional authentic live-scope check; default preserves legacy RPC failures.
-    /// Typed native providers return Some for both success and revocation.
     fn live_scope(&self) -> Option<Result<(), String>> {
         None
     }
-    /// Actual held native identity for directory opens; legacy backends expose none.
     fn native_identity(&self) -> Result<Option<[u64; 2]>, String> {
         Ok(None)
     }
-    /// # Errors
-    /// Refuses unavailable authority or a failed bounded read.
     fn read(&self, offset: u64, max_len: u32) -> Result<Vec<u8>, String>;
-    /// # Errors
-    /// Refuses unavailable write authority or a failed write.
     fn write(&self, offset: u64, bytes: &[u8]) -> Result<u32, String>;
 
-    /// One non-idempotent atomic append. Unsupported by default.
+    /// One non-idempotent atomic append, unsupported by default.
     fn append(&self, _bytes: &[u8]) -> Result<u32, String> {
         Err("atomic append unsupported".into())
     }
-    /// # Errors
-    /// Refuses unavailable authority or failed persistence.
     fn flush(&self) -> Result<(), String>;
-    /// # Errors
-    /// Refuses unavailable authority or failed descriptor metadata.
     fn metadata(&self) -> Result<Metadata, String>;
 }
 
-/// A workspace a host serves. Paths are workspace-relative with `/`
-/// separators; the root is `""`.
 pub trait WorkspaceBackend: Send + Sync + 'static {
-    /// Independently admitted native directory custody. Selected files return None.
     fn directory(
         &self,
     ) -> Result<Option<Arc<dyn crate::directory_backend::WorkspaceDirectoryBackend>>, String> {
         Ok(None)
     }
 
-    /// Optionally supply an already-admitted file capability. Returning None
-    /// selects the original path-backed behavior, which permits Read only.
-    /// Write retains its canonical truncate/create meaning; Append retains
-    /// append semantics. A provider must refuse modes it cannot implement.
+    /// An already-admitted file capability, when the backend has one: `None`
+    /// selects the path-backed behaviour, which permits Read only.
     fn open(
         &self,
         _path: &str,
@@ -78,17 +61,14 @@ pub trait WorkspaceBackend: Send + Sync + 'static {
         Ok(None)
     }
 
-    /// The entries of the directory at `path`.
     fn list(&self, path: &str) -> Result<Vec<DirEntry>, String>;
 
     fn stat(&self, path: &str) -> Result<Metadata, String>;
 
-    /// Up to `max_len` bytes of the file at `path` from `offset`, empty at
-    /// its end.
+    /// Up to `max_len` bytes from `offset`, empty at the file's end.
     fn read(&self, path: &str, offset: u64, max_len: u32) -> Result<Vec<u8>, String>;
 }
 
-/// A running server; stops, and removes its socket, when dropped.
 pub struct WorkspaceServer {
     socket: PathBuf,
     stop: Option<oneshot::Sender<()>>,
@@ -96,7 +76,6 @@ pub struct WorkspaceServer {
 }
 
 impl Drop for WorkspaceServer {
-    /// Closes every connection and releases the backend.
     fn drop(&mut self) {
         drop(self.stop.take());
         if let Some(thread) = self.thread.take() {
@@ -106,9 +85,8 @@ impl Drop for WorkspaceServer {
     }
 }
 
-/// Serves `backend` at `socket`, owner-only, to every connection, from a
-/// thread of its own, running the backend's calls on `runtime`. A stale
-/// socket file is replaced.
+/// Serve `backend` at `socket`, owner-only, to every connection, on a thread of
+/// its own that runs the backend's calls on `runtime`.
 pub fn serve_workspace(
     socket: &Path,
     backend: Arc<dyn WorkspaceBackend>,
@@ -151,21 +129,17 @@ pub fn serve_workspace(
     })
 }
 
-/// Exactly one authenticated private connected stream, with no discovery name.
-/// Dropping the owner closes the connection and joins its owned thread.
-/// Backend calls already running are not forcibly interrupted: providers must
-/// bound their calls and retire their native authority before releasing custody.
+/// One authenticated, private, connected stream with no discovery name;
+/// dropping the owner closes it and joins its thread.
 pub struct ConnectedWorkspaceServer {
     stop: Option<oneshot::Sender<()>>,
     thread: Option<std::thread::JoinHandle<io::Result<()>>>,
 }
 
 impl ConnectedWorkspaceServer {
-    /// Wait for the actual connection to finish without requesting stop.
     pub fn wait(mut self) -> io::Result<()> {
         self.join()
     }
-    /// Ask it to stop and report the actual owned worker departure.
     pub fn retire(mut self) -> io::Result<()> {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
@@ -197,24 +171,12 @@ impl Drop for ConnectedWorkspaceServer {
     }
 }
 
-/// Serve an attested, owned stream through the existing `WorkspaceFs` protocol.
-/// Transport authentication and source authority remain the caller's boundary;
-/// this function opens no socket path and accepts no credential claims.
+/// Serve an attested, owned stream through `WorkspaceFs`: transport
+/// authentication and source authority stay the caller's.
 pub fn serve_workspace_connected(
     stream: std::os::unix::net::UnixStream,
     backend: Arc<dyn WorkspaceBackend>,
     runtime: tokio::runtime::Handle,
-) -> io::Result<ConnectedWorkspaceServer> {
-    serve_workspace_connected_with_handoffs(stream, backend, runtime, None)
-}
-
-/// Same owned source connection, with an optional source-resident pending-only
-/// handoff registry. Registry contents arise only from actual Pending servers.
-pub fn serve_workspace_connected_with_handoffs(
-    stream: std::os::unix::net::UnixStream,
-    backend: Arc<dyn WorkspaceBackend>,
-    runtime: tokio::runtime::Handle,
-    handoffs: Option<Arc<PendingHandoffRegistry>>,
 ) -> io::Result<ConnectedWorkspaceServer> {
     stream.set_nonblocking(true)?;
     let local_runtime = tokio::runtime::Builder::new_current_thread()
@@ -233,8 +195,6 @@ pub fn serve_workspace_connected_with_handoffs(
                     backend,
                     runtime,
                     calls: Arc::new(tokio::sync::Semaphore::new(MAX_BACKEND_CALLS)),
-                    handoffs,
-                    drain: None,
                 });
                 tokio::select! {
                     result = serve_connection(stream, server) => result,
@@ -266,8 +226,6 @@ async fn accept(
             backend: Arc::clone(backend),
             runtime: runtime.clone(),
             calls: Arc::new(tokio::sync::Semaphore::new(MAX_BACKEND_CALLS)),
-            handoffs: None,
-            drain: None,
         });
         tokio::spawn(async move {
             if let Err(error) = serve_connection(stream, server).await {
@@ -288,19 +246,16 @@ pub(crate) struct Server {
     pub(crate) backend: Arc<dyn WorkspaceBackend>,
     pub(crate) runtime: tokio::runtime::Handle,
     pub(crate) calls: Arc<tokio::sync::Semaphore>,
-    pub(crate) handoffs: Option<Arc<PendingHandoffRegistry>>,
-    pub(crate) drain: Option<Arc<pending_handoff::CallDrain>>,
 }
 
 impl Server {
-    // Fail busy without queuing application-owned payload buffers or callbacks.
+    /// Fail busy rather than queue payload buffers or callbacks.
     pub(crate) fn admit_call(&self) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
         Arc::clone(&self.calls)
             .try_acquire_owned()
             .map_err(|_| "workspace backend busy".to_string())
     }
 
-    /// Runs one blocking backend call on the host's runtime.
     async fn blocking<T: Send + 'static>(
         &self,
         permit: tokio::sync::OwnedSemaphorePermit,
@@ -345,20 +300,15 @@ impl Server {
         .await
     }
 
-    /// Runs a directory backend call with its drain entry and fresh scope
-    /// brackets, so a handoff waits for it and a revocation reads as a refusal.
+    /// Run a directory backend call between its live-scope checks, so a revocation
+    /// reads as a refusal.
     pub(crate) async fn run_directory<T: Send + 'static>(
         &self,
         backend: Arc<dyn crate::directory_backend::WorkspaceDirectoryBackend>,
         call: impl FnOnce() -> Result<T, String> + Send + 'static,
     ) -> Result<Option<T>, String> {
         let permit = self.admit_call()?;
-        let drain = match &self.drain {
-            Some(drain) => Some(drain.enter()?),
-            None => None,
-        };
         self.blocking(permit, move || {
-            let _drain = drain;
             backend.check()?;
             let value = call();
             backend.check()?;
@@ -367,25 +317,15 @@ impl Server {
         .await
     }
 
-    /// Runs one directory call behind its drain entry, without scope brackets.
     pub(crate) async fn run<T: Send + 'static>(
         &self,
         call: impl FnOnce() -> Result<T, String> + Send + 'static,
     ) -> Result<T, String> {
         let permit = self.admit_call()?;
-        let drain = match &self.drain {
-            Some(drain) => Some(drain.enter()?),
-            None => None,
-        };
-        self.blocking(permit, move || {
-            let _drain = drain;
-            call()
-        })
-        .await
+        self.blocking(permit, call).await
     }
 }
 
-/// Brackets `call` with the object's own live-scope checks where it has them.
 pub(crate) fn checked<T>(
     scope: impl Fn() -> Option<Result<(), String>>,
     call: impl FnOnce() -> Result<T, String>,
@@ -511,8 +451,8 @@ impl File {
         let FileSource::Capability(file) = &self.source else {
             return Err(read_only());
         };
-        // Only actual native providers with successful before/after scope checks
-        // can distinguish an unsupported per-file operation from authority loss.
+        // Only a native provider with successful checks before and after a call can
+        // tell an unsupported per-file operation from lost authority.
         self.server
             .call_file(Arc::clone(file), |_| {
                 Err::<(), _>("unsupported file operation".into())
@@ -595,8 +535,6 @@ impl ServeObject for File {
                     if length > MAX_READ_CHUNK {
                         return Err("write exceeds byte bound".into());
                     }
-                    // Finite admission precedes allocation: full pipelines receive Busy
-                    // immediately rather than retaining another copied payload buffer.
                     let permit = self.server.admit_call()?;
                     let written = self
                         .server
@@ -677,9 +615,3 @@ impl ServeObject for File {
         })
     }
 }
-
-#[path = "workspace_server/pending_handoff.rs"]
-mod pending_handoff;
-pub use pending_handoff::{
-    PendingHandoffRegistry, serve_history_read_connected, serve_pending_connected,
-};

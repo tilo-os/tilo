@@ -32,12 +32,8 @@ const CONTRACTIONS: &[(&str, &str)] = &[
     ("youve", "you've"),
 ];
 
-/// The English contraction `bare` (lowercase, no apostrophe) stands for:
-/// `"doesnt"` gives `"doesn't"`, `"im"` gives `"I'm"`.
 #[must_use]
 pub fn contraction(bare: &str) -> Option<&'static str> {
-    // A search by halves stays one small loop; a scan of the table is
-    // unrolled into a comparison per entry.
     CONTRACTIONS
         .binary_search_by(|(typed, _)| (*typed).cmp(bare))
         .ok()

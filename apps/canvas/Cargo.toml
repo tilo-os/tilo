@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "canvas"
 version = "0.1.0"
 edition = "2024"
@@ -30,6 +32,12 @@ thin = ["dep:runtime-dylib"]
 # tools/ci/rustc-thin-app-wrapper.sh.
 runtime-engine = ["thin", "tilo-paint-engine/thin"]
 
+# One test binary for the app's integration tests, whose files it includes as
+# modules: a file per binary linked the whole app once each.
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-paint-engine = { path = "../../crates/runtime/engines/paint", optional = true }
@@ -48,8 +56,6 @@ rayon = "1.12.0"
 uuid.workspace = true
 # Exports are PNGs; looks are JPEGs unless a caller asks for PNG.
 png = "0.18"
-# Pictures are PNGs, JPEGs or WebPs; exports are any of the three.
-image = { workspace = true, features = ["png", "jpeg", "webp"] }
 # SVG import; without its font stack, text is read by hand.
 usvg = { version = "0.47", default-features = false }
 # SVG export embeds a painted layer's picture.
@@ -72,6 +78,8 @@ zip.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# Tests build and read their image fixtures.
+image = { workspace = true, features = ["png", "jpeg", "webp"] }
 # Tests see this package's samples. The key must not be the package name:
 # a dependency named `canvas` claims `--features canvas/thin` in the
 # collection build, and the app then links the whole runtime statically.

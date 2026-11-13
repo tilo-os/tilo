@@ -17,10 +17,12 @@
 
 use std::rc::Rc;
 
-use tilo_quick_settings::host::{FixtureHost, Lent};
-use tilo_quick_settings::{QsEffect, QsSection, QuickSettings, QuickSettingsApp, scenarios};
+mod common;
+
+use common::{click, drawn_on_each_other, has, hosted_at, target};
+use tilo_quick_settings::host::FixtureHost;
+use tilo_quick_settings::{QsEffect, QsSection, QuickSettings, QuickSettingsApp};
 use ui::framework::testing::HeadlessApp;
-use ui::vello::kurbo::Rect;
 
 /// The panel on a 2944×1840 2× laptop panel: its own logical width, and the
 /// room under the bar that that display leaves.
@@ -37,35 +39,7 @@ fn staged(scenario: &str) -> HeadlessApp<QuickSettingsApp> {
 }
 
 fn hosted(scenario: &str) -> (HeadlessApp<QuickSettingsApp>, Rc<FixtureHost>) {
-    let host = Rc::new(FixtureHost::new(scenarios::readings(Some(scenario))));
-    let lent: Rc<dyn tilo_quick_settings::host::PanelHost> = host.clone();
-    let mut app =
-        HeadlessApp::<QuickSettingsApp>::for_person_with_lent("person", Lent(lent)).unwrap();
-    for invoke in scenarios::actions(Some(scenario)) {
-        app.invoke(invoke).unwrap();
-    }
-    app.harness().set_input_scale(SCALE).unwrap();
-    app.harness().resize(VIEWPORT).unwrap();
-    app.settle();
-    (app, host)
-}
-
-fn target(app: &mut HeadlessApp<QuickSettingsApp>, name: &str) -> Rect {
-    let targets = app.harness().targets();
-    *targets.get(name).unwrap_or_else(|| {
-        let mut names: Vec<&String> = targets.keys().collect();
-        names.sort();
-        panic!("no target named {name}; there are {names:?}")
-    })
-}
-
-fn click(app: &mut HeadlessApp<QuickSettingsApp>, name: &str) {
-    app.harness().click_named(name).unwrap();
-    app.settle();
-}
-
-fn has(app: &mut HeadlessApp<QuickSettingsApp>, name: &str) -> bool {
-    app.harness().targets().contains_key(name)
+    hosted_at(scenario, VIEWPORT, SCALE)
 }
 
 /// Whether the panel on `state` offers `control`'s tile.
@@ -258,6 +232,8 @@ fn every_section_opens_at_scale_2() {
                 .any(|target| names.iter().any(|name| target.starts_with(name))),
             "{section:?} lists its own rows ({names:?}): {targets:?}"
         );
+        let found = drawn_on_each_other(&mut app);
+        assert!(found.is_empty(), "{section:?} at scale 2: {found:#?}");
     }
 }
 

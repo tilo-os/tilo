@@ -1,10 +1,9 @@
-//! Independent, consented browser domains; never inferred from file/account choices.
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
-// Portable selection metadata shared with presentation clients. Native source,
-// activation and completion authority remains in backend actors.
+// Portable selection metadata shared with presentation clients; native source, activation and
+// completion authority stays in the backend actors.
 pub use browser_continuity::{PROFILES_DIRECTORY, Plan, Profile, Provider, sessions::Service};
 
 #[cfg(unix)]
@@ -13,7 +12,6 @@ pub use browser_continuity::snapshot::{CapturedFile, Snapshot};
 pub use unsupported_capture::{CapturedFile, Snapshot};
 #[cfg(not(unix))]
 mod unsupported_capture {
-    /// Portable read projection; unsupported backends cannot construct one.
     pub struct CapturedFile {
         name: &'static str,
         bytes: Vec<u8>,
@@ -57,7 +55,6 @@ pub struct SelectedSources {
     profiles: Vec<(Arc<ReviewedProfile>, Profile)>,
 }
 impl SelectedSources {
-    /// Select only domains present in distinct reviewed browser profiles.
     pub fn from_reviewed(profiles: Vec<(Arc<ReviewedProfile>, Profile)>) -> io::Result<Self> {
         if profiles.len() > browser_continuity::MAX_PROFILES {
             return Err(io::Error::new(
@@ -88,7 +85,6 @@ impl SelectedSources {
     pub fn profiles(&self) -> &[(Arc<ReviewedProfile>, Profile)] {
         &self.profiles
     }
-    /// Bind the selected profile metadata to an authenticated transfer identity.
     pub fn plan(&self, binding: String, identity: [u8; 32]) -> io::Result<Plan> {
         Plan::new(
             binding,
@@ -101,10 +97,8 @@ impl SelectedSources {
         .map_err(io::Error::other)
     }
 }
-/// One profile's own inclusion and domain decisions. An exclusion clears both
-/// domains, so the authenticated plan cannot carry part of a profile that the
-/// review excluded. Re-including restores the domains its reviewed source
-/// supports.
+/// An exclusion clears both domains, so the authenticated plan cannot carry part of a profile the
+/// review excluded; re-including restores what its reviewed source supports.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProfileState {
     pub exportable: bool,
@@ -140,7 +134,6 @@ impl Default for Selection {
     }
 }
 impl Selection {
-    /// The caller runs this on its consented discovery worker, not the UI thread.
     pub fn discover(home: &Path, candidates: &[Candidate]) -> io::Result<Self> {
         let profiles = browser_profiles::discover(home, candidates)?
             .into_iter()
@@ -194,17 +187,14 @@ impl Selection {
             ..Self::default()
         })
     }
-    /// Source-oriented metadata for the review worker. No path or private value.
     #[must_use]
     pub fn inventory(&self) -> &[ProfileInventory] {
         &self.inventory
     }
-    /// True when at least one profile could not be inspected completely.
     #[must_use]
     pub fn inventory_incomplete(&self) -> bool {
         self.inventory_incomplete || self.inventory.iter().any(ProfileInventory::incomplete)
     }
-    /// Bounded report with the current per-profile domain selection.
     #[must_use]
     pub fn inventory_report(&self) -> Report {
         let mut report = Report {
@@ -223,12 +213,10 @@ impl Selection {
     fn choice(&self, id: &str) -> ProfileState {
         self.choices.get(id).copied().unwrap_or_default()
     }
-    /// One reviewed profile's own inclusion and domain decisions.
     #[must_use]
     pub fn profile_state(&self, id: &str) -> Option<ProfileState> {
         self.choices.get(id).copied()
     }
-    /// Snapshot every profile decision for an atomic batch that may fail.
     #[must_use]
     pub fn profile_states(&self) -> Vec<(String, ProfileState)> {
         self.profiles
@@ -239,8 +227,6 @@ impl Selection {
             })
             .collect()
     }
-    /// Restore a snapshot taken from this same reviewed selection. Never widens
-    /// or invents a source: an identity this selection no longer has stays out.
     pub fn restore_states(&mut self, states: &[(String, ProfileState)]) {
         for (id, state) in states {
             if let Some(choice) = self.choices.get_mut(id) {
@@ -248,9 +234,7 @@ impl Selection {
             }
         }
     }
-    /// Carry the person's decisions onto a fresh discovery of the same granted
-    /// home. A profile that disappeared cannot be recreated; a new profile keeps
-    /// the discovery default.
+    /// A profile that disappeared cannot be recreated, and a new profile keeps the discovery default.
     pub fn adopt(&mut self, previous: &Self) {
         for (id, state) in &previous.choices {
             if let Some(choice) = self.choices.get_mut(id) {
@@ -260,10 +244,8 @@ impl Selection {
         self.bookmarks = previous.bookmarks;
         self.history = previous.history;
     }
-    /// Exclude or restore one reviewed profile. Excluding clears every domain so
-    /// no part of the profile reaches the plan, and journeys clear the profile's
-    /// website-session choices in the same edit. Restoring puts back the domains
-    /// its reviewed source supports.
+    /// Excluding clears every domain so no part of the profile reaches the plan, and journeys clear its
+    /// website-session choices in the same edit; restoring puts back the domains its source supports.
     pub fn set_profile(&mut self, id: &str, included: bool) -> Result<(), &'static str> {
         let source = self
             .profiles
@@ -290,7 +272,6 @@ impl Selection {
         }
         Ok(())
     }
-    /// Set one profile's domain without touching any other profile.
     pub fn set_profile_domain(
         &mut self,
         id: &str,
@@ -326,7 +307,6 @@ impl Selection {
         }
         Ok(*choice != previous)
     }
-    /// Whether the current selection carries this reviewed profile.
     #[must_use]
     pub fn profile_included(&self, id: &str) -> bool {
         self.choice(id).included
@@ -334,8 +314,7 @@ impl Selection {
     pub fn available(&self) -> bool {
         !self.profiles.is_empty()
     }
-    /// Whether any included profile carries this domain. The global control that
-    /// reads this still changes every profile; each profile's own item is the
+    /// The global control that reads this still changes every profile; each profile's own item is the
     /// authority for its own domain.
     pub fn chosen(&self, domain: Domain) -> bool {
         if self.profiles.is_empty() {
@@ -353,8 +332,7 @@ impl Selection {
                 }
         })
     }
-    /// Set one domain on every reviewed profile that has it. This is the legacy
-    /// all-profiles control; a per-profile item uses `set_profile_domain`.
+    /// The legacy all-profiles control; a per-profile item uses `set_profile_domain`.
     pub fn set(&mut self, domain: Domain, included: bool) {
         match domain {
             Domain::Bookmarks => self.bookmarks = included,
@@ -394,7 +372,6 @@ impl Selection {
                 .collect(),
         }
     }
-    /// Reviewed metadata for presentation; not a source constructor.
     pub fn profiles(&self) -> impl Iterator<Item = &ReviewedProfile> {
         self.profiles.iter().map(AsRef::as_ref)
     }
@@ -833,8 +810,6 @@ mod tests {
             .unwrap();
         assert!(firefox_report.bookmarks_selected && firefox_report.history_selected);
 
-        // Excluding a profile clears every domain it owns and leaves the other
-        // profile exactly as it was.
         selection.set_profile(&firefox_id, false).unwrap();
         let excluded = selection.profile_state(&firefox_id).unwrap();
         assert!(!excluded.included && !excluded.bookmarks && !excluded.history);
@@ -853,8 +828,6 @@ mod tests {
                 .included
         );
 
-        // Re-including restores the domains its reviewed source supports, and
-        // the global control still changes both profiles at once.
         selection.set_profile(&firefox_id, true).unwrap();
         let restored = selection.profile_state(&firefox_id).unwrap();
         assert!(restored.included && restored.bookmarks && restored.history);

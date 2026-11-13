@@ -4,21 +4,23 @@ pub mod app_actions;
 pub mod automation;
 mod broker_error;
 pub mod certificate_authority;
-pub mod channel_encryption;
+/// The channel engine every host runs: its groups, the governance that settles them, and the
+/// keys an endpoint reads a sealed record with.
+pub use tilo_channels as channel_encryption;
+/// When a re-check of what was already admitted is due, and the announcements it waits on.
+pub use tilo_channels::schedule as policy_schedule;
 pub mod collab_app_broker;
 pub mod collab_broker;
-pub mod collab_core;
-pub mod collab_history;
+/// The workspaces' governance state and their durable op history, held on every host.
+pub use tilo_broker_core::{collab_core, collab_history};
 pub mod collab_inbound;
 pub mod collab_outbound;
 pub mod collab_presence;
 mod evidence_signer;
-mod governance_pump;
 pub mod local_document_action;
 pub mod owner_commits;
 pub mod personal;
 pub mod policy_clock;
-pub mod policy_schedule;
 pub mod published_authorization;
 pub mod record_content;
 /// The route an app's traffic is addressed on, the same on every host.
@@ -49,6 +51,10 @@ pub struct SurfacePersonRecords;
 impl tilo_identity_host::broker::PersonRecordKinds for SurfacePersonRecords {
     fn person_record_kinds(&self, app_id: &str) -> Vec<String> {
         ui::app_surface::person_record_kinds(app_id)
+    }
+
+    fn reads_records_of(&self, reader: &str, owner: &str) -> bool {
+        ui::app_surface::reads_app(reader, owner)
     }
 }
 

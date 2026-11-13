@@ -15,7 +15,8 @@ use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, CatalogueResource,
     CatalogueRow, Completer, Confirmation, InvocationLedger, InvocationReceipt, InvocationState,
-    InvokeArgument, InvokeRequest, Pending, pending,
+    InvokeArgument, InvokeRequest, Pending, RecordAddress, RecordCopy, RecordReads, RecordWake,
+    pending,
 };
 
 use crate::{
@@ -354,6 +355,10 @@ impl ActionHost for FakeHost {
             .map(|(update, _)| InvocationState::new(request.invocation, update.clone()).receipt());
         drop(state);
         Pending::ready(receipt)
+    }
+
+    fn record_reads(&self) -> Option<std::sync::Arc<dyn RecordReads>> {
+        Some(std::sync::Arc::new(NoteReads))
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
@@ -873,6 +878,7 @@ fn a_run_a_task_asked_for_stamps_its_steps_with_that_tasks_group() {
         id: "task-run-7".into(),
         label: "Sort the inbox".into(),
         kind: "task".into(),
+        title: None,
     };
     let report = block_on(run(
         &host,
@@ -905,6 +911,146 @@ fn a_run_a_task_asked_for_stamps_its_steps_with_that_tasks_group() {
             "the run keeps its own name inside the task"
         );
     }
+}
+
+/// The workspace's records as the fake host reads them: record `private` is
+/// refused, any other is one the workspace holds none of.
+struct NoteReads;
+
+impl RecordReads for NoteReads {
+    fn answer_read(
+        self: std::sync::Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::RecordReadRequest,
+    ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
+        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    }
+
+    fn read(&self, _: &Caller, address: &RecordAddress) -> Result<RecordCopy, ActionHostError> {
+        if address.record == "private" {
+            return Err(ActionHostError::Refused {
+                reason: "not yours".into(),
+            });
+        }
+        Ok(RecordCopy::Absent)
+    }
+
+    fn watch(&self, _: &Caller, _: &RecordAddress, _: &RecordWake) -> Result<(), ActionHostError> {
+        Ok(())
+    }
+}
+
+fn read_step(id: &str, record: &str, joined: bool) -> Step {
+    Step::new(
+        id,
+        StepKind::Read {
+            app: MAIL.into(),
+            record: record.into(),
+            joined,
+        },
+    )
+}
+
+// A record read is a step of its own: inside the grant it answers the
+// record door's reading, outside it nothing is read, and a refusal at the
+// door is the step's failure.
+#[test]
+fn a_read_step_reads_records_through_the_door_inside_the_grant() {
+    let host = FakeHost::new();
+    let mut reads = shortcut(
+        "reads",
+        vec![
+            read_step("folder", "", false),
+            read_step("pages", "pages", true),
+        ],
+    );
+    let errors = check(&reads, &host.catalog(), &NoShortcuts).unwrap_err();
+    assert!(
+        errors.iter().all(|error| matches!(
+            &error.kind,
+            CheckErrorKind::OutsideGrant { app_id, action } if app_id == MAIL && action == "read"
+        )),
+        "{errors:?}"
+    );
+    let refused = unattended(&host, &reads);
+    assert!(
+        matches!(read_failure(&refused), Some(StepFailure::OutsideGrant { action, .. }) if action == "read"),
+        "{refused:?}"
+    );
+
+    reads.grant = crate::grant::derived_rules(&reads, &host.catalog());
+    assert_eq!(
+        reads
+            .grant
+            .iter()
+            .map(|rule| rule.node.to_string())
+            .collect::<Vec<_>>(),
+        ["room:*/app:so.tilo.mail/resource:*"]
+    );
+    assert!(crate::grant::unused_rules(&reads).is_empty());
+    check(&reads, &host.catalog(), &NoShortcuts).unwrap();
+    let report = unattended(&host, &reads);
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    let read = report
+        .steps
+        .iter()
+        .find_map(|step| match &step.status {
+            StepStatus::Succeeded { output } if step.step == "pages" => output.clone(),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        read["records"],
+        json!([{"record": tilo_actions::record_sync::record_part("pages", 0), "absent": true}])
+    );
+    assert!(read["revision"].is_string());
+    assert!(host.started().is_empty(), "a read invokes nothing");
+
+    // A read names its record from the run, and a condition asks whether a
+    // value carries a field: one it lacks is absent, not a failure.
+    let when = |field: &str, then| {
+        let cond = Condition::Truthy(Binding::Var(format!("event/{field}")));
+        let otherwise = Vec::new();
+        Step::new(
+            field,
+            StepKind::If {
+                cond,
+                then,
+                otherwise,
+            },
+        )
+    };
+    let set = StepKind::SetVar {
+        name: "event".into(),
+        value: Binding::Literal(json!({"record": "private"})),
+    };
+    let run = Shortcut {
+        steps: vec![
+            Step::new("event", set),
+            when("source", vec![read_step("never", "", false)]),
+            when(
+                "record",
+                vec![read_step("private", "{{var.event/record}}", false)],
+            ),
+        ],
+        ..reads
+    };
+    check(&run, &host.catalog(), &NoShortcuts).unwrap();
+    let refused = unattended(&host, &run);
+    assert!(
+        matches!(read_failure(&refused), Some(StepFailure::Host { error }) if matches!(**error, ActionHostError::Refused { .. })),
+        "{refused:?}"
+    );
+}
+
+/// Why the run's read did not read: a read is a step of the run's own, which
+/// a later step reading it fails with.
+fn read_failure(report: &RunReport) -> Option<&StepFailure> {
+    report.steps.iter().find_map(|step| match &step.status {
+        StepStatus::Failed { failure, .. } => Some(failure),
+        StepStatus::Succeeded { .. } => None,
+    })
 }
 
 #[test]

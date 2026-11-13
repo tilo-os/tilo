@@ -189,7 +189,6 @@ fn a_horizontal_wheel_pans_and_a_wheel_over_the_preview_leaves_the_timeline() {
 fn page_keys_scroll_a_zoomed_timeline_and_z_fits_the_project_back() {
     let mut app = editor();
     zoom_in(&mut app);
-    assert!(timeline(&mut app).contains("Page Up and Page Down"));
     page(&mut app, true);
     assert_ne!(view_start(&mut app), "00:00:00", "Page Down pans later");
     page(&mut app, false);
