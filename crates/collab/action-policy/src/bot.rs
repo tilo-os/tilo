@@ -8,7 +8,7 @@
 
 use std::fmt;
 
-use crate::{Answer, Bound, Grant, KindSet, Rule, Subject, TreePath, roles};
+use crate::{Answer, Grant, KindSet, Rule, Subject, TreePath, roles};
 
 /// Why a program's rules cannot become a bot's grant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,17 +109,6 @@ pub fn grants(
         granted_by,
     ));
     Ok(grants)
-}
-
-/// The bound a bot acts within. Its grants live in the workspace's policy, so
-/// the bound carries none of its own: [`Bound::party`] finds them there.
-#[must_use]
-pub fn bound(installation: &str) -> Bound {
-    Bound {
-        subject: Subject::bot(installation),
-        grants: Vec::new(),
-        also: Vec::new(),
-    }
 }
 
 /// Whether `new` allows nothing `old` does not: every allowing grant of

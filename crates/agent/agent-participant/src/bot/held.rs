@@ -410,14 +410,14 @@ mod tests {
         );
         let grants = vec![Grant::new(
             "bot:b1:0",
-            bot.clone(),
+            bot,
             chat.node,
             chat.kinds,
             chat.answer,
             Subject::person("ada"),
         )];
         let standing = Standing::person(policy::WorkspacePolicy::new(workspace, "ada"), "ada")
-            .bounded_by(bot, grants);
+            .acting_as(policy::Actor::Member(policy::MemberId::bot("b1")), grants);
         let mut held = HeldRecords::new(
             AppCatalogue::native(),
             workspace.into(),

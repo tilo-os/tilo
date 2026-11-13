@@ -2,8 +2,8 @@
 //! may do right now, never beyond its own grant, never governing the workspace.
 
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Context, KindSet, Level, Refusal, Role, Rule, Standing, Subject,
-    TreePath, WorkspacePolicy, bot,
+    Acting, ActionKind, Answer, Authority, Context, KindSet, Level, Refusal, Role, Rule, Standing,
+    Subject, TreePath, WorkspacePolicy, bot,
     roles::{self, governance},
 };
 
@@ -72,7 +72,10 @@ fn workspace_with_bot(installer: &str, installer_role: Option<Role>) -> Workspac
 }
 
 fn bot_of(workspace: WorkspacePolicy, installer: &str) -> Standing {
-    Standing::person(workspace, installer).with_bound(bot::bound(BOT))
+    Standing::new(
+        workspace,
+        Acting::bot(BOT).acting_for(Acting::person(installer)),
+    )
 }
 
 #[test]

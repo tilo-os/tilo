@@ -250,7 +250,7 @@ impl StatePeer {
         validated_channel.grants.clone_from(&member.policy.grants);
         validated_channel.surfaces.clone_from(&self.surfaces);
         let foreign_bound = tilo_action_policy::roles::foreign_device_bound();
-        let author = member.authority(&foreign_bound);
+        let author = member.authority(foreign_bound);
         match collab_types::validate_admitted_inbound_op(
             &envelope,
             &author,

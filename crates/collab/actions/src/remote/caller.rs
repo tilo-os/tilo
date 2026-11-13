@@ -404,12 +404,12 @@ impl Caller {
 
     /// Who an action this caller invokes in `workspace` is decided for: the
     /// one reading of a caller every route that runs actions takes
-    /// ([`tilo_action_policy::Invoker`]).
+    /// ([`tilo_action_policy::Acting`]).
     ///
     /// - A person acts as themselves.
     /// - An agent a person's own device handed its session to
-    ///   ([`Self::delegated_to`]) carries the delegation a device gives its
-    ///   agents, within that person's standing.
+    ///   ([`Self::delegated_to`]) acts for them, carrying the delegation a
+    ///   device gives its agents ([`Self::granted`]).
     /// - An agent admitted as acting for a person ([`Self::acting_for`]),
     ///   or a delegated agent device acting for the person its certificate
     ///   chains to, does what both the person and the workspace's grants
@@ -419,32 +419,46 @@ impl Caller {
     ///   workspace grants it.
     ///
     /// Whether the person works from a device that is not theirs is the
-    /// host's to say ([`tilo_action_policy::Invoker::on_foreign_device`]).
+    /// host's to say ([`tilo_action_policy::Acting::on_foreign_device`]).
     #[must_use]
-    pub fn invoker(&self, workspace: &str) -> tilo_action_policy::Invoker {
-        use tilo_action_policy::{Invoker, Subject};
+    pub fn acting(&self) -> tilo_action_policy::Acting {
+        use tilo_action_policy::Acting;
         let root = || self.user_public_key.map(hex::encode);
-        match &self.principal {
-            CallerPrincipal::Person(person) => Invoker::person(person.clone()),
-            CallerPrincipal::Agent(agent) => match self.acting_for.clone() {
-                Some(person) if self.session_delegated => {
-                    Invoker::session_agent(workspace, agent, person)
-                }
-                Some(person) => Invoker::delegated(Subject::agent(agent), person, Vec::new()),
-                None => match root() {
-                    Some(person) => Invoker::delegated(Subject::agent(agent), person, Vec::new()),
-                    None => Invoker::own(Subject::agent(agent)),
-                },
+        let acting = match &self.principal {
+            CallerPrincipal::Person(person) => Acting::person(person.clone()),
+            CallerPrincipal::Agent(agent) => match self.acting_for.clone().or_else(root) {
+                Some(person) => Acting::agent(agent.clone()).acting_for(Acting::person(person)),
+                None => Acting::agent(agent.clone()),
             },
-            CallerPrincipal::App(app) => Invoker::own(Subject::App(app.clone())),
+            CallerPrincipal::App(app) => Acting::app(app.clone()),
             // A bot nobody installed has no authority to borrow: acting for
             // nobody's standing, it gets nothing.
-            CallerPrincipal::Bot(bot) => Invoker::delegated(
-                Subject::bot(bot),
-                self.acting_for.clone().or_else(root).unwrap_or_default(),
-                Vec::new(),
-            ),
+            CallerPrincipal::Bot(bot) => match self.acting_for.clone().or_else(root) {
+                Some(person) => Acting::bot(bot.clone()).acting_for(Acting::person(person)),
+                None => Acting::bot(bot.clone()),
+            },
+        };
+        acting.on_foreign_device(self.foreign)
+    }
+
+    /// The grants made for this caller's software: the delegation a person's
+    /// own device gives the agent it handed its session to.
+    #[must_use]
+    pub fn granted(&self, workspace: &str) -> Vec<tilo_action_policy::Grant> {
+        let mut granted = match (&self.principal, self.acting_for.clone()) {
+            (CallerPrincipal::Agent(agent), Some(person)) if self.session_delegated => {
+                tilo_action_policy::roles::agent_grants(workspace, agent, &person, &[])
+            }
+            _ => Vec::new(),
+        };
+        if self.foreign {
+            granted.extend(
+                tilo_action_policy::roles::foreign_device_bound()
+                    .iter()
+                    .cloned(),
+            );
         }
+        granted
     }
 
     /// The run this caller's actions are part of, as the host that admitted it

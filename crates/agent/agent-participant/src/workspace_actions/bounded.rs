@@ -49,7 +49,7 @@ const STANDING_FRESHNESS_SECS: u64 = 30;
 #[derive(Clone)]
 pub(super) struct Bounded {
     /// The caller as the transport admitted it: what decides whom the host
-    /// acts for ([`Caller::invoker`]).
+    /// acts for ([`Caller::acting`]).
     pub(super) caller: Caller,
     /// The person, on the device the request came from: what the workspace's
     /// policy is asked about.
@@ -304,7 +304,7 @@ pub(super) fn question(
 
 /// `who`'s standing as the host decides for them: the person's standing as
 /// `policy` gives it now, held to the bounds the one reading of a caller
-/// gives ([`Caller::invoker`]): for an agent, the delegation a device gives
+/// gives ([`Caller::acting`]): for an agent, the delegation a device gives
 /// its agents. Refused when the policy is someone else's.
 pub(super) fn bounded_standing(
     policy: &super::ViewReadPolicy,
@@ -313,7 +313,7 @@ pub(super) fn bounded_standing(
     policy
         .standing
         .clone()
-        .bounded_as(&who.caller.invoker(&policy.workspace))
+        .as_acting(who.caller.acting())
         .ok_or(ActionHostError::NotPermitted)
 }
 
@@ -408,7 +408,10 @@ impl Worker {
             None => link.workspace_policy(workspace_id, &who.person_caller),
         });
         match governed {
-            Some(policy) if policy.workspace == cluster && policy.standing.person == who.person => {
+            Some(policy)
+                if policy.workspace == cluster
+                    && policy.standing.person_id().unwrap_or_default() == who.person =>
+            {
                 Ok(policy)
             }
             None if who.person == self.participant && !self.governed(workspace_id) => {

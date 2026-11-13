@@ -650,7 +650,7 @@ impl ActionPlane {
         let certificate = certificate.ok_or(ActionHostError::NotPermitted)?;
         // The device is its own principal when its person delegated it: an
         // agent is the agent, a bot the bot, never the person.
-        let caller = match authority.delegate.map(|bound| bound.subject) {
+        let caller = match authority.delegate.map(|delegation| delegation.subject()) {
             Some(tilo_action_policy::Subject::Agent(agent)) => {
                 Caller::delegated_agent(agent, certificate.user_public_key, source)
             }

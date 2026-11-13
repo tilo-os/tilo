@@ -4,7 +4,7 @@
 //! is caused by a person's message in a conversation the agent takes part in.
 //! Its authority is that person's grants, capped at
 //! [`roles::agent_policy::ROLE_CAP`], narrowed by the bound the agent's record
-//! keeps ([`roles::agent_turn`]).
+//! keeps ([`roles::agent_grants`]).
 //!
 //! Every one of those four facts is checked here, in one place, so every door
 //! and every receiver asks the same question:
@@ -14,7 +14,7 @@
 //! 3. the turn has not ended ([`Looked::ended`]: its work is done or stopped);
 //! 4. the action's kind is within the person's grants at its heads ∩
 //!    [`roles::agent_policy::ROLE_CAP`] ∩ the agent's recorded bound — which
-//!    [`roles::agent_turn`] turns into grants the door decides with.
+//!    [`roles::agent_grants`] turns into grants the door decides with.
 //!
 //! A cause that has not reached the receiver yet is not a refusal: the op waits
 //! for it ([`Held::waits`]), the same way an op from a late joiner does.
@@ -157,7 +157,7 @@ pub fn authority(
     person: &str,
     turn: Option<&Turn>,
     looked: impl FnOnce(&Turn) -> Option<Looked>,
-) -> Result<crate::Bound, Held> {
+) -> Result<Vec<crate::Grant>, Held> {
     let Some(turn) = turn else {
         return Err(Held::NoCause);
     };
@@ -173,7 +173,7 @@ pub fn authority(
     if looked.ended {
         return Err(Held::Ended);
     }
-    Ok(roles::agent_turn(workspace, agent, person, &looked.bound))
+    Ok(roles::agent_grants(workspace, agent, person, &looked.bound))
 }
 
 /// Whether two ids name the same person: a member's root, with or without the
@@ -223,15 +223,15 @@ mod tests {
         })
         .unwrap();
         let granted =
-            |bound: &crate::Bound| bound.grants.first().map(|grant| grant.granted_by.clone());
+            |grants: &[crate::Grant]| grants.first().map(|grant| grant.granted_by.clone());
         assert_ne!(
             granted(&bob),
             granted(&ada),
             "each turn carries its own person"
         );
         assert_eq!(
-            bob.subject,
-            Subject::agent("scribe"),
+            bob.first().map(|grant| grant.subject.clone()),
+            Some(Subject::agent("scribe")),
             "the turn acts as the agent"
         );
 
@@ -252,11 +252,9 @@ mod tests {
             policy
         };
         let cx = Context::at_time(tilo_clock::wall());
-        let decision = |bound: &crate::Bound| {
-            let party = bound.party(&policy.grants);
-            let person = policy.party(BOB);
+        let decision = |grants: &[crate::Grant]| {
+            let person = policy.party(BOB).with_grants(grants);
             crate::Authority::person(person)
-                .bounded_by(party)
                 .decide(&node, ActionKind::Read, &cx)
                 .answer
         };
@@ -319,7 +317,7 @@ mod tests {
         .unwrap();
         let node = TreePath::workspace(WORKSPACE);
         let cx = Context::at_time(tilo_clock::wall());
-        let party: Party<'_> = bound.party(&[]);
+        let party = Party::new(vec![Subject::agent("scribe")], &bound);
         assert_eq!(
             party.decide(&node, ActionKind::Outside, &cx).answer,
             Answer::Ask
@@ -356,7 +354,7 @@ mod tests {
         })
         .unwrap();
         let cx = Context::at_time(tilo_clock::wall());
-        let party = bound.party(&[]);
+        let party = Party::new(vec![Subject::agent("scribe")], &bound);
         assert_eq!(
             party.decide(&notes, ActionKind::Undoable, &cx).answer,
             Answer::Deny

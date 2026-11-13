@@ -149,7 +149,7 @@ impl AppActionAuthorityProjection {
 /// The grants every foreign device is held to, before a room narrows them.
 #[must_use]
 pub fn foreign_device_bound() -> Vec<tilo_action_policy::Grant> {
-    roles::foreign_device_bound()
+    roles::foreign_device_bound().to_vec()
 }
 
 #[cfg(test)]

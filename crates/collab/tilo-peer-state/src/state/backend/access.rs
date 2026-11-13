@@ -26,7 +26,7 @@ pub(in crate::state) struct Member {
     pub role: Role,
     pub person: String,
     pub foreign: bool,
-    pub delegate: Option<tilo_action_policy::Bound>,
+    pub delegate: Option<crate::state::ActingAs>,
 }
 /// The authority of `person` under `policy`, held to `foreign_bound` on a
 /// foreign device and to `delegate`'s bound on a delegate's.
@@ -34,12 +34,16 @@ pub(in crate::state) fn member_authority<'a>(
     policy: &'a WorkspacePolicy,
     person: &'a str,
     foreign: bool,
-    delegate: Option<&'a tilo_action_policy::Bound>,
+    delegate: Option<&'a crate::state::ActingAs>,
     foreign_bound: &'a [Grant],
 ) -> Authority<'a> {
     let authority = policy.person_on_device(person, foreign, foreign_bound);
     match delegate {
-        Some(bound) => authority.bounded_by(bound.party(&policy.grants)),
+        Some(delegation) => authority.also_as(
+            policy
+                .party_of(delegation.subject())
+                .with_grants(&delegation.grants),
+        ),
         None => authority,
     }
 }
@@ -49,12 +53,12 @@ pub(in crate::state) fn check_document_read(
     policy: &WorkspacePolicy,
     person: &str,
     foreign: bool,
-    delegate: Option<&tilo_action_policy::Bound>,
+    delegate: Option<&crate::state::ActingAs>,
     (workspace, app, record): (&str, &str, &str),
     now: SystemTime,
 ) -> Result<(), String> {
     let bound = tilo_action_policy::roles::foreign_device_bound();
-    let authority = member_authority(policy, person, foreign, delegate, &bound);
+    let authority = member_authority(policy, person, foreign, delegate, bound);
     if document_read(&authority, workspace, app, record, now) {
         Ok(())
     } else {

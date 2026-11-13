@@ -31,7 +31,7 @@ impl StatePeer {
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
         let bound = roles::foreign_device_bound();
-        let authority = member.authority(&bound);
+        let authority = member.authority(bound);
         let seconds = now
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |since| since.as_secs());

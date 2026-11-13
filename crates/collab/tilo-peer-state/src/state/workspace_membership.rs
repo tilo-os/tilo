@@ -162,7 +162,7 @@ impl StatePeer {
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
         let bound = roles::foreign_device_bound();
-        let authority = member.authority(&bound);
+        let authority = member.authority(bound);
         let cx = tilo_action_policy::Context::at_time(now);
         let device = hex::encode(caller.device_public_key);
         let grants = crate::workspace::share::share_grants(
@@ -193,7 +193,7 @@ impl StatePeer {
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
         let bound = roles::foreign_device_bound();
-        let authority = member.authority(&bound);
+        let authority = member.authority(bound);
         let cx = tilo_action_policy::Context::at_time(now);
         let ended = crate::workspace::share::ended_by(
             &member.policy,
@@ -218,7 +218,7 @@ impl StatePeer {
     ) -> Result<bool, String> {
         let member = self.membership(caller.device_public_key, now)?;
         let bound = roles::foreign_device_bound();
-        let authority = member.authority(&bound);
+        let authority = member.authority(bound);
         let cx = tilo_action_policy::Context::at_time(now);
         let change = match command {
             WorkspaceMembershipCommand::Grant { grant } => Change::Grant(grant.clone()),

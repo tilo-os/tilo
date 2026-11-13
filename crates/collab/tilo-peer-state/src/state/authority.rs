@@ -21,7 +21,7 @@ pub struct MemberAuthority {
     pub foreign: bool,
     /// The bound on a delegate's device, an agent's or a bot's: its
     /// person's grants within its own, never above an Editor's.
-    pub delegate: Option<tilo_action_policy::Bound>,
+    pub delegate: Option<crate::state::ActingAs>,
 }
 /// `person`'s standing under `policy`, held to the foreign-device bound on a
 /// `foreign` device and to `delegate`'s bound on a delegate's.
@@ -29,14 +29,14 @@ fn standing_of(
     policy: impl Into<std::sync::Arc<WorkspacePolicy>>,
     person: String,
     foreign: bool,
-    delegate: Option<tilo_action_policy::Bound>,
+    delegate: Option<crate::state::ActingAs>,
 ) -> tilo_action_policy::Standing {
     let mut standing = tilo_action_policy::Standing::person(policy, person);
     if foreign {
         standing = standing.on_foreign_device();
     }
-    if let Some(bound) = delegate {
-        standing = standing.with_bound(bound);
+    if let Some(delegation) = delegate {
+        standing = standing.acting_as(delegation.actor, delegation.grants);
     }
     standing
 }
@@ -63,7 +63,7 @@ impl MemberAuthority {
     #[must_use]
     pub fn allows(&self, node: &TreePath, kind: ActionKind, now: SystemTime) -> bool {
         let bound = tilo_action_policy::roles::foreign_device_bound();
-        self.authority(&bound)
+        self.authority(bound)
             .decide(node, kind, &tilo_action_policy::Context::at_time(now))
             .answer
             == Answer::Allow
@@ -114,7 +114,7 @@ impl StatePeer {
         member
             .policy
             .check_action(
-                &member.authority(&bound),
+                &member.authority(bound),
                 action,
                 &tilo_action_policy::Context::at_time(now),
                 false,

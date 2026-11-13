@@ -455,8 +455,11 @@ impl AdmittedJoinIdentity {
             // held to the foreign-device bound there as anywhere, and an
             // agent one of them was handed to, to that delegation too.
             let policy = WorkspacePolicy::new(workspace_id, self.principal_id.clone());
-            let invoker = self.broker_actor().invoker(workspace_id);
-            return Ok(decide(&invoker.authority(&policy)));
+            let actor = self.broker_actor();
+            let acting = actor.acting();
+            let granted = actor.granted(workspace_id);
+            let authority = tilo_action_policy::Authority::of_acting(&acting, &policy, &granted);
+            return Ok(decide(&authority));
         }
         let workspace = tree
             .ok_or("the identity has no workspace authority")?

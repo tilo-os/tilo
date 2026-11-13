@@ -419,9 +419,12 @@ fn answer(
 ) -> tilo_desktop::workspace_settings::agent_access::AnswerCell {
     session.handle().read(|tree| {
         let workspace = tree.active_workspace().expect("a workspace");
-        let admission =
-            tilo_action_policy::roles::agent_turn(&workspace.policy.workspace, agent, PERSON, &[])
-                .grants;
+        let admission = tilo_action_policy::roles::agent_grants(
+            &workspace.policy.workspace,
+            agent,
+            PERSON,
+            &[],
+        );
         tilo_desktop::workspace_settings::agent_access::answer_at(
             workspace,
             agent,

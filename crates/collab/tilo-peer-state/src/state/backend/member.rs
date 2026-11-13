@@ -2,7 +2,7 @@
 use super::{GovernedIdentity, PeerCore, Role, SystemTime};
 use crate::state::MembershipError;
 use std::collections::BTreeMap;
-use tilo_action_policy::{Bound, Grant, Subject};
+use tilo_action_policy::{Grant, MemberId, Subject};
 use tilo_workspace_join::delegation::Delegate;
 
 trait Policy {
@@ -38,7 +38,7 @@ fn current<'peer, P: Policy>(
     source: &[u8; 32],
     now: SystemTime,
     collect: impl FnOnce(&'peer crate::cached_document::CachedDocument) -> Result<P, MembershipError>,
-) -> Result<(Role, Option<Bound>), MembershipError> {
+) -> Result<(Role, Option<crate::state::ActingAs>), MembershipError> {
     let cert = peer
         .certificate_typed(source, now)
         .map_err(MembershipError::from)?;
@@ -79,13 +79,19 @@ fn current<'peer, P: Policy>(
         .delegate
         .as_ref()
         .map(|row| match &row.delegation.delegate {
-            Delegate::Agent { agent_id } => tilo_action_policy::roles::agent_turn(
-                &peer.workspace,
-                agent_id,
-                person.as_str(),
-                &[],
-            ),
-            Delegate::Bot { installation } => tilo_action_policy::bot::bound(installation),
+            Delegate::Agent { agent_id } => crate::state::ActingAs {
+                actor: tilo_action_policy::Actor::Member(MemberId::agent(agent_id.clone())),
+                grants: tilo_action_policy::roles::agent_grants(
+                    &peer.workspace,
+                    agent_id,
+                    person.as_str(),
+                    &[],
+                ),
+            },
+            Delegate::Bot { installation } => crate::state::ActingAs {
+                actor: tilo_action_policy::Actor::Member(MemberId::bot(installation.clone())),
+                grants: Vec::new(),
+            },
         });
     let role = if delegate.is_some() {
         crate::state::delegates::agent_role(role)
@@ -122,7 +128,7 @@ pub(in crate::state) fn legacy(
     peer: &PeerCore,
     source: &[u8; 32],
     now: SystemTime,
-) -> Result<(Role, Option<Bound>), MembershipError> {
+) -> Result<(Role, Option<crate::state::ActingAs>), MembershipError> {
     current(peer, source, now, |workspace| {
         let data = workspace.workspace_policy(&peer.workspace);
         let key = key_text(source);

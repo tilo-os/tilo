@@ -623,7 +623,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// person's own device hands the session to that agent: the agent stays
     /// the principal, and what it may do is the person's own authority held
     /// to the delegation a device gives its agents
-    /// ([`tilo_action_policy::roles::agent_turn`]). Each session is its own
+    /// ([`tilo_action_policy::roles::agent_grants`]). Each session is its own
     /// fresh execution, retired when the session drops.
     #[must_use]
     pub fn for_agent(host: H, workspace: String, agent_id: &str, person: &str) -> Self {

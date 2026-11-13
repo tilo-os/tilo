@@ -212,7 +212,7 @@ fn rows_permitted(
     let actor = op.person();
     let foreign = op.author.capabilities.foreign && !held.is_owner(&actor);
     let bound = roles::foreign_device_bound();
-    let authority = held.person_on_device(&actor, foreign, &bound);
+    let authority = held.person_on_device(&actor, foreign, bound);
     let cx = Context::at(op.at_ns / 1_000_000);
     let writer = (actor.as_str(), &authority, &cx);
     let (before, written) = (governance_of(Some(at)), governance_of(Some(after)));
@@ -290,7 +290,7 @@ pub fn invitation_admits(
     // The owner grants itself anything, from any device of theirs, so the
     // foreign-device bound does not narrow what they invite.
     let foreign = grant.issuer.capabilities.foreign && !policy.is_owner(&issuer);
-    let authority = policy.person_on_device(&issuer, foreign, &bound);
+    let authority = policy.person_on_device(&issuer, foreign, bound);
     policy
         .check_invite(
             &issuer,

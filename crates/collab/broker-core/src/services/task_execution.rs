@@ -110,15 +110,19 @@ impl NativeTaskActionRequirement {
             return Err("this run has ended or was replaced".into());
         }
         let delegation = self.turn_authority(workspace, run, looked)?;
+        // The answers a person gave for this issue are grants naming it.
+        let issue = tilo_action_policy::Subject::Task(run.issue.clone());
         let verdict = Authority::person(
-            delegation
-                .party(&policy.grants)
-                .also_as(tilo_action_policy::Subject::Task(run.issue.clone())),
+            policy
+                .party_of(tilo_action_policy::Subject::agent(run.agent.clone()))
+                .with_grants(&delegation)
+                .also_as(issue.clone())
+                .with_grants(policy.grants_of(&issue)),
         )
         .decide(&node, self.need.kind, &cx);
         let foreign = roles::foreign_device_bound();
         let starter = policy
-            .person_on_device(&run.starter, false, &foreign)
+            .person_on_device(&run.starter, false, foreign)
             .decide(&node, self.need.kind, &cx)
             .answer;
         if !policy.is_member(&run.starter) || starter == Answer::Deny {
@@ -193,10 +197,15 @@ impl NativeTaskActionRequirement {
         workspace: &str,
         run: &TrackerRun,
         looked: Option<&tilo_action_policy::turn::Looked>,
-    ) -> Result<tilo_action_policy::Bound, String> {
+    ) -> Result<Vec<tilo_action_policy::Grant>, String> {
         use tilo_action_policy::{roles, turn};
         let Some(cause) = self.binding.turn.as_ref() else {
-            return Ok(roles::agent_turn(workspace, &run.agent, &run.starter, &[]));
+            return Ok(roles::agent_grants(
+                workspace,
+                &run.agent,
+                &run.starter,
+                &[],
+            ));
         };
         turn::authority(workspace, &run.agent, &run.starter, Some(cause), |_| {
             looked.cloned()

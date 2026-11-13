@@ -49,7 +49,7 @@ pub(crate) mod certificate_renewal;
 mod delegates;
 pub(crate) use bot_members::requests_in as bot_requests_in;
 pub use bot_members::{InstalledBot, RequestedBot};
-pub use delegates::{DelegateInactive, GovernedAgent, GovernedDelegateRow};
+pub use delegates::{ActingAs, DelegateInactive, GovernedAgent, GovernedDelegateRow};
 mod agent_runs;
 mod local_admission;
 mod local_outbox;

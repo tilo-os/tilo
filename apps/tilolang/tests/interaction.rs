@@ -315,7 +315,12 @@ fn draft(app: &mut TestApp<TlApp>) -> String {
 /// member.
 fn members_of_the_workspace(app: &mut TestApp<TlApp>) {
     use ui::permissions::policy::{self, Role, Subject};
-    let me = app.permissions().standing().person.clone();
+    let me = app
+        .permissions()
+        .standing()
+        .person_id()
+        .unwrap_or_default()
+        .to_owned();
     let id = app.permissions().standing().workspace().to_owned();
     let mut policy = policy::WorkspacePolicy::new(&id, &me);
     policy.members.insert("u_mia".to_owned(), Role::Editor);

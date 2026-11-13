@@ -1257,7 +1257,7 @@ impl super::StatePeer {
         member
             .policy
             .check_action(
-                &member.authority(&bound),
+                &member.authority(bound),
                 tilo_action_policy::roles::governance::INVITE,
                 &tilo_action_policy::Context::at_time(now),
                 false,
@@ -1280,7 +1280,7 @@ impl super::StatePeer {
             .policy
             .check_invite(
                 &member.person,
-                &member.authority(&bound),
+                &member.authority(bound),
                 role,
                 &tilo_action_policy::Context::at_time(now),
                 false,
