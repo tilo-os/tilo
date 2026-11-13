@@ -117,5 +117,9 @@ name = "it"
 path = "tests/it.rs"
 required-features = ["test-support"]
 
+[[example]]
+name = "regenerate_owner_fixture"
+required-features = ["test-support"]
+
 [lints]
 workspace = true
