@@ -1990,6 +1990,10 @@ impl AppWindow {
             }
             (Value::Text(before), _) => {
                 let text = splice_text(before, (show_at, show_at.saturating_add(delete)), &insert);
+                // Nothing of what they typed is left to make: the field shows it already.
+                if text == *before {
+                    return;
+                }
                 if let Some(message) = self.splice(key, before, text) {
                     self.out.push(message);
                 }
@@ -2029,7 +2033,14 @@ impl AppWindow {
         while !shown.is_char_boundary(start) {
             start = start.saturating_sub(1);
         }
-        (start, delete, insert)
+        // What they deleted that the field no longer shows is gone already: the app took it out
+        // meanwhile (an entry it emptied once what was typed in it was made). Only what is still
+        // there is deleted.
+        let mut end = start.saturating_add(delete).min(shown.len());
+        while !shown.is_char_boundary(end) {
+            end = end.saturating_sub(1);
+        }
+        (start, end.saturating_sub(start), insert)
     }
 
     /// What the person typed into the field of a resource the lane left: an edit of the resource

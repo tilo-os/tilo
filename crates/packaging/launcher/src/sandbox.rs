@@ -120,6 +120,8 @@ pub const INHERITED_ENV: &[&str] = &[
     "COLORTERM",
     // Without it `EnvFilter::from_default_env()` drops app diagnostics silently.
     "RUST_LOG",
+    // Without it an app's panic says what failed and never where: the trace names no secret.
+    "RUST_BACKTRACE",
 ];
 
 /// User-owned type-only accessibility preferences allowed into applications.

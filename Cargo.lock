@@ -21581,6 +21581,7 @@ dependencies = [
  "chat",
  "chrono",
  "collab-types",
+ "collaboration",
  "desktop-policy",
  "durable-store",
  "ed25519-dalek 3.0.0",

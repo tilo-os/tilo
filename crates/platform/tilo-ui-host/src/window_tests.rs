@@ -2162,3 +2162,75 @@ fn the_first_item_moves_the_windows_action_and_not_what_it_does() {
     unique.dedup();
     assert_eq!(ids.len(), unique.len(), "every node keeps an id of its own");
 }
+
+/// A list's entry clears once what was typed in it is made: the app answers the submit by setting
+/// the bound text back to nothing, while the field still holds its caret at the end of what was
+/// typed. The window shows the empty entry, the keyboard still in it, and takes the next item.
+#[test]
+fn an_entry_the_app_clears_after_its_submit_takes_the_next_item() {
+    use wire::Event;
+    let mut page = bound_page(
+        "ui.TextInput",
+        &[
+            ("entry", Value::Bool(true)),
+            ("placeholder", Value::text("New task for today")),
+        ],
+        Value::text(""),
+    );
+    if let Some(ToUi::Open { tree, .. }) = page.first_mut() {
+        tree.children[0]
+            .events
+            .insert("submit".to_owned(), Event::default());
+    }
+    let (mut app, mut harness) = drawn(&page);
+    harness.click_named("field").expect("the entry is drawn");
+    harness.type_text("Repot");
+    press(&mut harness, &[], "Enter");
+    let first = told(&mut app);
+    let acked = first
+        .iter()
+        .filter_map(|message| match message {
+            ToApp::Splice { seq, .. } => Some(*seq),
+            _ => None,
+        })
+        .max()
+        .unwrap_or_default();
+    assert!(
+        first.iter().any(|message| matches!(
+            message,
+            ToApp::Fire { event, value: Some(value), .. }
+                if event == "submit" && value == &Value::text("Repot")
+        )),
+        "the entry submits what was typed: {first:?}"
+    );
+    // The app made the item and empties the entry, as `add_entry`'s `set(typed, "")` does.
+    send(
+        &mut app,
+        &[
+            ToUi::Bound {
+                lane: Lane::Root,
+                key: "field".to_owned(),
+                value: Value::text(""),
+                acked,
+            },
+            ToUi::Took { fired: 1 },
+        ],
+    );
+    drawn_window(&mut harness).receive();
+    harness.relayout();
+    assert_eq!(
+        shown_value(&harness, "Field").unwrap_or_default(),
+        "",
+        "the entry is empty again"
+    );
+    harness.type_text("Sow");
+    press(&mut harness, &[], "Enter");
+    assert!(
+        told(&mut app).iter().any(|message| matches!(
+            message,
+            ToApp::Fire { event, value: Some(value), .. }
+                if event == "submit" && value == &Value::text("Sow")
+        )),
+        "the cleared entry takes the next item"
+    );
+}
