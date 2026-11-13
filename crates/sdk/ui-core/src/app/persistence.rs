@@ -282,12 +282,15 @@ impl App {
                     self.persistence.autosave.as_mut(),
                     self.persistence.room_index.as_mut(),
                 ) {
-                    saver.request(workspace.document_mut());
+                    let index = workspace.document_mut();
+                    index.commit();
+                    saver.request(index);
                 }
             }
             None => {
                 if let Some(saver) = self.persistence.autosave.as_mut() {
-                    saver.request(&mut self.state.doc);
+                    self.state.doc.commit();
+                    saver.request(&self.state.doc);
                 }
             }
         }
@@ -334,13 +337,16 @@ impl App {
                 self.persistence.autosave.as_mut(),
                 self.persistence.room_index.as_mut(),
             ) {
-                saver.request(workspace.document_mut());
+                let index = workspace.document_mut();
+                index.commit();
+                saver.request(index);
                 saver.flush();
             }
             return;
         }
         if let Some(saver) = self.persistence.autosave.as_mut() {
-            saver.request(&mut self.state.doc);
+            self.state.doc.commit();
+            saver.request(&self.state.doc);
             saver.flush();
         }
     }

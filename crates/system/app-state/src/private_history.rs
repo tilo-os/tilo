@@ -581,7 +581,8 @@ mod tests {
         let key = StorageKey::app("so.tilo.test");
         let owner = Rc::new(crate::DocOwner::acquire(store, key.clone()).unwrap());
         let mut doc = owner.new_document();
-        let mut writer = crate::DocWriter::start_new(&owner, &mut doc).unwrap();
+        doc.commit();
+        let mut writer = crate::DocWriter::start_new(&owner, &doc).unwrap();
         let initial = backend.drain().pop().unwrap();
         backend.acknowledge(initial.revision, Ok(())).unwrap();
         doc.put(automerge::ROOT, "body", "later edit").unwrap();
@@ -592,7 +593,8 @@ mod tests {
             receipt: Some(vec![2]),
         };
         writer.record_private_action(evidence.clone()).unwrap();
-        writer.request(&mut doc);
+        doc.commit();
+        writer.request(&doc);
         let submitted = backend.drain();
         assert_eq!(submitted.len(), 2);
         for write in submitted {
@@ -609,7 +611,8 @@ mod tests {
         }
         assert_eq!(writer.private_action_durability(), Durability::Durable);
         assert!(writer.private_actions(&doc).unwrap().is_empty());
-        writer.request_checkpoint(&mut doc);
+        doc.commit();
+        writer.request_checkpoint(&doc);
         let retry = backend.drain().pop().unwrap();
         assert_eq!(retry.key, key);
         assert!(retry.op.is_replace());
@@ -625,7 +628,8 @@ mod tests {
         let key = StorageKey::app("so.tilo.test");
         let owner = Rc::new(crate::DocOwner::acquire(store, key.clone()).unwrap());
         let mut doc = owner.new_document();
-        let mut writer = crate::DocWriter::start_new(&owner, &mut doc).unwrap();
+        doc.commit();
+        let mut writer = crate::DocWriter::start_new(&owner, &doc).unwrap();
         for write in backend.drain() {
             backend.acknowledge(write.revision, Ok(())).unwrap();
         }
@@ -652,7 +656,8 @@ mod tests {
                 assert!(backend.drain().is_empty());
             }
             assert_eq!(writer.private_action_durability(), Durability::Pending);
-            writer.request(&mut doc);
+            doc.commit();
+            writer.request(&doc);
             let pending = backend.drain();
             assert_eq!(pending.len(), 1, "one checkpoint for the entire batch");
             assert_ne!(pending[0].key, key, "shared document is unchanged");
@@ -662,7 +667,8 @@ mod tests {
             backend.acknowledge(pending[0].revision, Ok(())).unwrap();
             assert_eq!(writer.private_action_durability(), Durability::Durable);
             assert_eq!(writer.private_actions(&doc).unwrap().len(), LIMIT);
-            writer.request(&mut doc);
+            doc.commit();
+            writer.request(&doc);
             assert!(
                 backend.drain().is_empty(),
                 "clean ticks do not rewrite checkpoints"
@@ -678,7 +684,8 @@ mod tests {
         let owner = Rc::new(crate::DocOwner::acquire(store.clone(), key.clone()).unwrap());
         let mut doc = owner.new_document();
         doc.put(automerge::ROOT, "body", "saved edit").unwrap();
-        let mut writer = crate::DocWriter::start_new(&owner, &mut doc).unwrap();
+        doc.commit();
+        let mut writer = crate::DocWriter::start_new(&owner, &doc).unwrap();
         writer.try_flush().unwrap();
         let before = store.read(&key).unwrap().unwrap().bytes;
         let evidence = PrivateAction {
@@ -689,7 +696,8 @@ mod tests {
         };
         writer.record_private_action(evidence.clone()).unwrap();
         assert_eq!(writer.private_action_durability(), Durability::Pending);
-        writer.request(&mut doc);
+        doc.commit();
+        writer.request(&doc);
         writer.try_flush().unwrap();
         assert_eq!(writer.private_action_durability(), Durability::Durable);
         assert_eq!(

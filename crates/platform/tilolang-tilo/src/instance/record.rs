@@ -547,7 +547,7 @@ impl InstanceRecord {
             return;
         };
         for (chunk, writer) in &mut writers.chunks {
-            if let Some(doc) = chunks.mirror_mut(*chunk) {
+            if let Some(doc) = chunks.mirror(*chunk) {
                 writer.request(doc);
             }
             writer.flush();
@@ -566,7 +566,7 @@ impl InstanceRecord {
         let Some(writers) = writers.as_mut() else {
             return;
         };
-        let Some(doc) = chunks.mirror_mut(chunk) else {
+        let Some(doc) = chunks.mirror(chunk) else {
             return;
         };
         if let Some(writer) = writers.start(route, chunk) {
@@ -950,7 +950,7 @@ impl InstanceRecord {
     ) -> Result<Option<Json>, RecordError> {
         let action = HostHistoryEdit::new(edit.clone(), self.words.clone());
         let encoded = action.encoded().map_err(RecordError::Refused)?;
-        let before = self.open_chunk(chunk).get_heads();
+        let before = self.open_chunk(chunk).committed_heads();
         // The verb's change is a step of its own, or a part of the one action an undo or redo
         // across chunks is (`ambient`'s invocation).
         let invocation = ambient
@@ -959,13 +959,12 @@ impl InstanceRecord {
         let context = ActionContext::for_resource(resource, kind, kind)
             .with_source_invocation(Some(invocation));
         self.apply_on(chunk, &action, encoded, context, invoker, ambient)?;
-        let Some(doc) = self.chunks.mirror_mut(chunk) else {
+        let Some(doc) = self.chunks.mirror(chunk) else {
             return Err(RecordError::Refused(format!(
                 "chunk {chunk} is not held, though its change was taken"
             )));
         };
-        let after = doc.get_heads();
-        let patches = doc.diff(&before, &after);
+        let patches = doc.committed_diff(&before, &doc.committed_heads());
         Ok(verbs::result(edit.verb(), doc, &patches, &self.words))
     }
 
@@ -1000,9 +999,8 @@ impl InstanceRecord {
             .filter_map(|(chunk, doc)| {
                 let sent = self.sent.get(&chunk).map_or(&[][..], Vec::as_slice);
                 if sent.is_empty() {
-                    let document = doc.committed_document();
-                    return (!document.get_heads().is_empty())
-                        .then(|| (chunk, DocumentMutation::Snapshot(document.save())));
+                    return (!doc.committed_heads().is_empty())
+                        .then(|| (chunk, DocumentMutation::Snapshot(doc.save_committed())));
                 }
                 let change = doc.committed_document().save_after(sent);
                 (!change.is_empty()).then_some((chunk, DocumentMutation::Incremental(change)))
@@ -1210,7 +1208,7 @@ impl InstanceRecord {
         let Some(doc) = self.chunks.mirror(chunk) else {
             return;
         };
-        let request = CollabRequest::document_snapshot(doc.committed_document().save());
+        let request = CollabRequest::document_snapshot(doc.save_committed());
         if let Err(error) = self.send_on(chunk, request) {
             tracing::warn!(chunk, %error, "workspace: a snapshot for a late joiner was not sent");
         }
@@ -1441,7 +1439,7 @@ impl InstanceRecord {
         let context = context.with_invoker(invoker);
         let before = {
             let doc = self.open_chunk(chunk);
-            let before = doc.get_heads();
+            let before = doc.committed_heads();
             tilo_actions::apply_local_with_context(
                 doc,
                 action,

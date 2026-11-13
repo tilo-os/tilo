@@ -3,7 +3,8 @@
 //! [`DocOwner`] owns one key, exclusively or as one of its shared writers:
 //! it leases the key, decodes and validates what is stored without
 //! publishing anything, and accepts a candidate only once its exact source
-//! bytes are still current. [`DocWriter`] then persists the live document:
+//! bytes are still current. [`DocWriter`] then persists the live document's
+//! committed changes (never a transaction still open):
 //! `save_after(sent_heads)` appends until the appended volume outgrows the
 //! compacted base, then one full save. It never blocks and owns no thread:
 //! the store accepts each write at once, and the writer maps store revisions
@@ -504,9 +505,9 @@ impl DocWriter {
     /// # Errors
     /// As [`Self::try_start`], or when the store refuses the first write; the
     /// claim is released either way.
-    pub fn start_new(owner: &Rc<DocOwner>, doc: &mut AutoCommit) -> Result<Self, StoreError> {
+    pub fn start_new(owner: &Rc<DocOwner>, doc: &AutoCommit) -> Result<Self, StoreError> {
         let mut writer = Self::try_start(owner)?;
-        let heads = doc.get_heads();
+        let heads = doc.committed_heads();
         writer.send_full(doc, heads)?;
         Ok(writer)
     }
@@ -552,11 +553,11 @@ impl DocWriter {
 
     /// Treat `doc` as exactly what is already stored: its heads are durable
     /// and later requests append only what follows them.
-    pub fn seed(&mut self, doc: &mut AutoCommit) {
+    pub fn seed(&mut self, doc: &AutoCommit) {
         let Some(owner) = &self.owner else {
             return;
         };
-        self.sent = doc.get_heads();
+        self.sent = doc.committed_heads();
         self.base = owner
             .stored()
             .ok()
@@ -566,10 +567,11 @@ impl DocWriter {
         self.progress.get_mut().durable = Some(self.sent.clone());
     }
 
-    /// Submit the changes `doc` has beyond what was last submitted. Cheap when
-    /// nothing changed. Does nothing while a failure is outstanding, so a
-    /// failed writer never closes the caller's typing transaction.
-    pub fn request(&mut self, doc: &mut AutoCommit) {
+    /// Submit the committed changes `doc` has beyond what was last submitted.
+    /// Cheap when nothing changed. Does nothing while a failure is
+    /// outstanding. A transaction still open is not stored, and stays open:
+    /// whoever wants it stored commits it first.
+    pub fn request(&mut self, doc: &AutoCommit) {
         self.settle();
         if self.owner.is_none() || self.progress.get_mut().error.is_some() {
             return;
@@ -667,16 +669,16 @@ impl DocWriter {
         }
     }
 
-    fn request_changed(&mut self, doc: &mut AutoCommit) -> Result<(), StoreError> {
+    fn request_changed(&mut self, doc: &AutoCommit) -> Result<(), StoreError> {
         self.checkpoint_private_history();
-        let heads = doc.get_heads();
+        let heads = doc.committed_heads();
         if heads == self.sent {
             return Ok(());
         }
         if self.base == 0 || self.appended >= self.base.max(MIN_COMPACT_BYTES) {
             self.send_full(doc, heads)
         } else {
-            let bytes = doc.save_after(&self.sent);
+            let bytes = doc.committed_document().save_after(&self.sent);
             let len = bytes.len();
             self.submit(WriteOp::Append(bytes), heads).map(|()| {
                 self.appended = self.appended.saturating_add(len);
@@ -691,7 +693,7 @@ impl DocWriter {
     ///
     /// # Errors
     /// Returns a disabled writer or a synchronous store submission refusal.
-    pub fn offer(&mut self, doc: &mut AutoCommit) -> Result<(), String> {
+    pub fn offer(&mut self, doc: &AutoCommit) -> Result<(), String> {
         self.settle();
         if self.owner.is_none() {
             return Err(self
@@ -699,7 +701,7 @@ impl DocWriter {
                 .unwrap_or_else(|| "writer disabled".to_owned()));
         }
         let result = if self.last_error().is_some() {
-            let heads = doc.get_heads();
+            let heads = doc.committed_heads();
             self.send_full(doc, heads)
         } else {
             self.request_changed(doc)
@@ -712,12 +714,12 @@ impl DocWriter {
 
     /// Submit the full current document regardless of what was submitted
     /// before — the one write that clears an outstanding failure.
-    pub fn request_checkpoint(&mut self, doc: &mut AutoCommit) {
+    pub fn request_checkpoint(&mut self, doc: &AutoCommit) {
         self.settle();
         if self.owner.is_none() {
             return;
         }
-        let heads = doc.get_heads();
+        let heads = doc.committed_heads();
         if let Err(error) = self.send_full(doc, heads) {
             self.refuse(&error);
         }
@@ -725,7 +727,7 @@ impl DocWriter {
     }
 
     /// [`Self::request`] normally, [`Self::request_checkpoint`] after a failure.
-    pub fn save(&mut self, doc: &mut AutoCommit) {
+    pub fn save(&mut self, doc: &AutoCommit) {
         if self.last_error().is_some() {
             self.request_checkpoint(doc);
         } else {
@@ -740,12 +742,8 @@ impl DocWriter {
         self.call_settle_wakes();
     }
 
-    fn send_full(
-        &mut self,
-        doc: &mut AutoCommit,
-        heads: Vec<ChangeHash>,
-    ) -> Result<(), StoreError> {
-        let bytes = doc.save();
+    fn send_full(&mut self, doc: &AutoCommit, heads: Vec<ChangeHash>) -> Result<(), StoreError> {
+        let bytes = doc.save_committed();
         let len = bytes.len();
         let hint = load_hint::encode(&bytes, doc.committed_document().change_hashes());
         self.submit(WriteOp::Replace(bytes), heads)?;
@@ -1126,9 +1124,11 @@ mod tests {
         );
         let mut doc = owner.new_document();
         let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
-        let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+        doc.commit();
+        let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
         doc.splice_text(&body, 0, 0, "draft").unwrap();
-        writer.request(&mut doc);
+        doc.commit();
+        writer.request(&doc);
         assert!(
             writer.try_flush().is_err(),
             "a flush that must prove durability still says nothing is committed yet"
@@ -1146,7 +1146,8 @@ mod tests {
 
         // What the host could not commit is said.
         doc.splice_text(&body, 5, 0, "!").unwrap();
-        writer.request(&mut doc);
+        doc.commit();
+        writer.request(&doc);
         for write in queued.drain() {
             queued
                 .acknowledge(write.revision, Err("the disk is full".into()))
@@ -1177,7 +1178,8 @@ mod tests {
             let mut doc = owner.new_document();
             let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
             doc.splice_text(&body, 0, 0, "stored").unwrap();
-            let writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+            doc.commit();
+            let writer = DocWriter::start_new(&owner, &doc).unwrap();
             writer.try_flush().unwrap();
         }
 
@@ -1208,6 +1210,48 @@ mod tests {
         );
     }
 
+    /// What a writer stores is what is committed: a transaction someone
+    /// still holds open is neither stored nor committed by a full save or
+    /// an append, and is still open after both.
+    #[test]
+    fn a_writer_stores_only_committed_changes_and_leaves_a_transaction_open() {
+        for subject in Subject::all() {
+            let owner = subject.owner("pending");
+            let mut doc = owner.new_document();
+            doc.put(ROOT, "kept", "first").unwrap();
+            doc.commit();
+            doc.put(ROOT, "pending", "full").unwrap();
+            let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
+            doc.rollback();
+            doc.put(ROOT, "kept", "second").unwrap();
+            doc.commit();
+            doc.put(ROOT, "pending", "append").unwrap();
+            writer.request(&doc);
+            subject.flush(&writer).unwrap();
+            assert_eq!(doc.pending_ops(), 1, "{}", subject.name);
+            assert_eq!(
+                writer.durability_snapshot().durable_heads,
+                Some(doc.committed_heads()),
+                "{}",
+                subject.name
+            );
+            drop((writer, owner));
+            let reopened = subject.reopen("pending");
+            assert_eq!(
+                reopened.get(ROOT, "kept").unwrap().unwrap().0.into_string(),
+                Ok("second".to_owned()),
+                "{}",
+                subject.name
+            );
+            assert_eq!(
+                reopened.get(ROOT, "pending").unwrap(),
+                None,
+                "{}",
+                subject.name
+            );
+        }
+    }
+
     fn text(doc: &AutoCommit, key: &str) -> String {
         let (_, id) = doc.get(ROOT, key).unwrap().unwrap();
         doc.text(&id).unwrap()
@@ -1225,10 +1269,12 @@ mod tests {
                 let owner = subject.owner("burst");
                 let mut doc = owner.new_document();
                 let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
-                let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+                doc.commit();
+                let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
                 for (i, ch) in "persisted".chars().enumerate() {
                     doc.splice_text(&body, i, 0, &ch.to_string()).unwrap();
-                    writer.request(&mut doc);
+                    doc.commit();
+                    writer.request(&doc);
                 }
                 subject.flush(&writer).unwrap();
                 assert_eq!(
@@ -1251,11 +1297,13 @@ mod tests {
                 let mut doc = owner.new_document();
                 let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
                 doc.splice_text(&body, 0, 0, "seed").unwrap();
-                let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+                doc.commit();
+                let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
                 subject.flush(&writer).unwrap();
                 for i in 0..50 {
                     doc.splice_text(&body, 4 + i, 0, "y").unwrap();
-                    writer.request(&mut doc);
+                    doc.commit();
+                    writer.request(&doc);
                 }
                 subject.flush(&writer).unwrap();
                 assert_eq!(writer.full_writes(), 1, "{}", subject.name);
@@ -1264,7 +1312,8 @@ mod tests {
                 // passes the compaction floor.
                 for i in 0..1200 {
                     doc.splice_text(&body, 54 + i, 0, "z").unwrap();
-                    writer.request(&mut doc);
+                    doc.commit();
+                    writer.request(&doc);
                 }
                 subject.flush(&writer).unwrap();
                 assert!(writer.full_writes() >= 2, "{}", subject.name);
@@ -1282,14 +1331,17 @@ mod tests {
             for subject in Subject::all() {
                 let owner = subject.owner("status");
                 let mut doc = owner.new_document();
-                let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+                doc.commit();
+                let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
                 subject.flush(&writer).unwrap();
                 doc.put(ROOT, "value", 1_u64).unwrap();
-                writer.request(&mut doc);
+                doc.commit();
+                writer.request(&doc);
                 let older = doc.get_heads();
                 subject.flush(&writer).unwrap();
                 doc.put(ROOT, "value", 2_u64).unwrap();
-                writer.request(&mut doc);
+                doc.commit();
+                writer.request(&doc);
                 if subject.name != "memory" {
                     assert_eq!(
                         writer.durability_snapshot().durable_heads,
@@ -1316,23 +1368,26 @@ mod tests {
                 let owner = subject.owner("failure");
                 let mut doc = owner.new_document();
                 doc.put(ROOT, "body", "original").unwrap();
-                let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+                doc.commit();
+                let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
                 subject.flush(&writer).unwrap();
                 let acknowledged = writer.durability_snapshot().durable_heads;
                 if let Some(fs) = &subject.faults {
                     fs.faults().append_prefix = Some(8);
                 }
                 doc.put(ROOT, "body", "partial").unwrap();
-                writer.request(&mut doc);
+                doc.commit();
+                writer.request(&doc);
                 subject.pump_with(&Err("quota".into()));
                 assert!(writer.try_flush().is_err(), "{}", subject.name);
                 assert_eq!(writer.durability_snapshot().durable_heads, acknowledged);
                 doc.put(ROOT, "body", "latest").unwrap();
                 let pending = doc.pending_ops();
-                writer.request(&mut doc);
+                writer.request(&doc);
                 assert_eq!(doc.pending_ops(), pending, "{}", subject.name);
                 assert!(writer.try_flush().is_err(), "{}", subject.name);
-                writer.save(&mut doc);
+                doc.commit();
+                writer.save(&doc);
                 subject.flush(&writer).unwrap();
                 assert_eq!(writer.last_error(), None, "{}", subject.name);
                 assert_eq!(
@@ -1358,9 +1413,10 @@ mod tests {
                 doc.put(ROOT, "body", "stored").unwrap();
                 store_raw_leased(&subject, &owner, doc.save());
                 let mut writer = DocWriter::try_start(&owner).unwrap();
-                writer.seed(&mut doc);
+                writer.seed(&doc);
                 doc.put(ROOT, "body", "edited").unwrap();
-                writer.request(&mut doc);
+                doc.commit();
+                writer.request(&doc);
                 subject.flush(&writer).unwrap();
                 assert_eq!(
                     (writer.full_writes(), writer.appends()),
@@ -1386,9 +1442,11 @@ mod tests {
         doc.put(ROOT, "body", "typed").unwrap();
         {
             let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
-            let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+            doc.commit();
+            let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
             doc.put(ROOT, "body", "typed more").unwrap();
-            writer.save(&mut doc);
+            doc.commit();
+            writer.save(&doc);
             writer
                 .try_flush()
                 .expect("accepted writes are not a failure");
@@ -1542,7 +1600,8 @@ mod tests {
                     DocOwner::acquire_shared(Rc::clone(&subject.store), key.clone()).unwrap(),
                 );
                 let mut doc = primary.new_document();
-                let writer = DocWriter::start_new(&primary, &mut doc).unwrap();
+                doc.commit();
+                let writer = DocWriter::start_new(&primary, &doc).unwrap();
                 subject.flush(&writer).unwrap();
                 let secondary = Rc::new(
                     DocOwner::acquire_shared(Rc::clone(&subject.store), key.clone()).unwrap(),
@@ -1550,7 +1609,8 @@ mod tests {
                 assert_ne!(secondary.actor(), primary.actor(), "{}", subject.name);
                 let mut other = secondary.new_document();
                 other.put(ROOT, "from", "secondary").unwrap();
-                let second = DocWriter::start_new(&secondary, &mut other).unwrap();
+                other.commit();
+                let second = DocWriter::start_new(&secondary, &other).unwrap();
                 subject.flush(&second).unwrap();
                 let actor = primary.actor();
                 drop((writer, second, primary, secondary));
@@ -1563,8 +1623,10 @@ mod tests {
             let mut writer = DocWriter::disabled("no storage");
             let mut doc = AutoCommit::new();
             doc.put(ROOT, "k", "v").unwrap();
-            writer.request(&mut doc);
-            writer.request_checkpoint(&mut doc);
+            doc.commit();
+            writer.request(&doc);
+            doc.commit();
+            writer.request_checkpoint(&doc);
             assert!(!writer.is_enabled());
             assert_eq!(writer.last_error().as_deref(), Some("no storage"));
             assert!(writer.try_flush().is_err());
@@ -1588,7 +1650,8 @@ mod tests {
                 doc.commit();
             }
         }
-        let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+        doc.commit();
+        let mut writer = DocWriter::start_new(&owner, &doc).unwrap();
         writer.try_flush().unwrap();
         let saved = store.read(&key).unwrap().unwrap().bytes;
         assert!(saved.len() >= load_hint::MIN_HINTED_BYTES);
@@ -1598,7 +1661,8 @@ mod tests {
 
         // A later edit is appended after the hinted chunk.
         doc.put(ROOT, "later", "appended").unwrap();
-        writer.request(&mut doc);
+        doc.commit();
+        writer.request(&doc);
         writer.try_flush().unwrap();
         let stored = store.read(&key).unwrap().unwrap().bytes;
         assert!(stored.len() > saved.len() && stored.starts_with(&saved));

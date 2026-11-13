@@ -466,3 +466,13 @@ before. The marked spots are `TILO(actor-renumber)`, `TILO(actor-at-end)`
 and `TILO(work-count)` in `op_set.rs` and `work.rs`. Pinned by
 `tilolang-tilo`'s `chunks` budget test, which holds what a card added to a
 board renumbers at 4,000 cards to what it does at 1,000. Upstreamable.
+
+# Tilo patch: save the committed document while a transaction is open
+
+A transaction's ops sit in the op set from the moment they are made, so
+`committed_document().save()` stored them, and the overwrites they make,
+without the change that would hold them. `AutoCommit::save_committed` saves
+what is committed and leaves the transaction open: a disk writer that shares
+a document with code holding a transaction never stores, or commits, that
+code's pending writes. Pinned by
+`crates/doc/tilo-automerge/tests/committed_readers.rs`.

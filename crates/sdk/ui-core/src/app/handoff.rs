@@ -63,11 +63,14 @@ impl App {
                 self.persistence.autosave.as_mut(),
                 self.persistence.room_index.as_mut(),
             ) {
-                saver.request(index.document_mut());
+                let index = index.document_mut();
+                index.commit();
+                saver.request(index);
                 saver.flush();
             }
         } else if let Some(saver) = self.persistence.autosave.as_mut() {
-            saver.request(&mut self.state.doc);
+            self.state.doc.commit();
+            saver.request(&self.state.doc);
             saver.flush();
         }
         match self

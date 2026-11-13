@@ -1413,10 +1413,11 @@ mod tests {
             let mut doc = run1.load_or_new();
             let mut autosave1 = run1.writer();
             assert!(autosave1.is_enabled(), "run 1 must persist, not fall back");
-            autosave1.seed(&mut doc);
+            autosave1.seed(&doc);
             doc.put(&ROOT, "note", ScalarValue::Str("survives".into()))
                 .unwrap();
-            autosave1.request(&mut doc);
+            doc.commit();
+            autosave1.request(&doc);
             autosave1.flush();
             assert_eq!(autosave1.last_error(), None, "no write may have failed");
             drop(autosave1);

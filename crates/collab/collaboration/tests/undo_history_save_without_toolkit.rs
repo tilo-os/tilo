@@ -69,7 +69,8 @@ fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
         RecordSaveStatus::of_writer(&doc, &writer),
         RecordSaveStatus::Saved
     );
-    writer.request(&mut doc);
+    doc.commit();
+    writer.request(&doc);
     writer.flush();
     assert_eq!(
         RecordSaveStatus::of_writer(&doc, &writer),
@@ -106,7 +107,8 @@ fn a_record_keeps_its_undo_history_and_save_state_without_the_toolkit() {
     assert_eq!(step_authors(&mut doc), ["ada", "ada", "ada"]);
 
     // Saved: the writer reports it once the store holds it.
-    writer.request(&mut doc);
+    doc.commit();
+    writer.request(&doc);
     writer.flush();
     assert_eq!(
         RecordSaveStatus::of_writer(&doc, &writer),

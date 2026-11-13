@@ -19,7 +19,7 @@ pub(super) fn finish(
         Ok::<_, String>(doc)
     })??;
     let loaded = store.load_complete().map_err(|error| error.to_string())?;
-    let mut doc = if let Some(mut existing) = loaded {
+    let doc = if let Some(mut existing) = loaded {
         validate(&existing)
             .map_err(|error| format!("existing canonical cache refused: {error}"))?;
         existing
@@ -40,7 +40,7 @@ pub(super) fn finish(
             .last_error()
             .unwrap_or_else(|| "canonical writer unavailable".to_string()));
     }
-    writer.request(&mut doc);
+    writer.request(&doc);
     read.applied();
     Ok((doc, writer))
 }
