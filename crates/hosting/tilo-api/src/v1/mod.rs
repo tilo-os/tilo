@@ -505,23 +505,10 @@ impl<'a> Caller<'a> {
                 let args = json!({"invocation_id": run, "cancel": true});
                 action_answer(self.call("tilo_status", args).await?, &ws)
             }
+            // Exactly what the run changed, in every record, as the host takes a run back.
             "undoRun" => {
-                let status = self
-                    .call("tilo_status", json!({"invocation_id": run}))
-                    .await?;
-                let resource = status
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .and_then(|path| path.split_once('#'))
-                    .map(|(resource, _)| resource.to_owned())
-                    .ok_or_else(|| {
-                        ApiError::new(
-                            "not_found",
-                            "this run names no resource, so there is no step of its app to take back",
-                        )
-                    })?;
-                let undo = json!({"path": format!("{resource}#undo"), "args": {"steps": 1}});
-                action_answer(self.call("tilo_do", undo).await?, &ws)
+                let args = json!({"invocation_id": run, "undo": true});
+                action_answer(self.call("tilo_status", args).await?, &ws)
             }
             _ => Ok(Answer::Stream(events::stream(
                 events::Watch::new(Arc::clone(&self.session), ws, None, None),

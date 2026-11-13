@@ -446,3 +446,104 @@ async fn a_key_its_program_holds_reaches_the_host_directly() {
         "{apps}"
     );
 }
+
+/// What a hosted workspace answers a key besides actions: what changed in it,
+/// as it changes; search over what it holds; and a run taken back whole.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hosted_workspace_streams_changes_finds_and_undoes_runs() {
+    let on_relay = api_on_relay(ISSUER).await;
+    let api = Arc::clone(&on_relay.api);
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let backend = V1 {
+        api: &api,
+        token: approved_key(&on_relay, &ada, &page, "Notes backend").await,
+    };
+    let (status, made) = backend
+        .post("/v1/workspaces", &json!({"name": "Letters"}), &[])
+        .await;
+    assert_eq!(status, 201, "{made}");
+    let base = format!("/v1/workspaces/{}", made["id"].as_str().unwrap());
+    let mut stream = backend
+        .send(hyper::Method::GET, &format!("{base}/events"), b"", &[])
+        .await
+        .into_body();
+
+    let run_headers = [
+        ("tilo-run", "letter"),
+        ("tilo-run-title", "Write the letter"),
+    ];
+    let (status, opened) = backend
+        .post(
+            &format!("{base}/resources/word-processor/actions/open"),
+            &json!({}),
+            &run_headers,
+        )
+        .await;
+    assert_eq!(status, 200, "{opened}");
+    let (status, written) = backend
+        .post(
+            &format!("{base}/resources/word-processor/actions/append-paragraph"),
+            &json!({"text": "Gooseberry jam for the embassy"}),
+            &run_headers,
+        )
+        .await;
+    assert_eq!(status, 200, "{written}");
+    let run = written["run"].as_str().unwrap().to_owned();
+
+    // Search finds what the workspace holds.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let found = loop {
+        let (status, found) = backend.get(&format!("{base}/search?q=Gooseberry")).await;
+        assert_eq!(status, 200, "a hosted workspace answers search: {found}");
+        if found["hits"]
+            .as_array()
+            .is_some_and(|hits| !hits.is_empty())
+            || tokio::time::Instant::now() > deadline
+        {
+            break found;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    };
+    assert!(
+        found["hits"].to_string().contains("word-processor"),
+        "{found}"
+    );
+
+    // The run is taken back whole, by its id.
+    let (status, undone) = backend
+        .post(
+            &format!("{base}/runs/{run}/undo"),
+            &json!({}),
+            &[("idempotency-key", "undo-letter")],
+        )
+        .await;
+    assert_eq!((status, &undone["status"]), (200, &json!("ok")), "{undone}");
+    assert!(
+        undone["undone"]
+            .as_array()
+            .is_some_and(|undone| !undone.is_empty()),
+        "{undone}"
+    );
+    let (_, document) = backend
+        .get(&format!("{base}/resources/word-processor"))
+        .await;
+    assert!(
+        !document.to_string().contains("Gooseberry"),
+        "the paragraph is gone: {document}"
+    );
+
+    // Record changes come down the stream, not only runs.
+    let mut seen = String::new();
+    let within = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !seen.contains("event: change") {
+        let frame = tokio::time::timeout_at(within, stream.frame())
+            .await
+            .unwrap_or_else(|_| panic!("a change comes down the stream within 30 s: {seen}"))
+            .expect("the stream stays open")
+            .unwrap();
+        if let Ok(data) = frame.into_data() {
+            seen.push_str(&String::from_utf8_lossy(&data));
+        }
+    }
+}
