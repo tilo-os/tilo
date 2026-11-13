@@ -28,7 +28,6 @@ impl PropName {
     }
 }
 
-/// Properties the Tilo clients request.
 pub mod props {
     use super::PropName;
 

@@ -282,7 +282,6 @@ fn names<'a>(list: &[&'a str]) -> BTreeSet<&'a str> {
     list.iter().copied().collect()
 }
 
-/// The profile's fields, or `None` when the image has no hardware profile.
 pub fn read_profile(root: &Root) -> Result<Option<Map<String, Value>>> {
     if !root.present(PROFILE_PATH) {
         require(
@@ -362,7 +361,6 @@ fn relative_path(value: &Value) -> Result<usize> {
     Ok(parts.len())
 }
 
-/// `PurePath(text).suffix`.
 fn suffix(text: &str) -> &str {
     let name = text.rsplit('/').next().unwrap_or(text);
     match name.rfind('.') {

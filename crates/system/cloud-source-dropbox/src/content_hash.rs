@@ -66,7 +66,6 @@ impl ContentHasher {
         (self.in_block == 0).then(|| self.blocks.iter().map(hex::encode).collect())
     }
 
-    /// The final hash, lowercase hex.
     pub fn finish(mut self) -> String {
         if self.in_block > 0 {
             self.close_block();

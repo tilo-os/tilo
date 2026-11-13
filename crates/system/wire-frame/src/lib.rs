@@ -280,10 +280,7 @@ pub enum FrameError {
     /// turns that into this error.
     Closed,
     EmptyFrame,
-    /// A received prefix declared this many bytes, more than the limit.
     TooLarge(usize),
-    /// A payload of this many bytes is larger than the limit, so it was not
-    /// sent.
     PayloadTooLarge(usize),
     #[cfg(feature = "postcard")]
     Encode(postcard::Error),

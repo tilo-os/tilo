@@ -112,10 +112,6 @@ impl Registry {
         self.directory.path()
     }
 
-    /// Runs one verification command with these credentials.
-    ///
-    /// # Errors
-    /// See [`command::run`].
     pub fn run(&self, arguments: &[&str]) -> Result<String> {
         command::run(
             arguments,

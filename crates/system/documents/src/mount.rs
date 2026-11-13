@@ -44,7 +44,6 @@ const ROOT: u64 = 1;
 /// that mounted it ends without dropping it.
 pub struct Mounted {
     _session: fuser::BackgroundSession,
-    /// Removes the mount where this process could not drop it.
     _guardian: Guardian,
     at: PathBuf,
 }
@@ -177,7 +176,6 @@ enum Node {
     Workspace(String),
     App(AppKey),
     Token(AppKey, String),
-    /// A path in a document: its first component is the document's name.
     Entry(AppKey, String, PathBuf),
 }
 

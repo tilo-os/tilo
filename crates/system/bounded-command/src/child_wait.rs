@@ -11,14 +11,10 @@ use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, FromRawFd as _, OwnedFd};
 use std::process::{Child, ExitStatus};
 use std::time::{Duration, Instant};
 
-/// Why [`wait_child_or`] returned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wakeup {
-    /// The child exited and has been reaped.
     Exited(ExitStatus),
-    /// The wake descriptor became readable. The caller drains it.
     Woken,
-    /// The deadline passed before either.
     Deadline,
 }
 

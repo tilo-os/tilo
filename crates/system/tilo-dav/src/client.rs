@@ -102,7 +102,6 @@ impl DavClient {
         self.redirects == Redirects::Refuse
     }
 
-    /// `PROPFIND` for `props` at `depth`.
     pub fn propfind(
         &self,
         url: impl IntoUrl,
@@ -149,7 +148,6 @@ impl DavClient {
         send(apply(request, precondition))
     }
 
-    /// `DELETE` under `precondition`.
     pub fn delete(
         &self,
         url: impl IntoUrl,

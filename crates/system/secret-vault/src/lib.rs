@@ -45,7 +45,6 @@ pub const KEY_FILE: &str = "vault.key";
 /// never printed by `Debug`.
 pub type VaultKey = tilo_seal::SymmetricKey;
 
-/// Copy exactly [`KEY_LEN`] bytes into a [`VaultKey`].
 fn key_from_bytes(bytes: &[u8]) -> Option<VaultKey> {
     VaultKey::from_slice(bytes).ok()
 }

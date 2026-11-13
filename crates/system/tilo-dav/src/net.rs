@@ -146,7 +146,6 @@ impl DavClient {
         send(apply(request, precondition)).await
     }
 
-    /// `DELETE` under `precondition`.
     pub async fn delete(
         &self,
         url: &str,

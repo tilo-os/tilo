@@ -95,7 +95,6 @@ impl PendingGoogleCalendar {
         })
     }
 
-    /// Resolve the Google Drive mount from this combined consent grant.
     pub fn resolve_storage(&self, custody: &Custodian) -> Result<serde_json::Value, String> {
         custody
             .resolve_storage(account_custody::OAuthCloud::GoogleDrive, &self.tokens)

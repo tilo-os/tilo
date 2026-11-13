@@ -242,7 +242,6 @@ fn selected(args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
-/// The command line, without the program name; returns the exit status.
 #[must_use]
 pub fn main(args: &[String]) -> i32 {
     if let [command, override_ref] = args

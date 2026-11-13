@@ -58,14 +58,11 @@ use tilo_lock::MutexRecover as _;
 /// Default bytes per upload-session chunk: a multiple of the 4 MiB hash block, so a
 /// resumed session can keep verifying the whole file.
 pub const DEFAULT_UPLOAD_CHUNK: u64 = 8 * 1024 * 1024;
-/// Largest body Dropbox accepts in one upload request.
 pub const MAX_UPLOAD_REQUEST: u64 = 150 * 1024 * 1024;
-/// Long-poll timeouts Dropbox accepts, in seconds.
 const LONGPOLL_SECONDS: std::ops::RangeInclusive<u64> = 30..=480;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DropboxConfig {
-    /// The mounted folder: `""` for the whole account, else `/Some/Folder`.
     pub root: String,
     #[serde(default)]
     pub endpoints: Endpoints,
@@ -73,7 +70,6 @@ pub struct DropboxConfig {
     /// team space; see [`DropboxSource::team_root`].
     #[serde(default)]
     pub path_root: Option<String>,
-    /// Bytes per upload-session chunk; smaller files go in one request.
     pub upload_chunk: u64,
     #[serde(default)]
     pub page_limit: Option<u32>,
@@ -133,8 +129,6 @@ fn check_name(name: &str) -> Result<()> {
 }
 
 impl DropboxSource {
-    /// A source for `config` authenticating with `credentials` (a Bearer token). No
-    /// request is made until the first call.
     pub fn new(config: DropboxConfig, credentials: Arc<dyn CredentialSource>) -> Result<Self> {
         let mut config = config;
         config.root = normalize_root(&config.root);
@@ -470,7 +464,6 @@ impl DropboxSource {
         })
     }
 
-    /// Fail with a conflict unless `id` is at `expect`.
     fn check_revision(&self, id: &ItemId, expect: &Revision) -> Result<Entry> {
         if !is_rev(expect) {
             return Err(Error::Conflict { current: None });

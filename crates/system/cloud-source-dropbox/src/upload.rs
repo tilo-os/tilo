@@ -23,7 +23,6 @@ enum Mode {
     Update(String),
 }
 
-/// Where the upload is committed and under which write mode.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Commit {
     path: String,

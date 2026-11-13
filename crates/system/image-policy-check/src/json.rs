@@ -20,7 +20,6 @@ pub enum Json {
 }
 
 impl Json {
-    /// `value.get(key)` on an object.
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&Self> {
         match self {

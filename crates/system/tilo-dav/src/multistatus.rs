@@ -72,11 +72,9 @@ pub struct Multistatus {
     /// The RFC 6578 `sync-token` that is a direct child of the root, as a
     /// `sync-collection` REPORT returns it. Trimmed; `None` when absent/empty.
     pub sync_token: Option<String>,
-    /// Every `response`, in document order.
     pub responses: Vec<Response>,
 }
 
-/// One `response` element.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Response {
     /// The first `href`, trimmed and exactly as the server spelled it.
@@ -84,7 +82,6 @@ pub struct Response {
     /// The response-level status code (a whole-resource status such as the
     /// 404 a `sync-collection` report uses for removed members).
     pub status: Option<u16>,
-    /// Every `propstat`, in document order.
     pub propstats: Vec<Propstat>,
 }
 

@@ -102,14 +102,15 @@ const KEY_FIELDS: [&str; 4] = ["type", "keyPath", "rekorPublicKeyPath", "signedI
 const CHAIN_FIELDS: [&str; 4] = ["type", "fulcio", "rekorPublicKeyPath", "signedIdentity"];
 const FULCIO_FIELDS: [&str; 3] = ["caPath", "oidcIssuer", "subjectEmail"];
 
-/// What this image's release signature is anchored in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Trust {
-    /// The pinned release key, `PINNED_KEY`.
     Key,
     /// A certificate for `identity`, of the epoch `issuer` names, issued by
     /// the offline root `INSTALLED_ROOT`.
-    Chain { issuer: String, identity: String },
+    Chain {
+        issuer: String,
+        identity: String,
+    },
 }
 
 impl Trust {

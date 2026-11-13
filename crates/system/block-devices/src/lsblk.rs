@@ -30,7 +30,6 @@ pub struct BlockDevice {
     pub tran: Option<String>,
     pub rotational: bool,
     pub removable: bool,
-    /// `RO`.
     pub read_only: bool,
     pub fstype: Option<String>,
     /// `FSVER`: the filesystem's or container's version, `2` for LUKS2.

@@ -48,8 +48,6 @@ impl Target {
         }
     }
 
-    /// The folder every access to this target starts from, and the path resolved beneath
-    /// it.
     fn anchor(&self) -> (PathBuf, PathBuf, ResolveFlags) {
         match self.document.kind {
             Kind::Folder { .. } => {

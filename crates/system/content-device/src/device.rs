@@ -17,7 +17,6 @@ use tilo_content::{
     valid_hash,
 };
 
-/// Bytes of recently read content kept in the process.
 const CACHE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CACHED_ITEM: usize = 16 * 1024 * 1024;
 
@@ -121,7 +120,6 @@ impl<R: Read> Read for Filling<R> {
             }
         };
         if n == 0 {
-            // `Verifying` ends only once the content matched its address.
             if let (Some(kept), Ok(mut cache)) = (self.kept.take(), self.cache.lock()) {
                 cache.insert(&self.hash, kept.into());
             }
@@ -133,7 +131,6 @@ impl<R: Read> Read for Filling<R> {
 }
 
 impl DeviceBackend {
-    /// A backend over `client`, an app-scoped capability.
     pub fn new(client: BlobClient) -> Self {
         Self {
             client,
@@ -308,10 +305,8 @@ pub(crate) fn set_session_workspaces(workspaces: Vec<String>) {
 /// turn, and an address one served is read through that scope from then on.
 #[cfg(unix)]
 pub struct SessionBackend {
-    /// The scopes, the workspace in front's first.
     scopes: Vec<DeviceBackend>,
     cache: Arc<Mutex<Cache>>,
-    /// The scope each address was last read through, by hash.
     held: Mutex<BTreeMap<String, usize>>,
 }
 

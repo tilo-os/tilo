@@ -101,7 +101,6 @@ pub enum Kind {
     /// (`.<name>.tilo-save`, `tilo_dialogs::portal::save_sibling`) may be written and
     /// renamed over it, so a save replaces the file whole or not at all.
     Save,
-    /// A folder and everything under it: to read, or (`write`) to change.
     Folder {
         write: bool,
     },
@@ -142,15 +141,12 @@ pub struct Document {
 }
 
 impl Document {
-    /// The name the app sees it by: the chosen file's or folder's own.
     pub fn name(&self) -> &OsStr {
         self.host
             .file_name()
             .unwrap_or_else(|| OsStr::new("document"))
     }
 
-    /// The names a [`Kind::Save`] may write besides its own: its save
-    /// sibling.
     pub fn save_sibling(&self) -> Option<OsString> {
         (self.kind == Kind::Save).then(|| {
             let mut sibling = OsString::from(".");
@@ -185,12 +181,10 @@ impl std::error::Error for GrantError {}
 #[derive(Default)]
 struct View {
     documents: BTreeMap<String, Document>,
-    /// The tokens of `documents`, most recently chosen first.
     recent: Vec<String>,
 }
 
 impl View {
-    /// Add `document` as the latest choice; answers whether the view changed.
     fn choose(&mut self, token: String, document: Document) -> bool {
         if self.recent.first() == Some(&token) {
             return false;
@@ -309,7 +303,6 @@ impl Documents {
         documents
     }
 
-    /// Read the kept record into the table, behind anything chosen since.
     fn load(&self) {
         let Some(record) = self.record.as_deref() else {
             self.loading.finish();
@@ -341,7 +334,6 @@ impl Documents {
         self.loading.finish();
     }
 
-    /// Write the table to its record, when it is kept.
     fn keep(&self) {
         let Some(record) = self.record.as_deref() else {
             return;

@@ -213,7 +213,6 @@ struct ListCursor {
     scope: String,
     recursive: bool,
     seq: u64,
-    /// Position in an initial enumeration that is still paging.
     skip: Option<usize>,
 }
 
@@ -691,7 +690,6 @@ impl FakeDropbox {
             .map(|v| v.bytes.to_vec())
     }
 
-    /// Every `path_display` in the store, sorted by `path_lower`.
     pub fn paths(&self) -> Vec<String> {
         self.lock()
             .nodes
@@ -708,7 +706,6 @@ impl FakeDropbox {
         self.lock().faults.push(fault);
     }
 
-    /// Expire every cursor issued so far (`reset`).
     pub fn reset_cursors(&self) {
         self.lock().epoch += 1;
         self.changed();
@@ -1366,7 +1363,6 @@ fn check_hash(arg: &Value, body: &[u8]) -> Result<(), Reply> {
     }
 }
 
-/// Commit `bytes` under a `CommitInfo`: path, `WriteMode`, `strict_conflict`.
 fn commit(state: &mut State, arg: &Value, bytes: Vec<u8>) -> Result<Value, Reply> {
     let path = str_arg(arg, "path")?;
     let (key, display) = if path.starts_with("id:") {

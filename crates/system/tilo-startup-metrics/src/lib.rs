@@ -1,21 +1,14 @@
-//! Lightweight startup-timing capture used to measure the effect of shader precompile, glyph
-//! atlas warmth, and other cold-start work.
+//! Lightweight startup-timing capture, to measure the effect of shader precompile, glyph
+//! atlas warmth and other cold-start work.
 //!
-//! # How it works
+//! [`mark`] records `Instant::now()` against the module's `origin` (process start). Events
+//! are serialised to a JSON file at `TILO_STARTUP_METRICS_PATH` as they come, by a
+//! background thread once [`start_writer`] ran, so marking never waits for the disk, and in
+//! full at process exit or an explicit [`dump`]. Disabled, `mark` reads a single atomic
+//! pointer and returns.
 //!
-//! [`mark`] records `Instant::now()` against the module's `origin` (set at process start).
-//! Recorded events are serialised to a JSON file at `TILO_STARTUP_METRICS_PATH` as they
-//! come — by a background thread once [`start_writer`] ran, so marking never waits for the
-//! disk — and in full at process exit or an explicit [`dump`] call.
-//!
-//! Zero overhead when disabled: `mark` reads a single atomic pointer, and if the env var
-//! wasn't set at [`init`] time, the pointer is `None` and the call returns immediately.
-//!
-//! # Deliberately not `tracing`
-//!
-//! `tracing` events + spans require the subscriber to be online at the moment of the event.
-//! The compositor's `tracing_subscriber::fmt::init()` runs mid-startup, and we want to
-//! measure work that happens before that init — a raw `Instant` + `Vec` is unaffected.
+//! Not `tracing` events and spans: those need the subscriber at the moment of the event,
+//! and the compositor's runs mid-startup, while the work to measure happens before it.
 //!
 //! # Output shape
 //!
@@ -38,25 +31,23 @@
 //! }
 //! ```
 //!
-//! `origin_epoch_us` is `origin_epoch_ms` at microsecond precision. `launcher` covers
-//! the time before `main`, which the process's own clock cannot see: the phase marks of
-//! the `tilo-launcher` process that set up this app's sandbox, in Unix-epoch
-//! microseconds ([`handoff_mark`], handed over in [`LAUNCHER_MARKS_ENV`]). The launcher's
-//! last own mark, `sandbox-argv-ready`, is taken just before it spawns bubblewrap; the
-//! sandbox shim adds `sandbox-entered` when it starts inside the sandbox and
-//! `sandbox-exec` just before it executes the app ([`handoff_entry`]), so
-//! `origin_epoch_us` minus `sandbox-exec` is the dynamic loader and library
-//! constructors. (The app cannot read `/proc` under Landlock, so it cannot time its own
-//! exec.)
+//! `origin_epoch_us` is `origin_epoch_ms` at microsecond precision. `launcher` covers the
+//! time before `main`, which the process's own clock cannot see: the phase marks of the
+//! `tilo-launcher` process that set up this app's sandbox, in Unix-epoch microseconds
+//! ([`handoff_mark`], handed over in [`LAUNCHER_MARKS_ENV`]). The launcher's last own mark,
+//! `sandbox-argv-ready`, is taken just before it spawns bubblewrap; the sandbox shim adds
+//! `sandbox-entered` when it starts inside the sandbox and `sandbox-exec` just before it
+//! executes the app ([`handoff_entry`]), so `origin_epoch_us` minus `sandbox-exec` is the
+//! dynamic loader and library constructors.
 
 use serde::Serialize;
 use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
 use tilo_lock::MutexRecover as _;
 use web_time::Instant;
 
-/// One launch's process/surface timing. Placement remains the compositor's
-/// responsibility; this small crate owns only FIFO timing correlation so
-/// launch diagnostics can be tested without linking the full desktop.
+/// One launch's process and surface timing. Placement remains the compositor's; this
+/// crate owns only the FIFO timing correlation, so launch diagnostics can be tested without
+/// linking the full desktop.
 #[derive(Clone, Debug)]
 struct PendingLaunch {
     id: u64,
@@ -70,7 +61,6 @@ struct PendingLaunch {
     phases: Vec<(&'static str, Instant)>,
 }
 
-/// At most this many dispatch phases are kept per launch.
 const LAUNCH_PHASES_MAX: usize = 16;
 
 /// The most launches the table keeps. More than a person's desktop opens at
@@ -87,48 +77,41 @@ static LAUNCHES: Mutex<Vec<PendingLaunch>> = Mutex::new(Vec::new());
 static AWAITING_FIRST_PRESENT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-/// The `tracing` target of the compositor's per-launch timing lines.
 pub const LAUNCH_LATENCY_TARGET: &str = "tilo::launch_latency";
 
-/// The `tracing` target of the compositor's Xwayland bridge lines: a
-/// workspace's X display bound, the bridge started for its first client, the
-/// scale it announced, its exit or idle stop, each with how long it had been
-/// up. A handful of lines per X11 app session.
+/// The `tracing` target of the compositor's Xwayland bridge lines: a workspace's X display
+/// bound, the bridge started for its first client, the scale it announced, its exit or idle
+/// stop, each with how long it had been up. A handful of lines per X11 app session.
 pub const XWAYLAND_TARGET: &str = "tilo::xwayland";
 
-/// The `tracing` target of one-time repairs of a person's saved state: what
-/// each decided at session start and why, a few lines per session. A repair
-/// that changes nothing must still say why, in the log a device keeps.
+/// The `tracing` target of one-time repairs of a person's saved state: what each decided at
+/// session start and why, a few lines per session. A repair that changes nothing must still
+/// say why, in the log a device keeps.
 pub const REPAIR_TARGET: &str = "tilo::repair";
 
-/// The `tracing` target of where a person's input went: each input device
-/// the compositor opened or lost, each finger contact's route as it begins
-/// (raw to a client or widget, or turned into pointer input) and each
-/// launchpad card that activated. One line per device and per contact, so a
-/// key or tap that did nothing says in the device's log where it went.
+/// The `tracing` target of where a person's input went: each input device the compositor
+/// opened or lost, each finger contact's route as it begins, and each launchpad card that
+/// activated. One line per device and per contact, so a key or tap that did nothing says in
+/// the device's log where it went.
 pub const INPUT_ROUTE_TARGET: &str = "tilo::input_route";
 
-/// The `tracing` target of every step of joining a workspace, and of the
-/// certificate renewals a join depends on: the directory read, the door
-/// asked, the enrollment presented, the host's answer, the workspace slot
-/// made and taken away, and each certificate due, renewed or failed. A
-/// handful of lines per join, so a join that lands nowhere, or a workspace
-/// that comes and goes, says in the device's log where it stopped and why.
+/// The `tracing` target of every step of joining a workspace, and of the certificate
+/// renewals a join depends on: the directory read, the door asked, the enrollment presented,
+/// the host's answer, the workspace slot made and taken away, and each certificate due,
+/// renewed or failed. A handful of lines per join, so a join that lands nowhere says where
+/// it stopped.
 pub const JOIN_FLOW_TARGET: &str = "tilo::join_flow";
 
-/// The `tracing` target of what an app writes to its standard streams, each
-/// line prefixed with the app it came from (`[app so.tilo.notes stderr] …`) as
-/// the shell logged it: the only account of a launch that failed inside the
-/// app, which otherwise leaves nothing behind. Relayed at `info`, bounded by
-/// the launch that reads it, and always kept whatever `RUST_LOG` says, since a
-/// log that drops it is a log that cannot say why an app never opened.
+/// The `tracing` target of what an app writes to its standard streams, each line prefixed
+/// with the app it came from (`[app so.tilo.notes stderr] …`): the only account of a launch
+/// that failed inside the app. Relayed at `info`, bounded by the launch that reads it, and
+/// always kept whatever `RUST_LOG` says.
 pub const APP_OUTPUT_TARGET: &str = "tilo::app_output";
 
-/// Targets the session log keeps at `info` whatever the base filter: rare
-/// lines that time an app's open, the only record of the compositor's and
-/// launcher's share of it before the app's own clock starts, what the
-/// session's repairs of saved state decided, where touch went, every step of
-/// joining a workspace, and what an app itself said.
+/// Targets the session log keeps at `info` whatever the base filter: rare lines that time
+/// an app's open, the compositor's and launcher's share of it before the app's own clock
+/// starts, what the session's repairs decided, where touch went, every step of joining a
+/// workspace, and what an app itself said.
 const ALWAYS_LOGGED: [&str; 6] = [
     LAUNCH_LATENCY_TARGET,
     XWAYLAND_TARGET,
@@ -138,10 +121,10 @@ const ALWAYS_LOGGED: [&str; 6] = [
     APP_OUTPUT_TARGET,
 ];
 
-/// The compositor's log filter directives for a `RUST_LOG` of `rust_log`: that
-/// filter (errors only when unset, as `tracing_subscriber::fmt::init` has it),
-/// with the launch-latency and Xwayland bridge lines always on. A filter that
-/// names one of those targets keeps its choice for it.
+/// The compositor's log filter directives for a `RUST_LOG` of `rust_log`: that filter
+/// (errors only when unset, as `tracing_subscriber::fmt::init` has it), with the
+/// launch-latency and Xwayland bridge lines always on. A filter that names one of those
+/// targets keeps its choice for it.
 #[must_use]
 pub fn log_directives(rust_log: Option<&str>) -> String {
     let base = rust_log.map(str::trim).filter(|value| !value.is_empty());
@@ -163,16 +146,16 @@ fn launch_table() -> std::sync::MutexGuard<'static, Vec<PendingLaunch>> {
 }
 static NEXT_LAUNCH_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-/// A diagnostic generation, fixed at this process's first launch observation.
-/// Together with the emitting process ID it distinguishes compositor restarts.
-/// This is correlation only, never evidence of identity or launch authority.
+/// A diagnostic generation, fixed at this process's first launch observation. Together with
+/// the emitting process id it distinguishes compositor restarts; correlation only, never
+/// evidence of identity or launch authority.
 #[must_use]
 pub fn launch_generation() -> u128 {
     static GENERATION: OnceLock<u128> = OnceLock::new();
     *GENERATION.get_or_init(|| u128::from(tilo_clock::unix_now_ns()))
 }
 
-/// Begin timing one user-requested launch. Same-app launches are FIFO.
+/// Begin timing one user-requested launch; same-app launches are FIFO.
 pub fn launch_requested(key: impl Into<String>) -> u64 {
     let id = NEXT_LAUNCH_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let key = key.into();
@@ -206,10 +189,9 @@ pub fn launch_requested(key: impl Into<String>) -> u64 {
     id
 }
 
-/// Note that the dispatch of the oldest unspawned launch of `key` reached
-/// `phase` now. [`launch_spawned`] reports the phases with the spawn, so the
-/// compositor's share of an open is split where it is spent. A launch nobody
-/// requested (no [`launch_requested`]) is not timed.
+/// Note that the dispatch of the oldest unspawned launch of `key` reached `phase` now.
+/// [`launch_spawned`] reports the phases with the spawn, so the compositor's share of an
+/// open is split where it is spent. A launch nobody requested is not timed.
 pub fn launch_phase(key: &str, phase: &'static str) {
     let mut launches = launch_table();
     if let Some(launch) = launches
@@ -243,7 +225,6 @@ fn format_launch_phases(
     out.join(",")
 }
 
-/// Record the first spawned launcher process for the oldest matching request.
 pub fn launch_spawned(id: u64, pid: u32) {
     let mut launches = launch_table();
     let Some(launch) = launches
@@ -271,9 +252,8 @@ pub fn launch_spawned(id: u64, pid: u32) {
     );
 }
 
-/// Bind the oldest launch of `key` that has not mapped to the exact surface:
-/// the compositor knows a window's app, not the launch that started it, and
-/// same-app launches are FIFO.
+/// Bind the oldest launch of `key` that has not mapped to the exact surface: the compositor
+/// knows a window's app, not the launch that started it, and same-app launches are FIFO.
 pub fn launch_mapped(key: &str, surface_id: u64) {
     let mut launches = launch_table();
     let Some(launch) = launches
@@ -305,7 +285,6 @@ pub fn launch_mapped(key: &str, surface_id: u64) {
     );
 }
 
-/// Finish timing when the mapped surface supplies its first captured frame.
 pub fn launch_first_present(surface_id: u64, frame_seq: u64) {
     if frame_seq == 0 {
         return;
@@ -339,8 +318,6 @@ pub fn launch_first_present(surface_id: u64, frame_seq: u64) {
     );
 }
 
-/// The window of a launch went before any frame showed it: its open ends
-/// without one, so nothing waits for that surface any more.
 pub fn launch_window_closed(surface_id: u64) {
     let retired = {
         let mut launches = launch_table();
@@ -355,7 +332,6 @@ pub fn launch_window_closed(surface_id: u64) {
     retire(&retired, "application window closed before its first frame");
 }
 
-/// Surfaces bound to a launch that has not yet presented its first frame.
 #[must_use]
 pub fn launches_awaiting_first_present() -> Vec<u64> {
     if AWAITING_FIRST_PRESENT.load(std::sync::atomic::Ordering::Relaxed) == 0 {
@@ -384,8 +360,8 @@ fn retire(launch: &PendingLaunch, message: &'static str) {
     );
 }
 
-/// Retire one launch's timing, recording which startup phases it reached.
-/// Retirement can also be placement cleanup: it does not prove a process failed.
+/// Retire one launch's timing, recording which startup phases it reached. Retirement can
+/// also be placement cleanup: it does not prove a process failed.
 pub fn launch_failed(id: u64) {
     let retired = {
         let mut launches = launch_table();
@@ -400,8 +376,8 @@ pub fn launch_failed(id: u64) {
     );
 }
 
-/// Test-facing snapshot of in-flight launch timing. Kept deliberately small
-/// so integration tests can prove correlation without reaching into storage.
+/// Test-facing snapshot of in-flight launch timing, so integration tests can prove
+/// correlation without reaching into storage.
 #[cfg(any(test, feature = "test-support"))]
 #[must_use]
 pub fn launch_snapshot() -> Vec<(u64, String, bool, Option<u64>)> {
@@ -418,8 +394,7 @@ pub fn launch_snapshot() -> Vec<(u64, String, bool, Option<u64>)> {
         .collect()
 }
 
-/// Global capture state. Cheap to check on every [`mark`] call: the `OnceLock` reads a
-/// single atomic pointer.
+/// Global capture state: the first `mark` reads a single atomic pointer.
 static METRICS: OnceLock<Option<Metrics>> = OnceLock::new();
 
 struct Metrics {
@@ -438,10 +413,8 @@ struct Metrics {
     writer: OnceLock<Option<&'static Writer>>,
 }
 
-/// Content-free native admission, reported before application actions exist.
-/// RPC counters cover this transport lifetime, not a claim about every route.
-/// The launcher-issued metrics path and independently pinned worker lifetime
-/// remain necessary to associate this report with a desktop record.
+/// Content-free native admission, reported before application actions exist. RPC counters
+/// cover this transport lifetime, not a claim about every route.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct NativeAdmissionSnapshot {
     pub process_id: u32,
@@ -491,8 +464,8 @@ struct Writer {
     wake: Condvar,
 }
 
-/// How long the background writer gathers marks after writing before it
-/// writes again: a burst of marks costs one write per interval, not one each.
+/// How long the background writer gathers marks after writing before it writes again: a
+/// burst of marks costs one write per interval, not one each.
 const WRITE_SPACING: std::time::Duration = std::time::Duration::from_millis(50);
 
 impl Metrics {
@@ -572,8 +545,8 @@ impl Metrics {
     }
 }
 
-/// The background writer's loop: write whenever marks arrived, then gather the
-/// next ones for [`WRITE_SPACING`].
+/// The background writer's loop: write whenever marks arrived, then gather the next ones
+/// for [`WRITE_SPACING`].
 fn write_marks(metrics: &'static Metrics, writer: &'static Writer) -> ! {
     loop {
         let mut pending = writer.pending.lock_recover();
@@ -596,15 +569,13 @@ struct Event {
     ns: u128,
 }
 
-/// The variable `tilo-launcher` sets in the sandbox it starts, holding its own
-/// phase marks for the app's startup file: `name@epoch_us` entries joined by `,`.
+/// The variable `tilo-launcher` sets in the sandbox it starts, holding its own phase marks
+/// for the app's startup file: `name@epoch_us` entries joined by `,`.
 pub const LAUNCHER_MARKS_ENV: &str = "TILO_STARTUP_LAUNCHER_MARKS";
 
-/// At most this many handed-over marks are kept; the rest are dropped.
 const HANDOFF_MAX_MARKS: usize = 32;
 const HANDOFF_MAX_NAME: usize = 48;
 
-/// One phase mark of the process that started this one, on the shared wall clock.
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 struct HandoffEvent {
     name: String,
@@ -619,8 +590,8 @@ fn handoff_name_ok(name: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
-/// The marks in a [`LAUNCHER_MARKS_ENV`] value. Malformed entries are dropped:
-/// these are diagnostics, never a reason to fail or alter a launch.
+/// The marks in a [`LAUNCHER_MARKS_ENV`] value. Malformed entries are dropped: these are
+/// diagnostics, never a reason to fail or alter a launch.
 fn parse_handoff(value: &str) -> Vec<HandoffEvent> {
     value
         .split(',')
@@ -690,12 +661,10 @@ pub fn handoff_entry(name: &str) -> Option<String> {
     })
 }
 
-/// Whether the startup is still being captured: until [`close_startup`].
 static STARTUP_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
-/// [`mark`], only until the first frame is presented ([`close_startup`]): for
-/// code that also runs on every later rebuild, which must not rewrite the
-/// startup file each time.
+/// [`mark`], only until the first frame is presented ([`close_startup`]): for code that
+/// also runs on every later rebuild, which must not rewrite the startup file each time.
 #[inline]
 pub fn startup_mark(name: &str) {
     if STARTUP_OPEN.load(std::sync::atomic::Ordering::Relaxed) {
@@ -703,17 +672,14 @@ pub fn startup_mark(name: &str) {
     }
 }
 
-/// End the startup: later [`startup_mark`]s record nothing.
 pub fn close_startup() {
     STARTUP_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Enable capture. Idempotent — subsequent calls are no-ops. Reads
-/// `TILO_STARTUP_METRICS_PATH`: unset leaves the module disabled with every downstream
-/// [`mark`] a zero-cost load; set means the file is written as marks come (see [`mark`]),
-/// on [`dump`] and at process exit through a [`ScopedDumper`]. Run this at the earliest
-/// possible point in `main` so `origin`
-/// is a meaningful "process start" reference.
+/// Enable capture; idempotent. Reads `TILO_STARTUP_METRICS_PATH`: unset leaves the module
+/// disabled, set means the file is written as marks come (see [`mark`]), on [`dump`] and at
+/// process exit through a [`ScopedDumper`]. Run it at the earliest point in `main`, so
+/// `origin` is a meaningful process start.
 pub fn init() {
     METRICS.get_or_init(|| {
         let path = std::env::var_os("TILO_STARTUP_METRICS_PATH")?;
@@ -722,14 +688,12 @@ pub fn init() {
     });
 }
 
-/// Record `name` at "now". Cheap when capture is disabled — `OnceLock::get()` is a single
-/// atomic load.
+/// Record `name` at "now"; cheap when capture is disabled.
 ///
-/// The file is replaced with every mark so far — a checkpoint, since startup failures
-/// often end in a forced reboot and an exit-only dump is least useful exactly then. Once
-/// [`start_writer`] ran, a background thread does that, at most once per
-/// `WRITE_SPACING`, so the marking thread never waits for the disk or for another
-/// thread's write; before, the marking thread writes.
+/// The file is replaced with every mark so far, since startup failures often end in a forced
+/// reboot and an exit-only dump is least useful exactly then. Once [`start_writer`] ran a
+/// background thread does that, at most once per `WRITE_SPACING`; before, the marking thread
+/// writes.
 #[inline]
 pub fn mark(name: &str) {
     if let Some(Some(m)) = METRICS.get() {
@@ -737,10 +701,9 @@ pub fn mark(name: &str) {
     }
 }
 
-/// Write marks from a background thread from now on (see [`mark`]). Call it once the
-/// process may have threads: the compositor after its single-threaded start, an app once
-/// its runtime attachment (which can exec) is done. Idempotent; where no thread can start,
-/// marks go on being written by the thread that marks.
+/// Write marks from a background thread from now on (see [`mark`]). Call it once the process
+/// may have threads. Idempotent; where no thread can start, marks go on being written by the
+/// thread that marks.
 pub fn start_writer() {
     if let Some(Some(m)) = METRICS.get() {
         m.start_writer();
@@ -774,9 +737,8 @@ impl Metrics {
     }
 }
 
-/// Serialise every recorded event to the configured file, now, on this thread. Called
-/// automatically at process exit via [`ScopedDumper`] and after an app's first frame;
-/// the explicit version lets tests dump before drop.
+/// Serialise every recorded event to the configured file, now, on this thread. Called at
+/// process exit through [`ScopedDumper`]; the explicit version lets tests dump before drop.
 pub fn dump() {
     let Some(Some(m)) = METRICS.get() else { return };
     m.write_snapshot();
@@ -831,8 +793,6 @@ pub fn memory_line() -> Option<String> {
     None
 }
 
-/// Every mark recorded so far, in order, with its nanoseconds since the
-/// process's origin. Empty while capture is disabled.
 pub fn events() -> Vec<(String, u128)> {
     let Some(Some(m)) = METRICS.get() else {
         return Vec::new();
@@ -862,8 +822,8 @@ fn format_summary(app: &str, events: &[(String, u128)]) -> String {
     )
 }
 
-/// RAII guard: dumps recorded events when it goes out of scope. Instantiate at the top of
-/// `main` after [`init`].
+/// Dumps recorded events when it goes out of scope; instantiate at the top of `main` after
+/// [`init`].
 pub struct ScopedDumper;
 
 impl Drop for ScopedDumper {
@@ -872,9 +832,9 @@ impl Drop for ScopedDumper {
     }
 }
 
-/// Measure a closure and record the elapsed under `name`. Useful for wrapping a known-slow
-/// phase (font-system construction, render-context init) without threading marks around it;
-/// records two events, `<name>` at entry and `<name>-end` at exit.
+/// Measure a closure and record the elapsed under `name`: useful for wrapping a known-slow
+/// phase without threading marks around it. Records two events, `<name>` at entry and
+/// `<name>-end` at exit.
 pub fn span<T>(name: &str, f: impl FnOnce() -> T) -> T {
     mark(name);
     let out = f();

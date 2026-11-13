@@ -173,15 +173,12 @@ impl Output {
 
 #[derive(Debug, Error)]
 pub enum Error {
-    /// The caller fed a larger request or secret than allowed.
     #[error("command input exceeds its configured safety limit")]
     InputTooLarge,
     #[error("command process failed: {0}")]
     Process(#[from] std::io::Error),
-    /// An output stream crossed its allocation ceiling.
     #[error("command {stream} exceeds {limit} bytes")]
     OutputTooLarge { stream: &'static str, limit: usize },
-    /// The child and its descendants did not finish before the deadline.
     #[error("command timed out after {0} ms")]
     Timeout(u128),
     #[error("command output reader failed")]
@@ -198,7 +195,6 @@ pub enum Error {
 pub enum StderrObservation {
     /// At most 4096 captured bytes, in stream order.
     Bytes(Vec<u8>),
-    /// The queue overflowed; no later bytes are exposed.
     Overflow,
 }
 

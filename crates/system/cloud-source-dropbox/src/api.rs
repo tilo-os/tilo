@@ -37,11 +37,7 @@ impl Default for Endpoints {
 
 #[derive(Debug)]
 pub enum Failure {
-    /// HTTP 409 with a structured error.
-    Route {
-        summary: String,
-        error: Value,
-    },
+    Route { summary: String, error: Value },
     Error(Error),
 }
 
@@ -218,7 +214,6 @@ impl Api {
         })
     }
 
-    /// Call an RPC endpoint with a JSON argument (`Value::Null` for none).
     pub fn rpc(&self, route: &str, arg: &Value) -> Result<Value, Failure> {
         let url = format!("{}/2/{route}", self.endpoints.api);
         let request = self
@@ -229,7 +224,6 @@ impl Api {
         Ok(read_json(response)?)
     }
 
-    /// Call a content-upload endpoint with `body`.
     pub fn upload(&self, route: &str, arg: &Value, body: Vec<u8>) -> Result<Value, Failure> {
         let url = format!("{}/2/{route}", self.endpoints.content);
         let request = self
@@ -241,7 +235,6 @@ impl Api {
         Ok(read_json(response)?)
     }
 
-    /// `files/download`, optionally for a byte range.
     pub fn download(&self, arg: &Value, range: Option<&Range<u64>>) -> Result<Downloaded, Failure> {
         let url = format!("{}/2/files/download", self.endpoints.content);
         let mut request = self

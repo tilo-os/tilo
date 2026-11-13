@@ -53,8 +53,6 @@ impl Entry {
     }
 }
 
-/// The parent path of a lowercased Dropbox path (`"/a/b"` → `"/a"`,
-/// `"/a"` → `""`).
 pub fn parent_path(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(parent, _)| parent)
 }
@@ -104,8 +102,6 @@ impl Paths {
         self.by_id.insert(id.clone(), path.to_owned());
     }
 
-    /// Forget `path` and everything below it, returning their ids with
-    /// `path`'s own first.
     pub fn remove_tree(&mut self, path: &str) -> Vec<ItemId> {
         if path.is_empty() {
             return Vec::new();
@@ -124,7 +120,6 @@ impl Paths {
         doomed.into_iter().map(|(_, id)| id).collect()
     }
 
-    /// A folder moved from `from` to `to`: rewrite the paths below it.
     pub fn rebase(&mut self, from: &str, to: &str) {
         if from == to || from.is_empty() {
             return;
