@@ -1002,212 +1002,247 @@ mod tests {
             })
         }
     }
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn install_refuses_untrusted_artifacts_and_identity_before_mutation() {
+    tilo_test_env::scenario! {
+        #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
+        fn a_desktop_install_verifies_artifacts_commands_and_diagnostics;
+
+        phase install_refuses_untrusted_artifacts_and_identity_before_mutation;
         {
-            for case in [
-                "unknown",
-                "digest",
-                "wrong-host",
-                "altered",
-                "truncated",
-                "sandbox",
-                "no-runtime",
-            ] {
-                let temp = tempfile::tempdir().unwrap();
-                let input = temp.path().join("input.rpm");
-                std::fs::write(
-                    &input,
-                    if case == "altered" {
-                        b"altered".as_slice()
-                    } else if case == "truncated" {
-                        b"pack".as_slice()
+            {
+                for case in [
+                    "unknown",
+                    "digest",
+                    "wrong-host",
+                    "altered",
+                    "truncated",
+                    "sandbox",
+                    "no-runtime",
+                ] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let input = temp.path().join("input.rpm");
+                    std::fs::write(
+                        &input,
+                        if case == "altered" {
+                            b"altered".as_slice()
+                        } else if case == "truncated" {
+                            b"pack".as_slice()
+                        } else {
+                            b"package".as_slice()
+                        },
+                    )
+                    .unwrap();
+                    let mut release = release();
+                    if case == "no-runtime" {
+                        release.verified_runtime = None;
+                    }
+                    let request = DesktopInstallRequest {
+                        schema: 1,
+                        release_id: if case == "unknown" {
+                            "unknown".into()
+                        } else {
+                            release.id.clone()
+                        },
+                        package_input: input,
+                    };
+                    let bytes = serde_json::to_vec(&request).unwrap();
+                    let digest = if case == "digest" {
+                        "0".repeat(64)
                     } else {
-                        b"package".as_slice()
-                    },
-                )
-                .unwrap();
-                let mut release = release();
-                if case == "no-runtime" {
-                    release.verified_runtime = None;
+                        request_digest(&bytes)
+                    };
+                    let mut backend = Recording::new();
+                    if case == "wrong-host" {
+                        backend.host.architecture = Ok("x86_64".into());
+                    }
+                    if case == "sandbox" {
+                        backend.host.sandboxed = Ok(true);
+                    }
+                    assert!(
+                        transaction(
+                            &bytes,
+                            &digest,
+                            &[release],
+                            temp.path(),
+                            &mut backend,
+                            &mut |_| Ok(())
+                        )
+                        .is_err(),
+                        "accepted {case}"
+                    );
+                    assert_eq!(backend.installs, 0, "mutated for {case}");
                 }
-                let request = DesktopInstallRequest {
-                    schema: 1,
-                    release_id: if case == "unknown" {
-                        "unknown".into()
-                    } else {
-                        release.id.clone()
-                    },
-                    package_input: input,
-                };
-                let bytes = serde_json::to_vec(&request).unwrap();
-                let digest = if case == "digest" {
-                    "0".repeat(64)
-                } else {
-                    request_digest(&bytes)
-                };
+            }
+
+            {
                 let mut backend = Recording::new();
-                if case == "wrong-host" {
-                    backend.host.architecture = Ok("x86_64".into());
-                }
-                if case == "sandbox" {
-                    backend.host.sandboxed = Ok(true);
-                }
+                let request =
+                    br#"{"schema":1,"release_id":"local-artifact","package_input":"/tmp/local.rpm"}"#;
                 assert!(
                     transaction(
-                        &bytes,
-                        &digest,
-                        &[release],
-                        temp.path(),
+                        request,
+                        &request_digest(request),
+                        &super::super::desktop_catalog::bundled_releases().unwrap(),
+                        Path::new("/tmp"),
                         &mut backend,
                         &mut |_| Ok(())
                     )
-                    .is_err(),
-                    "accepted {case}"
+                    .is_err()
                 );
-                assert_eq!(backend.installs, 0, "mutated for {case}");
+                assert_eq!(backend.installs, 0);
             }
-        }
 
-        {
-            let mut backend = Recording::new();
-            let request =
-                br#"{"schema":1,"release_id":"local-artifact","package_input":"/tmp/local.rpm"}"#;
-            assert!(
-                transaction(
-                    request,
-                    &request_digest(request),
-                    &super::super::desktop_catalog::bundled_releases().unwrap(),
-                    Path::new("/tmp"),
-                    &mut backend,
-                    &mut |_| Ok(())
-                )
-                .is_err()
-            );
-            assert_eq!(backend.installs, 0);
-        }
-
-        {
-            let release = release();
-            assert!(
-                native::validate_package_identity(
-                    PackageManager::Dnf,
-                    "tilo-session\t0\t0.1.9\t1.fc44\taarch64\n",
-                    &release
-                )
-                .is_ok()
-            );
-            for wrong in [
-                "other\t0\t0.1.9\t1.fc44\taarch64\n",
-                "tilo-session\t0\t0.1.8\t1.fc44\taarch64\n",
-                "tilo-session\t0\t0.1.9\t1.fc44\tx86_64\n",
-                "tilo-session\t0\t0.1.9\t1.fc44\taarch64\nextra",
-            ] {
+            {
+                let release = release();
                 assert!(
-                    native::validate_package_identity(PackageManager::Dnf, wrong, &release)
-                        .is_err()
+                    native::validate_package_identity(
+                        PackageManager::Dnf,
+                        "tilo-session\t0\t0.1.9\t1.fc44\taarch64\n",
+                        &release
+                    )
+                    .is_ok()
+                );
+                for wrong in [
+                    "other\t0\t0.1.9\t1.fc44\taarch64\n",
+                    "tilo-session\t0\t0.1.8\t1.fc44\taarch64\n",
+                    "tilo-session\t0\t0.1.9\t1.fc44\tx86_64\n",
+                    "tilo-session\t0\t0.1.9\t1.fc44\taarch64\nextra",
+                ] {
+                    assert!(
+                        native::validate_package_identity(PackageManager::Dnf, wrong, &release)
+                            .is_err()
+                    );
+                }
+            }
+
+            {
+                let (_, args) = native::install_command(
+                    PackageManager::Pacman,
+                    Path::new("/private/package.pkg.tar.zst"),
+                );
+                assert_eq!(
+                    args,
+                    [
+                        "--noconfirm",
+                        "--ask=67",
+                        "--upgrade",
+                        "--",
+                        "/private/package.pkg.tar.zst"
+                    ]
                 );
             }
         }
 
+        phase pinned_staging_accepts_only_regular_nonsymlink_files;
         {
-            let (_, args) = native::install_command(
-                PackageManager::Pacman,
-                Path::new("/private/package.pkg.tar.zst"),
-            );
-            assert_eq!(
-                args,
-                [
-                    "--noconfirm",
-                    "--ask=67",
-                    "--upgrade",
-                    "--",
-                    "/private/package.pkg.tar.zst"
-                ]
-            );
-        }
-    }
-    #[test]
-    fn pinned_staging_accepts_only_regular_nonsymlink_files() {
-        {
-            use std::os::unix::fs::symlink;
-            let temp = tempfile::tempdir().unwrap();
-            let input = temp.path().join("input");
-            std::fs::write(&input, b"package").unwrap();
-            let link = temp.path().join("link");
-            symlink(&input, &link).unwrap();
-            assert!(stage_package(&link, &release(), temp.path()).is_err());
-            assert!(stage_package(temp.path(), &release(), temp.path()).is_err());
-            let staged = stage_package(&input, &release(), temp.path()).unwrap();
-            std::fs::write(&input, b"changed").unwrap();
-            assert_eq!(std::fs::read(&staged.path).unwrap(), b"package");
+            {
+                use std::os::unix::fs::symlink;
+                let temp = tempfile::tempdir().unwrap();
+                let input = temp.path().join("input");
+                std::fs::write(&input, b"package").unwrap();
+                let link = temp.path().join("link");
+                symlink(&input, &link).unwrap();
+                assert!(stage_package(&link, &release(), temp.path()).is_err());
+                assert!(stage_package(temp.path(), &release(), temp.path()).is_err());
+                let staged = stage_package(&input, &release(), temp.path()).unwrap();
+                std::fs::write(&input, b"changed").unwrap();
+                assert_eq!(std::fs::read(&staged.path).unwrap(), b"package");
+            }
+
+            {
+                let temp = tempfile::tempdir().unwrap();
+                let path = temp.path().join("input");
+                std::fs::write(&path, b"package").unwrap();
+                assert!(pin_input(&path).is_ok());
+                assert!(pin_input(Path::new("/dev/null")).is_err());
+                assert!(pin_input(temp.path()).is_err());
+                let link = temp.path().join("link");
+                std::os::unix::fs::symlink(&path, &link).unwrap();
+                assert!(pin_input(&link).is_err());
+            }
         }
 
+        phase install_verification_survives_lost_channels_and_never_fakes_success;
         {
-            let temp = tempfile::tempdir().unwrap();
-            let path = temp.path().join("input");
-            std::fs::write(&path, b"package").unwrap();
-            assert!(pin_input(&path).is_ok());
-            assert!(pin_input(Path::new("/dev/null")).is_err());
-            assert!(pin_input(temp.path()).is_err());
-            let link = temp.path().join("link");
-            std::os::unix::fs::symlink(&path, &link).unwrap();
-            assert!(pin_input(&link).is_err());
-        }
-    }
+            {
+                let temp = tempfile::tempdir().unwrap();
+                let path = temp.path().join("input");
+                std::fs::write(&path, b"package").unwrap();
+                let bytes = serde_json::to_vec(&DesktopInstallRequest {
+                    schema: 1,
+                    release_id: release().id,
+                    package_input: path,
+                })
+                .unwrap();
+                let mut backend = Recording::new();
+                let mut phases = Vec::new();
+                let outcome = transaction(
+                    &bytes,
+                    &request_digest(&bytes),
+                    &[release()],
+                    temp.path(),
+                    &mut backend,
+                    &mut |event| {
+                        phases.push(event.clone());
+                        if event == DesktopInstallEvent::Verifying {
+                            Err("closed".into())
+                        } else {
+                            Ok(())
+                        }
+                    },
+                );
+                assert!(outcome.is_err());
+                assert_eq!(backend.installs, 1);
+                assert_eq!(backend.verifications, 1);
+                assert_eq!(
+                    phases,
+                    vec![
+                        DesktopInstallEvent::Preparing,
+                        DesktopInstallEvent::Installing,
+                        DesktopInstallEvent::Verifying
+                    ]
+                );
+            }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn install_verification_survives_lost_channels_and_never_fakes_success() {
-        {
-            let temp = tempfile::tempdir().unwrap();
-            let path = temp.path().join("input");
-            std::fs::write(&path, b"package").unwrap();
-            let bytes = serde_json::to_vec(&DesktopInstallRequest {
-                schema: 1,
-                release_id: release().id,
-                package_input: path,
-            })
-            .unwrap();
-            let mut backend = Recording::new();
-            let mut phases = Vec::new();
-            let outcome = transaction(
-                &bytes,
-                &request_digest(&bytes),
-                &[release()],
-                temp.path(),
-                &mut backend,
-                &mut |event| {
-                    phases.push(event.clone());
-                    if event == DesktopInstallEvent::Verifying {
-                        Err("closed".into())
-                    } else {
-                        Ok(())
-                    }
-                },
-            );
-            assert!(outcome.is_err());
-            assert_eq!(backend.installs, 1);
-            assert_eq!(backend.verifications, 1);
-            assert_eq!(
-                phases,
-                vec![
-                    DesktopInstallEvent::Preparing,
-                    DesktopInstallEvent::Installing,
-                    DesktopInstallEvent::Verifying
-                ]
-            );
-        }
+            {
+                for changed in [true, false] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let input = temp.path().join("input");
+                    std::fs::write(&input, b"package").unwrap();
+                    let bytes = serde_json::to_vec(&DesktopInstallRequest {
+                        schema: 1,
+                        release_id: release().id,
+                        package_input: input,
+                    })
+                    .unwrap();
+                    let mut backend = Recording::new();
+                    backend.change_after_metadata = changed;
+                    backend.reject_install = !changed;
+                    let mut events = Vec::new();
+                    assert!(
+                        transaction(
+                            &bytes,
+                            &request_digest(&bytes),
+                            &[release()],
+                            temp.path(),
+                            &mut backend,
+                            &mut |event| {
+                                events.push(event);
+                                Ok(())
+                            }
+                        )
+                        .is_err()
+                    );
+                    assert_eq!(backend.installs, usize::from(!changed));
+                    assert_eq!(backend.verifications, 0);
+                    assert!(
+                        !events
+                            .iter()
+                            .any(|event| matches!(event, DesktopInstallEvent::Complete(_)))
+                    );
+                }
+            }
 
-        {
-            for changed in [true, false] {
+            {
                 let temp = tempfile::tempdir().unwrap();
                 let input = temp.path().join("input");
                 std::fs::write(&input, b"package").unwrap();
@@ -1218,211 +1253,211 @@ mod tests {
                 })
                 .unwrap();
                 let mut backend = Recording::new();
-                backend.change_after_metadata = changed;
-                backend.reject_install = !changed;
-                let mut events = Vec::new();
-                assert!(
-                    transaction(
-                        &bytes,
-                        &request_digest(&bytes),
-                        &[release()],
-                        temp.path(),
-                        &mut backend,
-                        &mut |event| {
-                            events.push(event);
+                backend.log_diagnostics = true;
+                let mut complete = false;
+                let result = transaction(
+                    &bytes,
+                    &request_digest(&bytes),
+                    &[release()],
+                    temp.path(),
+                    &mut backend,
+                    &mut |event| {
+                        if matches!(event, DesktopInstallEvent::Complete(_)) {
+                            complete = true;
+                        }
+                        if matches!(event, DesktopInstallEvent::DiagnosticLog(_)) {
+                            Err("lost channel".into())
+                        } else {
                             Ok(())
                         }
-                    )
-                    .is_err()
+                    },
                 );
-                assert_eq!(backend.installs, usize::from(!changed));
-                assert_eq!(backend.verifications, 0);
+                assert!(result.is_err());
+                assert_eq!(backend.installs, 1);
+                assert_eq!(backend.verifications, 1);
+                assert!(!complete);
+            }
+
+            {
+                let temp = tempfile::tempdir().unwrap();
+                let marker = temp.path().join("terminal-work-completed");
+                let script = "set -e; sleep 0.05; /usr/bin/yes credential-bearing-stdout | /usr/bin/head -c 262144; /usr/bin/yes credential-bearing-stderr | /usr/bin/head -c 262144 >&2; : > \"$1\"";
+                let mut injected = false;
+                let result = native::run_command_with_capture_check(
+                    "/bin/sh",
+                    &[
+                        "-c".into(),
+                        script.into(),
+                        "recording-transaction".into(),
+                        marker.as_os_str().into(),
+                    ],
+                    false,
+                    || {
+                        if std::mem::replace(&mut injected, true) {
+                            Ok(())
+                        } else {
+                            Err("Injected capture failure.".into())
+                        }
+                    },
+                );
+                assert!(injected);
+                assert!(result.is_err(), "capture failure must never become success");
                 assert!(
-                    !events
-                        .iter()
-                        .any(|event| matches!(event, DesktopInstallEvent::Complete(_)))
+                    marker.is_file(),
+                    "capture failure must not interrupt terminal native work"
                 );
             }
         }
 
+        phase native_commands_use_fixed_adapters_and_verify_the_installed_contract;
         {
-            let temp = tempfile::tempdir().unwrap();
-            let input = temp.path().join("input");
-            std::fs::write(&input, b"package").unwrap();
-            let bytes = serde_json::to_vec(&DesktopInstallRequest {
-                schema: 1,
-                release_id: release().id,
-                package_input: input,
-            })
-            .unwrap();
-            let mut backend = Recording::new();
-            backend.log_diagnostics = true;
-            let mut complete = false;
-            let result = transaction(
-                &bytes,
-                &request_digest(&bytes),
-                &[release()],
-                temp.path(),
-                &mut backend,
-                &mut |event| {
-                    if matches!(event, DesktopInstallEvent::Complete(_)) {
-                        complete = true;
-                    }
-                    if matches!(event, DesktopInstallEvent::DiagnosticLog(_)) {
-                        Err("lost channel".into())
-                    } else {
-                        Ok(())
-                    }
-                },
-            );
-            assert!(result.is_err());
-            assert_eq!(backend.installs, 1);
-            assert_eq!(backend.verifications, 1);
-            assert!(!complete);
+            {
+                let path = Path::new("/var/tmp/private/package with spaces.rpm");
+                let (program, args) = native::install_command(PackageManager::Dnf, path);
+                assert_eq!(program, "/usr/bin/dnf");
+                assert_eq!(
+                    args,
+                    [
+                        "--assumeyes",
+                        "--setopt=*.gpgkey=",
+                        "install",
+                        "--",
+                        "/var/tmp/private/package with spaces.rpm"
+                    ]
+                );
+                let (program, args) = native::install_command(PackageManager::Apt, path);
+                assert_eq!(program, "/usr/bin/apt-get");
+                assert_eq!(
+                    args,
+                    [
+                        "--assume-yes",
+                        "--no-remove",
+                        "install",
+                        "--",
+                        "/var/tmp/private/package with spaces.rpm"
+                    ]
+                );
+                let (program, args) = native::install_command(PackageManager::Pacman, path);
+                assert_eq!(program, "/usr/bin/pacman");
+                assert_eq!(
+                    args,
+                    [
+                        "--noconfirm",
+                        "--ask=67",
+                        "--upgrade",
+                        "--",
+                        "/var/tmp/private/package with spaces.rpm"
+                    ]
+                );
+            }
+
+            {
+                assert!(
+                    native::validate_session(
+                        include_str!("../../../../dist/session/tilo.desktop"),
+                        include_str!("../../../../dist/session/tilo-session"),
+                        "#!/bin/sh\nexec tilo-session --host-desktop"
+                    )
+                    .is_err()
+                );
+
+                assert!(
+                    native::validate_session(
+                        "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\n",
+                        include_str!("../../../../dist/session/tilo-session"),
+                        include_str!("../../../../dist/session/tilo-session-runner")
+                    )
+                    .is_ok()
+                );
+                assert!(
+                    native::validate_session(
+                        "[Desktop Entry]\nExec=/tmp/tilo-session\nType=Application\n",
+                        include_str!("../../../../dist/session/tilo-session"),
+                        include_str!("../../../../dist/session/tilo-session-runner")
+                    )
+                    .is_err()
+                );
+                assert!(native::validate_session("[Desktop Entry]\nExec=/usr/libexec/tilo-session\nExec=/tmp/evil\nType=Application\n", "--host-desktop --firstboot", "--host-desktop --firstboot").is_err());
+                assert!(
+                    native::validate_session(
+                        "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\n",
+                        "#!/bin/sh\nexec tilo-session --host-desktop",
+                        include_str!("../../../../dist/session/tilo-session-runner")
+                    )
+                    .is_err()
+                );
+                assert!(
+                    native::validate_session(
+                        "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\n",
+                        &include_str!("../../../../dist/session/tilo-session")
+                            .replace("session_bin=$TILO_SESSION", "session_bin=/usr/bin/other"),
+                        include_str!("../../../../dist/session/tilo-session-runner")
+                    )
+                    .is_err()
+                );
+                assert!(
+                    native::validate_session(
+                        "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\n",
+                        include_str!("../../../../dist/session/tilo-session"),
+                        include_str!("../../../../dist/session/tilo-session")
+                    )
+                    .is_err()
+                );
+            }
+
+            {
+                let result =
+                    native::run_command("/usr/bin/printf", &["%s".into(), "a;$(false)".into()], true)
+                        .unwrap();
+                assert_eq!(result.stdout, "a;$(false)");
+                assert_eq!(result.code, 0);
+                let result = native::run_command("/usr/bin/false", &[], false).unwrap();
+                assert_ne!(result.code, 0);
+            }
         }
 
+        phase native_diagnostics_stay_private_on_success_and_failure;
         {
-            let temp = tempfile::tempdir().unwrap();
-            let marker = temp.path().join("terminal-work-completed");
-            let script = "set -e; sleep 0.05; /usr/bin/yes credential-bearing-stdout | /usr/bin/head -c 262144; /usr/bin/yes credential-bearing-stderr | /usr/bin/head -c 262144 >&2; : > \"$1\"";
-            let mut injected = false;
-            let result = native::run_command_with_capture_check(
-                "/bin/sh",
-                &[
-                    "-c".into(),
-                    script.into(),
-                    "recording-transaction".into(),
-                    marker.as_os_str().into(),
-                ],
-                false,
-                || {
-                    if std::mem::replace(&mut injected, true) {
-                        Ok(())
-                    } else {
-                        Err("Injected capture failure.".into())
-                    }
-                },
-            );
-            assert!(injected);
-            assert!(result.is_err(), "capture failure must never become success");
-            assert!(
-                marker.is_file(),
-                "capture failure must not interrupt terminal native work"
-            );
-        }
-    }
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let temp = tempfile::tempdir().unwrap();
+                let log = temp.path().join("native.log");
+                let error = native::run_install_command(
+                    "/bin/sh",
+                    &[
+                        "-c".into(),
+                        "printf 'credential=top-secret-value\\n' >&2; exit 7".into(),
+                    ],
+                    &log,
+                )
+                .unwrap_err();
+                assert!(!error.contains("top-secret-value"));
+                assert!(!error.contains("credential="));
+                assert!(
+                    std::fs::read_to_string(&log)
+                        .unwrap()
+                        .contains("credential=top-secret-value")
+                );
+                assert_eq!(
+                    std::fs::metadata(log).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn native_commands_use_fixed_adapters_and_verify_the_installed_contract() {
-        {
-            let path = Path::new("/var/tmp/private/package with spaces.rpm");
-            let (program, args) = native::install_command(PackageManager::Dnf, path);
-            assert_eq!(program, "/usr/bin/dnf");
-            assert_eq!(
-                args,
-                [
-                    "--assumeyes",
-                    "--setopt=*.gpgkey=",
-                    "install",
-                    "--",
-                    "/var/tmp/private/package with spaces.rpm"
-                ]
-            );
-            let (program, args) = native::install_command(PackageManager::Apt, path);
-            assert_eq!(program, "/usr/bin/apt-get");
-            assert_eq!(
-                args,
-                [
-                    "--assume-yes",
-                    "--no-remove",
-                    "install",
-                    "--",
-                    "/var/tmp/private/package with spaces.rpm"
-                ]
-            );
-            let (program, args) = native::install_command(PackageManager::Pacman, path);
-            assert_eq!(program, "/usr/bin/pacman");
-            assert_eq!(
-                args,
-                [
-                    "--noconfirm",
-                    "--ask=67",
-                    "--upgrade",
-                    "--",
-                    "/var/tmp/private/package with spaces.rpm"
-                ]
-            );
-        }
-
-        {
-            assert!(
-                native::validate_session(
-                    include_str!("../../../../dist/session/tilo.desktop"),
-                    include_str!("../../../../dist/session/tilo-session"),
-                    "#!/bin/sh\nexec tilo-session --host-desktop"
-                )
-                .is_err()
-            );
-
-            assert!(
-                native::validate_session(
-                    "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\n",
-                    include_str!("../../../../dist/session/tilo-session"),
-                    include_str!("../../../../dist/session/tilo-session-runner")
-                )
-                .is_ok()
-            );
-            assert!(
-                native::validate_session(
-                    "[Desktop Entry]\nExec=/tmp/tilo-session\nType=Application\n",
-                    include_str!("../../../../dist/session/tilo-session"),
-                    include_str!("../../../../dist/session/tilo-session-runner")
-                )
-                .is_err()
-            );
-            assert!(native::validate_session("[Desktop Entry]\nExec=/usr/libexec/tilo-session\nExec=/tmp/evil\nType=Application\n", "--host-desktop --firstboot", "--host-desktop --firstboot").is_err());
-            assert!(
-                native::validate_session(
-                    "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\n",
-                    "#!/bin/sh\nexec tilo-session --host-desktop",
-                    include_str!("../../../../dist/session/tilo-session-runner")
-                )
-                .is_err()
-            );
-            assert!(
-                native::validate_session(
-                    "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\n",
-                    &include_str!("../../../../dist/session/tilo-session")
-                        .replace("session_bin=$TILO_SESSION", "session_bin=/usr/bin/other"),
-                    include_str!("../../../../dist/session/tilo-session-runner")
-                )
-                .is_err()
-            );
-            assert!(
-                native::validate_session(
-                    "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\n",
-                    include_str!("../../../../dist/session/tilo-session"),
-                    include_str!("../../../../dist/session/tilo-session")
-                )
-                .is_err()
-            );
-        }
-
-        {
-            let result =
-                native::run_command("/usr/bin/printf", &["%s".into(), "a;$(false)".into()], true)
-                    .unwrap();
-            assert_eq!(result.stdout, "a;$(false)");
-            assert_eq!(result.code, 0);
-            let result = native::run_command("/usr/bin/false", &[], false).unwrap();
-            assert_ne!(result.code, 0);
+            {
+                let temp = tempfile::tempdir().unwrap();
+                let input = temp.path().join("input");
+                std::fs::write(&input, b"package").unwrap();
+                let mut staged = stage_package(&input, &release(), temp.path()).unwrap();
+                let directory = staged.path.parent().unwrap().to_owned();
+                std::fs::write(directory.join("native.log"), "test diagnostic").unwrap();
+                staged.preserve_diagnostics();
+                drop(staged);
+                assert!(directory.join("native.log").is_file());
+                assert!(!directory.join("package.rpm").exists());
+            }
         }
     }
-
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "requires disposable Linux guest, root and explicit local artifact metadata"]
@@ -1506,46 +1541,5 @@ mod tests {
         assert_eq!(outcome.version, release.version);
         assert_eq!(outcome.session_entry, Path::new(SESSION_ENTRY));
         println!("Native package transaction verified; graphical login remains UNPROVED.");
-    }
-    #[test]
-    fn native_diagnostics_stay_private_on_success_and_failure() {
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let temp = tempfile::tempdir().unwrap();
-            let log = temp.path().join("native.log");
-            let error = native::run_install_command(
-                "/bin/sh",
-                &[
-                    "-c".into(),
-                    "printf 'credential=top-secret-value\\n' >&2; exit 7".into(),
-                ],
-                &log,
-            )
-            .unwrap_err();
-            assert!(!error.contains("top-secret-value"));
-            assert!(!error.contains("credential="));
-            assert!(
-                std::fs::read_to_string(&log)
-                    .unwrap()
-                    .contains("credential=top-secret-value")
-            );
-            assert_eq!(
-                std::fs::metadata(log).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-        }
-
-        {
-            let temp = tempfile::tempdir().unwrap();
-            let input = temp.path().join("input");
-            std::fs::write(&input, b"package").unwrap();
-            let mut staged = stage_package(&input, &release(), temp.path()).unwrap();
-            let directory = staged.path.parent().unwrap().to_owned();
-            std::fs::write(directory.join("native.log"), "test diagnostic").unwrap();
-            staged.preserve_diagnostics();
-            drop(staged);
-            assert!(directory.join("native.log").is_file());
-            assert!(!directory.join("package.rpm").exists());
-        }
     }
 }

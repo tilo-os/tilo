@@ -960,210 +960,242 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn native_package_status_and_installed_version_are_exact() {
+    tilo_test_env::scenario! {
+        #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
+        fn the_desktop_probe_reads_hosts_and_packages_exactly;
+
+        phase native_package_status_and_installed_version_are_exact;
         {
-            assert_eq!(
-                parse_package_status(PackageManager::Dnf, 0, "0\t1.0\t2.fc44\n", "").unwrap(),
-                InstalledPackage::Installed {
-                    version: "1.0-2.fc44".into()
-                }
-            );
-            assert_eq!(
-                parse_package_status(PackageManager::Dnf, 0, "2\t1.0\t2.fc44\n", "").unwrap(),
-                InstalledPackage::Installed {
-                    version: "2:1.0-2.fc44".into()
-                }
-            );
-            assert_eq!(
-                parse_package_status(
-                    PackageManager::Dnf,
-                    1,
-                    "package tilo-session is not installed\n",
-                    ""
-                )
-                .unwrap(),
-                InstalledPackage::Absent
-            );
-            assert_eq!(
-                parse_package_status(PackageManager::Apt, 0, "installed\t1:1.0-2\n", "").unwrap(),
-                InstalledPackage::Installed {
-                    version: "1:1.0-2".into()
-                }
-            );
-            assert_eq!(
-                parse_package_status(
-                    PackageManager::Apt,
-                    1,
-                    "",
-                    "dpkg-query: no packages found matching tilo-session\n"
-                )
-                .unwrap(),
-                InstalledPackage::Absent
-            );
-            assert_eq!(
-                parse_package_status(PackageManager::Pacman, 0, "tilo-session 1:1.0-2\n", "")
+            {
+                assert_eq!(
+                    parse_package_status(PackageManager::Dnf, 0, "0\t1.0\t2.fc44\n", "").unwrap(),
+                    InstalledPackage::Installed {
+                        version: "1.0-2.fc44".into()
+                    }
+                );
+                assert_eq!(
+                    parse_package_status(PackageManager::Dnf, 0, "2\t1.0\t2.fc44\n", "").unwrap(),
+                    InstalledPackage::Installed {
+                        version: "2:1.0-2.fc44".into()
+                    }
+                );
+                assert_eq!(
+                    parse_package_status(
+                        PackageManager::Dnf,
+                        1,
+                        "package tilo-session is not installed\n",
+                        ""
+                    )
                     .unwrap(),
-                InstalledPackage::Installed {
-                    version: "1:1.0-2".into()
+                    InstalledPackage::Absent
+                );
+                assert_eq!(
+                    parse_package_status(PackageManager::Apt, 0, "installed\t1:1.0-2\n", "").unwrap(),
+                    InstalledPackage::Installed {
+                        version: "1:1.0-2".into()
+                    }
+                );
+                assert_eq!(
+                    parse_package_status(
+                        PackageManager::Apt,
+                        1,
+                        "",
+                        "dpkg-query: no packages found matching tilo-session\n"
+                    )
+                    .unwrap(),
+                    InstalledPackage::Absent
+                );
+                assert_eq!(
+                    parse_package_status(PackageManager::Pacman, 0, "tilo-session 1:1.0-2\n", "")
+                        .unwrap(),
+                    InstalledPackage::Installed {
+                        version: "1:1.0-2".into()
+                    }
+                );
+                assert_eq!(
+                    parse_package_status(
+                        PackageManager::Pacman,
+                        1,
+                        "",
+                        "error: package 'tilo-session' was not found\n"
+                    )
+                    .unwrap(),
+                    InstalledPackage::Absent
+                );
+                for (manager, status, stdout, stderr) in [
+                    (PackageManager::Dnf, 1, "", "error: rpmdb failed"),
+                    (PackageManager::Dnf, 0, "0\t1.0\t1\n0\t2.0\t1\n", ""),
+                    (PackageManager::Apt, 0, "config-files\t1.0-1\n", ""),
+                    (PackageManager::Apt, 0, "installed\t\n", ""),
+                    (PackageManager::Pacman, 0, "other 1.0-1\n", ""),
+                    (PackageManager::Pacman, 1, "", "error: database unavailable"),
+                ] {
+                    assert!(parse_package_status(manager, status, stdout, stderr).is_err());
                 }
-            );
-            assert_eq!(
-                parse_package_status(
-                    PackageManager::Pacman,
-                    1,
-                    "",
-                    "error: package 'tilo-session' was not found\n"
-                )
-                .unwrap(),
-                InstalledPackage::Absent
-            );
-            for (manager, status, stdout, stderr) in [
-                (PackageManager::Dnf, 1, "", "error: rpmdb failed"),
-                (PackageManager::Dnf, 0, "0\t1.0\t1\n0\t2.0\t1\n", ""),
-                (PackageManager::Apt, 0, "config-files\t1.0-1\n", ""),
-                (PackageManager::Apt, 0, "installed\t\n", ""),
-                (PackageManager::Pacman, 0, "other 1.0-1\n", ""),
-                (PackageManager::Pacman, 1, "", "error: database unavailable"),
-            ] {
-                assert!(parse_package_status(manager, status, stdout, stderr).is_err());
             }
-        }
 
-        {
-            let mut host = fedora();
-            host.installed_package = Ok(InstalledPackage::Installed {
-                version: "1.0-1".into(),
-            });
-            assert!(matches!(
-                desktop_readiness(&host, &[release()]),
-                DesktopReadiness::AlreadyInstalled(_)
-            ));
-            host.installed_package = Ok(InstalledPackage::Installed {
-                version: "1.0-2".into(),
-            });
-            blocked(&host, &[release()]);
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn readiness_accepts_only_verified_ordinary_supported_hosts() {
-        {
-            let host = probe_desktop_host().unwrap().join().unwrap();
-            assert_eq!(host.operating_system, std::env::consts::OS);
-            if !cfg!(target_os = "linux") {
+            {
+                let mut host = fedora();
+                host.installed_package = Ok(InstalledPackage::Installed {
+                    version: "1.0-1".into(),
+                });
+                assert!(matches!(
+                    desktop_readiness(&host, &[release()]),
+                    DesktopReadiness::AlreadyInstalled(_)
+                ));
+                host.installed_package = Ok(InstalledPackage::Installed {
+                    version: "1.0-2".into(),
+                });
                 blocked(&host, &[release()]);
             }
         }
 
+        phase readiness_accepts_only_verified_ordinary_supported_hosts;
         {
-            let host = fedora();
-            let good = release();
-            assert!(matches!(
-                desktop_readiness(&host, &[good.clone()]),
-                DesktopReadiness::Ready(_)
-            ));
-            blocked(
-                &host,
-                &super::super::desktop_catalog::bundled_releases().unwrap(),
-            );
-            let mut no_runtime = good.clone();
-            no_runtime.verified_runtime = None;
-            blocked(&host, &[no_runtime]);
-            let mut wrong_runtime = good.clone();
-            wrong_runtime
-                .verified_runtime
-                .as_mut()
-                .unwrap()
-                .package_sha256 = "b".repeat(64);
-            blocked(&host, &[wrong_runtime]);
-            blocked(&host, &[good.clone(), good.clone()]);
-            for (id, version, arch) in [
-                ("example", "44", "aarch64"),
-                ("fedora", "44.0", "aarch64"),
-                ("fedora", "44", "x86_64"),
-                ("fedora", "44", "arm64"),
-            ] {
-                let mut wrong = host.clone();
-                wrong.os_release =
-                    parse_os_release(&format!("ID={id}\nVERSION_ID={version}\nID_LIKE=fedora"));
-                wrong.architecture = Ok(arch.into());
-                blocked(&wrong, &[good.clone()]);
-            }
-        }
-
-        {
-            let release = release();
-            for change in 0..11 {
-                let mut host = fedora();
-                match change {
-                    0 => host.immutable = Ok(true),
-                    1 => host.sandboxed = Ok(true),
-                    2 => host.immutable = Err("unknown".into()),
-                    3 => host.sandboxed = Err("unknown".into()),
-                    4 => host.session = Err("unknown".into()),
-                    5 => host.package_manager = Err("missing".into()),
-                    6 => host.installed_package = Err("query failed".into()),
-                    7 => host.operating_system = "windows".into(),
-                    8 => host.os_release = parse_os_release("ID=fedora"),
-                    9 => host.package_manager = Ok(PackageManager::Apt),
-                    _ => host.architecture = Err("unknown".into()),
+            {
+                let host = probe_desktop_host().unwrap().join().unwrap();
+                assert_eq!(host.operating_system, std::env::consts::OS);
+                if !cfg!(target_os = "linux") {
+                    blocked(&host, &[release()]);
                 }
-                blocked(&host, &[release.clone()]);
             }
-        }
 
-        {
-            for (id, version, manager, format) in [
-                (
-                    "ubuntu",
-                    Some("24.04"),
-                    PackageManager::Apt,
-                    PackageFormat::Deb,
-                ),
-                (
-                    "debian",
-                    Some("13"),
-                    PackageManager::Apt,
-                    PackageFormat::Deb,
-                ),
-                ("arch", None, PackageManager::Pacman, PackageFormat::Arch),
-            ] {
-                let mut host = fedora();
-                host.os_release = parse_os_release(&format!(
-                    "ID={id}\n{}",
-                    version.map_or(String::new(), |v| format!("VERSION_ID={v}"))
-                ));
-                host.package_manager = Ok(manager);
-                let mut release = release();
-                release.distro_id = id.into();
-                release.distro_version = version.unwrap_or("rolling").into();
-                release.package_format = format;
+            {
+                let host = fedora();
+                let good = release();
                 assert!(matches!(
-                    desktop_readiness(&host, &[release]),
+                    desktop_readiness(&host, &[good.clone()]),
                     DesktopReadiness::Ready(_)
                 ));
+                blocked(
+                    &host,
+                    &super::super::desktop_catalog::bundled_releases().unwrap(),
+                );
+                let mut no_runtime = good.clone();
+                no_runtime.verified_runtime = None;
+                blocked(&host, &[no_runtime]);
+                let mut wrong_runtime = good.clone();
+                wrong_runtime
+                    .verified_runtime
+                    .as_mut()
+                    .unwrap()
+                    .package_sha256 = "b".repeat(64);
+                blocked(&host, &[wrong_runtime]);
+                blocked(&host, &[good.clone(), good.clone()]);
+                for (id, version, arch) in [
+                    ("example", "44", "aarch64"),
+                    ("fedora", "44.0", "aarch64"),
+                    ("fedora", "44", "x86_64"),
+                    ("fedora", "44", "arm64"),
+                ] {
+                    let mut wrong = host.clone();
+                    wrong.os_release =
+                        parse_os_release(&format!("ID={id}\nVERSION_ID={version}\nID_LIKE=fedora"));
+                    wrong.architecture = Ok(arch.into());
+                    blocked(&wrong, &[good.clone()]);
+                }
             }
-            for id in ["nixos", "unknown", "fedora-derivative"] {
-                let mut host = fedora();
-                host.os_release = parse_os_release(&format!("ID={id}\nVERSION_ID=44"));
-                let mut release = release();
-                release.distro_id = id.into();
-                blocked(&host, &[release]);
+
+            {
+                let release = release();
+                for change in 0..11 {
+                    let mut host = fedora();
+                    match change {
+                        0 => host.immutable = Ok(true),
+                        1 => host.sandboxed = Ok(true),
+                        2 => host.immutable = Err("unknown".into()),
+                        3 => host.sandboxed = Err("unknown".into()),
+                        4 => host.session = Err("unknown".into()),
+                        5 => host.package_manager = Err("missing".into()),
+                        6 => host.installed_package = Err("query failed".into()),
+                        7 => host.operating_system = "windows".into(),
+                        8 => host.os_release = parse_os_release("ID=fedora"),
+                        9 => host.package_manager = Ok(PackageManager::Apt),
+                        _ => host.architecture = Err("unknown".into()),
+                    }
+                    blocked(&host, &[release.clone()]);
+                }
+            }
+
+            {
+                for (id, version, manager, format) in [
+                    (
+                        "ubuntu",
+                        Some("24.04"),
+                        PackageManager::Apt,
+                        PackageFormat::Deb,
+                    ),
+                    (
+                        "debian",
+                        Some("13"),
+                        PackageManager::Apt,
+                        PackageFormat::Deb,
+                    ),
+                    ("arch", None, PackageManager::Pacman, PackageFormat::Arch),
+                ] {
+                    let mut host = fedora();
+                    host.os_release = parse_os_release(&format!(
+                        "ID={id}\n{}",
+                        version.map_or(String::new(), |v| format!("VERSION_ID={v}"))
+                    ));
+                    host.package_manager = Ok(manager);
+                    let mut release = release();
+                    release.distro_id = id.into();
+                    release.distro_version = version.unwrap_or("rolling").into();
+                    release.package_format = format;
+                    assert!(matches!(
+                        desktop_readiness(&host, &[release]),
+                        DesktopReadiness::Ready(_)
+                    ));
+                }
+                for id in ["nixos", "unknown", "fedora-derivative"] {
+                    let mut host = fedora();
+                    host.os_release = parse_os_release(&format!("ID={id}\nVERSION_ID=44"));
+                    let mut release = release();
+                    release.distro_id = id.into();
+                    blocked(&host, &[release]);
+                }
+            }
+
+            {
+                let host = parse_os_release("ID=example\nID_LIKE=fedora\nVERSION_ID=44\n").unwrap();
+                assert_eq!(host.id, "example");
             }
         }
 
+        phase os_release_parses_literally_and_rejects_ambiguity;
         {
-            let host = parse_os_release("ID=example\nID_LIKE=fedora\nVERSION_ID=44\n").unwrap();
-            assert_eq!(host.id, "example");
+            {
+                let host = parse_os_release("# Fedora fixture\nNAME=\"Fedora Linux\"\nID='fedora'\nVERSION_ID=\"44\"\nPRETTY_NAME=\"Fedora \\\"44\\\" \\$HOME\"\n").unwrap();
+                assert_eq!(host.id, "fedora");
+                assert_eq!(host.version_id.as_deref(), Some("44"));
+            }
+
+            {
+                for value in [
+                    "",
+                    "ID=fedora\nID=fedora\n",
+                    "ID=fedora\nVERSION_ID=44\nVERSION_ID=45\n",
+                    "ID=\"fedora",
+                    "ID=fedora extra",
+                    "export ID=fedora",
+                    "ID=$(whoami)",
+                    "ID=fedora;true",
+                    "ID=fedora\nBROKEN",
+                    "ID=Fedora",
+                    "ID=fedora\nVERSION_ID=\"44\"junk",
+                ] {
+                    assert!(parse_os_release(value).is_err(), "accepted {value:?}");
+                }
+            }
+
+            {
+                assert_eq!(parse_os_release("ID=fedora\n").unwrap().version_id, None);
+                assert_eq!(catalog_architecture("aarch64"), Some("aarch64"));
+                assert_eq!(catalog_architecture("x86_64"), Some("x86_64"));
+                assert_eq!(catalog_architecture("arm64"), None);
+                assert_eq!(catalog_architecture("x86"), None);
+            }
         }
     }
 
@@ -1212,40 +1244,5 @@ mod tests {
         assert!(
             matches!(desktop_readiness(host, releases), DesktopReadiness::Blocked(ref reasons) if !reasons.is_empty())
         );
-    }
-
-    #[test]
-    fn os_release_parses_literally_and_rejects_ambiguity() {
-        {
-            let host = parse_os_release("# Fedora fixture\nNAME=\"Fedora Linux\"\nID='fedora'\nVERSION_ID=\"44\"\nPRETTY_NAME=\"Fedora \\\"44\\\" \\$HOME\"\n").unwrap();
-            assert_eq!(host.id, "fedora");
-            assert_eq!(host.version_id.as_deref(), Some("44"));
-        }
-
-        {
-            for value in [
-                "",
-                "ID=fedora\nID=fedora\n",
-                "ID=fedora\nVERSION_ID=44\nVERSION_ID=45\n",
-                "ID=\"fedora",
-                "ID=fedora extra",
-                "export ID=fedora",
-                "ID=$(whoami)",
-                "ID=fedora;true",
-                "ID=fedora\nBROKEN",
-                "ID=Fedora",
-                "ID=fedora\nVERSION_ID=\"44\"junk",
-            ] {
-                assert!(parse_os_release(value).is_err(), "accepted {value:?}");
-            }
-        }
-
-        {
-            assert_eq!(parse_os_release("ID=fedora\n").unwrap().version_id, None);
-            assert_eq!(catalog_architecture("aarch64"), Some("aarch64"));
-            assert_eq!(catalog_architecture("x86_64"), Some("x86_64"));
-            assert_eq!(catalog_architecture("arm64"), None);
-            assert_eq!(catalog_architecture("x86"), None);
-        }
     }
 }
