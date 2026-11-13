@@ -338,8 +338,14 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         if driver.exists():
             self.assertEqual(env["VK_DRIVER_FILES"], str(driver))
             self.assertEqual(env["WGPU_ADAPTER_NAME"], "llvmpipe")
+            # One shader cache for the run's test processes, kept with the
+            # fixtures: each has a fresh HOME, and would compile every shader
+            # again there.
+            self.assertEqual(env["MESA_SHADER_CACHE_DIR"],
+                             env["TILO_TEST_CACHE_DIR"] + "/mesa-shader-cache")
         else:
             self.assertNotIn("VK_DRIVER_FILES", env)
+            self.assertNotIn("MESA_SHADER_CACHE_DIR", env)
             self.assertEqual(env["TILO_REQUIRE_GPU"], "0")
 
     def test_runtime_starts_no_interpreter_and_no_other_shell(self) -> None:

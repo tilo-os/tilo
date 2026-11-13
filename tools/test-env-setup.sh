@@ -32,6 +32,9 @@
 #          where tests run as one, tools/as-test-user.sh), so fixtures a test
 #          generates itself (the media decode clip) are made once and shared
 #          by every test process instead of once per process in its fresh HOME;
+#          with lavapipe, MESA_SHADER_CACHE_DIR below it, so the machine code
+#          lavapipe compiles a shader to is compiled by the first test process
+#          that draws with it, not by every one again before its first frame;
 #          and TILO_REQUIRE_* of every capability .config/nextest-capabilities.toml
 #          maps, whose tests the CI step leaves out where it is missing.
 #          A TILO_REQUIRE_* or TILO_PDFIUM_LIB already set is kept, and a
@@ -95,9 +98,11 @@ provide() { # KEY VALUE: the variable, for the tests and for the later steps
     export "$1=$2"
 }
 
-# The fixture cache, the test user's: made where it is not there yet.
-test_cache() {
-    [[ -d $cache_dir ]] || (tilo_test_user_exec mkdir -p "$cache_dir")
+# The fixture cache, the test user's, or DIR below it: made, with what is above it, where it is
+# not there yet.
+test_cache() { # [DIR]
+    local dir=${1:-$cache_dir}
+    [[ -d $dir ]] || (tilo_test_user_exec mkdir -p "$dir")
 }
 
 # The TILO_REQUIRE_* variable of every capability
@@ -154,7 +159,19 @@ runtime() {
     elif [[ -r /usr/lib64/libpdfium.so ]]; then
         provide TILO_PDFIUM_LIB /usr/lib64/libpdfium.so
     fi
-    test_cache
+    # lavapipe compiles the shaders a process draws with to machine code the first time it draws
+    # with them: about three seconds before a test's first frame, which every test process paid
+    # again, its own cache directory being the empty one of its fresh HOME. One shader cache for
+    # the run's processes, kept with the fixtures, leaves that to the first process that draws.
+    # Mesa keys an entry by the driver's build and the shader and bounds the directory itself, so
+    # a process reads from it the code it would have compiled. Naming it starts nothing: the
+    # directory is made with the fixture cache's own, by the one `mkdir` of a machine's first job.
+    if [[ -r $icd ]]; then
+        test_cache "$cache_dir/mesa-shader-cache"
+        provide MESA_SHADER_CACHE_DIR "$cache_dir/mesa-shader-cache"
+    else
+        test_cache
+    fi
     provide TILO_TEST_CACHE_DIR "$cache_dir"
     # Where the pinned font catalog is, and the promise of it: a run promised the catalog stops
     # where one is missing, rather than comparing frames set in whatever faces the machine
