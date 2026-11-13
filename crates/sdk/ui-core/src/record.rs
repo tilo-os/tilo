@@ -1679,7 +1679,7 @@ impl RecordOwners {
         // workspace's records name the workspace.
         let person = person.filter(|_| workspace_id == person::PERSONAL_SCOPE);
         if self.portable.is_some() {
-            app_state::validate_record_namespace(app_id, workspace_id)?;
+            app_state::validate_document_namespace(app_id, workspace_id)?;
         } else {
             app_state::validate_document_identity(app_id, workspace_id, "validation")?;
         }

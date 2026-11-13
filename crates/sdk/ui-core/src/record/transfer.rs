@@ -131,7 +131,7 @@ impl Origin {
         match self {
             Self::Record(checkout) => key(package, workspace, &checkout.id),
             Self::AppDocument(_) => {
-                app_state::validate_record_namespace(package, workspace)?;
+                app_state::validate_document_namespace(package, workspace)?;
                 Ok(StorageKey::app(package))
             }
         }
@@ -721,7 +721,7 @@ pub fn install_workspace_document(
     workspace: &str,
     doc: &mut AutoCommit,
 ) -> Result<Landing, TransferError> {
-    app_state::validate_record_namespace(package, workspace)?;
+    app_state::validate_document_namespace(package, workspace)?;
     let key = StorageKey::workspace_index(package, workspace);
     let _writer = writer(store, &key)?;
     if store

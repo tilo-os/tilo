@@ -3,7 +3,7 @@
 //! Every document lives behind a [`durable_store::DurableStore`] key.
 //! [`FsStore`] is the native implementation: one directory per document
 //! (`<data home>/<app-id>/state.automerge` for a app's own document,
-//! below it for workspaces and records), atomic replacement, synced appends,
+//! below it for workspaces and their documents), atomic replacement, synced appends,
 //! an actor sidecar for restart continuity and advisory-lock gates for single
 //! or shared ownership. Identifiers are validated so an app can't address
 //! another app's storage or the shared workspace FUSE root.
@@ -46,7 +46,7 @@ pub use fs_store::{FsStore, INSTANCE_VIEWS_DIR, workspace_index_directory};
 
 pub const DOCUMENT_FILE: &str = "state.automerge";
 pub const ACTOR_FILE: &str = "actor";
-/// Beside a large record's document: the change hashes its last full save
+/// Beside a large document: the change hashes its last full save
 /// listed, so the next load need not rebuild every change (`load_hint`).
 pub const LOAD_HINT_FILE: &str = "state.hashes";
 pub const CANONICAL_GATE: &str = "canonical.lock";
@@ -81,7 +81,7 @@ pub enum StoreError {
     SourceChanged { path: PathBuf },
     #[error("invalid app id {0:?}: {1}")]
     AppId(String, &'static str),
-    /// The record key could not be turned into a directory name (distinct from
+    /// The document key could not be turned into a directory name (distinct from
     /// [`StoreError::AppId`] so the message names which input was wrong).
     #[error("invalid document key {0:?}: {1}")]
     DocumentKey(String, &'static str),
@@ -146,11 +146,10 @@ fn checked_app_id(id: &str) -> Result<AppId, StoreError> {
     Ok(AppId::new(id))
 }
 
-/// Validate a record key as a single directory name — same boundary as
-/// [`checked_app_id`], but stricter matters here since a record's
-/// identity can be a file path where `..` could enable traversal. Rejected
-/// rather than sanitised, since silently rewriting a bad key could make two
-/// records share one file.
+/// Check a document key as a single directory name — the same boundary as
+/// [`checked_app_id`], and it matters more here because a document's identity
+/// can be a file path where `..` would traverse. Rejected rather than
+/// sanitised: rewriting a bad key could make two documents share one file.
 fn validate_document_key(key: &str) -> Result<(), StoreError> {
     if key.is_empty() {
         return Err(StoreError::DocumentKey(
@@ -179,20 +178,20 @@ fn validate_document_key(key: &str) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Validate the identifiers of a workspace-scoped record without resolving
-/// any path, so a caller can refuse a bad namespace before choosing a store.
+/// Check the identifiers of a workspace-scoped document without resolving any
+/// path, so a caller can refuse a bad namespace before choosing a store.
 pub fn validate_document_identity(
     app: &str,
     workspace: &str,
-    record: &str,
+    document: &str,
 ) -> Result<(), StoreError> {
     checked_app_id(app)?;
     validate_document_key(workspace)?;
-    validate_document_key(record)
+    validate_document_key(document)
 }
 
-/// Validate the identifiers of a workspace's index document, as
-/// [`validate_document_identity`] does a record's.
+/// Check the identifiers of a workspace's index document, as
+/// [`validate_document_identity`] does a document's.
 pub fn validate_workspace_identity(app: &str, workspace: &str) -> Result<(), StoreError> {
     checked_app_id(app)?;
     validate_document_key(workspace)
@@ -239,7 +238,7 @@ impl DocStore {
     }
 
     /// [`Self::native_store`] as a handle any thread may hold: a service
-    /// that keeps a document of its own beside the records shares this one.
+    /// that keeps a document of its own beside the app's shares this one.
     pub fn native_store_shared() -> Arc<dyn DurableStore + Send + Sync> {
         Arc::new(FsStore::new(cli::data_home()))
     }
@@ -251,7 +250,7 @@ impl DocStore {
         Self::shared(Self::native_store(), StorageKey::app(app_id))
     }
 
-    /// Open one record in one workspace.  A record id is only unique
+    /// Open one document of one workspace. A document id is unique only
     /// *within* a workspace: a hostile or stale peer must not be able to make
     /// `uuid:...` in workspace B resolve to workspace A's change graph.
     ///
@@ -262,18 +261,18 @@ impl DocStore {
     pub fn open_workspace_document(
         app_id: &str,
         workspace_key: &str,
-        record_key: &str,
+        document_key: &str,
     ) -> Result<Self, StoreError> {
-        validate_document_identity(app_id, workspace_key, record_key)?;
+        validate_document_identity(app_id, workspace_key, document_key)?;
         Self::shared(
             Self::native_store(),
-            StorageKey::document(app_id, workspace_key, record_key),
+            StorageKey::document(app_id, workspace_key, document_key),
         )
     }
 
-    /// Open the index of **one workspace** — the list of which records that
-    /// workspace holds. A sibling of the workspace's records, so a workspace
-    /// id can never resolve to a record's document and merge the two.
+    /// Open the index of **one workspace** — the list of which documents that
+    /// workspace holds. A sibling of the workspace's documents, so a workspace
+    /// id can never resolve to a document's directory and merge the two.
     pub fn open_workspace(app_id: &str, workspace_key: &str) -> Result<Self, StoreError> {
         checked_app_id(app_id)?;
         validate_document_key(workspace_key)?;
@@ -349,28 +348,28 @@ impl DocStore {
         app: &str,
         workspace: &str,
     ) -> Result<PathBuf, StoreError> {
-        validate_record_namespace(app, workspace)?;
+        validate_document_namespace(app, workspace)?;
         validate_absolute_directory(profile_root)?;
         Ok(profile_root.join(app).join(WORKSPACES_DIR).join(workspace))
     }
 
-    /// Resolve one record under an explicit profile root without consulting the environment.
+    /// Resolve one document under an explicit profile root without consulting the environment.
     pub fn workspace_document_dir_at(
         profile_root: &Path,
         app: &str,
         workspace: &str,
-        record: &str,
+        document: &str,
     ) -> Result<PathBuf, StoreError> {
         checked_app_id(app)?;
         validate_document_key(workspace)?;
-        validate_document_key(record)?;
+        validate_document_key(document)?;
         validate_absolute_directory(profile_root)?;
         Ok(profile_root
             .join(app)
             .join(WORKSPACES_DIR)
             .join(workspace)
             .join(DOCUMENTS_DIR)
-            .join(record))
+            .join(document))
     }
 
     pub fn app_id(&self) -> &AppId {
@@ -450,7 +449,7 @@ impl DocStore {
         Ok(Some(doc))
     }
 
-    /// Load a complete existing change graph for checked record admission.
+    /// Load a complete existing change graph for checked document admission.
     ///
     /// # Errors
     /// Rejects incomplete, empty, unreadable, or unsupported stored documents.
@@ -684,7 +683,7 @@ fn decode_canonical_with(
 }
 
 /// Validate a canonical app/workspace identity independently of its storage adapter.
-pub fn validate_record_namespace(app: &str, workspace: &str) -> Result<(), StoreError> {
+pub fn validate_document_namespace(app: &str, workspace: &str) -> Result<(), StoreError> {
     checked_app_id(app)?;
     validate_document_key(workspace)
 }
