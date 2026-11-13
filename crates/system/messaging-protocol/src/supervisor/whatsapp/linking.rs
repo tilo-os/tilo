@@ -269,12 +269,10 @@ impl WhatsappLinking {
         self.check()?;
         Ok(verified)
     }
-    /// Resume the pinned encrypted identity without creating a pairing presentation.
     pub fn resume(&self) -> Result<(), SendError> {
         self.verify_resume()?;
         self.start()
     }
-    /// Check the exact pinned self identity without connecting or blocking on I/O.
     pub fn verify_resume(&self) -> Result<(), SendError> {
         self.check()?;
         let expected = self.resumed.as_ref().ok_or(SendError::InvalidRequest)?;
@@ -355,7 +353,6 @@ impl AccountSupervisor {
         }
         WhatsappLinking::new(self.owner.clone(), source, authority, None)
     }
-    /// Resume only the already reviewed identity from this exact encrypted SDK.
     pub fn whatsapp_resume(&self, expected: &str) -> Result<Arc<WhatsappLinking>, SendError> {
         let authority = self.authority.clone().ok_or(SendError::Revoked)?;
         authority.check()?;

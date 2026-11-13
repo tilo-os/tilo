@@ -6,7 +6,6 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use buffa_build::Config;
 
-// FileDescriptorSet for: syntax = "proto3"; package fixture; message Before {}
 const DESCRIPTOR: &[u8] = b"\x0a\x2a\x0a\x0d\x66\x69\x78\x74\x75\x72\x65\x2e\x70\x72\x6f\x74\x6f\x12\x07\x66\x69\x78\x74\x75\x72\x65\x22\x08\x0a\x06\x42\x65\x66\x6f\x72\x65\x62\x06\x70\x72\x6f\x74\x6f\x33";
 
 fn generate(config: Config, out: &Path) -> Result<(), Box<dyn std::error::Error>> {

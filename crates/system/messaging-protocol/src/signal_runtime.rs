@@ -1,9 +1,4 @@
 //! Native I/O for a supervisor-provided signal-cli connection.
-//!
-//! The supervisor authenticates the daemon and supplies the connected handle.
-//! This module never discovers ambient sockets, spawns a daemon, logs in or
-//! acquires Signal identity keys. A single total deadline bounds each exchange,
-//! including partial writes and trickling frames. The send journal stays local.
 
 use std::io::{self, BufRead, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -99,7 +94,6 @@ impl SignalRuntime {
             .bind_number(account.number.as_deref().ok_or(Error::InvalidIdentity)?)?;
         Ok(account)
     }
-    /// Compare the current verified provider key without changing trust.
     pub fn verify_recipient(
         &mut self,
         recipient: &str,
@@ -244,7 +238,6 @@ pub struct SignalReceiver {
 }
 #[cfg(feature = "signal-broker")]
 impl SignalReceiver {
-    /// The supervisor supplies a separately authenticated daemon connection.
     pub fn new(
         owner: Owner,
         signal_account: String,
@@ -385,7 +378,6 @@ fn valid_signal_account(account: &str) -> bool {
     }
 }
 
-/// Unlike a generic `BufReader`, this private receive buffer wipes on drop.
 pub(crate) struct DeadlineReader {
     stream: DeadlineStream,
     buffer: Zeroizing<Vec<u8>>,

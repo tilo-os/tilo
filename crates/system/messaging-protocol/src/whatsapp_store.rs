@@ -1,9 +1,4 @@
 //! Device/account-owned encrypted SDK state. No plaintext database or key file.
-//!
-//! Each batch is one authenticated, sequence-checked frame, flushed before its
-//! values become visible. Interrupted/corrupt logs fail closed, never reset.
-//! Compaction atomically publishes an encrypted snapshot. The host must prevent
-//! authorized rollback/deletion; AEAD does not prove that a backup is current.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -65,7 +60,6 @@ pub trait StateAuthority: Send + Sync {
 }
 
 impl EncryptedBackend {
-    /// Look up an existing OS-keychain key. Linking/provisioning is separate.
     pub fn open_system(
         root: &Path,
         owner: Owner,
@@ -94,7 +88,6 @@ impl EncryptedBackend {
         Self::open_state(root, owner, lookup()?, Some(authority))
     }
 
-    /// Use a host's existing scoped key without provisioning or fallback.
     pub fn open_existing_in(
         root: &Path,
         owner: Owner,
@@ -109,7 +102,6 @@ impl EncryptedBackend {
         Self::open_with_key(root, owner, key)
     }
 
-    /// Explicit host-supplied key, for hosts and isolated fixtures.
     pub fn open_with_key(root: &Path, owner: Owner, key: VaultKey) -> Result<Self> {
         Self::open_state(root, owner, key, None)
     }

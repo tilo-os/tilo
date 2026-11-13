@@ -69,7 +69,6 @@ async fn subscriptions_refuse_foreign_sources_and_supervisor_loss() {
         .await
         .unwrap();
     drop(broker);
-    // Even another cloned worker/client does not keep this supervisor binding.
     subscription
         .handler
         .handle_event(Arc::new(Event::Receipt(receipt(

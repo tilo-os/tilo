@@ -48,7 +48,6 @@ pub fn check(
     check_owned(store, route, expected, live)
 }
 
-/// Check a direct private Tilo route without admitting it to external adapters.
 pub(crate) fn check_native(
     store: &AccountStore,
     route: &Route,

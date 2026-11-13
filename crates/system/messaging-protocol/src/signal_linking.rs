@@ -28,7 +28,6 @@ const INTERRUPTED: u8 = 5;
 const ACCEPTED: u8 = 6;
 const LINK_LIFETIME: Duration = Duration::from_secs(120);
 
-/// Private display material. It has no serialization or payload diagnostics.
 pub struct SignalPairing {
     pub attempt: String,
     uri: Zeroizing<String>,

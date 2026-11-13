@@ -1,10 +1,4 @@
 //! Pinned SDK send binding for a supervisor-owned, already linked client.
-//!
-//! The supervisor must retain credential custody, configure encrypted SDK
-//! storage and bind one SDK client to one verified account/link generation.
-//! No default storage, transport, login or linking is created here. SDK write
-//! completion is submitted evidence only; server and recipient receipts remain
-//! separate. This initial binding supports direct text, not full rich content.
 
 use std::sync::Arc;
 
@@ -190,7 +184,6 @@ impl WhatsappRuntime {
         self.journal.recipient_evidence(operation)
     }
 
-    /// Frozen native owner used by the trusted mounting host.
     pub fn owner(&self) -> &Owner {
         &self.owner
     }
