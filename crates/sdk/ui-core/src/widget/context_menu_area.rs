@@ -908,11 +908,14 @@ impl super::Decorator for ContextMenuArea {
         true
     }
 
-    /// The open menu is placed by the area itself, over the content, where the window's layout
-    /// gives it no node: an assistive technology and an agent reach its rows through the
-    /// content's node, as a person reaches them by pointer.
+    /// The menu and the box it carries, and an emoji picker, are placed by the area itself, over
+    /// the content, where the window's layout gives them no node: an assistive technology and an
+    /// agent reach their controls through the content's node, as a person reaches them by pointer.
+    /// A box standing with no menu around it is placed here too, so the send key's box is reached
+    /// as the menu's rows are.
     fn lays_out_child(&self, child_index: usize) -> bool {
-        self.menu.is_open() && child_index == self.content.children().len()
+        self.menu.is_showing() && child_index == self.content.children().len()
+            || self.picker.is_some() && child_index == self.content.children().len() + 1
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {

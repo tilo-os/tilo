@@ -11,10 +11,12 @@ use std::rc::Rc;
 
 use crate::floating_surface::{
     FloatingSurfaceClientMessage, FloatingSurfaceHostMessage, FloatingSurfaceServiceClient,
+    Recipient, RecipientKind,
 };
 use crate::window_targets::{TargetAction, WindowTarget};
 
 use super::App;
+use super::AppSurface;
 use super::framework_history_tests::{app_with_root, layout};
 
 /// A window showing one button, `go`, counting its presses, on a shell-ui
@@ -190,4 +192,155 @@ fn a_control_that_runs_an_app_action_is_listed_and_pressed_by_what_it_does() {
         "the window acts on the control the identity names"
     );
     assert_eq!(pressed.get(), 1, "and the press reached it");
+}
+
+/// A window whose own menu carries the send-to box, on a shell-ui connection whose shell end the
+/// test holds.
+fn box_window() -> (App, UnixStream) {
+    let content = crate::widget::Column::new().push(Box::new(crate::widget::Spacer::fixed(300.0)));
+    let area = crate::widget::ContextMenuArea::new(Box::new(content), |_| Vec::new());
+    let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(area));
+    let (app_side, shell_side) = UnixStream::pair().unwrap();
+    app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+    (app, shell_side)
+}
+
+struct Window;
+impl AppSurface for Window {
+    fn scale_factor(&self) -> f64 {
+        1.0
+    }
+    fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
+        winit::dpi::PhysicalSize::new(400, 400)
+    }
+    fn request_redraw(&self) {}
+    fn set_cursor(&self, _cursor: winit::window::CursorIcon) {}
+}
+
+/// The frames that draw what the window holds: the box a pass was asked for opens on the first.
+fn drawn(app: &mut App) {
+    for _ in 0..4 {
+        let mut scene = crate::vello::Scene::new();
+        if !app.surface_frame(&Window, &mut scene) || !app.unsettled() {
+            break;
+        }
+    }
+}
+
+/// The names the window told the shell of, this pass.
+fn told(app: &mut App, shell: &mut UnixStream) -> Vec<WindowTarget> {
+    described(app, shell).expect("the window describes its controls")
+}
+
+/// The send key opens the window's box, and the box's own controls reach the shell as the
+/// window's: the field that names whom it goes to, the field that writes the message, what it is
+/// about, and Send — the same list, whether a menu opened the box or the key did.
+#[test]
+fn the_box_a_send_key_opens_tells_the_shell_its_controls() {
+    let (mut app, mut shell) = box_window();
+    drawn(&mut app);
+    let _window = told(&mut app, &mut shell);
+
+    assert!(
+        app.apply_floating_host_messages(vec![FloatingSurfaceHostMessage::ShareSelection {
+            to: Vec::new(),
+            pointing: false,
+        }]),
+        "the shell asked the window for its box"
+    );
+    drawn(&mut app);
+    let targets = told(&mut app, &mut shell);
+    let names: Vec<&str> = targets.iter().map(|target| target.name.as_str()).collect();
+    for wanted in [
+        crate::i18n::I18nManager::lookup_plain("send-to-recipients-name"),
+        crate::i18n::I18nManager::lookup_plain("send-to-message-name"),
+        crate::i18n::I18nManager::lookup_plain("send-to-send"),
+    ] {
+        assert!(
+            names.contains(&wanted.as_str()),
+            "the box's {wanted:?} is one of its controls: {names:?}"
+        );
+    }
+    let send = targets
+        .iter()
+        .find(|target| target.name == crate::i18n::I18nManager::lookup_plain("send-to-send"))
+        .expect("Send");
+    assert_eq!(send.role, "Button");
+    assert!(
+        send.rect[2] > send.rect[0] && send.rect[3] > send.rect[1],
+        "where the person reaches it: {:?}",
+        send.rect
+    );
+    let field = targets
+        .iter()
+        .find(|target| {
+            target.name == crate::i18n::I18nManager::lookup_plain("send-to-recipients-name")
+        })
+        .expect("the field that names whom it goes to");
+    assert_eq!(field.role, "TextInput");
+    assert!(
+        field.rect[2] > field.rect[0],
+        "a field is a control where it is drawn, though a press does not operate it: {:?}",
+        field.rect
+    );
+    assert!(
+        crate::shared_selection::take_open_send_box().is_none(),
+        "the box stood open, it was not left for the next frame"
+    );
+}
+
+/// Send is pressed through the target the shell was told of, and the window sends what the box
+/// holds: the path an assistive technology's activation takes, not a point aimed at.
+#[test]
+fn the_sends_send_is_pressed_through_the_target_and_sends_what_the_box_holds() {
+    let (mut app, mut shell) = box_window();
+    drawn(&mut app);
+    let _window = told(&mut app, &mut shell);
+    let adalovelace = Recipient::found(RecipientKind::Person, "person:ada", "Ada");
+    crate::shared_selection::open_send_box(
+        None,
+        None,
+        Some("Ship the launch notes"),
+        std::slice::from_ref(&adalovelace),
+    );
+    drawn(&mut app);
+    let targets = told(&mut app, &mut shell);
+    let names: Vec<&str> = targets.iter().map(|target| target.name.as_str()).collect();
+    assert!(
+        names.contains(&adalovelace.name.as_str()),
+        "the chip that takes a recipient off is a control of the box: {names:?}"
+    );
+    let send = targets
+        .iter()
+        .find(|target| target.name == crate::i18n::I18nManager::lookup_plain("send-to-send"))
+        .expect("Send");
+    assert!(
+        send.actions.contains(&TargetAction::Activate),
+        "with something to send, Send answers the press: {send:?}"
+    );
+
+    press(
+        &mut shell,
+        crate::i18n::I18nManager::lookup_plain("send-to-send").as_str(),
+        "Button",
+        TargetAction::Activate,
+    );
+    app.pump_floating_surface_service();
+    let mut sent_message = None;
+    for _ in 0..4 {
+        drawn(&mut app);
+        app.pump_floating_surface_service();
+        sent_message = sent(&mut shell)
+            .into_iter()
+            .find_map(|message| match message {
+                FloatingSurfaceClientMessage::SendTo { to, text, .. } => Some((to, text)),
+                _ => None,
+            });
+        if sent_message.is_some() {
+            break;
+        }
+    }
+    let (to, text) = sent_message.expect("the window sent what the box held");
+    assert_eq!(text, "Ship the launch notes");
+    assert_eq!(to, [adalovelace], "to whom the box was addressed");
 }

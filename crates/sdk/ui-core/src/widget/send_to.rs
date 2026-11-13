@@ -877,15 +877,8 @@ impl SendToBox {
                 .copied()
                 .flatten()
                 .is_some_and(|remove| remove.contains(at));
-            if remove || index > 0 {
-                let gone = self.to.remove(index);
-                if self.to.is_empty() && gone.kind == RecipientKind::Feedback {
-                    // A report taken off leaves the agent a message makes, so
-                    // the box still has somewhere to send.
-                    self.to.push(Recipient::new_agent(String::new()));
-                }
-                self.changed();
-                self.layout = self.build_layout();
+            if remove || self.chip_takes_it_off(index) {
+                self.take_recipient_off(index);
             }
             return true;
         }
@@ -895,9 +888,7 @@ impl SendToBox {
             .iter()
             .position(|chip| chip.contains(at))
         {
-            self.subjects.remove(index);
-            self.changed();
-            self.layout = self.build_layout();
+            self.take_subject_off(index);
             return true;
         }
         if let Some(index) = self.layout.rows.iter().position(|row| row.contains(at)) {
@@ -1001,6 +992,37 @@ impl SendToBox {
             return;
         };
         self.take_recipient(recipient);
+    }
+
+    /// Whether a press on the chip of the recipient at `index` takes it off: a
+    /// recipient the person picked goes on a press anywhere on it, and the
+    /// agent a message makes stays until it is taken off by its own ×.
+    fn chip_takes_it_off(&self, index: usize) -> bool {
+        index > 0 || self.layout.removes.get(index).copied().flatten().is_some()
+    }
+
+    /// Take the recipient at `index` off its chip.
+    fn take_recipient_off(&mut self, index: usize) {
+        if index >= self.to.len() {
+            return;
+        }
+        let gone = self.to.remove(index);
+        if self.to.is_empty() && gone.kind == RecipientKind::Feedback {
+            // A report taken off leaves the agent a message makes, so the box
+            // still has somewhere to send.
+            self.to.push(Recipient::new_agent(String::new()));
+        }
+        self.changed();
+        self.layout = self.build_layout();
+    }
+
+    /// Take the subject at `index` off its chip.
+    fn take_subject_off(&mut self, index: usize) {
+        if index < self.subjects.len() {
+            self.subjects.remove(index);
+            self.changed();
+            self.layout = self.build_layout();
+        }
     }
 
     /// A recipient the person chose: it joins the chips, in the place of the
@@ -1557,14 +1579,29 @@ impl SendToBox {
         };
         let mut children = Vec::new();
         // Whom it goes to, each chip read where it stands, and the field that
-        // adds someone, named as it reads, holding what is typed into it.
+        // adds someone, named as it reads, holding what is typed into it. A chip
+        // a press takes off is a control of its own, so assistive technology and
+        // an agent take it off as the person does.
         for (index, recipient) in self.to.iter().enumerate() {
-            children.push(
+            let mutable = self.chip_takes_it_off(index);
+            let mut node = if mutable {
+                AccessNode::new(Role::Button)
+            } else {
                 AccessNode::new(Role::StaticText)
-                    .with_name(chip_name(recipient))
-                    .with_description(recipient.kind.label().to_owned())
-                    .with_bounds(self.layout.chips.get(index).copied().unwrap_or(Rect::ZERO)),
-            );
+            };
+            node = node
+                .with_name(chip_name(recipient))
+                .with_description(recipient.kind.label().to_owned())
+                .with_bounds(self.layout.chips.get(index).copied().unwrap_or(Rect::ZERO));
+            if mutable {
+                node = node
+                    .with_action_target(format!("send-to:chip:{index}"))
+                    .with_state(AccessState {
+                        focusable: true,
+                        ..Default::default()
+                    });
+            }
+            children.push(node);
         }
         children.push(action(
             AccessNode::new(Role::TextInput)
@@ -1598,15 +1635,20 @@ impl SendToBox {
         }
         for (index, subject) in self.subjects.iter().enumerate() {
             children.push(
-                AccessNode::new(Role::StaticText)
+                AccessNode::new(Role::Button)
                     .with_name(subject_label(subject))
+                    .with_action_target(format!("send-to:subject:{index}"))
                     .with_bounds(
                         self.layout
                             .subjects
                             .get(index)
                             .copied()
                             .unwrap_or(Rect::ZERO),
-                    ),
+                    )
+                    .with_state(AccessState {
+                        focusable: true,
+                        ..Default::default()
+                    }),
             );
         }
         // Subjects are read where they stand; adding one is the keyboard's
@@ -1696,15 +1738,38 @@ impl SendToBox {
                 false
             }
             other => {
+                if !matches!(action, crate::a11y::Action::Activate) {
+                    return false;
+                }
+                if let Some(index) = other
+                    .strip_prefix("send-to:chip:")
+                    .and_then(|index| index.parse::<usize>().ok())
+                {
+                    // The chip a press takes off is the one an assistive
+                    // technology and an agent take off: one path, so what they
+                    // reach is what the person reaches.
+                    if !self.chip_takes_it_off(index) {
+                        return false;
+                    }
+                    self.take_recipient_off(index);
+                    return true;
+                }
+                if let Some(index) = other
+                    .strip_prefix("send-to:subject:")
+                    .and_then(|index| index.parse::<usize>().ok())
+                {
+                    if index >= self.subjects.len() {
+                        return false;
+                    }
+                    self.take_subject_off(index);
+                    return true;
+                }
                 let Some(index) = other
                     .strip_prefix("send-to:recipient:")
                     .and_then(|index| index.parse::<usize>().ok())
                 else {
                     return false;
                 };
-                if !matches!(action, crate::a11y::Action::Activate) {
-                    return false;
-                }
                 self.take_row(index);
                 true
             }

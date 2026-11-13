@@ -198,6 +198,7 @@ fn the_keyboard_visits_the_recipients_the_subjects_the_message_and_send() {
             "send-to:recipients",
             "send-to:recipient:0",
             "send-to:recipient:1",
+            "send-to:subject:0",
             "send-to:message",
             "send-to:send",
         ],
@@ -211,11 +212,8 @@ fn the_keyboard_visits_the_recipients_the_subjects_the_message_and_send() {
         .collect();
     assert_eq!(
         read,
-        [
-            crate::i18n::I18nManager::lookup_plain("send-to-new-agent").as_str(),
-            "Invoice from Ada"
-        ],
-        "whom it goes to and the subject are read where they stand"
+        [crate::i18n::I18nManager::lookup_plain("send-to-new-agent").as_str()],
+        "whom it goes to is read where it stands: a chip the agent a message makes is no control of its own"
     );
     let field = node
         .children

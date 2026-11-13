@@ -251,19 +251,25 @@ pub enum Action {
 /// Whether activating a control of `role` has a meaning of it, so an assistive technology is offered
 /// the activation: the roles a person presses.
 #[must_use]
-pub(crate) const fn activation_role(role: Role) -> bool {
+pub(crate) fn activation_role(role: Role) -> bool {
+    pressable_role(crate::accesskit_bridge::map_role(role))
+}
+
+/// [`activation_role`] of a role as the exported tree names it: the same roles, read back from a
+/// node a widget described ([`crate::accesskit_bridge::map_role`]).
+#[must_use]
+pub(crate) const fn pressable_role(role: crate::accesskit::Role) -> bool {
     matches!(
         role,
-        Role::Button
-            | Role::ToggleButton
-            | Role::Checkbox
-            | Role::RadioButton
-            | Role::Switch
-            | Role::Tab
-            | Role::MenuItem
-            | Role::ListItem
-            | Role::TreeItem
-            | Role::Link
+        crate::accesskit::Role::Button
+            | crate::accesskit::Role::CheckBox
+            | crate::accesskit::Role::RadioButton
+            | crate::accesskit::Role::Switch
+            | crate::accesskit::Role::Tab
+            | crate::accesskit::Role::MenuItem
+            | crate::accesskit::Role::ListItem
+            | crate::accesskit::Role::TreeItem
+            | crate::accesskit::Role::Link
     )
 }
 

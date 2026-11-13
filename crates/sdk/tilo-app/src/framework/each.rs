@@ -1153,7 +1153,9 @@ impl<R: Resource> Widget for Each<R> {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let open = self.menu.menu.is_open();
+        // The box a window was asked for stands with no menu around it, and it is a child then as
+        // the open menu is: the list hands it out as it lists it.
+        let open = self.menu.menu.is_showing();
         let mut children: Vec<&mut (dyn Widget + '_)> =
             Vec::with_capacity(self.mounted.len().saturating_add(1));
         // `mounted` is ascending: split each mounted row off the rest.
@@ -1177,6 +1179,13 @@ impl<R: Resource> Widget for Each<R> {
             children.push(&mut self.menu.menu);
         }
         children
+    }
+
+    /// The menu placed over the rows — and the box it carries with no menu around it — is laid out
+    /// by the list itself, where the window's layout gives it no node: an assistive technology and
+    /// an agent reach its controls through the row's node, as a person reaches them by pointer.
+    fn lays_out_child(&self, child_index: usize) -> bool {
+        self.menu.menu.is_showing() && child_index == self.mounted().count()
     }
 
     // A list of every item: each mounted row sits in an item that says
