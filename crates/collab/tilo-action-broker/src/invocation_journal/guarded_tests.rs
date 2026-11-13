@@ -5,7 +5,7 @@
 use super::*;
 use serde_json::{Value, json};
 fn fixture(update: Value) -> Value {
-    json!({"version":3,"host":"00000000-0000-0000-0000-000000000063","records":[{
+    json!({"version":7,"host":"00000000-0000-0000-0000-000000000063","records":[{
       "key":{"room":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":{"Local":{"actor":"person"}},"invocation":"00000000-0000-0000-0000-000000000004"},
       "intent":{},"wire_id":1,"update":update,"uncertain":false,"cancellation_requested":false,
       "guarded_read":{"version":1,"selection_digest":"11".repeat(32)} }]})
@@ -69,7 +69,7 @@ fn guarded_journal_pending_recovery_preserves_requirement() {
     drop(journal);
     let saved: Value =
         serde_json::from_slice(&std::fs::read(root.join("records.json")).unwrap()).unwrap();
-    assert_eq!(saved["version"], 3);
+    assert_eq!(saved["version"], 7);
     assert_eq!(
         saved["records"][0]["guarded_read"],
         value["records"][0]["guarded_read"]
@@ -100,19 +100,19 @@ fn guarded_journal_v3_enrolled_write_cannot_downgrade_or_forget_marker() {
     drop(journal);
     let saved: Value =
         serde_json::from_slice(&std::fs::read(root.join("records.json")).unwrap()).unwrap();
-    assert_eq!(saved["version"], 3);
+    assert_eq!(saved["version"], 7);
     assert_eq!(saved["records"][0], value["records"][0]);
 }
 #[test]
 fn guarded_journal_strict_presence_and_guarded_update_shape() {
     let base = fixture(terminal());
     let mut invalid = vec![];
-    for version in [1, 2] {
+    for version in [1, 2, 3, 4, 5, 6] {
         let mut v = base.clone();
         v["version"] = version.into();
         invalid.push(v);
     }
-    for version in [1, 2, 3] {
+    for version in [1, 2, 3, 4, 5, 6] {
         let mut v = fixture(accepted());
         v["version"] = version.into();
         v["records"][0]["guarded_read"] = Value::Null;
@@ -319,11 +319,11 @@ fn guarded_journal_duplicate_unknown_and_oversized_updates_do_not_hide_payload()
     assert!(InvocationJournal::open(&root).is_err());
 }
 #[test]
-fn guarded_journal_ordinary_public_decoder_behavior_stays_legacy() {
-    let mut value = fixture(
-        json!({"state":"succeeded","invocation":"00000000-0000-0000-0000-000000000004","output":{"value":"legacy","unknown":"preserved public permissiveness"},"unknown":"permitted"}),
+fn guarded_journal_ordinary_public_decoder_reads_a_plain_row() {
+    let value = fixture(
+        json!({"state":"succeeded","invocation":"00000000-0000-0000-0000-000000000004","output":{"value":"plain","unknown":"preserved public permissiveness"},"unknown":"permitted"}),
     );
-    value["version"] = 1.into();
+    let mut value = value;
     value["records"][0]
         .as_object_mut()
         .unwrap()
@@ -337,8 +337,8 @@ fn guarded_journal_ordinary_public_decoder_behavior_stays_legacy() {
     ));
     drop(journal);
     let raw = serde_json::to_string(&value).unwrap().replace(
-        "\"value\":\"legacy\"",
-        "\"value\":\"legacy\",\"value\":\"duplicate\"",
+        "\"value\":\"plain\"",
+        "\"value\":\"plain\",\"value\":\"duplicate\"",
     );
     std::fs::write(root.join("records.json"), raw).unwrap();
     assert!(

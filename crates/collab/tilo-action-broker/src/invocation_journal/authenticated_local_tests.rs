@@ -29,11 +29,11 @@ fn disk(value: &Value) -> (tempfile::TempDir, PathBuf) {
 #[test]
 fn authenticated_local_journal_reopen_preserves_exact_owner_and_terminal() {
     for agent in [None, Some("worker-a")] {
-        let literal = terminal_fixture(local_owner(agent), 4);
+        let literal = terminal_fixture(local_owner(agent), VERSION);
         let (_dir, root) = disk(&literal);
         let before = std::fs::read(root.join("records.json")).unwrap();
         let mut journal =
-            InvocationJournal::open(&root).expect("v4 exact authenticated local owner");
+            InvocationJournal::open(&root).expect("the store's own authenticated local owner");
         let key: InvocationKey =
             serde_json::from_value(literal["records"][0]["key"].clone()).unwrap();
         let row = journal.lookup(&key).unwrap().unwrap();
@@ -72,64 +72,12 @@ fn authenticated_local_journal_reopen_preserves_exact_owner_and_terminal() {
     }
 }
 #[test]
-fn authenticated_local_journal_floor_and_guarded_marker_are_independent() {
-    for initial in [1, 2, 3] {
-        let mut literal = terminal_fixture(json!({"Local":{"actor":"person"}}), initial);
-        if initial == 3 {
-            literal["records"][0]["guarded_read"] =
-                json!({"version":1,"selection_digest":"11".repeat(32)});
-            literal["records"][0]["update"] = json!({"state":"guarded_read_succeeded","invocation":"00000000-0000-0000-0000-000000000004","selection_digest":"11".repeat(32),"output_digest":"22".repeat(32),"basis_digest":"33".repeat(32),"output_bytes":64});
-        }
-        let (_dir, root) = disk(&literal);
-        let mut journal = InvocationJournal::open(&root).unwrap();
-        let original = journal.snapshot.records[0].key.clone();
-        let mut ordinary = original.clone();
-        ordinary.invocation = InvocationId(uuid::Uuid::from_u128(7));
-        assert!(journal.admit(ordinary, json!({}), 2).unwrap());
-        assert_eq!(journal.snapshot.version, initial);
-        let mut key = original.clone();
-        key.invocation = InvocationId(uuid::Uuid::from_u128(8));
-        key.owner = serde_json::from_value(local_owner(Some("worker-a"))).unwrap();
-        assert!(journal.admit(key.clone(), json!({}), 3).unwrap());
-        assert_eq!(journal.snapshot.version, 4);
-        journal.require_guarded_read(&key, [0x11; 32]).unwrap();
-        assert_eq!(journal.snapshot.version, 4);
-        let mut later_legacy = original.clone();
-        later_legacy.invocation = InvocationId(uuid::Uuid::from_u128(9));
-        later_legacy.owner = InvocationOwner::Enrolled {
-            root: [1; 32],
-            device: [2; 32],
-            task: uuid::Uuid::from_u128(10).to_string(),
-            run: uuid::Uuid::from_u128(11).to_string(),
-            channel: uuid::Uuid::from_u128(12).to_string(),
-        };
-        assert!(journal.admit(later_legacy, json!({}), 4).unwrap());
-        assert_eq!(
-            journal.snapshot.version, 4,
-            "a later v2 feature cannot downgrade v4"
-        );
-        drop(journal);
-        let mut reopened = InvocationJournal::open(&root).unwrap();
-        assert_eq!(reopened.snapshot.version, 4);
-        let recovered = reopened.lookup(&key).unwrap().unwrap();
-        assert!(recovered.uncertain);
-        assert!(!reopened.admit(key, json!({}), 4).unwrap());
-        let saved: Value =
-            serde_json::from_slice(&std::fs::read(root.join("records.json")).unwrap()).unwrap();
-        assert_eq!(saved["records"][0], literal["records"][0]);
-        assert_eq!(
-            saved["records"][2]["guarded_read"],
-            json!({"version":1,"selection_digest":"11".repeat(32)})
-        );
-    }
-}
-#[test]
 fn authenticated_local_journal_rejects_downgrade_and_ambiguous_agent() {
     let mut invalid = vec![];
-    for version in [1, 2, 3] {
+    for version in [1, 2, 3, 4, 5, 6] {
         invalid.push(terminal_fixture(local_owner(None), version));
     }
-    let mut missing = terminal_fixture(local_owner(None), 4);
+    let mut missing = terminal_fixture(local_owner(None), VERSION);
     missing["records"][0]["key"]["owner"]["AuthenticatedLocal"]
         .as_object_mut()
         .unwrap()
@@ -141,9 +89,9 @@ fn authenticated_local_journal_rejects_downgrade_and_ambiguous_agent() {
         "agent\nother".to_string(),
         "agent\0other".to_string(),
     ] {
-        invalid.push(terminal_fixture(local_owner(Some(&bad)), 4));
+        invalid.push(terminal_fixture(local_owner(Some(&bad)), VERSION));
     }
-    let mut unknown = terminal_fixture(local_owner(None), 4);
+    let mut unknown = terminal_fixture(local_owner(None), VERSION);
     unknown["records"][0]["key"]["owner"]["AuthenticatedLocal"]["role"] = json!("owner");
     invalid.push(unknown);
     for value in invalid {
@@ -158,7 +106,7 @@ fn authenticated_local_journal_failed_upgrade_never_returns_dispatch_permission(
         let root = dir.path().join("journal");
         let mut journal = InvocationJournal::open(&root).unwrap();
         let mut key: InvocationKey = serde_json::from_value(
-            terminal_fixture(local_owner(None), 4)["records"][0]["key"].clone(),
+            terminal_fixture(local_owner(None), VERSION)["records"][0]["key"].clone(),
         )
         .unwrap();
         key.host = journal.host();
@@ -171,52 +119,10 @@ fn authenticated_local_journal_failed_upgrade_never_returns_dispatch_permission(
             let row = reopened.lookup(&key).unwrap().unwrap();
             assert!(row.uncertain);
             assert!(!reopened.admit(key, json!({}), 2).unwrap());
-            assert_eq!(reopened.snapshot.version, 4);
+            assert_eq!(reopened.snapshot.version, VERSION);
         } else {
             assert!(reopened.lookup(&key).unwrap().is_none());
-            assert_eq!(reopened.snapshot.version, 1);
+            assert_eq!(reopened.snapshot.version, VERSION);
         }
     }
-}
-
-#[test]
-fn authenticated_local_journal_v3_decoder_never_reinterprets_owner() {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    #[allow(
-        dead_code,
-        reason = "frozen version-three layout is decoded, not constructed"
-    )]
-    enum VersionThreeOwner {
-        Local {
-            actor: String,
-        },
-        Certified {
-            root: [u8; 32],
-            device: [u8; 32],
-        },
-        Enrolled {
-            root: [u8; 32],
-            device: [u8; 32],
-            task: String,
-            run: String,
-            channel: String,
-        },
-    }
-    for owner in [local_owner(None), local_owner(Some("worker-a"))] {
-        assert!(serde_json::from_value::<VersionThreeOwner>(owner).is_err());
-    }
-    for owner in [
-        json!({"Local":{"actor":"person"}}),
-        json!({"Certified":{"root":vec![1;32],"device":vec![2;32]}}),
-    ] {
-        assert!(serde_json::from_value::<VersionThreeOwner>(owner).is_ok());
-    }
-    let version = terminal_fixture(local_owner(None), 4)["version"]
-        .as_u64()
-        .unwrap();
-    assert!(
-        !matches!(version, 1..=3),
-        "the frozen v3 version gate rejects v4 before observation"
-    );
 }
