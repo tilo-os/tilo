@@ -14,6 +14,7 @@ mod real {
     use tilo_media::{EngineConfig, MediaEngine};
 
     fn engine() -> MediaEngine {
+        shared_gst_registry();
         let mut e = MediaEngine::with_config(EngineConfig::default().silent());
         assert!(
             e.is_real_decode(),

@@ -176,6 +176,7 @@ mod tests {
     use super::*;
     #[test]
     fn shared_real_codec_roundtrip_is_device_free_and_bounded() {
+        crate::test_gst::shared_registry();
         let mut encoder = OpusEncoder::new().expect("required Opus encoder");
         let mut decoder = OpusDecoder::new().expect("required Opus decoder");
         let pcm = test_tone(RATE, CHANNELS, 60);

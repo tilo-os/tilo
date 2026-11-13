@@ -316,6 +316,7 @@ mod tests {
 
     #[test]
     fn decoded_pcm_reaches_host_queue_before_its_pipeline_timestamp() {
+        crate::test_gst::shared_registry();
         gst::init().expect("actual output bridge plugins available");
         let (sink, bridge) = host_clocked_sink_bin("pacing-test", "pacing-gain")
             .expect("actual output bridge constructed");
@@ -405,6 +406,7 @@ mod tests {
 
     #[test]
     fn pause_waits_for_the_current_decoded_buffer_to_reach_the_host() {
+        crate::test_gst::shared_registry();
         gst::init().expect("actual output bridge plugins available");
         let (_bin, bridge) =
             sink_bin("pause-test", "pause-gain").expect("actual output bridge constructed");
@@ -429,6 +431,7 @@ mod tests {
 
     #[test]
     fn decoder_backpressure_preserves_observed_host_progress() {
+        crate::test_gst::shared_registry();
         gst::init().expect("actual output bridge plugins available");
         let (_bin, bridge) =
             sink_bin("progress-test", "progress-gain").expect("actual output bridge constructed");
@@ -456,6 +459,7 @@ mod tests {
 
     #[test]
     fn source_reset_and_close_retire_cached_host_progress() {
+        crate::test_gst::shared_registry();
         gst::init().expect("actual output bridge plugins available");
         for close in [false, true] {
             let (_bin, bridge) = sink_bin("retirement-test", "retirement-gain")

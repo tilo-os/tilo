@@ -21,6 +21,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+mod common;
+
 use std::time::{Duration, Instant};
 
 use tilo_media::FramePayload;
@@ -269,6 +271,7 @@ fn software_round_trip(codec: StreamCodec) {
 
 #[test]
 fn software_codecs_round_trip_royalty_free_and_ten_bit() {
+    common::shared_gst_registry();
     {
         software_round_trip(StreamCodec::Vp9);
     }
@@ -375,6 +378,7 @@ fn keyframes_and_hardware_round_trips_behave_for_realtime_streams() {
             );
         }
     }
+    common::shared_gst_registry();
     {
         let mut config = EncoderConfig::new(StreamCodec::Vp9, 160, 120, 30);
         config.policy = RealtimePolicy::SoftwareOnly;
@@ -460,6 +464,7 @@ fn percentile(times: &[Duration], p: f64) -> Duration {
 #[test]
 #[ignore = "latency measurement for a quiet machine, not a shared-runner gate"]
 fn realtime_latency_per_frame() {
+    common::shared_gst_registry();
     let mut paths = vec![
         (StreamCodec::Vp9, RealtimePolicy::SoftwareOnly),
         (StreamCodec::Av1, RealtimePolicy::SoftwareOnly),
@@ -497,6 +502,7 @@ fn a_gpu_dmabuf_is_encoded_without_a_cpu_copy_on_va_hardware() {
     use std::os::fd::AsFd;
     use tilo_media::realtime::{CodecFamily, DmabufInput, DmabufInputPlane};
 
+    common::shared_gst_registry();
     let caps = local_capabilities();
     let Some(codec) = [StreamCodec::Av1, StreamCodec::H264, StreamCodec::Vp9]
         .into_iter()

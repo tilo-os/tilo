@@ -868,6 +868,7 @@ mod tests {
                  8 Mbit/s -> {high} bytes ({ratio:.1}x)",
             );
         }
+        crate::test_gst::shared_registry();
         // The table's property names and units, checked against the elements this machine
         // has. A wrong property name kills the export; a wrong unit is worse, because
         // nothing rejects it and the file is encoded at 1000x or 1/1000x the quoted rate.

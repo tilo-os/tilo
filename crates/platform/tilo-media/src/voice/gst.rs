@@ -972,6 +972,7 @@ mod tests {
     }
     fn delayed_element(output: bool) -> (gst::Element, Arc<delayed::Gate>) {
         use gst::subclass::prelude::ObjectSubclassIsExt;
+        crate::test_gst::shared_registry();
         gst::init().unwrap();
         let bin: DelayedSource = gst::glib::Object::new();
         let gate = Arc::new(delayed::Gate::default());
@@ -1018,6 +1019,7 @@ mod tests {
         Arc<delayed::Gate>,
         std::os::unix::net::UnixStream,
     ) {
+        crate::test_gst::shared_registry();
         gst::init().unwrap();
         let (fd, peer) = std::os::unix::net::UnixStream::pair().unwrap();
         let (sink, gate) = delayed_element(true);
@@ -1083,6 +1085,7 @@ mod tests {
     #[test]
     fn device_output_ready_requires_completed_playing_transition() {
         let _device_test = device_test_lock();
+        crate::test_gst::shared_registry();
         gst::init().unwrap();
         let source = gst_app::AppSrc::builder().format(gst::Format::Time).build();
         let sink = element("fakesink").unwrap();
@@ -1222,6 +1225,7 @@ mod tests {
     }
 
     fn software_output() -> VoiceAudio {
+        crate::test_gst::shared_registry();
         gst::init().unwrap();
         let pipeline = gst::parse::launch(
             "appsrc name=src is-live=true format=time ! fakesink sync=false async=false",
@@ -1251,6 +1255,7 @@ mod tests {
     }
 
     fn observed_output() -> (VoiceAudio, gst_app::AppSink) {
+        crate::test_gst::shared_registry();
         gst::init().unwrap();
         let pipeline = gst::parse::launch("appsrc name=src is-live=true format=time ! appsink name=sink sync=false async=false max-buffers=1 drop=true").unwrap().downcast::<gst::Pipeline>().unwrap();
         let source = pipeline
@@ -1278,6 +1283,7 @@ mod tests {
     fn exact_audio_source_rejects_plugins_without_required_binding_properties() {
         use std::os::fd::AsFd;
         let _device_test = device_test_lock();
+        crate::test_gst::shared_registry();
         gst::init().unwrap();
         let (fd, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
         for factory in ["fakesrc", "fakesink"] {
@@ -1731,6 +1737,7 @@ mod tests {
     #[test]
     fn encoder_uses_the_actual_voice_profile() {
         let _device_test = device_test_lock();
+        crate::test_gst::shared_registry();
         gst::init().unwrap();
         let encoder = encoder().unwrap();
         assert_eq!(encoder.property::<i32>("bitrate"), 32_000);
@@ -1789,6 +1796,7 @@ mod tests {
     #[test]
     fn a_silent_microphone_sends_a_few_comfort_noise_updates_per_second() {
         let _device_test = device_test_lock();
+        crate::test_gst::shared_registry();
         let mut encoder = OpusEncoder::new().unwrap();
         // 4 s of silence; the encoder enters DTX after its ~200 ms hangover.
         let packets = encoder.encode(&vec![0; 4 * 48_000]);
@@ -1809,6 +1817,7 @@ mod tests {
     #[test]
     fn speech_is_sent_every_frame_from_its_onset_at_the_opus_bitrate() {
         let _device_test = device_test_lock();
+        crate::test_gst::shared_registry();
         let mut encoder = OpusEncoder::new().unwrap();
         // 1 s of silence (deep in DTX), then 3 s of voice.
         let mut pcm = vec![0; 48_000];

@@ -1821,6 +1821,7 @@ mod late_picture_tests {
     }
 
     fn vp9_units() -> Vec<EncodedUnit> {
+        crate::test_gst::shared_registry();
         let mut config = EncoderConfig::new(StreamCodec::Vp9, WIDTH, HEIGHT, 30);
         config.policy = RealtimePolicy::SoftwareOnly;
         let mut encoder =

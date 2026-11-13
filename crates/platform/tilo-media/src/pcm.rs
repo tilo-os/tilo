@@ -322,6 +322,7 @@ mod tests {
 
     #[test]
     fn an_unreadable_source_fails_without_waiting_out_the_budget() {
+        crate::test_gst::shared_registry();
         let dir = tempfile::tempdir().expect("temp dir");
         let junk = dir.path().join("junk.mp4");
         std::fs::write(&junk, b"not a container, not even close").expect("write");

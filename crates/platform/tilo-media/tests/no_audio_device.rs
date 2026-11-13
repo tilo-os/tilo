@@ -10,6 +10,7 @@ fn a_frames_only_engine_never_connects_to_the_audio_server() {
     use common::*;
     use tilo_media::{EngineConfig, MediaEngine};
 
+    shared_gst_registry();
     let dir = tempfile::tempdir().expect("a scratch directory");
     // An audio server that takes connections into its queue and never
     // answers: any audio sink waits on it.

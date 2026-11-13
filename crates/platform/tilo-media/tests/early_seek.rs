@@ -31,6 +31,7 @@ fn an_early_seek_under_load_always_produces_a_picture() {
     // so only an open that stays silent for the shared hang bound is one.
     let stall = tilo_test_env::hang_bound();
 
+    shared_gst_registry();
     // The contention is made on a few CPUs, not the whole machine: every
     // thread of the test (the fixture's encoder, the hogs, the workers and the
     // pipelines they start) runs on them, a hog for each, so the opens contend

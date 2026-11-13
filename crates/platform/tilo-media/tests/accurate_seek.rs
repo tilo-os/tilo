@@ -22,6 +22,7 @@ mod real {
     const MID_GOP_MS: u64 = 12_500;
 
     fn engine() -> MediaEngine {
+        shared_gst_registry();
         // RGBA acceptance so frame content can be compared pixel by pixel.
         let mut e = MediaEngine::with_config(EngineConfig::default().frames_only());
         assert!(
