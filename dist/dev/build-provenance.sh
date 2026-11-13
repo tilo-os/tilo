@@ -5,10 +5,10 @@
 # A dev session is a set of builds and installs that are easy to point at the wrong tree:
 #
 #   * `dist/dev/nested-session-build.sh` builds host programs and thin apps into
-#     `${CARGO_TARGET_DIR:-target}/{nested,thin-app,nested-session}`,
+#     `${CARGO_TARGET_DIR:-target}/{nested,thin-dev,nested-session}`,
 #   * `dist/dev/tilolang-runtime-build.sh` builds the tilolang binary into those same two,
 #   * `dist/dev/shell-run.sh` builds into `target/debug` and bakes the runtime bundles from
-#     `target/thin-app`, and
+#     `target/thin-dev`, and
 #   * `dist/dev/nested-session.sh` reuses the apps a state directory already holds.
 #
 # A shared or stale target directory, a build handed over through `TILO_NESTED_SESSION_BUILD`,

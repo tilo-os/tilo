@@ -55,8 +55,8 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
 /// view — is placed at that point through the system's own `place`, which is what an agent's
 /// `place_at` runs. Either is one arranging step of the person's, attributed and undoable.
 action place_dropped(target: host.Resource, at: List<Int>) (label: "Move it here") {
-    let x = at.at(0) ?? 0
-    let y = at.at(1) ?? 0
+    let x = snap_x(at.at(0) ?? 0)
+    let y = snap_y(at.at(1) ?? 0)
     if let held = place_showing(target.id()) {
         session.position(place: the_place(held.key), x: x, y: y)
     } else {
@@ -64,11 +64,46 @@ action place_dropped(target: host.Resource, at: List<Int>) (label: "Move it here
     }
 }
 
+/// The style's own grid (`frames_snap`, `chrome.tl`): where a place let go at `at` lands on the
+/// canvas, so frames line up as a person places them. It is the style's setting, not the map's,
+/// so it is read here where the drop commits, and a person who turns it off gets the point they
+/// let go at exactly. `grid` is a frame's own pitch, so a grid cell is one frame and its gap.
+fn snap_x(at: Int) -> Int {
+    if frames_style() and shell.frames_snap { snap(at, canvas_grid()) } else { at }
+}
+
+/// See [`snap_x`].
+fn snap_y(at: Int) -> Int {
+    if frames_style() and shell.frames_snap { snap(at, canvas_grid()) } else { at }
+}
+
+/// Whether the desk style the person shows is the framed canvas: the style whose own settings
+/// the grid is.
+fn frames_style() -> Bool {
+    style_of(viewing) == "so.tilo.shell:frames"
+}
+
+/// The nearest multiple of `pitch` to `at`.
+fn snap(at: Int, pitch: Int) -> Int {
+    if pitch <= 0 {
+        return at
+    }
+    return (at + pitch / 2) / pitch * pitch
+}
+
 /// The place standing on the canvas that shows the resource `record`, if one does: what a drag
 /// that ended on the canvas moves rather than placing a second time.
 fn place_showing(record: Text) -> Option<ArrangementPlace> {
     let a = arrangement
     a.places.find(p -> p.record == record)
+}
+
+/// How far apart the canvas's grid lines stand, in canvas pixels: a frame's own width (720) and
+/// a tenth of it, so a place let go on the grid stands beside its neighbour rather than over it.
+/// The framed canvas's own setting (`frames_snap`, `chrome.tl`), so a person who wants their
+/// places exactly where they let go turns it off.
+fn canvas_grid() -> Int {
+    792
 }
 
 /// How wide a strip's places stand on the canvas: the width the record keeps for it, so a window

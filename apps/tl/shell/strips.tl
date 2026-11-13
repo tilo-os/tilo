@@ -92,6 +92,13 @@ view style_menu(v: Viewing, d: Desk) {
                 on choose: show_style(v, style.style)
             }
         }
+        // The one settings place the desk style's own settings live in (`shell.md` §6, "Two
+        // ways to change a desk"): the menu opens them where the style was picked, so a person
+        // changes the desk they look at without hunting for an app. The entry says which
+        // style's settings it opens, by the same name the menu lists the style under.
+        ui.MenuItem("Settings for {style_title(v, d)}", icon: .settings) {
+            on choose: open_style_settings(shell)
+        }
     }
 }
 
@@ -204,6 +211,10 @@ view row_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) {
 /// top edge — the tabs of its places while it shows several, the place's own header while it
 /// shows one — and the place in front fills everything under it. A strip holding nothing is an
 /// empty window, saying so.
+///
+/// The style's own setting `strips_tabs` (`chrome.tl`) says whether a strip of several places
+/// shows its tab bar: off, the place in front fills the window alone and the others stay a tab
+/// of it in the record, reached by the window's menu, for a person who wants the room.
 view strip_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) {
     let in_front = s.key == strip_in_front(a, v)
     let placed = places_of(a, s.key)
@@ -218,7 +229,7 @@ view strip_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) 
             window_controls(a, v, s, shown, in_front, lists)
         }
         tabs: {
-            if placed.len() > 1 {
+            if placed.len() > 1 and shell.strips_tabs {
                 ui.TabStrip(place_in_front(s), focused: in_front) {
                     on activate(p: session.Place): show_place(v, s.key, p)
                     on close(p: session.Place): session.close(place: p)

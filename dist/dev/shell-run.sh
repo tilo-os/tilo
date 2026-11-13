@@ -8,7 +8,7 @@
 # (`--test-control`).
 #
 # The Tilo runtime the apps run on, and the tilolang runtime whose binary runs them, are this
-# tree's: the thin app build in `target/thin-app` (made by `dist/dev/nested-session-build.sh`)
+# tree's: the thin app build in `target/thin-dev` (made by `dist/dev/nested-session-build.sh`)
 # is baked into a signed runtime bundle of its own, and the tilolang binary beside it into the
 # tilolang runtime bundle. So a session started here runs what this tree built.
 #
@@ -48,7 +48,7 @@
 # The tilolang runtime the apps run on: this tree's thin-app build
 # (`dist/dev/tilolang-runtime-build.sh`, or `dist/dev/nested-session-build.sh`), baked into a
 # signed runtime bundle of its own. The Tilo runtime it runs on is this tree's too, baked of
-# `target/thin-app` beside it.
+# `target/thin-dev` beside it.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -109,7 +109,7 @@ if ((build)); then
     # whose agent answers needs one at the session's own service socket.
     (cd "$repo_root" && cargo build --locked -p tilo-model-gateway --bin tilo-model-gateway \
         --features server,host-backend,local-models,runtime-client)
-    # Which tree these programs are: only the binaries built here are recorded. The thin-app
+    # Which tree these programs are: only the binaries built here are recorded. The thin-dev
     # build they bake their runtimes of is `nested-session-build.sh`'s and is checked, never
     # recorded here, so a run can never vouch for a build it did not make
     # (dist/dev/build-provenance.sh).
@@ -119,10 +119,11 @@ for tool in tilo-session tilolang tilo-control tilo-launcher tilo-install tilo-a
     [[ -x $bin/$tool ]] || die "no $bin/$tool (run without --no-build)"
 done
 # The thin-app build every Tilo runtime here is made of: `dist/dev/nested-session-build.sh`
-# makes one in `target/thin-app` (the shared runtime library, its engines and the tilolang
-# binary), and `dist/dev/tilolang-runtime-build.sh` one in `target/tilolang-runtime` of the
-# tilolang binary alone. A tree with neither runs no app at all.
-thin=$repo_root/target/thin-app
+# makes one in `target/thin-dev` (the shared runtime library, its engines and the tilolang
+# binary; the `thin-dev` profile, a development build), and
+# `dist/dev/tilolang-runtime-build.sh` one in `target/tilolang-runtime` of the tilolang binary
+# alone. A tree with neither runs no app at all.
+thin=$repo_root/target/thin-dev
 [[ -f $thin/libruntime_dylib.so && -f $thin/runtime-engines ]] \
     || die "no thin-app build in $thin: run dist/dev/nested-session-build.sh"
 # The tilolang binary a runtime bundle is baked of: the one `dist/dev/tilolang-runtime-build.sh`
@@ -347,12 +348,15 @@ install_apps() {
 }
 
 # Install the package at `tapp` into the session's own store, as `tilo-install` installs a
-# person's app: signed with this session's key, which the launcher's trust file names.
+# person's app: signed with this session's key, which the launcher's trust file names. The
+# store reads the same file, so a package this session built and signed installs under the
+# local-build ceiling: a `thin-dev` build is compiled for speed, not size, and is never published.
 install_tapp() {
     local tapp=$1
     shift
     env HOME="$home" XDG_DATA_HOME="$home/.local/share" \
         TILO_APPS_DATA_DIR="$store" TILO_RUNTIME_BUNDLE_DIR="$runtimes" \
+        TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE="$trust" \
         TILO_SYSTEM_INTERFACES="$repo_root/os/usr/share/tilo/system-interfaces.toml" \
         "$bin/tilo-install" install "$tapp" --allow-self-signed "$@" \
         >/dev/null
