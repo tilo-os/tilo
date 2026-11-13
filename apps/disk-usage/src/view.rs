@@ -1,7 +1,5 @@
-//! The window: the places to analyze, a folder's analysis as a donut and
-//! the list of its folders, or why a folder could not be read. Scanning and
-//! moving between them are the resource's effects; what the window shows,
-//! the way back and the analysis last finished are the view's own state.
+//! The window: the places to analyze, a folder's analysis as a donut and the list of its
+//! folders, or why a folder could not be read.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -33,7 +31,6 @@ use ui::framework::PersonRecord;
 use ui::tilo_resource::AbsolutePath;
 use ui::widget::DrawChild;
 
-/// The app, as the surfaces name it when it asks for attention.
 pub(crate) const OWNER_NAME: &str = "Disk Usage Analyzer";
 const OWNER_APP: &str = "so.tilo.disk-usage";
 
@@ -41,8 +38,8 @@ fn owner() -> ui::attention::Owner {
     ui::attention::Owner::new(OWNER_APP, OWNER_NAME).with_icon(Icon::HardDrive)
 }
 
-/// A measurement under way, for a capture: the band says what it is
-/// doing and offers Stop, exactly as a live one does.
+/// A measurement under way, for a capture: the band says what it is doing and offers Stop,
+/// exactly as a live one does.
 pub(crate) fn sample_job(folder: &str) {
     if ui::jobs::is_active() {
         return;
@@ -57,14 +54,13 @@ pub(crate) fn sample_job(folder: &str) {
     job.seen(41_200_000_000);
 }
 
-/// How a scan reports the bytes it has seen to its job: the registry takes
-/// the count, and the effect's own progress wakes the app to draw it.
+/// How a scan reports the bytes it has seen to its job: the registry takes the count, and
+/// the effect's own progress wakes the app to draw it.
 fn reporter(job: &ui::jobs::Running) -> impl Fn(u64, u64) + Send + Sync + 'static {
     let job = job.clone();
     move |bytes, _files| job.seen(bytes)
 }
 
-/// How many folders the chart names before it groups the rest.
 const NAMED_SLICES: usize = 8;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -77,9 +73,7 @@ pub(crate) struct Place {
 #[derive(Clone, Debug, PartialEq)]
 enum Page {
     Home,
-    /// What wants a person, opened from the window's bar.
     Needs,
-    /// A finished scan, with the slice a capture points at.
     Analysis {
         result: ScanResult,
         inspected: Option<String>,
@@ -87,17 +81,14 @@ enum Page {
     Error(PathBuf, String),
 }
 
-/// The window bar's action that chooses a folder to analyze.
 pub(crate) const CHOOSE_FOLDER: &str = "disk-usage.choose";
 
-/// The window bar's action that opens Disks.
 pub(crate) const OPEN_DISKS: &str = "disk-usage.disks";
 
-/// The window bar's action that opens what wants a person.
 pub(crate) const NEEDS_YOU: &str = "disk-usage.needs";
 
-/// A folder as the header row names it: a place by its name (Home, not
-/// the path to it), any other folder by its own name.
+/// A folder as the header row names it: a place by its name (Home, not the path to it), any
+/// other by its name.
 fn folder_title(places: &[Place], folder: &Path) -> String {
     if let Some(place) = places.iter().find(|place| place.path == folder) {
         return place.label.clone();
@@ -108,8 +99,7 @@ fn folder_title(places: &[Place], folder: &Path) -> String {
     )
 }
 
-/// The places a capture lists: the sample's home and workspace, and the
-/// file system.
+/// The places a capture lists: the sample's home and workspace, and the file system.
 fn sample_places() -> Vec<Place> {
     places(
         PathBuf::from("/home/you"),
@@ -144,8 +134,8 @@ fn places(home: PathBuf, workspace: PathBuf) -> Vec<Place> {
     ]
 }
 
-/// The recent folders the home view offers beside `places`: a recent
-/// folder that is also a place is listed once, as the place.
+/// The recent folders the home view offers beside `places`: a recent folder that is also a
+/// place is listed once, as the place.
 fn recent_places(places: &[Place], recent: &[PathBuf]) -> Vec<Place> {
     recent
         .iter()
@@ -162,25 +152,16 @@ fn recent_places(places: &[Place], recent: &[PathBuf]) -> Vec<Place> {
         .collect()
 }
 
-/// The window's navigation: what it shows, the way back, and the folders it
-/// remembers.
+/// The window's navigation: what it shows, the way back, and the folders it remembers.
 #[derive(Clone)]
 struct Nav {
     page: LocalState<Page>,
-    /// The folders the analyses on screen were opened from, oldest first.
     history: Rc<RefCell<Vec<PathBuf>>>,
-    /// The analysis that finished last, so a job's "Show me" returns to it
-    /// instead of scanning again.
     finished: Rc<RefCell<Option<ScanResult>>>,
-    /// The folders analyzed lately, by device: the record in a live
-    /// window, the scenario's in a capture.
     recent: LocalState<Rc<RecentFolders>>,
-    /// The record and this device's id, in a live window.
     recents: Option<(PersonRecord<RecentFolders>, String)>,
-    /// The device whose folders are shown.
     device: Rc<str>,
     places: Rc<Vec<Place>>,
-    /// What the person presses on the waiting stack.
     needs: ui::attention::Presses,
     dispatcher: Dispatcher<DiskUsage>,
 }
@@ -280,9 +261,8 @@ impl Nav {
         }
     }
 
-    /// Measure `path` as a job: the people's window keeps working, the band
-    /// says what it has seen and offers Stop, and the job survives this page
-    /// being left.
+    /// Measure `path` as a job: the people's window keeps working, the band says what it
+    /// has seen and offers Stop, and the job survives this page being left.
     fn scan(&self, path: PathBuf, push_history: bool, cx: &mut EffectCx<DiskUsage>) -> Effected {
         if push_history && let Some(current) = self.analysis() {
             self.history.borrow_mut().push(current.path);
@@ -387,8 +367,8 @@ impl Nav {
         self.show(Page::Home);
     }
 
-    /// Go to the folder a job was working on: its analysis if it is still
-    /// here, else measuring it again.
+    /// Go to the folder a job was working on: its analysis if it is still here, else
+    /// measuring it again.
     fn show_folder(&self, target: &str) {
         let path = PathBuf::from(target);
         let finished = self
@@ -418,8 +398,8 @@ impl Nav {
         });
     }
 
-    /// The common places, the folders analyzed lately, and the folders of
-    /// the scan on screen.
+    /// The common places, the folders analyzed lately, and the folders of the scan on
+    /// screen.
     fn folder_rows(&self) -> Vec<LiveRow> {
         let mut rows: Vec<LiveRow> = self
             .places
@@ -444,8 +424,8 @@ impl Nav {
     }
 }
 
-/// The whole window: the navigation shell around the page on screen,
-/// publishing the folders it offers as live rows.
+/// The whole window: the navigation shell around the page on screen, publishing the folders
+/// it offers as live rows.
 pub(crate) fn window(cx: &ViewCx<DiskUsage>) -> Element {
     let nav = Nav::new(cx);
     answer_effects(cx, &nav);
@@ -457,8 +437,6 @@ pub(crate) fn window(cx: &ViewCx<DiskUsage>) -> Element {
             }
         });
     }
-    // Folder controls analyze through the device's own effect, which only a
-    // live window runs.
     let live = cx.mode() == RunMode::Live;
     let actions = live.then(|| cx.actions());
     let content = {
@@ -474,9 +452,6 @@ pub(crate) fn window(cx: &ViewCx<DiskUsage>) -> Element {
             .content_kind(ui::widget::ContentKind::List)
             .with_id("disk-usage.shell")
             .with_window_toolbar()
-            // What runs, across the window's foot: it stays whatever page
-            // the window shows, so a measurement outlives the page that
-            // started it.
             .bottom_band(Box::new(ui::jobs::Band::with_presses(jobs.clone())))
             .on_back(
                 move || can.with(|page| *page != Page::Home),
@@ -497,8 +472,7 @@ pub(crate) fn window(cx: &ViewCx<DiskUsage>) -> Element {
     )
 }
 
-/// Answer the scans and navigation, whoever asks: a row, the bar, the
-/// palette, an agent.
+/// Answer the scans and navigation, whoever asks: a row, the bar, the palette, an agent.
 fn answer_effects(cx: &ViewCx<DiskUsage>, nav: &Nav) {
     let nav = nav.clone();
     cx.effects(move |effect: DiskUsageEffect, cx| match effect {
@@ -548,8 +522,8 @@ fn page_view(
     }
 }
 
-/// Builds the pages, binding their folder controls to the analyze effect
-/// while the window can run it.
+/// Builds the pages, binding their folder controls to the analyze effect while the window
+/// can run it.
 struct Pages {
     actions: Option<Actions<DiskUsage>>,
 }
@@ -662,13 +636,12 @@ impl Pages {
     }
 }
 
-/// The navigation shell, with the window's slots in its bar: the shell's
-/// own (Back while there is a way back), the place on screen as the
-/// location, Choose folder, and what wants a person.
+/// The navigation shell, with the window's slots in its bar: the shell's own (Back while
+/// there is a way back), the place on screen as the location, Choose folder, and what wants
+/// a person.
 struct Window {
     shell: NavShell,
     nav: Nav,
-    /// What the jobs band reports back.
     jobs: ui::jobs::Presses,
     live: bool,
 }
@@ -763,7 +736,6 @@ impl ui::widget::Decorator for Window {
         self.run_window_toolbar();
         let changed = self.shell.update(state, path);
         self.answer_presses();
-        // The stack counts what nobody has looked at as soon as it is open.
         if self.nav.page.with(|page| *page == Page::Needs) {
             ui::attention::seen();
         }
@@ -775,8 +747,8 @@ impl ui::widget::Decorator for Window {
     }
 }
 
-/// A count in the reader's language, singular or plural: the digits keep the
-/// separators the rest of the window writes them with.
+/// A count in the reader's language, singular or plural: the digits keep the separators the
+/// rest of the window writes them with.
 fn counted(n: u64, one: &str, many: &str) -> String {
     if n == 1 {
         CATALOG.t(one)
@@ -837,17 +809,14 @@ fn slice_rows(entries: &[Entry]) -> Vec<SliceRow> {
     rows
 }
 
-/// The donut of one scan. Slice colours come from the theme the chart is
-/// drawn with, and choosing a folder asks the app to analyze it. The donut's
-/// middle names the folder under the pointer (its size and name) and the
-/// whole scan otherwise; the legend and the folder list already carry every
-/// size, so a wedge gets no tooltip laid over the donut.
+/// The donut of one scan. The donut's middle names the folder under the pointer (its size
+/// and name) and the whole scan otherwise; the legend and the folder list already carry
+/// every size, so a wedge gets no tooltip laid over the donut.
 struct SliceChart {
     chart: PieChart,
     rows: Vec<SliceRow>,
     total: String,
     files: String,
-    /// Analyzes the folder of a chosen slice.
     analyze: Rc<dyn Fn(PathBuf)>,
 }
 
@@ -899,8 +868,6 @@ impl SliceChart {
             .iter()
             .enumerate()
             .map(|(i, row)| {
-                // The grouped remainder is not a folder: it takes the quiet
-                // ink rather than a hue of its own.
                 let colour = if row.interactive {
                     series.series(i)
                 } else {
@@ -976,8 +943,8 @@ impl ui::widget::Decorator for SliceChart {
 mod tests {
     use super::*;
 
-    /// Counts read with thousands separators and the chart names at most a
-    /// handful of folders.
+    /// Counts read with thousands separators and the chart names at most a handful of
+    /// folders.
     #[test]
     fn counts_are_grouped_and_the_chart_groups_small_folders() {
         assert_eq!(files_text(1), "1 file");
@@ -1004,8 +971,8 @@ mod tests {
         );
     }
 
-    /// The header names a place as the home view does and any other folder
-    /// by its own name, never by the path to it.
+    /// The header names a place as the home view does and any other folder by its name,
+    /// never by the path to it.
     #[test]
     fn the_header_names_places_and_folders_not_paths() {
         let places = [
@@ -1027,8 +994,8 @@ mod tests {
         assert_eq!(folder_title(&[], Path::new("/")), "/");
     }
 
-    /// Home lists the common places and at most five recent folders, a
-    /// recent folder that is a place only once.
+    /// Home lists the common places and at most five recent folders, a recent folder that
+    /// is a place only once.
     #[test]
     fn home_keeps_common_places_and_five_recent_folders() {
         let places = sample_places();
