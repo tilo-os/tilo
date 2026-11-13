@@ -356,6 +356,50 @@ mod tests {
     }
 
     #[test]
+    fn empty_and_malformed_tables_answer_without_words() {
+        let empty = Dictionary::from_str("");
+        assert!(empty.is_empty());
+        assert_eq!(empty.len(), 0);
+        assert!(!empty.contains("the"));
+        assert_eq!(empty.weight("the"), None);
+        assert_eq!(empty.frequency("the"), 0.0);
+        assert!(empty.complete("t", 5).is_empty());
+        assert_eq!(empty.iter_prefix("").count(), 0);
+        assert!(empty.next_char_weights("").is_empty());
+
+        // A word of weight zero is a word, and its frequency is zero rather
+        // than a division by the largest weight.
+        let rare = Dictionary::from_str("rare\t0\n");
+        assert!(rare.contains("rare"));
+        assert_eq!(rare.weight("rare"), Some(0));
+        assert_eq!(rare.frequency("rare"), 0.0);
+
+        for (line, why) in [
+            ("\t5", "no word"),
+            ("word\t", "no weight"),
+            ("word\tmany", "a weight that is no number"),
+            ("word\t-1", "a negative weight"),
+            ("   ", "only spaces"),
+        ] {
+            assert!(Dictionary::from_str(line).is_empty(), "{line:?}: {why}");
+        }
+
+        // Windows line ends and spaces around a weight still parse.
+        let d = Dictionary::from_str("the\t 7 \r\nthis\t9\r\n");
+        assert_eq!(d.len(), 2);
+        assert_eq!(d.weight("the"), Some(7));
+        assert_eq!(d.weight("this"), Some(9));
+        let top: Vec<&str> = d
+            .complete("TH", 5)
+            .into_iter()
+            .map(|e| e.word.as_str())
+            .collect();
+        assert_eq!(top, ["this", "the"], "a prefix matches in any case");
+        assert_eq!(d.complete("th", 1).len(), 1, "no more than asked for");
+        assert!(d.complete("th", 0).is_empty(), "none asked for");
+    }
+
+    #[test]
     fn prefix_iteration_and_completion_return_ranked_matches() {
         // One parse serves the two phases that read the English words.
         let d = Dictionary::english();

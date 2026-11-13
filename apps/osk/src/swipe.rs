@@ -687,6 +687,13 @@ mod tests {
                     .decode_top(&[Point::new(1.0, 1.0)], &geom, &layout, 8)
                     .is_empty()
             );
+            // A real path, but no keys to read it against, or nothing asked for.
+            let path = path_through("the", &geom, &layout);
+            assert!(model.decode_top(&path, &[], &layout, 8).is_empty());
+            assert!(model.decode_top(&path, &geom, &layout, 0).is_empty());
+            let one = model.decode_top(&path, &geom, &layout, 1);
+            assert_eq!(one.len(), 1, "no more than asked for");
+            assert_eq!(one[0].word, "the");
         }
 
         eprintln!("phase is_swipe_distinguishes_tap_from_drag");

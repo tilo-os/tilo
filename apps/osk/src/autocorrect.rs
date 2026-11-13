@@ -319,6 +319,17 @@ mod tests {
         assert_eq!(edit_cost("tpe", "the", &adj), EDIT_COST);
         assert_eq!(edit_cost("teh", "the", &adj), TRANSPOSITION_COST);
         assert_eq!(edit_cost("the", "the", &adj), 0.0);
+        // Nothing to line up, or a letter too few or too many: each letter
+        // put in or taken out costs one edit.
+        assert_eq!(edit_cost("", "", &adj), 0.0);
+        assert_eq!(edit_cost("", "the", &adj), 3.0 * EDIT_COST);
+        assert_eq!(edit_cost("the", "", &adj), 3.0 * EDIT_COST);
+        assert_eq!(edit_cost("th", "the", &adj), EDIT_COST, "a missing letter");
+        assert_eq!(
+            edit_cost("thee", "the", &adj),
+            EDIT_COST,
+            "a doubled letter"
+        );
     }
 
     /// One corrector serves every row and then the kept word: `correct` takes
@@ -375,7 +386,41 @@ mod tests {
         ac.keep("teh");
         assert!(ac.is_kept("Teh"));
         assert_eq!(ac.correct("teh"), None);
+        assert_eq!(ac.correct("Teh"), None, "kept under a capital too");
+        assert_eq!(
+            ac.correct("tge").as_deref(),
+            Some("the"),
+            "keeping one word leaves the others corrected"
+        );
         ac.clear_kept();
+        assert!(!ac.is_kept("teh"));
         assert_eq!(ac.correct("teh").as_deref(), Some("the"));
+    }
+
+    /// The kept words are a bounded memory: at the bound a new word is not
+    /// remembered, and a saved list longer than the bound is cut to it.
+    #[test]
+    fn kept_words_stop_at_their_bound() {
+        let mut ac =
+            Autocorrector::new(&Dictionary::from_str("the\t100\n"), KeyAdjacency::default());
+        let words: Vec<String> = (0..MAX_KEPT_WORDS + 6)
+            .map(|index| format!("word{index}"))
+            .collect();
+        let (within, beyond) = words.split_at(MAX_KEPT_WORDS);
+        for word in &words {
+            ac.keep(word);
+        }
+        assert!(within.iter().all(|word| ac.is_kept(word)));
+        assert!(!beyond.iter().any(|word| ac.is_kept(word)));
+        ac.keep("WORD0");
+        assert!(ac.is_kept("word0"), "a kept word kept again is no new word");
+
+        ac.clear_kept();
+        assert!(!words.iter().any(|word| ac.is_kept(word)));
+        ac.adopt_kept(&words);
+        assert_eq!(
+            words.iter().filter(|word| ac.is_kept(word)).count(),
+            MAX_KEPT_WORDS
+        );
     }
 }

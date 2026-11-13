@@ -404,6 +404,9 @@ mod tests {
             let preds = p.predict_next(None, "");
             assert!(!preds.is_empty());
             assert_eq!(preds[0].0, "the");
+            assert_eq!(p.predict_next_n(None, "", 1).len(), 1, "no more than asked");
+            assert!(p.predict_next_n(None, "", 0).is_empty(), "none asked for");
+            assert!(p.predict_next_n(Some("good"), "m", 0).is_empty());
         }
 
         eprintln!("phase unknown_context_falls_back_to_prefix_or_common");
@@ -519,5 +522,61 @@ mod tests {
             predictor.clear_learned();
             assert_eq!(predictor.learned_context_count(), 0);
         }
+
+        eprintln!("phase a_full_context_learns_no_new_word_and_still_counts_its_own");
+        {
+            let mut predictor = small();
+            // Distinct words of letters only: "wa", "waa", "waaa", ...
+            let words: Vec<String> = (1..=MAX_LEARNED_WORDS_PER_CONTEXT + 3)
+                .map(|letters| format!("w{}", "a".repeat(letters)))
+                .collect();
+            let (within, beyond) = words.split_at(MAX_LEARNED_WORDS_PER_CONTEXT);
+            for word in within {
+                assert!(predictor.learn_transition(Some("the"), word).is_some());
+            }
+            for word in beyond {
+                assert_eq!(predictor.learn_transition(Some("the"), word), None);
+                assert!(!predictor.has_learned(word), "{word} is one too many");
+            }
+            assert!(within.iter().all(|word| predictor.has_learned(word)));
+            assert!(
+                predictor.learn_transition(Some("the"), "wa").is_some(),
+                "a word the full context holds is still counted"
+            );
+            assert_eq!(predictor.learned_context_count(), 1);
+        }
+    }
+
+    /// What a committed word teaches: letters, and the apostrophes inside or
+    /// at the end of them. Anything else is not a word and leaves no trace.
+    #[test]
+    fn only_letters_and_their_apostrophes_are_learned() {
+        for (previous, word, expected) in [
+            (None, "Hello", Some(("", "hello"))),
+            (Some("Good"), " Morning ", Some(("good", "morning"))),
+            (Some("que"), "l'", Some(("que", "l'"))),
+            (None, "aujourd'hui", Some(("", "aujourd'hui"))),
+            (None, "'tis", None),
+            (None, "a1", None),
+            (None, "p@ss", None),
+            (None, "1234", None),
+            (None, "", None),
+            (None, "  ", None),
+        ] {
+            let taught = Predictor::transition(previous, word);
+            assert_eq!(
+                taught
+                    .as_ref()
+                    .map(|(context, next)| (context.as_str(), next.as_str())),
+                expected,
+                "{word:?} after {previous:?}"
+            );
+        }
+        let mut p = small();
+        for not_a_word in ["p@ss", "1234", "'tis", ""] {
+            assert_eq!(p.learn_transition(Some("my"), not_a_word), None);
+            assert!(!p.has_learned(not_a_word));
+        }
+        assert_eq!(p.learned_context_count(), 0);
     }
 }

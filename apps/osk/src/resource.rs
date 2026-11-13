@@ -489,6 +489,38 @@ mod tests {
         );
     }
 
+    /// The names a size is saved and chosen by: one per size, read back
+    /// exactly, and settings saved before a preference existed read as its
+    /// default.
+    #[test]
+    fn key_sizes_are_saved_by_name_and_missing_preferences_read_as_defaults() {
+        for (size, name) in KeyboardSize::ALL.into_iter().zip(KeyboardSize::NAMES) {
+            assert_eq!(size.name(), name);
+            assert_eq!(KeyboardSize::from_name(name), Some(size));
+            assert_eq!(serde_json::to_value(size).unwrap(), serde_json::json!(name));
+        }
+        for unknown in ["", "Large", " large", "huge"] {
+            assert_eq!(KeyboardSize::from_name(unknown), None, "{unknown:?}");
+        }
+        assert_eq!(
+            serde_json::from_value::<OskPreferences>(serde_json::json!({})).unwrap(),
+            OskPreferences::default()
+        );
+        let saved = serde_json::from_value::<OskPreferences>(serde_json::json!({
+            "layout": "azerty",
+            "size": "large"
+        }))
+        .unwrap();
+        assert_eq!(
+            saved,
+            OskPreferences {
+                layout: "azerty".into(),
+                size: KeyboardSize::Large,
+                ..OskPreferences::default()
+            }
+        );
+    }
+
     #[test]
     fn the_keyboard_service_runs_without_a_workspace_runtime() {
         assert!(
