@@ -214,53 +214,61 @@ mod tests {
             fail_partition: false,
         }
     }
-    #[test]
-    fn original_filesystem_shrinks_before_partition_and_restores_after_partition() {
-        let mut volume = fixture();
-        let binding = volume.facts.binding.clone();
-        shrink(&mut volume, &binding, 128 << 20, 64 << 20, &|| false).unwrap();
-        restore(&mut volume, &binding, 128 << 20, 64 << 20).unwrap();
-        assert_eq!(
-            volume.phases,
-            vec![
-                Phase::ShrinkFilesystem,
-                Phase::ShrinkPartition,
-                Phase::GrowPartition,
-                Phase::GrowFilesystem
-            ]
-        );
-    }
-    #[test]
-    fn failed_gpt_step_resumes_without_repeating_filesystem_resize() {
-        let mut volume = fixture();
-        let binding = volume.facts.binding.clone();
-        volume.fail_partition = true;
-        assert!(shrink(&mut volume, &binding, 128 << 20, 64 << 20, &|| false).is_err());
-        assert_eq!(volume.facts.partition_bytes, 128 << 20);
-        assert_eq!(volume.facts.filesystem_bytes, 64 << 20);
-        volume.fail_partition = false;
-        shrink(&mut volume, &binding, 128 << 20, 64 << 20, &|| false).unwrap();
-        assert_eq!(
-            volume
-                .phases
-                .iter()
-                .filter(|phase| **phase == Phase::ShrinkFilesystem)
-                .count(),
-            1
-        );
-    }
-    #[test]
-    fn stale_minimum_binding_and_unsupported_layouts_refuse_before_any_mutation() {
-        for mode in 0..3 {
+    tilo_test_env::scenario! {
+        /// Resizing the original Btrfs filesystem around the partition change.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_btrfs_resize_is_ordered_resumable_and_refused_when_stale;
+
+        phase original_filesystem_shrinks_before_partition_and_restores_after_partition;
+        {
             let mut volume = fixture();
             let binding = volume.facts.binding.clone();
-            match mode {
-                0 => volume.facts.minimum_bytes = 65 << 20,
-                1 => volume.facts.binding.device_id = 2,
-                _ => volume.facts.single_direct_device = false,
-            };
+            shrink(&mut volume, &binding, 128 << 20, 64 << 20, &|| false).unwrap();
+            restore(&mut volume, &binding, 128 << 20, 64 << 20).unwrap();
+            assert_eq!(
+                volume.phases,
+                vec![
+                    Phase::ShrinkFilesystem,
+                    Phase::ShrinkPartition,
+                    Phase::GrowPartition,
+                    Phase::GrowFilesystem
+                ]
+            );
+        }
+
+        phase failed_gpt_step_resumes_without_repeating_filesystem_resize;
+        {
+            let mut volume = fixture();
+            let binding = volume.facts.binding.clone();
+            volume.fail_partition = true;
             assert!(shrink(&mut volume, &binding, 128 << 20, 64 << 20, &|| false).is_err());
-            assert!(volume.phases.is_empty());
+            assert_eq!(volume.facts.partition_bytes, 128 << 20);
+            assert_eq!(volume.facts.filesystem_bytes, 64 << 20);
+            volume.fail_partition = false;
+            shrink(&mut volume, &binding, 128 << 20, 64 << 20, &|| false).unwrap();
+            assert_eq!(
+                volume
+                    .phases
+                    .iter()
+                    .filter(|phase| **phase == Phase::ShrinkFilesystem)
+                    .count(),
+                1
+            );
+        }
+
+        phase stale_minimum_binding_and_unsupported_layouts_refuse_before_any_mutation;
+        {
+            for mode in 0..3 {
+                let mut volume = fixture();
+                let binding = volume.facts.binding.clone();
+                match mode {
+                    0 => volume.facts.minimum_bytes = 65 << 20,
+                    1 => volume.facts.binding.device_id = 2,
+                    _ => volume.facts.single_direct_device = false,
+                };
+                assert!(shrink(&mut volume, &binding, 128 << 20, 64 << 20, &|| false).is_err());
+                assert!(volume.phases.is_empty());
+            }
         }
     }
 }
