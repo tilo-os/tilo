@@ -2335,6 +2335,15 @@ enum From {
     ShellRuntime(u32),
 }
 
+/// A client that left before asking needs no answer: the door lets it go
+/// without one.
+fn left_before_asking(error: &std::io::Error) {
+    tilo_failure::ignored!(
+        "a client that left before asking needs no answer",
+        tracing::debug!(%error, "agent door: the client left before its first request")
+    );
+}
+
 /// Serve one connection of this account, on its own thread: read what it opens with, ask the
 /// person, and only once they admit it answer what it asked. A refusal answers its `initialize`
 /// with a JSON-RPC error and closes.
@@ -2354,13 +2363,7 @@ fn serve_connection(opened: Opened, serving: &Serving) {
     let Opened { mut stream, from } = opened;
     let first = match tilo_runtime::session_door::read_first_line(&mut stream) {
         Ok(first) => first,
-        Err(error) => {
-            tilo_failure::ignored!(
-                "a client that left before asking needs no answer",
-                tracing::debug!(%error, "agent door: the client left before its first request")
-            );
-            return;
-        }
+        Err(error) => return left_before_asking(&error),
     };
     let (pid, entrance) = match from {
         From::ShellRuntime(pid) => {
