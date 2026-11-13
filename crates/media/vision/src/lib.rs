@@ -1,12 +1,10 @@
-//! A deliberately narrow bridge from a decoded photograph to a verified local
-//! multimodal model.
+//! A narrow bridge from a decoded photograph to a verified local multimodal
+//! model.
 //!
-//! This is not a generic prompt runner. [`discover_local_capability`] accepts
-//! only a configured, loopback, revision-pinned model that explicitly declares
-//! `vision`; [`prepare`] bounds pixels and encoded bytes before any data crosses
-//! a sandbox service boundary; and [`analyze`] calls the Photos-only fixed
-//! schema gateway operation. The returned bytes are model output, not labels
-//! inferred from filenames, EXIF, or fixtures.
+//! [`discover_local_capability`] accepts only a configured, loopback,
+//! revision-pinned model that declares `vision`; [`prepare`] bounds pixels and
+//! encoded bytes before data crosses a sandbox service boundary; [`analyze`]
+//! calls the Photos-only fixed-schema gateway operation.
 
 use std::io::Cursor;
 use tilo_image_codec::DecodedImage;
@@ -29,9 +27,8 @@ pub const MAX_FACE_BATCH: usize = 12;
 pub const MAX_FACE_PREVIEW_BYTES: usize = 128 * 1024;
 pub const MAX_FACE_PREVIEW_EDGE: u32 = 512;
 
-/// One model the signed local-model manager has published as vision capable.
-/// The revision is kept alongside each result so an index can be refreshed
-/// deliberately after a model upgrade rather than silently mixing outputs.
+/// A model the local-model manager published as vision capable. The revision
+/// is kept with each result so an upgrade never silently mixes outputs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalVisionCapability {
     pub profile_id: String,
@@ -41,7 +38,7 @@ pub struct LocalVisionCapability {
 }
 
 /// A separately signed capability for face detection, embedding and local
-/// clustering. It is never inferred from [`LocalVisionCapability`].
+/// clustering, never inferred from [`LocalVisionCapability`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalFaceCapability {
     pub profile_id: String,
@@ -50,8 +47,8 @@ pub struct LocalFaceCapability {
     pub revision: String,
 }
 
-/// Opaque membership returned by the verified face runtime.  Names,
-/// embeddings, crops, geometry, and confidences are intentionally absent.
+/// What the face runtime returns: membership only. Names, embeddings, crops,
+/// geometry and confidences are absent.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FaceClusterResponse {
@@ -67,7 +64,7 @@ pub struct FaceCluster {
 }
 
 /// Discover only an explicitly declared, revision-pinned, loopback face
-/// model. A generic vision model cannot enter this path.
+/// model.
 #[must_use]
 pub fn discover_local_face_capability(config: &ProviderConfig) -> Option<LocalFaceCapability> {
     let (profile_id, model_id, model_label, revision) =
@@ -80,9 +77,8 @@ pub fn discover_local_face_capability(config: &ProviderConfig) -> Option<LocalFa
     })
 }
 
-/// A downscaled JPEG ready for the authenticated model-gateway boundary.
-/// `source_content_hash` always identifies the original source bytes, never
-/// the temporary preview.
+/// A downscaled JPEG for the model gateway. `source_content_hash` identifies
+/// the original source bytes, never the preview.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreparedImage {
     pub media_type: &'static str,
@@ -92,8 +88,8 @@ pub struct PreparedImage {
     pub height: u32,
 }
 
-/// The fixed answer shape requested from the model. Apps should keep this as
-/// local, provisional analysis until a user explicitly shares it.
+/// The fixed answer shape requested from the model: provisional analysis until
+/// a user shares it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Analysis {
@@ -122,7 +118,7 @@ pub enum Error {
 }
 
 impl Error {
-    /// A stable explanation safe to show in a Photos notice.
+    /// A short explanation to show in a Photos notice.
     #[must_use]
     pub const fn user_message(&self) -> &'static str {
         match self {
@@ -142,8 +138,7 @@ impl Error {
 }
 
 /// Discover the selected local capability without probing a socket or trusting
-/// a model name. `None` means unavailable—not that another provider may be
-/// substituted.
+/// a model name. `None`, never another provider.
 #[must_use]
 pub fn discover_local_capability(config: &ProviderConfig) -> Option<LocalVisionCapability> {
     let (profile_id, model_id, model_label, revision) =
@@ -156,9 +151,8 @@ pub fn discover_local_capability(config: &ProviderConfig) -> Option<LocalVisionC
     })
 }
 
-/// The active profile's default model when the gateway would admit it for a
-/// device-local operation and it `declares` the needed capability: profile,
-/// model, display label and pinned revision.
+/// The active profile's default model when it would be admitted for a
+/// device-local operation carrying the needed capability.
 fn discover_local_model(
     config: &ProviderConfig,
     declares: impl Fn(&ModelDescriptor) -> bool,
@@ -181,14 +175,9 @@ fn discover_local_model(
     ))
 }
 
-/// Produce an adaptive JPEG preview from already decoded pixels. This function
-/// caps both dimensions and encoded bytes, and preserves an original-content
-/// SHA-256 for provenance. It never reads an arbitrary pathname.
-///
-/// # Errors
-///
-/// Returns [`Error::EmptyImage`] for an empty image and [`Error::Image`] if
-/// JPEG encoding fails.
+/// An adaptive JPEG preview from decoded pixels, bounded in both dimensions
+/// and encoded bytes, with the original's SHA-256 for provenance. It never
+/// reads a pathname.
 pub fn prepare(image: &DecodedImage, original_bytes: &[u8]) -> Result<PreparedImage, Error> {
     let image = dynamic(image)?;
     let (width, height) = image.dimensions();
@@ -218,8 +207,7 @@ pub fn prepare(image: &DecodedImage, original_bytes: &[u8]) -> Result<PreparedIm
             image::imageops::FilterType::Triangle,
         );
     }
-    // The final attempt is deliberately smaller rather than sending a frame
-    // that would breach the gateway's limit.
+    // The last attempt is smaller rather than over the gateway's limit.
     let (width, height) = preview.dimensions();
     let preview = preview.resize_exact(
         (width / 2).max(1),
@@ -241,13 +229,6 @@ pub fn prepare(image: &DecodedImage, original_bytes: &[u8]) -> Result<PreparedIm
 }
 
 /// Ask the Photos-only local gateway and validate its bounded fixed schema.
-/// No remote provider fallback exists.
-///
-/// # Errors
-///
-/// Returns [`Error::Gateway`] when the launcher did not provide the gateway or
-/// the verified model refuses the request, and [`Error::InvalidResponse`] for
-/// malformed or oversized model output.
 pub fn analyze(
     capability: &LocalVisionCapability,
     image: PreparedImage,
@@ -264,15 +245,14 @@ pub fn analyze(
     parse_analysis(&output)
 }
 
-/// Prepare and cluster one small, explicit face batch.  The caller supplies
+/// Prepare and cluster one small, explicit face batch. The caller supplies
 /// stable Photos ids and decoded local images; no pathname, identity label,
-/// face crop, or geometry is sent to the runtime.
+/// crop or geometry is sent.
 ///
 /// # Errors
 ///
-/// Returns [`Error::EmptyImage`] for an empty/oversized batch or unusable
-/// image, and [`Error::InvalidResponse`] when the local runtime emits a
-/// cluster outside the supplied photo ids.
+/// [`Error::EmptyImage`] for an empty or oversized batch or an unusable image,
+/// [`Error::InvalidResponse`] for a cluster outside the supplied photo ids.
 pub fn cluster_faces(
     capability: &LocalFaceCapability,
     images: Vec<(String, DecodedImage, Vec<u8>)>,
@@ -299,13 +279,8 @@ pub fn cluster_faces(
     parse_face_clusters(&output, &ids)
 }
 
-/// Parse and bound a model response. Keeping this separate lets callers test
-/// their persistence boundary without an inference runtime.
-///
-/// # Errors
-///
-/// Returns [`Error::InvalidResponse`] if neither the direct JSON result nor a
-/// standard OpenAI-compatible response envelope contains the fixed schema.
+/// Parse and bound a model response, so callers test their persistence
+/// boundary without an inference runtime.
 pub fn parse_analysis(raw: &str) -> Result<Analysis, Error> {
     let mut result = serde_json::from_str::<Analysis>(raw)
         .or_else(|_| {
@@ -339,15 +314,14 @@ pub fn parse_analysis(raw: &str) -> Result<Analysis, Error> {
     Ok(result)
 }
 
-/// Validate a face-runtime response against the exact image ids in the batch.
-/// This prevents a model from creating a phantom photo association or leaking
-/// an arbitrary string into the local People manager.
+/// Validate a face-runtime response against the image ids in the batch, so a
+/// model cannot create a phantom photo association.
 ///
 /// # Errors
-/// Returns [`Error::InvalidResponse`] when the response (or the chat envelope
-/// around it) is not valid JSON, or when any cluster has an invalid id, fewer
-/// than two or more than the batch limit of photos, a duplicate photo, or a
-/// photo that was not in the batch.
+/// [`Error::InvalidResponse`] when the response (or the chat envelope around
+/// it) is not JSON, or a cluster has an invalid id, fewer than two or more
+/// than the batch limit of photos, a duplicate photo, or one not in the
+/// batch.
 pub fn parse_face_clusters(
     raw: &str,
     allowed_photo_ids: &std::collections::BTreeSet<String>,
@@ -431,7 +405,7 @@ fn valid_cluster_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
-/// The toolkit codec's pixels as the encoder reads them.
+/// The decoded pixels in the form the encoder takes.
 fn dynamic(image: &DecodedImage) -> Result<DynamicImage, Error> {
     image::RgbaImage::from_raw(image.width, image.height, image.rgba.clone())
         .map(DynamicImage::ImageRgba8)
@@ -444,8 +418,7 @@ fn bounded_resize(image: &DynamicImage) -> DynamicImage {
     if width <= MAX_INPUT_EDGE && height <= MAX_INPUT_EDGE && pixels <= MAX_INPUT_PIXELS {
         return image.clone();
     }
-    // The edge ceiling is deliberately below sqrt(MAX_INPUT_PIXELS), so this
-    // integer-only resize establishes both limits without lossy arithmetic.
+    // The edge ceiling is below sqrt(MAX_INPUT_PIXELS), so this integer resize meets both limits.
     image.resize(
         MAX_INPUT_EDGE,
         MAX_INPUT_EDGE,
