@@ -204,12 +204,14 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
             ));
         wait_for_ready_with_pending(&b_again, &relay.handle().metrics).await;
 
-        let members: Vec<String> = serde_json::from_slice(
-            &std::fs::read(state.path().join("workspaces/9/membership.json")).unwrap(),
-        )
-        .unwrap();
+        // Both devices the host enrolled are members of the workspace's one
+        // record, so a restart admits them without any second list.
         assert_eq!(
-            members.len(),
+            tilo_relay::store::WorkspaceStore::open(state.path(), 9, true)
+                .unwrap()
+                .load_membership()
+                .unwrap()
+                .len(),
             2,
             "both same-owner devices persist as members"
         );

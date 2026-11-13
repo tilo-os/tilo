@@ -1,8 +1,8 @@
-//! Change notification for the membership files another process edits.
+//! Change notification for the access record another process edits.
 //!
-//! `tilo-relay-admin` rewrites a workspace's `membership.json` and
-//! `governed-access-v1.json` from outside the daemon. Rather than re-read and
-//! parse them on every authorization, the daemon watches the entries of
+//! `tilo-relay-admin` and the operator's own tools rewrite a workspace's
+//! `governed-access.log` from outside the daemon. Rather than re-read and
+//! parse it on every authorization, the daemon watches the entries of
 //! `<state_root>/workspaces` (workspace directories appearing and going) and the
 //! entries of each workspace directory, and bumps a per-workspace generation whenever
 //! one of those files, or the workspace directory itself, changes.
@@ -28,7 +28,7 @@ use tilo_files::{Change, ChangeKind, FsError, VPath, Watch};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::store::{GOVERNED_ACCESS_FILE, MEMBERSHIP_FILE};
+use crate::store::GOVERNED_ACCESS_FILE;
 use tilo_lock::MutexRecover as _;
 
 /// Changes queued from the native watches to the watch task.
@@ -408,19 +408,18 @@ fn room_directory(path: &VPath) -> Option<u64> {
     components.next().is_none().then_some(workspace_id)
 }
 
-/// Whether a change among a workspace directory's entries is one of its
-/// membership files. Other files in the workspace are not membership.
+/// Whether a change among a workspace directory's entries is its access
+/// record. Other files in the workspace are not membership.
 #[cfg(test)]
 fn names_membership(path: &VPath) -> bool {
     membership_file(path).is_some()
 }
 
 /// The membership file a change among a workspace directory's entries names, if
-/// it names one.
+/// it names one: the workspace's access record, and nothing else.
 fn membership_file(path: &VPath) -> Option<&'static str> {
     let mut components = path.components();
     match (components.next(), components.next()) {
-        (Some(MEMBERSHIP_FILE), None) => Some(MEMBERSHIP_FILE),
         (Some(GOVERNED_ACCESS_FILE), None) => Some(GOVERNED_ACCESS_FILE),
         _ => None,
     }
@@ -468,12 +467,11 @@ mod tests {
     fn only_membership_files_and_workspace_directories_name_a_workspace() {
         assert_eq!(room_directory(&path("7")), Some(7));
         assert_eq!(room_directory(&path("notes")), None);
-        assert_eq!(room_directory(&path("7/membership.json")), None);
+        assert_eq!(room_directory(&path("7/governed-access.log")), None);
         assert_eq!(room_directory(&VPath::root()), None);
-        assert!(names_membership(&path("membership.json")));
         assert!(names_membership(&path("governed-access.log")));
         assert!(!names_membership(&path("snapshot.automerge")));
-        assert!(!names_membership(&path("pending/membership.json")));
+        assert!(!names_membership(&path("pending/governed-access.log")));
         assert!(!names_membership(&VPath::root()));
     }
 
@@ -504,16 +502,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_membership_file_change_bumps_its_workspace() {
+    async fn an_access_file_change_bumps_its_workspace() {
         let tmp = tempfile::tempdir().unwrap();
         let workspace = tmp.path().join("workspaces/7");
         std::fs::create_dir_all(&workspace).unwrap();
         let (task, generation) = live_workspace(tmp.path(), 7).await;
-        for file in [MEMBERSHIP_FILE, GOVERNED_ACCESS_FILE] {
-            let before = generation.current();
-            std::fs::write(workspace.join(file), b"[]").unwrap();
-            moves_from(&generation, before, "the room to bump").await;
-        }
+        let before = generation.current();
+        std::fs::write(workspace.join(GOVERNED_ACCESS_FILE), b"[]").unwrap();
+        moves_from(&generation, before, "the room to bump").await;
         task.abort();
     }
 
@@ -556,7 +552,7 @@ mod tests {
         // Bumped once its own watch exists: anything written before is read.
         moves_from(&generation, before, "the new room to bump").await;
         let before = generation.current();
-        std::fs::write(workspace.join(MEMBERSHIP_FILE), b"[]").unwrap();
+        std::fs::write(workspace.join(GOVERNED_ACCESS_FILE), b"[]").unwrap();
         moves_from(&generation, before, "the new room's membership to bump").await;
         task.abort();
     }
@@ -578,7 +574,7 @@ mod tests {
             let staging = channel.join(format!("staging-{round}"));
             std::fs::create_dir_all(staging.join("sorter")).unwrap();
             std::fs::write(staging.join("delta"), b"delta").unwrap();
-            std::fs::write(staging.join(MEMBERSHIP_FILE), b"not the room's").unwrap();
+            std::fs::write(staging.join(GOVERNED_ACCESS_FILE), b"not the room's").unwrap();
             std::fs::rename(staging.join("delta"), channel.join(format!("{round}"))).unwrap();
             std::fs::remove_dir_all(&staging).unwrap();
         }
@@ -593,7 +589,7 @@ mod tests {
             before,
             "store churn below a room must not bump its membership generation"
         );
-        std::fs::write(workspace.join(MEMBERSHIP_FILE), b"[]").unwrap();
+        std::fs::write(workspace.join(GOVERNED_ACCESS_FILE), b"[]").unwrap();
         moves_from(&generation, before, "the room to bump").await;
         task.abort();
     }

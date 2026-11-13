@@ -340,7 +340,13 @@ impl WorkspaceRuntime {
     ) -> Result<Self, crate::store::StoreError> {
         let store = WorkspaceStore::open_with_payloads(state_root, workspace_id, pinned, payloads)?;
         let governed_access_record = store.load_governed_access()?;
-        let admission = if governed_access_record.is_some() {
+        // A record governance owns keeps the workspace governed; one that
+        // only lists the devices this host enrolled leaves the host's own rule
+        // (a same-owner home host's) deciding who else joins.
+        let admission = if governed_access_record
+            .as_ref()
+            .is_some_and(|access| access.governed)
+        {
             crate::workspace_access::AdmissionMode::Governed
         } else {
             crate::workspace_access::AdmissionMode::Explicit
@@ -349,8 +355,8 @@ impl WorkspaceRuntime {
             access.member_user_roots.into_iter().collect()
         });
         let mut membership = membership;
-        let stored_membership = store.load_membership()?;
-        for device in stored_membership {
+        let kept = store.load_membership()?;
+        for device in kept {
             if !membership.contains(&device) {
                 membership.devices.push(device);
             }
