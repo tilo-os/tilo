@@ -884,8 +884,14 @@ fn a_place_arrives_over_the_frames_between() {
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()
     });
-    // A note arrives on the desk.
+    // A note arrives on the desk. The clock is held while it does, so the frame that first shows
+    // it is the window at its motion's start however long the machine takes to get there: read
+    // at the running clock, a loaded machine could see the window already landed.
     let note = notes.first().expect("a note").clone();
+    let held = ui::motion::testing::frozen();
+    // The person asks for it with the pointer (a press on the dock, a drop on the canvas): what a
+    // hand asks for comes in, where a script's place lands at once (`motion::source`).
+    ui::motion::note_source(ui::tokens::MotionSource::Pointer);
     place(&mut session, &note);
     let shown = shown_as(&session, NOTE_TITLE);
     let arriving = crate::common::wait_for(&mut session, "the note on the desk", |session| {
@@ -893,6 +899,7 @@ fn a_place_arrives_over_the_frames_between() {
             .is_some()
             .then(|| crate::common::shot(session, "motion-arriving"))
     });
+    drop(held);
     // The frames right after it appears change: the window is on its way in.
     let mut changes = 0;
     let mut before = arriving;
