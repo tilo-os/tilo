@@ -421,10 +421,7 @@ fn a_window_runs_on_its_device_and_is_shown_there_wherever_it_is_placed() {
         }
     );
     // A Tilo app opens its own instance everywhere.
-    assert!(matches!(
-        desk.tab(NOTES).tile,
-        TileContent::LocalApp { .. }
-    ));
+    assert!(matches!(desk.tab(NOTES).tile, TileContent::LocalApp { .. }));
 
     // The desk puts the editor beside the notes on the other strip; the
     // laptop shows its live surface there.

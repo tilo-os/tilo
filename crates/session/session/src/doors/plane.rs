@@ -322,6 +322,7 @@ pub(crate) fn start_action_plane(
         .and_then(crate::sync::Client::personal)
         .map(|personal| personal.sync().clone());
     let channels = std::sync::Arc::clone(&sealed.broker);
+    let carets = crate::carets::Carets::new(std::sync::Arc::clone(&fanout), options.wake.handle());
     let broker = plane::serve(
         path.clone(),
         std::sync::Arc::clone(&link),
@@ -396,6 +397,7 @@ pub(crate) fn start_action_plane(
         broker,
         calls,
         calls_service,
+        carets,
         file_clipboard,
         _personal: personal,
     }))

@@ -1363,6 +1363,9 @@ pub(crate) struct Plane {
     /// The service apps join a call through, when this session carries
     /// calls at all.
     pub(crate) calls_service: Option<tilo_native_media::NativeMediaService>,
+    /// The people's carets in the workspaces this session takes part in: the person here's as
+    /// their apps publish it, and everyone else's as this session's apps show them.
+    pub(crate) carets: crate::carets::Carets,
     /// Files' clipboard, whose copies the loop puts on the desktop's
     /// clipboard: what the person pastes into any other app.
     pub(crate) file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,

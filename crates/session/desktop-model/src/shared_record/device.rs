@@ -36,8 +36,9 @@ enum Seen<'a> {
 
 fn seen(tile: &TileContent) -> Seen<'_> {
     match tile {
-        TileContent::Foreign { app_id, .. }
-        | TileContent::LocalApp { app_id, .. } => Seen::App(app_id.to_lowercase()),
+        TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => {
+            Seen::App(app_id.to_lowercase())
+        }
         TileContent::HostedWindow { app_id, host, .. } => Seen::Hosted { app: app_id, host },
         other => Seen::Other(other),
     }

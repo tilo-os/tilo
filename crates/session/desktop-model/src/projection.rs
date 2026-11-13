@@ -484,23 +484,22 @@ pub fn localise_tile(
     tab_title: &str,
 ) -> TileContent {
     match tile {
-        TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => {
-            match current {
-                Some(
-                    matched @ (TileContent::Foreign { app_id: local, .. }
-                    | TileContent::LocalApp { app_id: local, .. }),
-                ) if local.eq_ignore_ascii_case(&app_id) => matched.clone(),
-                _ => TileContent::LocalApp {
-                    label: if tab_title.trim().is_empty() {
-                        app_id.clone()
-                    } else {
-                        tab_title.to_string()
-                    },
-                    app_id,
-                    note: String::new(),
+        TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => match current
+        {
+            Some(
+                matched @ (TileContent::Foreign { app_id: local, .. }
+                | TileContent::LocalApp { app_id: local, .. }),
+            ) if local.eq_ignore_ascii_case(&app_id) => matched.clone(),
+            _ => TileContent::LocalApp {
+                label: if tab_title.trim().is_empty() {
+                    app_id.clone()
+                } else {
+                    tab_title.to_string()
                 },
-            }
-        }
+                app_id,
+                note: String::new(),
+            },
+        },
         // A governed workspace's owner places in-process kinds; a member that bound
         // its own instance of that app to the tab keeps it, as does a device whose
         // window of that app waits for the app to open it.

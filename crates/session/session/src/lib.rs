@@ -118,6 +118,8 @@ mod capture_studio;
 #[cfg(target_os = "linux")]
 mod cards;
 #[cfg(target_os = "linux")]
+mod carets;
+#[cfg(target_os = "linux")]
 mod certification;
 #[cfg(target_os = "linux")]
 mod chrome;
