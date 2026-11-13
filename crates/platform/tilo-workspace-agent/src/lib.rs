@@ -1,22 +1,14 @@
-//! A workspace's agents: who works in it, each as one item of the workspace's
-//! own record of agents, kept by Chat.
+//! A workspace's agents: who works in it, each as one item of the workspace's own
+//! record of agents, kept by Chat.
 //!
-//! An agent is not a member: members stay people. An agent is a record every
-//! app of the workspace opens, so its name, its colour and the model it plans
-//! with read the same in the settings that list it, in the chat it answers in,
-//! and in the presence its work leaves. Its actor is `agent:<item id>`.
+//! An agent is not a member: members stay people. An agent is a record every app of
+//! the workspace opens, so its name, colour and model read the same in the settings
+//! that list it, in the chat it answers in, and in the presence its work leaves.
+//! Its actor is `agent:<item id>`.
 //!
 //! The record is Chat's ([`OWNER`]): its actions are decided against Chat's
-//! committed surface, by the workspace's grants, wherever they are invoked. An
-//! editor names, bounds and retires agents; the person who keeps an agent — the
-//! one whose devices run it and whose model credentials pay — alone chooses the
-//! model it plans with.
-//!
-//! [`Agent::bound`] is a narrowing of what its keeper may do, never a widening:
-//! an empty one follows the default (read and make undoable changes; outside
-//! effects ask first). A rule that would let an outside effect run unasked is
-//! refused, so no stored bound can make an agent reach further than the person
-//! it works for.
+//! committed surface by the workspace's grants. An editor names, bounds and retires
+//! agents; the person who keeps one alone chooses its model.
 
 use std::fmt;
 
@@ -32,37 +24,27 @@ use tilo_resource::{
 #[cfg(test)]
 mod tests;
 
-/// The app whose record this is, and whose surface decides its changes:
-/// Chat ships wherever a workspace is used, natively and in the browser.
+/// The app whose record this is, and whose surface decides its changes.
 pub const OWNER: &str = "so.tilo.chat";
 
-/// The record's resource kind.
 pub const KIND: &str = "chat.agent";
 
-/// The longest name an agent is given.
 pub const MAX_NAME: usize = 64;
 
-/// The most agents a workspace keeps.
 pub const MAX_AGENTS: usize = 250;
 
-/// The longest a keeper's id may be.
 const MAX_KEEPER: usize = 4096;
 
-/// The longest a model's key (`provider/model`) may be.
 const MAX_MODEL: usize = 200;
 
-/// The most rules one bound holds.
 pub const MAX_BOUND: usize = 64;
 
 /// The most a keeper may let an agent spend in a day, in millionths of the
 /// currency: ten thousand, far past what a day's work costs.
 pub const MAX_SPEND_LIMIT_MICROS: u64 = 10_000_000_000;
 
-/// What an agent spent on one day, as its keeper counted it.
-///
-/// The counter is kept per day, so a day that ends starts it again: a later
-/// day's first charge replaces it, and no reading of an old day is a reading
-/// of this one ([`Agent::spent_on`]).
+/// What an agent spent on one day, as its keeper counted it: a later day's first
+/// charge replaces it, so no reading of an old day is a reading of this one.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Spent {
     /// The day it counts, `YYYY-MM-DD` by its keeper's clock.
@@ -90,7 +72,6 @@ pub struct Bound {
 }
 
 impl Bound {
-    /// `rule` as the record stores it.
     #[must_use]
     pub fn of(rule: &tilo_action_policy::Rule) -> Self {
         Self {
@@ -100,7 +81,6 @@ impl Bound {
         }
     }
 
-    /// The rule this stores.
     pub fn rule(&self) -> Result<tilo_action_policy::Rule, Refusal> {
         use std::str::FromStr as _;
         let node = tilo_action_policy::TreePath::from_str(&self.node)
@@ -134,19 +114,17 @@ impl Bound {
     }
 }
 
-/// Whether an agent is up for work or was retired: retiring keeps its name and
-/// its conversations readable, and takes it out of the roster of who works here.
+/// Whether an agent works here or was retired: retiring keeps its name and its
+/// conversations readable and takes it out of the roster.
 #[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentState {
-    /// Works here.
     #[default]
     Active,
     /// Was told to stop: it takes no new work.
     Retired,
 }
 
-/// One agent of the workspace.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 pub struct Agent {
     /// Its item id, and the id its actor carries: `agent:<id>`.
@@ -154,24 +132,22 @@ pub struct Agent {
     /// Its name, as people read it and search finds it.
     #[model(label)]
     pub name: String,
-    /// Its presence colour as its keeper chose it: a slot of the palette
-    /// people are drawn in ([`PresenceHue`]). `None` follows its identity.
+    /// Its presence colour as its keeper chose it, a slot of the palette people are
+    /// drawn in ([`PresenceHue`]); `None` follows its identity.
     pub colour: Option<u8>,
-    /// Who keeps it: the member whose devices run it and whose model
-    /// credentials pay. Only they choose its model.
+    /// Who keeps it: the member whose devices run it and whose credentials pay, and
+    /// who alone chooses its model.
     pub keeper: String,
-    /// The model it plans with as `provider/model`; `None` follows the
-    /// keeper's default.
-    pub model: Option<String>,
-    /// What it may do, narrowed from its keeper's grants; empty follows the
+    /// The model it plans with as `provider/model`; `None` follows the keeper's
     /// default.
+    pub model: Option<String>,
+    /// What it may do, narrowed from its keeper's grants; empty follows the default.
     pub bound: Vec<Bound>,
-    /// The most its keeper lets it spend in a day, in millionths of the
-    /// currency; `None` spends unmetered.
+    /// The most its keeper lets it spend in a day, in millionths of the currency;
+    /// `None` spends unmetered.
     pub spend_limit_micros: Option<u64>,
     /// What it spent on the last day its keeper counted.
     pub spent: Option<Spent>,
-    /// Whether it works here.
     pub state: AgentState,
     /// When it was made, in milliseconds since the Unix epoch.
     pub created_at: i64,
@@ -190,9 +166,9 @@ impl Agent {
         format!("agent:{}", self.id.0)
     }
 
-    /// Its presence colour's slot: the one its keeper chose, or the one the
-    /// rule every surface draws software by gives it — what it is, clear of
-    /// the colour of the person who keeps it ([`PresenceHue::of_participant`]).
+    /// Its presence colour's slot: the one its keeper chose, or the one the rule every
+    /// surface draws software by gives it, clear of the colour of the person who keeps
+    /// it ([`PresenceHue::of_participant`]).
     #[must_use]
     pub fn slot(&self) -> u8 {
         self.colour.unwrap_or_else(|| {
@@ -202,14 +178,13 @@ impl Agent {
         })
     }
 
-    /// Whether it still works here.
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.state == AgentState::Active
     }
 
-    /// What it spent on `day`, in millionths of the currency: nothing on a
-    /// day its keeper has not charged, so a new day starts it at zero.
+    /// What it spent on `day`, in millionths of the currency: nothing on a day its
+    /// keeper has not charged, so a new day starts at zero.
     #[must_use]
     pub fn spent_on(&self, day: &str) -> u64 {
         self.spent
@@ -218,19 +193,17 @@ impl Agent {
             .map_or(0, |spent| spent.cost_micros)
     }
 
-    /// Whether it may still spend on `day`: its keeper's limit is not
-    /// reached yet, or there is none.
+    /// Whether it may still spend on `day`: its keeper's limit is not reached yet, or
+    /// there is none.
     #[must_use]
     pub fn within_budget(&self, day: &str) -> bool {
         self.spend_limit_micros
             .is_none_or(|limit| self.spent_on(day) < limit)
     }
 
-    /// What it may do, as the policy reads it: the stored narrowing, or
-    /// `None` following the default for its workspace.
-    ///
-    /// A stored rule the policy does not read cannot be here: the record's
-    /// own check refuses one before any state holds it.
+    /// What it may do, as the policy reads it: the stored narrowing, or `None` for the
+    /// workspace's default. A rule the policy does not read cannot be here, since the
+    /// record's own check refuses one first.
     #[must_use]
     pub fn bound_rules(&self) -> Option<Vec<tilo_action_policy::Rule>> {
         if self.bound.is_empty() {
@@ -253,8 +226,8 @@ pub struct WorkspaceAgents {
 }
 
 impl WorkspaceAgents {
-    /// What search finds in the workspace's agents: each by the name people
-    /// know it by, opening it at its item of the record.
+    /// What search finds in the workspace's agents: each by the name people know it by,
+    /// opening it at its item of the record.
     #[must_use]
     pub fn search(&self) -> Vec<SearchEntry> {
         self.agents
@@ -285,13 +258,9 @@ impl WorkspaceAgents {
 }
 
 impl WorkspaceAgents {
-    /// What the record holds: the workspace's agents: each one's name, the member who keeps it,
-    /// its model and its colour.
-    ///
-    /// It answers through [`fields`](tilo_resource::read::fields): a caller
-    /// with no window open reads the record as it reads any app's record, and
-    /// a named item is read from the record's table or by the read its own
-    /// type gives it.
+    /// What the record holds: each agent's name, the member who keeps it, its model and
+    /// its colour. It answers through [`fields`](tilo_resource::read::fields), so a
+    /// caller with no window open reads it like any app's record.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
@@ -306,14 +275,9 @@ impl WorkspaceAgents {
     read_content = WorkspaceAgents::read_document
 )]
 impl WorkspaceAgents {
-    /// Make an agent.
-    ///
-    /// A name people read (at most 64 characters), the member who keeps it
-    /// (whoever asks here when none is named) and optionally a model as
-    /// `provider/model` and the colour it is drawn in. Its colour follows its
-    /// id, as a person's follows theirs, unless one is named. Its id is the
-    /// caller's (`claude-code` for a client that named itself, an agent
-    /// admitted before records were) or a fresh one.
+    /// Make an agent: a name people read (at most 64 characters), the member who keeps
+    /// it (whoever asks when none is named), and optionally a model as `provider/model`
+    /// and the colour it is drawn in.
     #[action]
     pub fn create_agent(
         &mut self,
@@ -364,12 +328,9 @@ impl WorkspaceAgents {
         Ok(())
     }
 
-    /// Set the most an agent may spend in a day.
-    ///
-    /// The keeper's to choose, as the model is: their credentials pay for it.
-    /// A limit of zero stops it working until its keeper raises it again;
-    /// none spends unmetered. The day is its keeper's clock's, so a limit
-    /// counts from midnight where the keeper sits.
+    /// Set the most an agent may spend in a day. Its keeper's to choose, as the model
+    /// is: their credentials pay. Zero stops it working until the keeper raises it;
+    /// none spends unmetered.
     #[action(item = agents)]
     pub fn set_agent_spend_limit(
         &mut self,
@@ -394,12 +355,9 @@ impl WorkspaceAgents {
         Ok(())
     }
 
-    /// Charge what an agent spent to the day's counter.
-    ///
-    /// The keeper's to write, on the device that runs the agent, from what the
-    /// model gateway charged for each call: an agent never counts its own
-    /// spending. A later day than the one counted starts the counter again; an
-    /// earlier one is already over and changes nothing.
+    /// Charge what an agent spent to the day's counter, written by its keeper from what
+    /// the model gateway charged: an agent never counts its own spending. A later day
+    /// starts the counter again, and an earlier one changes nothing.
     #[action(item = agents)]
     pub fn record_agent_spend(
         &mut self,
@@ -431,10 +389,8 @@ impl WorkspaceAgents {
         Ok(())
     }
 
-    /// Set the colour an agent is drawn in.
-    ///
-    /// The keeper's to choose, as the model is: it is part of the agent's
-    /// identity, the one its face and presence are drawn in everywhere.
+    /// Set the colour an agent is drawn in: part of its identity, the one its face and
+    /// presence are drawn in everywhere.
     #[action(item = agents)]
     pub fn set_agent_colour(
         &mut self,
@@ -472,10 +428,8 @@ impl WorkspaceAgents {
         Ok(())
     }
 
-    /// Choose the model an agent plans with.
-    ///
-    /// The keeper's to choose, alone: their devices run the agent and their
-    /// credentials pay for it.
+    /// Choose the model an agent plans with, the keeper's alone: their devices run the
+    /// agent and their credentials pay.
     #[action(item = agents)]
     pub fn set_agent_model(
         &mut self,
@@ -499,10 +453,8 @@ impl WorkspaceAgents {
         Ok(())
     }
 
-    /// Bound what an agent may do.
-    ///
-    /// The rules narrow what its keeper's grants allow; none follows the
-    /// default. An outside effect is never allowed unasked.
+    /// Bound what an agent may do: the rules narrow what its keeper's grants allow, and
+    /// none follows the default.
     #[action(item = agents)]
     pub fn set_agent_bound(
         &mut self,
@@ -530,9 +482,8 @@ impl WorkspaceAgents {
         Ok(())
     }
 
-    /// Retire an agent: it takes no new work.
-    ///
-    /// Its name and its conversations stay readable; nothing it did is lost.
+    /// Retire an agent: it takes no new work, and its name and conversations stay
+    /// readable.
     #[action(item = agents)]
     pub fn retire_agent(&mut self, #[param("The agent")] agent: Id) -> Result<(), Refusal> {
         let found = self
@@ -591,27 +542,23 @@ impl WorkspaceAgents {
         Ok(())
     }
 
-    /// The agent `id`, whether it works here or was retired.
     #[must_use]
     pub fn get(&self, id: &Id) -> Option<&Agent> {
         self.agents.find(id)
     }
 
-    /// The agent called `name`, the first one made.
     #[must_use]
     pub fn by_name(&self, name: &str) -> Option<&Agent> {
         self.agents.iter().find(|agent| agent.name == name)
     }
 
-    /// The agents that work here, by id.
     pub fn active(&self) -> impl Iterator<Item = &Agent> {
         self.agents.iter().filter(|agent| agent.is_active())
     }
 
-    /// An id for a new agent called `name` that no agent here holds: its
-    /// name in lowercase letters, digits and dashes, `2`, `3`, … appended
-    /// where that is taken. The actor it works as reads `agent:<id>`, so the
-    /// id is made once and kept.
+    /// An id for a new agent called `name` that no agent here holds: its name in
+    /// lowercase letters, digits and dashes, with `2`, `3`, … appended where taken. Its
+    /// actor reads `agent:<id>`, so the id is made once and kept.
     #[must_use]
     pub fn free_id(&self, name: &str) -> String {
         let mut stem: String = name
@@ -643,8 +590,8 @@ impl WorkspaceAgents {
             .unwrap_or_else(|| format!("{stem}-{}", MAX_AGENTS + 2))
     }
 
-    /// What each agent working here is called, by its bare id (its actor is `agent:<id>`): the
-    /// one answer every app names an agent by.
+    /// What each agent working here is called, by its bare id (its actor is
+    /// `agent:<id>`).
     #[must_use]
     pub fn active_names(&self) -> std::collections::HashMap<String, String> {
         self.active()
@@ -653,7 +600,6 @@ impl WorkspaceAgents {
             .collect()
     }
 
-    /// Every agent's name, as search names them.
     #[must_use]
     pub fn names(&self) -> Vec<&str> {
         self.agents
@@ -684,8 +630,8 @@ fn author(cx: &ActionCx) -> Result<String, Refusal> {
         .ok_or_else(|| Refusal::new("an agent is always made by someone"))
 }
 
-/// Whether two stored ids name the same person: a member's root, with or
-/// without the `person:` prefix grants carry.
+/// Whether two stored ids name the same person: a member's root, with or without the
+/// `person:` prefix grants carry.
 #[must_use]
 pub fn same_person(a: &str, b: &str) -> bool {
     root_of(a) == root_of(b)
@@ -728,8 +674,8 @@ fn check_id(id: &str) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// An id a caller names an agent by: one every host reads the same, so a
-/// client that names itself is the same agent on every device.
+/// An id a caller names an agent by, read the same by every host, so a client that
+/// names itself is one agent on every device.
 fn given_id(id: &str) -> Result<String, Refusal> {
     let id = id.trim();
     check_id(id)?;
@@ -760,7 +706,6 @@ fn chosen_model(model: Option<String>) -> Result<Option<String>, Refusal> {
     Ok(Some(model))
 }
 
-/// The most a keeper may set as a day's limit, or `None` for no limit.
 fn checked_limit(limit: Option<u64>) -> Result<Option<u64>, Refusal> {
     match limit {
         Some(limit) if limit > MAX_SPEND_LIMIT_MICROS => Err(Refusal::new(format!(
@@ -771,7 +716,6 @@ fn checked_limit(limit: Option<u64>) -> Result<Option<u64>, Refusal> {
     }
 }
 
-/// A day as the counter keeps it, `YYYY-MM-DD` by its keeper's clock.
 fn checked_day(day: &str) -> Result<String, Refusal> {
     let day = day.trim();
     let digits = day.split('-').map(str::len).collect::<Vec<_>>();
