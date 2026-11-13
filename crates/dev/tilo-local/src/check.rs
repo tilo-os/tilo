@@ -82,8 +82,10 @@ impl Traps {
     }
 
     fn trap(&mut self, name: &str, path: &Path) -> Result<(), String> {
-        let listener =
-            UnixListener::bind(path).map_err(|error| format!("{}: {error}", path.display()))?;
+        // The traps are this check's own: `socket_dir` keeps their paths short
+        // enough for the kernel, and a bind that still fails is reported here.
+        let listener = UnixListener::bind(path) // allow-socket-path: the check's own directory, short by construction
+            .map_err(|error| format!("{}: {error}", path.display()))?;
         let hits = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&hits);
         std::thread::spawn(move || {
@@ -118,9 +120,16 @@ impl Drop for Traps {
 }
 
 /// A short directory for the check's sockets: a socket path holds 108 bytes, and the session's
-/// deepest sit 56 bytes below its host's runtime directory (`tilo-nested-HASH/tilo/services/…`).
+/// deepest sit 56 bytes below its host's runtime directory (`tilo-nested-HASH/tilo/services/…`),
+/// which this directory holds under `/r`, so its own path may take 49 bytes. A temp directory
+/// deeper than that is stood in for by `/tmp` rather than left to a bind that would refuse it.
 fn socket_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("tl{}", std::process::id()))
+    const ROOM: usize = 107 - 56 - "/r".len();
+    let in_temp = std::env::temp_dir().join(format!("tl{}", std::process::id()));
+    if in_temp.as_os_str().len() <= ROOM {
+        return in_temp;
+    }
+    Path::new("/tmp").join(format!("tl{}", std::process::id()))
 }
 
 /// Stop the process group `child` leads, and wait for it.
