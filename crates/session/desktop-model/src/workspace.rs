@@ -103,11 +103,6 @@ pub struct Workspace {
     /// the person closed it, with the app this device opens.
     #[serde(skip)]
     pub(crate) closed_tabs: crate::closed_tabs::ClosedTabs,
-    /// The fields a stored workspace holds that this one does not read (the
-    /// shell engine's tasks among them), kept exactly as they were: saving
-    /// the workspace again leaves them in place, and nothing is migrated.
-    #[serde(flatten)]
-    pub retired_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A workspace as stored: its policy names the workspace it was stored for, or is
@@ -140,18 +135,11 @@ struct StoredWorkspace {
     schedule_claims: Vec<tilo_automation::ScheduleClaim>,
     #[serde(default)]
     shared_surfaces: SharedSurfaces,
-    #[serde(flatten)]
-    retired_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 impl From<StoredWorkspace> for Workspace {
     fn from(stored: StoredWorkspace) -> Self {
         let identity = stored.id;
-        // What this workspace writes but never reads back is its own, not
-        // retired.
-        let mut retired_fields = stored.retired_fields;
-        retired_fields.remove("collaborators");
-        retired_fields.remove("bots");
         let policy = match stored.policy {
             Some(mut policy) => {
                 policy.rehome(identity.to_string());
@@ -176,7 +164,6 @@ impl From<StoredWorkspace> for Workspace {
             bots: Vec::new(),
             shared_surfaces: stored.shared_surfaces,
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
-            retired_fields,
         }
     }
 }
@@ -993,7 +980,6 @@ impl Workspace {
             bots: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
-            retired_fields: serde_json::Map::new(),
         }
     }
 
@@ -1022,7 +1008,6 @@ impl Workspace {
             bots,
             shared_surfaces,
             closed_tabs: _,
-            retired_fields: _,
         } = self;
         Self {
             slot: *slot,
@@ -1041,7 +1026,6 @@ impl Workspace {
             bots: bots.clone(),
             shared_surfaces: shared_surfaces.clone(),
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
-            retired_fields: serde_json::Map::new(),
         }
     }
 
@@ -1095,7 +1079,6 @@ impl Default for Workspace {
             bots: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
             closed_tabs: crate::closed_tabs::ClosedTabs::default(),
-            retired_fields: serde_json::Map::new(),
         }
     }
 }

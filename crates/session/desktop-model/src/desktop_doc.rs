@@ -542,8 +542,8 @@ impl View {
 }
 
 /// What a workspace holds that this device reads and no other device needs:
-/// the defaults for opening each kind of resource, which windows this device
-/// streams to which peer, and the fields an older build wrote there.
+/// the defaults for opening each kind of resource, and which windows this
+/// device streams to which peer.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Local {
     #[serde(default, skip_serializing_if = "default_apps_unset")]
@@ -553,8 +553,6 @@ struct Local {
         skip_serializing_if = "crate::shared_surfaces::SharedSurfaces::is_empty"
     )]
     shared_surfaces: crate::shared_surfaces::SharedSurfaces,
-    #[serde(flatten)]
-    retired_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Local {
@@ -562,7 +560,6 @@ impl Local {
         Self {
             default_apps: workspace.default_apps.clone(),
             shared_surfaces: workspace.shared_surfaces.clone(),
-            retired_fields: workspace.retired_fields.clone(),
         }
     }
 
@@ -570,13 +567,10 @@ impl Local {
     fn apply(self, workspace: &mut Workspace) {
         workspace.default_apps = self.default_apps;
         workspace.shared_surfaces = self.shared_surfaces;
-        workspace.retired_fields = self.retired_fields;
     }
 
     fn is_empty(&self) -> bool {
-        default_apps_unset(&self.default_apps)
-            && self.shared_surfaces.is_empty()
-            && self.retired_fields.is_empty()
+        default_apps_unset(&self.default_apps) && self.shared_surfaces.is_empty()
     }
 }
 
