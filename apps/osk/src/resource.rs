@@ -443,10 +443,8 @@ mod tests {
         );
     }
 
-    /// One typed word and one clearing: what the record holds afterwards and
-    /// how its history reads are asserted on the same run.
     #[test]
-    fn clearing_forgets_the_saved_lessons_and_the_history_reads_as_sentences() {
+    fn clearing_learned_suggestions_forgets_the_saved_lessons() {
         let mut app = keyboard();
         for key in ["h", "i", "Space"] {
             tap(&mut app, key);
@@ -458,7 +456,18 @@ mod tests {
         app.settle();
         assert!(learned(&mut app).is_empty());
         assert!(prefs(&app).personalization);
+    }
 
+    #[test]
+    fn the_learned_records_history_reads_as_sentences() {
+        let mut app = keyboard();
+        for key in ["h", "i", "Space"] {
+            tap(&mut app, key);
+        }
+        app.settle();
+        app.effect_on_confirmed("osk.keyboard.suggestions", &OskEffect::ClearPersonal)
+            .unwrap();
+        app.settle();
         let record = app
             .person::<crate::learned::Learned>()
             .expect("the person's record of what the keyboard learned");
