@@ -285,6 +285,18 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "How many changes it folds: one for one command, however many items it \
                  changed at once, and more for a step of several.",
             ),
+            (
+                "opens",
+                "Bool",
+                "Whether it opens a visit: the newest step, or one whose hand, or the moment \
+                 it was made at, is not the step above it's. A history draws the face of the \
+                 step that opens a visit, and the steps below it that open none join it.",
+            ),
+            (
+                "latest",
+                "Bool",
+                "Whether it is the newest step: the change whose result the page shows.",
+            ),
         ],
     },
     ValueType {

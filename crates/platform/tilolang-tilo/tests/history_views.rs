@@ -1926,3 +1926,101 @@ fn the_changes_of_one_action_are_one_entry_of_history_its_undo_takes_back() {
         "and its second with it"
     );
 }
+
+/// The key of the note's body in its page: the editor a person writes the note in.
+fn note_body(view: &ViewInstance) -> String {
+    nodes(view.tree())
+        .into_iter()
+        .find(|node| node.kind == "ui.BlockEditor")
+        .unwrap_or_else(|| panic!("the note's page edits its body: {:#?}", view.tree()))
+        .key
+        .clone()
+}
+
+/// What one key typed in a note costs the history its page shows, in views run, where the
+/// note's history already holds `older` steps.
+fn renders_of_a_key(older: usize) -> u64 {
+    let (mut ada, notes, _) = two_people();
+    let note = call(&ada, "ada", NOTES_APP, "new_note", vec![notes]);
+    ada.commit();
+    // `older` steps, each of another hand, so history lists one entry for each.
+    for step in 0..older {
+        let who = if step % 2 == 0 { "bo" } else { "ada" };
+        call(
+            &ada,
+            who,
+            NOTES_APP,
+            "retitle",
+            vec![note.clone(), Value::text(format!("Note {step}"))],
+        );
+        ada.commit();
+    }
+    let mut page = ada.host.open_resource(&target(&note), None).unwrap();
+    page.poll_patches().unwrap();
+    let body = note_body(&page);
+    let before = page.stats().renders;
+    page.edit(
+        &body,
+        &Value::Rich(tilolang_runtime::rich::RichValue::from_text("Groceries")),
+    )
+    .unwrap();
+    ada.commit();
+    page.poll_patches().unwrap();
+    page.stats().renders.saturating_sub(before)
+}
+
+/// A key typed in a note reruns the history entry it changes and no older one: an entry reads
+/// what it shows of its own step, never the steps around it, so a page whose history is long
+/// costs a key what one whose history is short does.
+#[test]
+fn a_key_reruns_the_history_entry_it_changes_and_no_older_one() {
+    let (short, long) = (renders_of_a_key(2), renders_of_a_key(12));
+    assert_eq!(
+        short, long,
+        "a key reran {long} views where the note's history held 12 steps, and {short} where it \
+         held 2"
+    );
+}
+
+/// The faces a history opens: the steps of one hand a moment apart stand under the face of the
+/// step that opens their visit, and the same hand's steps hours apart open one each.
+#[test]
+fn one_hands_steps_a_moment_apart_share_one_face_and_hours_apart_do_not() {
+    let faces = |second: &str| {
+        let (mut ada, notes, _) = two_people();
+        let note = call(&ada, "ada", NOTES_APP, "new_note", vec![notes]);
+        ada.commit();
+        // Two runs of one agent, each a step of its own: the steps are the same hand's.
+        ada.host.set_clock(|| "2026-10-30T09:10:00Z".to_owned());
+        call(
+            &ada,
+            AGENT,
+            NOTES_APP,
+            "retitle",
+            vec![note.clone(), Value::text("Groceries")],
+        );
+        ada.commit_in_run(AGENT, "issue-7@8000000000000001", "Tidy the notes");
+        let second = second.to_owned();
+        ada.host.set_clock(move || second.clone());
+        call(
+            &ada,
+            AGENT,
+            NOTES_APP,
+            "retitle",
+            vec![note.clone(), Value::text("Shopping")],
+        );
+        ada.commit_in_run(AGENT, "issue-7@8000000000000002", "Tidy the notes");
+        // Ada made the note, then the agent's two steps: each entry's face, newest first.
+        entries(&history_of(&ada, &target(&note)))
+    };
+    assert_eq!(
+        faces("2026-10-30T09:15:00Z"),
+        [AGENT, "ada"],
+        "a moment apart, the agent's two steps join the visit the newer one opened"
+    );
+    assert_eq!(
+        faces("2026-10-30T12:00:00Z"),
+        [AGENT, AGENT, "ada"],
+        "hours apart, each of the agent's steps opens a visit of its own"
+    );
+}

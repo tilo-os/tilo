@@ -1016,7 +1016,8 @@ impl Core {
     }
 
     /// `steps(at)`: the changes made to a resource, newest first, each with the versions one
-    /// change made together and the count of changes it folds.
+    /// change made together, the count of changes it folds, and where it stands among the visits
+    /// history reads: whether it opens one, and whether the page ends with it.
     fn steps_value(&self, at: &crate::value::ResourceRef) -> HResult<Value> {
         let trapped = |e: crate::store::StoreError| crate::engine::HostFail::Trap(e.to_string());
         let versions = self.store.borrow().versions(at).map_err(trapped)?;
@@ -1031,6 +1032,11 @@ impl Core {
             }
         }
         let mut out = Vec::with_capacity(steps.len());
+        // The step above the one being built: the newest one opens a visit, and each below it
+        // joins that visit when it is the same hand's a moment later. Steps say this of
+        // themselves, so one entry of a history reads what it shows and nothing of the step
+        // above it.
+        let mut above: Option<crate::store::Version> = None;
         for step in steps.into_iter().rev() {
             let Some(last) = step.last() else {
                 continue;
@@ -1040,6 +1046,9 @@ impl Core {
             let run = Value::Opt(last.run.as_ref().map(|run| Box::new(run_value(run))));
             let mine =
                 last.run.is_none() && self.looking_now().as_deref() == Some(last.who.as_str());
+            let opens = above.as_ref().is_none_or(|above| opens_visit(above, last));
+            let latest = above.is_none();
+            above = Some(last.clone());
             // How many acts the step folds: versions of one change are one command over many
             // items, and the changes of one gesture are the keystrokes of one burst of typing —
             // history says the count of each, and Undo takes them all back together.
@@ -1069,6 +1078,8 @@ impl Core {
                 Value::List(versions),
                 Value::Bool(mine),
                 Value::Int(i64::try_from(changes).unwrap_or(i64::MAX)),
+                Value::Bool(opens),
+                Value::Bool(latest),
             ]));
         }
         Ok(Value::List(out))
@@ -2638,6 +2649,26 @@ fn same_step(last: &crate::store::Version, next: &crate::store::Version) -> bool
         (Some(a), Some(b)) => a.id == b.id,
         (None, None) => last.who == next.who,
         _ => false,
+    }
+}
+
+/// How long after one step the next one by the same hand still joins its visit: a person's
+/// steps moments apart read as one visit, under the face of the step that opened it.
+const VISIT_SECONDS: i64 = 60 * 60;
+
+/// Whether a step whose last version is `next` opens a visit of its own under `above`, the step
+/// history lists just before it (newer): another hand's, or made [`VISIT_SECONDS`] or more after
+/// it. The newest step opens the visit history reads from it.
+fn opens_visit(above: &crate::store::Version, next: &crate::store::Version) -> bool {
+    if above.who != next.who {
+        return true;
+    }
+    match (
+        tilolang::calendar::instant(&above.at),
+        tilolang::calendar::instant(&next.at),
+    ) {
+        (Some(above), Some(next)) => above.saturating_sub(next) >= VISIT_SECONDS,
+        _ => true,
     }
 }
 

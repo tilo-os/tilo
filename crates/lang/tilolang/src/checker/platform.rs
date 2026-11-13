@@ -223,7 +223,9 @@ impl Checker<'_> {
 
     /// `steps(r)`: the history of `r` as people read it, newest first: consecutive versions by
     /// the same person, or by the same run, folded into one `host.Step`. Which versions
-    /// fold is the platform's rule, the same in every app's history, so no view writes it.
+    /// fold is the platform's rule, the same in every app's history, so no view writes it; so is
+    /// where a step stands among the visits history reads the changes in, which each step says of
+    /// itself rather than a row asking the steps around it.
     pub(super) fn builtin_steps(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(r) = self.resource_arg("steps", args, span) else {
             return Ex::error();
