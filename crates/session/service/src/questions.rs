@@ -351,7 +351,7 @@ impl Asked {
     /// The session's sheets are drawn on its own loop, so a thread waiting
     /// here must not hold the loop: this parks on a waker the answer wakes,
     /// and never on a timer that polls the loop.
-    pub fn until(&mut self, deadline: Option<std::time::Instant>) -> Option<Option<Answer>> {
+    pub fn until(&mut self, deadline: Option<tilo_clock::time::Instant>) -> Option<Option<Answer>> {
         struct Park(std::thread::Thread);
         impl std::task::Wake for Park {
             fn wake(self: std::sync::Arc<Self>) {
@@ -369,7 +369,7 @@ impl Asked {
             }
             match deadline {
                 Some(deadline) => {
-                    let now = std::time::Instant::now();
+                    let now = tilo_clock::now();
                     if now >= deadline {
                         // The deadline has come: the question is still up.
                         return None;

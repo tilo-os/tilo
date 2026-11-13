@@ -11,6 +11,7 @@ serde.workspace = true
 serde_json.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 # The content store a service's records keep their large parts in.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-content = { path = "../../system/content" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
