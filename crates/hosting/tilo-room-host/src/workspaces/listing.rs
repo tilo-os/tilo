@@ -478,19 +478,6 @@ impl Workspaces {
             .active_role(&hex::encode(user))
     }
 
-    /// Whether `user` is a member of a workspace this host governs, which is
-    /// who it serves: whose devices its certification queue takes beside the
-    /// owner's own.
-    pub async fn admits_person(&self, user: [u8; 32]) -> bool {
-        let workspaces: Vec<String> = self.inner.workspaces.lock().await.keys().cloned().collect();
-        for workspace in workspaces {
-            if self.member_role(&workspace, user).await.is_some() {
-                return true;
-            }
-        }
-        false
-    }
-
     pub fn listing(&self, workspace: &str) -> Option<Listing> {
         self.inner.listings.get(workspace)
     }

@@ -51,6 +51,8 @@ pub use follow::RecordWrite;
 mod device_rejoin_tests;
 #[cfg(test)]
 mod hard_stop_tests;
+#[cfg(test)]
+mod returning_person_tests;
 pub(crate) use desktop_writes::writes_desktop;
 mod hosts;
 /// Wait until this host is reached through a relay, before it names its own

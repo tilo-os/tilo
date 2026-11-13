@@ -426,7 +426,10 @@ impl CertificationProtocol {
         if user == self.identity.user_public_key {
             return true;
         }
-        let served = match &self.workspaces {
+        // One answer for who is a member here: each workspace's governance
+        // names its people by their roots, whatever devices of theirs it
+        // lists now, so a member whose browser forgot the site is still one.
+        match &self.workspaces {
             Some(workspaces) => {
                 crate::workspace_access::admits_person(
                     workspaces,
@@ -436,14 +439,6 @@ impl CertificationProtocol {
                 .await
             }
             None => false,
-        };
-        // A workspace this relay governs keeps its members itself, apart from
-        // the sessions it holds: a member of the Lounge is a member whether or
-        // not their device has a session open, and their own new device is
-        // theirs to approve there as the host's own person's is.
-        match self.records.get() {
-            Some(governed) => served || governed.admits_person(user).await,
-            None => served,
         }
     }
 

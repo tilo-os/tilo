@@ -119,8 +119,10 @@ pub struct WorkspaceRuntime {
     /// the relay owner's devices on a same-owner home host, or under native
     /// governance. Read only through [`crate::workspace_access::decide`].
     pub(crate) admission: crate::workspace_access::AdmissionMode,
-    /// User roots needed only to pass the relay-wide handshake for devices in
-    /// this native-governed workspace. Exact workspace admission still uses
+    /// The people this native-governed workspace has as members, by their
+    /// roots, whatever devices of theirs it lists now: the one answer to
+    /// whether a person is a member here, which the relay-wide handshake and
+    /// the certification queue read. Exact workspace admission still uses
     /// `membership`, so an ungoverned sibling device under the same root
     /// does not join.
     pub governed_user_roots: HashSet<[u8; 32]>,

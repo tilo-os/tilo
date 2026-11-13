@@ -155,7 +155,11 @@ pub struct SeedState {
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GovernedAccess {
+    /// The devices the workspace admits now: its members' certified,
+    /// unrevoked devices.
     pub member_devices: Vec<[u8; 32]>,
+    /// Its members, by their roots: every person its policy gives a role,
+    /// whether or not a device of theirs is listed now.
     pub member_user_roots: Vec<[u8; 32]>,
 }
 /// Who a Read Deny keeps out of a workspace's record channels; see
