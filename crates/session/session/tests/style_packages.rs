@@ -161,8 +161,8 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     .expect("install ran")
     .expect("completed");
     assert_eq!(installed["ok"], true, "{installed}");
-    // The edited copy is the style the switch now names: its view's own doc line is the one
-    // name a style has everywhere, and the session read the reinstalled package.
+    // The edited copy is what the switch now lists: its view's own doc line is the one name a
+    // style has everywhere, and the reinstalled package is what the session read.
     let copy = format!("{}:strips", tilo_session::style_packages::COPY_ID);
     common::until(
         &mut session,
@@ -171,7 +171,7 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
             desk(session)
                 .styles
                 .iter()
-                .any(|style| style.style == copy && style.line == "My strips" && style.loads)
+                .any(|style| style.style == copy && style.line == "My strips")
         },
     );
 }

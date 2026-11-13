@@ -23,7 +23,6 @@
 //! source the person owns. A copy is installed *from* the workspace, so editing it and installing
 //! it again is the whole loop.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -458,11 +457,19 @@ fn build_and_install(dir: &Path, package: &str) -> Result<String, String> {
             .map_err(|error| format!("{id}: {error}"))?;
         installed = id;
     }
+    // The `tapp`s were the install's transport: the store holds what they carried, so the build
+    // directory goes, and a person's cache keeps no second copy of what they installed.
+    let out = build_out(package);
+    if let Err(error) = std::fs::remove_dir_all(&out) {
+        // ignored-failure: the install itself succeeded; a cache directory left behind costs
+        // space the next build reuses, and nothing the person was doing depended on its removal.
+        tracing::debug!(%error, "a style build's leftovers stay in the cache");
+    }
     Ok(installed)
 }
 
 /// Where a build's payloads and `.tapp`s go: the person's cache, never their workspace or the
-/// store, so a check leaves nothing behind and an install keeps only what it installed.
+/// store, and removed once the install has taken what they carried.
 fn build_out(package: &str) -> PathBuf {
     tilo_paths::xdg::cache_home()
         .or_else(|| tilo_paths::home().map(|home| home.join(".cache")))
@@ -470,25 +477,4 @@ fn build_out(package: &str) -> PathBuf {
         .join("tilo")
         .join("style-builds")
         .join(package)
-}
-
-/// The packages of the person's workspace, by their id: a reading of what they own.
-///
-/// # Errors
-/// The workspace does not read.
-pub fn owned() -> Result<BTreeMap<String, PathBuf>, String> {
-    let root = workspace_root()?;
-    let Ok(entries) = std::fs::read_dir(&root) else {
-        return Ok(BTreeMap::new());
-    };
-    let mut out = BTreeMap::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir()
-            && let Some(name) = path.file_name().and_then(|name| name.to_str())
-        {
-            out.insert(name.to_owned(), path);
-        }
-    }
-    Ok(out)
 }
