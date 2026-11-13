@@ -4781,13 +4781,11 @@ impl CallbackBinding {
             Ok(entry)
         })?
     }
-    /// Immediate action boundary inside the already admitted owned frame. The
-    /// explicit Doc witness is checked before any frame access; no references
-    /// are recovered from ACTIVE.
-    /// [`Self::close_open_step`], but only when an open action names the
-    /// step: an unnamed change is one the identity service refuses to sign,
-    /// so a step nothing names stays open for its own boundary. Whether the
-    /// document has no unfinished edit afterwards.
+    /// Immediate action boundary inside the already admitted owned frame,
+    /// as [`Self::close_open_step`] makes one, but only for a step an open
+    /// action names: an unnamed change is one the identity service refuses
+    /// to sign, so its step stays open for its own boundary. Whether a
+    /// named step closed.
     pub(crate) fn close_named_step(
         &self,
         outer: &mut AutoCommit,

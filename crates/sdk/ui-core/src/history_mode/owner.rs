@@ -501,8 +501,9 @@ impl HistoryOwner {
         }
     }
 
-    /// See [`crate::bound_dispatch::CallbackBinding::close_named_step`].
-    /// Whether nothing unfinished is left open; a record owner outside a component keeps no step.
+    /// See [`crate::bound_dispatch::CallbackBinding::close_named_step`]:
+    /// whether a step an open action names closed. A record owner outside a
+    /// component keeps no step.
     pub(crate) fn close_named_step(&self, outer: &mut AutoCommit) -> bool {
         match &self.0 {
             OwnerKind::Component(binding) => {
