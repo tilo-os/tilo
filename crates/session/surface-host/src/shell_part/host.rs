@@ -154,18 +154,10 @@ impl SurfaceHost for ShellPart {
     }
 
     fn wants_keyboard(&self) -> bool {
-        // While a surface of the desk's is up it answers the keyboard: the switcher walks,
-        // every surface closes on Esc, and a field in one takes what is typed. A modifier's
-        // release reaches it this way too, since its press came before the surface was up.
-        if self.cover {
-            return true;
-        }
-        // A field of the part's that the person put the caret in takes what is typed next: the
-        // canvas's entry, a conversation's line, the launcher's search, and every other field
-        // the shell draws. The part reports the same field as its [`Self::text_input`], so a
-        // field the input method composes into is a field the part's keys reach. A part with no
-        // such field leaves the keys to the window in front, as the desk under the windows does.
-        self.text_input().is_some()
+        // The desk under the windows takes the keys when one of its own controls put the caret
+        // somewhere it answers: a field of the bar's, or a canvas's place, which pans with the
+        // arrow keys (`ui.Map`). A shell with none leaves the keys to the window in front.
+        self.cover || self.text_input().is_some() || self.widgets.takes_keys()
     }
 
     /// The regions the shell's translucent material records: the compositor blurs what lies

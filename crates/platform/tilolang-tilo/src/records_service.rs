@@ -72,6 +72,14 @@ pub struct RecordService {
     notices: crate::notices::Notices,
     /// Where they are shown: the session's notifications. Until it is set, nothing is shown.
     tell: Option<Box<dyn tilo_session_core::notice::Notices>>,
+    /// The places a resource's `open` asked the session for since [`Service::take_open`] last
+    /// took them, each with the actor that asked: opening is the session's arranging step
+    /// (`docs/designs/app-language/one-app-model.md` §3), never the record's change.
+    opens: Vec<(tilo_actions::ActionInvoker, tilo_service::Open)>,
+    /// The place the invocation now running is asked in, by the resource that place shows — the
+    /// conversation of the turn an agent asks in — or empty for the place in front: what a
+    /// resource it opens stands beside ([`Service::note_beside`]).
+    beside: String,
 }
 
 impl RecordService {
@@ -102,6 +110,8 @@ impl RecordService {
             shared_records: std::collections::BTreeMap::new(),
             origins: crate::origin::Origins::default(),
             origin_waker: None,
+            opens: Vec::new(),
+            beside: String::new(),
         }
     }
 
@@ -183,22 +193,26 @@ impl RecordService {
         Ok(true)
     }
 
-    /// The record of the package `app` the session runs itself (`share`d here): its app's
-    /// committed document and the packages a reader of it loads (the package's and each it
-    /// uses), as a task's host reads it. `None` for any other app.
+    /// The record of the app `app` this service keeps: its app's committed document and the
+    /// packages a reader of it loads (the package's and each it uses), as a task's host reads
+    /// it. `None` for an app whose package this service does not run.
+    ///
+    /// Every tilolang app this session runs is one: an app it hosts keeps its record in this
+    /// service's one document (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4),
+    /// and so does a package it `share`s itself (the shell). A task reads them all alike, by
+    /// the app, and starts no app to read a record this session holds.
     #[must_use]
     pub fn service_record(&self, app: &str) -> Option<tilo_service::Record> {
-        let wasm = self.shared.get(app)?;
-        let meta = crate::runtime::Meta::from_wasm(wasm)?;
-        let mut packages = vec![std::sync::Arc::clone(wasm)];
-        for used in &meta.uses {
+        let package = self.host.package(app)?;
+        let mut packages = vec![std::sync::Arc::clone(&package.wasm)];
+        for used in &package.meta.uses {
             if let Some(package) = self.host.package(used) {
                 packages.push(std::sync::Arc::clone(&package.wasm));
             }
         }
         Some(tilo_service::Record {
             app: app.to_owned(),
-            id: crate::own_record(&meta, &self.person).unwrap_or_default(),
+            id: crate::own_record(&package.meta, &self.person).unwrap_or_default(),
             document: self.record.clone().save(),
             packages,
         })
@@ -372,6 +386,8 @@ impl RecordService {
             .get("field")
             .and_then(Json::as_str)
             .unwrap_or_default();
+        // The edit verbs take a field by its name, as their `field` choices list; an older
+        // caller's id still resolves to the field it names in `edit_action`.
         let mut value = arguments.get("value").cloned().unwrap_or(Json::Null);
         if flag && let Some(said) = value.as_str() {
             match said.parse::<bool>() {
@@ -453,6 +469,14 @@ impl RecordService {
     /// Run the published `action` of `resource` with `arguments`, planned on the record as it
     /// is and committed as `invoker`'s step, of the run `run` when it is one of a run's: the one
     /// path [`Service::invoke`], [`Service::invoke_as`] and [`Service::invoke_in_run`] share.
+    ///
+    /// A resource's `open` is not a change of the record: the record publishes it so a caller —
+    /// an agent reading the catalogue, a view offering it — finds it at the resource, and the
+    /// session carries it out as its own arranging step, placing the resource with its view
+    /// beside the place the asking turn is in (`docs/designs/app-language/one-app-model.md`
+    /// §3; shell.md §8, "The canvas composes views; it opens nothing"). What was asked waits in
+    /// [`Self::opens`] for the session's next pass, which places it with the same `open` the
+    /// arrangement's own action runs — never a second implementation of it.
     fn run(
         &mut self,
         action: &str,
@@ -462,12 +486,22 @@ impl RecordService {
         run: Option<&tilo_actions::WorkGroup>,
     ) -> Result<Started, DoorError> {
         let address = ActionAddress::new(resource, action);
+        // The place this invocation is asked in, taken as this one's: a note from the step that
+        // brought it stands for it alone, never for the next invocation the service answers.
+        let beside = std::mem::take(&mut self.beside);
         let planned = if action == EDIT_TEXT_ACTION || action == EDIT_FLAG_ACTION {
             self.direct_edit(resource, action == EDIT_FLAG_ACTION, arguments)
                 .ok_or_else(|| DoorError::Unknown(address.clone()))?
                 .map_err(DoorError::InvalidArguments)?
         } else {
             let encoded = tilo_actions::door::encode_json(&self.resources(), &address, arguments)?;
+            if encoded.type_id == crate::effects::OPEN_OPERATION {
+                let mut open =
+                    open_asked(&encoded.payload, resource).map_err(DoorError::InvalidArguments)?;
+                open.beside = beside;
+                self.opens.push((invoker.clone(), open));
+                return Ok(Started::Done(ActionOutput::default()));
+            }
             if encoded.type_id == EDIT_TYPE {
                 let edit: HistoryEdit = serde_json::from_slice(&encoded.payload)
                     .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
@@ -507,6 +541,21 @@ impl RecordService {
             resources: made.into_iter().collect(),
         }))
     }
+}
+
+/// The place the `open` effect `payload` names: the resource the invocation addresses — the
+/// published id of the record or item whose `open` ran — and the view it shows, empty for the
+/// type's primary one. The effect's own anchor is the record's internal id, which the published
+/// address already carries as `tl:<app>:<id>`.
+fn open_asked(payload: &[u8], resource: &str) -> Result<tilo_service::Open, String> {
+    use tilo_resource::Effect as _;
+    let open =
+        crate::effects::OpenEffect::from_payload(payload).map_err(|error| error.to_string())?;
+    Ok(tilo_service::Open {
+        resource: resource.to_owned(),
+        view: open.view().unwrap_or_default().to_owned(),
+        beside: String::new(),
+    })
 }
 
 impl RecordService {
@@ -844,6 +893,20 @@ impl Service for RecordService {
         self.run(action, resource, arguments, invoker, Some(run))
     }
 
+    /// The places a resource's `open` asked this service for since the last pass: the session
+    /// places each through its arrangement, as its own `open` does
+    /// (`docs/designs/app-language/one-app-model.md` §3).
+    fn take_open(&mut self) -> Vec<(tilo_actions::ActionInvoker, tilo_service::Open)> {
+        std::mem::take(&mut self.opens)
+    }
+
+    /// The place the invocation that follows is asked in, by the resource it shows: the
+    /// conversation of the turn an agent asks in, or empty for the place in front. A resource the
+    /// invocation opens stands beside it (`docs/designs/app-language/one-app-model.md` §3).
+    fn note_beside(&mut self, beside: &str) {
+        beside.clone_into(&mut self.beside);
+    }
+
     fn poll(&mut self) -> bool {
         let touched = self.publications.update(&self.host, &self.planner);
         let ran = self.trigger();
@@ -883,8 +946,16 @@ impl Service for RecordService {
     }
 
     fn records(&self) -> Vec<tilo_service::Record> {
-        self.shared
-            .keys()
+        let mut apps: Vec<String> = self
+            .host
+            .packages()
+            .into_iter()
+            .map(|package| package.meta.app)
+            .collect();
+        apps.extend(self.shared.keys().cloned());
+        apps.sort();
+        apps.dedup();
+        apps.iter()
             .filter_map(|app| self.service_record(app))
             .collect()
     }

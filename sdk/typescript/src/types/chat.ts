@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@10e830cca539427e";
+export const SURFACE = "so.tilo.chat@285e342c43975c1d";
 
 export interface Category {
   name: string;
@@ -306,6 +306,7 @@ export interface Message {
   edited: boolean;
   history: Revision[];
   parent: string | null;
+  quoted: Quote | null;
   reactions: unknown;
   mentions: Mention[];
   attachments: Attached[];
@@ -324,6 +325,12 @@ export interface ProviderStream {
   progress: string;
   finish: AgentFinish | null;
   detail: string;
+}
+
+export interface Quote {
+  text: string;
+  start: number;
+  end: number;
 }
 
 export interface ResourceAt {
@@ -384,6 +391,7 @@ export interface Work {
   stream: ProviderStream | null;
   state: Transition | null;
   trace: Step[];
+  failure_detail: string | null;
 }
 
 export interface WorkUpdate {
@@ -392,6 +400,7 @@ export interface WorkUpdate {
   did: string | null;
   about: string | null;
   trace: StepUpdate[];
+  detail: string | null;
 }
 
 export interface Emoji {

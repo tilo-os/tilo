@@ -703,6 +703,7 @@ fn a_fullscreen_window_on_another_display_leaves_this_part_standing() {
 /// record), keyed `p1`.
 fn one_window_arrangement() -> ArrangementReading {
     ArrangementReading {
+        queries: Vec::new(),
         workspaces: vec![ArrangementWorkspaceReading {
             key: "w1".to_owned(),
             name: "Desk".to_owned(),

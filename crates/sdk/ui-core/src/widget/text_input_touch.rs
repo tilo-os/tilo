@@ -196,5 +196,6 @@ impl TextInput {
                 crate::widget::open_external_url(&target);
             }
         }
+        self.report_selection();
     }
 }

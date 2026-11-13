@@ -447,9 +447,15 @@ pub struct Lists(Held);
 
 #[derive(Clone)]
 enum Held {
-    Fixed(Arc<AppLists>),
+    /// Lists fixed up front, and the generation they were fixed at: fixed lists never change, so
+    /// every clone of them keeps the number they were given.
+    Fixed(Arc<AppLists>, u64),
     Followed(Watched<AppLists>),
 }
+
+/// The generation of the last [`Lists::fixed`]: one per process, so a fixed list is told from any
+/// other even after an earlier one was freed and a new one landed at its address.
+static FIXED_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl Default for Lists {
     fn default() -> Self {
@@ -461,7 +467,8 @@ impl Lists {
     /// Lists that never change.
     #[must_use]
     pub fn fixed(lists: AppLists) -> Self {
-        Self(Held::Fixed(Arc::new(lists)))
+        let serial = FIXED_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self(Held::Fixed(Arc::new(lists), serial))
     }
 
     /// `read` on a worker named `name`, as it starts, and again after any
@@ -495,8 +502,27 @@ impl Lists {
     /// The lists as last read. Never touches the disk: the same value until a change was read.
     pub(crate) fn latest(&self) -> Arc<AppLists> {
         match &self.0 {
-            Held::Fixed(lists) => Arc::clone(lists),
+            Held::Fixed(lists, _) => Arc::clone(lists),
             Held::Followed(watched) => watched.get(),
+        }
+    }
+
+    /// The lists as last read, with the generation of the read that produced them: the two taken
+    /// together, so a caller keys on a reading and the lists of that same reading.
+    pub(crate) fn snapshot(&self) -> (u64, Arc<AppLists>) {
+        match &self.0 {
+            Held::Fixed(lists, serial) => (*serial, Arc::clone(lists)),
+            Held::Followed(watched) => watched.snapshot(),
+        }
+    }
+
+    /// Read the device's lists again on this thread, for a test that changed what the lists' read
+    /// returns and must see the new reading (an install or a removal) without waiting on the file
+    /// watcher. A device's session only ever reads them on their worker.
+    #[cfg(test)]
+    pub(crate) fn refresh(&self) {
+        if let Held::Followed(watched) = &self.0 {
+            watched.refresh();
         }
     }
 
@@ -511,7 +537,8 @@ impl Lists {
 
 impl crate::platform::apps::Apps for Lists {
     fn reading(&self) -> Arc<dyn crate::platform::apps::Reading> {
-        Arc::new(Listed(self.latest()))
+        let (generation, lists) = self.snapshot();
+        Arc::new(Listed { lists, generation })
     }
 
     fn name(&self, id: &str) -> String {
@@ -532,12 +559,16 @@ impl crate::platform::apps::Apps for Lists {
 }
 
 /// One reading of this device's lists, as search builds its sources from: the sources it keeps
-/// until the worker reads another one.
-struct Listed(Arc<AppLists>);
+/// until the worker reads another one. The generation is the read's own, not the value's address:
+/// an installed or removed app is a new reading, even after the old one was freed.
+struct Listed {
+    lists: Arc<AppLists>,
+    generation: u64,
+}
 
 impl crate::platform::apps::Reading for Listed {
     fn generation(&self) -> usize {
-        Arc::as_ptr(&self.0) as usize
+        usize::try_from(self.generation).unwrap_or(usize::MAX)
     }
 
     fn host_apps(
@@ -545,14 +576,14 @@ impl crate::platform::apps::Reading for Listed {
         preferences: &tilo_desktop_search::SearchPreferences,
     ) -> Option<tilo_desktop_search::Held> {
         Some(tilo_desktop_search::Held::new(HostApps::new(
-            self.0.host_apps.clone(),
+            self.lists.host_apps.clone(),
             preferences,
         )))
     }
 
     fn catalogue(&self, workspace: &str) -> Option<tilo_desktop_search::Held> {
         Some(tilo_desktop_search::Held::new(StoreCatalogue::new(
-            self.0.catalogue.clone(),
+            self.lists.catalogue.clone(),
             workspace,
         )))
     }
@@ -706,5 +737,107 @@ mod tests {
                 .iter()
                 .any(|app| app.id == "so.tilo.notes")
         });
+    }
+
+    /// An app installed or removed is a new reading, and the generation says so: a cache keyed on it
+    /// (the desk's, the launcher's) sees the change. The generation is a rising count, not the
+    /// reading's address, so it moves even when the new reading happens to land where the old one
+    /// was — the case the old address key got wrong.
+    #[test]
+    fn an_install_or_a_removal_is_a_new_generation_and_reading() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        // What the store holds, as the worker reads it: Notes, then an install adds Tasks, then a
+        // removal takes Notes away — a list that shrinks back onto the first reading's length.
+        let store = std::sync::Arc::new(AtomicUsize::new(1));
+        let read = {
+            let store = std::sync::Arc::clone(&store);
+            move || {
+                let notes = AppEntry {
+                    id: "so.tilo.notes".to_owned(),
+                    title: "Notes".to_owned(),
+                    category: None,
+                    description: None,
+                };
+                let tasks = AppEntry {
+                    id: "so.tilo.tasks".to_owned(),
+                    title: "Tasks".to_owned(),
+                    category: None,
+                    description: None,
+                };
+                let applications = match store.load(Ordering::Acquire) {
+                    1 => vec![notes],
+                    2 => vec![notes, tasks],
+                    _ => vec![tasks],
+                };
+                AppLists {
+                    applications,
+                    ..AppLists::default()
+                }
+            }
+        };
+        let lists = Lists::follow(
+            "tilo-search-lists-generation",
+            vec![dir.path().to_owned()],
+            read,
+        )
+        .unwrap();
+        tilo_test_env::wait_until("the first reading", || {
+            lists
+                .latest()
+                .applications
+                .iter()
+                .any(|app| app.id == "so.tilo.notes")
+        });
+        let (first, _) = lists.snapshot();
+        // Installing Tasks is a new reading, and the generation rises.
+        store.store(2, Ordering::Release);
+        lists.refresh();
+        tilo_test_env::wait_until("Tasks to be listed after the install", || {
+            lists
+                .latest()
+                .applications
+                .iter()
+                .any(|app| app.id == "so.tilo.tasks")
+        });
+        let (second, _) = lists.snapshot();
+        assert!(
+            second > first,
+            "the install moved the generation: {first} then {second}"
+        );
+        // Removing Notes is another reading; the list is back to one app, but the generation still
+        // rises — an address keyed on the value would have reused the first reading's.
+        store.store(3, Ordering::Release);
+        lists.refresh();
+        tilo_test_env::wait_until("Notes to be gone after the removal", || {
+            lists
+                .latest()
+                .applications
+                .iter()
+                .all(|app| app.id != "so.tilo.notes")
+        });
+        let (third, _) = lists.snapshot();
+        assert!(
+            third > second,
+            "the removal moved the generation: {second} then {third}"
+        );
+    }
+
+    /// The same for lists fixed up front, which never change: `Lists::fixed` gives each its own
+    /// generation, so two fixed readings of one list are told apart, and clones of one share it.
+    #[test]
+    fn fixed_lists_have_their_own_generation() {
+        let one = Lists::fixed(AppLists::default());
+        let two = Lists::fixed(AppLists::default());
+        assert_eq!(
+            one.snapshot().0,
+            one.clone().snapshot().0,
+            "a clone shares it"
+        );
+        assert_ne!(
+            one.snapshot().0,
+            two.snapshot().0,
+            "two fixed lists are told apart, never the same number"
+        );
     }
 }

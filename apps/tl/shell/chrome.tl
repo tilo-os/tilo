@@ -124,6 +124,17 @@ type Shell {
     /// A click on the dock's icons magnifies the item under the pointer, as macOS's Dock
     /// does.
     dock_zoom: Bool = false
+    /// Whether the chosen style's own settings stand over the desk (`style_settings`), opened
+    /// from the bar's style menu: the one place a person changes the style they show without an
+    /// agent, as `shell.md` §6's "Two ways to change a desk" says. It is the person's record, so
+    /// it survives a switch and an agent opens and closes it as they do.
+    settings_open: Bool = false
+    /// Strips: whether a strip of several places shows its tab bar. Off, the strip shows the
+    /// place in front alone and the others are reached by the window's own menu.
+    strips_tabs: Bool = true
+    /// Frames: whether a place let go on the canvas lands on the style's grid, so frames line
+    /// up as they are placed. Off, a place stays exactly where it was let go.
+    frames_snap: Bool = true
 }
 
 /// One part of the top bar, in the person's order.

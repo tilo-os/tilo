@@ -724,6 +724,10 @@ pub struct Message {
     /// The message it answers in a thread.
     #[model(readonly)]
     pub parent: Option<Id>,
+    /// The run of the answered message it quotes, when it answers a span rather than the whole
+    /// message: what the quote over it shows, and where pressing the quote reveals it.
+    #[model(readonly)]
+    pub quoted: Option<Quote>,
     /// Who reacted with which emoji: the framework's reactions, each the
     /// invoker's own, so this read-only message still takes them.
     #[model(readonly)]
@@ -900,6 +904,41 @@ impl Identified for Person {
     }
 }
 
+/// The run of a message a reply quotes, as the reply carries it: the words as they read when
+/// the reply was written, and where in the answered message they stand so the quote opens the
+/// very words it names ([`crate::effects::ChatEffect::RevealMessageRange`]).
+///
+/// A reply that answers a whole message carries none: its `parent` is the message it answers,
+/// and the quote over it shows the start of what that message says. A reply to a *span* of a
+/// message carries one, and the quote shows the span instead.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Quote {
+    /// The words as they read when the reply was written: what the quote shows, however the
+    /// answered message changes after.
+    #[model(label)]
+    pub text: String,
+    /// Where they stand in the answered message's text, in UTF-8 bytes of
+    /// [`Message::text`]: what pressing the quote reveals. A body edited after the quote was
+    /// taken may move the words; the span is kept as written, and the quote itself always
+    /// reads from `text`.
+    pub start: u64,
+    /// Where the run ends, in UTF-8 bytes, exclusive.
+    pub end: u64,
+}
+
+impl Quote {
+    /// Whether the span a reply quotes is one this record may keep: its words are some and
+    /// bounded, and its span is ordered and inside a message of at most
+    /// [`MAX_MESSAGE_TEXT_BYTES`].
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        !self.text.trim().is_empty()
+            && self.text.len() <= MAX_MESSAGE_TEXT_BYTES
+            && self.start < self.end
+            && usize::try_from(self.end).is_ok_and(|end| end <= MAX_MESSAGE_TEXT_BYTES)
+    }
+}
+
 /// An agent's record of its work on a message, written by that agent.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Work {
@@ -910,6 +949,10 @@ pub struct Work {
     pub state: Option<Transition>,
     /// One row per operation it dispatched, rewritten when the app answers.
     pub trace: Keyed<Step>,
+    /// The run's working record of a failure, for whoever debugs it later: the
+    /// transport's error, the partial answer, the provider's exposed reasoning.
+    /// Never the reply's words, and shown only behind a disclosure.
+    pub failure_detail: Option<String>,
 }
 
 /// Received provider output, stored as fields and CRDT text, not a JSON snapshot.
@@ -1014,6 +1057,10 @@ pub struct WorkUpdate {
     /// The operations dispatched so far, each by the id minted when it was.
     #[serde(default)]
     pub trace: Vec<StepUpdate>,
+    /// The run's working record of a failure, for whoever debugs it later;
+    /// never the reply's words. Absent when nothing failed.
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 /// One dispatched operation, as an agent reports it.
@@ -1089,16 +1136,35 @@ pub(crate) fn seconds(cx: &ActionCx) -> i64 {
 }
 
 /// A portable address, never copied content, a local path or an access grant.
+///
+/// Its kind may be empty when its id is a resource's published address
+/// (`tl:<app>:<id>`, as a tilolang app publishes one): the address names the
+/// resource and the catalogue its kind, exactly as [`tilo_reference::Embed`]
+/// reads one, so a reference to a resource no catalogue has loaded yet still
+/// attaches and resolves where it is read. Any other id names its kind.
 pub(crate) fn valid_reference(reference: &tilo_reference::ResourceRef) -> bool {
     let field = |value: &str, max: usize| {
         !value.trim().is_empty() && value.len() <= max && !value.chars().any(char::is_control)
     };
-    field(&reference.kind, 128)
-        && reference
-            .kind
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-        && field(&reference.id, 2048)
+    let published = |id: &str| {
+        // `tl:<app>:<id>`: the app is dotted and never holds a `:`, so the address says its app
+        // and its published id, and its kind is whatever the catalogue resolves it to.
+        id.strip_prefix("tl:")
+            .and_then(|rest| rest.split_once(':'))
+            .is_some_and(|(app, id)| !app.is_empty() && !id.is_empty())
+    };
+    // A named kind is bounded like any other address; an empty one is only a resource's
+    // published address, the form the catalogue reads without a kind.
+    let kind = if reference.kind.is_empty() {
+        published(&reference.id)
+    } else {
+        field(&reference.kind, 128)
+            && reference
+                .kind
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    };
+    kind && field(&reference.id, 2048)
         && !reference.id.starts_with(['/', '\\'])
         && !reference.id.contains("://")
         && field(&reference.label, 512)
@@ -1226,6 +1292,8 @@ pub(crate) struct Posting {
     pub text: String,
     pub body: Vec<ClipBlock>,
     pub parent: Option<Id>,
+    /// The run of the message it answers that it quotes, when it answers a span.
+    pub quoted: Option<Quote>,
     /// What it carries besides its words.
     pub attachments: Vec<tilo_reference::Attached>,
     pub appearance: Option<tilo_actions::Appearance>,

@@ -67,6 +67,12 @@ impl AppBrokerState {
         target: (&str, &str),
         argument: Option<&str>,
     ) -> Result<NativeGate, String> {
+        if crate::services::is_conversation_turn(&run.task_id) {
+            // A turn has no issue to hang a question on: its question goes to
+            // the person on the system's own sheet
+            // ([`super::conversation_ask`]).
+            return self.conversation_confirmation(run, lease, offered, target, argument);
+        }
         self.tracker_confirmation(run, lease, offered, target, argument)
     }
 }

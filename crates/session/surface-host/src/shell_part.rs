@@ -42,12 +42,12 @@ use crate::{Placement, WidgetHost};
 /// What a shell reads of the session and the names the session publishes it by: every host's,
 /// so the shell's views and the session name one desk.
 pub use tilo_session_core::shell::{
-    ARRANGEMENT_RESOURCE, AgentReading, ArrangementPlaceReading, ArrangementReading,
-    ArrangementRowReading, ArrangementStripReading, ArrangementWorkspaceReading, Ask, AskReading,
-    CHROME_RESOURCE, DESK_RESOURCE, DeskReading, DeskStyleReading, NoticeActionReading,
-    NoticeReading, ORIGIN, PersonReading, RoomReading, SHELL_APP, SHELL_RECORD, ScreenEdges,
-    TimerReading, TrayReading, WindowReading, WindowRect, WorkspaceReading, reach_pad,
-    screen_edges,
+    ARRANGEMENT_RESOURCE, AgentReading, AppReading, ArrangementPlaceReading,
+    ArrangementQueryReading, ArrangementReading, ArrangementRefReading, ArrangementRowReading,
+    ArrangementStripReading, ArrangementWorkspaceReading, Ask, AskReading, CHROME_RESOURCE,
+    DESK_RESOURCE, DeskReading, DeskStyleReading, NoticeActionReading, NoticeReading, ORIGIN,
+    PersonReading, RoomReading, SHELL_APP, SHELL_RECORD, ScreenEdges, TimerReading, TrayReading,
+    WindowReading, WindowRect, WorkspaceReading, reach_pad, screen_edges,
 };
 
 mod host;
@@ -123,6 +123,10 @@ const SHELL_FILES: &[(&str, &str)] = &[
         include_str!("../../../../apps/tl/shell/strips.tl"),
     ),
     (
+        "style_settings.tl",
+        include_str!("../../../../apps/tl/shell/style_settings.tl"),
+    ),
+    (
         "switcher.tl",
         include_str!("../../../../apps/tl/shell/switcher.tl"),
     ),
@@ -160,6 +164,30 @@ fn session_verbs() -> BTreeMap<String, ui::tilo_actions::surface::VerbSurface> {
         tracing::error!(%error, "the session's description does not read");
         BTreeMap::new()
     })
+}
+
+/// The shell package's ids lock, as it ships.
+#[must_use]
+pub const fn shell_ids() -> &'static str {
+    SHELL_IDS
+}
+
+/// Every file of the shell package this build ships, by the name the package knows it by
+/// (`app.tl`, `strips.tl`, …) and its source: the same copy [`compile_shell`] compiles, so
+/// "make it mine" copies exactly the style a person is looking at (`shell.md` §6). Its
+/// scenarios (`scenarios.tl`) are not here: they are fixtures, never part of the package a
+/// session runs.
+#[must_use]
+pub const fn shell_sources() -> &'static [(&'static str, &'static str)] {
+    SHELL_FILES
+}
+
+/// The shell package's own source-locale catalogue (`apps/tl/shell/locales/en-US.ftl`), as it
+/// ships: what a copy of the shell carries so its own words travel with it, as an installed
+/// app's do.
+#[must_use]
+pub const fn shell_catalogue() -> &'static str {
+    include_str!("../../../../apps/tl/shell/locales/en-US.ftl")
 }
 
 /// The desk the session writes its reading into: the `desk` view over the `Desk` root, the
@@ -455,7 +483,10 @@ pub struct SessionOrigin {
     arrangement_rows: BTreeMap<String, Kept<ArrangementRowReading>>,
     arrangement_strips: BTreeMap<String, Kept<ArrangementStripReading>>,
     arrangement_places: BTreeMap<String, Kept<ArrangementPlaceReading>>,
+    arrangement_queries: BTreeMap<String, Kept<ArrangementQueryReading>>,
+    arrangement_refs: BTreeMap<String, Kept<ArrangementRefReading>>,
     tray: BTreeMap<String, Kept<TrayReading>>,
+    apps: BTreeMap<String, Kept<AppReading>>,
     /// The packages of other apps loaded into the shell's runtime, by app id: each the module
     /// the session handed for it.
     loaded: BTreeMap<String, std::sync::Arc<[u8]>>,
@@ -480,7 +511,10 @@ impl SessionOrigin {
             arrangement_rows: BTreeMap::new(),
             arrangement_strips: BTreeMap::new(),
             arrangement_places: BTreeMap::new(),
+            arrangement_queries: BTreeMap::new(),
+            arrangement_refs: BTreeMap::new(),
             tray: BTreeMap::new(),
+            apps: BTreeMap::new(),
         }
     }
 
@@ -632,6 +666,26 @@ impl SessionOrigin {
                         ("key", text(&item.key)),
                         ("title", text(&item.title)),
                         ("menu", Value::Bool(item.menu)),
+                    ]
+                },
+            ));
+        }
+        // The installed applications: what the launcher lists and opens.
+        if let (Ok(ty), Some(collection)) = (kind("application"), field(desk, "apps")) {
+            writes.extend(sync_items(
+                &mut self.apps,
+                &reading.apps,
+                root,
+                &collection,
+                ty,
+                |app| app.key.clone(),
+                |app| {
+                    vec![
+                        ("key", text(&app.key)),
+                        ("name", text(&app.name)),
+                        ("icon", text(&app.icon)),
+                        ("category", text(&app.category)),
+                        ("description", text(&app.description)),
                     ]
                 },
             ));
@@ -857,58 +911,6 @@ fn text(s: &str) -> Value {
     Value::Text(s.to_owned())
 }
 
-/// The fields of an arrangement workspace, as it is written into the shell's record.
-fn workspace_fields(w: &ArrangementWorkspaceReading) -> Vec<(&'static str, Value)> {
-    vec![
-        ("key", text(&w.key)),
-        ("name", text(&w.name)),
-        ("current", Value::Bool(w.current)),
-    ]
-}
-
-/// The fields of a row, as it is written into the shell's record.
-fn row_fields(r: &ArrangementRowReading) -> Vec<(&'static str, Value)> {
-    vec![
-        ("key", text(&r.key)),
-        ("workspace", text(&r.workspace)),
-        ("name", text(&r.name)),
-        ("shell", text(&r.shell)),
-    ]
-}
-
-/// The fields of a strip, as it is written into the shell's record.
-fn strip_fields(s: &ArrangementStripReading) -> Vec<(&'static str, Value)> {
-    vec![
-        ("key", text(&s.key)),
-        ("workspace", text(&s.workspace)),
-        ("row", text(&s.row)),
-        ("width", Value::Int(s.width)),
-        ("maximized", Value::Bool(s.maximized)),
-        ("active", text(&s.active)),
-        ("placed", Value::Bool(s.placed)),
-        ("canvas_x", Value::Int(s.canvas_x)),
-        ("canvas_y", Value::Int(s.canvas_y)),
-        ("canvas_width", Value::Int(s.canvas_width)),
-        ("canvas_height", Value::Int(s.canvas_height)),
-        ("shell", text(&s.shell)),
-    ]
-}
-
-/// The fields of a place, as it is written into the shell's record.
-fn place_fields(p: &ArrangementPlaceReading) -> Vec<(&'static str, Value)> {
-    vec![
-        ("key", text(&p.key)),
-        ("strip", text(&p.strip)),
-        ("shows", text(&p.shows)),
-        ("shown_as", text(&p.shown_as)),
-        ("record", text(&p.record)),
-        ("title", text(&p.title)),
-        ("name", text(&p.name)),
-        ("pinned", Value::Bool(p.pinned)),
-        ("shell", text(&p.shell)),
-    ]
-}
-
 impl SessionOrigin {
     /// Write the person's arrangement into the shell's `Arrangement` root, when the session
     /// published one the origin has not written yet. Whether anything was written.
@@ -987,7 +989,7 @@ impl SessionOrigin {
                 field,
                 item,
                 |w| w.key.clone(),
-                workspace_fields,
+                readings::workspace_fields,
             ));
         }
         if let (Some(field), Some(item)) = (ty.field("rows"), find("arrangement_row")) {
@@ -998,7 +1000,7 @@ impl SessionOrigin {
                 field,
                 item,
                 |r| r.key.clone(),
-                row_fields,
+                readings::row_fields,
             ));
         }
         if let (Some(field), Some(item)) = (ty.field("strips"), find("arrangement_strip")) {
@@ -1009,7 +1011,7 @@ impl SessionOrigin {
                 field,
                 item,
                 |s| s.key.clone(),
-                strip_fields,
+                readings::strip_fields,
             ));
         }
         if let (Some(field), Some(item)) = (ty.field("places"), find("arrangement_place")) {
@@ -1020,7 +1022,37 @@ impl SessionOrigin {
                 field,
                 item,
                 |p| p.key.clone(),
-                place_fields,
+                readings::place_fields,
+            ));
+        }
+        if let (Some(field), Some(item)) = (ty.field("queries"), find("arrangement_query")) {
+            // The refs each query found live in their own collection, keyed by their `key`
+            // (as `<query>/<number>`), so a query's rows are the refs that name it.
+            let query = |q: &ArrangementQueryReading| q.key.clone();
+            writes.extend(sync_items(
+                &mut self.arrangement_queries,
+                &reading.queries,
+                root,
+                field,
+                item,
+                query,
+                readings::query_fields,
+            ));
+        }
+        if let (Some(field), Some(item)) = (ty.field("refs"), find("arrangement_ref")) {
+            let refs: Vec<ArrangementRefReading> = reading
+                .queries
+                .iter()
+                .flat_map(|query| query.matches.iter().cloned())
+                .collect();
+            writes.extend(sync_items(
+                &mut self.arrangement_refs,
+                &refs,
+                root,
+                field,
+                item,
+                |r| r.key.clone(),
+                readings::ref_fields,
             ));
         }
         // The keys of the items the writes insert, in their order: what the origin must find
@@ -1756,12 +1788,15 @@ impl ShellPart {
     /// or while a surface of the desk's is (the overview, the switcher, the launcher, the
     /// notifications, the workspaces, the composer).
     fn follow_cover(&mut self) {
+        // A menu node a view lays out closed is hidden, and a place's frame carries one: counting
+        // it would stand the part over every window for as long as a frame is drawn, so no press
+        // or key would ever reach the window in one.
         let menu = self
             .widgets
             .host_mut()
             .a11y_nodes()
             .iter()
-            .any(|(_, node)| node.role() == ui::accesskit::Role::Menu);
+            .any(|(_, node)| node.role() == ui::accesskit::Role::Menu && !node.is_hidden());
         let surface = !matches!(
             self.origin.borrow().link.surface().as_str(),
             "" | "none" | "desk"
@@ -2348,6 +2383,12 @@ impl crate::Published for ShellPart {
     }
 
     fn press(&mut self, name: &str) -> Result<(), String> {
+        // A press takes the part into its turn, as a press of the pointer does: a named press
+        // (an assistive technology's activation, `tilo-control click`) changes the shell's
+        // record, and the change is drawn by the turn that takes it in. The part wakes for
+        // input alone, so a press that did not say so waited for the next deadline — the
+        // clock — the desk drawing the style the person left until then.
+        self.input = true;
         crate::Published::press(&mut self.widgets, name)
     }
 

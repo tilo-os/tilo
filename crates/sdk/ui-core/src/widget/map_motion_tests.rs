@@ -216,12 +216,12 @@ fn a_place_arriving_in_view_leaves_the_camera_where_the_person_left_it() {
 #[test]
 fn the_camera_glides_to_a_place_arriving_past_the_edge_laying_every_place_out_on_its_way() {
     let start = crate::time::now();
-    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let viewport = Rect::new(0.0, 0.0, 1200.0, 600.0);
     let (old, mut map) = {
         let _frame = crate::motion::pin_frame_at(start);
-        let mut old = map_of(&[("one", 0.0)], viewport);
+        let mut old = map_of(&[("one", 300.0)], viewport);
         draw(&mut old);
-        (old, pins_of(&[("one", 0.0), ("two", 700.0)]))
+        (old, pins_of(&[("one", 300.0), ("two", 1100.0)]))
     };
     // The person opened it: the camera glides there, whoever's input came last.
     crate::motion::note_source(crate::tokens::MotionSource::Pointer);
@@ -250,18 +250,18 @@ fn the_camera_glides_to_a_place_arriving_past_the_edge_laying_every_place_out_on
     assert!(
         along
             .iter()
-            .all(|(one, two)| (two - one - 700.0).abs() < 0.5),
+            .all(|(one, two)| (two - one - 800.0).abs() < 0.5),
         "every place is laid out where the camera has carried it, each frame: {along:?}"
     );
     let (_, last) = *along.last().expect("the camera moved");
     assert!(
-        (last - (800.0 - 200.0 - ARRIVAL_MARGIN)).abs() < 0.5,
+        (last - (1200.0 - 200.0 - ARRIVAL_MARGIN)).abs() < 0.5,
         "it arrives whole in view: {along:?}"
     );
     assert!(
         along
             .iter()
-            .any(|(_, two)| *two < 699.0 && *two > last + 1.0),
+            .any(|(_, two)| *two < 1099.0 && *two > last + 1.0),
         "on its way over the frames between: {along:?}"
     );
     let _frame = crate::motion::pin_frame_at(frame);
@@ -276,7 +276,285 @@ fn the_camera_glides_to_a_place_arriving_past_the_edge_laying_every_place_out_on
             places.get("one").map(|p| p.x),
             places.get("two").map(|p| p.x)
         ),
-        (Some(0.0), Some(700.0)),
+        (Some(300.0), Some(1100.0)),
         "no place on the canvas moved: only the lens did"
     );
+}
+
+/// A map of pins at `(key, x, y)`, not laid out yet: built in place of the one dropped before it.
+fn pins_at(pins: &[(&str, f64, f64)]) -> Map {
+    let mut map = Map::new();
+    for (key, x, y) in pins {
+        map = map.pin(
+            *key,
+            PinPlace {
+                x: *x,
+                y: *y,
+                width: 200.0,
+                height: Some(120.0),
+            },
+            Box::new(crate::widget::Spacer::new()),
+        );
+    }
+    map
+}
+
+#[test]
+fn a_map_is_known_by_the_key_its_view_gave_it_not_by_where_it_stands() {
+    use crate::component::{Described, Event};
+    // Two maps at the same origin are two canvases, and a drag let go over one must never land
+    // on the other. The map's key on the drag bus is the stable one the view named it by, never
+    // a place it happens to stand at: two maps' plates side by side at the same x would share a
+    // key, and one would take the other's drop.
+    let left = Map::from_props(
+        "left",
+        MapProps {
+            drop: Event::None,
+            ..MapProps::default()
+        },
+    );
+    let right = Map::from_props(
+        "right",
+        MapProps {
+            drop: Event::None,
+            ..MapProps::default()
+        },
+    );
+    assert_ne!(
+        left.drop_key(),
+        right.drop_key(),
+        "two maps are told apart by their views' keys"
+    );
+    assert!(
+        left.drop_key().contains("left"),
+        "the left map is known by its own key: {}",
+        left.drop_key()
+    );
+}
+
+#[test]
+fn a_place_that_arrives_off_screen_is_panned_into_view() {
+    // The conversation stands at the origin and the viewport shows it; a place opened beside it
+    // one row down — the row `free_place_next_to` puts below a taken column — arrives outside what
+    // the map shows. The map pans so the person sees what was just placed, and never changes its
+    // zoom: opening a place never resizes the places already there, so the conversation keeps the
+    // size the person was reading it at, even when the pan brings the new place to the front and
+    // the conversation goes partly out of sight (the person pans back to it).
+    let _frame = crate::motion::pin_frame();
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let mut old = map_of(&[("conversation", 0.0)], viewport);
+    draw(&mut old);
+    let before = old.camera();
+    let mut map = pins_at(&[("conversation", 0.0, 0.0), ("answer", 0.0, 544.0)]);
+    drop(old);
+    lay_out_again(&mut map, viewport);
+    let after = map.camera();
+    assert!(
+        after.origin != before.origin,
+        "the camera panned to show the place that arrived: {after:?} against {before:?}"
+    );
+    assert!(
+        (after.zoom - before.zoom).abs() <= f64::EPSILON,
+        "the camera kept its zoom — opening a place never resizes the places there: {after:?} \
+         against {before:?}"
+    );
+    // What arrived stands wholly in view: the person sees what was just placed.
+    let arrived = Rect::from_origin_size(
+        after.to_screen(viewport.origin(), Point::new(0.0, 544.0)),
+        (200.0 * after.zoom, 120.0 * after.zoom),
+    );
+    assert!(
+        arrived.y0 >= viewport.y0 && arrived.y1 <= viewport.y1,
+        "the place that arrived stands in view: {arrived:?} in {viewport:?}"
+    );
+    // And the conversation keeps the size it had: the camera panned, it never zoomed it.
+    let conversation = Rect::from_origin_size(
+        after.to_screen(viewport.origin(), Point::new(0.0, 0.0)),
+        (200.0 * after.zoom, 120.0 * after.zoom),
+    );
+    assert!(
+        (conversation.width() - 200.0 * before.zoom).abs() < 0.5,
+        "the conversation is drawn at the width it was, never shrunk by what arrived: \
+         {conversation:?}"
+    );
+}
+
+/// `map` mounted as a window's whole root, laid out at `viewport`, so its presses and keys go
+/// through the same dispatch a window's do.
+fn mounted(map: Map) -> crate::headless::FrameHarness {
+    let mut harness =
+        crate::headless::FrameHarness::for_root(crate::State::new(), map, (800, 600), theme());
+    harness.relayout();
+    harness
+}
+
+/// A middle drag from `(from_x, from_y)` by `(dx, dy)` in four motions, the press first and the
+/// release last, a frame between — the gesture a person makes with the wheel's button.
+fn middle_drag(
+    harness: &mut crate::headless::FrameHarness,
+    (from_x, from_y): (f64, f64),
+    (dx, dy): (f64, f64),
+) {
+    harness.send(&crate::synthetic_input::cursor_moved(from_x, from_y));
+    harness.send(&crate::synthetic_input::mouse_input(
+        ElementState::Pressed,
+        MouseButton::Middle,
+    ));
+    for step in 1..=4 {
+        let fraction = f64::from(step) / 4.0;
+        harness.send(&crate::synthetic_input::cursor_moved(
+            from_x + dx * fraction,
+            from_y + dy * fraction,
+        ));
+    }
+    harness.send(&crate::synthetic_input::mouse_input(
+        ElementState::Released,
+        MouseButton::Middle,
+    ));
+}
+
+/// A pin's rectangle on the screen as the region laid it out: what the person sees move.
+fn laid(harness: &crate::headless::FrameHarness, key: &str) -> Rect {
+    harness
+        .root::<Map>()
+        .laid
+        .borrow()
+        .get(key)
+        .copied()
+        .unwrap_or_else(|| panic!("the pin {key:?} is laid out"))
+}
+
+#[test]
+fn every_middle_drag_pans_the_pins_the_same_distance() {
+    // The live run's failure: a middle drag over the canvas panned once, and identical drags after
+    // it did nothing. The camera moved each time, but the region that lays the pins out held the
+    // camera it was built with, so the pins never moved again.
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let mut harness = mounted(map_of(&[("one", 100.0)], viewport));
+    let start = laid(&harness, "one");
+    let mut seen = start;
+    for round in 1..=5 {
+        middle_drag(&mut harness, (700.0, 500.0), (-120.0, -90.0));
+        harness.relayout();
+        let now = laid(&harness, "one");
+        assert!(
+            (now.x0 - (seen.x0 - 120.0)).abs() <= 1.0 && (now.y0 - (seen.y0 - 90.0)).abs() <= 1.0,
+            "round {round}: the drag moved the pin (-120, -90) as the first one did: \
+             {seen:?} became {now:?}"
+        );
+        seen = now;
+    }
+}
+
+#[test]
+fn the_arrow_keys_pan_a_canvas_whose_press_put_the_keyboard_in_it() {
+    // The arrows pan the canvas from the keyboard a press gave it: without the press the keys are
+    // some other surface's, and pan nothing.
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let mut harness = mounted(map_of(&[("one", 100.0)], viewport));
+    let before = laid(&harness, "one");
+    harness.send(&crate::synthetic_input::named_key(
+        winit::keyboard::NamedKey::ArrowRight,
+    ));
+    harness.relayout();
+    assert_eq!(
+        laid(&harness, "one"),
+        before,
+        "no press put the keyboard in the canvas: the arrow panned nothing"
+    );
+    middle_drag(&mut harness, (700.0, 500.0), (4.0, 4.0));
+    harness.relayout();
+    assert!(
+        harness.focused().is_some(),
+        "the press put the keyboard in the canvas"
+    );
+    let mut before = laid(&harness, "one");
+    for round in 1..=3 {
+        harness.send(&crate::synthetic_input::named_key(
+            winit::keyboard::NamedKey::ArrowRight,
+        ));
+        harness.relayout();
+        let now = laid(&harness, "one");
+        assert!(
+            now.x0 < before.x0 - 1.0,
+            "round {round}: the right arrow panned the canvas right as the first one did: \
+             {before:?} became {now:?}"
+        );
+        before = now;
+    }
+}
+
+#[test]
+fn ctrl_and_a_wheel_notch_zooms_the_pins() {
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let mut harness = mounted(map_of(&[("one", 100.0)], viewport));
+    let before = laid(&harness, "one");
+    let _ = harness.dispatch_to_root(&crate::synthetic_input::cursor_moved(400.0, 300.0));
+    let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+    // Zooming in a notch at a time: the pin widens with each, so the third is wider than the
+    // first, and the lens stays what the person set — no gesture's zoom is undone by the next.
+    let mut seen = before.width();
+    for round in 1..=3 {
+        let _ =
+            harness.dispatch_to_root_with(&crate::synthetic_input::mouse_wheel(0.0, 1.0), &ctrl);
+        harness.relayout();
+        let now = laid(&harness, "one").width();
+        assert!(
+            now > seen + 1.0,
+            "round {round}: Ctrl and a notch zoomed the canvas in: {seen} became {now}"
+        );
+        seen = now;
+    }
+}
+
+#[test]
+fn places_opened_beside_a_conversation_never_shrink_it() {
+    // The live run's failure: an agent opened Mail beside its conversation and the camera zoomed
+    // everything into the viewport, so the conversation and every place were drawn as a narrow
+    // column. A place that arrives beside another comes into view by the camera panning, never by
+    // zooming, so every place keeps the size it was drawn at however many arrive. Here three
+    // answers arrive one row at a time, down the canvas, as `free_place_next_to` puts them.
+    let _frame = crate::motion::pin_frame();
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let mut map = map_of(&[("conversation", 0.0)], viewport);
+    draw(&mut map);
+    let camera = map.camera();
+    let on_screen = |camera: MapCamera, (x, y): (f64, f64)| {
+        Rect::from_origin_size(
+            camera.to_screen(viewport.origin(), Point::new(x, y)),
+            (200.0 * camera.zoom, 120.0 * camera.zoom),
+        )
+    };
+    let conversation = on_screen(camera, (0.0, 0.0));
+    assert!(
+        conversation.y0 >= viewport.y0 && conversation.y1 <= viewport.y1,
+        "the conversation starts in view: {conversation:?} in {viewport:?}"
+    );
+    // Three answers, each one row below the last of the two columns `free_place_next_to` walks.
+    let mut held: Vec<(String, f64)> = vec![("conversation".to_owned(), 0.0)];
+    for round in 1..=3 {
+        held.push((format!("answer-{round}"), 544.0 * f64::from(round)));
+        let pins: Vec<(&str, f64, f64)> = held
+            .iter()
+            .map(|(key, y)| (key.as_str(), 0.0, *y))
+            .collect();
+        let mut next = pins_at(&pins);
+        drop(map);
+        lay_out_again(&mut next, viewport);
+        draw(&mut next);
+        map = next;
+        let camera = map.camera();
+        // The zoom is the person's: no place arriving zooms it, so every place keeps its size.
+        assert!(
+            (camera.zoom - 1.0).abs() < f64::EPSILON,
+            "round {round}: the camera kept the person's zoom, never shrinking the places: {}",
+            camera.zoom
+        );
+        // What arrived is brought into view by the pan, whole.
+        let arrived = on_screen(camera, (0.0, 544.0 * f64::from(round)));
+        assert!(
+            arrived.y0 >= viewport.y0 && arrived.y1 <= viewport.y1,
+            "round {round}: answer {round} is in view: {arrived:?} in {viewport:?}"
+        );
+    }
 }

@@ -109,6 +109,8 @@ fn start(
             })
             .map_err(|error| error.to_string()),
         "nested" => {
+            // `--scale` is what this compositor draws when the desktop reports no scale of its own;
+            // a Wayland desktop that says its preferred scale draws the window at that instead.
             let config = NestedConfig {
                 size,
                 scale,

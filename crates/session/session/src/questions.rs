@@ -36,8 +36,8 @@ use tilo_portal::wallpaper::WallpaperQuestion;
 use tilo_service::{Answer, Question, Questions, Services};
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerSeat, FileRequest, FileType};
 use tilo_sheets::portal::{
-    Body, Device, Dialog, Field, PortalEffect, PortalSeat, Prompt, PromptField, PromptKind,
-    Remember, Shortcut,
+    Body, Device, Dialog, DraftRow, DraftValue, Field, PortalEffect, PortalSeat, Prompt,
+    PromptField, PromptKind, Remember, Shortcut,
 };
 use tilo_sheets::{Seat as _, word, words};
 
@@ -754,6 +754,7 @@ fn compose(question: &Question) -> Option<Composed> {
         crate::network::AGENT_QUESTION => agent_question(&question.handle, details)?,
         crate::run_questions::KIND => run_question(&question.handle, details)?,
         crate::network::DEVICE_UNLOCK => device_unlock(&question.handle, details)?,
+        crate::turn_questions::KIND => turn_question(&question.handle, details)?,
         _ => return None,
     };
     Some(Composed {
@@ -941,6 +942,94 @@ fn device_unlock(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     );
     dialog.code = Some(asked.approval_code);
     dialog.confirm_label = word("network-device-unlock-allow");
+    Some((dialog, Plan::Confirm))
+}
+
+/// `label` as a person reads it, or empty when it is an internal address
+/// rather than a name: a control path (`i6ll2n4j~…~action-0`), or an app's
+/// own resource id (`tl:app:root-…`, `desktop:tab:7`, `tilo.control:…`). A
+/// step's sheet names what it acts on by the resource's published title
+/// ([`crate::questions`]); a title the broker could not resolve yet is
+/// dropped rather than shown as a path.
+fn readable_label(label: &str) -> String {
+    let label = label.trim();
+    let address = label.contains('~')
+        || label.contains('#')
+        || label.contains("%7E")
+        || label.starts_with("tl:")
+        || label.starts_with("desktop:")
+        || label.starts_with("app.")
+        || label.starts_with("tilo.control:")
+        || label.starts_with("session:")
+        || label.starts_with("chat.");
+    if address {
+        return String::new();
+    }
+    label.to_owned()
+}
+
+/// An agent's step inside a conversation turn, asking the person before it
+/// runs: the draft they review, row by row, and the one confirmation that
+/// answers it (`docs/designs/app-language/shell.md` §1, "Trust stays
+/// system-drawn"). The conversation points at this sheet; it never draws the
+/// question.
+fn turn_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
+    let asked: crate::turn_questions::TurnDetails = serde_json::from_value(details).ok()?;
+    // What the step acts on, as the person reads it: the resource's published
+    // title, never the internal id a control path or a raw address carries.
+    // A label that is still an address is dropped rather than shown: nothing
+    // stands as the sheet's heading, and the step is named by no place.
+    let resource = readable_label(&asked.resource_label);
+    let mut rows = Vec::new();
+    for field in &asked.draft.fields {
+        // A value the sheet shows but does not edit (a list, a resource, a
+        // withheld secret) is one the person confirms as it is.
+        let value = match &field.value {
+            tilo_actions::draft::DraftValue::Text { text }
+            | tilo_actions::draft::DraftValue::Number { text } => DraftValue::Text {
+                text: field.shows.clone().unwrap_or_else(|| text.clone()),
+                multiline: field.multiline,
+                number: matches!(field.value, tilo_actions::draft::DraftValue::Number { .. }),
+                withheld: false,
+            },
+            tilo_actions::draft::DraftValue::Flag { on } => DraftValue::Flag(*on),
+            tilo_actions::draft::DraftValue::List { .. }
+            | tilo_actions::draft::DraftValue::Resource { .. }
+            | tilo_actions::draft::DraftValue::Withheld => DraftValue::Text {
+                text: field.shows.clone().unwrap_or_else(|| field.value.line()),
+                multiline: false,
+                number: false,
+                withheld: matches!(field.value, tilo_actions::draft::DraftValue::Withheld),
+            },
+        };
+        rows.push(DraftRow {
+            index: rows.len(),
+            label: field.label.clone(),
+            value,
+            editable: field.editable,
+        });
+    }
+    let mut dialog = review(
+        handle,
+        words("turn-question-title", &[("action", &asked.action_label)]),
+        resource.clone(),
+        if resource.is_empty() {
+            words(
+                "turn-question-detail-here",
+                &[("action", &asked.action_label)],
+            )
+        } else {
+            words(
+                "turn-question-detail",
+                &[("action", &asked.action_label), ("resource", &resource)],
+            )
+        },
+    );
+    dialog.confirm_label = word("portal-allow-once");
+    dialog.body = Body::Draft {
+        rows,
+        choices: Vec::new(),
+    };
     Some((dialog, Plan::Confirm))
 }
 
@@ -1747,5 +1836,137 @@ mod tests {
         assert!(shown.dialog.detail.contains("abcd:0"));
         assert!(!shown.dialog.detail.contains("network-device"));
         assert!(matches!(shown.plan, Plan::Confirm));
+    }
+
+    /// A step an agent takes inside a conversation asks on the system's
+    /// sheet: the draft the person reviews, row by row, and one confirm that
+    /// answers it (`shell.md` §1, "Trust stays system-drawn"; §8.1).
+    #[test]
+    fn an_agents_step_in_a_conversation_asks_on_the_system_sheet() {
+        let draft = tilo_actions::Draft {
+            action_label: "Retitle".into(),
+            resource_label: "Groceries".into(),
+            fields: vec![tilo_actions::draft::DraftField {
+                path: vec!["title".into()],
+                label: "Title".into(),
+                value: tilo_actions::draft::DraftValue::Text {
+                    text: "Groceries".into(),
+                },
+                editable: true,
+                multiline: false,
+                shows: None,
+                role: None,
+            }],
+            ..tilo_actions::Draft::default()
+        };
+        let shown = sheet(
+            crate::turn_questions::KIND,
+            serde_json::to_value(crate::turn_questions::TurnDetails {
+                resource_label: "Groceries".into(),
+                action_label: "Retitle".into(),
+                draft,
+            })
+            .unwrap(),
+        );
+        // The words are the session's own catalogue's (`turn-question-*`);
+        // a unit test has none loaded, so it reads the key standing for them,
+        // and the data that fills them: what the step acts on, by its name.
+        assert!(
+            shown.dialog.title.contains("turn-question-title")
+                || shown.dialog.title.contains("Retitle"),
+            "{:?}",
+            shown.dialog
+        );
+        assert!(
+            shown.dialog.detail.contains("turn-question-detail")
+                || shown.dialog.detail.contains("Groceries"),
+            "{:?}",
+            shown.dialog
+        );
+        assert_eq!(shown.dialog.heading, "Groceries", "{:?}", shown.dialog);
+        assert!(matches!(shown.plan, Plan::Confirm));
+        let Body::Draft { rows, choices } = &shown.dialog.body else {
+            panic!("the sheet shows the step's draft: {:?}", shown.dialog.body);
+        };
+        assert_eq!(rows.len(), 1, "one row per field: {rows:?}");
+        assert_eq!(rows[0].label, "Title");
+        assert!(rows[0].editable, "the person may change it");
+        assert!(choices.is_empty(), "one confirmation answers it");
+    }
+
+    /// A step whose resource label is a control path rather than a title — an
+    /// editor's "Go to" on a sidebar row, as a live run showed — names what it
+    /// acts on by a person's words, never the hundred-character id: the sheet
+    /// must not print the address of a control.
+    #[test]
+    fn a_control_path_step_names_its_resource_by_title_not_by_its_id() {
+        let draft = tilo_actions::Draft {
+            action_label: "Go to".into(),
+            resource_label: "Inbox".into(),
+            fields: vec![tilo_actions::draft::DraftField {
+                path: vec!["entry".into()],
+                label: "Entry".into(),
+                value: tilo_actions::draft::DraftValue::Text {
+                    text: "is:inbox".into(),
+                },
+                editable: false,
+                multiline: false,
+                shows: None,
+                role: None,
+            }],
+            ..tilo_actions::Draft::default()
+        };
+        let shown = sheet(
+            crate::turn_questions::KIND,
+            serde_json::to_value(crate::turn_questions::TurnDetails {
+                // The title the broker resolved for the control's resource.
+                resource_label: "Inbox".into(),
+                action_label: "Go to".into(),
+                draft: draft.clone(),
+            })
+            .unwrap(),
+        );
+        for text in [
+            &shown.dialog.title,
+            &shown.dialog.detail,
+            &shown.dialog.heading,
+        ] {
+            assert!(
+                !text.contains('~') && !text.contains("i6ll2n4j"),
+                "the sheet shows an internal control path: {text:?}"
+            );
+        }
+        assert_eq!(shown.dialog.heading, "Inbox", "{:?}", shown.dialog);
+
+        // An unresolved label is an address: the sheet drops it and names the
+        // step by what it does, rather than printing a path a person cannot
+        // read.
+        let path = "i6ll2n4j~i6ll2n4j.108~tj4z2obq.513~s7yqm7cb.for0/root-qhf2pyze/if2201f91-35~s7yqm7cb~row0~s7yqm7cb~row0.for0/root-qhf2pyze/if2201f91-35#select";
+        let raw = sheet(
+            crate::turn_questions::KIND,
+            serde_json::to_value(crate::turn_questions::TurnDetails {
+                resource_label: path.into(),
+                action_label: "Go to".into(),
+                draft,
+            })
+            .unwrap(),
+        );
+        for text in [&raw.dialog.title, &raw.dialog.detail, &raw.dialog.heading] {
+            assert!(
+                !text.contains('~') && !text.contains("i6ll2n4j"),
+                "the sheet prints the control's own path: {text:?}"
+            );
+        }
+        assert_eq!(
+            raw.dialog.heading, "",
+            "an address is no heading: {:?}",
+            raw.dialog
+        );
+        assert!(
+            raw.dialog.detail.contains("turn-question-detail-here")
+                || raw.dialog.detail.contains("Go to"),
+            "the step is still named by what it does: {:?}",
+            raw.dialog
+        );
     }
 }

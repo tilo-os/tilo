@@ -147,6 +147,29 @@ impl ChatPart {
                     "a reply answers a top-level message of its channel",
                 ));
             }
+            // A quoted span is a run of the message it answers: it stands inside that
+            // message's text, on its own character boundaries, so pressing the quote reveals
+            // the words it shows.
+            if let Some(quoted) = &posting.quoted
+                && (!quoted.valid()
+                    || usize::try_from(quoted.end)
+                        .ok()
+                        .filter(|&end| end <= parent.text.len())
+                        .and_then(|end| {
+                            let start = usize::try_from(quoted.start).ok()?;
+                            (start < end
+                                && parent.text.is_char_boundary(start)
+                                && parent.text.is_char_boundary(end))
+                            .then_some(())
+                        })
+                        .is_none())
+            {
+                return Err(Refusal::new(
+                    "a quoted span is a run of the message it answers",
+                ));
+            }
+        } else if posting.quoted.is_some() {
+            return Err(Refusal::new("a quote answers a message"));
         }
         self.messages.push(
             id.clone(),
@@ -157,6 +180,7 @@ impl ChatPart {
                 text: posting.text,
                 body: posting.body,
                 parent: posting.parent,
+                quoted: posting.quoted,
                 mentions: posting.mentions,
                 attachments: posting.attachments,
                 appearance: posting.appearance.map(Into::into),
@@ -179,6 +203,10 @@ pub struct NewMessage {
     /// The message it answers in a thread
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<Id>,
+    /// The run of the message it answers that it quotes, when it answers a span rather than the
+    /// whole message: the words as they read, and where they stand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quoted: Option<crate::record::Quote>,
     /// Its paragraphs as written, with their formatting
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<Vec<ClipBlock>>,
@@ -220,6 +248,7 @@ impl ChatPart {
             channel,
             text,
             parent,
+            quoted,
             body,
             attachments,
             mentions,
@@ -240,6 +269,7 @@ impl ChatPart {
                 text,
                 body: body.unwrap_or_default(),
                 parent,
+                quoted,
                 attachments,
                 appearance,
                 mentions: mentions.unwrap_or_default(),
@@ -679,6 +709,11 @@ impl ChatPart {
             .is_some_and(|transition| transition.state == state);
         if !unchanged {
             record.state = Some(Transition { state, since });
+        }
+        // The run's working record of a failure, kept beside the words the
+        // reply shows; a later update without one leaves it as it was.
+        if work.detail.is_some() {
+            record.failure_detail.clone_from(&work.detail);
         }
         for step in trace {
             let id = Id::from_raw(step.id.clone());

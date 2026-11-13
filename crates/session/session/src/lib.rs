@@ -146,7 +146,7 @@ pub mod controllers;
 #[cfg(target_os = "linux")]
 mod controls;
 #[cfg(target_os = "linux")]
-mod conversations;
+pub mod conversations;
 #[cfg(target_os = "linux")]
 mod desk;
 #[cfg(target_os = "linux")]
@@ -364,6 +364,8 @@ mod sockets;
 pub mod startup;
 pub mod status;
 #[cfg(target_os = "linux")]
+pub mod style_packages;
+#[cfg(target_os = "linux")]
 pub mod surfaces;
 pub mod switcher;
 pub mod sync;
@@ -378,8 +380,9 @@ mod task_undo;
 pub mod termination;
 #[cfg(target_os = "linux")]
 pub mod test_control;
-#[cfg(target_os = "linux")]
 mod tools;
+#[cfg(target_os = "linux")]
+pub mod turn_questions;
 #[cfg(target_os = "linux")]
 pub mod unlock;
 #[cfg(target_os = "linux")]

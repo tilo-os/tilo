@@ -650,3 +650,14 @@ d-rygoropv = Rahmenteile
     .w-pinned-standing = Angeheftet, stehend
     .w-unread = Ungelesen
     .w-the-line-above-marks-where-a = Die Linie darüber markiert, wo die ungelesenen Nachrichten einer Leserin beginnen.
+    .w-dragging-one-view-to-another = Eine Ansicht auf eine andere ziehen
+    .w-a-view-a-person-picks-up = Eine Ansicht, die eine Person aufnimmt und im selben Fenster auf ein Ziel zieht, und das Ziel, das aufnimmt, was sie trug.
+    .w-a-drop-target = Ein Ablageziel
+    .w-a-pinned-app-let-go-over = Eine angeheftete App, die über dieser Karte losgelassen wird, wird hier aufgenommen.
+
+d-256inp7w = Abgelegt
+    .doc = Hält fest, was ein Ablageziel aufgenommen hat, in der letzten Antwort des Fensters.
+
+d-256inp7w-last = Zuletzt
+
+d-256inp7w-target = Ziel

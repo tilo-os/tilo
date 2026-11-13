@@ -773,6 +773,17 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
             .collect()
     }
 
+    /// A shown child holding the pointer (a drag it latched, a menu open in it) owns input the
+    /// same way through this arrangement: without the forward, a drag that began in a slot and
+    /// travelled out of it would stop receiving motion and release, and its drop would be lost
+    /// at the edge. The hidden slots hold nothing that can be pressed.
+    fn wants_pointer_capture(&self) -> bool {
+        self.slots
+            .iter()
+            .enumerate()
+            .any(|(index, slot)| !self.layout.hidden(index) && slot.element.wants_pointer_capture())
+    }
+
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         for slot in &self.slots {
             visitor(slot.element.as_ref());

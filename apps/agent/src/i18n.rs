@@ -81,7 +81,7 @@ mod tests {
             "agent-plan-no-action",
             "agent-plan-unmatched-asked",
             "agent-plan-no-model",
-            "agent-done-model",
+            "agent-plan-model-failed",
             "agent-done-words-asked",
             "agent-done-words-no-model",
             "agent-match-nothing",
@@ -110,8 +110,6 @@ mod tests {
             "agent-fail-turns",
             "agent-fail-time",
             "agent-fail-budget",
-            "agent-fail-model-call",
-            "agent-fail-model-answer",
             "agent-fail-turn-not-finished",
             "agent-fail-native-outcome",
             "agent-fail-direction-pages",
@@ -173,5 +171,36 @@ mod tests {
         )));
         assert!(note.chars().count() <= 110, "{note}");
         assert!(!note.contains('\n'), "{note}");
+    }
+
+    const SOURCE_FTL: &str = include_str!("../locales/en-US.ftl");
+    const DE_FTL: &str = include_str!("../locales/de-DE.ftl");
+
+    /// Every message the source catalogue has, the German one has too, so a
+    /// German conversation never mixes languages.
+    #[test]
+    fn the_german_catalogue_covers_every_message() {
+        let english = tilo_copy_lint::catalog::messages(SOURCE_FTL);
+        let german = tilo_copy_lint::catalog::messages(DE_FTL);
+        assert!(!english.is_empty());
+        for id in english.keys() {
+            assert!(german.contains_key(id), "de-DE lacks {id}");
+        }
+        for id in german.keys() {
+            assert!(english.contains_key(id), "en-US lacks {id}");
+        }
+    }
+
+    /// Every message the source catalogue has reads as a sentence a person
+    /// could be shown: it carries nothing only the agent's record needs.
+    #[test]
+    fn no_failure_sentence_carries_the_runs_record() {
+        let messages = tilo_copy_lint::catalog::messages(SOURCE_FTL);
+        assert!(!messages.is_empty());
+        for (id, said) in &messages {
+            assert!(!said.trim().is_empty(), "{id} says nothing");
+            assert!(!said.contains("Retry inference"), "{id}: {said}");
+            assert!(!said.contains("replay completed actions"), "{id}: {said}");
+        }
     }
 }

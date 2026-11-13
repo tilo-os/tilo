@@ -437,6 +437,7 @@ pub(crate) fn message_row(id: &Id, message: &crate::record::Message) -> Message 
             })
             .collect(),
         parent: message.parent.as_ref().map(ToString::to_string),
+        quoted: message.quoted.clone(),
         reactions,
         mentions: message.mentions.clone(),
         attachments: message.attachments.clone(),
@@ -483,6 +484,7 @@ fn work_row(work: &crate::record::Work) -> Option<AgentWork> {
                 |outcome| crate::model::AgentWorkState::ProviderFinished { outcome },
             ),
         since: transition.since,
+        failure_detail: work.failure_detail.clone(),
         trace,
     })
 }

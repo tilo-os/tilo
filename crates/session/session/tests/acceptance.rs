@@ -178,7 +178,7 @@ fn step_3_the_repl_switches_the_layout_and_the_screen_changes() {
     // The strips, through the shell's preset.
     let (answer, failed) = repl.run(
         &mut session,
-        "shell.show_style(shell.viewing, shown: \"so.tilo.shell:strips\")",
+        "shell.show_style(shell.viewing, style: \"so.tilo.shell:strips\")",
     );
     assert!(!failed, "the REPL switches the preset: {answer}");
     until(&mut session, "the strips", |session| {
@@ -189,7 +189,7 @@ fn step_3_the_repl_switches_the_layout_and_the_screen_changes() {
     // The traditional desktop: no preset switch at all, its own top bar instead.
     let (answer, failed) = repl.run(
         &mut session,
-        "shell.show_style(shell.viewing, shown: \"so.tilo.shell:desktop\")",
+        "shell.show_style(shell.viewing, style: \"so.tilo.shell:desktop\")",
     );
     assert!(!failed, "the REPL switches to the desktop: {answer}");
     until(&mut session, "the traditional desktop", |session| {
@@ -354,7 +354,7 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
     // The traditional desktop, through the shell's own record.
     let (answer, failed) = repl.run(
         &mut session,
-        "shell.apply(shell.shell, to: shell.Layout.windows_desktop)",
+        "shell.apply(shell.shell, layout: shell.Layout.windows_desktop)",
     );
     assert!(!failed, "the desk is the traditional one: {answer}");
     until(&mut session, "the traditional desktop", |session| {

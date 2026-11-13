@@ -88,8 +88,11 @@ d-5kokd6gv = Windows
 d-pdaqdidq = Tray
     .doc = The running applications' tray items, in the order they registered.
 
+d-s7dh3s7h = Apps
+    .doc = The applications installed on this device: what the launcher lists and opens.
+
 d-n2fzxj5u = Styles
-    .doc = The desk styles the installed apps offer: each a view of the arrangement, listed by its own words.
+    .doc = The desk styles every installed package offers, as the session publishes them: each a view of the arrangement (`shell.md` §6), listed by its own words.
 
 d-4jk2lkpt-filter-switcher_revealed = Switcher revealed
 
@@ -138,6 +141,28 @@ d-eihyiyeb = Reason
     .doc = Why the style does not load, in the words it failed with, when it does not; empty when it does.
 
 d-zxwtaxaw-filter-loads = Loads
+
+d-dkwmlyh7 = App
+    .doc = An application installed on this device, as the launcher lists it: its package id, its name in the person's language, the glyph it shows, and how it opens.
+    .noun = { $count ->
+        [one] app
+       *[other] apps
+    }
+
+d-wabxc4xe = Key
+    .doc = Its package id, which `open_app` names it by.
+
+d-dhizmikp = Name
+    .doc = Its name in the person's interface language.
+
+d-bkmyu6to = Icon
+    .doc = The glyph it shows, by the platform icon's kebab-case name.
+
+d-fxhx35ly = Category
+    .doc = Its category (`work`, `media`, `play`, `system`), empty when it named none.
+
+d-vebrnbn2 = Description
+    .doc = What it is for, in a few words; empty when it offers none.
 
 d-bynckgvt = Workspace
     .doc = A workspace on this device.
@@ -351,6 +376,55 @@ d-x2vx3spj = Strips
 d-id3ec54i = Places
     .doc = Every place, each naming the strip it is in, so the views need not walk the tree.
 
+d-if7lamna = Queries
+    .doc = The queries the canvas stands while an app answers them, by the place that shows each: what the person typed, what it found, or why nothing did (shell.md §8).
+
+d-bkx6ffql = Refs
+    .doc = The resources those queries found, each naming the query it is of.
+
+d-7ync2hvz = Arrangement query
+    .doc = A query a place shows while its app answers it: what the person typed, in which app, and what came of it.
+    .noun = { $count ->
+        [one] arrangement query
+       *[other] arrangement queries
+    }
+
+d-l6u2kjnd = Key
+    .doc = Its id: the place showing it.
+
+d-fs44wwaw = Text
+    .doc = What the person typed.
+
+d-tilkofni = In app
+    .doc = The app asked, by its canonical id.
+
+d-hpdpdjlh = Kind
+    .doc = The kind of resource the query names, as its app publishes it (`tube.channel`).
+
+d-34fpixhk = State
+    .doc = How the search stands: `searching`, `one`, `several`, `none` or `failed`.
+
+d-wz5iufcx = Reason
+    .doc = Why it failed, in the app's own words; empty while it does better.
+
+d-m3of3jpo = Arrangement ref
+    .doc = A resource a query found: its address, the name it goes by, and its kind — the same three words a place's record is named by.
+    .noun = { $count ->
+        [one] arrangement ref
+       *[other] arrangement refs
+    }
+
+d-c4hrnixt = Key
+
+d-7bz4aejw = Query
+    .doc = The query it is of, by its key.
+
+d-m6dvgoo5 = Address
+
+d-e6vecsii = Title
+
+d-xhyuztvt = Kind
+
 d-wydxt4zu = Arrangement workspace
     .doc = A workspace the person's desk shows.
     .noun = { $count ->
@@ -539,6 +613,15 @@ d-h5oo7js2 = Dock launcher
 d-5n4s55tz = Dock zoom
     .doc = A click on the dock's icons magnifies the item under the pointer, as macOS's Dock does.
 
+d-4zknrelh = Settings open
+    .doc = Whether the chosen style's own settings stand over the desk (`style_settings`), opened from the bar's style menu: the one place a person changes the style they show without an agent, as `shell.md` §6's "Two ways to change a desk" says.
+
+d-dwct4abs = Strips tabs
+    .doc = Strips: whether a strip of several places shows its tab bar.
+
+d-gfmzi3qr = Frames snap
+    .doc = Frames: whether a place let go on the canvas lands on the style's grid, so frames line up as they are placed.
+
 d-cejnvssb-filter-preset = Preset
 
 d-cejnvssb-filter-based_on = Based on
@@ -574,6 +657,12 @@ d-cejnvssb-filter-dock_running = Dock running
 d-cejnvssb-filter-dock_launcher = Dock launcher
 
 d-cejnvssb-filter-dock_zoom = Dock zoom
+
+d-cejnvssb-filter-settings_open = Settings open
+
+d-cejnvssb-filter-strips_tabs = Strips tabs
+
+d-cejnvssb-filter-frames_snap = Frames snap
 
 d-sfhd6wko = Bar part
     .doc = One part of the top bar, in the person's order.
@@ -789,6 +878,13 @@ d-dkylvhw4 = In front
 
 d-dkylvhw4-strip = Strip
 
+d-nljxfsom = Move it here
+    .doc = Puts a resource dropped on the canvas where it was let go.
+
+d-nljxfsom-target = Target
+
+d-nljxfsom-at = At
+
 d-zoqbhs7o = Seed
     .doc = A shell that has never been arranged: the bar's parts and the dock's, in the order the default shell shows them.
 
@@ -942,6 +1038,11 @@ d-aitkuflo-desk = Desk
 
 d-aitkuflo-key = App
 
+d-5giytccr = Open first
+    .doc = Enter's work on a query: the first app the text finds opens, so typing "no" and pressing Enter opens Notes; a query that names no app is what search everywhere answers, as Enter has always done for what the desk's own rows do not hold.
+
+d-5giytccr-query = Query
+
 d-vjnksgzm = Seed waiting
     .doc = Two notices a sender left and the person has not seen: what the shell stages on a desk it shows before the person has caught up, so the bar's bell has something to count.
 
@@ -978,12 +1079,70 @@ d-tnecawb6-index = Index
 
 d-tnecawb6-title = Title
 
+d-u6kdedav = Query show
+    .doc = Show `found` in the place `place` while it shows a query: the same place, now the found resource (shell.md §8).
+
+d-u6kdedav-place = Place
+
+d-u6kdedav-found = Found
+
+d-4vtnv5px = Query retry
+    .doc = Look for what the place `place`'s search names again.
+
+d-4vtnv5px-place = Place
+
+d-mtt6d3af = Tab it here
+    .doc = Tab the place whose window's bar was dragged onto the strip `s` into that strip — how a person drags one window's bar onto another's to make its tabs, and the same arranging action the window's menu's "Move into … as a tab" runs.
+
+d-mtt6d3af-v = V
+
+d-mtt6d3af-s = S
+
+d-mtt6d3af-target = Target
+
+d-n2ez6yop = Rearrange
+    .doc = Rank the place `place` at `at` among its strip's tabs: what dragging a pill within the window's bar does, as the desk's own `move` with the place it goes before.
+
+d-n2ez6yop-s = S
+
+d-n2ez6yop-place = Place
+
+d-n2ez6yop-at = At
+
+d-d64rg4sw = Its own window
+    .doc = Give the place `place` a window of its own: what dragging a tab out of its window's bar does, as the desk's own `split-right` for the window in front.
+
+d-d64rg4sw-s = S
+
+d-d64rg4sw-place = Place
+
 d-b3rfswle = Show place
     .doc = Shows the place `place` and brings its strip forward with it: what choosing a tab does, and the same arranging action a script or an agent runs.
 
 d-b3rfswle-strip = Strip
 
 d-b3rfswle-place = Place
+
+d-jipcl6u3 = Desk style settings
+    .doc = The desk style's own settings, and the two ways of changing a desk (`docs/designs/app-language/ shell.md` §6): without an agent, in the one place a person's settings live, and with an agent, by the same actions the person's controls run.
+
+d-wxxxvca4 = Close
+    .doc = Closes them.
+
+d-33wxlq7h = Desk style settings
+    .doc = Shows or hides their being open: one control for both, so a person sees the state where they press it.
+
+d-33wxlq7h-on = On
+
+d-zitymayc = Strip tabs
+    .doc = Whether the strip of several places shows its tab bar: the strips style's own setting.
+
+d-zitymayc-on = On
+
+d-lfa3rl6s = Snap places to a grid
+    .doc = Whether a place let go on the framed canvas lands on the grid: the frames style's own setting.
+
+d-lfa3rl6s-on = On
 
 d-i6ll2n4j = Desk view
 
@@ -1085,12 +1244,16 @@ d-lwt7iwsj = Dock tile
 
 d-dpqvjh2f = Launcher
     .w-search-apps-windows-actions-and-files = Search apps, windows, actions and files
+    .w-apps = Apps
+    .w-all-apps = All apps
     .w-windows = Windows
     .w-recent-windows = Recent windows
     .w-nothing-here-matches = Nothing here matches
     .w-search-everywhere-for-it = Search everywhere for it
     .w-open-as-a-tab = Open as a tab
     .w-search-everywhere-for = Search everywhere for { $query }
+
+d-7womqcp3 = App row
 
 d-tst43bqy = Window row
 
@@ -1256,6 +1419,7 @@ d-xzb2gybw = Style switch
 
 d-kssxjs7v = Style menu
     .w-showing = Showing { $style_title }
+    .w-settings-for = Settings for { $style_title }
 
 d-qrahog47 = Strips view
     .w-no-window-here-yet = No window here yet
@@ -1271,6 +1435,7 @@ d-2fofsa7f = Strip window
     .w-nothing-here = Nothing here
 
 d-p5wzoqr5 = Window controls
+    .w-this-window = This window
     .w-narrow = Narrow
     .w-normal = Normal
     .w-wide = Wide
@@ -1281,6 +1446,9 @@ d-p5wzoqr5 = Window controls
     .w-maximize = Maximize
     .w-close = Close
 
+d-6bfcv6wf = Window actions
+    .w-window-actions = Window actions
+
 d-z4vc77e6 = Place controls
     .w-pin-place = Pin place
     .w-move-to-row = Move to row
@@ -1289,6 +1457,30 @@ d-z4vc77e6 = Place controls
 d-oyjbbzbk = Place content
 
 d-43am22do = Place view
+
+d-6t5hb2z7 = Query view
+    .w-retry = Retry
+    .w-nothing-matched = Nothing matched { $text }
+
+d-pjkvdmwk = Show style settings~present
+
+d-vseev2rl = Style panel
+    .w-settings-for = Settings for { $style_title }
+    .w-close = Close
+    .w-comes-from-and-its-settings-are = { $style_label } comes from { $package }, and its settings are its package's own.
+
+d-g476xvac = Desktop style settings
+    .w-show-the-top-bar = Show the top bar
+    .w-show-the-dock = Show the dock
+
+d-e3tczbcu = Strips style settings
+    .w-show-the-tabs-of-a-strip = Show the tabs of a strip
+
+d-mnbjennf = Frames style settings
+    .w-snap-places-to-a-grid = Snap places to a grid
+
+d-xwhxaimf = Spaces style settings
+    .w-spaces-shows-each-place-as-its = Spaces shows each place as its own view and has nothing to set.
 
 d-fziuz57n = Switcher
     .w-of = { $at } of { $count }

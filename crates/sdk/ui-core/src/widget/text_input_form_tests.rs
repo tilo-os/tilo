@@ -680,3 +680,172 @@ fn a_field_with_a_change_and_a_submit_publishes_one_resource_with_both() {
     );
     assert_eq!(submitted.borrow().as_slice(), ["42"]);
 }
+
+/// A bound entry lets go of what it sent: pressing Enter on a field with `entry: true` (a
+/// `ui.TextInput(entry: true, bind: draft)`, Chat's composer) submits the words and then reports
+/// the emptied field as its latest edit, so the state it is bound to is emptied too. Without it
+/// the shell pushed the sent draft back into the field on its next reading, and the person's
+/// next words were typed into the message already sent — the live composer's ghost copies.
+#[test]
+fn an_entry_reports_its_emptied_state_after_it_submits() {
+    let _settled = crate::motion::testing::settled();
+    let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let submitted = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let (change_sink, submit_sink) = (changes.clone(), submitted.clone());
+    let mut ti = TextInput::local()
+        .with_id("composer")
+        .with_entry(true)
+        .on_change_view(move |value| change_sink.borrow_mut().push(value.to_owned()))
+        .on_submit_view(move |text| submit_sink.borrow_mut().push(text.to_owned()));
+    ti.insert_at_cursor("hello");
+    assert_eq!(
+        crate::testing::answer_controls(&mut ti),
+        1,
+        "the typed words reach the change verb"
+    );
+    assert_eq!(changes.borrow().as_slice(), ["hello"]);
+    ti.set_focus(true);
+    let mut doc = AutoCommit::new();
+    assert!(drive(
+        &mut ti,
+        &mut doc,
+        &named_key(NamedKey::Enter),
+        mods(false, false)
+    ));
+    // The submit carries the words as they were, and the field let go of them.
+    assert_eq!(ti.value(), "", "the entry emptied itself");
+    assert_eq!(
+        crate::testing::answer_controls(&mut ti),
+        2,
+        "the submit and the clearing are both reported"
+    );
+    assert_eq!(submitted.borrow().as_slice(), ["hello"]);
+    assert_eq!(
+        changes.borrow().as_slice(),
+        ["hello", ""],
+        "the emptied field is reported after the submit, so the bound draft is emptied too"
+    );
+}
+
+/// A submit is answered with the words it caught, never with what the field shows when the answer
+/// runs: the shell collects a press and answers it a step later, and an entry has let go of its
+/// words by then. Reading the field back at the answer would send an empty message — the words
+/// the person typed are lost between the press and the door.
+///
+/// Marked by `insert_at_cursor`, whose rows before the fix never reached the change verb and the
+/// submit's answer read an emptied field: this test fails on both counts without the fix.
+#[test]
+fn a_submit_is_answered_with_the_words_it_caught_even_after_an_entry_emptied_itself() {
+    let _settled = crate::motion::testing::settled();
+    let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let answered = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let (change_sink, answer_sink) = (changes.clone(), answered.clone());
+    let mut ti = TextInput::local()
+        .with_id("composer")
+        .with_entry(true)
+        .on_change_view(move |value| change_sink.borrow_mut().push(value.to_owned()))
+        .on_submit_view(move |text| answer_sink.borrow_mut().push(text.to_owned()));
+    // What the person types, as a host splices a chosen key's text: reported once, as a
+    // keystroke's edit is.
+    ti.insert_at_cursor("ship it");
+    assert_eq!(
+        crate::testing::answer_controls(&mut ti),
+        1,
+        "the typed words reach the change verb"
+    );
+    assert_eq!(
+        changes.borrow().as_slice(),
+        ["ship it"],
+        "the typed words are reported as they land"
+    );
+    ti.set_focus(true);
+    let mut doc = AutoCommit::new();
+    assert!(drive(
+        &mut ti,
+        &mut doc,
+        &named_key(NamedKey::Enter),
+        mods(false, false)
+    ));
+    // The press has not been answered yet, and the entry has already let go of its words.
+    assert_eq!(ti.value(), "");
+    assert_eq!(
+        answered.borrow().as_slice(),
+        [] as [String; 0],
+        "a press is answered when the host collects it, not at the press"
+    );
+    // The host answers what it collected: the submit still carries the words.
+    assert_eq!(
+        crate::testing::answer_controls(&mut ti),
+        2,
+        "the submit and the clearing are both answered"
+    );
+    assert_eq!(
+        answered.borrow().as_slice(),
+        ["ship it"],
+        "the submit is answered with the words it caught, not the emptied field"
+    );
+}
+
+/// An entry that sent its words keeps the keyboard and takes the very next typing: one message
+/// after another is typed and sent through the one field, as a person does in Chat's composer.
+/// `ui.TextInput(entry: true, bind: draft)` is that field: Enter submits what it holds and the
+/// field clears itself, and what is typed next must land in it as a new draft rather than be
+/// lost or drawn over the sent words.
+#[test]
+fn an_entry_that_submitted_takes_the_next_typing_at_once() {
+    let _settled = crate::motion::testing::settled();
+    let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let submitted = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let (change_sink, submit_sink) = (changes.clone(), submitted.clone());
+    let mut ti = TextInput::local()
+        .with_id("composer")
+        .with_entry(true)
+        .on_change_view(move |value| change_sink.borrow_mut().push(value.to_owned()))
+        .on_submit_view(move |text| submit_sink.borrow_mut().push(text.to_owned()));
+    ti.set_focus(true);
+    let mut doc = AutoCommit::new();
+    for word in ["first", "second"] {
+        for ch in word.chars() {
+            assert!(
+                drive(
+                    &mut ti,
+                    &mut doc,
+                    &char_key(&ch.to_string()),
+                    mods(false, false)
+                ),
+                "the entry took {ch:?} with the keyboard in it"
+            );
+            let _ = crate::testing::answer_controls(&mut ti);
+        }
+        assert_eq!(ti.value(), word, "the field draws what was typed");
+        assert!(drive(
+            &mut ti,
+            &mut doc,
+            &named_key(NamedKey::Enter),
+            mods(false, false)
+        ));
+        let _ = crate::testing::answer_controls(&mut ti);
+        assert_eq!(ti.value(), "", "the entry let go of what it sent");
+        assert!(
+            Widget::is_focused(&ti),
+            "the entry keeps the keyboard after submitting"
+        );
+    }
+    assert_eq!(
+        submitted.borrow().as_slice(),
+        ["first", "second"],
+        "each send carried the words it held, and the next words are a new message"
+    );
+    assert_eq!(
+        changes.borrow().last().map(String::as_str),
+        Some(""),
+        "the field's latest report is the empty field, which empties the draft it binds: {:?}",
+        changes.borrow()
+    );
+    assert!(
+        changes.borrow().iter().any(|text| text == "first")
+            && changes.borrow().iter().any(|text| text == "second"),
+        "each word reached the draft it binds as it was typed: {:?}",
+        changes.borrow()
+    );
+}

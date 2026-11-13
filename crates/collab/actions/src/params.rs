@@ -426,6 +426,28 @@ impl ActionParam {
         Pick::TAGGED.into_iter().find(|pick| pick.tag() == tag)
     }
 
+    /// Say how each of `labels` reads to a person, without restricting the
+    /// parameter to them ([`CHOICE_LABELS_ANNOTATION`] alone): a draft shows
+    /// the label a value reads as, while binding still takes any value the
+    /// action's own type allows (a nested field path, a word nothing lists).
+    #[must_use]
+    pub fn labelling_choices<V: Into<Str>, L: Into<String>>(
+        self,
+        labels: impl IntoIterator<Item = (V, L)>,
+    ) -> Self {
+        let mut by_value = serde_json::Map::new();
+        for (value, label) in labels {
+            by_value.insert(
+                value.into().to_string(),
+                serde_json::Value::String(label.into()),
+            );
+        }
+        self.annotate(
+            CHOICE_LABELS_ANNOTATION,
+            serde_json::Value::Object(by_value),
+        )
+    }
+
     /// How `choice` reads to a person ([`Self::with_labelled_choices`]).
     #[must_use]
     pub fn choice_label(&self, choice: &str) -> Option<&str> {

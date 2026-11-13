@@ -2068,6 +2068,7 @@ impl PlanModel for ScriptModel {
                 catalogue,
                 most_steps,
                 sees,
+                output_tokens: None,
                 timeout: tilo_test_env::hang_bound(),
             },
             read,
@@ -2438,7 +2439,7 @@ fn a_refusal_ends_the_plan_saying_so_and_is_logged() {
 
 /// A plan beside other calls in one turn runs none of them: each is told
 /// the plan comes alone, and the plan the model then sends alone is taken.
-/// A turn cut short is asked again once.
+/// A turn cut off at the output limit is continued from where it stopped.
 #[test]
 fn a_mixed_or_cut_short_turn_is_asked_again() {
     let offer = open_notes().offers[0].id();
@@ -2454,7 +2455,7 @@ fn a_mixed_or_cut_short_turn_is_asked_again() {
         turns: Script {
             answers: vec![
                 Ok(mixed),
-                Ok(said("", StopReason::OutputLimit)),
+                Ok(said("Plan so far: ope", StopReason::OutputLimit)),
                 Ok(called("p1", tilo_agent::tools::PLAN, &plan)),
             ]
             .into(),
@@ -2475,9 +2476,22 @@ fn a_mixed_or_cut_short_turn_is_asked_again() {
         told.iter()
             .all(|text| text.starts_with("Not run: `plan` must be the only call"))
     );
+    // The cut-off turn is continued from where it stopped, with what it
+    // wrote and the instruction to go on, never asked again as it was.
+    let count = requests[2].messages.len();
     assert_eq!(
-        requests[1], requests[2],
-        "the cut-short turn is asked again as it was"
+        requests[1].messages.len() + 2,
+        count,
+        "the cut-off answer and the instruction are added"
+    );
+    assert_eq!(
+        text_of(&requests[2].messages[count - 2]),
+        "Plan so far: ope",
+        "what the model wrote before it stopped is carried"
+    );
+    assert!(
+        text_of(&requests[2].messages[count - 1]).contains("cut off at the model's output limit"),
+        "and it is told to go on from there"
     );
 }
 
@@ -2616,6 +2630,7 @@ fn lossy_plan(
             catalogue: &open_notes(),
             most_steps: MOST_STEPS,
             sees: false,
+            output_tokens: None,
             timeout: tilo_test_env::hang_bound(),
         },
         &mut NoPlanReads,

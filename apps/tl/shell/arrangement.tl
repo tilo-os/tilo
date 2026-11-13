@@ -19,6 +19,40 @@ type Arrangement (origin: session.arrangement) {
     strips: Collection<ArrangementStrip>
     /// Every place, each naming the strip it is in, so the views need not walk the tree.
     places: Collection<ArrangementPlace>
+    /// The queries the canvas stands while an app answers them, by the place that shows each:
+    /// what the person typed, what it found, or why nothing did (shell.md §8).
+    queries: Collection<ArrangementQuery>
+    /// The resources those queries found, each naming the query it is of.
+    refs: Collection<ArrangementRef>
+}
+
+/// A query a place shows while its app answers it: what the person typed, in which app, and what
+/// came of it. Its place is the one whose key this is (`ArrangementPlace.key`), and a press on a
+/// row shows that match in the same place.
+type ArrangementQuery (origin: session.arrangement_query) {
+    /// Its id: the place showing it.
+    key: Text merge register
+    /// What the person typed.
+    text: Text merge register
+    /// The app asked, by its canonical id.
+    in_app: Text merge register
+    /// The kind of resource the query names, as its app publishes it (`tube.channel`).
+    kind: Text merge register
+    /// How the search stands: `searching`, `one`, `several`, `none` or `failed`.
+    state: Text merge register
+    /// Why it failed, in the app's own words; empty while it does better.
+    reason: Text merge register
+}
+
+/// A resource a query found: its address, the name it goes by, and its kind — the same three
+/// words a place's record is named by.
+type ArrangementRef (origin: session.arrangement_ref) {
+    key: Text merge register
+    /// The query it is of, by its key.
+    query: Text merge register
+    address: Text merge register
+    title: Text merge register
+    kind: Text merge register
 }
 
 /// A workspace the person's desk shows.

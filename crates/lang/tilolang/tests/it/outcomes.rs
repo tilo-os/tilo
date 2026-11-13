@@ -331,6 +331,7 @@ fn published() -> tilolang::PackageMeta {
             group: None,
             guard: false,
             invokes: false,
+            outside: Vec::new(),
         }],
         ..tilolang::PackageMeta::default()
     }

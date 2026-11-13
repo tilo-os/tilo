@@ -261,8 +261,12 @@ pub fn window_has_shown() -> bool {
 }
 
 /// While the guard lives, the window being laid out has (`shown`) or has
-/// not shown a frame before ([`window_has_shown`]).
-pub(crate) fn laying_out_window(shown: bool) -> LayingOutWindow {
+/// not shown a frame before ([`window_has_shown`]). A host that builds a
+/// window's widgets outside its layout (a reconciler composing a view's tree
+/// into the widgets it was built into) holds it too, so what it builds into a
+/// window already shown comes in.
+#[must_use = "the answer holds only while the guard lives"]
+pub fn laying_out_window(shown: bool) -> LayingOutWindow {
     LayingOutWindow(WINDOW_SHOWN.with(|cell| cell.replace(shown)))
 }
 
@@ -283,7 +287,7 @@ impl Drop for ClosingWindow {
 }
 
 /// Restores what [`laying_out_window`] replaced.
-pub(crate) struct LayingOutWindow(bool);
+pub struct LayingOutWindow(bool);
 
 impl Drop for LayingOutWindow {
     fn drop(&mut self) {

@@ -767,6 +767,121 @@ impl SessionSearch {
         *self.pending.borrow_mut() = kept;
     }
 
+    /// The app and the resource kind `needle` names, when it names a type of an app whose origin
+    /// the query could ask for what it says (`outside:<origin>.search`, shell.md §8, search.md
+    /// §7): the words of the query that are a type's noun or plural, or its app's name, choose the
+    /// type, exactly as the one search ranks by what a resource is. `None` when no word of the
+    /// query names a type, or the type's app holds no origin the platform can ask.
+    ///
+    /// The app is named by the id its resources publish under (`so.tilo.lang.tube`), and the kind
+    /// as its app publishes it (`tube.channel`): the origin's own search action is the one that
+    /// asks the service for it, and an answer of that kind is what a place becomes.
+    #[must_use]
+    pub(crate) fn origin_search(&self, needle: &str) -> Option<(String, String, String)> {
+        let needle = ui::search::system::without_filler(needle.trim());
+        if needle.trim().is_empty() {
+            return None;
+        }
+        // The session's own published actions, from its door: the apps' and the seeded records'
+        // alike, which is where an app's search action and its types are (the palette's `own`).
+        let own = self.own.borrow();
+        let types = self.own_types.borrow();
+        // The app each of the session's resources belongs to, by its id in the app's own address
+        // (`tl:so.tilo.lang.tube:…` → `so.tilo.lang.tube`).
+        let app_of = |resource: &str| {
+            resource
+                .strip_prefix("tl:")
+                .and_then(|rest| rest.split_once(':'))
+                .map(|(app, _)| app.to_owned())
+        };
+        // The nouns of every type each app publishes, by app: a word naming one is about that
+        // app's things, so "youtube videos of <name>" is its `Channel` and not its `Video`.
+        let mut kin: std::collections::BTreeMap<String, Vec<&tilo_actions::Noun>> =
+            std::collections::BTreeMap::new();
+        for (resource, named) in types.iter() {
+            let Some(app) = app_of(resource) else {
+                continue;
+            };
+            let nouns = kin.entry(app).or_default();
+            if !nouns.contains(&&named.noun) {
+                nouns.push(&named.noun);
+            }
+        }
+        // The apps that ask an outside origin for a query (`outside:<origin>.search`).
+        let searchers: std::collections::BTreeSet<String> = own
+            .iter()
+            .filter(|action| {
+                action
+                    .contract
+                    .outside_capabilities()
+                    .any(|capability| capability.ends_with(".search"))
+            })
+            .filter_map(|action| app_of(action.address.resource.as_str()))
+            .collect();
+        let mut found: Vec<(usize, (String, String, String, bool))> = Vec::new();
+        for (resource, named) in types.iter() {
+            if named.root {
+                // A root names the app rather than a type of its own.
+                continue;
+            }
+            let Some(app) = app_of(resource) else {
+                continue;
+            };
+            if !searchers.contains(&app) {
+                continue;
+            }
+            // The kind the type's resources publish under (`tl.<app>.<Type>`): what a query
+            // names, and what an answer of that kind becomes a place of.
+            // Where the type is first published among the app's actions: the order its package
+            // declares its types in, which the tie between types a query names alike falls back
+            // on, so the same words name the same type on every run.
+            let Some((order, kind)) = own
+                .iter()
+                .position(|action| action.address.resource.as_str() == resource.as_str())
+                .map(|at| (at, own[at].resource_kind.clone()))
+            else {
+                continue;
+            };
+            // Does any word of the query name this type? The same rule the ranking uses: a noun
+            // or plural of it, or the app's name, with the rest sent to the app.
+            let keywords = tilo_desktop_search::availability::keywords_for(&app);
+            let rest = ui::search::system::type_words_rest(
+                &needle,
+                named,
+                kin.get(&app)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|noun| **noun != named.noun),
+                keywords,
+            );
+            // Whether the query names it by its own noun ("videos") or only through its app or a
+            // kindred type's noun ("youtube videos of <channel>"): the type the person means is
+            // the one the other words name, not the one whose noun they typed to narrow it.
+            let by_own_noun = ui::search::system::named_by_own_noun(&needle, named);
+            if let Some(rest) = rest {
+                found.push((order, (app.clone(), kind, rest, by_own_noun)));
+            }
+        }
+        // One app and one kind. A type named only through its app or a kindred type ("of <channel>"
+        // after "videos") is the one the query means over one named by its own noun ("videos").
+        found.sort_by_key(|(order, _)| *order);
+        let found: Vec<(String, String, String, bool)> =
+            found.into_iter().map(|(_, named)| named).collect();
+        let narrowed: Vec<&(String, String, String, bool)> =
+            found.iter().filter(|(.., by_noun)| !by_noun).collect();
+        let candidates: Vec<&(String, String, String, bool)> = if narrowed.is_empty() {
+            found.iter().collect()
+        } else {
+            narrowed
+        };
+        let (app, kind, rest, _) = candidates.first()?.clone();
+        if candidates.iter().any(|(other, ..)| *other != *app) {
+            return None;
+        }
+        Some((app.clone(), kind.clone(), rest.clone()))
+    }
+
     /// A window was at `place` .
     pub fn record_place(&self, place: Place) {
         let mut places = self.places.borrow_mut();

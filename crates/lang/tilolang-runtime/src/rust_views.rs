@@ -127,11 +127,34 @@ pub const EVERY_APP: &str = "";
 
 /// The app a resource of type `ty` (`tube.Channel`, or a foreign reading's `tube#Channel`) is
 /// drawn by, from the registries the runtime was told: the app whose name `ty` starts with, else
-/// the one registry that answers for every app.
+/// the one registry that answers for every app — when it draws that type at all.
+///
+/// A registry that answers for every app ([`EVERY_APP`]) is registered under a key every type
+/// reaches, a tilolang package's included (`so.tilo.lang.notes#Note`, or the bare id a `meta(T)`
+/// names a type by, `mavvhka7`). Asked without checking what it draws, it answered for every
+/// type there is: a placed Notes root drew its notebook as "All Mavvhka7" and every row as
+/// "Note", the type's id and name, where the notes app's own title and `(untitled:)` words
+/// belong. So a type no registry declares a view of is no Rust app's type.
 pub(crate) fn app_of(shared: &Shared, ty: &str) -> Option<Rc<dyn RustViews>> {
     let app = ty.split(['#', '.']).next().unwrap_or(ty);
-    let held = shared.borrow();
-    held.get(app).or_else(|| held.get(EVERY_APP)).map(Rc::clone)
+    let found = {
+        let held = shared.borrow();
+        held.get(app).or_else(|| held.get(EVERY_APP)).cloned()
+    }?;
+    draws(&found, ty).then_some(found)
+}
+
+/// Whether `views` draw a resource of the type `ty`: they declare a view of a kind whose type
+/// name is `ty`'s, for `ty`'s app (or a kind named by the type alone, which one app's registry
+/// may).
+fn draws(views: &Rc<dyn RustViews>, ty: &str) -> bool {
+    let app = ty.split(['#', '.']).next().unwrap_or(ty);
+    let name = ty.rsplit(['#', '.']).next().unwrap_or(ty);
+    views.kinds().into_iter().any(|kind| {
+        let kind_app = kind.split(['#', '.']).next().unwrap_or(&kind);
+        let kind_name = kind.rsplit(['#', '.']).next().unwrap_or(&kind);
+        kind_name == name && (kind_app == app || kind == kind_name)
+    })
 }
 
 /// The kind a Rust app declares for the resource type `ty`: its own kind whose type name is
@@ -150,7 +173,8 @@ pub(crate) fn kind_of(views: &Rc<dyn RustViews>, ty: &str) -> String {
                 && kind.rsplit(['#', '.']).next() == Some(name)
         })
         .or_else(|| {
-            // A kind a registry of every app names by the type alone.
+            // A kind a registry of every app names by the type alone (`chat.Channel` for the
+            // app-and-type key `chat#Channel`).
             views
                 .kinds()
                 .into_iter()
@@ -290,4 +314,106 @@ fn action(
             from: None,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ids::Principal;
+
+    /// A registry of every app's views, declaring the kinds `kinds`, as the session links one:
+    /// [`EVERY_APP`] answers for the several Rust apps one process draws.
+    struct EveryApp(Vec<String>);
+
+    impl RustViews for EveryApp {
+        fn app(&self) -> &'static str {
+            EVERY_APP
+        }
+
+        fn kinds(&self) -> Vec<String> {
+            self.0.clone()
+        }
+
+        fn views_of(&self, kind: &str) -> Vec<RustViewDecl> {
+            (kind == "chat.workspace.channels")
+                .then(|| RustViewDecl {
+                    name: "page".to_owned(),
+                    is_default: true,
+                })
+                .into_iter()
+                .collect()
+        }
+
+        fn resolve(&self, kind: &str, name: &str) -> Option<RustViewDecl> {
+            self.views_of(kind)
+                .into_iter()
+                .find(|view| name.is_empty() || view.name == name)
+        }
+
+        fn render(
+            &self,
+            _kind: &str,
+            _name: &str,
+            _target: &RustResource,
+            _reading: Option<&serde_json::Value>,
+            _person: &Principal,
+            _window: &str,
+        ) -> RustRendered {
+            RustRendered {
+                tree: RustNode::default(),
+                events: BTreeMap::new(),
+            }
+        }
+    }
+
+    fn held(kinds: &[&str]) -> Shared {
+        let views: Rc<dyn RustViews> = Rc::new(EveryApp(
+            kinds.iter().map(|kind| (*kind).to_owned()).collect(),
+        ));
+        let mut all: BTreeMap<String, Rc<dyn RustViews>> = BTreeMap::new();
+        all.insert(EVERY_APP.to_owned(), views);
+        Rc::new(std::cell::RefCell::new(all))
+    }
+
+    /// A registry that answers for every app draws only the kinds it declares: a tilolang
+    /// package's type (`so.tilo.lang.notes#Note`) is no Rust app's, and neither is the bare id
+    /// the type's own package names it by (`mavvhka7`) — the two a placed Notes root's views ask
+    /// `meta` of.
+    #[test]
+    fn a_registry_of_every_app_draws_only_its_own_kinds() {
+        let shared = held(&["chat.workspace.channels", "tube.channel"]);
+        assert!(
+            app_of(&shared, "chat.workspace.channels").is_some(),
+            "the kind it declares is its own"
+        );
+        assert!(
+            app_of(&shared, "chat#channels").is_some(),
+            "the app-and-type key the session publishes its resource by is its own"
+        );
+        assert!(
+            app_of(&shared, "tube#channel").is_some(),
+            "another Rust app's type, from the one registry that answers for every app"
+        );
+        assert!(
+            app_of(&shared, "so.tilo.lang.notes#Note").is_none(),
+            "a tilolang package's type is no Rust app's"
+        );
+        assert!(
+            app_of(&shared, "mavvhka7").is_none(),
+            "the bare id a type is named by is no Rust app's"
+        );
+    }
+
+    /// A registry held under its own app answers for its app's types, and for no other's.
+    #[test]
+    fn an_apps_registry_draws_only_its_apps_types() {
+        let mut all: BTreeMap<String, Rc<dyn RustViews>> = BTreeMap::new();
+        all.insert(
+            "chat".to_owned(),
+            Rc::new(EveryApp(vec!["chat.workspace.channels".to_owned()])),
+        );
+        let shared = Rc::new(std::cell::RefCell::new(all));
+        assert!(app_of(&shared, "chat.workspace.channels").is_some());
+        assert!(app_of(&shared, "tube.channel").is_none());
+    }
 }

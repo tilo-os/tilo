@@ -302,11 +302,13 @@ fn listed_parts_must_be_done_or_explained() {
     );
 }
 
-/// Every part done, then the closing model turn fails (e.g. the model
-/// ran into its token limit without a call): the task is finished, not
-/// failed. With a part still undone the same failure stays a failure.
+/// Every part done, then the closing model turn fails (e.g. the model ran into
+/// its token limit without a call): the work stays done, the model is asked
+/// once to say what it did, and the reply is what it says — never a line the
+/// run writes in its place. A model that still says nothing ends with the
+/// clean failure row rather than a success nobody answered.
 #[test]
-fn a_failed_closing_turn_after_all_parts_are_done_finishes() {
+fn a_failed_closing_turn_after_all_parts_are_done_asks_for_the_words() {
     let mut f = fixture(
         "write hello in Writer, then ping me in Chat",
         World::default(),
@@ -316,15 +318,45 @@ fn a_failed_closing_turn_after_all_parts_are_done_finishes() {
                 64,
             ),
             turn(&[post("Hello is in Writer.")], 64),
+            // The closing turn the loop lost: the model says what it did.
+            said_turn("I wrote hello in Writer and pinged you in Chat."),
         ],
     );
     f.session.run_task(&f.run).unwrap();
     assert_eq!(f.world.borrow().posts, ["Hello is in Writer."]);
-    assert!(matches!(
+    assert_eq!(
         terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Succeeded { .. }
-    ));
+        runtime_collab::TaskRunUpdate::Succeeded {
+            message: "I wrote hello in Writer and pinged you in Chat.".into()
+        }
+    );
 
+    // The model is asked, and still says nothing: the run ends with the clean
+    // failure row, not a success line it never wrote.
+    let mut f = fixture(
+        "write hello in Writer, then ping me in Chat",
+        World::default(),
+        vec![
+            turn(
+                &[invoke("type-text", &serde_json::json!({"text": "Hello."}))],
+                64,
+            ),
+            turn(&[post("Hello is in Writer.")], 64),
+            turn(&[(tools::PLAN, serde_json::json!({}))], 64),
+        ],
+    );
+    f.session.run_task(&f.run).unwrap();
+    assert_eq!(f.world.borrow().posts, ["Hello is in Writer."]);
+    assert!(
+        matches!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Failed { message }
+                if message == crate::i18n::t("agent-failure-no-answer")
+        ),
+        "the run ends failed, never as a success with a line nobody wrote"
+    );
+
+    // With a part still undone the same failure stays a failure.
     let mut f = fixture(
         "write hello in Writer, then ping me in Chat",
         World::default(),
@@ -504,4 +536,121 @@ fn a_question_implies_no_parts_and_a_request_to_send_still_does() {
     assert!(asks_for_message("post the summary in chat"));
     assert!(!asks_for_message("tell me what this chat says"));
     assert!(asks_for_message("ping me in chat"));
+}
+
+/// A run that did nothing is not a success: a finish that ran no step and
+/// wrote nothing for the person is answered as its own error, and a model that
+/// keeps finishing that way ends with the clean failure row — never a line the
+/// run wrote in its place.
+#[test]
+fn a_finish_with_no_work_and_no_words_is_not_a_success() {
+    // `plan` with no arguments, as the real model called it: done, no reply,
+    // nothing done. The loop answers it with what is missing and takes another
+    // turn; the model keeps making the same empty finish, so the run ends
+    // failed.
+    let turns = (0..=MOST_SILENT_FINISHES + 1)
+        .map(|_| turn(&[(tools::PLAN, serde_json::json!({}))], 64))
+        .collect();
+    let mut f = fixture("make a note called Groceries", World::default(), turns);
+    f.session.run_task(&f.run).unwrap();
+    let bodies = f.script.bodies.lock().unwrap().clone();
+    assert_eq!(
+        bodies.len(),
+        MOST_SILENT_FINISHES + 1,
+        "each empty finish costs one more turn, then the run ends"
+    );
+    let second = bodies[1]["messages"].to_string();
+    assert!(
+        second.contains("nothing in this run did anything"),
+        "the empty finish is fed back as an error: {second}"
+    );
+    assert!(f.world.borrow().steps.is_empty(), "nothing ran");
+    assert!(
+        matches!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Failed { message }
+                if message == crate::i18n::t("agent-failure-no-answer")
+        ),
+        "the run ends failed, never as a canned success"
+    );
+}
+
+/// The empty finish is corrected: the model reads what was wrong and does the
+/// work, and the run ends as a success with its own words.
+#[test]
+fn an_empty_finish_is_answered_and_the_model_corrects_it() {
+    let mut f = fixture(
+        "write hi",
+        World::default(),
+        vec![
+            turn(&[(tools::PLAN, serde_json::json!({}))], 64),
+            turn(&[finish("", true)], 64),
+            turn(
+                &[invoke_replying(
+                    "type-text",
+                    &serde_json::json!({"text": "Hi."}),
+                    "Wrote hi.",
+                )],
+                64,
+            ),
+        ],
+    );
+    f.session.run_task(&f.run).unwrap();
+    let bodies = f.script.bodies.lock().unwrap().clone();
+    assert_eq!(bodies.len(), 3);
+    assert!(
+        bodies[1]["messages"]
+            .to_string()
+            .contains("nothing in this run did anything"),
+        "the first empty finish was answered"
+    );
+    assert_eq!(
+        terminal(&f.sent.borrow()),
+        runtime_collab::TaskRunUpdate::Succeeded {
+            message: "Wrote hi.".into()
+        }
+    );
+    assert_eq!(f.world.borrow().blocks[0].1, "Hi.");
+}
+
+/// Every part done, then the closing model turn fails: the run finishes with
+/// the last words the model wrote for the person — here the sentence that rode
+/// on an invoke whose call failed, and whose closing turn was lost — never a
+/// line the run writes in its place.
+#[test]
+fn a_lost_closing_turn_keeps_the_models_own_words() {
+    let world = World {
+        refuse: vec!["type-text".into()],
+        ..World::default()
+    };
+    let mut first = invoke("append-paragraph", &serde_json::json!({"text": "Hello."}));
+    first.1["parts"] = serde_json::json!([
+        {"part": "write hello", "app": "so.tilo.word-processor"}
+    ]);
+    let mut f = fixture(
+        "write hello in Writer and add a paragraph",
+        world,
+        vec![
+            turn(&[first], 64),
+            // The model's sentence rides on an invoke that fails.
+            turn(
+                &[invoke_replying(
+                    "type-text",
+                    &serde_json::json!({"text": "More."}),
+                    "I wrote hello and added a paragraph.",
+                )],
+                64,
+            ),
+            // The closing turn never arrives: the script runs out, which is a
+            // failed turn after every part is done.
+        ],
+    );
+    f.session.run_task(&f.run).unwrap();
+    assert_eq!(
+        terminal(&f.sent.borrow()),
+        runtime_collab::TaskRunUpdate::Succeeded {
+            message: "I wrote hello and added a paragraph.".into()
+        },
+        "the model's own words are the reply, never a canned line"
+    );
 }

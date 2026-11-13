@@ -2235,6 +2235,7 @@ impl ChatApp {
                 channel: item(&pending.channel),
                 text: String::new(),
                 parent: None,
+                quoted: None,
                 body: None,
                 attachments: vec![tilo_reference::Attached::from(file)],
                 mentions: None,

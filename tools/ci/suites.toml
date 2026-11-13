@@ -472,6 +472,7 @@ suites = [
   "dist/session/tests/vm-e2e-input-import.py",
   "dist/session/tests/test-files-workspace.py",
   "dist/dev/tests/fedora44-vm-iterate-test.sh",
+  "dist/dev/tests/build-provenance-test.sh",
   "dist/local-models/smolvlm2-500m/contract-test.sh",
   "dist/local-models/u2net-subject/contract-test.sh",
   "dist/rpm/test-app-collection.sh",

@@ -103,7 +103,6 @@ chat-agent-work-step-refused = Abgelehnt: { $target }
 chat-agent-work-step-refused-why = Abgelehnt: { $target }: { $why }
 chat-agent-work-show-details = Aktivität anzeigen
 chat-agent-work-hide-details = Aktivität ausblenden
-chat-agent-recovery = Die Antwort brach früh ab. Frage erneut, um fortzufahren.
 chat-agent-provider-reasoning = Begründung des Anbieters
 chat-agent-show-reasoning = Begründung anzeigen
 chat-agent-hide-reasoning = Begründung ausblenden
@@ -303,6 +302,7 @@ chat-composer = Nachrichtenfeld
 chat-send-message = Nachricht senden
 chat-undo = Rückgängig
 chat-retry = Erneut versuchen
+chat-failure-details = Einzelheiten
 chat-close = Schließen
 # Eine Nachricht, die den Arbeitsbereich nicht erreicht hat; $reason sagt, warum.
 chat-not-sent = Nicht gesendet: { $reason }

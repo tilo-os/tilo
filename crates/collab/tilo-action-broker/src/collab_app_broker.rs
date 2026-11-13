@@ -1274,10 +1274,11 @@ impl PendingInvocation {
 }
 
 // Remote-action host: the broker as a `tilo_actions::remote::ActionHost`.
-mod action_host;
+pub(super) mod action_host;
 mod admission_memo;
 mod app_consent;
 mod app_open_door;
+mod conversation_ask;
 mod foreign_ask;
 mod host_action_admission;
 mod host_steps;
@@ -2826,6 +2827,9 @@ pub struct AppBrokerState {
     app_action_consent: RwLock<Option<Arc<dyn crate::app_actions::AppActionConsentPrompter>>>,
     /// The notices of runs' questions given, by handle, with their workspace.
     run_question_notices: Mutex<HashMap<String, String>>,
+    /// A conversation turn's questions, waiting for the person's answer on
+    /// the system's sheet ([`conversation_ask`]).
+    conversation_asks: std::sync::Arc<conversation_ask::ConversationAsks>,
     /// The grant questions on screen ([`app_consent::ConsentKey`]): one at a
     /// time for each action an app asks for, so an app cannot bury the person
     /// in sheets, while the two apps one action of it changes are asked about
@@ -3595,6 +3599,9 @@ impl AppBrokerState {
                 app_resource_kinds: RwLock::new(services.app_resource_kinds.clone()),
                 app_action_consent: RwLock::new(None),
                 run_question_notices: Mutex::new(HashMap::new()),
+                conversation_asks: std::sync::Arc::new(
+                    conversation_ask::ConversationAsks::default(),
+                ),
                 app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
                 invocation_generation: tokio::sync::watch::Sender::new(0),
                 execution_activity: ActivityBus::default(),

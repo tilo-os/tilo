@@ -59,6 +59,8 @@ mod atspi_bus;
 mod automation;
 #[path = "canvas_ask.rs"]
 mod canvas_ask;
+#[path = "canvas_chrome.rs"]
+mod canvas_chrome;
 #[path = "chat_2x2.rs"]
 mod chat_2x2;
 #[path = "chat_view.rs"]
@@ -109,6 +111,8 @@ mod fabric;
 mod file_clipboard;
 #[path = "files_tree.rs"]
 mod files_tree;
+#[path = "find_records.rs"]
+mod find_records;
 #[path = "firstboot.rs"]
 mod firstboot;
 #[path = "float_windows.rs"]
@@ -155,6 +159,8 @@ mod no_locale_leaks;
 mod origin_connector;
 #[path = "overlays.rs"]
 mod overlays;
+#[path = "overlays_styles.rs"]
+mod overlays_styles;
 #[path = "owner_door.rs"]
 mod owner_door;
 #[path = "palette_captures.rs"]
@@ -205,6 +211,8 @@ mod settings_authorship;
 mod settings_sync;
 #[path = "shared_folder.rs"]
 mod shared_folder;
+#[path = "sheet_click.rs"]
+mod sheet_click;
 #[path = "sheet_frames.rs"]
 mod sheet_frames;
 #[path = "sheets.rs"]
@@ -225,6 +233,10 @@ mod shortcut_effects;
 mod shortcut_guide;
 #[path = "slot_view.rs"]
 mod slot_view;
+#[path = "strips_tabs.rs"]
+mod strips_tabs;
+#[path = "style_packages.rs"]
+mod style_packages;
 #[path = "test_control.rs"]
 mod test_control;
 #[path = "tools.rs"]
@@ -239,6 +251,8 @@ mod visual_alerts;
 mod vpn;
 #[path = "wifi_continuity.rs"]
 mod wifi_continuity;
+#[path = "window_bar_actions.rs"]
+mod window_bar_actions;
 #[path = "window_menu.rs"]
 mod window_menu;
 #[path = "window_menu_probe.rs"]

@@ -78,6 +78,26 @@ impl PartialEq for Started {
     }
 }
 
+/// A place an invocation asked the session to open: the resource, and the view it is shown
+/// through when it is not the resource's primary one (`docs/designs/app-language/one-app-model.md`
+/// §3, "`open(r)` places r with its default view, beside where it was asked, for every app").
+///
+/// Opening a place is the system's, never a resource's own act (shell.md §8, "The canvas composes
+/// views; it opens nothing"). A service that keeps a resource's record publishes its `open` as the
+/// other actions are published — an agent and a view read the catalogue the same way — and answers
+/// it here: the invocation changed nothing of the record, and the session places the resource
+/// through its arrangement, as [`crate::Service::take_open`] hands it over.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Open {
+    /// The resource to place, by its published id.
+    pub resource: String,
+    /// The view to show it through; empty for its primary one.
+    pub view: String,
+    /// The place it stands beside, by the resource that place shows: the conversation whose turn
+    /// asked, when an agent's invocation queued it. Empty means the place in front.
+    pub beside: String,
+}
+
 /// One service the session runs.
 pub trait Service {
     /// Who sits at this device, as the session knows them before it starts
@@ -169,6 +189,23 @@ pub trait Service {
     fn module(&self, _app: &str) -> Option<std::sync::Arc<[u8]>> {
         None
     }
+
+    /// The places [`Self::invoke`] and [`Self::invoke_as`] were asked to open since this was last
+    /// taken, each with the actor that asked: an invocation of a resource's `open` changes nothing
+    /// of the record, and opening is the system's ([`Open`], shell.md §8, "The canvas composes
+    /// views; it opens nothing"). The session places each through its arrangement, attributed to
+    /// that actor and admitted as the same step `shell:arrangement#open` is. A service that
+    /// publishes no `open` has nothing to take.
+    fn take_open(&mut self) -> Vec<(tilo_actions::ActionInvoker, Open)> {
+        Vec::new()
+    }
+
+    /// The place the invocations that follow are asked in, by the resource that place shows: the
+    /// conversation of a turn an agent acts in, or empty for the place in front. A place an
+    /// invocation opens stands beside it (`docs/designs/app-language/one-app-model.md` §3).
+    /// [`crate::Services::invoke_as_beside`] sets it for one invocation; a service that opens no
+    /// place has nothing to note.
+    fn note_beside(&mut self, _beside: &str) {}
 
     /// The record of the app `app` this service keeps, when the session runs the app's package
     /// itself (the shell) and its records are the person's as any app's: what a connection the
@@ -431,6 +468,21 @@ impl Services {
         self.started.iter().find_map(|service| service.module(app))
     }
 
+    /// The places the services were asked to open since this was last taken, each with the actor
+    /// that asked; see [`Service::take_open`].
+    #[must_use]
+    pub fn take_open(&mut self) -> Vec<(tilo_actions::ActionInvoker, Open)> {
+        let opened: Vec<(tilo_actions::ActionInvoker, Open)> = self
+            .started
+            .iter_mut()
+            .flat_map(|service| service.take_open())
+            .collect();
+        if !opened.is_empty() {
+            self.changed();
+        }
+        opened
+    }
+
     /// The record of the app `app`, from the service keeping it; see [`Service::record`].
     #[must_use]
     pub fn record(&self, app: &str) -> Option<Record> {
@@ -500,6 +552,24 @@ impl Services {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, DoorError> {
+        self.invoke_as_beside(invoker, run, resource, action, arguments, "")
+    }
+
+    /// [`Self::invoke_as`] with the place the ask is in named: the resource the place shows — the
+    /// conversation of the turn an agent asks in — or empty for the place in front. A place the
+    /// invocation opens stands beside it (`docs/designs/app-language/one-app-model.md` §3).
+    ///
+    /// # Errors
+    /// The service's refusal.
+    pub fn invoke_as_beside(
+        &mut self,
+        invoker: &tilo_actions::ActionInvoker,
+        run: Option<&tilo_actions::WorkGroup>,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+        beside: &str,
+    ) -> Result<Started, DoorError> {
         let address = ActionAddress::new(resource, action);
         let index = self
             .started
@@ -508,13 +578,14 @@ impl Services {
                 tilo_actions::door::resolve(&service.resources(), &address).is_some()
             })
             .ok_or_else(|| DoorError::Unknown(address.clone()))?;
-        let started = self
+        let service = self
             .started
             .get_mut(index)
             .ok_or_else(|| DoorError::Unknown(address.clone()))?;
+        service.note_beside(beside);
         let started = match run {
-            Some(run) => started.invoke_in_run(invoker, run, resource, action, arguments),
-            None => started.invoke_as(invoker, resource, action, arguments),
+            Some(run) => service.invoke_in_run(invoker, run, resource, action, arguments),
+            None => service.invoke_as(invoker, resource, action, arguments),
         };
         if let Some(stirred) = self.stirred.get_mut(index) {
             *stirred = true;

@@ -90,6 +90,7 @@ mod tests {
         "chat-voice-channel",
         "chat-quote-caption",
         "chat-quote-earlier",
+        "chat-failure-details",
         "chat-conversation-read-only",
         "chat-direct-unavailable",
         "chat-person-unknown",

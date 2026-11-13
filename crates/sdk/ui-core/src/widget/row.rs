@@ -203,7 +203,6 @@ impl Widget for Row {
                 taffy::AlignItems::Center
             })),
             justify_content: self.justify,
-            flex_grow: if self.fill_height { 1.0 } else { 0.0 },
             flex_shrink: 0.0, // Prevent vertical squashing
             gap: taffy::Size {
                 width: length(gap),
@@ -227,6 +226,9 @@ impl Widget for Row {
             padding: super::layout::insets_xy(pad_x, pad_y),
             ..Default::default()
         };
+        // A body row that fills what its parent's column leaves takes that room and no more
+        // (`super::layout::filling`), its children sharing it.
+        let style = super::layout::filling(style, if self.fill_height { 1.0 } else { 0.0 });
         let node = taffy.parent_node(style, &self.flow.child_nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node

@@ -493,11 +493,13 @@ impl Attempt {
                 _ => AgentFinish::Failed,
             };
             self.sequence += 1;
+            // The end's readable line: the safe diagnostic, never the recovery
+            // instruction written for a model call's caller.
             let detail = self
                 .state
                 .error
                 .as_ref()
-                .map(|e| format!("{} {}", e.message, e.recovery().guidance()))
+                .map(|e| e.message.clone())
                 .unwrap_or_default();
             events.push(AgentStreamEvent {
                 run: self.reply.clone(),

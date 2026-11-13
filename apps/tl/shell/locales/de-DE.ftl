@@ -1090,6 +1090,8 @@ d-dpqvjh2f = Launcher
     .w-search-everywhere-for-it = Überall danach suchen
     .w-open-as-a-tab = Als Tab öffnen
     .w-search-everywhere-for = Überall nach { $query } suchen
+    .w-apps = Apps
+    .w-all-apps = Alle Apps
 
 d-tst43bqy = Fensterzeile
 
@@ -1255,6 +1257,7 @@ d-xzb2gybw = Stilumschalter
 
 d-kssxjs7v = Stilmenü
     .w-showing = Zeigt { $style_title }
+    .w-settings-for = Einstellungen für { $style_title }
 
 d-qrahog47 = Leistenansicht
     .w-no-window-here-yet = Noch kein Fenster hier
@@ -1279,6 +1282,7 @@ d-p5wzoqr5 = Fensterbedienelemente
     .w-restore = Wiederherstellen
     .w-maximize = Maximieren
     .w-close = Schließen
+    .w-this-window = Dieses Fenster
 
 d-z4vc77e6 = Bedienelemente des Platzes
     .w-pin-place = Platz anheften
@@ -1323,3 +1327,190 @@ d-cijhlzxf = Fensterbefehle
 d-yx7doxgr = Traditionelle Leiste
     .w-tilo = Tilo
 
+d-s7dh3s7h = Apps
+    .doc = Die auf diesem Gerät installierten Anwendungen: was der Starter auflistet und öffnet.
+
+d-dkwmlyh7 = App
+    .doc = Eine auf diesem Gerät installierte Anwendung, wie der Starter sie auflistet: ihre Paket-ID, ihr Name in der Sprache der Person, das Symbol, das sie zeigt, und wie sie sich öffnet.
+    .noun = { $count ->
+        [one] App
+       *[other] Apps
+    }
+
+d-wabxc4xe = Schlüssel
+    .doc = Ihre Paket-ID, unter der `open_app` sie nennt.
+
+d-dhizmikp = Name
+    .doc = Ihr Name in der Oberflächensprache der Person.
+
+d-bkmyu6to = Symbol
+    .doc = Das Symbol, das sie zeigt, nach dem Kebab-Case-Namen des Plattformsymbols.
+
+d-fxhx35ly = Kategorie
+    .doc = Ihre Kategorie (`work`, `media`, `play`, `system`), leer, wenn sie keine nennt.
+
+d-vebrnbn2 = Beschreibung
+    .doc = Wofür sie da ist, in wenigen Worten; leer, wenn sie keine anbietet.
+
+d-if7lamna = Anfragen
+    .doc = Die Anfragen, die die Arbeitsfläche aufstellt, während eine App sie beantwortet, nach dem Platz, der jede zeigt: was die Person eingegeben hat, was sie gefunden hat oder warum nichts (shell.md §8).
+
+d-bkx6ffql = Verweise
+    .doc = Die Ressourcen, die diese Anfragen gefunden haben, jede mit der Anfrage, zu der sie gehört.
+
+d-7ync2hvz = Anordnungsanfrage
+    .doc = Eine Anfrage, die ein Platz zeigt, während ihre App sie beantwortet: was die Person eingegeben hat, in welcher App und was daraus wurde.
+    .noun = { $count ->
+        [one] Anordnungsanfrage
+       *[other] Anordnungsanfragen
+    }
+
+d-l6u2kjnd = Schlüssel
+    .doc = Ihre ID: der Platz, der sie zeigt.
+
+d-fs44wwaw = Text
+    .doc = Was die Person eingegeben hat.
+
+d-tilkofni = In der App
+    .doc = Die gefragte App, nach ihrer kanonischen ID.
+
+d-hpdpdjlh = Art
+    .doc = Die Art von Ressource, die die Anfrage nennt, wie ihre App sie veröffentlicht (`tube.channel`).
+
+d-34fpixhk = Zustand
+    .doc = Wie die Suche steht: `searching`, `one`, `several`, `none` oder `failed`.
+
+d-wz5iufcx = Grund
+    .doc = Warum sie fehlgeschlagen ist, in den Worten der App; leer, solange es besser läuft.
+
+d-m3of3jpo = Anordnungsverweis
+    .doc = Eine Ressource, die eine Anfrage gefunden hat: ihre Adresse, der Name, unter dem sie läuft, und ihre Art – dieselben drei Angaben, mit denen der Datensatz eines Platzes benannt ist.
+    .noun = { $count ->
+        [one] Anordnungsverweis
+       *[other] Anordnungsverweise
+    }
+
+d-c4hrnixt = Schlüssel
+
+d-7bz4aejw = Anfrage
+    .doc = Die Anfrage, zu der er gehört, nach ihrem Schlüssel.
+
+d-m6dvgoo5 = Adresse
+
+d-e6vecsii = Titel
+
+d-xhyuztvt = Art
+
+d-4zknrelh = Einstellungen offen
+    .doc = Ob die eigenen Einstellungen des gewählten Stils über dem Schreibtisch stehen (`style_settings`), geöffnet aus dem Stilmenü der Leiste: der eine Ort, an dem eine Person den gezeigten Stil ohne Agent ändert, wie es `shell.md` §6, „Zwei Wege, einen Schreibtisch zu ändern“, sagt.
+
+d-dwct4abs = Reihen-Tabs
+    .doc = Reihen: ob eine Reihe mit mehreren Plätzen ihre Tableiste zeigt.
+
+d-gfmzi3qr = Rahmen einrasten
+    .doc = Rahmen: ob ein auf der Arbeitsfläche losgelassener Platz auf dem Raster des Stils landet, damit Rahmen beim Platzieren in einer Linie stehen.
+
+d-cejnvssb-filter-settings_open = Einstellungen offen
+
+d-cejnvssb-filter-strips_tabs = Reihen-Tabs
+
+d-cejnvssb-filter-frames_snap = Rahmen einrasten
+
+d-nljxfsom = Hierher verschieben
+    .doc = Legt eine auf die Arbeitsfläche gezogene Ressource dort ab, wo sie losgelassen wurde.
+
+d-nljxfsom-target = Ziel
+
+d-nljxfsom-at = Bei
+
+d-5giytccr = Erstes öffnen
+    .doc = Was Enter bei einer Anfrage tut: Die erste App, die der Text findet, öffnet sich, sodass „no“ und Enter Notizen öffnen; eine Anfrage, die keine App nennt, beantwortet die Suche überall, wie Enter es schon immer für das tat, was die eigenen Zeilen des Schreibtischs nicht enthalten.
+
+d-5giytccr-query = Anfrage
+
+d-u6kdedav = Anfrage zeigen
+    .doc = Zeigt `found` im Platz `place`, solange er eine Anfrage zeigt: derselbe Platz, jetzt die gefundene Ressource (shell.md §8).
+
+d-u6kdedav-place = Platz
+
+d-u6kdedav-found = Gefunden
+
+d-4vtnv5px = Anfrage wiederholen
+    .doc = Sucht erneut nach dem, was die Suche des Platzes `place` nennt.
+
+d-4vtnv5px-place = Platz
+
+d-mtt6d3af = Hier als Tab
+    .doc = Macht den Platz, dessen Fensterleiste auf die Reihe `s` gezogen wurde, zu einem Tab dieser Reihe – so zieht eine Person die Leiste eines Fensters auf die eines anderen, um Tabs zu bilden, und dieselbe Anordnungsaktion, die „In … als Tab verschieben“ im Fenstermenü ausführt.
+
+d-mtt6d3af-v = V
+
+d-mtt6d3af-s = S
+
+d-mtt6d3af-target = Ziel
+
+d-n2ez6yop = Umsortieren
+    .doc = Stellt den Platz `place` an die Stelle `at` unter den Tabs seiner Reihe: was das Ziehen einer Pille innerhalb der Fensterleiste tut, als das eigene `move` des Schreibtischs mit dem Platz, vor dem er steht.
+
+d-n2ez6yop-s = S
+
+d-n2ez6yop-place = Platz
+
+d-n2ez6yop-at = Bei
+
+d-d64rg4sw = Eigenes Fenster
+    .doc = Gibt dem Platz `place` ein eigenes Fenster: was das Herausziehen eines Tabs aus seiner Fensterleiste tut, als das eigene `split-right` des Schreibtischs für das vordere Fenster.
+
+d-d64rg4sw-s = S
+
+d-d64rg4sw-place = Platz
+
+d-jipcl6u3 = Einstellungen des Schreibtischstils
+    .doc = Die eigenen Einstellungen des Schreibtischstils und die zwei Wege, einen Schreibtisch zu ändern (`docs/designs/app-language/ shell.md` §6): ohne Agent, an dem einen Ort, an dem die Einstellungen einer Person liegen, und mit Agent, über dieselben Aktionen, die die Bedienelemente der Person ausführen.
+
+d-wxxxvca4 = Schließen
+    .doc = Schließt sie.
+
+d-33wxlq7h = Einstellungen des Schreibtischstils
+    .doc = Zeigt oder verbirgt sie: ein Bedienelement für beides, damit eine Person den Zustand dort sieht, wo sie drückt.
+
+d-33wxlq7h-on = An
+
+d-zitymayc = Reihen-Tabs
+    .doc = Ob die Reihe mit mehreren Plätzen ihre Tableiste zeigt: die eigene Einstellung des Reihenstils.
+
+d-zitymayc-on = An
+
+d-lfa3rl6s = Plätze am Raster einrasten
+    .doc = Ob ein auf der gerahmten Arbeitsfläche losgelassener Platz auf dem Raster landet: die eigene Einstellung des Rahmenstils.
+
+d-lfa3rl6s-on = An
+
+d-7womqcp3 = App-Zeile
+
+d-6bfcv6wf = Fensteraktionen
+    .w-window-actions = Fensteraktionen
+
+d-6t5hb2z7 = Anfrageansicht
+    .w-retry = Erneut versuchen
+    .w-nothing-matched = Nichts passt zu { $text }
+
+d-pjkvdmwk = Stileinstellungen zeigen~present
+
+d-vseev2rl = Stilbereich
+    .w-settings-for = Einstellungen für { $style_title }
+    .w-close = Schließen
+    .w-comes-from-and-its-settings-are = { $style_label } stammt aus { $package }, und seine Einstellungen gehören zu seinem Paket.
+
+d-g476xvac = Einstellungen des Desktopstils
+    .w-show-the-top-bar = Obere Leiste zeigen
+    .w-show-the-dock = Dock zeigen
+
+d-e3tczbcu = Einstellungen des Reihenstils
+    .w-show-the-tabs-of-a-strip = Tabs einer Reihe zeigen
+
+d-mnbjennf = Einstellungen des Rahmenstils
+    .w-snap-places-to-a-grid = Plätze am Raster einrasten
+
+d-xwhxaimf = Einstellungen des Raumstils
+    .w-spaces-shows-each-place-as-its = Räume zeigt jeden Platz als eigene Ansicht und hat nichts einzustellen.

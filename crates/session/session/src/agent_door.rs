@@ -29,7 +29,7 @@ mod task_hosts;
 use environments::Origin;
 pub(crate) use seats::{Seats, Working};
 pub(crate) use service_steps::invoke_service_step;
-use service_steps::{arguments_of, change_through};
+use service_steps::{arguments_of, change_through, with_turn_beside};
 pub(crate) use task_hosts::TaskHosts;
 
 use std::collections::HashMap;
@@ -1355,12 +1355,16 @@ enum DoorAsk {
     },
     /// Run one of their actions as a step of an agent's turn, already decided
     /// by the broker where it lands: `slot` is its arguments in their slot
-    /// form, as the broker carries them. No `reads_only`: the broker decided
-    /// the step.
+    /// form, as the broker carries them, and `beside` the place the ask is in
+    /// (the turn's conversation, or empty for the place in front). No
+    /// `reads_only`: the broker decided the step.
     Step {
         actor: String,
         address: tilo_actions::ActionAddress,
         slot: Option<String>,
+        /// The place the ask is in, by the resource that place shows: the conversation of the
+        /// turn an agent asks in, or empty for the place in front.
+        beside: String,
         /// The run the step is one of, as its invocation names it.
         run: Option<tilo_actions::WorkGroup>,
         done: tilo_actions::remote::Completer<
@@ -1453,6 +1457,7 @@ impl crate::platform::steps::SessionSteps for SessionDoors {
         actor: String,
         address: tilo_actions::ActionAddress,
         slot: Option<String>,
+        beside: String,
         run: Option<tilo_actions::WorkGroup>,
         done: tilo_actions::remote::Completer<
             Result<Option<tilo_actions::ActionOutput>, ActionHostError>,
@@ -1462,6 +1467,7 @@ impl crate::platform::steps::SessionSteps for SessionDoors {
             actor,
             address,
             slot,
+            beside,
             run,
             done,
         });
@@ -1671,6 +1677,7 @@ impl SessionDoors {
                     actor,
                     address,
                     slot,
+                    beside,
                     run,
                     done,
                 } => match arguments_of(slot.as_deref()) {
@@ -1693,12 +1700,20 @@ impl SessionDoors {
                             run.as_ref(),
                             &address,
                             &arguments,
+                            &beside,
                             done,
                         );
                     }
+                    // The system's `open` stands a place beside the conversation of the turn that
+                    // asked when it names none (`docs/designs/app-language/one-app-model.md` §3).
                     Ok(arguments) => done.complete(
                         doors
-                            .invoke_as(&actor, &address, &arguments, look)
+                            .invoke_as(
+                                &actor,
+                                &address,
+                                &with_turn_beside(&address, &arguments, &beside),
+                                look,
+                            )
                             .map(ui::host_operation::ResourceOperationStart::completed)
                             .map_err(|error| crate::surfaces::refusal(&error)),
                     ),
@@ -2043,7 +2058,7 @@ impl Host {
             tilo_actions::remote::CallerPrincipal::Agent(agent) => format!("agent:{agent}"),
             _ => return Pending::ready(Err(ActionHostError::NotPermitted)),
         };
-        self.invoke_step_at(actor, request)
+        self.invoke_step_at(actor, request, caller.turn())
     }
 
     /// The session's own actions as rows, as the kind of publisher its own door is, for a
@@ -2075,7 +2090,7 @@ impl Host {
             tilo_actions::remote::CallerPrincipal::Person(person) => person.clone(),
             _ => return Pending::ready(Err(ActionHostError::NotPermitted)),
         };
-        self.invoke_step_at(actor, request)
+        self.invoke_step_at(actor, request, caller.turn())
     }
 
     /// The session's own action `request` names, carried out on the loop's pass as `actor` (the
@@ -2084,13 +2099,20 @@ impl Host {
         &self,
         actor: String,
         request: InvokeRequest,
+        turn: Option<&tilo_action_policy::turn::Turn>,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         let slot = request.argument.to_slot();
         let invocation = request.invocation;
+        // The place the ask is in: the turn's conversation, when the step is an agent's; else the
+        // place in front. A place the step opens stands beside it
+        // (`docs/designs/app-language/one-app-model.md` §3).
+        let beside = turn
+            .map(|turn| turn.conversation.clone())
+            .unwrap_or_default();
         let run = request.context.and_then(|context| context.group);
         let (done, ran) = tilo_actions::remote::pending();
         self.session
-            .invoke_step(actor, request.target.address, slot, run, done);
+            .invoke_step(actor, request.target.address, slot, beside, run, done);
         let answered = Arc::clone(&self.answered);
         ran.map(move |ran| {
             use tilo_actions::remote::ReceiptStatus;

@@ -70,7 +70,10 @@ opens them. The task host is not an app, so it gets its own admission instead of
   works in its workspace ([environments.md, "Coding agents"](../../app-model/environments.md#coding-agents)).
 - **Reads, per record.** The task host asks the door for each record it reads, once per
   program (`{"record": {app, record}}`; the person's own record for an app with
-  `records: .own`). The broker decides it at the record's node with that actor, the lesser of
+  `records: .own`). The door answers for every app whose package the session runs: a tilolang
+  app the session hosts keeps its record in the session's one record, so its committed content
+  is the door's own to hand over, and no app is started to read it. The broker decides the read
+  at the record's node with that actor, the lesser of
   the agent's and the person's grants (`RecordReads`, `record_read.rs`), and the workspace's
   document owner captures it under the person's device certificate, whose own check is the
   person's read. The capture decides the agent's read again before every chunk it hands out.

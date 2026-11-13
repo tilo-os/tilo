@@ -66,6 +66,7 @@ __all__ = [
     "Mention",
     "Message",
     "ProviderStream",
+    "Quote",
     "ResourceAt",
     "Revision",
     "ShareAccess",
@@ -334,6 +335,7 @@ class Message(TypedDict):
     edited: bool
     history: list[Revision]
     parent: str | None
+    quoted: Quote | None
     reactions: Any
     mentions: list[Mention]
     attachments: list[Attached]
@@ -351,6 +353,11 @@ class ProviderStream(TypedDict):
     progress: str
     finish: AgentFinish | None
     detail: str
+
+class Quote(TypedDict):
+    text: str
+    start: int
+    end: int
 
 class ResourceAt(TypedDict):
     app: str
@@ -401,6 +408,7 @@ class Work(TypedDict):
     stream: ProviderStream | None
     state: Transition | None
     trace: list[Step]
+    failure_detail: str | None
 
 class WorkUpdate(TypedDict):
     state: str
@@ -408,6 +416,7 @@ class WorkUpdate(TypedDict):
     did: str | None
     about: str | None
     trace: list[StepUpdate]
+    detail: str | None
 
 class Emoji(TypedDict):
     image: Any
@@ -439,7 +448,7 @@ class Spent(TypedDict):
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@10e830cca539427e"
+    __surface__ = "so.tilo.chat@285e342c43975c1d"
     @property
     def categories(self) -> list[Category]:
         """Read only."""
@@ -692,7 +701,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@10e830cca539427e"
+    __surface__ = "so.tilo.chat@285e342c43975c1d"
     @property
     def messages(self) -> list[Message]:
         """Read only."""
@@ -901,7 +910,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@10e830cca539427e"
+    __surface__ = "so.tilo.chat@285e342c43975c1d"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> Run | None:
@@ -911,7 +920,7 @@ class Drafts(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@10e830cca539427e"
+    __surface__ = "so.tilo.chat@285e342c43975c1d"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -933,7 +942,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
-    __surface__ = "so.tilo.chat@10e830cca539427e"
+    __surface__ = "so.tilo.chat@285e342c43975c1d"
     agents: list[Agent]
 
     def create_agent(self,

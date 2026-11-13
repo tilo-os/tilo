@@ -424,6 +424,36 @@ impl DynAction {
         EncodedAction::encode(ACTION_TYPE, self)
     }
 
+    /// Apply this action to `doc` as the step it is, its change recording the action it made:
+    /// the same commit the workspace's own records take ([`crate::instance::record`]), so a
+    /// store reading `doc` reads back which edit the change holds and the write it shadowed
+    /// leaves the mirror. A record committed from an action applied without this carries no
+    /// action, and a store reading it cannot tell its own pending writes from the change's:
+    /// they stay, and answer every read over the record that holds them.
+    ///
+    /// The change is the invoker's, on the resource the action wrote first, as the runtime
+    /// commits an action of its own; its entry names the run the action was made in when it has
+    /// one.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the action's apply refuses, or encoding it does.
+    pub fn apply_as_step(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        let encoded = self.encode()?;
+        let context = tilo_actions::ActionContext::for_resource(
+            self.resources().first().copied().unwrap_or("workspace"),
+            &self.kind,
+            &self.kind,
+        )
+        .with_invoker(tilo_actions::ActionInvoker::actor(
+            self.authorship.invoker.clone(),
+        ))
+        .with_source_invocation(self.authorship.invocation.as_deref().map(invocation_id));
+        let actor = self.authorship.invoker.as_bytes();
+        let _package = self.package_schemas();
+        tilo_actions::apply_local_with_context(doc, self, encoded, Some(actor), context).map(|_| ())
+    }
+
     /// The resources this action changed, as the runtime writes them (`doc` or `doc/item`):
     /// each one it edited, each item it inserted, moved or removed, and the resources whose
     /// collections those joined or left. What reflection reads a resource's versions from. An

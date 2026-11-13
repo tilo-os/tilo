@@ -416,6 +416,14 @@ impl Shell {
                     packages.insert(app.to_owned(), module);
                 }
             }
+            // A placed app's views call the `fn`s of the apps it uses (`discussion.said_about`):
+            // those run as their own app's code here, so their packages are loaded with it, as
+            // an app's own window loads them (`RecordService::service_record`).
+            let packages = tilo_surface_host::shell_part::readings::with_uses(packages, |app| {
+                services
+                    .module(app)
+                    .or_else(|| crate::desk_styles::module_from_store(app))
+            });
             // A resource of an app no package is published of any more is followed no more, and
             // neither is one of an app whose views draw it as a Rust app when none of its views is
             // linked here any more.
@@ -1774,12 +1782,23 @@ mod tests {
         let published = super::device_surfaces();
         let committed = tilolang_tilo::platform_apps::device_surfaces()
             .unwrap_or_else(|why| panic!("device-surface.json does not read: {why}"));
-        if committed != published {
-            let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": published }))
-                .expect("a surface writes as JSON");
-            panic!(
-                "crates/session/session/device-surface.json is not what the session publishes; write:\n{text}"
-            );
+        if committed == published {
+            return;
         }
+        let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": published }))
+            .expect("a surface writes as JSON");
+        // `UPDATE_SNAPSHOTS=1` writes the file the session publishes, as the session package's
+        // own snapshot test does: a resource whose verbs changed is regenerated in place rather
+        // than pasted from a failing run.
+        if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|v| v == "1") {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("device-surface.json");
+            std::fs::write(&path, &text).expect("device-surface.json is written");
+            return;
+        }
+        panic!(
+            "crates/session/session/device-surface.json is not what the session publishes; \
+             regenerate it with UPDATE_SNAPSHOTS=1 cargo nextest run -p tilo-session --lib \
+             device_surface, or write what it publishes:\n{text}"
+        );
     }
 }

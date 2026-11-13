@@ -123,17 +123,25 @@ impl Session {
     }
 
     /// End `run` as done: `answer` is the reply's text, and the run's own
-    /// record says `done` when there is no answer.
+    /// record says `done` when there is no answer. A run with neither — a
+    /// model-planned run that ended with nothing said — is not reported as a
+    /// success with a line nobody wrote: the person reads that the agent
+    /// finished without answering.
     pub(super) fn succeed_turn(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
         answer: Option<String>,
-        done: String,
+        done: Option<String>,
     ) -> Result<()> {
         if let Some(record) = self.record.as_mut() {
             record.answer.clone_from(&answer);
         }
-        let message = answer.unwrap_or(done);
+        let Some(message) = answer.or(done) else {
+            return self.fail_task(
+                run,
+                &crate::session::Failure::said(crate::i18n::t("agent-failure-no-answer")),
+            );
+        };
         self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
     }
 
@@ -161,7 +169,17 @@ impl Session {
                 self.record_state(run, "provider_complete", json!({}), answer.as_deref())
             }
             TaskRunUpdate::Failed { message } => {
-                self.record_state(run, "refused", json!({}), Some(message))
+                // What the host heard is the failure's sentence for a person —
+                // what happened, and at most what to do — and the run keeps the
+                // failure's record beside it for whoever debugs it later.
+                let detail = self.failure_detail.clone();
+                self.record_state_with_detail(
+                    run,
+                    "refused",
+                    json!({}),
+                    Some(message),
+                    detail.as_deref(),
+                )
             }
             TaskRunUpdate::Cancelled { message } => {
                 self.record_state(run, "provider_cancelled", json!({}), Some(message))
@@ -282,6 +300,21 @@ impl Session {
         fields: Value,
         say: Option<&str>,
     ) -> Result<()> {
+        self.record_state_with_detail(run, state, fields, say, None)
+    }
+
+    /// [`Self::record_state`], with the run's working record of a failure kept
+    /// on the reply's work beside the words a person reads: the transport's
+    /// error, the partial answer, the provider's exposed reasoning — for
+    /// whoever debugs it later, never the reply's own sentence.
+    fn record_state_with_detail(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        state: &str,
+        fields: Value,
+        say: Option<&str>,
+        detail: Option<&str>,
+    ) -> Result<()> {
         let Some(record) = self.record.as_ref() else {
             return Ok(());
         };
@@ -291,6 +324,9 @@ impl Session {
         };
         work.insert("state".into(), json!(state));
         work.insert("trace".into(), Value::Array(record.steps.clone()));
+        if let Some(detail) = detail.map(str::trim).filter(|detail| !detail.is_empty()) {
+            work.insert("detail".into(), json!(detail));
+        }
         let mut arguments = Map::new();
         arguments.insert("message".into(), json!(record.cause.message.clone()));
         arguments.insert("work".into(), Value::Object(work.clone()));

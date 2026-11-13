@@ -2753,9 +2753,9 @@ impl Widget for FilePicker {
         self.adopt_theme(theme);
         let style = Style {
             size: Size::from_percent(1.0, 1.0),
-            flex_grow: 1.0,
             ..Default::default()
         };
+        let style = crate::widget::layout::filling(style, 1.0);
         taffy.widget_leaf(style, node_map, self)
     }
 

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use automerge::AutoCommit;
 use serde_json::json;
+use tilo_actions::resource::INVALID_ARGUMENTS_TYPE as REFUSED_TYPE;
 use tilo_actions::{ActionKind, ActionRegistry};
 use tilolang_runtime::{Meta, SourceWords};
 use tilolang_tilo::action::{ACTION_TYPE, DynAction, register_actions};
@@ -160,6 +161,160 @@ fn a_bound_fields_edit_names_a_verb_the_surface_publishes() {
         "a keystroke's change names the field it edits: {}",
         action.args
     );
+}
+
+/// A note's `edit-text` lists the type's editable fields by their **names** — `title` and
+/// `body`, never the internal ids a record stores them under — so an agent reads the field to
+/// set from the verb itself. `edit-text` takes `body` and writes the note's body.
+#[test]
+fn an_edit_verb_names_its_fields_the_app_declares_and_takes_one() {
+    // A package with a note's shape — a title, a body and a flag — the same fields the Notes
+    // app declares; it stands alone so it compiles without another app's records.
+    const NOTE: &str = r#"app so.tilo.lang.note "Note"
+
+type Note {
+  title: Text
+  body: RichText
+  pinned: Bool = false
+}
+
+root notebook: Note
+
+default view note for Note
+
+view note(n: Note) {
+  page {
+    input(bind: n.title, placeholder: "Title")
+  }
+}
+"#;
+    let (mut replica, packages) = Replica::new("ada", AutoCommit::new(), &[(NOTE, "")]);
+    let meta = packages[0].meta.clone();
+    replica.host.root_of(&meta.app).unwrap();
+    replica.commit();
+    let surfaces = package_surfaces(&meta);
+    let note = surfaces
+        .iter()
+        .find(|surface| surface.kind == tilolang_tilo::meta::MetaExt::kind_of(&meta, "Note"))
+        .expect("the note type is a surface");
+    let text = note
+        .verbs
+        .iter()
+        .find(|verb| verb.id == "edit-text")
+        .expect("a note offers edit-text");
+    let field = text
+        .params
+        .iter()
+        .find(|param| param.name == "field")
+        .expect("edit-text takes a field");
+    let choices: Vec<&str> = field.schema["enum"]
+        .as_array()
+        .expect("the field parameter names its choices")
+        .iter()
+        .filter_map(|choice| choice.as_str())
+        .collect();
+    assert_eq!(
+        choices,
+        ["title", "body"],
+        "the fields an agent may set, by the names the app declares"
+    );
+    assert!(
+        !choices.contains(&crate::fixtures::field_id(&meta, "Note", "body").as_str()),
+        "never the internal id a record stores the body under"
+    );
+    // The flag verb offers the flag field the same way.
+    let flag = note
+        .verbs
+        .iter()
+        .find(|verb| verb.id == "edit-flag")
+        .expect("a note offers edit-flag");
+    let flag_choices = flag.params[0].schema["enum"]
+        .as_array()
+        .expect("the flag names its choices");
+    assert_eq!(flag_choices, &[json!("pinned")]);
+
+    // The verb's own binding takes the name, and the edit reaches the note's body.
+    let note_id = tilolang_tilo::publish::resource_id(APP_NOTE, "anote");
+    let planner: Arc<dyn Planner> = Arc::new(NoPlanner);
+    let bound = publish_record(
+        &ActionTypes::new(&meta, &planner, &SourceWords),
+        "Note",
+        "anote",
+        "Note",
+    );
+    let edit = bound
+        .actions
+        .iter()
+        .find(|spec| spec.id == "edit-text")
+        .expect("the note's resource offers edit-text");
+    // A field the type lacks is refused by the verb's own build, with a sentence that names
+    // the fields it offers rather than the internal ids.
+    let refused = edit
+        .build_json(
+            &json!({"field": "content", "value": "x"})
+                .as_object()
+                .cloned()
+                .unwrap(),
+        )
+        .expect("the build encodes a refusal rather than panicking");
+    assert_eq!(
+        refused.type_id, REFUSED_TYPE,
+        "a field the type lacks is refused"
+    );
+    let why = String::from_utf8_lossy(&refused.payload);
+    assert!(
+        why.contains("title") && why.contains("body"),
+        "the refusal names the fields that are offered: {why}"
+    );
+
+    // A bound control's `$edit` hands back the field's internal id: the same verb takes it,
+    // so the control's own edits keep binding. The value is the runtime's rich-text encoding
+    // as text, the single `Text` argument `edit-text` fixes.
+    let rich = json!({"rich": [{"id": "", "kind": "paragraph", "text": "by id",
+                                "marks": [], "attrs": {}, "children": []}]});
+    let by_id = edit
+        .build_json(
+            &json!({
+                "field": crate::fixtures::field_id(&meta, "Note", "body"),
+                "value": rich.to_string(),
+            })
+            .as_object()
+            .cloned()
+            .unwrap(),
+        )
+        .expect("the id binds too");
+    assert_eq!(
+        by_id.type_id, ACTION_TYPE,
+        "an edit by the field's internal id is accepted"
+    );
+
+    // `field: "body"` is accepted: it names a field the verb offers, and the edit is the
+    // note's body, not a field id.
+    let planned = tilolang_tilo::publish::edit_action(
+        &meta,
+        "Note",
+        &note_id.trim_start_matches(&format!("tl:{APP_NOTE}:")),
+        "body",
+        &json!({"rich": [{"id": "", "kind": "paragraph", "text": "milk and eggs",
+                          "marks": [], "attrs": {}, "children": []}]}),
+    )
+    .expect("`body` names the note's body");
+    assert_eq!(
+        planned.args["field"],
+        json!(crate::fixtures::field_id(&meta, "Note", "body")),
+        "the name is mapped to the id the record stores it under"
+    );
+}
+
+const APP_NOTE: &str = "so.tilo.lang.note";
+
+/// A planner that plans nothing, for a surface that only builds its verbs.
+struct NoPlanner;
+
+impl Planner for NoPlanner {
+    fn plan(&self, _request: &PlanRequest<'_>) -> Result<DynAction, String> {
+        Err("no plan".into())
+    }
 }
 
 #[test]

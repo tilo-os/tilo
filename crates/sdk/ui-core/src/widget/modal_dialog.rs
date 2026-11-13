@@ -982,6 +982,9 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     /// Whether `last_cursor` is current: cleared by `CursorLeft` and on open,
     /// so a hover face never outlives the pointer that caused it.
     pointer_inside: bool,
+    /// Whether a press on the scrim outside the card dismisses
+    /// ([`Self::dismiss_on_scrim`]).
+    dismiss_on_scrim: bool,
     /// The content's own tree, when no host lays it out (a painted host).
     detached: Option<floating_surface::DetachedContent>,
     /// The content's node in the host's tree, once a host has built it.
@@ -1063,6 +1066,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
             keys: Vec::new(),
             last_cursor: Point::ZERO,
             pointer_inside: false,
+            dismiss_on_scrim: true,
             detached: None,
             host_content: None,
             header: None,
@@ -1264,6 +1268,18 @@ impl<C: Widget + 'static> ModalDialog<C> {
     pub fn set_tertiary_action(&mut self, action: Option<DialogAction>) {
         self.tertiary_action = action;
         self.as_dyn_mut().footer_changed();
+    }
+
+    /// Whether a press on the scrim, beside the card, dismisses
+    /// ([`ModalSpec::dismiss_on_scrim`]). The scrim swallows the press either
+    /// way: a surface that lets presses through is not modal. Off for a
+    /// sheet whose dismissal means something — a question somebody waits on
+    /// — so a stray press is answered by nothing rather than by the sheet's
+    /// way out.
+    #[must_use]
+    pub fn dismiss_on_scrim(mut self, dismisses: bool) -> Self {
+        self.dismiss_on_scrim = dismisses;
+        self
     }
 
     /// The tertiary action discards something ("Don't save"): danger ink on
@@ -1580,6 +1596,7 @@ impl ModalDialog<dyn Widget> {
             .header_height(self.header_size.1)
             .max_width(self.max_width)
             .closable(self.closable())
+            .dismiss_on_scrim(self.dismiss_on_scrim)
             .anchor(self.anchor);
         let mut layout = layout_for(self.window, &spec, text_renderer, theme, self.environment);
         drop(actions);
@@ -2375,10 +2392,16 @@ impl Widget for ModalDialog<dyn Widget> {
                     *ctx.handled = true;
                     return;
                 }
+                // A press the sheet has no pointer for is no press on it: the last position a
+                // closed sheet saw is not where the person pressed.
                 let p = self.last_cursor;
-                let hit = self.layout.as_ref().and_then(|l| l.hit(p));
+                let hit = self
+                    .pointer_inside
+                    .then(|| self.layout.as_ref().and_then(|l| l.hit(p)))
+                    .flatten();
                 match hit {
-                    Some(ModalHit::Close | ModalHit::Scrim) | None => self.dismiss(),
+                    Some(ModalHit::Close) => self.dismiss(),
+                    Some(ModalHit::Scrim) if self.dismiss_on_scrim => self.dismiss(),
                     Some(ModalHit::Action(i)) => {
                         if let Some(slot) = self.slots.get(i).copied() {
                             self.activate(slot);
@@ -2391,6 +2414,9 @@ impl Widget for ModalDialog<dyn Widget> {
                             self.forward_to_content(event, ctx);
                         }
                     }
+                    // The scrim a press does not dismiss still swallows it; a point outside the
+                    // window entirely is no press on the sheet at all.
+                    Some(ModalHit::Scrim) | None => {}
                 }
                 *ctx.handled = true;
             }

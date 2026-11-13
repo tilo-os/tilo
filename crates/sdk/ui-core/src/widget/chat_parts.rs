@@ -320,6 +320,10 @@ pub struct QuoteProps {
     /// The close button was pressed. Without it there is no close button.
     #[component(event)]
     pub dismiss: Event,
+    /// The quote was pressed: show the message it quotes, or the run of it it names, where that
+    /// message stands. Without it the quote is read, not pressed.
+    #[component(event)]
+    pub activate: Event,
 }
 
 /// See [`QuoteProps`].
@@ -327,6 +331,9 @@ pub struct Quote {
     /// What the quote is addressed by.
     key: String,
     row: crate::widget::arrange::Row,
+    /// The press on the quote's own body: reveal what it quotes. `None` when the quote is
+    /// read, not pressed.
+    activation: crate::widget::activation::Activation,
 }
 
 impl Described for Quote {
@@ -340,15 +347,17 @@ impl Described for Quote {
             author,
             caption,
             dismiss,
+            activate,
         } = props;
         let said = QuoteLines {
             caption,
-            author: author.map(|author| author.name),
+            author: author.as_ref().map(|author| author.name.clone()),
             excerpt,
             rect: Rect::ZERO,
             dirty: true,
             layout_dirty: true,
             layout_theme: Theme::dark(),
+            interaction: crate::widget::activation::Interaction::default(),
         };
         let mut row = Row::row()
             .gap(Rhythm::Related)
@@ -365,9 +374,17 @@ impl Described for Quote {
                 .on_effect(move || close()),
             ));
         }
+        let mut activation = crate::widget::activation::Activation::new(format!("{key}/quote"));
+        let label = author.as_ref().map_or_else(
+            || crate::i18n::I18nManager::lookup_plain("quote-open"),
+            |author| author.name.clone(),
+        );
+        activation.set_event(activate, &label);
+        let row = row.with_id(key);
         Self {
             key: key.to_owned(),
-            row: row.with_id(key),
+            row,
+            activation,
         }
     }
 
@@ -375,7 +392,9 @@ impl Described for Quote {
     /// stands.
     fn set_props(&mut self, props: QuoteProps) -> bool {
         let key = self.key.clone();
-        self.row = Self::from_props(&key, props).row;
+        let mut quote = Self::from_props(&key, props);
+        quote.activation = std::mem::take(&mut self.activation);
+        *self = quote;
         true
     }
 }
@@ -394,6 +413,9 @@ struct QuoteLines {
     layout_dirty: bool,
     /// The theme the last layout was built with, for measuring.
     layout_theme: Theme,
+    /// How the person is reaching the quote: hovered and pressed, when it can be pressed
+    /// ([`Quote::lines_mut`]).
+    interaction: crate::widget::activation::Interaction,
 }
 
 impl QuoteLines {
@@ -558,6 +580,13 @@ impl Widget for QuoteLines {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
+        // A quote that can be pressed says so under the pointer: its words come forward, the
+        // way a link's do, so the line reads as something to open.
+        let excerpt_ink = if self.interaction.hovered || self.interaction.pressed {
+            colors.text_primary
+        } else {
+            colors.text_dim
+        };
         let height = self.height(text, theme);
         let top = rect.y0 + (rect.height() - height) / 2.0;
         // The rule runs the height of what is quoted, rounded at its ends.
@@ -591,7 +620,7 @@ impl Widget for QuoteLines {
                 scene,
                 transform,
                 text,
-                (&self.excerpt, &plain, colors.text_dim),
+                (&self.excerpt, &plain, excerpt_ink),
                 (x, below),
                 rect.x1,
             );
@@ -612,7 +641,7 @@ impl Widget for QuoteLines {
                     scene,
                     transform,
                     text,
-                    (&self.excerpt, &plain, colors.text_dim),
+                    (&self.excerpt, &plain, excerpt_ink),
                     (at, top),
                     rect.x1,
                 );
@@ -632,6 +661,17 @@ impl Widget for QuoteLines {
     }
 }
 
+impl Quote {
+    /// The quote's lines, when the widget that draws them is its first slot's child: the words
+    /// a press shows reaching the accent.
+    fn lines_mut(&mut self) -> Option<&mut QuoteLines> {
+        self.row
+            .child_mut(0)?
+            .as_any_mut()?
+            .downcast_mut::<QuoteLines>()
+    }
+}
+
 impl Decorator for Quote {
     type Inner = crate::widget::arrange::Row;
 
@@ -645,6 +685,40 @@ impl Decorator for Quote {
 
     fn name(&self) -> &'static str {
         "Quote"
+    }
+
+    /// The quote's own press: the whole line (and its rule) reveals what it quotes, while the
+    /// close button stands outside it and takes its own press first.
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) {
+        Widget::handle_event(&mut self.row, event, ctx);
+        if *ctx.handled || !self.activation.is_bound() {
+            return;
+        }
+        let before = self.activation.state;
+        if self
+            .activation
+            .handle_pointer(event, ctx, self.row.get_rect(), &[])
+            && self.activation.state != before
+        {
+            // A hover or a press the quote shows: its words take the accent, and the host
+            // repaints the line.
+            let interaction = self.activation.state;
+            if let Some(lines) = self.lines_mut() {
+                lines.interaction = interaction;
+                lines.dirty = true;
+            }
+        }
+    }
+
+    fn cursor_shape(&self, point: vello::kurbo::Point) -> Option<winit::window::CursorIcon> {
+        if self.activation.is_bound() && self.row.get_rect().contains(point) {
+            return Some(winit::window::CursorIcon::Pointer);
+        }
+        Widget::cursor_shape(&self.row, point)
     }
 }
 
