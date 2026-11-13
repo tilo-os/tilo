@@ -361,6 +361,43 @@ struct Reach {
     mine: std::collections::BTreeSet<String>,
 }
 
+/// What the changes heard together had checked of the collections boundaries saw: each listing
+/// read once for every boundary that saw it, and each thing a boundary saw checked once against
+/// it, however many fields of the changes reach it.
+#[derive(Default)]
+struct CollChecks {
+    listings: Vec<(Rc<crate::value::CollRef>, Option<Rc<crate::store::Listing>>)>,
+    /// Whether what each boundary saw of a collection, by the boundary and where it is among
+    /// what it saw, no longer holds.
+    seen: HashMap<(BoundId, usize), bool>,
+}
+
+impl CollChecks {
+    /// Whether `seen`, what the boundary `id` saw of a collection at `at` among what it saw, no
+    /// longer holds in the store.
+    fn stale(&mut self, core: &Core, id: (BoundId, usize), seen: &CollSeen) -> bool {
+        if let Some(stale) = self.seen.get(&id) {
+            return *stale;
+        }
+        let at = self
+            .listings
+            .iter()
+            .position(|(held, _)| seen.is_of(held))
+            .unwrap_or_else(|| {
+                let listing = crate::colls::listing_of(&**core.store.borrow(), &seen.coll);
+                self.listings.push((Rc::clone(&seen.coll), listing.ok()));
+                self.listings.len().saturating_sub(1)
+            });
+        let stale = !self
+            .listings
+            .get(at)
+            .and_then(|(_, listing)| listing.as_ref())
+            .is_some_and(|listing| seen.holds(listing));
+        self.seen.insert(id, stale);
+        stale
+    }
+}
+
 /// What a view instance counts, for tests and the benchmark.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LiveStats {
@@ -624,7 +661,7 @@ impl Live {
     /// something of a collection it changed that is no longer so, and the steps the rows of
     /// loops over a collection it changed take. Rows whose steps the store could not tell are
     /// built again by their boundary.
-    fn reached(&self, core: &Core, change: &ChangeSummary) -> Reach {
+    fn reached(&self, core: &Core, change: &ChangeSummary, checked: &mut CollChecks) -> Reach {
         let mut reach = Reach::default();
         // What the person looking did in this window, as opposed to anyone else's change:
         // the rows of a list they changed themselves linger ([`crate::live::virtual_rows`]).
@@ -660,7 +697,13 @@ impl Live {
             reach
                 .hit
                 .extend(self.index.readers(&key.resource, &key.field));
-            self.reach_colls(core, &key.resource, &key.field, false, &mut reach);
+            self.reach_colls(
+                core,
+                (&key.resource, &key.field),
+                false,
+                checked,
+                &mut reach,
+            );
             for (id, field) in self.index.loop_holders(&key.resource, &key.field) {
                 let held = self.bound(id).into_iter().flat_map(|b| &b.loops);
                 for rows in held.filter(|rows| rows.coll.field == field) {
@@ -721,7 +764,7 @@ impl Live {
             // and the rows of a virtual list over one find where the item is now.
             if let Some((parent, coll, item)) = item_in(core, &key.resource) {
                 let (parent, coll) = (parent.as_str(), coll.as_str());
-                self.reach_colls(core, parent, coll, true, &mut reach);
+                self.reach_colls(core, (parent, coll), true, checked, &mut reach);
                 for (id, field) in self.index.loop_holders(parent, coll) {
                     let held = self.bound(id).into_iter().flat_map(|b| &b.loops);
                     for rows in held
@@ -747,19 +790,16 @@ impl Live {
 
     /// The boundaries that saw something of the collection `field` of `resource` (or of any
     /// collection of it, for [`ANY_FIELD`]) that no longer holds: of its filtered views alone
-    /// when `filtered`.
+    /// when `filtered`. What `checked` holds was checked against the store as it is now by an
+    /// earlier field of the same changes, and is not checked again.
     fn reach_colls(
         &self,
         core: &Core,
-        resource: &str,
-        field: &str,
+        (resource, field): (&str, &str),
         filtered: bool,
+        checked: &mut CollChecks,
         reach: &mut Reach,
     ) {
-        // Every row of a list reads the same listing: it is read once for all of them, not once
-        // a row.
-        let mut listings: Vec<(Rc<crate::value::CollRef>, Option<Rc<crate::store::Listing>>)> =
-            Vec::new();
         for (id, coll) in self.index.coll_readers(resource, field) {
             let Some(b) = self.bound(id) else {
                 continue;
@@ -767,60 +807,26 @@ impl Live {
             let stale = b
                 .colls
                 .iter()
-                .filter(|seen| seen.resource == resource && seen.coll.field == coll)
-                .filter(|seen| !filtered || seen.coll.derived())
-                .any(|seen| {
-                    let at = listings
-                        .iter()
-                        .position(|(held, _)| seen.is_of(held))
-                        .unwrap_or_else(|| {
-                            let listing =
-                                crate::colls::listing_of(&**core.store.borrow(), &seen.coll);
-                            listings.push((Rc::clone(&seen.coll), listing.ok()));
-                            listings.len().saturating_sub(1)
-                        });
-                    !listings
-                        .get(at)
-                        .and_then(|(_, listing)| listing.as_ref())
-                        .is_some_and(|listing| seen.holds(listing))
-                });
+                .enumerate()
+                .filter(|(_, seen)| seen.resource == resource && seen.coll.field == coll)
+                .filter(|(_, seen)| !filtered || seen.coll.derived())
+                .any(|(at, seen)| checked.stale(core, (id, at), seen));
             if stale {
                 reach.hit.push(id);
             }
         }
     }
 
-    /// Whether a change reaches some boundary or the rows of some loop.
-    pub fn reaches(&self, core: &Core, change: &ChangeSummary) -> bool {
-        let reach = self.reached(core, change);
-        !reach.hit.is_empty() || !reach.steps.is_empty()
-    }
-
-    /// Whether a view state slot some boundary read moved since.
-    pub fn states_moved(&self, core: &Core) -> bool {
-        let states = core.view_states.borrow();
-        if states.clock() == self.state_clock {
-            return false;
+    /// Mark the boundaries the changes `changes` reach, heard together: the store is as each of
+    /// them left it, so what one of them had checked of a collection holds for the rest.
+    pub fn absorb(&mut self, core: &Core, changes: &[ChangeSummary]) {
+        let mut checked = CollChecks::default();
+        for change in changes {
+            let reach = self.reached(core, change, &mut checked);
+            self.dirty.extend(reach.hit);
+            self.pending.extend(reach.steps);
+            self.mine_items.extend(reach.mine);
         }
-        self.index.states.iter().any(|(key, ids)| {
-            let now = states.generation(key);
-            ids.iter().any(|id| {
-                self.bound(*id).is_some_and(|b| {
-                    b.state_reads
-                        .iter()
-                        .any(|(k, seen)| k == key && *seen != now)
-                })
-            })
-        })
-    }
-
-    /// Mark the boundaries a change reaches.
-    pub fn absorb(&mut self, core: &Core, change: &ChangeSummary) {
-        let reach = self.reached(core, change);
-
-        self.dirty.extend(reach.hit);
-        self.pending.extend(reach.steps);
-        self.mine_items.extend(reach.mine);
     }
 
     /// Mark the boundaries whose view state moved since they read it.

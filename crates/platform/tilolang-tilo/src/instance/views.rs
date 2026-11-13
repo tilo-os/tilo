@@ -259,7 +259,7 @@ impl Instance {
             };
             // What the view reads changed: the tree may stand as it was (a row's control reads
             // the item's field it is bound to), and the window still needs the values it shows.
-            let stale = view.view.borrow().is_stale();
+            let stale = view.view.borrow_mut().is_stale();
             let patches = match view.view.borrow_mut().poll_patches() {
                 Ok(patches) => patches,
                 Err(error) => {
