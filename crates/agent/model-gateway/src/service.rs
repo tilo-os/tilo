@@ -453,7 +453,15 @@ async fn serve_connection_within(
         // Finish it before acknowledging Stop; an abandoned response is not a
         // promise that the write was cancelled.
         let committing = management_mutation(&request);
-        let (events, mut queued) = tokio::sync::mpsc::channel::<Zeroizing<Vec<u8>>>(8);
+        // The provider future emits without awaiting, so a whole burst of
+        // frames (an answer the provider sent in one read) is queued before
+        // the writer runs again. The queue holds every frame one request may
+        // carry, which the protocol bounds; a full queue then means only a
+        // gateway past that bound, never a writer that is merely behind —
+        // which `emit` would report as the agent having left.
+        let (events, mut queued) = tokio::sync::mpsc::channel::<Zeroizing<Vec<u8>>>(
+            MAX_STREAM_EVENTS + MAX_DELTA_EVENTS + 1,
+        );
         let handling = async {
             let mut emit = |event: &Response| {
                 serde_json::to_vec(event)
@@ -2329,7 +2337,7 @@ impl PlanTiming {
              start_unix_ms={} first_byte_ms={} first_reasoning_ms={} first_token_ms={} first_tool_call_ms={} \
              plan_call_ms={} done_ms={} prompt_tokens={} completion_tokens={} \
              reasoning_tokens={} cached_tokens={} cache_write_tokens={} cost_micros={} tool_calls={} output_allowance={} \
-             source_context={} runtime_context={} timeout_ms={} {} outcome={}",
+             source_context={} runtime_context={} timeout_ms={} {} outcome={}{}",
             log_token(call.profile_id),
             log_token(call.model_id),
             self.stream,
@@ -2356,6 +2364,11 @@ impl PlanTiming {
                 .map_or_else(|| "-".into(), |value| value.to_string()),
             self.progress_log_fields(),
             if outcome.is_ok() { "ok" } else { "error" },
+            // Why an answer was not used, so a failed turn is never only
+            // "error": the stream's own failure, as the gateway saw it.
+            outcome
+                .err()
+                .map_or_else(String::new, |why| format!(" reason={why:?}")),
         );
     }
 }
