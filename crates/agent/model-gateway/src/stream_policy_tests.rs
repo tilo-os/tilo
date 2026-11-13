@@ -10,6 +10,10 @@ fn collect(event: &Response, frames: &mut Vec<(String, serde_json::Value)>) -> b
 
 tilo_test_env::scenario! {
     /// The stream policy between the provider's deltas and the caller's frames.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
     fn presentation_deltas_are_coalesced_and_capped_without_touching_what_is_authorized;
 
     phase coalescing_uses_time_size_and_utf8_boundaries_then_flushes_before_authorization;

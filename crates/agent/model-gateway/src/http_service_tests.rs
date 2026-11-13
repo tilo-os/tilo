@@ -148,6 +148,10 @@ async fn request_bytes_and_concurrency_are_bounded() {
 
 tilo_test_env::scenario! {
     /// The size bounds of what the HTTP gateway encodes and buffers, without a server.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
+    )]
     fn response_frames_and_synchronous_bursts_are_bounded;
 
     phase oversized_response_frame_is_refused;
