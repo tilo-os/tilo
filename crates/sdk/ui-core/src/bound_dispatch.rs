@@ -997,7 +997,7 @@ pub(crate) fn resolve_component_resource(
 }
 
 /// Whether any widget of `widget`'s tree, whatever component it is part of, may resolve resource `id`
-/// once what it reads lands.
+/// once what it reads arrives.
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn any_resource_pending(widget: &dyn Widget, id: &str) -> bool {
     let mut pending = crate::resources::resource_pending(widget, id);
@@ -3304,7 +3304,7 @@ pub(crate) fn resolve_unbound_resource(
 }
 
 /// Whether resource `id`, which `widget`'s subtree resolves to nothing now, may resolve once what it
-/// reads lands ([`crate::resources::PublishesResources::resource_pending`]).
+/// reads arrives ([`crate::resources::PublishesResources::resource_pending`]).
 pub(crate) fn unbound_resource_pending(widget: &dyn Widget, id: &str) -> bool {
     if widget.has_separate_document_owner() {
         return false;

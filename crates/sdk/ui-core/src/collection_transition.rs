@@ -122,7 +122,7 @@ impl<K: Clone + Eq + std::hash::Hash> RowMotions<K> {
         });
     }
 
-    /// Forget a change noted but not started: it lands at once.
+    /// Forget a change noted but not started: it takes effect at once.
     pub fn cancel(&mut self) {
         self.pending = None;
     }

@@ -1,6 +1,6 @@
 //! Who the keyboard belongs to: the one rule every caret follows. A field's text and selection stay
 //! where the person left them when another surface takes the keyboard; its caret is what says "typing
-//! lands here", so only the surface holding the keyboard paints one.
+//! goes here", so only the surface holding the keyboard paints one.
 
 use std::cell::Cell;
 

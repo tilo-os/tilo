@@ -179,7 +179,7 @@ pub fn take_window_activation_intent(widget: &(impl Widget + ?Sized)) -> bool {
 /// A window whose content says what it shows: the page a note is open on, the place a list is at, the
 /// record a sheet edits.
 pub trait WindowTitle {
-    /// What the window shows now, as words a person reads: `None` where it names nothing.
+    /// What the window shows now, as words a person reads: `None` where it is empty.
     fn window_title(&self) -> Option<&str>;
 }
 

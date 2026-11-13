@@ -7,7 +7,7 @@ pub enum FullscreenTarget {
     /// Let the compositor choose (fill whatever output it decides).
     Auto,
     /// The audience-facing screen — the presentation default, so "Present" /
-    /// immersive video lands on the big screen: an external display before
+    /// immersive video plays on the big screen: an external display before
     /// the built-in panel, then the physically largest, then the most pixels.
     #[default]
     Largest,

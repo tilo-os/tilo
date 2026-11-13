@@ -77,7 +77,7 @@ impl ActionPalette {
     }
 
     /// Dim the window behind the card as it arrives, and at once where motion is reduced, as the
-    /// arrival itself lands.
+    /// arrival itself shows.
     pub(super) fn paint_scrim(
         &self,
         scene: &mut vello::Scene,

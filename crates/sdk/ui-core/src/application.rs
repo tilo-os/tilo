@@ -844,7 +844,7 @@ impl HostContext {
         self.settings = document;
     }
     /// Give the component these file areas instead of the person's: a test or capture profile, so
-    /// nothing it writes lands in theirs.
+    /// nothing it writes reaches theirs.
     pub fn provide_files(&mut self, files: crate::storage::AppFiles) {
         self.files = Some(files);
     }
@@ -1439,7 +1439,7 @@ impl AppComponent {
             // through `take_save_status_presentation`, a host through the
             // widget's redraw. No wake: one would run the owner model's
             // update and sync again and draw another frame for every save
-            // that lands, a second frame after each keystroke.
+            // that arrives, a second frame after each keystroke.
             self.save_status_changed = true;
         }
         changed

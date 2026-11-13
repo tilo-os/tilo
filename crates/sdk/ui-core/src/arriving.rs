@@ -317,7 +317,7 @@ impl ArrivalClock {
     }
 
     /// Whether the answer moves in (cross-fades) when it shows. A local
-    /// answer inside the frame budget lands at once: the person never saw
+    /// answer inside the frame budget shows at once: the person never saw
     /// the space without it.
     #[must_use]
     pub fn arrives_with_motion(&self) -> bool {
@@ -354,7 +354,7 @@ impl ArrivalClock {
     }
 
     /// The next instant after `now` at which [`Self::step`] changes; `None`
-    /// once the answer shows, or while nothing will change until it lands.
+    /// once the answer shows, or while nothing will change until it arrives.
     #[must_use]
     pub fn next_step_at(&self, now: Instant) -> Option<Instant> {
         let shows_at = self.shows_at();

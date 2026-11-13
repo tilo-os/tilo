@@ -672,7 +672,7 @@ struct Recording {
     layers: Vec<(usize, u32)>,
     nested: Vec<usize>,
     /// Surfaces drawn into a nested scene, waiting for [`append_nested`] to
-    /// say where that scene lands. Their `layer` is unset until then.
+    /// say where that scene is placed. Their `layer` is unset until then.
     pending: Vec<(usize, RecordedBackdrop)>,
     surfaces: Vec<RecordedBackdrop>,
 }
@@ -1126,7 +1126,7 @@ fn source_uv(uv: vec2<f32>) -> vec2<f32> {
     return pass_.uv_offset + uv * pass_.uv_scale;
 }
 
-// Each target texel centre lands on the corner shared by four source
+// Each target texel centre falls on the corner shared by four source
 // texels, so one bilinear tap is their box average.
 @fragment
 fn fs_halve(in: VertexOut) -> @location(0) vec4<f32> {

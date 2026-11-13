@@ -1838,7 +1838,7 @@ impl App {
         // The debounce spares a settings file a stat on every pass. A source
         // the host provides (the shell's records over the app's channel)
         // says its revision in one atomic read and wakes this loop when it
-        // rings, so its change lands on the wake it caused rather than on
+        // rings, so its change arrives on the wake it caused rather than on
         // some later input after the debounce.
         if settings_store::installed_source().is_some()
             && let Some(due) = now.checked_sub(Duration::from_millis(750))
@@ -2072,7 +2072,7 @@ impl App {
     }
 
     /// When [`Self::autofocus_on_structure_change`] is set, restores the
-    /// focused widget's caret/selection only if focus lands back on the SAME
+    /// focused widget's caret/selection only if focus returns to the SAME
     /// focusable ordinal after rebuild (never onto a different field);
     /// without this an unrelated rebuild snaps the caret to offset 0.
     /// [`Widget::take_focus_reset`] instead jumps to the first focusable

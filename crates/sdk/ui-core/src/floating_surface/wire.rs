@@ -311,7 +311,7 @@ pub enum FloatingSurfaceClientMessage {
         forward: bool,
         instance: Option<u64>,
     },
-    /// The next window this app maps lands as a tab right after this one.
+    /// The next window this app maps opens as a tab right after this one.
     PlaceNextWindowBeside {
         background: bool,
         instance: Option<u64>,

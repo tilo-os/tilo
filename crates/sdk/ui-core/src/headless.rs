@@ -4744,7 +4744,7 @@ impl FrameHarness {
     }
 
     /// The local accessibility node of the currently-focused widget, if any — what a screen reader
-    /// would announce when Tab lands here.
+    /// would announce when Tab arrives here.
     pub fn focused_access_node(&self) -> Option<AccessNode> {
         self.drain_component_wakes();
         let id = self.focused?;
@@ -4854,7 +4854,7 @@ impl FrameHarness {
     ///
     /// # Errors
     ///
-    /// Returns an error when the id names nothing in the current frame — a
+    /// Returns an error when the id is empty in the current frame — a
     /// stale reference is reported, never quietly retargeted at whatever now
     /// occupies the slot — or when it addresses the inoperable window root.
     pub fn perform_a11y_action(

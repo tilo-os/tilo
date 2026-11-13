@@ -301,7 +301,7 @@ impl<'a> NavRowFace<'a> {
     }
 }
 
-/// Where each part of a navigation row lands.
+/// Where each part of a navigation row sits.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavRowLayout {
     /// The selection lift (and the focus ring) of the row.
@@ -418,7 +418,7 @@ fn rail_caption_width(theme: &Theme, width: f64) -> f64 {
 /// How wide a rail of these destination `labels` is: its stock width, grown
 /// with the text so its longest single word fits whole, but never past the
 /// stock width times the text's growth nor `metrics.rail_max_width`. A
-/// fragment such as "Cha…" names nothing, so the rail widens before any word
+/// fragment such as "Cha…" is empty, so the rail widens before any word
 /// is shortened; only past that cap does a word elide.
 #[must_use]
 pub fn rail_width_fitting<'a>(
@@ -1225,7 +1225,7 @@ impl<'a> NavSectionFace<'a> {
     }
 }
 
-/// Where each part of a section header lands.
+/// Where each part of a section header sits.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavSectionLayout {
     /// The header's line, below its leading space.

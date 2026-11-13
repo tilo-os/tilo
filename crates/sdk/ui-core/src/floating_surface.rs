@@ -703,7 +703,7 @@ pub struct FloatingPlacement {
     /// Exact render-only handoff phase used by deterministic visual review.
     handoff_progress_override: Option<f64>,
     settle_motion: Option<SettleMotion>,
-    /// Reduced motion: a return lands home at once and the ownership flourish is not played
+    /// Reduced motion: a return comes home at once and the ownership flourish is not played
     /// ([`Self::set_reduce_motion`]).
     reduce_motion: bool,
 }
@@ -1071,7 +1071,7 @@ impl FloatingPlacement {
     }
 
     /// Detaches after crossing the app by a deliberate 28px, and reattaches
-    /// when the pointer returns well inside it. The asymmetric thresholds stop
+    /// when the pointer returns inside it. The asymmetric thresholds stop
     /// the surface flickering between owners along the border.
     pub fn update_drag(&mut self, pointer: Point, app: Rect, desktop: Rect) -> Handoff {
         let Some(mut drag) = self.drag else {

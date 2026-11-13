@@ -95,7 +95,7 @@ pub struct HintLayer<S: 'static> {
     coach: Coach<S>,
     placed: Option<Placed>,
     /// Everything the last draw painted: the card with its shadow, the lit edge, the dot and where it
-    /// lands.
+    /// goes.
     painted: Option<Rect>,
 }
 
@@ -198,7 +198,7 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
     }
 
     /// Everything the last draw painted (the card with its shadow, a lit edge, the dot it folds into
-    /// and where that lands): while the hint moves, the only pixels it changes are under this and the
+    /// and where that goes): while the hint moves, the only pixels it changes are under this and the
     /// last draw's.
     #[must_use]
     pub fn painted_rect(&self) -> Option<Rect> {

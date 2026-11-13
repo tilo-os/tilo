@@ -299,7 +299,7 @@ fn pan_view(scene: &mut Scene, t: Affine, phase: f64, ink: Ink, touch: bool) {
     }
 }
 
-/// A fingertip resting at `at`, `down` (`0..=1`) as it lands and lifts.
+/// A fingertip resting at `at`, `down` (`0..=1`) as it touches and lifts.
 fn fingertip(scene: &mut Scene, t: Affine, at: Point, radius: f64, down: f64, ink: Ink) {
     let down = down.clamp(0.0, 1.0);
     if down <= 0.0 {

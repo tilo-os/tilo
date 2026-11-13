@@ -2634,8 +2634,8 @@ mod tests {
         {
             // A host that publishes a child's semantics itself (the shell's
             // palette inside its overlay tree) must not have the child
-            // node exported beside it, and keyboard focus on the child lands
-            // on the representation.
+            // node exported beside it, and keyboard focus on the child goes
+            // to the representation.
             let child = TestWidget::new(Some(
                 AccessNode::new(Role::Dialog).with_name("palette widget"),
             ));
