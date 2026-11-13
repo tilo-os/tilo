@@ -1,5 +1,5 @@
-//! The album and metadata editors: opening them over the library, their
-//! input, saving their drafts and painting their sheets.
+//! The album and metadata editors: opening them over the library, their input, saving their drafts
+//! and painting their sheets.
 
 use crate::actions::PhotosEffect;
 use crate::model::PhotoLibrary;
@@ -26,9 +26,6 @@ use super::{
 use ui::widget::DrawChild;
 
 impl Photos {
-    /// Pose the ordinary library editor for deterministic offscreen coverage.
-    /// The production entry point is the visible “Edit album” control; shot
-    /// rendering has no window event stream to click it through.
     pub fn show_album_editor_for_shot(&mut self) {
         self.show_library();
         self.active_album = self
@@ -40,7 +37,6 @@ impl Photos {
         self.begin_edit_album();
     }
 
-    /// Pose the shared metadata editor for visual regression coverage.
     pub fn show_metadata_editor_for_shot(&mut self) {
         self.show_library();
         let library = self.presented();
@@ -55,9 +51,6 @@ impl Photos {
         }
     }
 
-    /// Pose a mixed-value multi-photo edit on its location section. This is
-    /// the state most likely to regress silently because blank means “keep”
-    /// until the user explicitly clears or replaces the dimension.
     pub fn show_batch_metadata_editor_for_shot(&mut self) {
         self.show_selection_for_shot();
         self.begin_selected_metadata_editor();
@@ -65,17 +58,12 @@ impl Photos {
     }
 
     pub(super) fn begin_new_album(&mut self) {
-        // A local `untitled-1` counter collides when two offline replicas
-        // create their first album. Mint the durable identity independently
-        // of its editable name so concurrent creations remain separate.
         let id = format!("photos.album:{}", tilo_actions::InvocationId::new().0);
         self.album_editor = true;
         self.album_editor_creating = true;
         self.album_editor_id = Some(id);
         self.album_name_input.set_text(&tr("photos-untitled-album"));
         self.album_name_input.set_focus(true);
-        // The suggested name is selected, so typing replaces it rather than
-        // appending to "Untitled album".
         self.album_name_input.select_all();
         self.album_editor_members.clear();
         self.album_delete_confirm = false;
@@ -83,8 +71,6 @@ impl Photos {
         self.notice = Some(tr("photos-album-new-hint"));
     }
 
-    /// Open the compact, shared-widget metadata sheet for an explicit card.
-    /// Nothing is inferred from pixels: people are only labels the user types.
     pub(super) fn begin_metadata_editor(&mut self, photo_id: &str) {
         self.begin_metadata_editor_for_ids(vec![photo_id.to_owned()]);
     }
@@ -184,8 +170,6 @@ impl Photos {
             };
             self.metadata_location_from_map = false;
         }
-        // A field's placeholder says what to type, never its label again;
-        // one that differs across the chosen photos says it is kept as is.
         let mixed_hint = tr("photos-metadata-mixed");
         for (input, mixed, ordinary) in [
             (
@@ -236,12 +220,9 @@ impl Photos {
         self.editor_scroll.set_offset(vello::kurbo::Vec2::ZERO);
         self.metadata_editor_reveal_focus = true;
         self.album_editor = false;
-        // The sheet owns the full privacy explanation. Keeping a duplicate
-        // in the persistent status band made it wrap below a phone viewport.
         self.notice = None;
     }
 
-    /// The draft's text fields in [`Self::metadata_seed`] order.
     fn metadata_draft_inputs(&self) -> [&TextInput; 7] {
         [
             &self.metadata_folder_input,
@@ -254,8 +235,6 @@ impl Photos {
         ]
     }
 
-    /// Whether the details draft differs from what the editor opened with:
-    /// a field edited, or one marked to clear for every photo.
     pub(super) fn metadata_draft_changed(&self) -> bool {
         self.metadata_force_clear.contains(&true)
             || self
@@ -284,7 +263,6 @@ impl Photos {
         reason = "builds the single atomic batch metadata action from all sheet fields in one place"
     )]
     pub(super) fn save_metadata_editor(&mut self) {
-        // Save stands disabled while nothing changed; no path saves then.
         if self.metadata_editor_ids.is_empty() || !self.metadata_draft_changed() {
             return;
         }
@@ -465,9 +443,6 @@ impl Photos {
         }
     }
 
-    /// Write an explicit offline-map point into the draft fields. No document
-    /// update occurs here: batch edits retain their mixed values until the
-    /// user deliberately saves this one shared provenance-bearing patch.
     pub(super) fn set_metadata_location_from_map_point(&mut self, point: Point) -> bool {
         let bounds = self.metadata_location_map_bounds;
         if !bounds.contains(point) {
@@ -485,8 +460,6 @@ impl Photos {
             .set_text(&format!("{latitude:.6}"));
         self.metadata_longitude_input
             .set_text(&format!("{longitude:.6}"));
-        // Re-centre the private draft map so its persistent crosshair is an
-        // honest confirmation of the point just chosen.
         self.metadata_location_map.latitude = latitude;
         self.metadata_location_map.longitude = longitude;
         self.metadata_mixed[4] = false;
@@ -538,11 +511,6 @@ impl Photos {
         self.album_editor_focus = 0;
     }
 
-    /// Back's first step while an editor stands as the narrow window's
-    /// sheet: raised to the whole window it comes down to half, else the
-    /// editor is put away as Cancel puts it. Returns whether there was such
-    /// a sheet to take the step; the window bar's Back, Escape and the
-    /// system's back gesture all ask it before anything navigates.
     pub(super) fn sheet_back(&mut self) -> bool {
         if !self.editor_sheet_shown() {
             return false;
@@ -554,14 +522,12 @@ impl Photos {
         true
     }
 
-    /// Whether an editor stands as the narrow window's sheet.
     pub(super) fn editor_sheet_shown(&self) -> bool {
         (self.album_editor || self.metadata_editor)
             && self.chrome.inspector.is_open()
             && self.chrome.inspector.sheet_detent().is_some()
     }
 
-    /// Put the open editor away, its edits discarded.
     fn cancel_editor(&mut self) {
         if self.album_editor {
             self.cancel_album_editor();
@@ -622,8 +588,6 @@ impl Photos {
                     .insert_as(&album.item(), usize::MAX, &album),
             );
         } else {
-            // A name and a membership saved together, so collaborators never
-            // see half of the save.
             let paths = crate::model::album_paths(&id);
             let before = library
                 .album(&id)
@@ -634,8 +598,6 @@ impl Photos {
             self.commit_group(&edits);
         }
         self.active_album = Some(id);
-        // The editor is done with this album: its own save landing must not
-        // read as someone else changing the album under an open draft.
         self.album_editor = false;
         self.album_editor_id = None;
         self.album_editor_members.clear();
@@ -674,8 +636,6 @@ impl Photos {
         if !self.album_editor {
             return false;
         }
-        // The timeline beside the editor keeps scrolling: choosing photos
-        // means finding them.
         if matches!(event, winit::event::WindowEvent::MouseWheel { .. }) {
             return false;
         }
@@ -734,7 +694,6 @@ impl Photos {
                             self.delete_active_album();
                         }
                         (false, 2) => self.album_delete_confirm = true,
-                        // Enter in the name field saves, as in any form.
                         (_, 0) | (true, 2) | (false, 3) => self.save_album_editor(),
                         _ => {}
                     }
@@ -746,8 +705,6 @@ impl Photos {
             if self.metadata_editor_section == MetadataEditorSection::TimeAndPlace
                 && matches!(self.metadata_editor_focus, 2 | 3)
             {
-                // Coordinates subsequently authored through the shared text
-                // input are no longer accurately described as a map pin.
                 self.metadata_location_from_map = false;
             }
         }
@@ -820,10 +777,6 @@ impl Photos {
         if !self.metadata_editor {
             return false;
         }
-        // The sheet floats over a custom media surface, so dispatch its
-        // retained controls explicitly. They still use the normal widget
-        // event contract and publish the same action surface as every other
-        // button in the app.
         for (_, button) in &mut self.metadata_editor_buttons {
             let mut sink = None;
             button.handle_event(
@@ -884,8 +837,6 @@ impl Photos {
                 _ => {}
             }
         }
-        // A wheel over the field list is the scroll region's: it moves the
-        // list, fades its edges and glides on as every scroller does.
         if let winit::event::WindowEvent::MouseWheel { .. } = event
             && self.editor_scroll_viewport.contains(self.pointer)
         {
@@ -905,8 +856,6 @@ impl Photos {
             }
             return true;
         }
-        // A press outside the field list's visible region belongs to the
-        // pinned footer (or the scrim), never to an input scrolled under it.
         let press_outside_body = matches!(
             event,
             winit::event::WindowEvent::MouseInput {
@@ -935,7 +884,6 @@ impl Photos {
                 },
             );
         }
-        // A field's clear toggle answers in the same event.
         if let Some(hit) = self.metadata_editor_pending.take() {
             self.activate_metadata_editor_hit(hit);
             *ctx.handled = true;
@@ -960,8 +908,6 @@ impl Photos {
         true
     }
 
-    /// The album editor in the inspector: the album's name, how many photos
-    /// are in it (chosen in the timeline beside it), and its actions.
     #[expect(
         clippy::too_many_lines,
         reason = "the editor lays out its field, count and footer actions in one pass"
@@ -997,11 +943,6 @@ impl Photos {
         let rhythm = &local.tokens.spacing.rhythm;
         let control_h = ui::widget::ControlSize::Regular.height(&local);
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, &local);
-        // Edit album's body is the same scroll region the details sheet's
-        // field list uses: the name, its guidance and the count fill the
-        // sheet from the header down to the footer, and scroll under its
-        // edge fade when the sheet is short.
-        // Down to the footer's own rows, as the details sheet's list runs.
         let body = Rect::new(
             frame.body.x0,
             frame.body.y0,
@@ -1025,9 +966,6 @@ impl Photos {
             + Self::line_of(&local, ui::TextRole::Caption);
         self.editor_scroll
             .set_content_size(region.width(), content_h);
-        // The rows in content coordinates, as the list rests against them,
-        // so the region lands the offset between them when the sheet is
-        // short.
         let guidance_band = Rect::new(
             region.x0,
             label_h + f64::from(rhythm.tight) + control_h + f64::from(rhythm.group),
@@ -1042,8 +980,6 @@ impl Photos {
         );
         self.editor_field_bands = vec![guidance_band, count_band];
         self.editor_scroll_landed();
-        // The rows stand where the region shows them: its origin less the
-        // offset, in window coordinates, as the details sheet's fields do.
         let shown = self.editor_scroll.offset();
         let top = region.y0 - shown.y;
         let name = Rect::new(
@@ -1086,7 +1022,6 @@ impl Photos {
         });
         self.editor_scroll = album_scroll;
         let ctx = PaintCtx::new(scene, transform, text_renderer, &local);
-        // Footer: delete leading, cancel and save trailing.
         let footer = frame.footer;
         let gap = f64::from(rhythm.related);
         let save_label = tr("photos-save");
@@ -1150,8 +1085,6 @@ impl Photos {
         }
     }
 
-    /// The details editor in the inspector: the photographs' folder, people
-    /// and tags, or when and where they were taken, and Save.
     #[expect(
         clippy::too_many_lines,
         reason = "the two sections share one scroll region, field rhythm and footer"
@@ -1206,7 +1139,6 @@ impl Photos {
         let body = frame.body;
         let mut hits = Vec::new();
 
-        // The two sections.
         let strip_h = SegmentedFace::height(ui::widget::ControlSize::Regular, &local);
         let strip = Rect::new(body.x0, body.y0, body.x1, body.y0 + strip_h);
         let labels = [tr("photos-organize"), tr("photos-time-and-place")];
@@ -1238,11 +1170,6 @@ impl Photos {
                 .zip(segments.iter().copied()),
         );
 
-        // The field list is a scroll region filling the sheet from the tabs
-        // down to the footer, so the last field is reachable and no empty
-        // sheet is left below an edge the list was cut at. The footer's own
-        // rows are in `frame.footer`, below the body the frame reserves for
-        // it, so the list ends where they start.
         let start = Rect::new(
             body.x0,
             strip.y1 + sibling,
@@ -1255,27 +1182,17 @@ impl Photos {
         let row_h = label_h + tight + control_h + sibling;
         let content = MetadataFieldList::new(region, row_h, sibling);
         let time_and_place = self.metadata_editor_section == MetadataEditorSection::TimeAndPlace;
-        // The map gives up height first, so in a short window the
-        // coordinates under it stay in view; it never shrinks below a target
-        // the pointer can still pick from.
         let least_map = 2.0 * f64::from(local.tokens.metrics.min_pointer_target);
         let map_h = if time_and_place {
             content.map_h(&local, least_map)
         } else {
             0.0
         };
-        // Its whole height is known before a field is placed, so the region
-        // clamps the offset against it and can land it between two fields.
         let reveal = self
             .metadata_editor_reveal_focus
             .then_some(self.metadata_editor_focus);
         self.editor_scroll_bands(&content, map_h, reveal);
         self.metadata_editor_reveal_focus = false;
-        // The rows stand where the list shows them: the region's origin,
-        // less the offset. A field is laid out in window coordinates (hover,
-        // press and caret hit-testing read them), so the rows are placed
-        // there and drawn with the window's own transform, while the clip
-        // and the edge fades come from the region.
         let shown = self.editor_scroll.offset();
         let place = MetadataFieldPlacement {
             region,
@@ -1289,8 +1206,6 @@ impl Photos {
             tight,
             related,
         };
-        // The region borrows no part of the app while it paints, so the
-        // fields it holds can reach the app's own inputs.
         let scroll = std::mem::replace(
             &mut self.editor_scroll,
             ScrollRegion::vertical().with_edge_fade(),
@@ -1307,7 +1222,6 @@ impl Photos {
             );
         });
         self.editor_scroll = scroll;
-        // Footer: cancel and save, trailing.
         let footer = frame.footer;
         let footer_focus = if self.metadata_editor_section == MetadataEditorSection::Organize {
             (3, 4)
@@ -1350,9 +1264,6 @@ impl Photos {
         self.metadata_editor_hits = hits;
     }
 
-    /// The field list's rows, in the content coordinates its scroll region
-    /// paints with: every field's band, the map's, and the pair of
-    /// coordinates under it.
     fn draw_metadata_fields(
         &mut self,
         scene: &mut Scene,
@@ -1363,9 +1274,6 @@ impl Photos {
         place: &MetadataFieldPlacement,
         hits: &mut Vec<(MetadataEditorHit, Rect)>,
     ) {
-        // One field: its label, and the input under it. A field a batch edit
-        // can clear for every photo carries that as a toggle in its trailing
-        // accessory; `clear` is whether it is on.
         let field = |scene: &mut Scene,
                      text_renderer: &mut TextRenderer,
                      input: &mut TextInput,
@@ -1435,8 +1343,6 @@ impl Photos {
                     Some(self.metadata_force_clear[4]),
                     column(1.0),
                 );
-                // A pick surface for the location: the offline map, with the
-                // drafted position marked.
                 let map = Rect::new(region.x0, place.map_y, region.x1, place.map_y + place.map_h);
                 self.metadata_location_map_bounds = map;
                 self.paint_location_map(scene, transform, local, map);
@@ -1465,8 +1371,6 @@ impl Photos {
         }
     }
 
-    /// Where each field's band stands in the field list's content, and the
-    /// list's height with the map at `map_h`.
     fn editor_field_bands(&self, content: &MetadataFieldList, map_h: f64) -> (Vec<Rect>, f64) {
         let region = content.region;
         let row_h = content.row_h;
@@ -1487,10 +1391,6 @@ impl Photos {
         )
     }
 
-    /// Lay the list out as the frame will draw it, remember the bands its
-    /// fields stand in, then move the offset to where the list rests and,
-    /// when focus moved this frame, reveal the focused field: the region
-    /// clamps it, so the list never ends past its last field.
     fn editor_scroll_bands(
         &mut self,
         content: &MetadataFieldList,
@@ -1511,13 +1411,10 @@ impl Photos {
         }
     }
 
-    /// Put the field list where it rests between two fields.
     fn editor_scroll_landed(&mut self) {
         self.editor_scroll.land_between(&self.editor_field_bands);
     }
 
-    /// The location pick surface: the offline land silhouettes on the
-    /// raised well, and the drafted position as a ring in primary ink.
     fn paint_location_map(&self, scene: &mut Scene, transform: Affine, theme: &Theme, map: Rect) {
         use vello::peniko::Fill;
         let colors = &theme.tokens.colors;
@@ -1607,13 +1504,6 @@ impl Photos {
     }
 }
 
-/// Keep compact card chrome single-line.  Character iteration, rather than a
-/// byte slice, preserves Unicode names in both painting and accessibility.
-/// Native controls layered over the custom metadata inspector. The inspector
-/// owns responsive geometry; `Button` owns interaction states, focus, action
-/// publication, tooltips, and the accessible name. This keeps the sheet from
-/// becoming a painted collection of fake controls merely because it is docked
-/// over the photo canvas.
 pub(super) fn build_metadata_editor_buttons(
     actions: Option<&ui::framework::Actions<crate::model::PhotoLibrary>>,
 ) -> Vec<(MetadataEditorHit, Button)> {
@@ -1634,7 +1524,6 @@ pub(super) fn build_metadata_editor_buttons(
     ]
     .into_iter()
     .map(|(hit, id, label)| {
-        // Save is the sheet's primary action, as in the album sheet.
         let role = if hit == MetadataEditorHit::Save {
             ButtonRole::Primary
         } else {
@@ -1649,8 +1538,6 @@ pub(super) fn build_metadata_editor_buttons(
     .collect()
 }
 
-/// A metadata field whose trailing accessory toggles "clear this for every
-/// photo in the batch": a field's own control, not a separate button.
 pub(super) fn clear_toggled_input(
     id: &str,
     clear: MetadataEditorHit,
@@ -1674,9 +1561,6 @@ pub(super) fn clear_toggled_input(
     )
 }
 
-/// The effect each retained control invokes, and back: a button is bound to
-/// its effect through the framework, and the effect's handler posts the
-/// control's intent for the next sync, which has the document.
 impl MetadataEditorHit {
     fn effect(self) -> PhotosEffect {
         match self {
@@ -1694,8 +1578,6 @@ impl MetadataEditorHit {
     }
 }
 
-/// Where the field list stands this frame: the region it shows in, and the
-/// content coordinates its rows start from.
 struct MetadataFieldPlacement {
     region: Rect,
     fields_y: f64,
@@ -1709,8 +1591,6 @@ struct MetadataFieldPlacement {
     related: f64,
 }
 
-/// The field list's shape in the sheet: the region it scrolls in, one
-/// field's pitch and the space between a field and the next.
 struct MetadataFieldList {
     region: Rect,
     row_h: f64,
@@ -1726,23 +1606,16 @@ impl MetadataFieldList {
         }
     }
 
-    /// How tall the map may stand: half the list's width, at most most of a
-    /// utility panel's.
     fn preferred_map_h(&self, theme: &Theme) -> f64 {
         (self.region.width() * 0.5).min(f64::from(theme.tokens.metrics.panel_width_utility) * 0.6)
     }
 
-    /// The map gives up height first, so in a short window the coordinates
-    /// under it stay in view. It never shrinks below `least`, a target the
-    /// pointer can still pick from, unless even that leaves the fields no
-    /// room.
     fn map_h(&self, theme: &Theme, least: f64) -> f64 {
         let preferred = self.preferred_map_h(theme);
         let room = self.region.height() - 3.0 * self.row_h - self.sibling;
         preferred.min(room).max(least.min(preferred))
     }
 
-    /// The whole list's height, the map (`0` for Organize) included.
     fn height(&self, map_h: f64) -> f64 {
         3.0 * self.row_h + map_h + self.sibling
     }

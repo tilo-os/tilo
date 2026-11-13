@@ -1,16 +1,4 @@
-//! The library as search: the resource's search entries, and the index the
-//! timeline filters by.
-//!
-//! Every photograph, album, timeline month and day, place, folder, person,
-//! tag, object and pet is a row found by its Unicode name, dimensions,
-//! capture date, location and analysed content. A hit uses the harmless
-//! canonical `open` action; choosing one never rotates, crops, copies or
-//! saves a picture just because the query matched one of those words.
-//!
-//! The same rows are the library's search entries
-//! ([`library_search_entries`], the app's one search source) and
-//! [`LibraryIndex`], which the timeline pages through as you type and which
-//! materializes any row's exact resource by id.
+//! The library as search: the resource's search entries, and the index the timeline filters by.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -35,13 +23,6 @@ pub const PHOTO_SEARCH_KIND: &str = "Photos";
 
 pub const LIBRARY_ID: &str = "photos.library";
 
-/// A complete, bounded-query index of the library the timeline filters by,
-/// and the library its rows' resources are published from.
-///
-/// This is built from the document, never from widget state or a filesystem
-/// scan. A row's address is exactly the resource address agents,
-/// accessibility and collaboration resolve, and a library change makes old
-/// targets fail normal fresh-tree resolution.
 #[derive(Clone)]
 pub struct LibraryIndex {
     state: Arc<RwLock<ProviderState>>,
@@ -53,7 +34,6 @@ struct ProviderState {
     library: Arc<PhotoLibrary>,
 }
 
-/// What a row is, as the timeline filters them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RowKind {
     Library,
@@ -71,9 +51,8 @@ enum RowKind {
 }
 
 impl RowKind {
-    /// The id of the view the row's resource offers to open it, which the
-    /// window's opener runs for a hit anchored at it. A photograph or an
-    /// album is opened as the item it is.
+    /// The id of the view the row's resource offers to open it, which the window's opener runs for
+    /// a hit anchored at it. A photograph or an album is opened as the item it is.
     fn opened_by(self) -> &'static str {
         use crate::actions::PhotosEffect as E;
         match self {
@@ -92,7 +71,6 @@ impl RowKind {
         }
     }
 
-    /// That view as the row's resource `id` offers it: what its hit invokes.
     fn opened_on(self, id: &str) -> ActionAddress {
         use crate::actions::PhotosEffect as E;
         match self {
@@ -111,20 +89,17 @@ impl RowKind {
         }
     }
 
-    /// Whether the row is an item of the library, opened by its anchor.
     fn item(self) -> bool {
         matches!(self, Self::Photo | Self::Album)
     }
 }
 
 struct LibraryRow {
-    /// What the row is found by, beside its title.
     text: String,
     title: String,
     subtitle: String,
     /// The lucide name of the glyph its hit leads with.
     icon: &'static str,
-    /// The resource it opens: the anchor of its hit.
     id: String,
     kind: RowKind,
     /// The facets a photograph is filtered by: its people, tags and place.
@@ -155,7 +130,6 @@ impl LibraryRow {
     }
 
     fn result(&self) -> SearchResult {
-        // The index the timeline filters by keeps canonical addresses.
         SearchResult::for_action(
             PHOTO_SEARCH_KIND,
             &self.title,
@@ -165,7 +139,6 @@ impl LibraryRow {
         .with_icon(Icon::from_name(self.icon).unwrap_or(Icon::Image))
     }
 
-    /// The text the index finds the row by: its title first.
     fn searchable(&self) -> String {
         format!("{}\0{}", self.title, self.text)
     }
@@ -175,8 +148,6 @@ impl LibraryRow {
             .grouped(PHOTO_SEARCH_KIND)
             .subtitled(self.subtitle.clone())
             .with_icon(self.icon);
-        // An item opens as the item it is; any other place by its view
-        // ([`opened`]).
         entry = entry.anchored(self.id.clone());
         for (facet, value) in &self.facets {
             let group = match *facet {
@@ -200,8 +171,6 @@ impl LibraryRow {
 }
 
 fn photo_row(photo: &LibraryPhoto) -> LibraryRow {
-    // Omit repeated kind/action boilerplate: it creates huge shared
-    // postings in a large library without helping find a photograph.
     let mut row = LibraryRow::open(
         &photo_resource_id(&photo.id),
         RowKind::Photo,
@@ -240,9 +209,6 @@ fn photo_row(photo: &LibraryPhoto) -> LibraryRow {
     row
 }
 
-/// The view that shows the row anchored at `anchor` of `library`: the one
-/// its published place offers. `None` for an item (opened as the item it
-/// is) and for an anchor that names no row any more.
 pub fn opened(library: &PhotoLibrary, anchor: &str) -> Option<crate::actions::PhotosEffect> {
     use ui::tilo_resource::Effect as _;
     let kind = library_rows(library).get(anchor)?.kind;
@@ -262,9 +228,6 @@ pub fn opened(library: &PhotoLibrary, anchor: &str) -> Option<crate::actions::Ph
     crate::actions::PhotosEffect::from_payload(&encoded.payload).ok()
 }
 
-/// The library's search entries: every row, each hit opening its exact
-/// resource. What [`Resource::search`](ui::tilo_resource::Resource::search)
-/// answers for the photos library.
 pub fn library_search_entries(library: &PhotoLibrary) -> Vec<SearchEntry> {
     library_rows(library)
         .values()
@@ -272,9 +235,6 @@ pub fn library_search_entries(library: &PhotoLibrary) -> Vec<SearchEntry> {
         .collect()
 }
 
-/// Every searchable row of `library`, keyed by resource id. A hostile or
-/// corrupt document can claim one stable id for two kinds; neither ambiguous
-/// row is safe to advertise, so both are left out.
 #[allow(
     clippy::too_many_lines,
     reason = "one builder keeps every searchable resource kind in a single collision boundary"
@@ -460,7 +420,6 @@ fn library_rows(library: &PhotoLibrary) -> BTreeMap<String, LibraryRow> {
 }
 
 impl LibraryIndex {
-    /// An empty provider used only before the first document synchronization.
     #[must_use]
     pub fn empty() -> Self {
         Self {
@@ -472,32 +431,16 @@ impl LibraryIndex {
         }
     }
 
-    /// Index `library`'s records directly. Resource snapshots are
-    /// deliberately contextual, so searching through one would hide late
-    /// library entries.
-    ///
-    /// # Errors
-    ///
-    /// Returns a catalogue contract error if a generated canonical row cannot
-    /// be admitted. Ambiguous resource-id collisions are excluded safely.
     pub fn new(library: &PhotoLibrary) -> Result<Self, SearchCatalogError> {
         let provider = Self::empty();
         provider.replace_from_library(library)?;
         Ok(provider)
     }
 
-    /// Refresh this retained provider to one document generation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a catalogue contract error if the replacement snapshot cannot
-    /// be admitted; the previous complete generation remains available.
     pub fn sync(&self, library: &PhotoLibrary) -> Result<(), SearchCatalogError> {
         self.replace_from_library(library)
     }
 
-    /// The resource `id` as the library publishes it, from the retained
-    /// generation: what the widget resolves for agent and history lookups.
     pub fn resource(&self, id: &str) -> Option<ResourceSpec> {
         let state = self.state.read_recover();
         state.rows.get(id)?;
@@ -544,13 +487,6 @@ impl LibraryIndex {
         self.replace_from_library_before_publish(library, || {})
     }
 
-    /// Build the library's rows before taking the public snapshot lock,
-    /// then publish them with the library they came from as one generation.
-    /// The catalogue indexes again only the rows that changed, so one
-    /// photo's edit or analysis result costs its own rows, not a rebuild of
-    /// every row the library has. The hook makes the lock boundary directly
-    /// regression-testable: a query must remain able to read the previous
-    /// generation after the rows are built but before publication.
     fn replace_from_library_before_publish<F>(
         &self,
         library: &PhotoLibrary,
@@ -567,9 +503,6 @@ impl LibraryIndex {
         let library = Arc::new(library.clone());
         before_publish();
         let mut state = self.state.write_recover();
-        // Callers never observe fresh hits with stale resources: the rows
-        // and their library change under one lock. A refused snapshot
-        // leaves the catalogue, and so the old snapshot, intact.
         state.catalog.sync_records(rows.iter().map(|(id, row)| {
             SearchRecord::new(id, row.result()).field(row.searchable(), FieldWeight::UNRANKED)
         }))?;
@@ -611,8 +544,6 @@ mod tests {
     use ui::search::testing::assert_late_hit_reachable;
     use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider};
 
-    /// The app's search source over the library `doc` holds, as the
-    /// framework builds it from the resource's entries.
     fn source(doc: &AutoCommit) -> impl SearchProvider + use<> {
         source_of(&crate::test_doc::library(doc))
     }
@@ -621,13 +552,10 @@ mod tests {
         ui::framework::testing::search_source::<PhotoLibrary>(library_search_entries(library))
     }
 
-    /// Where a hit goes: the resource it is anchored at. The view that
-    /// shows it is the window's opener's ([`super::opened`]).
     fn target(hit: &SearchResult) -> (String, Option<String>) {
         (hit.action_id.clone(), None)
     }
 
-    /// The view the window's opener runs for a hit anchored at `anchor`.
     fn view_of(doc: &AutoCommit, anchor: &str) -> Option<String> {
         use ui::tilo_resource::Effect as _;
         super::opened(&crate::test_doc::library(doc), anchor).map(|effect| effect.id().to_owned())
@@ -643,9 +571,6 @@ mod tests {
         <PhotoLibrary as ui::tilo_resource::Resource>::child(&library, id)
     }
 
-    /// The resource a search hit opens, as the library publishes it, when
-    /// the window can show it: an item as itself, any other place through
-    /// the view it offers.
     fn opened(doc: &AutoCommit, (resource, _): &(String, Option<String>)) -> Option<ResourceSpec> {
         let library = crate::test_doc::library(doc);
         let item = library_rows(&library).get(resource)?.kind.item();
@@ -1105,10 +1030,6 @@ mod tests {
                 });
                 built_rx.recv().expect("replacement finished off-lock work");
 
-                // This runs exactly in the window after the replacement rows
-                // exist but before the short publication. If that work ever
-                // re-enters the public state lock, either operation deadlocks
-                // here instead of continuing against the prior generation.
                 assert!(
                     provider
                         .photo_matches_page("before", None)
@@ -1158,7 +1079,6 @@ mod tests {
                     "step {step}, query {query:?}"
                 );
             }
-            // The same library again changes nothing: cursors stay current.
             let generation = provider.generation();
             provider.sync(&library).unwrap();
             assert_eq!(provider.generation(), generation);

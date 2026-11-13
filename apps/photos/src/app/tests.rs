@@ -12,30 +12,21 @@ use vello::kurbo::Affine;
 use super::jobs::thumbnail_request;
 use ui::widget::DrawChild;
 
-/// Collections: naming and saving albums, the controls a view offers, and
-/// what collection views show and act on.
 #[path = "tests/collections.rs"]
 mod collections;
 use crate::timeline_projection::{TimelineGeometry, TimelinePhoto};
 
-/// Present `doc`'s library to `app` as the framework does after a change,
-/// then sync it.
 fn sync(app: &mut PhotosApp, doc: &mut AutoCommit) {
     sync_once(app, doc);
     sync_until_decoded(app, doc);
 }
 
-/// One pass: present `doc`'s library to `app` and sync, without waiting for
-/// the pixels the window asks the decoder for.
 fn sync_once(app: &mut PhotosApp, doc: &mut AutoCommit) {
     present(app, doc);
     Widget::sync(app, doc, &ROOT);
     settle(app, doc);
 }
 
-/// Run passes until the photograph the window shows has been decoded off the
-/// frame: the pass that asked for its pixels showed the loading state, and a
-/// later one shows the picture.
 fn sync_until_decoded(app: &mut PhotosApp, doc: &AutoCommit) {
     let deadline = tilo_test_env::hang_deadline();
     while app.state().decoding.is_some() {
@@ -49,16 +40,12 @@ fn sync_until_decoded(app: &mut PhotosApp, doc: &AutoCommit) {
     }
 }
 
-/// Apply what `app` submitted to `doc`, as the host does after a pass,
-/// without showing it the result yet.
 fn land(app: &PhotosApp, doc: &mut AutoCommit) {
     if let Some(dispatch) = &app.state().dispatch {
         ui::framework::testing::resolve(dispatch, doc).expect("submitted edits apply");
     }
 }
 
-/// Apply what `app` submitted to `doc`, as the host does after a pass, and
-/// show it the result.
 fn settle(app: &mut PhotosApp, doc: &mut AutoCommit) {
     let Some(dispatch) = app.state().dispatch.clone() else {
         return;
@@ -72,7 +59,6 @@ fn settle(app: &mut PhotosApp, doc: &mut AutoCommit) {
     }
 }
 
-/// Present `doc`'s library to `app`, as the framework does after a change.
 fn present(app: &PhotosApp, doc: &AutoCommit) {
     let state =
         <PhotoLibrary as ui::tilo_resource::Resource>::read(doc).expect("the library reads");
@@ -84,39 +70,30 @@ use crate::shots_pattern;
 use automerge::{AutoCommit, ROOT};
 use ui::tilo_resource::{Invoke, Resource as _};
 
-/// Apply `invoke` to `doc`, as the door does.
 fn apply(doc: &mut AutoCommit, invoke: &Invoke<PhotoLibrary>) -> Result<(), String> {
     let action = invoke.build(0)?;
     tilo_actions::Action::apply(&action, doc).map_err(|error| error.to_string())
 }
 
-/// What `invoke` invokes, to compare two.
 fn invocation(
     invoke: Option<&Invoke<PhotoLibrary>>,
 ) -> Option<(&'static str, serde_json::Map<String, serde_json::Value>)> {
     invoke.map(|invoke| (invoke.id, invoke.arguments.clone()))
 }
 
-/// The library as published, with every child resource.
 fn published(doc: &AutoCommit) -> tilo_actions::ResourceSpec {
     let library = crate::test_doc::library(doc);
     ui::tilo_resource::publish::<PhotoLibrary>("photos.library", "Photos", &library)
 }
 
-/// `app`, editing through a test's dispatcher of the library.
 fn editing(app: PhotosApp) -> PhotosApp {
     app.with_dispatcher(ui::framework::testing::dispatcher("so.tilo.photos"))
 }
 
-/// A surface on an in-memory content store, editing through a test's
-/// dispatcher.
 fn test_app() -> PhotosApp {
     editing(PhotosApp::new())
 }
 
-/// Stage the screenshot scenario `name` as a capture does: its photographs
-/// in the app's content store, its actions applied, its view state posed on
-/// the next sync.
 fn stage(app: &PhotosApp, doc: &mut AutoCommit, name: &str) {
     crate::sample::put_content(&app.state().content);
     for action in crate::sample::scenario(Some(name)) {
@@ -133,8 +110,6 @@ fn has_resource_id(resource: &tilo_actions::ResourceSpec, id: &str) -> bool {
             .any(|child| has_resource_id(child, id))
 }
 
-/// Lay the chrome out at `width`, as a frame would, which declares the
-/// window bar's slots.
 fn lay_out_header(app: &PhotosApp, width: f64) {
     let theme = Theme::dark();
     app.state().rect = Rect::new(0.0, 0.0, width, 800.0);
@@ -142,8 +117,6 @@ fn lay_out_header(app: &PhotosApp, width: f64) {
     app.state().place_chrome();
 }
 
-/// The window's shell laid out at `width`, and the link the window bar
-/// reaches its own buttons through. The harness keeps the shell alive.
 fn laid_out_shell(width: f64) -> (ui::headless::FrameHarness, ui::widget::WindowBarLink) {
     use ui::widget::{ContentKind, NavList, NavShell};
     let shell = NavShell::new()
@@ -160,7 +133,6 @@ fn laid_out_shell(width: f64) -> (ui::headless::FrameHarness, ui::widget::Window
     (harness, link)
 }
 
-/// The names of the commands the window bar offers.
 fn toolbar_names(app: &PhotosApp) -> Vec<String> {
     app.state()
         .window_bar()
@@ -178,8 +150,6 @@ fn bar_command(app: &PhotosApp, name: &str) -> Option<ui::window_toolbar::Toolba
         .find(|action| action.name == name)
 }
 
-/// Press the window bar's command named `name`, as the desktop hands the
-/// press to the app. Returns whether the bar offered it.
 fn press_bar(app: &PhotosApp, name: &str) -> bool {
     let Some(action) = bar_command(app, name) else {
         return false;
@@ -204,7 +174,6 @@ fn the_open_photograph_can_be_presented_slid_and_zoomed() {
         assert!(!app.state().library_mode, "a photograph is open");
         assert!(app.state().viewer.is_some(), "the photograph has a viewer");
 
-        // Full screen is the window's, and the app asks for it.
         assert_eq!(
             ui::widget::FullscreenProvider::fullscreen_intent(&app),
             Some(false)
@@ -215,7 +184,6 @@ fn the_open_photograph_can_be_presented_slid_and_zoomed() {
             Some(true),
             "presenting asks the window for the screen"
         );
-        // Leaving full screen any other way ends the presentation.
         ui::widget::FullscreenProvider::on_fullscreen_changed(&mut app, false);
         assert!(!app.state().presenting);
         assert_eq!(
@@ -247,7 +215,6 @@ fn the_open_photograph_can_be_presented_slid_and_zoomed() {
             "the window sleeps until the next photograph is due"
         );
 
-        // Stepping goes to the next photograph in the chronology, and wraps.
         assert!(app.state().step_photo(true));
         assert_eq!(app.state().open_photo_id(), Some(order[1].as_str()));
         app.state().show_photo(&order[order.len() - 1]);
@@ -297,7 +264,6 @@ fn the_open_photograph_can_be_presented_slid_and_zoomed() {
         assert!((reset - 1.0).abs() < 1e-6);
         assert!((app.state().viewer.as_ref().expect("a viewer").zoom() - 1.0).abs() < 1e-6);
 
-        // In the library the gesture belongs to the window, not the grid.
         app.state().show_library();
         assert_eq!(app.zoom_content(ZoomStep::In), None);
     }
@@ -368,8 +334,6 @@ fn a_photograph_decodes_off_the_frame_and_appears_when_it_lands() {
     let bytes = pixels::encode_png(&shots_pattern(40, 20)).expect("the fixture encodes");
     app.state().open_contents("picked.png", &bytes);
 
-    // The pass that chooses it names it by its header's size and hands the
-    // pixels to the decoder: it draws the loading state rather than wait.
     sync_once(&mut app, &mut doc);
     assert_eq!(app.state().canvas_state, CanvasState::Loading);
     assert!(
@@ -379,8 +343,6 @@ fn a_photograph_decodes_off_the_frame_and_appears_when_it_lands() {
     assert!(app.state().decoding.is_some());
     assert_eq!(app.state().empty_state_text().0, tr("photos-loading-title"));
 
-    // Once the decoder hands the pixels over, the picture shows at the size
-    // its header promised.
     sync_until_decoded(&mut app, &doc);
     assert_eq!(app.state().canvas_state, CanvasState::Ready);
     assert_eq!(
@@ -715,8 +677,6 @@ fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
                 .apply_timeline_index_intent(&DateIndexIntent::ScrollTo { position: 0.5 })
         );
         assert!((app.state().timeline_scroll_y - 45.0).abs() < f64::EPSILON);
-        // A hover preview may redraw a label but must never mutate the scroll
-        // anchor or create an accidental shared action.
         assert!(
             app.state()
                 .apply_timeline_index_intent(&DateIndexIntent::PreviewChanged(None))
@@ -821,8 +781,6 @@ fn timeline_anchor_uses_current_library_instead_of_cached_day_offset() {
     app.state().view_timeline(&previous, Some(&anchor)).unwrap();
     assert_eq!(app.state().timeline_scroll_y, 0.0);
 
-    // The day still exists in the cache, but now has another day before it.
-    // A resource open must resolve against the library it was dispatched on.
     app.state().view_timeline(&current, Some(&anchor)).unwrap();
     let fresh = test_app();
     fresh
@@ -1477,8 +1435,6 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
             &AccessAction::Activate,
             &doc,
         ));
-        // The preceding activation is valid from the second page and leaves
-        // the editor's membership draft local.
         assert_eq!(app.state().library_offset, 0);
 
         app.state().page_library(true);
@@ -1626,7 +1582,6 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
 
         let empty = app.accessibility().unwrap();
         assert_eq!(empty.role, Role::Group);
-        // Photos opens on the library, not on an empty viewer.
         assert_eq!(empty.children[0].role, Role::List);
         let commands = toolbar_names(&app);
         assert!(
@@ -1751,8 +1706,6 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
 
     eprintln!("phase metadata_sheet_footer_never_covers_a_focused_field");
     {
-        // Laid out frame by frame with no clock between: the panel at rest,
-        // not caught mid-rise from the foot of a narrow window.
         let _settled = ui::motion::testing::settled();
         for (scale, (w, h)) in [(1.0_f32, (1200.0_f32, 800.0_f32)), (2.0, (800.0, 900.0))] {
             let mut app = test_app();
@@ -1842,10 +1795,6 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
 
     eprintln!("phase compact_sheet_field_list_reaches_the_footer");
     {
-        // A short window is where the sheet's field list used to stop above
-        // its footer and cut the last field through its middle, with empty
-        // sheet below: the list must fill the sheet down to the footer, and
-        // every field must be reachable by scrolling it.
         let _settled = ui::motion::testing::settled();
         let (w, h) = (420.0_f32, 800.0_f32);
         let mut app = test_app();
@@ -1904,8 +1853,6 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
             .set_metadata_editor_section(MetadataEditorSection::TimeAndPlace);
         frame(&mut app);
 
-        // The list's viewport runs from the section tabs to the footer, so
-        // no empty sheet is left below the fields it shows.
         let body = app.state().editor_scroll_viewport;
         let footer_top = app
             .state()
@@ -1923,8 +1870,6 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
             body.height() > 0.0,
             "the field list has no room in a short sheet: {body:?}"
         );
-        // At rest the list's lower edge falls between fields: no field is
-        // cut through its middle with empty sheet left below it.
         let edge = app.state().editor_scroll.offset().y + body.height();
         let bands = app.state().editor_field_bands.clone();
         assert!(
@@ -1933,8 +1878,6 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
                 .any(|band| band.y0 < edge - 0.5 && band.y1 > edge + 0.5),
             "the list rests cutting a field at {edge}: {bands:?}",
         );
-        // The list scrolls, so a field its edge cuts at rest is still
-        // reachable: the wheel brings the last one fully into view.
         let content_bottom = app
             .state()
             .editor_field_bands
@@ -1959,7 +1902,6 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
             );
             frame(&mut app);
             let body = app.state().editor_scroll_viewport;
-            // The coordinates are the row the Time and place list ends on.
             let last = app.state().metadata_longitude_input.get_rect();
             if last.y1 <= body.y1 + 0.01 && last.y0 >= body.y0 - 0.01 && last.height() > 0.0 {
                 reached = true;
@@ -2313,8 +2255,6 @@ fn controls_contain_their_text_share_insets_and_keep_pointer_targets() {
         stage(&app, &mut doc, "library");
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
-        // Two frames: the first lays out roomy, the second refits the toolbar
-        // to the width it produced (see `build_layout`).
         for _ in 0..2 {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -2817,15 +2757,12 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
             decoded,
             pixels::render(&original, edits.crop, edits.rotate_quarters)
         );
-        // The rendering is an output: the photograph is still its original plus
-        // the edits recorded against it.
         assert_eq!(
             crate::test_doc::photo(&doc, &resource_id).map(|photo| photo.image.hash()),
             Some(source_hash)
         );
         assert_eq!(crate::test_doc::photo_edits(&doc, &resource_id), edits);
 
-        // The photograph as it is when the export runs: edits since are in it.
         crate::test_doc::set_photo_edits(&mut doc, &resource_id, crate::model::Edits::default());
         let output = app
             .state()
@@ -2877,11 +2814,6 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
     }
 }
 
-/// The layout tree holds pointers into the People buttons and the viewer,
-/// and the framework syncs again between building that tree and measuring
-/// it. A sync must therefore never replace the People buttons, and replacing
-/// the viewer must report a structure change so the tree is rebuilt instead
-/// of measured through a freed widget.
 #[test]
 fn sync_never_frees_a_laid_out_child() {
     let mut app = PhotosApp::new();
@@ -2925,8 +2857,6 @@ fn sync_never_frees_a_laid_out_child() {
 #[path = "tests/link_host.rs"]
 mod link_host;
 
-/// Every path an agent hands Photos must be absolute: a relative one would
-/// land wherever the process runs.
 #[test]
 fn path_actions_refuse_a_relative_path() {
     use ui::tilo_resource::Effect as _;

@@ -1,9 +1,4 @@
 //! The scenario, end to end: open a photograph, adjust it, get the result out.
-//!
-//! These drive the real widget through the same five passes `ui::App` runs —
-//! sync, `build_layout`, `compute_layout`, `apply_layout`, draw — so an assertion
-//! here is an assertion about the production path and not about a helper that
-//! agrees with itself.
 
 #![allow(
     clippy::unwrap_used,
@@ -27,8 +22,6 @@ use photos::pixels::{self, Rgba};
 use photos::{PhotosApp, shots_pattern};
 use ui::tilo_resource::{Fields as _, Resource as _};
 
-/// A new library's document, started the way a new record is: the
-/// resource's initial state at its current storage version.
 fn new_state() -> ui::State {
     let mut doc = AutoCommit::new();
     PhotoLibrary::initialize(&mut doc).expect("a new library initializes");
@@ -45,16 +38,11 @@ fn set_library(doc: &mut AutoCommit, library: &PhotoLibrary) {
         .expect("the library writes");
 }
 
-/// The library as published.
 fn published(doc: &AutoCommit) -> tilo_actions::ResourceSpec {
     ui::tilo_resource::publish::<PhotoLibrary>("photos.library", "Photos", &library(doc))
 }
 
-/// A laid-out app, ready to assert on. It is mounted in the production frame
-/// host on its first frame; until then the app and its document are driven
-/// directly, exactly as before any frame ran.
 struct Harness {
-    /// The door the app submits its edits to, resolved before each look.
     dispatch: ui::framework::Dispatcher<PhotoLibrary>,
     unmounted: Option<(PhotosApp, ui::State)>,
     mounted: Option<Framed<PhotosApp>>,
@@ -77,8 +65,6 @@ impl Harness {
         }
     }
 
-    /// The app and its document, the app presented the document's library
-    /// as the framework presents it after every change.
     fn parts(&mut self) -> (&mut PhotosApp, &mut ui::State) {
         let (app, state) = if let Some(framed) = self.mounted.as_mut() {
             Framed::split(framed)
@@ -86,7 +72,6 @@ impl Harness {
             let (app, state) = self.unmounted.as_mut().expect("harness owns its app");
             (app, state)
         };
-        // What the app submitted lands, as the host applies it after a pass.
         ui::framework::testing::resolve(&self.dispatch, &mut state.doc)
             .expect("submitted edits apply");
         let library = library(&state.doc);
@@ -102,8 +87,6 @@ impl Harness {
         self.parts().1
     }
 
-    /// One full frame, exactly as `ui::App` runs it. Returns the drawn scene
-    /// so a caller can prove drawing happened at all.
     fn frame(&mut self) -> Scene {
         let _ = self.parts();
         let viewport = viewport(self.size);
@@ -119,10 +102,6 @@ impl Harness {
         Framed::harness(framed).scene().clone()
     }
 
-    /// Frame until the photograph the window shows is on screen: its pixels
-    /// are decoded off the frame, so the pass that opens it draws the loading
-    /// state and a later one draws the picture. Returns the scene of the frame
-    /// that showed it.
     fn frame_until_shown(&mut self) -> Scene {
         let deadline = tilo_test_env::hang_deadline();
         let mut scene = self.frame();
@@ -137,7 +116,6 @@ impl Harness {
         scene
     }
 
-    /// The edits of the photograph the window shows.
     fn edits(&mut self) -> Edits {
         let id = self
             .app()
@@ -151,7 +129,6 @@ impl Harness {
             .edits
     }
 
-    /// Give the photograph the window shows `edits`, as its edit action does.
     fn set_edits(&mut self, edits: Edits) {
         let id = self
             .app()
@@ -173,8 +150,6 @@ impl Harness {
     }
 }
 
-/// Write a generated pattern to a real file and return its path. Nothing in
-/// the crate ships a sample image; this is a fixture, made here.
 fn staged(dir: &std::path::Path, w: u32, h: u32) -> (String, Rgba) {
     let img = shots_pattern(w, h);
     let path = dir.join("harbour.png");
@@ -210,10 +185,6 @@ fn library_accessibility_is_certified_and_album_actions_are_canonical() {
         assert!(driver.accessibility_audit().is_clean());
     }
 
-    // The destination picker is an overlay, but its controls still have to be
-    // individually routable through the same stable album ids an agent or screen
-    // reader uses.  In particular, the shared modal close control must not
-    // duplicate Cancel's semantic identity.
     eprintln!("phase destination_album_chooser_keeps_native_actions_unique_and_canonical");
     {
         fn collect_targets(node: &ui::a11y::AccessNode, targets: &mut Vec<String>) {
@@ -283,22 +254,9 @@ fn library_accessibility_is_certified_and_album_actions_are_canonical() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 1. An image loads and lays out inside its viewport.
-// ---------------------------------------------------------------------------
-
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn photographs_fit_the_canvas_and_non_images_open_nothing() {
-    // The anti-clipping assertion, at a spread of window sizes including ones far
-    // narrower and far shorter than the photograph.
-    //
-    // Two things are checked at each size. The chrome must tile the window
-    // exactly — a toolbar, a canvas and a status line that together overflow the
-    // frame is how content gets cut off with no scrollbar and no warning. And the
-    // canvas must be showing the *whole* photograph: `visible_image_rect` is the
-    // unit square only when every image pixel maps inside the canvas rect, so
-    // anything less than the full rect means part of the picture is off-screen.
     eprintln!("phase the_whole_photograph_is_inside_the_canvas_at_every_window_size");
     {
         let dir = tempfile::tempdir().unwrap();
@@ -353,9 +311,6 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
         }
     }
 
-    // A portrait source is the stress case for a narrow portrait window: its
-    // initial view must still be contain-fit rather than inheriting an inspection
-    // zoom or presenting a cropped corner as though it were the whole image.
     eprintln!("phase a_portrait_photograph_initially_fits_a_narrow_portrait_window");
     {
         let dir = tempfile::tempdir().unwrap();
@@ -371,9 +326,6 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
         );
     }
 
-    // A frame with a photograph loaded must actually put something in the scene.
-    // A layout that is correct while nothing is drawn would pass every geometry
-    // assertion above.
     eprintln!("phase a_loaded_photograph_produces_a_non_empty_scene");
     {
         let dir = tempfile::tempdir().unwrap();
@@ -389,7 +341,6 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
                 .count()
         };
 
-        // With nothing open the scene is chrome and an empty state — no image.
         let empty = hz.frame();
         assert_eq!(
             images(&empty),
@@ -397,9 +348,6 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
             "an empty app drew an image from somewhere"
         );
 
-        // Path count is deliberately not the metric: the empty state is an icon
-        // plus two runs of text, so opening a photograph *reduces* the path count
-        // while adding the one draw that matters.
         hz.app().state().open_path(&path);
         let loaded = hz.frame_until_shown();
         assert_eq!(
@@ -409,9 +357,6 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
         );
     }
 
-    // With nothing open, the resource tree still exports the library's open
-    // operation so agents, scripts, and search can enter the app; a full frame in
-    // that state renders the empty view.
     eprintln!("phase nothing_open_publishes_open_and_still_draws");
     {
         let mut hz = Harness::new(900.0, 600.0);
@@ -431,8 +376,6 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
         assert!(!hz.app().state().has_image());
     }
 
-    // Opening something that is not an image must fail honestly rather than
-    // leaving a blank canvas that claims to hold a picture.
     eprintln!("phase opening_a_non_image_says_so_and_opens_nothing");
     {
         let dir = tempfile::tempdir().unwrap();
@@ -449,10 +392,6 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 2. The edits change the pixels.
-// ---------------------------------------------------------------------------
-
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -461,8 +400,6 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
-    // Rotating must move the pixels the app would export — asserted on the output
-    // buffer and on a sampled corner, not on the quarter-turn counter.
     eprintln!("phase rotating_changes_the_exported_pixels");
     {
         let dir = tempfile::tempdir().unwrap();
@@ -487,12 +424,6 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         assert_eq!((after.w, after.h), (200, 300), "the axes did not swap");
         assert_ne!(after.bytes, before.bytes, "the buffer is unchanged");
 
-        // One clockwise turn sends source (sx, sy) to destination
-        // (sh - 1 - sy, sx). Assert that exact mapping on a spread of pixels
-        // rather than sampling by fraction: the two buffers have different aspect
-        // ratios, so the same fraction lands on different pixels of a smooth
-        // gradient and would compare near-equal colours that are not the same
-        // pixel at all.
         let (sw, sh) = (before.w, before.h);
         let mut checked = 0;
         for (sx, sy) in [(0, 0), (sw - 1, 0), (0, sh - 1), (sw - 1, sh - 1), (37, 61)] {
@@ -508,10 +439,6 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         }
         assert_eq!(checked, 5);
 
-        // And the sun, which sits left-of-centre and high, must now be high on the
-        // right — a coarse check that the turn went clockwise rather than the
-        // other way, which the corner mapping alone would not catch if both the
-        // rotation and this expectation were mirrored together.
         let brightness = |img: &Rgba, fx: f64, fy: f64| {
             let p = img
                 .pixel(
@@ -527,8 +454,6 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         );
     }
 
-    // Cropping must genuinely shrink the exported buffer and keep the region that
-    // was asked for.
     eprintln!("phase cropping_changes_the_exported_pixels");
     {
         let dir = tempfile::tempdir().unwrap();
@@ -560,7 +485,6 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
             after.bytes.len() < before.bytes.len(),
             "the cropped buffer is not smaller"
         );
-        // Pixel (0,0) of the crop is pixel (200,200) of the original.
         assert_eq!(
             after.pixel(0, 0).unwrap(),
             original.pixel(200, 200).unwrap()
@@ -571,8 +495,6 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         );
     }
 
-    // Reset must return the exported pixels to exactly the original — byte for
-    // byte, so a "reset" that merely re-crops to something near-full fails.
     eprintln!("phase reset_restores_the_original_pixels_exactly");
     {
         let dir = tempfile::tempdir().unwrap();
@@ -603,14 +525,10 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         );
     }
 
-    // Cropping to what the viewport frames, through the real geometry: zoom in,
-    // then crop, and the exported image must be the zoomed region.
     eprintln!("phase cropping_to_the_view_keeps_what_the_viewport_frames");
     {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 400, 400);
-        // A square window over a square photograph, so the fit is exact and the
-        // arithmetic below is not fighting a letterbox.
         let mut hz = Harness::new(600.0, 600.0 + 48.0 + 28.8);
         hz.app().state().open_path(&path);
         hz.frame_until_shown();
@@ -648,12 +566,6 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 3. The result gets out.
-// ---------------------------------------------------------------------------
-
-/// Records whatever is offered to the clipboard, so the copy path can be
-/// asserted on real bytes instead of on its return value.
 #[derive(Default)]
 struct RecordingClipboard {
     image: Mutex<Option<(usize, usize, Vec<u8>)>>,
@@ -677,17 +589,12 @@ impl ClipboardBackend for RecordingClipboard {
 
 #[test]
 fn copy_and_save_export_what_was_shown_without_overwriting() {
-    // Copy must put the *edited* pixels on the clipboard — the bytes the user is
-    // looking at, not the file that was opened — and must refuse when there is
-    // nothing open.
-    //
     eprintln!("phase copy_puts_the_edited_pixels_on_the_clipboard");
     {
         let recorder = Arc::new(RecordingClipboard::default());
         let services = ui::host::HostServices::null().with_clipboard(recorder.clone());
         let _host = ui::host::enter(&services);
 
-        // Nothing open: the copy is refused and nothing is offered.
         {
             let mut empty = Harness::new(900.0, 600.0);
             empty.frame();
@@ -742,7 +649,6 @@ fn copy_and_save_export_what_was_shown_without_overwriting() {
         );
     }
 
-    // Save must write a real PNG that decodes back to exactly what was shown.
     eprintln!("phase save_writes_a_png_that_decodes_to_what_was_shown");
     {
         let dir = tempfile::tempdir().unwrap();
@@ -775,13 +681,8 @@ fn copy_and_save_export_what_was_shown_without_overwriting() {
     }
 }
 
-/// Save with no destination asks the host's Save chooser, as every app's
-/// Save does, and never writes into the process's working directory.
 #[test]
 fn save_asks_the_chooser_with_a_bare_name() {
-    // The default name must not be the file that was opened, and must be
-    // only a name: a relative path would be written wherever the process
-    // happens to run.
     eprintln!("phase save_suggests_a_bare_name_that_does_not_overwrite_the_original");
     for name in [
         "harbour.png",
@@ -801,8 +702,6 @@ fn save_asks_the_chooser_with_a_bare_name() {
         assert!(suggested.ends_with("-edited.png"), "got {suggested}");
     }
 
-    // Save with no destination asks the host's Save chooser and writes
-    // where it answers, never into the working directory.
     eprintln!("phase save_without_a_path_asks_the_chooser_and_writes_where_it_answers");
     {
         let dir = tempfile::tempdir().unwrap();
@@ -839,15 +738,9 @@ fn save_asks_the_chooser_with_a_bare_name() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 4. The resource surface.
-// ---------------------------------------------------------------------------
-
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn resource_surface_acts_on_the_open_photograph_without_a_display() {
-    // The open photograph is enumerable by id and title, its actions invoke, and
-    // listing them changes nothing.
     eprintln!("phase the_resource_surface_enumerates_the_open_photograph_and_acts_on_it");
     {
         use tilo_actions::{ActionRegistry, flatten};
@@ -879,8 +772,6 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
             .find(|child| child.id.0 == photos::resource::photo_resource_id(&shown))
             .expect("the open photograph is published in the library");
         assert_eq!(photo.label, "harbour.png");
-        // The size is legible from what the photograph reads as — no
-        // display needed.
         let content =
             PhotoLibrary::read_content(&library(&hz.state().doc), &hz.state().doc, Some(&shown))
                 .expect("a photograph reads as content");
@@ -892,7 +783,6 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
             (Some(400), Some(200))
         );
 
-        // Every row is addressable by a composite key with no coordinate in it.
         for row in &flat {
             assert!(!row.key.is_empty());
             assert!(
@@ -902,7 +792,6 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
             );
         }
 
-        // Invoke rotate-right by id, and the pixels must follow.
         let mut registry = ActionRegistry::new();
         PhotoLibrary::register(&mut registry);
         let spec = photo
@@ -933,15 +822,6 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
         );
     }
 
-    // A caller with no display crops the photograph by address, and the pixels
-    // that come back are the region it asked for.
-    //
-    // The pieces of this were each covered — the resource surface publishes a
-    // `crop` spec, `parse_crop_arg` reads a string, `Edits::cropped_from_view`
-    // composes a rect — but nothing joined them to the rendered buffer. This
-    // walks the whole way an out-of-process caller does: find the action by its
-    // id, hand it a string, decode it through the registry, apply it, and check
-    // the exported pixels against the original by identity rather than by size.
     eprintln!("phase a_caller_with_no_display_crops_by_address_and_gets_those_pixels");
     {
         use tilo_actions::ActionRegistry;
@@ -952,8 +832,6 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
         hz.app().state().open_path(&path);
         hz.frame_until_shown();
 
-        // Address the photograph by the id derived from its content — no
-        // enumeration, no coordinate, nothing that needs a screen.
         let resources = [published(&hz.state().doc)];
         let id = hz
             .app()
@@ -1009,8 +887,6 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
             (200, 200),
             "cropping by address did not resize the exported pixels"
         );
-        // The bottom-right quarter, by identity — a crop of the right *size*
-        // taken from the wrong *place* would pass a dimensions-only check.
         assert_eq!(
             after.pixel(0, 0).unwrap(),
             original.pixel(200, 200).unwrap()
@@ -1020,7 +896,6 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
             original.pixel(209, 203).unwrap()
         );
 
-        // And the document still carries only the decision, never the pixels.
         let saved = hz.state().doc.save().len();
         assert!(
             saved < 4096,
@@ -1029,30 +904,12 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 5. Contrast, measured rather than eyeballed.
-// ---------------------------------------------------------------------------
-
 #[allow(
     clippy::cast_precision_loss,
     reason = "label.chars().count() is a handful of glyphs in a toolbar tooltip, nowhere near f32's precision limit"
 )]
 #[test]
 fn toolbar_controls_fit_legibly_at_every_size_and_theme() {
-    // Every toolbar control must be reachable at every window size the app can
-    // be given.
-    //
-    // The strip used to be seven fixed 120 px buttons, so it was always 912 px
-    // wide and simply overflowed anything narrower: at 720 px Copy was cut in
-    // half and Save was entirely off-screen, with no overflow affordance to
-    // reach it. `the_whole_photograph_is_inside_the_canvas_at_every_window_size`
-    // passed throughout, because the canvas was fine — it was the chrome above
-    // it that had escaped.
-    //
-    // Two frames per size on purpose: the strip refits from the width the last
-    // layout measured, the same way the shared `ui::widget::Toolbar` recomputes
-    // from an extent its host passes in. `ui::App` redraws continuously, so the
-    // settled frame is the one anybody sees.
     eprintln!("phase every_toolbar_control_is_inside_the_window_at_every_size");
     {
         let dir = tempfile::tempdir().unwrap();
@@ -1072,8 +929,6 @@ fn toolbar_controls_fit_legibly_at_every_size_and_theme() {
             hz.frame_until_shown();
             hz.frame();
 
-            // Every command stays reachable in the window's bar: those its
-            // row has no room for are in its menu.
             let names = hz.app().state().window_bar_names();
             for wanted in ["Library", "Open", "Save"] {
                 assert!(
@@ -1084,11 +939,6 @@ fn toolbar_controls_fit_legibly_at_every_size_and_theme() {
         }
     }
 
-    // With nothing open there is no status line, so no band is reserved for one.
-    //
-    // A zero-height strip is the point: the app used to keep a 29 px plate and a
-    // rule under the empty state with not one glyph in it, which reads as a
-    // control that failed to draw rather than as one with nothing to say.
     eprintln!("phase an_empty_app_reserves_no_status_band");
     {
         let mut hz = Harness::new(1000.0, 700.0);
@@ -1227,10 +1077,6 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
         );
     }
 
-    // 200% text has a deliberately compact overflow toolbar and a two-row
-    // library shelf.  Keep both the actual touch targets and their measured card
-    // bounds honest: screenshot review alone cannot catch a later geometry tweak
-    // that puts a scaled label back through a neighboring card action.
     eprintln!("phase large_text_library_keeps_toolbar_and_card_actions_separate");
     {
         let dir = tempfile::tempdir().unwrap();
@@ -1288,11 +1134,6 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
     }
 }
 
-/// A photograph opened in a workspace that keeps content sealed is ciphertext
-/// in the store, and the record names the reference that opens it: a second
-/// member whose device holds only the ciphertext shows the same picture. A
-/// photograph named by a plain hash, as earlier versions named it, still
-/// shows.
 #[test]
 fn a_photograph_is_kept_sealed_and_a_member_opens_it() {
     let bytes = pixels::encode_png(&shots_pattern(300, 200)).expect("the pattern encodes");
@@ -1327,8 +1168,6 @@ fn a_photograph_is_kept_sealed_and_a_member_opens_it() {
         "the window that opened it shows it"
     );
 
-    // What a member's device receives is the ciphertext, under its address,
-    // and the record's reference opens it there.
     let address = tilo_content::content_address(&reference).expect("a reference");
     let carried = writer.read(&address).expect("the ciphertext");
     assert_ne!(carried, bytes, "the ciphertext is not the picture");
@@ -1339,8 +1178,6 @@ fn a_photograph_is_kept_sealed_and_a_member_opens_it() {
         Some(bytes.clone())
     );
 
-    // A photograph named by its plain hash, as an earlier version recorded it,
-    // still shows where the bytes were kept so.
     let plain = tilo_content::ContentStore::memory_in_workspace();
     let hash = plain.put(&bytes).expect("kept in the clear");
     let earlier = photos::OpenImage::new(

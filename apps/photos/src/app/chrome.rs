@@ -1,14 +1,5 @@
-//! The window around the photo surfaces.
-//!
-//! The window's shell (`resource.rs`) holds the sidebar: the library's
-//! destinations and its albums, a `NavList` this window keeps through a
-//! `NavFeed`. A status bar keeps the count or the size of the photograph. The toolbar is the window
-//! bar's slots ([`ui::window_toolbar`]): the sidebar's toggle, Back while a
-//! photograph or a person is open, the title of what is shown as the
-//! window's location and the commands for it; search is the bar's own.
-//! Every piece is the shared chrome: the sidebar is the shell's, the bar
-//! is `chrome::status_bar`. Nothing here picks a colour, a size or a
-//! radius.
+//! The window around the photo surfaces. The window's shell (`resource.rs`) holds the sidebar: the
+//! library's destinations and its albums, a `NavList` this window keeps through a `NavFeed`.
 
 use automerge::AutoCommit;
 use ui::a11y::{AccessNode, Politeness, Role};
@@ -27,7 +18,6 @@ use ui::widget::{
     NavFeed, NavItem, NavSection, NavShell, SidebarDrawer, WINDOW_BACK, WindowBarLink,
 };
 
-/// What a sidebar row opens.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum NavTarget {
     Destination(LibraryDestination),
@@ -36,8 +26,6 @@ pub(super) enum NavTarget {
 }
 
 impl NavTarget {
-    /// The stable semantic route of the row, shared with the library's
-    /// accessibility actions.
     pub(super) fn action_target(&self) -> String {
         match self {
             Self::Destination(LibraryDestination::Timeline) => "photos:library:timeline".into(),
@@ -51,7 +39,6 @@ impl NavTarget {
     }
 }
 
-/// One sidebar row.
 #[derive(Clone, Debug)]
 pub(super) struct NavEntry {
     pub target: NavTarget,
@@ -61,8 +48,6 @@ pub(super) struct NavEntry {
     pub selected: bool,
 }
 
-/// One command of the window bar: the window's own [`Hit`] it runs, as the
-/// bar names and draws it.
 struct Command {
     hit: Hit,
     label: String,
@@ -92,12 +77,10 @@ impl Command {
         self
     }
 
-    /// The slot id the bar hands back for this command.
     fn id(&self) -> String {
         format!("{:?}", self.hit)
     }
 
-    /// The command as the window bar's action.
     fn action(&self) -> ToolbarAction {
         ToolbarAction::new(self.id(), self.icon.name(), self.label.clone())
             .enabled(self.enabled)
@@ -105,15 +88,9 @@ impl Command {
     }
 }
 
-/// The chrome's own state and the geometry of its last paint.
 pub(super) struct Chrome {
-    /// The sidebar the window's shell shows.
     pub places: NavFeed,
-    /// The shell's own buttons in the window's bar; none outside a shell.
     pub bar: Option<WindowBarLink>,
-    /// The trailing panel the album and details editors open in: docked
-    /// beside a wide timeline, a sheet up from a narrow one's foot, with the
-    /// timeline above it still live to choose photographs in.
     pub inspector: SidebarDrawer,
     pub title: String,
     pub status_left: String,
@@ -130,10 +107,6 @@ impl Chrome {
             inspector: SidebarDrawer::new()
                 .right()
                 .docked_width(inspector_width)
-                // It docks while the timeline beside it keeps a readable
-                // column, shrunk toward its own minimum first (the shell's
-                // sidebar is outside this window's content); narrower, it
-                // floats.
                 .content_is_column(f64::from(base.content_min_width))
                 .sheet_when_narrow()
                 .closed(),
@@ -144,13 +117,10 @@ impl Chrome {
     }
 }
 
-/// The header row's height under `theme`: the same row a `NavShell` draws.
 pub(super) fn header_height(theme: &Theme) -> f64 {
     ui::chrome::HeaderRowFace::height(theme)
 }
 
-/// The inspector's parts: its panel, its header row, its body and the
-/// footer its actions stand in.
 pub(super) struct InspectorFrame {
     pub panel: Rect,
     pub body: Rect,
@@ -158,8 +128,6 @@ pub(super) struct InspectorFrame {
 }
 
 impl Photos {
-    /// The window in a shell: its sidebar shows what `places` shows, and
-    /// the shell's own buttons join the window bar through `bar`.
     pub(super) fn join_shell(&mut self, places: &NavFeed, bar: WindowBarLink) {
         self.chrome.places = places.clone();
         self.chrome.bar = Some(bar);
@@ -184,8 +152,6 @@ impl Photos {
         ]
     }
 
-    /// Whether the timeline shows the whole library, with no album or
-    /// metadata filter narrowing it.
     pub(super) fn timeline_unfiltered(&self) -> bool {
         self.active_album.is_none()
             && !self.active_favorites
@@ -196,7 +162,6 @@ impl Photos {
             && self.active_pet.is_none()
     }
 
-    /// The sidebar rows, in order, before they are placed.
     fn nav_entries(&self) -> Vec<NavEntry> {
         let browsing = self.library_mode;
         let destination = if self.people_mode {
@@ -242,7 +207,6 @@ impl Photos {
         entries
     }
 
-    /// The title of what the content column shows.
     pub(super) fn chrome_title(&self) -> String {
         if !self.library_mode {
             return self
@@ -300,12 +264,7 @@ impl Photos {
         }
     }
 
-    /// The commands the window bar offers for what is shown. A command that
-    /// does not apply is left out rather than shown dead.
     fn commands(&self) -> Vec<Command> {
-        // Where the content offers to open a photo itself (an empty
-        // library, no photo, an unreadable one), the header does not repeat
-        // it.
         let mut commands = if self.content_offers_open() {
             Vec::new()
         } else {
@@ -329,7 +288,6 @@ impl Photos {
                 return self.selection_commands();
             }
             LibraryDestination::Timeline => self.timeline_commands(&mut commands),
-            // While an album is being made, New album is the editor open.
             LibraryDestination::Albums if self.album_editor => {}
             LibraryDestination::Albums => {
                 commands.push(Command::icon(
@@ -338,8 +296,6 @@ impl Photos {
                     Icon::GalleryVerticalEnd,
                 ));
             }
-            // With no located photos there is no map to list or zoom; the
-            // empty state is all there is.
             LibraryDestination::Places if self.places_items.is_empty() => {}
             LibraryDestination::Places => {
                 commands.push(
@@ -365,8 +321,6 @@ impl Photos {
         commands
     }
 
-    /// The timeline's commands after Open: selecting, paging an album
-    /// being edited, the thumbnails' size, and editing or making an album.
     fn timeline_commands(&self, commands: &mut Vec<Command>) {
         if self.library_total > 0 {
             commands.push(
@@ -417,8 +371,6 @@ impl Photos {
         }
     }
 
-    /// The People overview's command: showing the suggestions you hid,
-    /// offered once there are some.
     fn people_commands(&self) -> Option<Command> {
         let any_hidden = self
             .people_controller
@@ -434,8 +386,6 @@ impl Photos {
         })
     }
 
-    /// Whether the content column shows an empty state whose one action
-    /// opens a photo.
     pub(super) fn content_offers_open(&self) -> bool {
         if self.library_mode {
             !self.people_mode
@@ -451,8 +401,6 @@ impl Photos {
         }
     }
 
-    /// The commands for the open photograph: turn, crop and revert it, then
-    /// pass it on.
     fn viewer_commands(&self) -> Vec<Command> {
         let mut commands = Vec::new();
         if !self.has_image() {
@@ -483,9 +431,6 @@ impl Photos {
         commands.push(Command::icon(Hit::Copy, tr("photos-copy"), Icon::Copy));
         commands.push(Command::icon(Hit::Share, tr("photos-share"), Icon::Send));
         commands.push(Command::icon(Hit::Save, tr("photos-save"), Icon::Download));
-        // The picture's size, said the way every app says a zoom: the level
-        // itself while it is not the frame's own, so "Actual size" is where a
-        // person expects it (Ctrl+0 reaches the same thing).
         let zoom = self.viewer_zoom.clone();
         commands.push(Command::icon(
             Hit::ZoomOut,
@@ -535,8 +480,6 @@ impl Photos {
         commands
     }
 
-    /// The commands for photographs chosen in the timeline. Those that need a
-    /// choice appear once something is chosen.
     fn selection_commands(&self) -> Vec<Command> {
         let mut commands = vec![Command::icon(
             Hit::Selection(SelectionHit::SelectAll),
@@ -584,7 +527,6 @@ impl Photos {
                 Icon::X,
             ));
         }
-        // Done leads: it is what ends choosing.
         commands.insert(
             0,
             Command::icon(
@@ -596,7 +538,6 @@ impl Photos {
         commands
     }
 
-    /// The commands the header offers now, in order.
     #[cfg(test)]
     pub(super) fn command_hits(&self) -> Vec<Hit> {
         self.commands()
@@ -605,19 +546,13 @@ impl Photos {
             .collect()
     }
 
-    /// The window bar's slots for what is shown: the sidebar's toggle, Back
-    /// while a photograph or a person is open, the title as the window's
-    /// location and the commands. A command whose published action this
-    /// window may not run is offered disabled.
     pub(crate) fn window_bar(&self) -> WindowToolbar {
-        // The shell's own: the sidebar's toggle, Back in a narrow window.
         let mut toolbar = self
             .chrome
             .bar
             .as_ref()
             .map(WindowBarLink::slots)
             .unwrap_or_default();
-        // What is open, else (no photograph) the app's name.
         toolbar.location = Some(ToolbarLocation {
             label: if self.chrome.title.is_empty() {
                 self.title().to_owned()
@@ -626,7 +561,6 @@ impl Photos {
             },
             ..ToolbarLocation::default()
         });
-        // An editor's sheet is Back's first step ([`Self::sheet_back`]).
         if self.editor_sheet_shown()
             && !self.header_back_visible()
             && !toolbar
@@ -667,8 +601,6 @@ impl Photos {
         toolbar
     }
 
-    /// Whether `event` is one of the bar's Backs: the shell's, the one an
-    /// editor's sheet adds, or the way back to the library.
     fn is_back(event: &ToolbarEvent) -> bool {
         match event {
             ToolbarEvent::Back => true,
@@ -679,13 +611,10 @@ impl Photos {
         }
     }
 
-    /// Declare the window bar's slots.
     pub(super) fn declare_window_toolbar(&self) {
         ui::window_toolbar::declare(Some(self.window_bar()));
     }
 
-    /// Run what the person did in the window's bar as the window's own hit,
-    /// the path assistive technology's activation takes too.
     pub(super) fn apply_window_toolbar(&mut self) {
         for event in ui::window_toolbar::take_events() {
             if Self::is_back(&event) && self.sheet_back() {
@@ -718,11 +647,8 @@ impl Photos {
         self.declare_window_toolbar();
     }
 
-    /// Recompute the title and the status bar's readouts from the model.
     pub(super) fn refresh_chrome_text(&mut self, _doc: &AutoCommit) {
         self.chrome.title = self.chrome_title();
-        // An empty library's empty state already says so; a "0 photos"
-        // readout under it would only repeat it in a band of its own.
         let (left, right) = if self.library_mode && self.library_photo_count == 0 {
             (String::new(), String::new())
         } else if self.library_mode {
@@ -773,9 +699,6 @@ impl Photos {
         self.chrome.status_right = right;
     }
 
-    /// The viewer always offers Library navigation, including before a
-    /// photograph is opened. In the library, a selected person offers the
-    /// same back control to return to People.
     pub(super) fn header_back_visible(&self) -> bool {
         if self.library_mode {
             self.people_selection.is_some()
@@ -785,20 +708,15 @@ impl Photos {
         }
     }
 
-    /// Whether the status bar has anything to show.
     pub(super) fn has_status(&self) -> bool {
         !self.chrome.status_left.is_empty() || !self.chrome.status_right.is_empty()
     }
 
-    /// Show the sidebar's rows, and declare the window bar's slots for what
-    /// this frame shows.
     pub(super) fn place_chrome(&self) {
         self.show_places();
         self.declare_window_toolbar();
     }
 
-    /// Hand the shell's sidebar the library's destinations; the albums
-    /// nest under Albums, each by its cover.
     pub(super) fn show_places(&self) {
         let entries = self.nav_entries();
         let selected = entries
@@ -849,7 +767,6 @@ impl Photos {
             .show(vec![NavSection::untitled("library", places)], selected);
     }
 
-    /// Open the places the person chose in the shell's sidebar.
     pub(super) fn open_chosen_places(&mut self) {
         for chosen in self.chrome.places.take_chosen() {
             let target = self
@@ -863,8 +780,6 @@ impl Photos {
         }
     }
 
-    /// Open the inspector while an editor is open, close it after; whether
-    /// it opened or closed, which the layout gives a column or a sheet.
     pub(super) fn sync_inspector(&mut self) -> bool {
         let wanted = self.library_mode && (self.album_editor || self.metadata_editor);
         if wanted == self.chrome.inspector.is_open() {
@@ -878,8 +793,6 @@ impl Photos {
         true
     }
 
-    /// Paint the inspector's panel and return where its parts are, with the
-    /// theme to draw them in; `None` while it is closed.
     pub(super) fn paint_inspector(
         &self,
         scene: &mut Scene,
@@ -940,7 +853,6 @@ impl Photos {
         ))
     }
 
-    /// Paint the status bar along the bottom of the content column.
     pub(super) fn paint_status(
         &self,
         scene: &mut Scene,
@@ -962,7 +874,6 @@ impl Photos {
         );
     }
 
-    /// Open a sidebar row.
     pub(super) fn open_nav_target(&mut self, target: &NavTarget) {
         self.library_mode = true;
         self.notice = None;
@@ -1000,7 +911,6 @@ impl Photos {
         }
     }
 
-    /// Show the whole library again.
     pub(super) fn clear_timeline_filters(&mut self) {
         self.active_album = None;
         self.active_favorites = false;
@@ -1013,7 +923,6 @@ impl Photos {
         self.timeline_scroll_y = 0.0;
     }
 
-    /// What the open inspector is titled: the editor it holds.
     pub(super) fn inspector_title(&self) -> Option<String> {
         if !self.library_mode {
             return None;
@@ -1035,8 +944,6 @@ impl Photos {
         })
     }
 
-    /// Whether the chrome took the event: what lands on a floating
-    /// inspector is the editor's.
     pub(super) fn handle_chrome_event(&self, ctx: &ui::widget::EventCtx<'_>) -> bool {
         if self.chrome.inspector.is_open()
             && self.chrome.inspector.is_overlay()
@@ -1047,8 +954,6 @@ impl Photos {
         *ctx.handled || self.pending.get().is_some()
     }
 
-    /// The chrome's accessibility: the status bar. The sidebar is the
-    /// shell's, the toolbar the window bar's.
     pub(super) fn chrome_semantics(&self) -> Vec<AccessNode> {
         let mut nodes = Vec::new();
         if let Some(sheet) = self

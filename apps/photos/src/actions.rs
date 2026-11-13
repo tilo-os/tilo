@@ -1,35 +1,15 @@
-//! What Photos does that is not an edit of its library: what a window
-//! shows, getting photographs in and out, and local analysis whose results
-//! arrive as the library's ordinary edits and verbs.
-//!
-//! Zoom, pan and which region the viewport shows are local presentation
-//! and never leave the machine. Copying to the clipboard is not a change of
-//! the library either: it is an affordance of the window the person is
-//! touching. Everything is named by id: a photograph by its content, an
-//! album by the id it was made with.
+//! What Photos does that is not an edit of its library: what a window shows, getting photographs in
+//! and out, and local analysis whose results arrive as the library's ordinary edits and verbs.
 
-// `#[derive(Effect)]` names the crate as `tilo_resource`.
 use ui::tilo_resource;
 use ui::tilo_resource::{Bytes, Effect};
 
-/// A stable, metadata-only position in the chronological timeline.
-///
-/// No timezone conversion or inferred capture date is involved: `Month` and
-/// `Day` occur only when an imported/shared capture value actually starts
-/// with that ISO calendar boundary. Non-calendar values are deliberately
-/// absent instead of being assigned an invented date.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TimelineAnchor {
     Month { month: String },
     Day { day: String },
 }
 
-/// Everything Photos does that changes no document by itself: what a window
-/// shows, getting photographs in and out, and local analysis whose results
-/// arrive as the library's ordinary actions. Every caller — a button, the
-/// palette, an agent, a script — reaches the surface's handler as one of
-/// these. The ones offered on a row (a photograph, an album, a place) are
-/// published bound to it.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "photos.effect")]
 pub enum PhotosEffect {
@@ -136,25 +116,39 @@ pub enum PhotosEffect {
     /// View place: one shared place cluster, without sending its location
     /// anywhere.
     #[effect(view, row)]
-    ViewPlace { place_key: String },
+    ViewPlace {
+        place_key: String,
+    },
     /// View album.
     #[effect(view)]
-    ViewAlbum { album_id: String },
+    ViewAlbum {
+        album_id: String,
+    },
     /// View folder: the photographs filed under this folder label.
     #[effect(view, row)]
-    ViewFolder { folder: String },
+    ViewFolder {
+        folder: String,
+    },
     /// View person: the photographs carrying this person label.
     #[effect(view, row)]
-    ViewPerson { person: String },
+    ViewPerson {
+        person: String,
+    },
     /// View tag: the photographs carrying this tag.
     #[effect(view, row)]
-    ViewTag { tag: String },
+    ViewTag {
+        tag: String,
+    },
     /// View object: the photographs analysis shared this object for.
     #[effect(view, row)]
-    ViewObject { object: String },
+    ViewObject {
+        object: String,
+    },
     /// View pet: the photographs analysis shared this pet for.
     #[effect(view, row)]
-    ViewPet { pet: String },
+    ViewPet {
+        pet: String,
+    },
     /// Import photograph into the library and show it.
     #[effect(job, cancellable)]
     Import {
@@ -175,7 +169,10 @@ pub enum PhotosEffect {
     /// Import Camera media: a verified Camera photograph whose bytes are on
     /// this device.
     #[effect(returns)]
-    ImportCameraMedia { media_id: String, name: String },
+    ImportCameraMedia {
+        media_id: String,
+        name: String,
+    },
     /// Reindex photo folder: refresh metadata re-read from a folder's files
     /// without overwriting deliberate organization.
     #[effect(job, cancellable, tag = tilo_actions::REQUIRES_NATIVE_PATHS_TAG)]
@@ -185,7 +182,6 @@ pub enum PhotosEffect {
         #[param("Retain GPS read from imported files; defaults to true")]
         retain_exif_location: Option<bool>,
     },
-    /// Copy photograph: the photograph this window shows, as edited.
     Copy,
     /// Produce edited image content: render the photograph's crop and
     /// rotation, as they are now, into immutable PNG content.
@@ -228,7 +224,9 @@ pub enum PhotosEffect {
     /// Analyze image locally with the signed local model; share only the
     /// bounded result.
     #[effect(job, cancellable, sensitive)]
-    AnalyzeImage { resource_id: String },
+    AnalyzeImage {
+        resource_id: String,
+    },
     /// Rotate left: turn the photograph this window shows a quarter turn
     /// anticlockwise.
     #[effect(label = "photos-command-rotate-left")]
@@ -240,9 +238,7 @@ pub enum PhotosEffect {
     /// Crop to view: keep what this window frames of its photograph.
     #[effect(label = "photos-command-crop")]
     CropShownToView,
-    /// Reset edits of the photograph this window shows.
     ResetShownEdits,
-    /// Share the photograph this window shows: copy its portable address.
     ShareShown,
     /// New album: start naming one and choosing its photographs.
     #[effect(view)]
@@ -272,7 +268,6 @@ pub enum PhotosEffect {
     /// Confirm deleting the album being edited. Its photographs stay.
     #[effect(destructive)]
     ConfirmAlbumDelete,
-    /// Save changes to the photograph details being edited.
     SaveDetails,
     /// Cancel editing photograph details.
     #[effect(view)]
@@ -333,7 +328,6 @@ pub enum PhotosEffect {
     /// Next page of places.
     #[effect(view)]
     NextPlacesPage,
-    /// Stop the folder import; photographs already imported are kept.
     StopImport,
     /// Details of the folder import.
     #[effect(view)]
@@ -344,16 +338,18 @@ pub enum PhotosEffect {
     /// Back from a person or suggestion to People.
     #[effect(view)]
     PeopleBack,
-    /// Turn private People recognition on or off on this device.
     TogglePeopleRecognition,
-    /// Stop the People scan after the batch in progress.
     CancelPeopleScan,
     /// View photos of an approved person.
     #[effect(view)]
-    OpenApprovedPerson { person: String },
+    OpenApprovedPerson {
+        person: String,
+    },
     /// Review a private suggestion.
     #[effect(view)]
-    OpenSuggestion { cluster: String },
+    OpenSuggestion {
+        cluster: String,
+    },
     /// Browse approved people.
     #[effect(view)]
     BrowseApprovedPeople,
@@ -363,24 +359,24 @@ pub enum PhotosEffect {
     /// Merge: choose a person to merge the one shown into.
     #[effect(view)]
     BeginPeopleMerge,
-    /// Merge the person shown into `person`.
-    MergeApprovedInto { person: String },
-    /// Approve the suggestion reviewed: share its people label.
+    MergeApprovedInto {
+        person: String,
+    },
     ApproveSuggestion,
-    /// Reject the suggestion reviewed on this device.
     RejectSuggestion,
-    /// Hide the suggestion reviewed on this device.
     HideSuggestion,
-    /// Restore the hidden suggestion reviewed.
     RestoreSuggestion,
-    /// Merge the suggestion reviewed into the approved `person`.
-    MergeSuggestionWith { person: String },
+    MergeSuggestionWith {
+        person: String,
+    },
     /// Show or hide hidden suggestions.
     #[effect(view)]
     ToggleHiddenSuggestions,
     /// Another page of People suggestions.
     #[effect(view)]
-    PeoplePage { forward: bool },
+    PeoplePage {
+        forward: bool,
+    },
     /// Delete local People data: ask to confirm.
     #[effect(view)]
     DeleteLocalPeopleData,
@@ -389,20 +385,6 @@ pub enum PhotosEffect {
     ConfirmDeleteLocalPeopleData,
 }
 
-/// Render one exact addressed source/edit snapshot into immutable content.
-/// Both the windowed lifecycle host and headless/test hosts call this same
-/// producer, so no caller may substitute a later mutable Photos replica for
-/// the output of the admitted export operation.
-///
-/// The rendering is an output, not the photograph: it is put in `store` and
-/// returned by address, while the photograph itself stays its original content
-/// plus the edits recorded against it.
-///
-/// # Errors
-///
-/// Returns a user-facing message when the addressed photograph or its edit
-/// snapshot is no longer in the library, or when the source bytes cannot be
-/// read, decoded, re-encoded, or stored as content.
 pub fn export_edited_content(
     photo_id: &str,
     library: &crate::model::PhotoLibrary,
@@ -434,29 +416,10 @@ pub fn export_edited_content(
     })
 }
 
-/// Make thumbnails of `photos` from `store`: the local run of the
-/// offloadable `make-thumbnails`, byte for byte what the thumbnails package's
-/// `thumbnail-batch` entrypoint makes on another device. As there, content
-/// named twice is one input, and a picture that is not an image makes no
-/// thumbnail of its own while the rest still do. Its failure is listed in
-/// the answer by the photograph's content, so the person can see which
-/// picture to look at.
-///
-/// Each photograph is read through [`Bytes::read`], as the rest of Photos
-/// opens one: the reference a record keeps carries the key its bytes are
-/// sealed with, so what is thumbnailed is the picture, never the ciphertext
-/// the store holds under their address.
-///
-/// # Errors
-///
-/// A store failure.
 pub fn make_thumbnails(
     photos: &[Bytes],
     store: &tilo_content::ContentStore,
 ) -> Result<tilo_actions::ActionOutput, String> {
-    // Each distinct picture once, in the order the caller first named it
-    // (the entrypoint's order, so the offloaded run answers the same list),
-    // by the content hash that names it the same on every device.
     let mut distinct = std::collections::BTreeSet::new();
     let mut named: Vec<(String, &Bytes)> = Vec::with_capacity(photos.len());
     for photo in photos {
@@ -502,18 +465,13 @@ pub fn make_thumbnails(
     })
 }
 
-/// One picture that made no thumbnail, named as the caller named it.
 fn json_failure(photo: &str, reason: &str) -> serde_json::Value {
     serde_json::json!({"photo": photo, "reason": reason})
 }
 
-/// The resource `kind` a library photograph publishes under: an item of
-/// the library's `photos`.
+/// The resource `kind` a library photograph publishes under: an item of the library's `photos`.
 pub const PHOTO_KIND: &str = "photos.library.photos";
 
-/// The content a photograph's id names. A photograph is addressed by what it
-/// is, not where a machine put it, so a session that never had a file for it
-/// goes from the address to the bytes through its content store.
 pub fn content_of(id: &str) -> Option<&str> {
     let tail = id.strip_prefix("photos.photo:")?;
     crate::model::is_content_hash(tail).then_some(tail)

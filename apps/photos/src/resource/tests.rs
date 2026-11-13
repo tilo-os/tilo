@@ -1,5 +1,5 @@
-//! The library's model and verbs through the door every caller uses: field
-//! edits, verbs, invariants, and two replicas converging.
+//! The library's model and verbs through one set of verbs every caller uses: field edits, verbs,
+//! invariants, and two replicas converging.
 
 use ui::tilo_resource::{Edit, Id, Invoke, Replica, Resource as _};
 
@@ -13,7 +13,6 @@ fn portable_photo(path: &str, width: u32, height: u32) -> LibraryPhoto {
     LibraryPhoto::from_image(OpenImage::fixture(path, width, height))
 }
 
-/// A library holding `photos`, imported through the door.
 fn library_of(photos: &[LibraryPhoto]) -> Replica<PhotoLibrary> {
     let mut library = Replica::<PhotoLibrary>::new();
     for photo in photos {
@@ -126,7 +125,6 @@ fn an_import_is_content_addressed_portable_idempotent_and_bounded() {
     );
     assert!(!String::from_utf8_lossy(&library.save()).contains(origin));
 
-    // Importing the same content again keeps what the library made of it.
     edit(&mut library, &photo_paths(&id).favorite.set(true)).unwrap();
     library
         .apply(PhotoLibrary::IMPORT_PHOTO.with((image, None, None)))
@@ -134,7 +132,6 @@ fn an_import_is_content_addressed_portable_idempotent_and_bounded() {
     assert!(photo(&library, &id).favorite);
     assert_eq!(library.state().unwrap().photos.len(), 1);
 
-    // Content that is not a hash names no bytes any device could resolve.
     let unaddressed = OpenImage::new(
         "/private/unaddressed.png",
         20,
@@ -146,13 +143,10 @@ fn an_import_is_content_addressed_portable_idempotent_and_bounded() {
             .apply(PhotoLibrary::IMPORT_PHOTO.with((unaddressed, None, None)))
             .is_err()
     );
-    // A photograph that claims another's identity is refused wherever it
-    // comes from: it is named by its content.
     let mut impostor = portable_photo("/private/harbour.png", 20, 10);
     impostor.id = "photos.album:collision".into();
     assert!(edit(&mut library, &insert(&impostor)).is_err());
 
-    // A photograph is a few dozen bytes of decisions, never its pixels.
     let big = portable_photo("/var/tmp/big.png", 4000, 3000);
     edit(&mut library, &insert(&big)).unwrap();
     library
@@ -182,7 +176,6 @@ fn edits_rotate_compose_crops_and_refuse_what_is_not_a_crop() {
         .unwrap();
     assert_eq!(photo(&library, &harbour.id).edits.rotate_quarters, 3);
 
-    // A crop is of what is shown, and composes onto the crop in force.
     let half = Rect01 {
         x: 0.0,
         y: 0.0,
@@ -203,8 +196,6 @@ fn edits_rotate_compose_crops_and_refuse_what_is_not_a_crop() {
         "editing one photograph leaves every other alone"
     );
 
-    // A region outside the photograph, or a malformed edit from a peer, is
-    // refused and changes nothing.
     let outside = Rect01 {
         x: 1.0,
         y: 1.0,
@@ -247,7 +238,6 @@ fn edits_rotate_compose_crops_and_refuse_what_is_not_a_crop() {
     .unwrap();
     assert!(photo(&library, &other.id).edits.is_identity());
 
-    // The crop schema says what a region is.
     let crop = PhotoLibrary::surface()
         .verbs
         .into_iter()
@@ -332,7 +322,6 @@ fn metadata_edits_are_bounded_canonical_and_merge_per_label() {
             );
         }
 
-        // A stale selection, or an impossible date, refuses before any edit.
         let before = library.state().unwrap();
         let stale = before.metadata_edits(
             &[first.id.clone(), "photos.photo:gone".into()],
@@ -353,8 +342,6 @@ fn metadata_edits_are_bounded_canonical_and_merge_per_label() {
                 )
                 .is_err()
         );
-        // Malformed labels are refused by the photograph's own rules, not
-        // normalized.
         assert!(
             edit(
                 &mut library,
@@ -642,7 +629,6 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
         assert_eq!(read["ocr"]["text"], "invoice total forty two");
         assert_eq!(read["vision"]["objects"][0], "bicycle");
 
-        // Analysis that is not shared, or not of these bytes, never syncs.
         let local = ImageAnalysis {
             provenance: AnalysisProvenance {
                 scope: "local".to_owned(),
@@ -774,8 +760,6 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
     eprintln!("phase local_analysis_is_a_cancellable_background_job");
     {
         let effects = <PhotosEffect as ui::tilo_resource::Effect>::specs();
-        // Folders are reached by their path, which browser storage lacks:
-        // the framework publishes these unavailable on such a host.
         for id in ["import-directory", "reindex-directory"] {
             let spec = effects
                 .iter()
@@ -875,13 +859,11 @@ fn albums_are_items_whose_name_and_photographs_are_fields() {
         .collect();
     assert!(group(&mut library, &too_many).is_err());
 
-    // Removing a photograph takes it out of every album.
     library
         .apply_confirmed(PhotoLibrary::REMOVE_PHOTO.with(first.item()))
         .unwrap();
     let state = library.state().unwrap();
     assert!(state.album(&summer.id).unwrap().photo_ids.is_empty());
-    // Removing an album keeps its photographs.
     edit(&mut library, &members.insert(&second.id)).unwrap();
     library
         .apply_confirmed(PhotoLibrary::REMOVE_ALBUM.with(summer.item()))
@@ -921,8 +903,6 @@ fn albums_merge_names_and_memberships_and_deletes_win_stale_imports() {
         [item.id.as_str()]
     );
 
-    // Filing merges per photograph: one person swapping a photograph for
-    // another while someone else swaps it for a third keeps both new ones.
     let second = portable_photo("second-member.png", 20, 10);
     let third = portable_photo("third-member.png", 20, 10);
     for photo in [&second, &third] {
@@ -950,7 +930,6 @@ fn albums_merge_names_and_memberships_and_deletes_win_stale_imports() {
         assert_eq!(filed, [second.id.clone(), third.id.clone()]);
     }
 
-    // Concurrent imports into one library both land.
     let mut one = Replica::<PhotoLibrary>::new();
     let mut other = one.fork();
     let left_photo = portable_photo("left-root.png", 20, 10);
@@ -962,8 +941,6 @@ fn albums_merge_names_and_memberships_and_deletes_win_stale_imports() {
     assert!(state.photo(&left_photo.id).is_some());
     assert!(state.photo(&right_photo.id).is_some());
 
-    // A delete is not undone by an import from a replica that had the
-    // photograph already.
     let mut delete = one.fork();
     let mut late_import = one.fork();
     delete
@@ -1074,10 +1051,8 @@ fn the_library_publishes_its_places_and_items_and_enumerating_writes_nothing() {
         "free text is no day of the timeline"
     );
 
-    // Every published action has a valid contract.
     check_contracts(&root);
 
-    // Clearing the last label of a kind takes its place away.
     group(
         &mut library,
         &[
@@ -1166,9 +1141,6 @@ fn timeline_days_parse_within_bounds() {
     );
 }
 
-/// What an agent does for a person is history the person reads: the app's
-/// sentence for each field and verb, naming the photograph as it was
-/// called, and who did it for whom.
 #[test]
 fn history_entries_render_as_the_apps_sentences() {
     use ui::framework::testing::TestApp;
@@ -1250,8 +1222,6 @@ fn history_entries_render_as_the_apps_sentences() {
 fn upgrading_drops_origin_paths_and_photos_kept_only_by_path() {
     use ui::tilo_resource::{Collection, Fields as _, Model};
 
-    /// The library as version 1 stored it: a picture named its origin path
-    /// and had a content address only when one was known.
     #[derive(Model, Clone, Debug, Default, PartialEq)]
     struct V1Image {
         name: String,

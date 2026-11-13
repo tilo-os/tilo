@@ -1,5 +1,5 @@
-//! How the shared state syncs from its document, lays out, draws and
-//! handles input for the window ([`PhotosApp`](super::PhotosApp)).
+//! How the shared state syncs from its document, lays out, draws and handles input for the window
+//! ([`PhotosApp`](super::PhotosApp)).
 
 use crate::model::{LibraryPhoto, PhotoLibrary};
 use crate::strings::{tr, tr_with};
@@ -24,13 +24,7 @@ use super::{
 };
 use ui::widget::DrawChild;
 
-/// The window's toolkit traits answered from the shared state: what each
-/// asks of the empty state, the window's own child, it is handed.
 impl Photos {
-    /// The widgets beside the empty state the canvas may give a layout
-    /// node: the photograph, and the People surface's name field and
-    /// buttons. The buttons live outside the window, in a list, so the
-    /// retained layout check reaches them only through this walk.
     pub(super) fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         if let Some(viewer) = &self.viewer {
             visitor(viewer);
@@ -44,14 +38,10 @@ impl Photos {
     pub(super) fn set_motion_reduced(&mut self, reduced: bool) {
         self.places_motion_reduced = reduced;
         if reduced {
-            // Reduced motion keeps the camera operation immediate and every
-            // marker fully present; only the decorative settle cue disappears.
             self.places_camera_feedback = None;
         }
     }
 
-    /// A preview of a photograph on screen is still being decoded: a capture
-    /// waits for it rather than showing a placeholder.
     pub(super) fn has_pending_visual_work(&self) -> bool {
         self.staged.is_some()
             || !self.thumbnail_queued.is_empty()
@@ -63,8 +53,6 @@ impl Photos {
     }
 
     pub(super) fn needs_animation_frame(&self) -> bool {
-        // Asked while a frame lays out: its motions read at the frame's
-        // instant, never at the clock ([`ui::motion::frame_now`]).
         let now = ui::motion::frame_now();
         self.chrome.inspector.is_animating()
             || (!self.places_motion_reduced
@@ -80,16 +68,12 @@ impl Photos {
                 .needs_animation_frame(&self.layout_theme)
     }
 
-    /// The modal lists glide on after a flick, as the wheel scrolls them;
-    /// that changes no model.
     pub(super) fn glide(&mut self) {
         self.directory_import_details_scroll.advance();
         self.selection_album_scroll.advance();
     }
 
     pub(super) fn take_structure_dirty(&mut self) -> bool {
-        // An editor opened or closed since the last frame: the inspector
-        // follows it, and the layout makes room for it.
         let inspector = self.sync_inspector();
         let viewer = self
             .viewer
@@ -106,8 +90,6 @@ impl Photos {
         if self.copy.failed() {
             self.notice = Some(tr("photos-copy-failed"));
         }
-        // The slide show moves on to the next photograph while the window is
-        // awake for it, and the picture's own wheel zoom is what the bar says.
         self.tick_slide_show();
         if let Some(viewer) = self.viewer.as_ref() {
             self.viewer_zoom.adopt(viewer.zoom());
@@ -251,9 +233,6 @@ impl Photos {
                     .map_or_else(|| "Undated".to_owned(), capture_day),
             })
             .collect();
-        // A timeline reads newest-first.  The id tie-breaker makes peers with
-        // the same capture-day stable without making the date a mutable sort
-        // key in the shared document.
         timeline_items.sort_by(|left, right| {
             let left_undated = left.captured_at == "Undated";
             let right_undated = right.captured_at == "Undated";
@@ -300,9 +279,6 @@ impl Photos {
             self.timeline_projection_filter = projection_filter;
             self.library_total = self.timeline_projection.len();
         }
-        // Markers stand from the last draw until the next: they are built from
-        // exact pixel day offsets, so only a draw knows them. A sync clears
-        // nothing, or the index would read as gone until the window paints.
         let visible_ids: HashSet<_> = self
             .timeline_projection
             .visible_photos(self.timeline_scroll_y, self.timeline_viewport_height)
@@ -391,9 +367,6 @@ impl Photos {
                     .insert(person.clone(), photo.id.clone());
             }
         }
-        // The dedicated People management surface may show approved people
-        // outside the current browse-shelf page, so add their bounded covers
-        // without changing collection-page navigation.
         for person in &self.people_approved {
             if self.library_person_covers.contains_key(&person.label) {
                 continue;
@@ -408,9 +381,6 @@ impl Photos {
             }
         }
         self.library_tags = tags.into_iter().take(6).collect();
-        // Request exactly the sorted, virtualised timeline slice, not the
-        // document's original insertion order.  Otherwise a visible newest
-        // photo can remain a placeholder while an off-screen old one decodes.
         let mut thumbnail_sources: Vec<_> = self
             .library_items
             .iter()
@@ -454,7 +424,6 @@ impl Photos {
             }
             thumbnail_sources.truncate(40);
         }
-        // The sidebar shows each album by its cover, whatever is open.
         for cover in self
             .library_albums
             .iter()
@@ -472,14 +441,9 @@ impl Photos {
         self.refresh_chrome_text(doc);
         self.report_state_save_failure();
         self.publish_notice();
-        // A narrow window shows the places on a screen of their own, where
-        // the library is not drawn: they come with what the library holds,
-        // not with its frame.
         self.show_places();
     }
 
-    /// The slide show is a timed presentation: the window sleeps until the
-    /// next photograph is due rather than repainting while it waits.
     pub(super) fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         self.notice_said
             .deadline()
@@ -488,8 +452,6 @@ impl Photos {
             .min()
     }
 
-    /// The window's style and its two children, the canvas (holding
-    /// `empty` when the column shows it) and the status line.
     pub(super) fn build_layout(
         &mut self,
         empty: Option<&mut EmptyState>,
@@ -498,19 +460,11 @@ impl Photos {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> (Style, [NodeId; 2]) {
         self.layout_theme = theme.clone();
-        // A docked inspector takes its column beside the content; in a
-        // narrow window it floats over it and takes nothing. The sidebar is
-        // the shell's, beside this window's content.
         self.chrome.inspector.scale_for(theme);
         self.sync_inspector();
         let beside = self.chrome.inspector.resolve(self.rect);
         let mut inspector_inset = (self.rect.x1 - beside.x1).max(0.0);
-        // A sheet keeps the foot it rests on clear: the timeline scrolls
-        // every photograph into view above it.
         let sheet_inset = (self.rect.y1 - beside.y1).max(0.0);
-        // A panel floating over an empty view would hide what the empty
-        // state offers (Open, on an empty library): it stands in the part
-        // the panel leaves, where that still holds it.
         if empty.is_some()
             && self.chrome.inspector.is_overlay()
             && !self.chrome.inspector.rises_as_sheet()
@@ -522,9 +476,6 @@ impl Photos {
                 inspector_inset = covered;
             }
         }
-        // The layout tree points at the People buttons, and the framework
-        // syncs again before it measures; rebuilding them only here keeps
-        // those pointers alive until the next tree replaces them.
         self.refresh_people_controls();
 
         let canvas = self.build_canvas_node(empty, taffy, theme, node_map);
@@ -541,7 +492,6 @@ impl Photos {
             },
             ..Default::default()
         };
-        // The toolbar is the window bar's: the canvas starts at the top.
         (style, [canvas, status])
     }
 
@@ -583,9 +533,6 @@ impl Photos {
                     }
                     index += 1;
                 }
-                // The tree was placed from the canvas the previous frame
-                // had; place the surface again on the canvas it has now, so
-                // the painted headings and the controls always agree.
                 let theme = self.layout_theme.clone();
                 self.layout_people_controls(&theme);
                 if show_name {
@@ -620,8 +567,6 @@ impl Photos {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // No window ground: the framework paints `surfaces.content` under
-        // the app; the sidebar is the shell's.
         self.chrome.inspector.tick(theme);
         self.chrome.inspector.resolve(self.rect);
         self.place_chrome();
@@ -663,8 +608,6 @@ impl Photos {
 
         self.draw_directory_import_status(scene, transform, text_renderer, theme);
         self.paint_status(scene, transform, text_renderer, theme);
-        // The inspector comes last: floating in a narrow window it stands
-        // over everything else.
         self.draw_album_editor(scene, transform, text_renderer, theme, presence);
         if self.library_mode
             && !self.people_mode
@@ -714,8 +657,6 @@ impl Photos {
             }
             self.pointer = next;
         }
-        // The inspector's sheet takes a drag on its grip and the arrow keys
-        // on it; the timeline above it stays live.
         self.chrome.inspector.resolve(self.rect);
         let motion = self.layout_theme.motion();
         if self
@@ -766,8 +707,6 @@ impl Photos {
                 *ctx.handled = true;
                 return;
             }
-            // A modal swallows pointer/keyboard input that it does not use;
-            // cursor motion still reaches it so hover feedback remains live.
             if !matches!(event, winit::event::WindowEvent::CursorMoved { .. }) {
                 *ctx.handled = true;
                 return;
@@ -1074,10 +1013,6 @@ impl Photos {
             return;
         }
 
-        // Give the shared chronological index first refusal only while its
-        // narrow track/preview lane owns the pointer (or it holds a drag / AT
-        // focus). Ordinary scrolling anywhere else remains the timeline's
-        // smooth wheel path below.
         if self.library_mode
             && self.library_destination == LibraryDestination::Timeline
             && !self.album_editor
@@ -1113,9 +1048,6 @@ impl Photos {
             }
         }
 
-        // Ctrl + wheel is the cross-platform density gesture.  Keep an
-        // ordinary wheel for chronological browsing; otherwise a trackpad
-        // scroll would unexpectedly rearrange the entire library.
         if self.library_mode
             && self.library_destination == LibraryDestination::Timeline
             && !self.album_editor
@@ -1128,16 +1060,12 @@ impl Photos {
                 winit::event::MouseScrollDelta::PixelDelta(position) => position.y as f32,
             };
             if amount != 0.0 {
-                // Natural scroll semantics: up means see more at once.
                 self.adjust_timeline_density(amount < 0.0);
                 *ctx.handled = true;
                 return;
             }
         }
 
-        // Tilo's vendored Wayland winit maps zwp_pointer_gestures_v1 to this
-        // same event; macOS/iOS use it natively.  Ctrl-wheel above remains the
-        // fallback on compositors that do not advertise pinch gestures.
         if self.library_mode
             && self.library_destination == LibraryDestination::Timeline
             && !self.album_editor
@@ -1423,10 +1351,6 @@ impl Photos {
             return;
         }
 
-        // A library card is a direct manipulation surface, but it is still
-        // only a front end for a canonical action. The trailing star and
-        // remove affordance have their own hit areas, so destructive and
-        // metadata changes do not unexpectedly open the editor.
         if self.library_mode
             && matches!(
                 event,
@@ -1469,10 +1393,6 @@ impl Photos {
             *ctx.handled = true;
             return;
         }
-        // The photograph has the screen: the keys that show it to a workspace are
-        // here, where the picture is — full screen, the slide show, and
-        // stepping through the collection. Ctrl+= / Ctrl+- / Ctrl+0 reach the
-        // picture through `ContentZoom` before any widget sees them.
         if !self.library_mode
             && self.viewer.is_some()
             && let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
@@ -1539,10 +1459,6 @@ impl Photos {
             || self.perform_library_semantic_action(target, action, state)
     }
 
-    /// The open file's own name, so two photographs open at once are two
-    /// distinguishable tabs rather than two tabs called "Photos". Nothing
-    /// open falls back to the app's name, which is the only true thing to
-    /// say about an empty window.
     pub(super) fn title(&self) -> &str {
         self.open_image_path()
             .and_then(|p| p.rsplit('/').next())
@@ -1552,7 +1468,6 @@ impl Photos {
 }
 
 impl Photos {
-    /// A new notice is said in the window's bar for a while.
     fn publish_notice(&mut self) {
         if self.notice != self.notice_last {
             self.notice_last.clone_from(&self.notice);
