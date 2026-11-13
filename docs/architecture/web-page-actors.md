@@ -389,12 +389,16 @@ answer one form in one tab, and the record and the review name each remote
 agent's device by its key and its name and none beside the tab's own agent.
 The share step has not passed there. When it last ran, the sharing device
 said it shared the window, the other said it watched it, and no picture
-crossed. Two causes were found, and both are closed in the session and held
-by tests that run two real sessions (`window_share_live`): a device that did
-not reach the device relaying the workspace's live plane when its session
+crossed. Two causes were found and are closed in the session: a device that
+did not reach the device relaying the workspace's live plane when its session
 started never asked again, and a desk that listed the window as its own view
-of it had no tab to picture the shared window in. The step has not been run
-on booted machines since (see "Not built yet").
+of it had no tab to picture the shared window in. The second is held by the
+shares' own tests, which carry the workspace's governance between two
+sessions by hand. The tests that run two real sessions (`window_share_live`)
+are written to hold both and do not reach the share today: they stop where a
+workspace made on one device should arrive on the person's other one, which
+does not happen on this tree. The step has not been run on booted machines
+since (see "Not built yet").
 
 ## The cases
 
