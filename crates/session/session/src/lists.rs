@@ -73,7 +73,7 @@ impl AppLists {
             .iter()
             .filter(|app| app.has_gui)
             .map(|app| AppEntry {
-                id: app.package_id.clone(),
+                id: app.app_id.to_string(),
                 // The name the person's interface language gives the app: a German machine lists
                 // the app whose manifest says `[package.names] de = "Notizen"` as Notizen, and
                 // every surface that names it — a tab, a start card, search — reads that name from
@@ -85,7 +85,7 @@ impl AppLists {
             .collect();
         let icons = installed
             .iter()
-            .filter_map(|app| Some((app.package_id.clone(), app.icon_path()?)))
+            .filter_map(|app| Some((app.app_id.to_string(), app.icon_path()?)))
             .collect();
         let named = named(&installed);
         let declared = declared(&installed);
@@ -97,7 +97,7 @@ impl AppLists {
         // An installed Tilo app may keep a desktop entry of its own, as its bundle does: that entry
         // is the same app, listed once.
         let tilo_apps =
-            app_catalogue::Installed::from_ids(installed.iter().map(|app| app.package_id.clone()));
+            app_catalogue::Installed::from_ids(installed.iter().map(|app| app.app_id.to_string()));
         // The entries Tilo keeps for the person's downloaded programs are search's own source
         // (`providers::downloaded`): it lists them with what the registry knows of them (their
         // kind, and a file that went away), which a host app row says nothing of.
@@ -114,7 +114,7 @@ impl AppLists {
         let candidates: Vec<desktop_policy::AppCandidate> = installed
             .iter()
             .map(|app| desktop_policy::AppCandidate {
-                package_id: app.package_id.clone(),
+                package_id: app.app_id.to_string(),
                 display_name: app.display_name.clone(),
                 resources: app
                     .opens_extensions
@@ -152,7 +152,7 @@ impl AppLists {
         let present = app_catalogue::Installed::from_ids(
             installed
                 .iter()
-                .map(|app| app.package_id.clone())
+                .map(|app| app.app_id.to_string())
                 .chain(scan.entries.iter().map(|entry| entry.id.clone())),
         );
         let catalogue = app_catalogue::Catalogue::from_sources(
@@ -210,14 +210,14 @@ fn launchable(
 ) -> Vec<LaunchableApplication> {
     let packages: std::collections::HashSet<String> = installed
         .iter()
-        .map(|app| app.package_id.to_ascii_lowercase())
+        .map(|app| app.app_id.to_ascii_lowercase())
         .collect();
     installed
         .iter()
         .filter(|app| app.has_gui)
         .map(|app| LaunchableApplication {
             capabilities: if settings_store::app_scope::SYSTEM_SETTINGS_APPS
-                .contains(&app.package_id.as_str())
+                .contains(&app.app_id.as_str())
             {
                 app.declared_capabilities()
                     .into_iter()
@@ -228,7 +228,7 @@ fn launchable(
             } else {
                 Vec::new()
             },
-            package_id: app.package_id.clone(),
+            package_id: app.app_id.to_string(),
             display_name: app.display_name.clone(),
             unconfined: false,
             offers: app.offers.clone(),
@@ -270,7 +270,7 @@ fn listed_apps(
         .collect();
     let packages: std::collections::HashSet<String> = installed
         .iter()
-        .map(|app| app.package_id.to_ascii_lowercase())
+        .map(|app| app.app_id.to_ascii_lowercase())
         .collect();
     let person_applications = tilo_paths::xdg::data_home().map(|home| home.join("applications"));
     let person_flatpaks = tilo_paths::xdg::data_home().map(|home| home.join("flatpak"));
@@ -279,14 +279,14 @@ fn listed_apps(
         .filter(|app| app.has_gui)
         .map(|app| {
             let added = from
-                .get(&app.package_id.to_ascii_lowercase())
+                .get(&app.app_id.to_ascii_lowercase())
                 .is_some_and(|from| from == "user");
             ListedApp {
-                id: app.package_id.clone(),
+                id: app.app_id.to_string(),
                 name: app.display_name.clone(),
-                package: Some(app.package_id.clone()),
+                package: Some(app.app_id.to_string()),
                 icon: icons
-                    .get(&app.package_id)
+                    .get(app.app_id.as_str())
                     .map(|icon| icon.display().to_string()),
                 program: None,
                 removal: if added {
@@ -403,7 +403,7 @@ fn named(installed: &[app_catalogue::apps::InstalledApp]) -> Vec<collab_types::h
     installed
         .iter()
         .map(|app| collab_types::history::NamedApp {
-            id: app.package_id.clone(),
+            id: app.app_id.to_string(),
             name: app.display_name.clone(),
             names: app.localized_names.clone(),
         })
@@ -418,7 +418,7 @@ fn resource_kinds(
 ) -> BTreeMap<String, Vec<String>> {
     installed
         .iter()
-        .map(|app| (app.package_id.clone(), app.declared_resource_kinds()))
+        .map(|app| (app.app_id.to_string(), app.declared_resource_kinds()))
         .collect()
 }
 
@@ -430,7 +430,7 @@ fn declared(
         .map(|app| {
             let declared = app.declared_actions();
             (
-                app.package_id.clone(),
+                app.app_id.to_string(),
                 tilo_broker_core::access::AppActionAccess {
                     query: declared.query,
                     invoke: declared.invoke,

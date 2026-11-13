@@ -244,7 +244,7 @@ impl Planned {
             .flatten()
             .ok_or_else(|| PlanError::NotInstalled(app.to_owned()))?;
         let package = Package {
-            id: &installed.package_id,
+            id: installed.app_id.as_str(),
             title: &installed.display_name,
             manifest: &installed.manifest_path,
             payload_root: &installed.payload_root,

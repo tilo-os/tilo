@@ -165,7 +165,7 @@ impl Apps {
     fn declared_access(&self, app_id: &str) -> AppActionAccess {
         self.installed()
             .into_iter()
-            .find(|app| app.package_id == app_id)
+            .find(|app| app.app_id == app_id)
             .map(|app| {
                 let declared = app.declared_actions();
                 AppActionAccess {
@@ -182,7 +182,7 @@ impl Apps {
     pub fn declared_resource_kinds(&self, app_id: &str) -> Option<Vec<String>> {
         self.installed()
             .into_iter()
-            .find(|app| app.package_id == app_id)
+            .find(|app| app.app_id == app_id)
             .map(|app| app.declared_resource_kinds())
     }
 
@@ -206,7 +206,7 @@ impl Apps {
     pub fn display_name(&self, app_id: &str) -> String {
         self.installed()
             .into_iter()
-            .find(|app| app.package_id == app_id)
+            .find(|app| app.app_id == app_id)
             .map_or_else(
                 || package_store::display_name_for_package_id(app_id),
                 |app| app.display_name,
@@ -231,7 +231,7 @@ impl Apps {
             .as_ref()
             .and_then(package_store::integrity::signed_surface)
         {
-            tilo_action_broker::register_package_surface(&app.package_id, &surface);
+            tilo_action_broker::register_package_surface(&app.app_id, &surface);
         }
     }
 
@@ -239,7 +239,7 @@ impl Apps {
         let app = self
             .installed()
             .into_iter()
-            .find(|app| app.package_id == app_id)
+            .find(|app| app.app_id == app_id)
             .ok_or_else(|| format!("{app_id} is not installed"))?;
         if !app.has_gui {
             return Err(format!("{app_id} has no window to open"));
@@ -273,7 +273,7 @@ impl Apps {
             let _ = (&app, &sockets);
             return Err("refusing to launch: no app sandbox on this platform".into());
         };
-        if !self.launched.record(launch.pid, &app.package_id, workspace) {
+        if !self.launched.record(launch.pid, &app.app_id, workspace) {
             launch.kill();
             return Err(format!(
                 "refusing to keep {app_id} running: its process could not be identified"
@@ -328,7 +328,7 @@ impl LauncherServices for Apps {
         apps.into_iter()
             .map(|app| LaunchableApplication {
                 capabilities: Vec::new(),
-                package_id: app.package_id,
+                package_id: app.app_id.to_string(),
                 display_name: app.display_name,
                 unconfined: false,
                 offers: app.offers,

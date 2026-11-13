@@ -121,7 +121,7 @@ impl RecordReader for AppReader {
             .arg("--payload-root")
             .arg(&installed.payload_root)
             .arg("--app-id")
-            .arg(&installed.package_id)
+            .arg(installed.app_id.as_str())
             .arg("--no-services")
             .arg("--")
             .arg(tilo_app::framework::record_index::INDEX_FLAG)

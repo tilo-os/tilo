@@ -21,28 +21,23 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
         .ok_or("refusing to launch: no app store is available")?;
     verify_installed(catalog, app)?;
     let manifest = launcher::manifest::read_manifest(&app.manifest_path)
-        .map_err(|error| format!("refusing to launch {}: {error}", app.package_id))?;
+        .map_err(|error| format!("refusing to launch {}: {error}", app.app_id))?;
     let executable = manifest
         .entrypoint
         .gui_bin()
         .filter(|bin| !bin.is_empty())
-        .ok_or_else(|| format!("{} has no window to open", app.package_id))?;
+        .ok_or_else(|| format!("{} has no window to open", app.app_id))?;
     if apps.data_home.as_os_str().is_empty() {
         return Err("refusing to launch: HOME is not set, so the app has nowhere to write".into());
     }
     let container = launcher_macos::policy::prepare_container(
         &apps.data_home,
         Some(&apps.workspace),
-        &app.package_id,
+        &app.app_id,
     )
-    .map_err(|error| {
-        format!(
-            "refusing to launch {}: its container: {error}",
-            app.package_id
-        )
-    })?;
+    .map_err(|error| format!("refusing to launch {}: its container: {error}", app.app_id))?;
     let services = ServiceConnections::connect(
-        &app.package_id,
+        &app.app_id,
         &apps.workspace,
         &ServiceSockets {
             collab: &sockets.collab,
@@ -50,25 +45,16 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
             blobs: &sockets.blobs,
         },
     )
-    .map_err(|error| {
-        format!(
-            "could not connect {} to its services: {error}",
-            app.package_id
-        )
-    })?;
-    let chooser = Chooser::start(&app.package_id)
-        .map_err(|error| format!("could not give {} a file chooser: {error}", app.package_id))?;
-    let capture = Capture::start(apps, app, &manifest.sandbox.portals).map_err(|error| {
-        format!(
-            "could not give {} its capture broker: {error}",
-            app.package_id
-        )
-    })?;
+    .map_err(|error| format!("could not connect {} to its services: {error}", app.app_id))?;
+    let chooser = Chooser::start(&app.app_id)
+        .map_err(|error| format!("could not give {} a file chooser: {error}", app.app_id))?;
+    let capture = Capture::start(apps, app, &manifest.sandbox.portals)
+        .map_err(|error| format!("could not give {} its capture broker: {error}", app.app_id))?;
     let mut inherit_fds = services.fds();
     inherit_fds.push(chooser.app_end.as_raw_fd());
     inherit_fds.push(capture.app_end.as_raw_fd());
     let mut env: Vec<(OsString, OsString)> = services
-        .env(&app.package_id, &apps.workspace)
+        .env(&app.app_id, &apps.workspace)
         .into_iter()
         .map(|(key, value)| (OsString::from(key), OsString::from(value)))
         .collect();
@@ -81,7 +67,7 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
         OsString::from(capture.app_end.as_raw_fd().to_string()),
     ));
     let request = launcher_macos::LaunchRequest {
-        package_id: app.package_id.clone(),
+        package_id: app.app_id.to_string(),
         executable: app.payload_root.join(executable),
         args: Vec::new(),
         payload_dir: app.payload_root.clone(),
@@ -103,7 +89,7 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
     drop(chooser.app_end);
     drop(capture.app_end);
     let pid = u32::try_from(launched.pid())
-        .map_err(|_| format!("{} started with an invalid pid", app.package_id))?;
+        .map_err(|_| format!("{} started with an invalid pid", app.app_id))?;
     Ok(Launch { pid, app: launched })
 }
 
@@ -174,7 +160,7 @@ impl Capture {
             std::sync::Arc::new(tilo_capture::grants::GrantPolicy {
                 grants: apps.device_grants()?,
                 workspace: apps.workspace.clone(),
-                app: app.package_id.clone(),
+                app: app.app_id.to_string(),
                 declared,
                 consent: move |device: DeviceKind| {
                     let mut helper = std::process::Command::new(&exe);
@@ -183,7 +169,7 @@ impl Capture {
                 },
             });
         let sources: std::sync::Arc<dyn Sources> = std::sync::Arc::new(SystemSources);
-        let package = app.package_id.clone();
+        let package = app.app_id.to_string();
         std::thread::Builder::new()
             .name("tilo-app-capture".into())
             .spawn(move || {
@@ -208,7 +194,7 @@ pub(super) fn verify_installed(
     app: &InstalledApp,
 ) -> Result<(), String> {
     use package_store::integrity;
-    let refuse = |why: String| format!("refusing to launch {}: {why}", app.package_id);
+    let refuse = |why: String| format!("refusing to launch {}: {why}", app.app_id);
     let package = catalog
         .list()
         .map_err(|error| refuse(error.to_string()))?

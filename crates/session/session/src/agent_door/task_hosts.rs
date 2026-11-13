@@ -42,16 +42,16 @@ fn installed_apps(
         }
     };
     for (app, title, surface) in installed {
-        if named.contains(&app) {
+        if named.contains(app.as_str()) {
             continue;
         }
         let Ok(surface) = String::from_utf8(surface) else {
             tracing::warn!(%app, "agent door: an app's surface is not text");
             continue;
         };
-        named.insert(app.clone());
+        named.insert(app.to_string());
         apps.push(App::Surface {
-            app,
+            app: app.to_string(),
             title,
             surface,
         });

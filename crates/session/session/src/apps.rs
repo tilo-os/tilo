@@ -504,7 +504,7 @@ impl Apps {
         };
         let planned = Planned::of(
             &Launch::Package {
-                app: installed.package_id,
+                app: installed.app_id.to_string(),
                 open: None,
             },
             &context,
@@ -2018,7 +2018,7 @@ pub(crate) fn launch_of(app: &str) -> Option<Launch> {
 /// The package id `app` is installed under: the id itself, or the package whose short name it is.
 fn installed_package(app: &str) -> Option<String> {
     if let Ok(Some(installed)) = app_catalogue::apps::read_one_from_env(app) {
-        return Some(installed.package_id);
+        return Some(installed.app_id.to_string());
     }
     if app.contains('.') {
         return None;
@@ -2027,11 +2027,11 @@ fn installed_package(app: &str) -> Option<String> {
     installed
         .into_iter()
         .find(|package| {
-            tilo_app_launch::package_identities(&package.package_id)
+            tilo_app_launch::package_identities(&package.app_id)
                 .iter()
                 .any(|identity| identity.eq_ignore_ascii_case(app))
         })
-        .map(|package| package.package_id)
+        .map(|package| package.app_id.to_string())
 }
 
 /// Why an action an app publishes cannot be run here: the action host an app's resources arrive on

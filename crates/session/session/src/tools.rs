@@ -538,7 +538,7 @@ fn document_apps(caller: &Caller, path: &str) -> ToolReply {
             let name = match launch {
                 Launch::Package { .. } => installed
                     .iter()
-                    .find(|listed| listed.package_id == id)
+                    .find(|listed| listed.app_id == id.as_str())
                     .map_or_else(|| id.clone(), |listed| listed.name_in(&locales).to_owned()),
                 _ => entries
                     .entries

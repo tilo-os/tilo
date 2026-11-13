@@ -9,12 +9,12 @@
 use std::path::PathBuf;
 
 use package_store::{Catalog, CatalogError, InstalledPackage};
+use tilo_app_id::AppId;
 
 /// One installed application the launcher can start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledApp {
-    /// Reverse-DNS package id — the identity `tilo-install` records.
-    pub package_id: String,
+    pub app_id: AppId,
     /// Human-facing name — the manifest's `[package].name`, or derived
     /// from the package id's trailing component when unset.
     pub display_name: String,
@@ -82,7 +82,7 @@ impl InstalledApp {
         let offers = signed.offers.clone();
         let opens_resource_kinds = signed.providers.resources.clone();
         let manifest = tilo_app_package::view::ManifestView::try_from(signed.clone()).ok()?;
-        let package_id = if manifest.package_id.is_empty() {
+        let app_id = if manifest.package_id.is_empty() {
             entry.id.clone()
         } else {
             manifest.package_id.clone()
@@ -92,11 +92,11 @@ impl InstalledApp {
                 .name
                 .clone()
                 .filter(|n| !n.trim().is_empty())
-                .unwrap_or_else(|| package_store::display_name_for_package_id(&package_id)),
+                .unwrap_or_else(|| package_store::display_name_for_package_id(&app_id)),
             localized_names: manifest.localized_names.clone(),
             keywords: manifest.keywords.clone(),
             category: manifest.category.clone().filter(|c| !c.trim().is_empty()),
-            package_id,
+            app_id: AppId::new(app_id),
             version: manifest.version.clone(),
             manifest_path: entry.manifest_path.clone(),
             payload_root: entry.payload_root.clone(),
@@ -282,7 +282,7 @@ pub fn successor_of(catalog: &Catalog, old: &str) -> Result<Option<InstalledApp>
         .iter()
         .find(|row| row.id == app)
         .and_then(InstalledApp::from_package)
-        .filter(|found| found.package_id == app))
+        .filter(|found| found.app_id == app))
 }
 
 /// Read one visible registry row and its manifest. Other installed packages'
@@ -296,7 +296,7 @@ pub fn successor_of(catalog: &Catalog, old: &str) -> Result<Option<InstalledApp>
 /// Returns a catalogue error when either installed store cannot be read.
 pub fn read_one(catalog: &Catalog, app_id: &str) -> Result<Option<InstalledApp>, CatalogError> {
     match catalog.find(app_id)? {
-        Some(row) => Ok(InstalledApp::from_package(&row).filter(|app| app.package_id == app_id)),
+        Some(row) => Ok(InstalledApp::from_package(&row).filter(|app| app.app_id == app_id)),
         None => successor_of(catalog, app_id),
     }
 }
@@ -326,7 +326,7 @@ pub fn read_exact(
             return None;
         }
         let app = InstalledApp::from_package(entry)?;
-        (app.package_id == app_id).then_some(app)
+        (app.app_id == app_id).then_some(app)
     }))
 }
 
@@ -334,7 +334,7 @@ pub fn read_exact(
 /// the bytes its signed package ships ([`package_store::integrity::signed_surface`]), for each
 /// app that publishes one. What a task's programs may name of the native apps this device has.
 #[must_use]
-pub fn signed_surfaces(catalog: &Catalog) -> Vec<(String, String, Vec<u8>)> {
+pub fn signed_surfaces(catalog: &Catalog) -> Vec<(AppId, String, Vec<u8>)> {
     let Ok(rows) = catalog.list() else {
         return Vec::new();
     };
@@ -346,7 +346,7 @@ pub fn signed_surfaces(catalog: &Catalog) -> Vec<(String, String, Vec<u8>)> {
         let Some(app) = InstalledApp::from_package(row) else {
             continue;
         };
-        out.push((app.package_id, app.display_name, surface));
+        out.push((app.app_id, app.display_name, surface));
     }
     out
 }
@@ -356,7 +356,7 @@ pub fn signed_surfaces(catalog: &Catalog) -> Vec<(String, String, Vec<u8>)> {
 /// # Errors
 ///
 /// See [`Catalog::from_env`].
-pub fn signed_surfaces_from_env() -> Result<Vec<(String, String, Vec<u8>)>, CatalogError> {
+pub fn signed_surfaces_from_env() -> Result<Vec<(AppId, String, Vec<u8>)>, CatalogError> {
     Ok(signed_surfaces(&Catalog::from_env()?))
 }
 
@@ -501,7 +501,7 @@ mod tests {
         assert_eq!(apps.len(), 2, "{apps:?}");
         let viewer = apps
             .iter()
-            .find(|app| app.package_id == "so.tilo.viewer")
+            .find(|app| app.app_id == "so.tilo.viewer")
             .unwrap();
         assert_eq!(viewer.display_name, "Viewer");
         assert_eq!(viewer.version, "2.0.0");
@@ -518,7 +518,7 @@ mod tests {
         );
         let tool = apps
             .iter()
-            .find(|app| app.package_id == "so.tilo.tool")
+            .find(|app| app.app_id == "so.tilo.tool")
             .unwrap();
         assert!(!tool.has_gui);
         assert_eq!(tool.display_name, "Tool");
@@ -566,7 +566,7 @@ mod tests {
         )
         .unwrap();
         let found = read_one(&catalog, "so.tilo.lang.todo").unwrap().unwrap();
-        assert_eq!(found.package_id, "so.tilo.lang.tasks");
+        assert_eq!(found.app_id, "so.tilo.lang.tasks");
         assert_eq!(found.previously(), ["so.tilo.lang.todo"]);
         assert_eq!(
             earlier_ids(&catalog)
@@ -593,7 +593,7 @@ mod tests {
         let ids: Vec<String> = read(&catalog)
             .unwrap()
             .into_iter()
-            .map(|app| app.package_id)
+            .map(|app| app.app_id.to_string())
             .collect();
         assert_eq!(ids, ["so.tilo.lang.tasks"]);
         std::fs::write(
@@ -607,7 +607,7 @@ mod tests {
             read_one(&catalog, "so.tilo.lang.todo")
                 .unwrap()
                 .unwrap()
-                .package_id,
+                .app_id,
             "so.tilo.lang.todo"
         );
     }
@@ -698,7 +698,7 @@ mod tests {
 
         std::fs::write(&registry, format!("{}{}", row(&forged), row(&canonical))).unwrap();
         let osk = read_one(&catalog, "so.tilo.osk").unwrap().unwrap();
-        assert_eq!(osk.package_id, "so.tilo.osk");
+        assert_eq!(osk.app_id, "so.tilo.osk");
         assert_eq!(osk.version, "1.0.0");
         assert_eq!(osk.manifest_path, canonical.manifest_path);
 
@@ -802,7 +802,7 @@ mod tests {
         );
         std::fs::write(package_store::Layout::new(&user).registry(), row).unwrap();
         let apps = read(&Catalog::at(&user, None)).unwrap();
-        let ids: Vec<&str> = apps.iter().map(|app| app.package_id.as_str()).collect();
+        let ids: Vec<&str> = apps.iter().map(|app| app.app_id.as_str()).collect();
         assert_eq!(ids, ["com.evil.app"]);
     }
 

@@ -55,11 +55,7 @@ pub fn documents(path: &Path, installed: &[InstalledApp], entries: &Scan) -> Vec
     let mut claiming: Vec<&InstalledApp> =
         installed.iter().filter(|app| claims_mime(app)).collect();
     for app in installed {
-        if claims_extension(app)
-            && !claiming
-                .iter()
-                .any(|listed| listed.package_id == app.package_id)
-        {
+        if claims_extension(app) && !claiming.iter().any(|listed| listed.app_id == app.app_id) {
             claiming.push(app);
         }
     }
@@ -67,7 +63,7 @@ pub fn documents(path: &Path, installed: &[InstalledApp], entries: &Scan) -> Vec
         .into_iter()
         .map(|app| {
             Launch::Package {
-                app: app.package_id.clone(),
+                app: app.app_id.to_string(),
                 open: None,
             }
             .opening(open.clone())
@@ -110,7 +106,7 @@ pub fn link(uri: &str, installed: &[InstalledApp], entries: &Scan) -> Option<Lau
     if let Some(app) = app {
         return Some(
             Launch::Package {
-                app: app.package_id.clone(),
+                app: app.app_id.to_string(),
                 open: None,
             }
             .opening(open),
@@ -185,7 +181,7 @@ mod tests {
         let manifest = tilo_app_package::manifest::Manifest::from_toml_str(&manifest)
             .expect("the test manifest reads");
         InstalledApp {
-            package_id: id.into(),
+            app_id: id.into(),
             display_name: id.into(),
             localized_names: std::collections::BTreeMap::new(),
             keywords: Vec::new(),

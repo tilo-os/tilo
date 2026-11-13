@@ -598,6 +598,7 @@ dependencies = [
  "serde",
  "tempfile",
  "tilo-action-policy",
+ "tilo-app-id",
  "tilo-app-package",
  "tilo-paths",
  "workspace-hack",

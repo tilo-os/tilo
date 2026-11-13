@@ -87,16 +87,16 @@ pub fn task_packages() -> Vec<TaskPackage> {
     };
     let earlier = tilo_action_policy::earlier::held();
     apps.iter()
-        .filter(|app| runs_in_host(&app.package_id))
-        .filter_map(|app| match verified_package(&app.package_id) {
+        .filter(|app| runs_in_host(&app.app_id))
+        .filter_map(|app| match verified_package(&app.app_id) {
             Ok(verified) => Some(TaskPackage {
-                app: app.package_id.clone(),
+                app: app.app_id.to_string(),
                 module: verified.module,
-                records_under: Some(earlier.records_under(&app.package_id).to_owned())
-                    .filter(|under| *under != app.package_id),
+                records_under: Some(earlier.records_under(&app.app_id).to_owned())
+                    .filter(|under| under.as_str() != app.app_id.as_str()),
             }),
             Err(error) => {
-                tracing::warn!(package_id = %app.package_id, %error, "a task leaves out an app it could not verify");
+                tracing::warn!(package_id = %app.app_id, %error, "a task leaves out an app it could not verify");
                 None
             }
         })
@@ -115,11 +115,11 @@ fn installed_apps() -> std::collections::BTreeMap<String, String> {
     };
     let earlier = tilo_action_policy::earlier::held();
     apps.iter()
-        .filter(|app| runs_in_host(&app.package_id))
+        .filter(|app| runs_in_host(&app.app_id))
         .map(|app| {
             (
-                app.package_id.clone(),
-                earlier.records_under(&app.package_id).to_owned(),
+                app.app_id.to_string(),
+                earlier.records_under(&app.app_id).to_owned(),
             )
         })
         .collect()
@@ -433,14 +433,14 @@ impl Hosts {
         };
         for app in apps
             .iter()
-            .filter(|app| app.package_id != PERSON_VIEWS_APP && runs_in_host(&app.package_id))
+            .filter(|app| app.app_id != PERSON_VIEWS_APP && runs_in_host(&app.app_id))
         {
-            let Ok(verified) = (self.verifies)(&app.package_id) else {
-                tracing::warn!(package_id = %app.package_id, "the person's views leave out an app that could not be verified");
+            let Ok(verified) = (self.verifies)(&app.app_id) else {
+                tracing::warn!(package_id = %app.app_id, "the person's views leave out an app that could not be verified");
                 continue;
             };
             if verified.runtime != key.runtime || verified.app_runtime != key.app_runtime {
-                tracing::warn!(package_id = %app.package_id, "the person's views leave out an app on other runtimes");
+                tracing::warn!(package_id = %app.app_id, "the person's views leave out an app on other runtimes");
                 continue;
             }
             if !module.imports.contains(&verified.module.wasm) {
@@ -653,7 +653,7 @@ fn verified_installed(app: &str) -> Result<VerifiedInstance, String> {
 
 /// Take over what a window of `app` that ran its instance in its own process kept of its record
 /// in `workspace`, the first time the host whose storage is `storage` keeps it: the app's own
-/// directory held it (`<data home>/tilo-rooms/<workspace>/<app>`, its documents under its data
+/// directory held it (`<data home>/tilo-workspaces/<workspace>/<app>`, its documents under its data
 /// home, keyed by `records`, the id its records are kept under), and the host's documents hold
 /// it from now on, the same files in the same layout. Once the host holds a copy, nothing moves.
 pub fn adopt_window_copy(

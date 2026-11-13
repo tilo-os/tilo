@@ -113,13 +113,13 @@ pub fn installed(catalog: &package_store::Catalog) -> Vec<DeskStyleReading> {
     for app in &apps {
         match Bundle::read(&app.payload_root) {
             // A Rust app's payload carries no tilolang module: no style.
-            Ok(bundle) => modules.push((app.package_id.clone(), bundle.meta)),
+            Ok(bundle) => modules.push((app.app_id.to_string(), bundle.meta)),
             Err(tilolang_tilo::bundle::BundleError::NotAModule(_)) => {}
             // Something was meant as a package and does not read: the switch says so, named by
             // the package, so the person who installed it sees why rather than nothing.
             Err(error) => {
-                tracing::warn!(app = app.package_id, %error, "a package's styles do not read");
-                broken.push(unreadable(&app.package_id));
+                tracing::warn!(app = %app.app_id, %error, "a package's styles do not read");
+                broken.push(unreadable(&app.app_id));
             }
         }
     }
