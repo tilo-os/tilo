@@ -176,9 +176,11 @@ impl ui::framework::ActionControl<String> for ThemeTiles {
 fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme, radius: f64) {
     let colors = &theme.tokens.colors;
     let surfaces = &colors.surfaces;
+    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
+        // ratchet-allow(desktop_ground): a theme tile is a miniature of that theme, drawn in its own colours
         surfaces.base,
         None,
         &RoundedRect::from_rect(area, radius),
@@ -186,6 +188,7 @@ fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme,
     let inset = (area.height() * 0.12).round();
     let window = Rect::new(area.x0 + inset, area.y0 + inset, area.x1, area.y1);
     let corner = (radius * 0.6).max(3.0);
+    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
@@ -219,6 +222,7 @@ fn paint_sidebar(
         window.x0 + window.width() * 0.32,
         window.y1,
     );
+    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
@@ -235,6 +239,7 @@ fn paint_sidebar(
     for row in 0..3 {
         let y = sidebar.y0 + unit * (1.2 + f64::from(row) * 1.6);
         if row == 1 {
+            // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -256,6 +261,7 @@ fn paint_sidebar(
             sidebar.x0 + unit,
             y,
             sidebar.width() * 0.55,
+            // ratchet-allow(literal_alpha): a theme tile is a miniature of that theme, drawn in its own colours
             colors.text_dim.multiply_alpha(0.7),
         );
     }
@@ -289,6 +295,7 @@ fn paint_tile_content(
         left,
         window.y0 + unit * 2.8,
         width * 0.9,
+        // ratchet-allow(literal_alpha): a theme tile is a miniature of that theme, drawn in its own colours
         colors.text_dim.multiply_alpha(0.6),
     );
     tile_bar(
@@ -298,10 +305,12 @@ fn paint_tile_content(
         left,
         window.y0 + unit * 4.0,
         width * 0.7,
+        // ratchet-allow(literal_alpha): a theme tile is a miniature of that theme, drawn in its own colours
         colors.text_dim.multiply_alpha(0.6),
     );
     let control = unit * 1.6;
     let bottom = window.y1 - unit * 1.2;
+    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
@@ -321,6 +330,7 @@ fn paint_tile_content(
         window.x1 - unit * 1.2,
         bottom,
     );
+    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
@@ -328,6 +338,7 @@ fn paint_tile_content(
         None,
         &RoundedRect::from_rect(track, control / 2.0),
     );
+    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
@@ -349,6 +360,7 @@ fn tile_bar(
     width: f64,
     color: vello::peniko::Color,
 ) {
+    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
@@ -450,6 +462,7 @@ impl Widget for ThemeTiles {
             if chosen {
                 ui::surface::selected_edge(scene, transform, area, radius, theme);
             } else {
+                // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
                 scene.stroke(
                     &Stroke::new(1.0),
                     transform,
@@ -459,6 +472,7 @@ impl Widget for ThemeTiles {
                 );
             }
             if self.hover == Some(index) && !chosen {
+                // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -468,6 +482,7 @@ impl Widget for ThemeTiles {
                 );
             }
             if self.focused && self.cursor == index {
+                // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,

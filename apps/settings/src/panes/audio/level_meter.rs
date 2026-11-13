@@ -169,6 +169,7 @@ impl Widget for LevelMeter {
     ) {
         let colors = &theme.tokens.colors;
         let radius = self.rect.height() / 2.0;
+        // ratchet-allow(raw_paint): the level meter draws live audio levels, content rather than chrome
         scene.fill(
             Fill::NonZero,
             transform,
@@ -184,9 +185,11 @@ impl Widget for LevelMeter {
                 self.rect.x0 + (width * f64::from(self.shown)).max(self.rect.height()),
                 self.rect.y1,
             );
+            // ratchet-allow(raw_paint): the level meter draws live audio levels, content rather than chrome
             scene.fill(
                 Fill::NonZero,
                 transform,
+                // ratchet-allow(literal_alpha): the level meter draws live audio levels, content rather than chrome
                 colors.text_primary.multiply_alpha(0.9),
                 None,
                 &RoundedRect::from_rect(fill, radius),
@@ -195,6 +198,7 @@ impl Widget for LevelMeter {
         if self.peak > 0.02 {
             let x = (self.rect.x0 + width * f64::from(self.peak))
                 .clamp(self.rect.x0 + 1.0, self.rect.x1 - 1.0);
+            // ratchet-allow(raw_paint): the level meter draws live audio levels, content rather than chrome
             scene.fill(
                 Fill::NonZero,
                 transform,
