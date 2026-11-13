@@ -1470,6 +1470,10 @@ mod tests {
 
     /// The reminder's form, opened from a task's row menu as a
     /// finger opens it: the menu's "Remind me…" row asks when.
+    ///
+    /// A menu row on a touchscreen is pressed where it stands, by a finger: a mouse press there
+    /// only dismisses the menu the finger opened, and the row runs nothing. Both tests of the
+    /// form open it this way, in a window laid out for a finger, and each holds the form open.
     fn open_reminder_form(staged: &mut Staged, packages: &Rc<Packages>) {
         // The task stands open as its page: the reminder's menu is part of the document, and a page
         // takes the presses the controls of a row's document do not (yet) reach.
@@ -1638,35 +1642,6 @@ mod tests {
             before + 1,
             "the task is reminded at the moment the person typed"
         );
-    }
-
-    /// A menu row on a touchscreen is pressed where it stands, by a finger: a mouse press there
-    /// only dismisses the menu the finger opened, and the row runs nothing.
-    #[test]
-    fn a_menu_row_of_a_touchscreen_window_is_pressed_by_a_tap() {
-        tilo_ui_host::i18n::ensure();
-        let packages = app_packages("tasks");
-        let app = packages.0.last().expect("the app").meta.app.clone();
-        let (width, height) = (390, 844);
-        let mut staged = Staged::over(
-            &app,
-            &packages,
-            "a busy week",
-            (width, height),
-            ui::Theme::light(),
-            None,
-            &[],
-        )
-        .expect("the scenario stages");
-        staged
-            .lay_out(
-                (width, height),
-                ui::Theme::light(),
-                ui::interaction::InteractionEnvironment::TOUCH,
-                1.0,
-            )
-            .expect("the window lies out for a finger");
-        open_reminder_form(&mut staged, &packages);
     }
 
     /// Press `bounds` as a person presses them, and let the window and its app answer.
@@ -2144,6 +2119,10 @@ mod tests {
 
     /// A task's steps stand on the column of the words over them when none of them holds a step of its
     /// own: a tree keeps a column for a chevron only where a row of that level has something to fold.
+    ///
+    /// The narrow window's list is read first, as it stands before its row is pressed: where a
+    /// step another day heads stands in it
+    /// (`a_step_due_another_day_stands_at_its_lists_first_level`).
     #[test]
     fn a_tasks_steps_that_fold_nothing_stand_on_their_sections_column() {
         tilo_ui_host::i18n::ensure();
@@ -2164,6 +2143,7 @@ mod tests {
             .expect("the scenario stages");
             staged.harness.relayout();
             if width <= 390 {
+                a_step_due_another_day_stands_at_its_lists_first_level(&staged);
                 // A window too narrow for the list and the item at once: the task's row opens its
                 // page in front of the list, and the steps stand in the page.
                 let id = super::super::button_named(&staged.harness().inspection().root, task)
@@ -2199,11 +2179,10 @@ mod tests {
     /// A step the sort put under another day's heading stands on the level its list starts at, and
     /// says which task it is a step of: indented, it would stand under a row that is not there, and
     /// the person reading the day could not tell what it belongs to.
-    #[test]
-    fn a_step_due_another_day_stands_at_its_lists_first_level() {
-        tilo_ui_host::i18n::ensure();
-        let packages = app_packages("tasks");
-        let app = packages.0.last().expect("the app").meta.app.clone();
+    ///
+    /// `staged` is the tasks app's "a task that is late" at 390×844 in the light theme, laid out
+    /// once and not yet pressed: this reads it and leaves it as it stood.
+    fn a_step_due_another_day_stands_at_its_lists_first_level(staged: &Staged) {
         let (width, height) = (390_u32, 844_u32);
         // A step due the day its task is due keeps its place under
         // it; one due another day opens the group its own day
@@ -2211,17 +2190,6 @@ mod tests {
         let task = "Call the landlord about the boiler";
         let same_day = "Find the last service date";
         let other_day = "Book the engineer's visit";
-        let mut staged = Staged::over(
-            &app,
-            &packages,
-            "a task that is late",
-            (width, height),
-            ui::Theme::light(),
-            None,
-            &[],
-        )
-        .expect("the scenario stages");
-        staged.harness.relayout();
         let root = &staged.harness().inspection().root;
         let row_of = |title: &str| {
             let row = named(root, ROWS, title).unwrap_or_else(|| {
@@ -2668,13 +2636,12 @@ mod tests {
     #[test]
     fn a_service_notice_keeps_one_gutter_over_and_under_it() {
         tilo_ui_host::i18n::ensure();
-        let gaps = |app: &str, scenario: &str, (width, height): (u32, u32)| -> (f64, f64) {
-            let packages = app_packages(app);
+        let gaps = |packages: &Rc<Packages>, scenario: &str, (width, height): (u32, u32)| {
             let id = packages.0.last().expect("the app").meta.app.clone();
             let theme = ui::Theme::light();
             let mut staged = Staged::over(
                 &id,
-                &packages,
+                packages,
                 scenario,
                 (width, height),
                 theme.clone(),
@@ -2719,12 +2686,15 @@ mod tests {
             (notice.rect[1] - top, below)
         };
         let gutter = f64::from(ui::Theme::light().tokens.spacing.rhythm.group);
+        // Each app is built once, and staged from that build at both sizes.
+        let apps = [
+            ("mail", "an account that cannot be reached"),
+            ("tube", "YouTube cannot be reached"),
+        ]
+        .map(|(app, scenario)| (app, scenario, app_packages(app)));
         for size in [(390, 844), (1280, 800)] {
-            for (app, scenario) in [
-                ("mail", "an account that cannot be reached"),
-                ("tube", "YouTube cannot be reached"),
-            ] {
-                let (over, under) = gaps(app, scenario, size);
+            for &(app, scenario, ref packages) in &apps {
+                let (over, under): (f64, f64) = gaps(packages, scenario, size);
                 assert!(
                     (over - gutter).abs() < 0.5,
                     "{app} at {size:?}: {over} over the notice, where the page's gutter is {gutter}"
