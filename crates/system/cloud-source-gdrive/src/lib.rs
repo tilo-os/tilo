@@ -787,37 +787,41 @@ mod tests {
     use super::*;
     use cloud_source::StaticCredential;
 
-    #[test]
-    fn upload_chunks_round_up_to_the_quantum() {
-        let credentials = Arc::new(StaticCredential(Credential::Bearer {
-            token: String::from("t").into(),
-            expires: None,
-        }));
-        let config = DriveConfig {
-            upload_chunk: 300_000,
-            ..DriveConfig::my_drive()
-        };
-        let drive = GDrive::new(config, credentials).unwrap();
-        assert_eq!(drive.capabilities().upload_chunk, 2 * UPLOAD_QUANTUM);
-        assert_eq!(drive.root(), ItemId::new("root"));
-        let shared = GDrive::new(
-            DriveConfig::shared_drive("0AdrIvE"),
-            Arc::new(StaticCredential(Credential::Bearer {
+    tilo_test_env::scenario! {
+        fn a_drive_configuration_decides_chunks_and_root_and_persists;
+
+        phase upload_chunks_round_up_to_the_quantum;
+        {
+            let credentials = Arc::new(StaticCredential(Credential::Bearer {
                 token: String::from("t").into(),
                 expires: None,
-            })),
-        )
-        .unwrap();
-        assert_eq!(shared.root(), ItemId::new("0AdrIvE"));
-        assert!(!shared.capabilities().multiple_parents);
-        assert!(!shared.capabilities().quota);
-    }
+            }));
+            let config = DriveConfig {
+                upload_chunk: 300_000,
+                ..DriveConfig::my_drive()
+            };
+            let drive = GDrive::new(config, credentials).unwrap();
+            assert_eq!(drive.capabilities().upload_chunk, 2 * UPLOAD_QUANTUM);
+            assert_eq!(drive.root(), ItemId::new("root"));
+            let shared = GDrive::new(
+                DriveConfig::shared_drive("0AdrIvE"),
+                Arc::new(StaticCredential(Credential::Bearer {
+                    token: String::from("t").into(),
+                    expires: None,
+                })),
+            )
+            .unwrap();
+            assert_eq!(shared.root(), ItemId::new("0AdrIvE"));
+            assert!(!shared.capabilities().multiple_parents);
+            assert!(!shared.capabilities().quota);
+        }
 
-    #[test]
-    fn configurations_persist_with_defaults() {
-        let config: DriveConfig = serde_json::from_str(r#"{"root":"1fOlDeR"}"#).unwrap();
-        assert_eq!(config, DriveConfig::my_drive().with_root("1fOlDeR"));
-        let round = serde_json::to_string(&config).unwrap();
-        assert_eq!(serde_json::from_str::<DriveConfig>(&round).unwrap(), config);
+        phase configurations_persist_with_defaults;
+        {
+            let config: DriveConfig = serde_json::from_str(r#"{"root":"1fOlDeR"}"#).unwrap();
+            assert_eq!(config, DriveConfig::my_drive().with_root("1fOlDeR"));
+            let round = serde_json::to_string(&config).unwrap();
+            assert_eq!(serde_json::from_str::<DriveConfig>(&round).unwrap(), config);
+        }
     }
 }
