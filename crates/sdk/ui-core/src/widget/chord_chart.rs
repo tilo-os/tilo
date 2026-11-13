@@ -513,70 +513,77 @@ mod tests {
     use crate::presence::PresenceCtx;
     use crate::widget::Widget;
 
-    #[test]
-    fn arc_labels_stay_off_the_ring_and_off_each_other() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        for (w, h) in [(220.0, 200.0), (320.0, 260.0), (520.0, 360.0)] {
-            let mut chart = ChordChart::new(
-                ["Design", "Engineering", "Research", "Support", "Sales"]
-                    .into_iter()
-                    .map(|label| ChartNode::new(label, label))
-                    .collect(),
-                vec![
-                    ChartLink::new("d-e", "Design", "Engineering", 32.0),
-                    ChartLink::new("d-r", "Design", "Research", 14.0),
-                    ChartLink::new("e-r", "Engineering", "Research", 25.0),
-                    ChartLink::new("e-s", "Engineering", "Support", 18.0),
-                    ChartLink::new("s-s", "Support", "Sales", 27.0),
-                    ChartLink::new("s-d", "Sales", "Design", 21.0),
-                ],
-            );
-            chart.marks.frame.rect = Rect::new(0.0, 0.0, w, h);
-            let mut scene = Scene::new();
-            chart.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &PresenceCtx::default(),
-            );
-            let (center, _, outer) = chart.marks.geometry();
-            let labels = chart.marks.label_layout(&mut tr, &theme, center, outer);
-            assert!(!labels.is_empty(), "{w}: some arcs are named");
-            for (i, (_, a)) in labels.iter().enumerate() {
-                let nearest = Point::new(center.x.clamp(a.x0, a.x1), center.y.clamp(a.y0, a.y1));
-                assert!(
-                    nearest.distance(center) >= outer,
-                    "{w}: {a:?} covers the ring"
+    tilo_test_env::scenario! {
+        /// The labels and hit testing of a chord chart.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn a_chord_chart_labels_its_arcs_and_hit_tests_its_ribbons;
+
+        phase arc_labels_stay_off_the_ring_and_off_each_other;
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            for (w, h) in [(220.0, 200.0), (320.0, 260.0), (520.0, 360.0)] {
+                let mut chart = ChordChart::new(
+                    ["Design", "Engineering", "Research", "Support", "Sales"]
+                        .into_iter()
+                        .map(|label| ChartNode::new(label, label))
+                        .collect(),
+                    vec![
+                        ChartLink::new("d-e", "Design", "Engineering", 32.0),
+                        ChartLink::new("d-r", "Design", "Research", 14.0),
+                        ChartLink::new("e-r", "Engineering", "Research", 25.0),
+                        ChartLink::new("e-s", "Engineering", "Support", 18.0),
+                        ChartLink::new("s-s", "Support", "Sales", 27.0),
+                        ChartLink::new("s-d", "Sales", "Design", 21.0),
+                    ],
                 );
-                assert!(
-                    a.x0 >= chart.marks.frame.rect.x0 - 0.5
-                        && a.x1 <= chart.marks.frame.rect.x1 + 0.5,
-                    "{w}: {a:?} leaves the chart"
+                chart.marks.frame.rect = Rect::new(0.0, 0.0, w, h);
+                let mut scene = Scene::new();
+                chart.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    &PresenceCtx::default(),
                 );
-                for (_, b) in labels.iter().skip(i + 1) {
-                    assert!(a.intersect(*b).is_zero_area(), "{w}: {a:?} hits {b:?}");
+                let (center, _, outer) = chart.marks.geometry();
+                let labels = chart.marks.label_layout(&mut tr, &theme, center, outer);
+                assert!(!labels.is_empty(), "{w}: some arcs are named");
+                for (i, (_, a)) in labels.iter().enumerate() {
+                    let nearest = Point::new(center.x.clamp(a.x0, a.x1), center.y.clamp(a.y0, a.y1));
+                    assert!(
+                        nearest.distance(center) >= outer,
+                        "{w}: {a:?} covers the ring"
+                    );
+                    assert!(
+                        a.x0 >= chart.marks.frame.rect.x0 - 0.5
+                            && a.x1 <= chart.marks.frame.rect.x1 + 0.5,
+                        "{w}: {a:?} leaves the chart"
+                    );
+                    for (_, b) in labels.iter().skip(i + 1) {
+                        assert!(a.intersect(*b).is_zero_area(), "{w}: {a:?} hits {b:?}");
+                    }
                 }
             }
         }
-    }
-    #[test]
-    fn chord_ribbons_hit_test_and_invalid_links_are_safe() {
-        fn ribbon_is_closed_and_hit_testable() {
-            let path = ribbon(Point::ZERO, 100.0, 0.0, 0.2, 2.0, 2.2);
-            assert!(path.winding(Point::new(20.0, 20.0)) != 0 || path.elements().last().is_some());
-        }
 
-        fn invalid_links_do_not_panic() {
-            let mut chart = ChordChart::new(
-                vec![ChartNode::new("a", "A")],
-                vec![ChartLink::new("x", "missing", "a", 1.0)],
-            );
-            assert!(chart.take_activated().is_none());
-        }
+        phase chord_ribbons_hit_test_and_invalid_links_are_safe;
+        {
+            fn ribbon_is_closed_and_hit_testable() {
+                let path = ribbon(Point::ZERO, 100.0, 0.0, 0.2, 2.0, 2.2);
+                assert!(path.winding(Point::new(20.0, 20.0)) != 0 || path.elements().last().is_some());
+            }
 
-        ribbon_is_closed_and_hit_testable();
-        invalid_links_do_not_panic();
+            fn invalid_links_do_not_panic() {
+                let mut chart = ChordChart::new(
+                    vec![ChartNode::new("a", "A")],
+                    vec![ChartLink::new("x", "missing", "a", 1.0)],
+                );
+                assert!(chart.take_activated().is_none());
+            }
+
+            ribbon_is_closed_and_hit_testable();
+            invalid_links_do_not_panic();
+        }
     }
 }
