@@ -39,14 +39,25 @@ fn settle(app: &mut TestApp<SettingsShell>) {
     }
 }
 
-fn searching(query: &str) -> TestApp<SettingsShell> {
+/// Settings in its window, before anything is searched for.
+fn mounted() -> TestApp<SettingsShell> {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<SettingsShell>::new().expect("Settings mounts");
     app.harness().resize(VIEWPORT).unwrap();
     settle(&mut app);
+    app
+}
+
+/// Type `query` into the window's search, and let what it finds be drawn.
+fn search(app: &mut TestApp<SettingsShell>, query: &str) {
     app.with_widget::<crate::window::Inspected, _>(|settings| settings.narrow_sidebar(query))
         .expect("the window is Settings");
-    settle(&mut app);
+    settle(app);
+}
+
+fn searching(query: &str) -> TestApp<SettingsShell> {
+    let mut app = mounted();
+    search(&mut app, query);
     app
 }
 
@@ -61,12 +72,17 @@ fn found(app: &mut TestApp<SettingsShell>) -> Vec<&'static str> {
 
 #[test]
 fn every_setting_row_is_an_indexed_setting_drawn_by_its_control() {
+    // One window, searched for each setting in turn. What a search finds and
+    // draws follows from the words typed and what the settings hold, and no
+    // row here changes a setting or sends the window input: a row sees the
+    // window as the first one did.
+    let mut app = mounted();
     let mut ids = std::collections::HashSet::new();
     for entry in &crate::area::registry().settings {
         assert!(ids.insert(entry.id), "{} has two rows", entry.id);
         let setting = index::setting(entry.id)
             .unwrap_or_else(|| panic!("{} is not in the settings index", entry.id));
-        let mut app = searching(&crate::i18n::t(&setting.name_key()));
+        search(&mut app, &crate::i18n::t(&setting.name_key()));
         assert!(
             found(&mut app).contains(&entry.id),
             "{}: its name finds it, got {:?}",
@@ -101,6 +117,26 @@ fn every_setting_row_is_an_indexed_setting_drawn_by_its_control() {
             ),
         }
     }
+    // Nothing typed, or only spaces: nothing is found, and no row of the last
+    // search stays in the window.
+    for nothing in ["", "   "] {
+        search(&mut app, nothing);
+        assert!(
+            found(&mut app).is_empty(),
+            "{nothing:?} finds nothing, got {:?}",
+            found(&mut app)
+        );
+        assert!(
+            !shows_found_row(app.harness().root_widget()),
+            "{nothing:?}: no found setting is listed"
+        );
+    }
+}
+
+fn shows_found_row(root: &dyn Widget) -> bool {
+    root.test_id()
+        .is_some_and(|id| id.starts_with("settings.found:"))
+        || root.children().into_iter().any(shows_found_row)
 }
 
 fn widget<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
