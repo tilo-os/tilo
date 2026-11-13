@@ -1,9 +1,4 @@
 //! The `BlueZ` client: adapter control, discovery, pairing, trust, removal.
-//!
-//! Everything goes through `org.bluez` on the **system** bus. Fedora's default D-Bus policy
-//! (`/usr/share/dbus-1/system.d/bluetooth.conf`) grants `send_destination="org.bluez"` to
-//! every user and `send_interface="org.bluez.Agent1"` to root (`bluetoothd` calling back into
-//! our agent), so the whole flow runs in the user's session with no privileged helper.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -38,13 +33,11 @@ const SHOWN_DEVICE: &[&str] = &[
     "Blocked",
     "Connected",
 ];
-/// An adapter's properties a person sees change.
 const SHOWN_ADAPTER: &[&str] = &["Powered", "Discovering", "Alias"];
 /// Signals buffered per stream before the oldest is dropped. Every signal
 /// only moves a count a reader re-reads on, so a dropped one loses nothing.
 const SIGNAL_QUEUE: usize = 64;
 
-/// The `a{oa{sa{sv}}}` shape `GetManagedObjects` returns.
 type ManagedObjects = HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>>;
 
 /// A connected `BlueZ` handle. Hold this for as long as discovery should run: `BlueZ` ties a
@@ -57,7 +50,6 @@ pub struct BluezClient {
 }
 
 impl BluezClient {
-    /// Connect to the system bus.
     pub async fn connect() -> zbus::Result<Self> {
         let connection = Connection::system().await?;
         Ok(Self::with_connection(connection, DeviceNames::new()))
@@ -73,7 +65,6 @@ impl BluezClient {
         &self.connection
     }
 
-    /// The shared display-name cache the pairing agent reads from.
     pub fn names(&self) -> DeviceNames {
         self.names.clone()
     }
@@ -136,7 +127,6 @@ impl BluezClient {
         Ok(BluezChanges { receiver })
     }
 
-    /// Every adapter `BlueZ` knows about, in path order.
     pub async fn adapters(&self) -> zbus::Result<Vec<AdapterInfo>> {
         let objects = self.managed_objects().await?;
         let mut out: Vec<AdapterInfo> = objects
@@ -249,7 +239,6 @@ impl BluezClient {
             zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
         match proxy.call_method("StopDiscovery", &()).await {
             Ok(_) => Ok(()),
-            // Not scanning, or someone else's session — nothing to undo.
             Err(zbus::Error::MethodError(name, _, _))
                 if matches!(
                     name.as_str(),
@@ -288,7 +277,6 @@ impl BluezClient {
         }
     }
 
-    /// Abort an in-flight pairing.
     pub async fn cancel_pairing(&self, device: &str) -> zbus::Result<()> {
         let proxy = self.device_proxy(device).await?;
         match proxy.call_method("CancelPairing", &()).await {
@@ -405,7 +393,6 @@ impl BluezClient {
     }
 }
 
-/// What `pair_and_connect` achieved.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PairOutcome {
     PairedAndConnected,
@@ -424,7 +411,6 @@ pub struct BluezChanges {
 }
 
 impl BluezChanges {
-    /// How many changes there were so far.
     #[must_use]
     pub fn count(&self) -> u64 {
         *self.receiver.borrow()
@@ -466,7 +452,6 @@ async fn follow_changes(
     }
 }
 
-/// Whether a `PropertiesChanged` changed what a Bluetooth page shows.
 fn shows(signal: &zbus::Message) -> bool {
     let Ok((interface, changed, invalidated)) =
         signal
@@ -657,7 +642,6 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(changes.count(), 1, "transmit power is not a change");
 
-        // The interface holds the server's connection too.
         drop((device, server));
         tokio::time::timeout(bound, async { while changes.changed().await.is_some() {} })
             .await

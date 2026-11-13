@@ -1,12 +1,4 @@
 //! Who is on the other end of a connection.
-//!
-//! Every caller must be the person at this machine's seat. Among their
-//! processes, only the compositor may open drives: it is the one that draws
-//! the consent prompt, which no app can draw or fake. The compositor is
-//! recognised by the program it runs, read through a pidfd so a recycled
-//! process id cannot impersonate it, and by sharing this service's user and
-//! mount namespaces, which no sandboxed app does. `kernel.yama.ptrace_scope`
-//! is 3 on Tilo, so no process can be steered from outside once running.
 
 use std::path::PathBuf;
 
@@ -16,14 +8,10 @@ pub use seat_peer::PeerFacts;
 #[cfg(target_os = "linux")]
 pub use seat_peer::facts;
 
-/// Where the facts about callers come from.
 #[derive(Clone, Debug)]
 pub struct PeerPolicy {
-    /// The compositor's executable.
     pub trusted_ui: PathBuf,
-    /// logind's record of the seat (`ACTIVE_UID=`).
     pub seat: PathBuf,
-    /// logind's per-user records, present while the user has a session.
     pub users: PathBuf,
 }
 
@@ -47,7 +35,6 @@ impl PeerPolicy {
         }
     }
 
-    /// The uid logind reports at the seat.
     pub fn active_uid(&self) -> Option<u32> {
         seat_peer::active_uid(&self.seat)
     }
@@ -56,7 +43,6 @@ impl PeerPolicy {
         seat_peer::has_session(&self.users, uid)
     }
 
-    /// Decide who `peer` is, or why it is turned away.
     pub fn decide(&self, peer: &PeerFacts) -> Result<Caller, String> {
         if self.active_uid() != Some(peer.uid) {
             return Err("only the person at this computer may use its drives".into());

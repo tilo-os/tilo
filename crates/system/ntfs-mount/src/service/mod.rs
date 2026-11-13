@@ -18,25 +18,21 @@ use crate::protocol::{
     Request, Response,
 };
 
-/// One NTFS volume the backend found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
     /// `<kernel name>:<disk sequence number>`: unique per insertion.
     pub id: String,
-    /// The kernel's name for the block device (`sdb1`).
     pub name: String,
     pub label: String,
     pub size_bytes: u64,
     pub facts: DriveFacts,
 }
 
-/// Who is asking, as the kernel reports the connecting process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Caller {
     /// The compositor of the person at the seat: the only process that
     /// draws the consent prompt, so the only one that may open drives.
     Shell { uid: u32 },
-    /// Any other process of the person at the seat.
     Person { uid: u32 },
 }
 
@@ -48,13 +44,11 @@ impl Caller {
     }
 }
 
-/// What the preflight found, before any driver touched the volume.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Health {
     pub read_only: Option<ReadOnlyReason>,
 }
 
-/// One mount the backend is asked to make.
 #[derive(Clone, Copy, Debug)]
 pub struct MountRequest<'a> {
     pub candidate: &'a Candidate,
@@ -63,9 +57,7 @@ pub struct MountRequest<'a> {
     pub uid: u32,
 }
 
-/// Everything that touches devices, drivers, mounts and sessions.
 pub trait Backend {
-    /// What the backend keeps for an open drive (a helper process, say).
     type Mount;
 
     /// The NTFS volumes attached now.
@@ -82,7 +74,6 @@ pub trait Backend {
     /// A message for the person when the volume must not be opened.
     fn preflight(&mut self, candidate: &Candidate) -> Result<Health, String>;
 
-    /// Mount the volume and return where.
     fn mount(&mut self, request: &MountRequest<'_>) -> Result<(PathBuf, Self::Mount), String>;
 
     /// Unmount it; `gone` when the device has already disappeared.
@@ -98,13 +89,10 @@ pub trait Backend {
         gone: bool,
     ) -> Result<(), String>;
 
-    /// Whether what serves the mount is still running.
     fn alive(&mut self, mount: &mut Self::Mount) -> bool;
 
-    /// Whether `uid` still has a session on this machine.
     fn owner_present(&self, uid: u32) -> bool;
 
-    /// A fresh identifier for a new grant.
     fn new_grant_id(&mut self) -> String;
 }
 
@@ -116,7 +104,6 @@ struct Active<M> {
     handle: M,
 }
 
-/// The service's state.
 pub struct Service<B: Backend> {
     backend: B,
     grants: GrantStore,
@@ -148,7 +135,6 @@ impl<B: Backend> Service<B> {
         self.active.is_empty()
     }
 
-    /// Answer one request.
     pub fn handle(&mut self, caller: Caller, request: Request) -> Response {
         let uid = caller.uid();
         match request {

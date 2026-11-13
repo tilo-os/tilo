@@ -96,7 +96,6 @@ impl CheckedHistoryRequestV1 {
         Ok(value)
     }
 
-    /// Validate the protocol version and required request identifiers.
     pub fn validate(&self) -> Result<(), CheckedHistoryProtocolError> {
         if self.schema_version != CHECKED_HISTORY_VERSION || self.intent_id.is_nil() {
             return Err(CheckedHistoryProtocolError);
@@ -115,7 +114,6 @@ impl CheckedHistoryRequestV1 {
 }
 
 impl FileRestoreReviewV1 {
-    /// Validate the protocol version and the reviewed file's identity.
     pub fn validate(&self) -> Result<(), CheckedHistoryProtocolError> {
         if self.schema_version != CHECKED_HISTORY_VERSION
             || self.workspace_id.is_nil()
@@ -147,7 +145,6 @@ mod tests {
             },
         }
     }
-    /// An exact request round-trips; wrong version, nil scope and unchecked requests are rejected.
     #[test]
     fn checked_history_requests_round_trip_exactly_and_reject_malformed_ones() {
         // Phase: checked_history_exact_request_round_trip.
@@ -200,10 +197,8 @@ pub struct CheckedHistoryResponseV1 {
 /// download. Once the job is ready, the caller repeats the exact request,
 /// which commits from local content.
 pub const HISTORY_JOB_XATTR_PREFIX: &str = "user.tilo.history-job.";
-/// The value written to a history-job attribute to cancel it.
 pub const HISTORY_JOB_CANCEL: &[u8] = b"cancel";
 
-/// Where the hydration behind one history request stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "state", deny_unknown_fields)]
 pub enum HistoryJobStateV1 {
@@ -212,7 +207,6 @@ pub enum HistoryJobStateV1 {
     Hydrating { done: u64, total: u64 },
     /// Every byte is local: repeat the request to commit it.
     Ready,
-    /// A peer could not supply the content. Repeating the request retries.
     Failed,
     /// The caller cancelled the download. Repeating the request starts over.
     Cancelled,

@@ -1,20 +1,4 @@
 //! SRP-6a as Apple's `idmsa` sign-in speaks it.
-//!
-//! RFC 5054's 2048-bit group with `g = 2` and SHA-256, plus Apple's
-//! deviations: the password is first stretched with PBKDF2 (`s2k` over the
-//! raw SHA-256 of the password, `s2k_fo` over its hex), the username is left
-//! out of `x`, `k = H(N | pad(g))`, and every group element is padded to 256
-//! bytes in the proofs.
-//!
-//! The client never sends the password or anything derived from it that is
-//! not a zero-knowledge proof. The arithmetic is `crypto-bigint`'s
-//! fixed-width Montgomery form: every exponentiation by a secret (the
-//! ephemeral `a`, the password-derived `x`, and `a + u·x`) runs
-//! [`FixedMontyForm::pow_bounded_exp`] with a fixed exponent bound, so its
-//! time does not depend on the exponent's value, and the reduction and
-//! subtraction steps never branch on secrets. Only the server's public `B`
-//! and the public scrambler `u` are checked with branches. Every secret
-//! integer and byte buffer is wiped when dropped.
 
 use std::sync::OnceLock;
 
@@ -48,18 +32,14 @@ const N: Odd<U2048> = Odd::<U2048>::from_be_hex(concat!(
 /// (`a`, `b`, `x`, `u`).
 const SHORT_EXPONENT_BITS: u32 = 256;
 
-/// The bound for `a + u·x`, which is below `2^513`.
 const LONG_EXPONENT_BITS: u32 = 768;
 
-/// Why a sign-in challenge could not be answered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SrpError {
-    /// The server offered a password protocol other than `s2k`/`s2k_fo`.
     UnsupportedProtocol,
     /// The server's public value is degenerate (0 mod N) or longer than a
     /// group element, or the scrambler is zero.
     InvalidChallenge,
-    /// The operating system could not supply randomness.
     Randomness,
 }
 
@@ -86,16 +66,13 @@ pub struct Proofs {
 struct Group {
     params: FixedMontyParams<LIMBS>,
     g: Element,
-    /// `k = H(N | pad(g))`, in Montgomery form.
     k: Element,
-    /// `H(pad(g)) XOR H(N)`, the first input of `M1`.
     hg_xor_hn: [u8; 32],
 }
 
 fn group() -> &'static Group {
     static GROUP: OnceLock<Group> = OnceLock::new();
     GROUP.get_or_init(|| {
-        // N is public: its parameters may be computed in variable time.
         let params = FixedMontyParams::new_vartime(N);
         let g = U2048::from_u8(2);
         let n_bytes = to_bytes(N.as_ref());
@@ -114,7 +91,6 @@ fn group() -> &'static Group {
     })
 }
 
-/// SHA-256 of the concatenation of `parts`.
 fn hash(parts: &[&[u8]]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     for part in parts {
@@ -180,14 +156,12 @@ pub fn derive_password(
     Ok(key)
 }
 
-/// `x = H(salt | H(":" | derived))`: Apple leaves the username out.
 fn private_key(salt: &[u8], derived: &[u8; 32]) -> Zeroizing<U256> {
     let inner = Zeroizing::new(hash(&[b":", derived]));
     let digest = Zeroizing::new(hash(&[salt, inner.as_slice()]));
     Zeroizing::new(U256::from_be_slice(digest.as_slice()))
 }
 
-/// `u = H(pad(A) | pad(B))`, public.
 fn scrambler(a_pub: &[u8; ELEMENT_LEN], b_pub: &[u8; ELEMENT_LEN]) -> U256 {
     U256::from_be_slice(&hash(&[a_pub, b_pub]))
 }
@@ -207,7 +181,6 @@ fn proofs(
     Proofs { m1, m2 }
 }
 
-/// `K = H(pad(S))`.
 fn session_key(shared: &Element) -> Zeroizing<[u8; 32]> {
     let shared = Zeroizing::new(shared.retrieve());
     let bytes = Zeroizing::new(to_bytes(&shared));
@@ -219,11 +192,8 @@ fn g_pow(exponent: &U256) -> Element {
     group().g.pow_bounded_exp(exponent, SHORT_EXPONENT_BITS)
 }
 
-/// The client half of one sign-in.
 pub struct SrpClient {
-    /// The ephemeral private exponent `a`, below `2^256`.
     secret: Zeroizing<U256>,
-    /// `A = g^a mod N`, padded.
     public: [u8; ELEMENT_LEN],
 }
 
@@ -244,7 +214,6 @@ impl SrpClient {
         Ok(Self::with_secret(&bytes))
     }
 
-    /// A client with a chosen private exponent, for known-answer tests.
     #[doc(hidden)]
     #[must_use]
     pub fn with_secret(secret: &[u8; 32]) -> Self {
@@ -253,7 +222,6 @@ impl SrpClient {
         Self { secret, public }
     }
 
-    /// `A`, padded, for `/signin/init`.
     #[must_use]
     pub fn public(&self) -> [u8; ELEMENT_LEN] {
         self.public
@@ -274,7 +242,6 @@ impl SrpClient {
     ) -> Result<Proofs, SrpError> {
         let group = group();
         let b_bytes = padded(server_public)?;
-        // Montgomery conversion reduces B mod N. B is public.
         let b_pub = Element::new(&U2048::from_be_slice(&b_bytes), &group.params);
         if b_pub.retrieve().is_zero_vartime() {
             return Err(SrpError::InvalidChallenge);
@@ -284,13 +251,11 @@ impl SrpClient {
             return Err(SrpError::InvalidChallenge);
         }
         let x = private_key(salt, derived);
-        // S = (B - k·g^x)^(a + u·x) mod N.
         let gx = Zeroizing::new(g_pow(&x));
         let kgx = Zeroizing::new(group.k.mul(&gx));
         let base = Zeroizing::new(b_pub.sub(&kgx));
         let a_wide = Zeroizing::new(self.secret.resize::<WIDE>());
         let x_wide = Zeroizing::new(x.resize::<WIDE>());
-        // u, x < 2^256: the product and the sum stay far below 2^768.
         let ux = Zeroizing::new(u.resize::<WIDE>().wrapping_mul(&*x_wide));
         let exponent = Zeroizing::new(a_wide.wrapping_add(&ux));
         let shared = Zeroizing::new(base.pow_bounded_exp(&*exponent, LONG_EXPONENT_BITS));
@@ -299,7 +264,6 @@ impl SrpClient {
     }
 }
 
-/// The server half, for test servers that impersonate Apple's `idmsa`.
 #[cfg(feature = "srp-test-server")]
 pub mod server {
     use super::{
@@ -349,7 +313,6 @@ pub mod server {
             Ok(Self::with_secret(verifier, &bytes))
         }
 
-        /// A session with a chosen `b`, for known-answer tests.
         #[must_use]
         pub fn with_secret(verifier: &[u8; ELEMENT_LEN], secret: &[u8; 32]) -> Self {
             let group = group();
@@ -363,7 +326,6 @@ pub mod server {
             }
         }
 
-        /// `B`, padded, for the `/signin/init` answer.
         #[must_use]
         pub fn public(&self) -> [u8; ELEMENT_LEN] {
             self.public
@@ -388,7 +350,6 @@ pub mod server {
                 return Err(SrpError::InvalidChallenge);
             }
             let u = scrambler(&a_bytes, &self.public);
-            // S = (A·v^u)^b mod N.
             let vu = Zeroizing::new(self.verifier.pow_bounded_exp(&u, SHORT_EXPONENT_BITS));
             let base = Zeroizing::new(a_pub.mul(&vu));
             let shared = Zeroizing::new(base.pow_bounded_exp(&*self.secret, SHORT_EXPONENT_BITS));

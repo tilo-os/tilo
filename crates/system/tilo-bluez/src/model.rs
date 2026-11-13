@@ -1,20 +1,14 @@
 //! Pure model types for the `BlueZ` layer.
-//!
-//! Everything here is bus-free so it can be unit-tested without a running `bluetoothd`:
-//! object-path ↔ address conversion, the device shape the UI renders, and the pairing
-//! question/answer pair the agent exchanges with whoever is drawing the prompt.
 
 use std::collections::HashMap;
 
 use zbus::zvariant::{OwnedValue, Value};
 
-/// A Bluetooth device as `BlueZ` describes it on `org.bluez.Device1`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeviceInfo {
     /// The `BlueZ` object path, e.g. `/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF`. This is the handle
     /// every operation takes — addresses are not unique across adapters, paths are.
     pub path: String,
-    /// MAC address, e.g. `AA:BB:CC:DD:EE:FF`.
     pub address: String,
     /// `Alias` if set, else `Name`, else the address. Never empty.
     pub name: String,
@@ -51,7 +45,6 @@ impl DeviceInfo {
     }
 }
 
-/// Sort a device list in place into the order [`DeviceInfo::sort_key`] describes.
 pub fn sort_devices(devices: &mut [DeviceInfo]) {
     devices.sort_by_key(DeviceInfo::sort_key);
 }
@@ -87,11 +80,8 @@ pub enum PairingPrompt {
     /// `DisplayPasskey` — we show a number for the user to type on the *other* device.
     /// `entered` is how many digits `BlueZ` has seen so far. Informational: nothing to answer.
     DisplayPasskey { passkey: u32, entered: u16 },
-    /// `DisplayPinCode` — same, but a legacy alphanumeric PIN.
     DisplayPinCode { pin: String },
-    /// `RequestPasskey` — the user reads a number off the other device and types it here.
     RequestPasskey,
-    /// `RequestPinCode` — legacy: the user types a PIN, typically `0000`.
     RequestPinCode,
     /// `RequestAuthorization` — just-works pairing with no number to compare. The weakest flow;
     /// the prompt should say so.
@@ -112,7 +102,6 @@ impl PairingPrompt {
         )
     }
 
-    /// Whether answering requires typing something rather than pressing yes/no.
     pub fn expects_entry(&self) -> bool {
         matches!(
             self,
@@ -132,26 +121,19 @@ impl PairingPrompt {
     }
 }
 
-/// A pairing question addressed to the user, with the device it concerns.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PairingRequest {
-    /// `BlueZ` object path of the device being paired.
     pub device_path: String,
     /// Best-effort display name for the device. Falls back to the address.
     pub device_name: String,
     pub prompt: PairingPrompt,
 }
 
-/// The user's answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PairingReply {
-    /// Yes / confirmed.
     Accept,
-    /// No — `BlueZ` is told the request was rejected, which aborts pairing.
     Reject,
-    /// A typed passkey, for [`PairingPrompt::RequestPasskey`].
     Passkey(u32),
-    /// A typed PIN, for [`PairingPrompt::RequestPinCode`].
     PinCode(String),
 }
 
@@ -281,7 +263,6 @@ pub fn address_from_path(path: &str) -> Option<String> {
     Some(parts.join(":"))
 }
 
-/// `AA:BB:CC:DD:EE:FF` on `/org/bluez/hci0` → the device object path.
 pub fn path_for_address(adapter_path: &str, address: &str) -> String {
     format!("{adapter_path}/dev_{}", address.replace([':', '-'], "_"))
 }
@@ -306,12 +287,10 @@ mod tests {
         {
             assert_eq!(address_from_path("/org/bluez/hci0"), None);
             assert_eq!(address_from_path("/org/bluez"), None);
-            // A service under a device is not itself a device.
             assert_eq!(
                 address_from_path("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/service0001"),
                 None
             );
-            // Non-hex where hex is required.
             assert_eq!(
                 address_from_path("/org/bluez/hci0/dev_ZZ_BB_CC_DD_EE_FF"),
                 None
@@ -358,7 +337,6 @@ mod tests {
             assert!(!PairingPrompt::AuthorizeService { uuid: "x".into() }.expects_entry());
         }
         {
-            // A yes/no answer to "type the passkey" is not an answer.
             assert!(!reply_answers(
                 &PairingPrompt::RequestPasskey,
                 &PairingReply::Accept
@@ -371,7 +349,6 @@ mod tests {
                 &PairingPrompt::RequestPasskey,
                 &PairingReply::Reject
             ));
-            // And a typed passkey is not an answer to "do these match?".
             assert!(!reply_answers(
                 &PairingPrompt::ConfirmPasskey { passkey: 1 },
                 &PairingReply::Passkey(1)
