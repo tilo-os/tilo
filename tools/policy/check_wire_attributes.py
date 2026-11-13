@@ -18,13 +18,20 @@ roots of an ``interface.toml`` whose ``encoding`` is ``postcard`` or ``bincode``
 carries is exempt, because that file says ``encoding = "json"``: those bytes
 name their fields, so leaving one out is what ``skip_serializing_if`` is for. A
 type both kinds of interface carry is judged, since the positional reader is
-the one that breaks.
+the one that breaks. A declaration this cannot read is named and left out:
+``check_interfaces.py check`` reports it, and a tree whose declarations do not
+read cannot land.
 
 ``#[serde(default)]`` is not refused: it says what an absent field reads as and
 never changes what is written, and a positional format only omits a field at
 the end of a frame. Neither are ``rename``/``rename_all`` (a positional format
 writes no names), ``with``/``serialize_with`` (which write the field the same
 way on both sides), or ``transparent``.
+
+What a compact format carries is reachability from those roots, so a type that
+only builds what a frame holds is not judged: a roster's `Person` is turned into
+its `Member` row before it reaches the frame, and no byte of it is read by
+position. A type that becomes a field of a carried type is judged from then on.
 
 This is an absolute judgement of a tree, not of a change: it runs over the whole
 tree in the pre-commit hook and in the repository policy suite, so a commit made
@@ -72,16 +79,13 @@ def placed(item) -> list[tuple[str, object]]:
     return places
 
 
-def problems(root: Path = ROOT) -> list[str]:
-    """What the types `root`'s compact interfaces carry get wrong, one line each."""
-    # Resolved here, as `carried_types` does: an interface the tree cannot read is this
-    # check's answer too, not an uncaught traceback.
-    from check_interfaces import InterfaceError
+def problems(root: Path = ROOT, unreadable: list[str] | None = None) -> list[str]:
+    """What the types `root`'s compact interfaces carry get wrong, one line each.
 
-    try:
-        carried = carried_types(root)
-    except InterfaceError as error:
-        return [f"{error}; the types a compact format carries cannot be read"]
+    A declaration this cannot read is named in `unreadable` and that wire is left
+    out: the declaration is `check_interfaces.py check`'s to report, and a tree
+    whose declarations do not read cannot land either way."""
+    carried = carried_types(root, unreadable)
     found = []
     for source, names in sorted(carried.items()):
         items = []
@@ -102,7 +106,14 @@ def problems(root: Path = ROOT) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser_args = list(sys.argv[1:] if argv is None else argv)
     root = Path(parser_args[0]).resolve() if parser_args else ROOT
-    found = problems(root)
+    unreadable: list[str] = []
+    found = problems(root, unreadable)
+    for error in unreadable:
+        print(
+            f"note: {error}; the wire types it declares are left unjudged until "
+            "`python3 tools/policy/check_interfaces.py check` passes",
+            file=sys.stderr,
+        )
     for problem in found:
         print(f"::error::{problem}", file=sys.stderr)
     if found:

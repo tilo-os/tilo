@@ -7,7 +7,6 @@ from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parents[1]
 POLICY = TOOLS / "policy"
-ROOT = TOOLS.parent
 sys.path.insert(0, str(POLICY))
 from check_interfaces import InterfaceError, load_spec  # noqa: E402
 
@@ -156,15 +155,17 @@ pub enum Settings {
 
     def test_json_roots_must_be_roots(self):
         root = self.tree(SOURCE.format(attribute="#[serde(default)]"), extra='json_roots = ["Settings"]')
-        found = attributes.problems(root)
-        self.assertEqual(len(found), 1, found)
-        self.assertIn("json_roots", found[0])
+        unreadable = []
+        self.assertEqual(attributes.problems(root, unreadable), [])
+        self.assertEqual(len(unreadable), 1, unreadable)
+        self.assertIn("json_roots", unreadable[0])
 
-    def test_an_unreadable_interface_is_reported_not_skipped(self):
-        root = self.tree(SOURCE.format(attribute="#[serde(default)]"), roots='"Nowhere"')
-        found = attributes.problems(root)
-        self.assertEqual(len(found), 1, found)
-        self.assertIn("Nowhere", found[0])
+    def test_an_unreadable_declaration_is_named_and_its_wire_left_out(self):
+        root = self.tree(row('#[serde(skip_serializing_if = "Option::is_none")]'), roots='"Nowhere"')
+        unreadable = []
+        self.assertEqual(attributes.problems(root, unreadable), [])
+        self.assertEqual(len(unreadable), 1, unreadable)
+        self.assertIn("Nowhere", unreadable[0])
 
 
 class SpecTests(unittest.TestCase):
@@ -189,11 +190,6 @@ class SpecTests(unittest.TestCase):
         ))
         with self.assertRaises(InterfaceError):
             load_spec(path)
-
-
-class TreeTests(unittest.TestCase):
-    def test_the_tree_carries_every_field_of_every_type_a_compact_format_carries(self):
-        self.assertEqual(attributes.problems(ROOT), [])
 
 
 if __name__ == "__main__":

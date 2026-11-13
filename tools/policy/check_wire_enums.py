@@ -166,7 +166,9 @@ def in_scope(path: str) -> bool:
     )
 
 
-def carried_types(root: Path = ROOT) -> dict[str, set[str]]:
+def carried_types(
+    root: Path = ROOT, unreadable: list[str] | None = None
+) -> dict[str, set[str]]:
     """`{file: type names}` of what a compact format carries: every type reachable
     from the roots of an `interface.toml` whose `encoding` is a positional format
     (`POSITIONAL`), read with `check_interfaces.py`.
@@ -176,19 +178,38 @@ def carried_types(root: Path = ROOT) -> dict[str, set[str]]:
     reachable only through the interface's `json_roots`, the roots it carries as
     JSON on a socket it shares with a compact protocol. A type both kinds carry is
     one, because the positional reader is the one that breaks.
+
+    A declaration this cannot read raises, unless `unreadable` is given: then the
+    reason is appended to it and that wire is left out, so a caller can name it and
+    judge the rest (`check_interfaces.py check` owns a broken declaration).
     """
-    from check_interfaces import load_spec, read_items, rust_schema, tokenize, top_type
+    # Imported here: the enum check above reads a file's own text, and only what a
+    # compact format carries needs the interfaces read.
+    from check_interfaces import (
+        InterfaceError,
+        load_spec,
+        read_items,
+        rust_schema,
+        tokenize,
+        top_type,
+    )
 
     carried: dict[str, set[str]] = {}
     for manifest in sorted(root.glob("crates/*/*/interface.toml")):
-        spec = load_spec(manifest)[0]
-        if spec.encoding not in POSITIONAL:
+        try:
+            spec = load_spec(manifest)[0]
+            if spec.encoding not in POSITIONAL:
+                continue
+            reachable = {top_type(key) for key in rust_schema(spec, root)}
+            # The same closure over the JSON roots alone: what only they carry is JSON.
+            if spec.json_roots:
+                as_json = replace(spec, roots=spec.json_roots)
+                reachable -= {top_type(key) for key in rust_schema(as_json, root)}
+        except InterfaceError as error:
+            if unreadable is None:
+                raise
+            unreadable.append(str(error))
             continue
-        reachable = {top_type(key) for key in rust_schema(spec, root)}
-        # The same closure over the JSON roots alone: what only they carry is JSON.
-        if spec.json_roots:
-            as_json = replace(spec, roots=spec.json_roots)
-            reachable -= {top_type(key) for key in rust_schema(as_json, root)}
         for source in spec.sources:
             items = []
             read_items(tokenize((root / source).read_text()), source, items)
