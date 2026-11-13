@@ -6,6 +6,7 @@
 //! one, through the action door, so neither the fleet file nor any secret
 //! enters this process; the answers never enter widget or Automerge state.
 
+use ui::icons::Icon;
 use ui::tilo_actions::remote::identity_admin::{self, FleetDevice, KeyKind};
 use ui::tilo_actions::remote::{Confirmation, InvokeArgument};
 
@@ -41,6 +42,58 @@ pub struct DeviceView {
     /// The one workspace an agent's key reaches; every one of theirs when
     /// `None`.
     pub workspace: Option<String>,
+}
+
+/// The machine a device's label names, as the words that name it: the label
+/// is what the device called itself ("Pixel 9", "Safari on iPad", "Framework
+/// 16"), and the list knows nothing else of what it is.
+const PHONE_WORDS: &[&str] = &[
+    "phone", "pixel", "android", "galaxy", "mobile", "oneplus", "redmi", "xiaomi", "huawei",
+    "motorola", "moto",
+];
+const TABLET_WORDS: &[&str] = &["ipad", "tablet", "tab"];
+const LAPTOP_WORDS: &[&str] = &[
+    "laptop",
+    "notebook",
+    "macbook",
+    "chromebook",
+    "thinkpad",
+    "ideapad",
+    "ultrabook",
+    "framework",
+    "surface",
+    "xps",
+];
+const DESKTOP_WORDS: &[&str] = &[
+    "desktop",
+    "tower",
+    "workstation",
+    "imac",
+    "mac mini",
+    "mac studio",
+    "server",
+];
+
+/// The picture a device's row shows: a phone, a tablet, a laptop or a desktop
+/// as its label names it, and a computer where the label names no kind.
+#[must_use]
+pub fn device_icon(label: &str) -> Icon {
+    let label = label.to_lowercase();
+    let named = |words: &[&str]| words.iter().any(|word| label.contains(word));
+    // A tablet is read before a phone, since "Galaxy Tab S9" names both, and a
+    // laptop before the desktop words it shares: "Mac mini" and "MacBook Pro"
+    // are one each.
+    if named(TABLET_WORDS) {
+        Icon::Tablet
+    } else if named(LAPTOP_WORDS) {
+        Icon::Laptop
+    } else if named(DESKTOP_WORDS) {
+        Icon::Monitor
+    } else if named(PHONE_WORDS) {
+        Icon::Smartphone
+    } else {
+        Icon::Monitor
+    }
 }
 
 /// Ask the host for the devices trusted under the workspace's identity.
@@ -128,4 +181,33 @@ pub(crate) fn settled(
             Err("the host stopped before it answered".into())
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A device's row shows the machine it says it is: the phone, tablet,
+    /// laptop or desktop its label names, and a computer where its label
+    /// names none.
+    #[test]
+    fn a_device_shows_the_machine_its_label_names() {
+        for (label, icon) in [
+            ("Pixel 9", Icon::Smartphone),
+            ("Chrome on Android", Icon::Smartphone),
+            ("Old phone", Icon::Smartphone),
+            ("iPhone 15", Icon::Smartphone),
+            ("Safari on iPad", Icon::Tablet),
+            ("Galaxy Tab S9", Icon::Tablet),
+            ("Framework 16", Icon::Laptop),
+            ("Ada's laptop", Icon::Laptop),
+            ("MacBook Pro", Icon::Laptop),
+            ("Mac mini", Icon::Monitor),
+            ("Office desktop", Icon::Monitor),
+            ("Chrome on Linux", Icon::Monitor),
+            ("Ada's machine", Icon::Monitor),
+        ] {
+            assert_eq!(device_icon(label), icon, "{label}");
+        }
+    }
 }

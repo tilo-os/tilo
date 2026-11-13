@@ -1201,7 +1201,7 @@ fn device_item(cx: &ViewCx<Settings>, state: &PageState, device: &DeviceView, no
         state,
         &id,
         &title,
-        Icon::Monitor,
+        crate::device_fleet::device_icon(&device.label),
         device_lines(device, now),
         removal,
         details(
