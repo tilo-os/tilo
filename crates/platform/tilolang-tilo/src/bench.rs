@@ -784,7 +784,12 @@ fn seed(doc: &mut Doc, shape: &Shape, n: usize, who: &str) -> Result<(), String>
     for (_, linked) in &shape.links {
         seed(doc, linked, n, who)?;
     }
-    let root = seeded_root(shape, n)?;
+    // The root's own items come as adding them does, [`SEED_BATCH`] an action: one action of
+    // them all outgrows what a change records whole past a few thousand, and its change would be
+    // read as one whose action does not decode, a record of another kind than at a smaller size.
+    // A collection inside holders comes with the root.
+    let added = shape.list.as_ref().filter(|list| list.holders.is_empty());
+    let root = seeded_root(shape, if added.is_some() { 0 } else { n })?;
     let action = DynAction {
         app: shape.app.clone(),
         kind: format!("tl.{}.seed", shape.app),
@@ -796,8 +801,49 @@ fn seed(doc: &mut Doc, shape: &Shape, n: usize, who: &str) -> Result<(), String>
             record: tilo_resource::Model::to_json(&root),
         }],
     };
-    execute(doc, &action, who)
+    execute(doc, &action, who)?;
+    let Some(list) = added else {
+        return Ok(());
+    };
+    let items = seeded_items(list, n)?;
+    let items: Vec<_> = items.iter().collect();
+    for (batch, run) in items.chunks(SEED_BATCH).enumerate() {
+        let first = batch.saturating_mul(SEED_BATCH);
+        let edits = run
+            .iter()
+            .enumerate()
+            .map(|(k, (id, item))| {
+                let place = tilolang_runtime::place::Placement::At {
+                    place: tilolang_runtime::place::Place {
+                        parent: None,
+                        field: list.field.clone(),
+                        key: format!("{:010}", first.saturating_add(k)),
+                    },
+                    was: None,
+                };
+                DynEdit::Insert {
+                    id: root_id(shape),
+                    item: id.as_str().to_owned(),
+                    record: tilo_resource::Model::to_json(*item),
+                    at: place.encode(),
+                }
+            })
+            .collect();
+        let action = DynAction {
+            app: shape.app.clone(),
+            kind: list.item_ty.clone(),
+            action_id: "add".into(),
+            args: Json::Null,
+            authorship: Authorship::default(),
+            edits,
+        };
+        execute(doc, &action, who)?;
+    }
+    Ok(())
 }
+
+/// How many items one action of the seed adds: what a change records whole holds them.
+const SEED_BATCH: usize = 256;
 
 /// A workspace seeded with `n` items, all made by `who`: the record, ready for a host.
 fn seeded_workspace(shape: &Shape, n: usize, who: &str) -> Result<Doc, String> {
