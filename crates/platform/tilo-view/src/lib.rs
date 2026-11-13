@@ -13,18 +13,12 @@
 //! }
 //! ```
 //!
-//! The pieces:
-//!
-//! - [`node`]: the tree a view builds, and the check each prop passes against the catalogue
-//!   (`crates/dev/ui-graph/components.json`), the same one tilolang's `ui.X` passes.
-//! - [`ui`]: the typed builders, one per described component, generated from the catalogue.
-//! - [`cx`]: what the view is handed besides the resource: its events and its own state.
-//! - [`registry`]: the views an app declares, by resource type and name, so the shell finds one
-//!   by the name a place names, and the type's default view.
-//!
-//! What a view looks like is therefore the platform's: it is built from the same described
-//! components a tilolang view is, so a theme, a motion, an accessibility role and the keyboard
-//! reach it through the same code. A Rust app is not a second-class app, and not a better one.
+//! The pieces are [`node`] (the tree a view builds, and the catalogue check each
+//! prop passes), [`ui`] (the generated builders), [`cx`] (what the view is handed
+//! besides the resource) and [`registry`] (the views an app declares, by resource
+//! type and name). What a view looks like is the platform's: it is built from the
+//! same described components a tilolang view is, so a theme, a motion, an
+//! accessibility role and the keyboard reach it through the same code.
 
 pub mod cx;
 pub mod node;
