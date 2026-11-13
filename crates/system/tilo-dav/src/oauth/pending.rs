@@ -17,8 +17,8 @@ pub struct PendingGoogleCalendar {
 }
 
 impl PendingGoogleCalendar {
-    /// Redeem the existing browser authorization on a worker thread.
-    /// The authorization must request Google's calendar scope.
+    /// Redeem the existing browser authorization on a worker thread; it must request
+    /// Google's calendar scope.
     pub fn complete(authorization: Authorization) -> Result<Self, String> {
         let url = Url::parse(authorization.url()).map_err(|_| "invalid authorization URL")?;
         let expected = account_custody::OAuthIssuer::Google.endpoints();
@@ -47,9 +47,9 @@ impl PendingGoogleCalendar {
         Ok(pending)
     }
 
-    /// Resolve the authenticated primary calendar and discover its collections.
-    /// Returns the provider-confirmed ID, DAV endpoint and collection metadata.
-    /// Blocking; call off the UI thread.
+    /// Resolve the authenticated primary calendar and discover its collections: the
+    /// provider-confirmed ID, DAV endpoint and collection metadata. Blocking; call off
+    /// the UI thread.
     ///
     /// # Errors
     /// Identity lookup, unsafe identity or bounded DAV discovery failure.
@@ -109,8 +109,8 @@ impl PendingGoogleCalendar {
             .map_err(|error| error.to_string())
     }
 
-    /// Stage this grant in the selected private vault without exposing its bytes.
-    /// The caller owns the explicit save, after calendar selection is confirmed.
+    /// Stage this grant in the selected private vault without exposing its bytes. The
+    /// caller saves explicitly, after calendar selection is confirmed.
     pub fn stage(&self, id: &accounts::AccountId, vault: &mut accounts::SecretVault) {
         let mut secret = account_custody::oauth_secret(&self.tokens);
         vault.put(id, &secret);

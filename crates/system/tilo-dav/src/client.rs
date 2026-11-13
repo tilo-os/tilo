@@ -1,10 +1,9 @@
 //! Blocking `WebDAV` client on Tilo's TLS defaults.
 //!
-//! The client builds requests — method, headers, credentials, conditional
-//! `ETag`s — and reads bounded bodies. It deliberately does not interpret
-//! status codes: a 412, a 404 on delete or a 403 from an expired sync token
-//! mean different things to different callers, so [`DavResponse`] hands the
-//! status back and callers map it.
+//! The client builds requests (method, headers, credentials, conditional `ETag`s) and
+//! reads bounded bodies. It deliberately does not interpret status codes: a 412, a 404
+//! on delete or a 403 from an expired sync token mean different things to different
+//! callers, so [`DavResponse`] hands the status back and callers map it.
 
 use std::fmt;
 use std::io::Read;
@@ -21,7 +20,6 @@ use crate::multistatus::{self, Limits, Multistatus, XmlError};
 use crate::request::XML_CONTENT_TYPE;
 pub use crate::request::{Credentials, Depth, Options, Precondition, Redirects};
 
-/// A request body for [`DavClient::send`].
 pub enum Body {
     Empty,
     Bytes(Vec<u8>),
@@ -40,18 +38,12 @@ impl fmt::Debug for Body {
     }
 }
 
-/// Transport and bounded-read failures. HTTP statuses are not errors.
 #[derive(Debug)]
 pub enum Error {
-    /// The HTTP client could not be built.
     Build(reqwest::Error),
-    /// The request could not be sent or the response headers not received.
     Transport(reqwest::Error),
-    /// Reading the response body failed.
     Read(std::io::Error),
-    /// The body is larger than the caller's limit.
     TooLarge,
-    /// The body is not an acceptable multistatus document.
     Xml(XmlError),
 }
 
@@ -97,7 +89,6 @@ impl DavClient {
         })
     }
 
-    /// The same transport, authenticating every request with `credentials`.
     #[must_use]
     pub fn with_credentials(&self, credentials: Credentials) -> Self {
         Self {
@@ -126,7 +117,6 @@ impl DavClient {
         send(request)
     }
 
-    /// `REPORT` with an XML `body` (see [`crate::body`]).
     pub fn report(
         &self,
         url: impl IntoUrl,
@@ -141,12 +131,10 @@ impl DavClient {
         send(request)
     }
 
-    /// `GET`.
     pub fn get(&self, url: impl IntoUrl) -> Result<DavResponse, Error> {
         send(self.request(Method::GET, url))
     }
 
-    /// `PUT` `body` under `precondition`, declaring `content_type` if given.
     pub fn put(
         &self,
         url: impl IntoUrl,
@@ -170,7 +158,6 @@ impl DavClient {
         send(apply(self.request(Method::DELETE, url), precondition))
     }
 
-    /// `MKCOL`.
     pub fn mkcol(&self, url: impl IntoUrl) -> Result<DavResponse, Error> {
         send(self.request(method(b"MKCOL"), url))
     }
@@ -250,7 +237,6 @@ impl DavClient {
     }
 }
 
-/// A response whose body has not been read yet.
 #[derive(Debug)]
 pub struct DavResponse {
     inner: Response,
@@ -261,7 +247,6 @@ impl DavResponse {
         self.inner.status()
     }
 
-    /// The `ETag` header, if present and visible ASCII.
     pub fn etag(&self) -> Option<String> {
         self.inner
             .headers()
@@ -270,7 +255,6 @@ impl DavResponse {
             .map(ToOwned::to_owned)
     }
 
-    /// A response header as visible ASCII.
     pub fn header(&self, name: &str) -> Option<String> {
         self.inner
             .headers()
@@ -279,7 +263,6 @@ impl DavResponse {
             .map(ToOwned::to_owned)
     }
 
-    /// The declared body length.
     pub fn content_length(&self) -> Option<u64> {
         self.inner.content_length()
     }
