@@ -17,8 +17,7 @@ use tilo_app_package::id::PackageId;
 /// What `tilo-install` runs after every install, update and uninstall, and at every start of the
 /// daemon (a new image or a swapped userspace changes the system store without any install
 /// running): the store's size cap, payload trees and staging nothing names, and runtime builds no
-/// installed app runs any more. A tree a launch holds or a running app has mounted stays, and so
-/// do the apps `keep` names. Never fails the change it follows.
+/// installed app runs any more. A tree a launch holds stays, and so do the apps `keep` names.
 pub fn collect_after_change(
     store: &PackageStore,
     catalog: &Catalog,
@@ -670,7 +669,7 @@ fn last_verified_catalogue(registry: &str) -> Result<String, ReadError> {
 ///
 /// Which builds of an app run here is decided against that declaration. Unreadable, it was written
 /// for another version of the system than this app host, so the Store must say the system needs an
-/// update, rather than list apps judged against nothing.
+/// update.
 fn system_declaration_readable(path: &std::path::Path) -> Result<(), ReadError> {
     match package_store::interfaces::read_interfaces(path) {
         Ok(_) => Ok(()),
